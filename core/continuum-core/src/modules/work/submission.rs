@@ -78,7 +78,7 @@ pub struct WorkSubmit {
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
 )]
 pub struct WorkSubmitParams {
-    /// The room the card lives in (id or name).
+    /// Card room (ID/name).
     pub room: String,
     // The card you hold. Everything below is DERIVED from it and your checkout when
     // omitted — the citizen's world has no verb that mints an artifact hash, and
@@ -95,21 +95,20 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub claim_id: Option<Uuid>,
-    /// Benchmark instance name; read from your checkout when omitted.
+    /// Instance; defaults to checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// The commit your patch is against; read from your checkout when omitted.
+    /// Patch base commit; defaults to checkout base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
-    /// SHA-256 + size of your patch; computed when omitted.
+    /// Patch hash/size; computed if omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Explicit retained learning revision to bind before publication. It must
-    /// belong to this persona, card and claim; omission publishes without learning
-    /// credit. A revision is not interchangeable with the artifact/submission ID.
+    /// Learning revision for this persona/card/claim. Omitted: no learning credit.
+    // Bind before publication; not an artifact or submission ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
@@ -522,7 +521,7 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
 )]
 pub struct WorkReviewParams {
-    /// The room the review card lives in (id or name).
+    /// Review room (ID/name).
     pub room: String,
     // The REVIEW card she holds. The parent card, its latest submission and artifact,
     // and her claim on the review card are read off the board from it when the fields
@@ -541,19 +540,19 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_id: Option<Uuid>,
-    /// The card under review; read from the review card when omitted.
+    /// Parent card; defaults to review's parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub card_id: Option<Uuid>,
-    /// The submission reviewed; the latest when omitted.
+    /// Submission; defaults to latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Its artifact; read off the board when omitted.
+    /// Artifact; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Your claim on the review card; read off the board when omitted.
+    /// Review claim; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_claim_id: Option<Uuid>,
@@ -781,8 +780,8 @@ pub struct WorkSubmissionParams {
     /// Accepted submission UUID.
     #[ts(type = "string")]
     pub submission_id: Uuid,
-    /// Inspect this card's retained learning-revision metadata. Does not select,
-    /// bind, or train it; matching a claim alone does not prove artifact causality.
+    /// Include learning provenance; inspection only.
+    // No selection, binding or training; matching claims do not prove causality.
     #[serde(default)]
     pub include_staged_evidence: bool,
 }
