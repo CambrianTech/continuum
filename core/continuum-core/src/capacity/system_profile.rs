@@ -157,7 +157,10 @@ impl SystemProfile {
         // Live free RAM (the probe's `system_ram_bytes` is TOTAL, not free).
         let mut sys = sysinfo::System::new();
         sys.refresh_memory();
-        let system_ram_free_bytes = sys.available_memory();
+        // NOT `available_memory()` — 0 on macOS, so `DeviceCapacity::system_ram_free_bytes`
+        // was a permanent zero on every Mac for anyone budgeting against it.
+        let system_ram_free_bytes =
+            crate::system_resources::memory_pressure::available_from(&sys);
 
         let capacity = DeviceCapacity {
             gpu_total_bytes: hw_profile.total_vram_bytes,
