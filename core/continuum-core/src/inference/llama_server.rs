@@ -2159,6 +2159,14 @@ pub trait LlamaServerControl: Send + Sync {
         false
     }
 
+    /// The KV decision the RUNNING engine was launched with — read off its own argv
+    /// (card 977842fd), so the adopt rail can compare it against the decision a spawn
+    /// would make NOW. `None` = unknown (no live lane, argv unreadable, a fake): an
+    /// absence is not a mismatch; adoption proceeds on the other axes.
+    fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
+        None
+    }
+
     /// Fingerprint of the server's `/slots` activity state (see
     /// [`slots_activity_fingerprint_of`]). The health heartbeat compares the value
     /// across two consecutive smoke-probe MISSES: changed → the serve loop is
@@ -2486,7 +2494,22 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     }
                 }
             };
-            if !window_ok || !lanes_ok || !sight_ok {
+            // THE KV DECISION IS LAUNCH GEOMETRY TOO (card 977842fd). The cache type and
+            // flash-attention are applied at spawn; an engine now survives a deploy
+            // (#4284) and is adopted across a window drift on purpose. Measured on the
+            // 5090, 2026-09-21 00:33Z: the new core read the q8_0 decision (#4285),
+            // found its healthy f16 engine at 26,880, adopted it, and the decision never
+            // reached the process it was written to change — three minds fell home from
+            // that seat within seven minutes. Adopt against the geometry a spawn would
+            // produce NOW: a different decision is a stale lane and relaunches once, the
+            // probe naming both. Unknown (no argv, a fake) is not a mismatch.
+            let planned_kv = crate::cognition::kv_cache_plan::resolve();
+            let running_kv = ctrl.launch_kv();
+            let kv_ok = running_kv.as_ref().is_none_or(|r| {
+                r.cache_type_or_default().eq_ignore_ascii_case(&planned_kv.cache_type)
+                    && r.flash_attn == planned_kv.flash_attn
+            });
+            if !window_ok || !lanes_ok || !sight_ok || !kv_ok {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
@@ -2496,11 +2519,18 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     window_ok,
                     lanes_ok,
                     sight_ok,
-                    "served capacity is below target (window, lanes and/or sight) — relaunching \
-                     to grow (llama.cpp has no hot-resize; a genome-set match alone must not \
-                     strand a starved lane at the boot floor, nor a blind one without its eyes)",
+                    kv_ok,
+                    planned_kv = %planned_kv.cache_type,
+                    planned_flash_attn = planned_kv.flash_attn,
+                    running_kv = running_kv.as_ref().map(|r| r.cache_type_or_default().to_string()).unwrap_or_default(), // unwrap_or_default: "" = the running decision is unknown (no live argv); kv_ok is then true
+                    running_flash_attn = running_kv.as_ref().map(|r| r.flash_attn).unwrap_or(false), // unwrap_or: unknown reads false alongside the empty type above
+                    "served geometry differs from the target (window, lanes, sight and/or the KV \
+                     decision) — relaunching (llama.cpp has no hot-resize; a genome-set match \
+                     alone must not strand a starved lane at the boot floor, a blind one without \
+                     its eyes, or an adopted lane on last deploy's cache type)",
                 );
-                // fall through to relaunch at the larger window / more lanes / with eyes.
+                // fall through to relaunch at the larger window / more lanes / with eyes /
+                // on the decided cache type.
             } else {
                 // Window matches. Is the COMPUTE path alive? A child we spawned
                 // ourselves was decode-verified at `wait_ready` and is trusted
@@ -3425,6 +3455,13 @@ impl LlamaServerControl for LlamaServerProcess {
 
     fn owns_child(&self) -> bool {
         self.child.lock().unwrap().is_some()
+    }
+
+    fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
+        let (_host, port) = split_host_port(&self.root);
+        let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
+        let argv = crate::inference::lane_process::command_args(record.pid)?;
+        Some(crate::inference::lane_process::launch_kv_in(&argv))
     }
 
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
@@ -4951,6 +4988,9 @@ mod tests {
         /// `Some(_)` = the fake's `/slots` fingerprint ADVANCES on every look (a busy
         /// lane); `None` = no slots account (the default: no exoneration, as before).
         slots_busy: Option<AtomicUsize>,
+        /// The KV decision the fake's running engine was launched with; `None` = unknown
+        /// (the default, so every pre-existing case adopts on the other axes alone).
+        launched_kv: Option<crate::inference::lane_process::LaunchKv>,
         /// Whether the fake "owns" the running child (we spawned it). `false` =
         /// an adopted orphan (the conservative default that exercises the
         /// smoke-probe gate).
@@ -4976,6 +5016,7 @@ mod tests {
                 serves: AtomicUsize::new(0),
                 decode_ok: true,
                 slots_busy: None,
+                launched_kv: None,
                 owns: false,
                 served_lanes: 0,
                 served_window: 32768,
@@ -5013,6 +5054,11 @@ mod tests {
         /// (mid-prefill for a client this core never knew, or under a build's load).
         fn slots_busy(mut self) -> Self {
             self.slots_busy = Some(AtomicUsize::new(0));
+            self
+        }
+        /// Model an engine launched with this KV decision (read off its argv in production).
+        fn launched_with(mut self, cache_type: Option<&str>, flash_attn: bool) -> Self {
+            self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn });
             self
         }
         /// Model a child we spawned ourselves (trusted without a per-tick probe).
@@ -5061,6 +5107,9 @@ mod tests {
             self.slots_busy
                 .as_ref()
                 .map(|n| n.fetch_add(1, Ordering::SeqCst) as u64)
+        }
+        fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
+            self.launched_kv.clone()
         }
         fn owns_child(&self) -> bool {
             self.owns
@@ -5335,6 +5384,33 @@ mod tests {
             .decode_wedged()
             .slots_busy();
         assert_eq!(ensure_model_serving(&ctrl, &target("coder-14b"), true).await, EnsureOutcome::AlreadyServing);
+    }
+
+    // what this catches (card 977842fd, the 5090 2026-09-21 00:33Z): a healthy engine
+    // launched on last deploy's KV decision, adopted by a core whose plan now decides
+    // differently — the decision never reached the process. An adopted lane whose launch
+    // KV differs from what a spawn would produce NOW relaunches once; the same decision
+    // (or an unknown one) still adopts, so the #4284 warm-lane economy stands.
+    #[tokio::test]
+    async fn an_adopted_lane_on_last_deploys_kv_decision_relaunches_onto_this_ones() {
+        let planned = crate::cognition::kv_cache_plan::resolve();
+        let other = if planned.cache_type == crate::cognition::kv_cache_plan::Q8_0 { None } else { Some(crate::cognition::kv_cache_plan::Q8_0) };
+        // Launched on the OTHER decision: stale, relaunched.
+        let stale = FakeControl::probe(Ok(Some("coder-14b".into()))).owned().launched_with(other, !planned.flash_attn);
+        assert_eq!(
+            ensure_model_serving(&stale, &target("coder-14b"), false).await,
+            EnsureOutcome::Spawned { model: "coder-14b".into() },
+            "a different KV decision is a stale lane"
+        );
+        assert_eq!(stale.serves.load(Ordering::SeqCst), 1);
+        // Launched on THIS decision: adopted, nothing respawned.
+        let same_type = planned.launcher_cache_type();
+        let fresh = FakeControl::probe(Ok(Some("coder-14b".into()))).owned().launched_with(same_type, planned.flash_attn);
+        assert_eq!(ensure_model_serving(&fresh, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
+        assert_eq!(fresh.serves.load(Ordering::SeqCst), 0);
+        // Unknown launch (no argv): not a mismatch.
+        let unknown = FakeControl::probe(Ok(Some("coder-14b".into()))).owned();
+        assert_eq!(ensure_model_serving(&unknown, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
     }
 
     // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode

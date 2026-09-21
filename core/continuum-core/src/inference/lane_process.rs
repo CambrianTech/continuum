@@ -432,6 +432,55 @@ pub fn cache_ram_mib_in(argv: &[String]) -> Option<u32> {
     None
 }
 
+/// The KV cache decision a running llama-server was LAUNCHED with, read off its argv —
+/// the process's truth about the geometry the plan cannot change without a relaunch.
+/// `cache_type` is `--cache-type-k <t>` (or `=`); absent = the engine's default (f16).
+/// `flash_attn` is `--flash-attn on` (a bare `--flash-attn` or `on`/`auto`; `off` is off).
+/// Card 977842fd: the KV cache type is applied at SPAWN, an engine now survives a deploy
+/// (#4284), and the adopt rail compared model + window + lanes + sight — so a new
+/// decision (q8_0 on the 5090) never reached the f16 engine the new core adopted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchKv {
+    pub cache_type: Option<String>,
+    pub flash_attn: bool,
+}
+
+impl LaunchKv {
+    /// f16 is the engine's default, so "no flag" and "f16" are the same launch.
+    pub fn cache_type_or_default(&self) -> &str {
+        self.cache_type.as_deref().unwrap_or(crate::cognition::kv_cache_plan::F16) // unwrap_or: no flag = the engine's f16 default, a value not an absence
+    }
+}
+
+/// PURE: the KV decision in a llama-server argv (see [`LaunchKv`]).
+pub fn launch_kv_in(argv: &[String]) -> LaunchKv {
+    let mut cache_type = None;
+    let mut flash_attn = false;
+    let mut it = argv.iter().peekable();
+    while let Some(a) = it.next() {
+        if a == "--cache-type-k" || a == "-ctk" {
+            cache_type = it.next().cloned();
+        } else if let Some(v) = a.strip_prefix("--cache-type-k=") {
+            cache_type = Some(v.to_string());
+        } else if a == "--flash-attn" || a == "-fa" {
+            flash_attn = match it.peek().map(|s| s.as_str()) {
+                Some("off") => {
+                    it.next();
+                    false
+                }
+                Some("on") | Some("auto") => {
+                    it.next();
+                    true
+                }
+                _ => true,
+            };
+        } else if let Some(v) = a.strip_prefix("--flash-attn=") {
+            flash_attn = v != "off";
+        }
+    }
+    LaunchKv { cache_type, flash_attn }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +632,21 @@ mod tests {
             !is_llama_server(dead),
             "a reaped pid must not read as a live llama-server"
         );
+    }
+
+    // what this catches (card 977842fd): the running engine's KV decision is read off its
+    // own argv in every shape the launcher and an operator write it — the fact the adopt
+    // rail compares the plan's decision against.
+    #[test]
+    fn the_kv_decision_is_read_off_the_engines_own_argv() {
+        let argv = |s: &str| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        let kv = launch_kv_in(&argv("llama-server -m x.gguf --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on -c 53760"));
+        assert_eq!(kv, LaunchKv { cache_type: Some("q8_0".into()), flash_attn: true });
+        let plain = launch_kv_in(&argv("llama-server -m x.gguf -c 26880 --parallel 1"));
+        assert_eq!(plain, LaunchKv { cache_type: None, flash_attn: false });
+        assert_eq!(plain.cache_type_or_default(), "f16", "no flag is the engine's f16 default");
+        assert_eq!(launch_kv_in(&argv("llama-server --cache-type-k=q4_0 --flash-attn=off")), LaunchKv { cache_type: Some("q4_0".into()), flash_attn: false });
+        assert!(launch_kv_in(&argv("llama-server -fa --mmproj p.gguf")).flash_attn, "a bare flag is on and eats nothing");
+        assert!(!launch_kv_in(&argv("llama-server --flash-attn off")).flash_attn);
     }
 }
