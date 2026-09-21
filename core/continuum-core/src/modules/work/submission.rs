@@ -6,6 +6,23 @@ use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::Connection;
 
+/// How a room is NAMED in a refusal (Kimi's `work/submit`, 2026-09-21).
+///
+/// "card 31c241e2 is absent from this room" is TRUE and USELESS: she asked for one room
+/// name, `resolve_room` turned it into a Room, and if that landed somewhere other than
+/// where she meant, the sentence gives her no way to see the mismatch. She re-reads her
+/// own card id, finds it correct, and concludes the substrate lost her card — the
+/// substrate's resolution failing, presented as the citizen being wrong about her own work.
+///
+/// So: the RESOLVER's answer, never the caller's string — and the channel id beside the
+/// name, because two rooms can share a name across scopes and the name alone cannot tell
+/// them apart (Cormac's condition). The caller's input is reported too, since the gap
+/// between what she asked for and what she got IS the diagnosis.
+fn room_label(name: &str, channel: Uuid) -> String {
+    format!("'{name}' ({})", short8(channel))
+}
+
+
 /// The same content-addressed reference the AIRC submission protocol carries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
@@ -283,7 +300,14 @@ impl ActionCommand for WorkSubmit {
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
         let card = board.card(card_id).ok_or_else(|| {
-            CommandError::NotFound(format!("card {} is absent from this room", p.card_id))
+            CommandError::NotFound(format!(
+                "card {} is absent from the board of room {} — you asked for '{}'. If that \
+                 is not the room you meant, the card is on another board and this submit \
+                 went to the wrong one",
+                p.card_id,
+                room_label(&room.name, room.channel.as_uuid()),
+                p.room
+            ))
         })?;
         // The claim is HERS on THIS card, read off the board — a typed id she would
         // otherwise have to remember from a claim receipt three turns ago.
@@ -552,7 +576,14 @@ impl ActionCommand for WorkReview {
             .map_err(|e| CommandError::Internal(e.to_string()))?;
         let review_card = board
             .card(WorkCardId::from_uuid(p.review_card_id))
-            .ok_or_else(|| CommandError::NotFound(format!("review card {} is absent from this room", p.review_card_id)))?;
+            .ok_or_else(|| {
+                CommandError::NotFound(format!(
+                    "review card {} is absent from the board of room {} — you asked for '{}'",
+                    p.review_card_id,
+                    room_label(&room.name, room.channel.as_uuid()),
+                    p.room
+                ))
+            })?;
         let card_id = match p.card_id {
             Some(c) => WorkCardId::from_uuid(c),
             None => review_card.reviews.ok_or_else(|| {
@@ -582,7 +613,13 @@ impl ActionCommand for WorkReview {
         };
         let parent = board
             .card(card_id)
-            .ok_or_else(|| CommandError::NotFound(format!("card {card_id} is absent from this room")))?;
+            .ok_or_else(|| {
+                CommandError::NotFound(format!(
+                    "card {card_id} is absent from the board of room {} — you asked for '{}'",
+                    room_label(&room.name, room.channel.as_uuid()),
+                    p.room
+                ))
+            })?;
         let submission = match p.submission_id {
             Some(id) => parent
                 .submissions
@@ -835,8 +872,25 @@ mod tests {
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
-    use super::{artifact_of_patch, base_sha_of, instance_of_checkout, is_placeholder_hash};
+    use super::{artifact_of_patch, base_sha_of, instance_of_checkout, is_placeholder_hash, room_label, short8};
     use std::path::Path;
+
+    // what this catches (Kimi's work/submit, 2026-09-21): "card X is absent from this room"
+    // is true and useless — she asked for one room name, `resolve_room` turned it into a
+    // Room, and if that landed elsewhere the sentence gives her no way to see the mismatch,
+    // so the substrate's resolution failing reads as her being wrong about her own card.
+    // The refusal must name the RESOLVER's answer, and carry the channel id beside it
+    // because two rooms can share a name across scopes (Cormac's condition).
+    #[test]
+    fn a_room_is_named_by_resolver_answer_and_channel_never_by_name_alone() {
+        let a = uuid::Uuid::from_u128(0xabcdef12_3456_7890_abcd_ef1234567890);
+        let b = uuid::Uuid::from_u128(0x12345678_90ab_cdef_1234_567890abcdef);
+        let seed = room_label("continuum", a);
+        assert!(seed.contains("'continuum'"), "the resolved NAME is quoted: {seed}");
+        assert!(seed.contains(&short8(a)), "and the channel id rides beside it: {seed}");
+        // Two rooms sharing a name are distinguishable — the whole point of carrying the id.
+        assert_ne!(room_label("continuum", a), room_label("continuum", b));
+    }
 
     #[test]
     fn placeholders_are_never_artifacts_and_a_patch_hashes_to_its_sha256() {
