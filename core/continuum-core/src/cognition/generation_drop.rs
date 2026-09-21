@@ -31,6 +31,13 @@
 //! says it: answer chars, reasoning chars, prefill progress, and the tool calls ALREADY
 //! PARSEABLE in the partial text ([`crate::ai::json_in_prompt_tools::parse_tool_calls`]).
 //!
+//! THE COST, STATED: the chunks now sit in the unbounded channel for the life of the
+//! generation instead of being discarded on send (the receiver used to be dropped
+//! immediately). That buffer is bounded by the turn's own `max_tokens` — the completion
+//! budget the substrate already sized, a quarter of the served window at most — so it is
+//! a few MB per in-flight generation at the widest window, not an unbounded growth. The
+//! drain itself is `try_recv` in `Drop`, off every hot path.
+//!
 //! It REPORTS the loss; it does not re-enter the turn with it. `Drop` is synchronous and
 //! the settle loop that would execute those calls is itself being torn down at that
 //! instant — there is no seam to hand them back to. Naming them is the difference between
