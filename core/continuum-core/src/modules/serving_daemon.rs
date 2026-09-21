@@ -3828,11 +3828,55 @@ impl ServingDaemonModule {
         let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
             a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
         });
+        // WHICH BRANCH PLANNED THIS, AND WHAT IT PLANNED FROM (card d0ba2342, 2026-09-21).
+        // These two arms differ by exactly ONE engine footprint: `at_rest` trusts that the
+        // ledger has already credited serving's own bytes back, `stable` credits them here.
+        // Taking the wrong one puts the budget off by a whole engine in one direction or the
+        // other — and the selector is a board attribution, so which arm ran is OBSERVABLE and
+        // was being inferred instead. Measured that night on the M5: the engine held a SETTLED
+        // 3 lanes at 78,592 while the plan said 1 (`bound_by=host-fit`, `demand_lanes=2`) with
+        // one lane of KV costing 2.4 GiB against 13.9 GiB available. Two confident explanations
+        // — the plan charging f16 while the engine served q8_0, and the weights being charged
+        // against a budget that already excluded the running engine — were both refuted by
+        // reading the guards that prevent them (#232's `apply_kv_quantization`, and the
+        // credit-back-exactly-once ledger above). Nobody could say which arm had run, because
+        // nothing said so. This says it.
         let stable = if ledger_credited {
             plan_serving_at_rest(&budget, candidates, incumbent.as_deref(), &demand)
         } else {
             plan_serving_stable(&budget, candidates, incumbent.as_deref(), &demand)
         };
+        {
+            let credited_bytes: u64 = self
+                .resource_daemon
+                .board()
+                .attributions
+                .iter()
+                .filter(|a| a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind())
+                .map(|a| a.bytes)
+                .sum();
+            let planned = stable.as_ref().map(|p| (p.lanes, p.served_context_window));
+            // Once per CHANGE of the decision's inputs, never per 5-second tick — the same law
+            // the prompt-cache divergence receipt in this file follows.
+            static LAST_BRANCH: parking_lot::Mutex<Option<(bool, u64, u64, Option<(u32, u32)>)>> =
+                parking_lot::Mutex::new(None);
+            let now = Some((ledger_credited, budget.usable_bytes, credited_bytes, planned));
+            if say_on_change(&mut *LAST_BRANCH.lock(), now).is_some() {
+                crate::probe!(
+                    class = "serving.plan.branch",
+                    branch = if ledger_credited { "at_rest" } else { "stable" },
+                    ledger_credited = ledger_credited,
+                    credited_bytes = credited_bytes,
+                    usable_bytes = budget.usable_bytes,
+                    perf_cores = budget.perf_cores as u64,
+                    planned_lanes = planned.map(|(l, _)| l as u64).unwrap_or(0), // unwrap_or: 0 = no plan produced, not a lane count
+                    planned_window = planned.map(|(_, w)| w as u64).unwrap_or(0), // unwrap_or: as above
+                    "which planning arm produced this plan, and the budget it planned from — \
+                     the two arms differ by one engine footprint, so this is the first thing to \
+                     read when the plan and the running engine disagree about how many lanes fit"
+                );
+            }
+        }
         match stable {
             Some(plan) => {
                 // NO PERSONA LANE BELOW WHAT THE RESIDENTS REQUIRE (2eec3977; Joel 2026-09-20:
