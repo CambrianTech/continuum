@@ -91,6 +91,8 @@ class CudaTrainingTests(unittest.TestCase):
                     spec.update(memoryBytes=planned["memoryBytes"], revision=planned["revision"],
                                 microBatchSize=1)  # Force accumulation within the admitted footprint.
                     cuda_train.train(spec, output)
+                    adapter_config = json.loads((output / "adapter_config.json").read_text())
+                    self.assertEqual(adapter_config["base_model_name_or_path"], spec["baseModel"])
                     receipt = json.loads((output / "training-provenance.json").read_text())
                     self.assertEqual(receipt["effectiveBatchSize"], 3)
                     self.assertEqual(receipt["microBatchSize"], 1)

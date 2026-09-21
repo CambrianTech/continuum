@@ -21,6 +21,12 @@ standalone MLX caller's ungoverned/unsized behavior is preserved, not endorsed a
 equivalent protection. Migrating that behavior and its separate job registry is
 follow-up work requiring Mac validation.
 
+The native **genome MLX adapter** is a different caller from `forge/train`:
+it shares process ownership here but still has no measured governor admission.
+Card `3e752cc6` remains open. This PR must not be read as closing Mac training
+memory safety; that adapter needs measured footprint admission before it loads
+weights alongside serving.
+
 `cuda_train.py` owns PyTorch/PEFT tensor operations. It plans from actual model
 configuration and meta tensors before loading weights. The plan records weights,
 optimizer, activations, logits and allocator overhead separately. The governor
@@ -49,6 +55,10 @@ receives an explicit checkpoint format (omission retains MLX compatibility).
 The custodian transposes MLX weights into PEFT, or validates native PEFT tensor
 pairs, rank and base identity. Both then use the existing pinned llama.cpp GGUF
 converter. Native PEFT weights are never transposed as though they were MLX.
+The PEFT boundary currently accepts positive integer `lora_alpha` only, matching
+our typed training request; float-valued JSON alpha is refused. The GPU fixture
+asserts the saved PEFT base identity exactly matches the trainer's resolved base,
+so library changes that normalize it differently fail before export acceptance.
 
 The completion sentinel still requires conversion and the existing evaluation
 and adoption gates. Completed training alone is not evidence of improvement.
