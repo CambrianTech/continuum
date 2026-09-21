@@ -3382,18 +3382,56 @@ impl LlmDeliberationFaculty {
             // subtracting would reserve one extra old turn and leave the fit over budget.
             let evidence_fit = evidence.fit_within(history_budget);
             if evidence_fit == EvidenceFit::CannotFit {
+                // A REFUSAL, NOT A QUIET DROP (Astra's review of #4290, and her test
+                // `continuity_insufficient_capacity_refuses_instead_of_dropping_evidence`).
+                //
+                // This branch is only reached when every other optional turn has already
+                // yielded and her act and its result STILL do not fit. Continuing here
+                // would forget a completed act and let her re-issue it, with a probe as
+                // the only trace — "required action/result continuity must not become
+                // optional when it exceeds capacity". So it is a capacity error, the same
+                // outcome the irreducible stimulus and `latest_result` already produce,
+                // on the same path the caller already handles.
+                //
+                // It is loud in both directions: the probe names what did not fit, and the
+                // error carries the real requirement, which is the number the untruncated
+                // demand receipt feeds to `serving_plan` — so a window too small for one
+                // act gets PROVISIONED rather than silently trimmed forever.
                 crate::probe!(
                     class = "delib.fill.evidence_cannot_fit",
                     persona = %self.persona_name,
+                    verdict = evidence_fit.as_str(),
                     evidence_messages = evidence.messages,
                     evidence_tokens = evidence.tokens,
+                    largest_message_tokens = evidence.largest_message,
                     history_budget,
                     truncated_chain = evidence.truncated,
                     "her most recent act and its result do NOT fit the conversation \
-                     budget — they are being dropped and she may re-issue the act. A \
-                     cannot-fit outcome, never a silent fallback: either the budget is \
-                     too small for a turn of this shape, or the act's result is too big \
-                     to carry whole and wants condensing"
+                     budget — refusing the turn rather than forgetting a completed act. \
+                     The window is too small for a turn of this shape"
+                );
+                return Err(PromptCapacityError {
+                    required_tokens: required_tokens.saturating_add(evidence.tokens),
+                    budget_tokens,
+                });
+            }
+            if evidence_fit == EvidenceFit::TooLargeToCarry {
+                // Loud, but NOT a refusal — see [`EvidenceFit::TooLargeToCarry`]. The
+                // oversized member yields like any other optional turn and the rest of
+                // the drop proceeds; refusing here is the 836-refusals outage.
+                crate::probe!(
+                    class = "delib.fill.evidence_cannot_fit",
+                    persona = %self.persona_name,
+                    verdict = evidence_fit.as_str(),
+                    evidence_messages = evidence.messages,
+                    evidence_tokens = evidence.tokens,
+                    largest_message_tokens = evidence.largest_message,
+                    history_budget,
+                    truncated_chain = evidence.truncated,
+                    "one message of her last act is on its own larger than the whole \
+                     conversation budget — it cannot be carried whole by any policy, so \
+                     it yields rather than muting the turn. The answer is condensing it, \
+                     never a capacity fault"
                 );
             }
             let drop_end = if evidence_fit == EvidenceFit::Protected {
@@ -3572,6 +3610,10 @@ struct RecentMove {
     /// causal chain, not the chain. Rides the receipt so a partial protection never
     /// reads as a whole one.
     truncated: bool,
+    /// The largest single message in the unit. Separates "this unit does not fit, but
+    /// every piece of it COULD have been kept" from "one piece of it cannot be carried
+    /// whole under any policy" — see [`EvidenceFit`].
+    largest_message: usize,
 }
 
 /// Whether her most recent causal unit can be held out of a binding drop.
@@ -3586,9 +3628,33 @@ pub(crate) enum EvidenceFit {
     NoMove,
     /// The unit fits the budget and is held out of the drop.
     Protected,
-    /// The unit is LARGER than the whole conversation budget. Nothing here can save it;
-    /// it is dropped, loudly, and she may re-issue the act.
+    /// The unit is larger than the budget, but every message in it would individually
+    /// fit. Dropping it forgets a completed act that COULD have been kept, so the turn
+    /// refuses instead (Astra's review of #4290): required action/result continuity does
+    /// not become optional when it exceeds capacity.
     CannotFit,
+    /// One message in the unit is on its own larger than the whole conversation budget.
+    ///
+    /// No policy can carry that whole, and refusing here does not preserve it — it just
+    /// mutes the citizen. That exact refusal is a MEASURED outage: an unbounded required
+    /// result produced 836 refusals and zero acts on 2026-09-10, and the substrate's
+    /// answer was to cap the result at its share of the window and demote the remainder
+    /// to history (the demoted remainder is what lands back here). So this is loud but
+    /// not fatal: the oversized member yields like any other optional turn, and the real
+    /// fix is condensing it, never a capacity fault
+    /// ([[collapse-dont-clip-condense-the-past-never-erode-it]]).
+    TooLargeToCarry,
+}
+
+impl EvidenceFit {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NoMove => "no_move",
+            Self::Protected => "protected",
+            Self::CannotFit => "cannot_fit",
+            Self::TooLargeToCarry => "too_large_to_carry",
+        }
+    }
 }
 
 /// What a binding fill budget costs her, in KIND and amount. A clip that takes her own
@@ -3610,6 +3676,8 @@ impl RecentMove {
             EvidenceFit::NoMove
         } else if self.tokens <= history_budget {
             EvidenceFit::Protected
+        } else if self.largest_message > history_budget {
+            EvidenceFit::TooLargeToCarry
         } else {
             EvidenceFit::CannotFit
         }
@@ -3680,6 +3748,11 @@ impl PromptMessages {
                 .map(LlmDeliberationFaculty::message_cost)
                 .sum(),
             truncated,
+            largest_message: history[idx..]
+                .iter()
+                .map(LlmDeliberationFaculty::message_cost)
+                .max()
+                .unwrap_or(0), // unwrap_or: the span is non-empty by construction here; 0 is unreachable
         }
     }
 
@@ -8054,32 +8127,31 @@ mod tests {
                 "what it sheds is old conversation — never her own move or its result"
             );
 
-            // When the budget cannot hold the evidence at all, nothing here can save it —
-            // and the fit still binds rather than protecting the prompt past the window.
+            // When the budget cannot hold the act and its result at all, the turn
+            // REFUSES rather than forgetting a completed act — see
+            // `continuity_insufficient_capacity_refuses_instead_of_dropping_evidence`.
             let last_cost = LlmDeliberationFaculty::message_cost(
                 history.last().expect("the history ends with her act's result"),
             );
-            let starving = faculty
-                .fit_messages(prompt(), last_cost)
-                .expect("one whole message always fits its own cost")
-                .messages;
             assert!(
-                LlmDeliberationFaculty::messages_cost(&starving) <= last_cost,
-                "a budget too small for her last move still binds — a trimmed prompt \
-                 beats a 500 that mutes her for the whole tick"
+                faculty.fit_messages(prompt(), last_cost).is_err(),
+                "a budget too small for her completed act is a capacity error, not a \
+                 silent forgetting"
             );
         }
 
-        // what this catches (Astra's review of #4290): the protection reading only the
-        // TRAILING run, so the single commonest shape in a room — a follow-up arriving
-        // after a completed action — got NO protection at all, and the act the follow-up
-        // is asking about was the first thing dropped. Plus the two limits this
-        // protection still has, pinned so the PR cannot read as if recent-action loss is
-        // closed: a chain longer than the scan bound is protected only as a SUFFIX, and a
-        // move further back than the bound is not protected at all. The real answer is
-        // source-owned causal grouping; this test is the honest boundary of the heuristic.
+        // what this catches: the LIMITS of the recent-move protection, pinned so this
+        // change cannot read as if recent-action loss is closed.
+        //
+        // The behaviour itself is specified by Astra's two regressions above
+        // (`continuity_followup_keeps_completed_action_evidence`,
+        // `continuity_insufficient_capacity_refuses_instead_of_dropping_evidence`); this
+        // test is deliberately NOT a parallel version of them. It pins the two edges the
+        // heuristic still has: a tool chain longer than the scan bound is protected only
+        // as a SUFFIX and says so, and a move further back than the bound is not
+        // protected at all. Source-owned causal grouping is what closes those.
         #[test]
-        fn her_move_is_protected_after_a_follow_up_and_its_limits_are_explicit() {
+        fn the_recent_move_protection_states_its_own_limits() {
             let msg = |role: &str, body: &str| ChatMessage::text(role, body.to_string());
             let of = |history: Vec<ChatMessage>| PromptMessages {
                 input_identity: [0; 32],
@@ -8091,33 +8163,15 @@ mod tests {
                 room_updates: Vec::new(),
             };
 
-            // (a) A NEW ROOM/USER MESSAGE ARRIVES AFTER A COMPLETED ACTION. The whole
-            // suffix is protected — you cannot drop from the middle of a conversation, so
-            // keeping her act means keeping the follow-up that depends on it too.
-            let after_follow_up = of(vec![
-                msg("user", "old chatter"),
-                msg("user", "please write the file"),
-                msg("assistant", "calling code/write"),
-                msg("user", "Full result of code/write — ok"),
-                msg("user", "did that land?"),
-            ]);
-            let evidence = after_follow_up.recent_move_evidence();
-            assert_eq!(
-                evidence.messages, 4,
-                "the ask, the act, its result AND the follow-up asking about it"
-            );
-            assert!(!evidence.truncated, "a four-message unit is whole, not a suffix");
-
-            // (b) A MULTI-TOOL CHAIN LONGER THAN THE SCAN BOUND. Protected as a suffix,
-            // and SAID to be one: no opener is added, because the message before the cut
-            // is another link in the chain, not the turn that opened it.
+            // A MULTI-TOOL CHAIN LONGER THAN THE SCAN BOUND. Protected as a suffix, and
+            // SAID to be one: no opener is added, because the message before the cut is
+            // another link in the chain, not the turn that opened it.
             let mut chain = vec![msg("user", "do the whole migration")];
             for i in 0..5 {
                 chain.push(msg("assistant", &format!("calling tool {i}")));
                 chain.push(msg("user", &format!("Full result of tool {i}")));
             }
-            let long = of(chain);
-            let evidence = long.recent_move_evidence();
+            let evidence = of(chain).recent_move_evidence();
             assert_eq!(
                 evidence.messages,
                 LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES,
@@ -8129,34 +8183,54 @@ mod tests {
                  whole one is how a limit becomes an invisible loss"
             );
 
-            // (c) A MOVE FURTHER BACK THAN THE SCAN BOUND IS NOT PROTECTED. Stated, not
+            // A MOVE FURTHER BACK THAN THE SCAN BOUND IS NOT PROTECTED. Stated, not
             // hidden: this is the heuristic's edge, and the receipt carries a zero.
             let mut buried = vec![msg("assistant", "calling code/write")];
             for i in 0..LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES + 1 {
                 buried.push(msg("user", &format!("unrelated room turn {i}")));
             }
+            let none = of(buried).recent_move_evidence();
             assert_eq!(
-                of(buried).recent_move_evidence(),
+                none,
                 RecentMove::default(),
                 "beyond the scan bound this protection does not reach — source-owned \
                  causal grouping is what closes that, not a longer sniff"
             );
-
-            // (d) CANNOT-FIT IS AN OUTCOME, NOT A SILENT FALLBACK. Evidence larger than
-            // the whole conversation budget is still dropped — nothing can save it — but
-            // the verdict is typed and named (`delib.fill.evidence_cannot_fit`), so it
-            // composes with the substrate's other cannot-fit signals instead of vanishing.
-            let evidence = after_follow_up.recent_move_evidence();
-            assert_eq!(evidence.fit_within(evidence.tokens), EvidenceFit::Protected);
             assert_eq!(
-                evidence.fit_within(evidence.tokens - 1),
-                EvidenceFit::CannotFit,
-                "one token short of the unit is a declared cannot-fit"
+                none.fit_within(1_000),
+                EvidenceFit::NoMove,
+                "no move is not a cannot-fit — there is nothing to lose, and the two \
+                 must never be conflated on the receipt"
+            );
+
+            // AN OVERSIZED RESULT IS A CONDENSE CASE, NOT A CAPACITY FAULT — the one
+            // place this deliberately does NOT refuse. Refusing when a single message
+            // cannot be carried whole does not preserve it; it mutes her. That exact
+            // refusal is a measured outage: an unbounded required result produced 836
+            // refusals and zero acts on 2026-09-10, and the substrate's answer was to cap
+            // the result at its share of the window and demote the remainder to history —
+            // which is the message that lands back here. Only the REDUCIBLE case refuses
+            // (`continuity_insufficient_capacity_refuses_instead_of_dropping_evidence`,
+            // where every message would individually have fit).
+            let huge = of(vec![
+                msg("user", "read the file"),
+                msg("assistant", "calling code/read"),
+                msg(
+                    "user",
+                    &format!("Full result of code/read {}", "x".repeat(60_000)),
+                ),
+            ]);
+            let evidence = huge.recent_move_evidence();
+            assert_eq!(
+                evidence.fit_within(evidence.largest_message - 1),
+                EvidenceFit::TooLargeToCarry,
+                "a message larger than the whole budget cannot be carried by any policy \
+                 — that wants condensing, not a fault that mutes the turn"
             );
             assert_eq!(
-                RecentMove::default().fit_within(1_000),
-                EvidenceFit::NoMove,
-                "no move is not a cannot-fit — there is nothing to lose"
+                evidence.fit_within(evidence.tokens),
+                EvidenceFit::Protected,
+                "and it is Protected the moment the budget can hold it"
             );
         }
 
@@ -9353,8 +9427,10 @@ mod tests {
                     LlmDeliberationFaculty::messages_cost(&[ChatMessage::text(
                         "user",
                         result.clone()
-                    )]) > PREFILL_TARGET_SECONDS * CONSERVATIVE_PREFILL_TOKENS_PER_S,
-                    "fixture must present a genuinely oversized action result"
+                    )]) > crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS,
+                    "fixture must present a genuinely oversized action result — measured \
+                     against the substrate's own unmeasured-box fill floor, since the \
+                     `30 × 500` product this used to compare with was the defect"
                 );
                 let view = faculty.prompt_view(&ws);
                 assert!(view.capacity_error.is_none(), "{view:?}");

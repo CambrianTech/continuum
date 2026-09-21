@@ -48,7 +48,7 @@
 //! them today would fail forever and be `#[ignore]`d inside a week — the documented fate
 //! of every rule that lives in prose. So: **the count may never rise.** Every new bound
 //! arrives derived or justified, and every old one anybody touches is a chance to lower
-//! [`BASELINE_UNDERIVED_BOUNDS`].
+//! `BASELINE_UNDERIVED_BOUNDS` (in the test mod).
 
 use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
 
@@ -114,14 +114,6 @@ const CONST_PREFIXES: &[&str] = &[
     "pub const ",
     "const ",
 ];
-
-/// Underived, unjustified bounds at the time this guard landed (2026-09-20).
-///
-/// **This number may only ever go DOWN.** Raising it to make a red build green is
-/// defeating the guard, and should be refused in review for the same reason the unwrap
-/// and reachability baselines are: every one of the four defects in the module header was
-/// individually "not worth blocking on".
-const BASELINE_UNDERIVED_BOUNDS: usize = 159;
 
 pub struct DerivedBounds;
 
@@ -325,6 +317,18 @@ impl SourceRule for DerivedBounds {
 mod tests {
     use super::*;
     use crate::source_hygiene::scan;
+
+    /// Underived, unjustified bounds at the time this guard landed (2026-09-20).
+    ///
+    /// **This number may only ever go DOWN.** Raising it to make a red build green is
+    /// defeating the guard, and should be refused in review for the same reason the
+    /// unwrap and reachability baselines are: every one of the four defects in the module
+    /// header was individually "not worth blocking on".
+    ///
+    /// Lives inside the test mod, unlike its siblings, so it costs the production build no
+    /// `never used` warning — the warning ratchet is monotonic and a new guard should not
+    /// spend a slot in it just to hold a number only a test reads.
+    const BASELINE_UNDERIVED_BOUNDS: usize = 159;
 
     /// What this catches: a new bound landing on a live path as a constant, with nothing
     /// measured behind it and no line saying why a constant is right there.
