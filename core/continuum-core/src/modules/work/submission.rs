@@ -107,8 +107,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Learning revision for this persona/card/claim. Omitted: no learning credit.
-    // Bind before publication; not an artifact or submission ID.
+    /// Revision UUID, not artifact/submission ID. Bind before publish; omitted: no credit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
@@ -780,8 +779,7 @@ pub struct WorkSubmissionParams {
     /// Accepted submission UUID.
     #[ts(type = "string")]
     pub submission_id: Uuid,
-    /// Include learning provenance; inspection only.
-    // No selection, binding or training; matching claims do not prove causality.
+    /// Inspect only; no selection/binding/training. Matching claims do not prove causality.
     #[serde(default)]
     pub include_staged_evidence: bool,
 }
