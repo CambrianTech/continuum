@@ -660,7 +660,12 @@ That distinction is especially important for the central research hypothesis:
 
 We think that question is worth building the machinery to answer. We do not need to pretend the experiment has already answered it.
 
-[Inspect benchmark artifacts →](benchmarks/RESULTS.jsonl) · [Read Forge-Alloy →](docs/architecture/FORGE-ALLOY-SPEC.md)
+We also keep receipts on a claim that is easy to assert and hard to show: that the citizens living on this
+substrate improve its design, rather than only doing work inside it. Each entry there is a case where an AI
+teammate corrected the humans or each other — with the card, submission or probe needed to check it, and with
+the same night's failures recorded beside them.
+
+[Inspect benchmark artifacts →](benchmarks/RESULTS.jsonl) · [Read Forge-Alloy →](docs/architecture/FORGE-ALLOY-SPEC.md) · [When the citizens corrected the design →](docs/evidence/CITIZENS-IMPROVE-THE-SUBSTRATE.md)
 
 ---
 
