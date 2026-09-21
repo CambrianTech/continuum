@@ -2198,10 +2198,24 @@ mod tests {
         assert_eq!(source, BoundSource::TurnBound);
         assert_eq!(bound, hers);
         assert!(bound > queue, "the measured turn RAISES the wait; 165 s killed healthy work");
-        // …and it is never a ceiling on the queue either: a queue that measures LONGER
-        // than her turn keeps its own number.
-        let deep = lane_wait_bound(7, 1, 300_000, 30).expect("measured");
-        assert_eq!(effective_bound(deep, Some(hers)), deep, "the larger of the two, always");
+        // AND `LANE_WAIT_CEILING` has stopped being a ceiling on the WAIT. It still
+        // clamps the QUEUE's own estimate (a queue estimate past ten minutes is a starve,
+        // not a queue) — `lane_wait_bound(7, 1, 300_000, 30)` computes 4,800 s and returns
+        // the 600 s ceiling — but her measured turn rides ABOVE that clamp, which is the
+        // whole point: a constant may raise a wait and may never shorten one.
+        let clamped = lane_wait_bound(7, 1, 300_000, 30).expect("measured");
+        assert_eq!(clamped, LANE_WAIT_CEILING, "the queue's estimate is still clamped");
+        assert_eq!(
+            effective_bound(clamped, Some(hers)),
+            hers,
+            "her 848 s turn is NOT capped by the 600 s ceiling — the constant is a floor"
+        );
+        // …and the queue keeps its own number whenever IT is the larger of the two: a
+        // mind with a one-minute turn on a queue two rounds deep waits the queue's 480 s.
+        let deep = lane_wait_bound(3, 2, 120_000, 12).expect("measured");
+        let short = from_expectation(Some(Duration::from_secs(60))).expect("a measured turn");
+        assert_eq!(deep, Duration::from_secs(480));
+        assert_eq!(effective_bound(deep, Some(short)), deep, "the larger of the two, always");
         // No measured turn (her first, or an unmeasured box) → the queue governs alone,
         // exactly as before this change.
         assert_eq!(effective_bound(queue, None), queue);
