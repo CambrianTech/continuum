@@ -2962,6 +2962,8 @@ pub struct WorkGetResult {
     pub id: String,
     /// The board that supplied this receipt; never the caller's current focus.
     pub room_id: String,
+    pub room: String,
+    pub is_self: bool,
     /// Availability uses the same holder projection as work/list.
     pub claimable: bool,
     pub lease: Option<String>,
@@ -2984,7 +2986,7 @@ pub struct WorkGetResult {
 impl WorkGet {
     /// Read only the caller's subscribed boards; a card lookup neither joins a
     /// room nor moves focus. Resolution and content use the same board view.
-    async fn read_card(airc: &Arc<Airc>, requested: &str) -> Result<WorkGetResult, CommandError> {
+    async fn read_card(airc: &Arc<Airc>, requested: &str, reader: Uuid) -> Result<WorkGetResult, CommandError> {
         let boards = subscribed_boards(airc)
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
@@ -3009,6 +3011,7 @@ impl WorkGet {
             card,
             ledger,
             crate::modules::chat::now_ms(),
+            reader,
         ))
     }
 
@@ -3017,16 +3020,19 @@ impl WorkGet {
         card: &airc_work::WorkCard,
         ledger: Option<crate::experience::ledger::CardLedger>,
         now_ms: u64,
+        reader: Uuid,
     ) -> WorkGetResult {
         let holder = crate::persona::card_holder::holder(
             card,
-            Uuid::nil(),
+            reader,
             now_ms,
             &crate::persona::card_holder::NoNames,
         );
         WorkGetResult {
             id: short8(card.card_id.as_uuid()),
             room_id: room.channel.as_uuid().to_string(),
+            room: room.name.clone(),
+            is_self: holder.is_self,
             claimable: holder.claimable(card.state),
             lease: holder.lease_word().map(str::to_string),
             observed_at_ms: now_ms,
@@ -3057,7 +3063,8 @@ impl ActionCommand for WorkGet {
 
     async fn run(&self, ctx: &Ctx, p: WorkGetParams) -> Result<WorkGetResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
-        Self::read_card(&airc, &p.card_id).await
+        let reader = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()).unwrap_or_default(); // An absent caller has no self identity; never attribute the claim to the operator.
+        Self::read_card(&airc, &p.card_id, reader).await
     }
 }
 
@@ -3740,11 +3747,11 @@ mod tests {
             .await
             .expect("subscriptions before refused reads");
         assert!(matches!(
-            WorkGet::read_card(&airc, &full_id).await,
+            WorkGet::read_card(&airc, &full_id, Uuid::nil()).await,
             Err(CommandError::NotFound(_))
         ));
         assert!(matches!(
-            WorkGet::read_card(&airc, &prefix).await,
+            WorkGet::read_card(&airc, &prefix, Uuid::nil()).await,
             Err(CommandError::Invalid(_))
         ));
         assert_eq!(
@@ -3772,7 +3779,7 @@ mod tests {
             .expect("the academy card resolves by prefix from the run room");
         assert_eq!(resolved, card);
         for id in [&full_id, &prefix] {
-            let read = WorkGet::read_card(&airc, id)
+            let read = WorkGet::read_card(&airc, id, Uuid::nil())
                 .await
                 .expect("read the subscribed card");
             assert_eq!(read.id, prefix);
@@ -3794,14 +3801,14 @@ mod tests {
             .find_map(|(r, b)| b.card(card).map(|c| (r, c)))
             .expect("academy card");
         let mut claimed = source.clone();
-        claimed.owner = Some(PeerId::new());
+        claimed.owner = Some(airc_core::PeerId::new());
         claimed.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
         claimed.claim_expires_at_ms = Some(100);
         claimed.last_heartbeat_at_ms = Some(50);
-        let held = WorkGet::receipt(room, &claimed, None, 99);
+        let held = WorkGet::receipt(room, &claimed, None, 99, Uuid::nil());
         assert!(!held.claimable);
         assert_eq!(held.lease.as_deref(), Some("held"));
-        let lapsed = WorkGet::receipt(room, &claimed, None, 101);
+        let lapsed = WorkGet::receipt(room, &claimed, None, 100, Uuid::nil());
         assert!(lapsed.claimable);
         assert_eq!(lapsed.lease.as_deref(), Some("expired"));
         assert_eq!(
@@ -3810,14 +3817,18 @@ mod tests {
         );
         assert_eq!(lapsed.claim_expires_at_ms, Some(100));
         assert_eq!(lapsed.last_heartbeat_at_ms, Some(50));
-        assert_eq!(lapsed.observed_at_ms, 101);
+        assert_eq!(lapsed.observed_at_ms, 100);
+        assert!(!lapsed.is_self);
+        let own = WorkGet::receipt(room, &claimed, None, 100, claimed.owner.expect("owner").as_uuid());
+        assert!(own.is_self, "an expired claim still identifies its own holder");
+        assert_eq!(own.room, academy.name);
         claimed.state = CardState::Review;
-        assert!(!WorkGet::receipt(room, &claimed, None, 101).claimable);
+        assert!(!WorkGet::receipt(room, &claimed, None, 100, Uuid::nil()).claimable);
         for id in [
             local_card.as_uuid().to_string(),
             short8(local_card.as_uuid()),
         ] {
-            let read = WorkGet::read_card(&airc, &id)
+            let read = WorkGet::read_card(&airc, &id, Uuid::nil())
                 .await
                 .expect("read the current-room card");
             assert_eq!(read.id, short8(local_card.as_uuid()));
@@ -3825,7 +3836,7 @@ mod tests {
             assert!(read.body.is_none());
         }
         assert!(matches!(
-            WorkGet::read_card(&airc, &Uuid::nil().to_string()).await,
+            WorkGet::read_card(&airc, &Uuid::nil().to_string(), Uuid::nil()).await,
             Err(CommandError::NotFound(_))
         ));
         assert_eq!(
