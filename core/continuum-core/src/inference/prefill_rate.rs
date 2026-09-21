@@ -26,6 +26,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+/// A rate and WHERE IT CAME FROM — shared with the decode side on purpose.
+///
+/// "A measured rate with its provenance" is one concept, and the ladder over it (fresh →
+/// stale → the box's most conservative curve → nothing) is one rule; a second copy of
+/// either here would be the parallel-allocator shape this crate bans. `decode_knee`
+/// landed them first (#4283, after a restart left every point untrusted, the rate read
+/// 0.0 and an allowance fell to a floor no thinking pass could hold), so the prefill side
+/// re-exports rather than re-declares.
+pub use crate::inference::decode_knee::{MeasuredRate, RateSource};
+
 /// Who is waiting on the first token. The TTFT budget is the last CHOSEN number in the
 /// render-budget chain (card 7496ed9d, Cormac's review of #4124): 60 s is justified by
 /// what the person on the other side feels — and a turn with nobody on the other side (a
@@ -97,6 +107,18 @@ impl PrefillPoint {
     pub fn trusted_at(&self, now_ms: u64) -> bool {
         self.samples >= MIN_SAMPLES && now_ms.saturating_sub(self.last_ms) <= FRESH_MS
     }
+
+    /// This point's rate and where it came from: fresh, else stale — the record survives
+    /// a reboot, and last hour's measured rate is still evidence about this box where a
+    /// constant never was. A point with no lifetime evidence (or a pre-freshness `0.0`)
+    /// is UNKNOWN, never a measured zero.
+    fn own_rate(&self, now_ms: u64) -> Option<(f64, RateSource)> {
+        if self.trusted_at(now_ms) {
+            return Some((self.tps_ema, RateSource::Fresh));
+        }
+        (self.samples >= MIN_SAMPLES && self.tps_ema > 0.0)
+            .then_some((self.tps_ema, RateSource::Stale))
+    }
 }
 
 /// The prompt (tokens) a turn may cost at `tps` inside the audience's TTFT budget,
@@ -105,6 +127,63 @@ pub fn affordable_prompt_tokens(tps: f64, floor: u32, served: u32, audience: Aud
     let raw = (tps * audience.ttft().as_secs_f64()).floor();
     let raw = if raw.is_finite() && raw > 0.0 { raw as u32 } else { 0 };
     raw.max(floor).min(served.max(floor))
+}
+
+/// The conversation fill a box that has NEVER measured a prefill may spend, in tokens.
+///
+/// A FLOOR, and named as one: it is consulted only when the ladder returns
+/// [`RateSource::None`], and it never clamps a box that HAS measured. The value is the
+/// substrate's own bootstrap working set — the prompt it already assumes a mind needs
+/// before anything about that mind has been measured — so the unmeasured case borrows a
+/// number the substrate owns instead of inventing a second one. The first completed
+/// generation on the box replaces it with a measurement ([`observe`]).
+pub const UNMEASURED_FILL_FLOOR_TOKENS: usize =
+    crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET as usize;
+
+/// PURE: the conversation fill a turn may cost inside `target_seconds`, at this box's
+/// measured prefill rate.
+///
+/// The rule is `target_seconds × measured tokens-per-second`, and the ONLY chosen number
+/// in it is the target — the latency intent. A rate at any rung of the ladder governs;
+/// with no rung at all the named floor does, and the caller's receipt says which
+/// (`rate_source`).
+///
+/// This exists because the cap it replaces was `PREFILL_TARGET_SECONDS ×
+/// CONSERVATIVE_PREFILL_TOKENS_PER_S` — a constant times a constant, 15,000 tokens on
+/// every machine in the fleet, whose 500 t/s half was 5–20× what any of them actually
+/// prefills.
+pub fn latency_fill_cap(target_seconds: usize, rate: MeasuredRate) -> usize {
+    match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
+        // `as usize` saturates on overflow in Rust, so an absurd rate cannot wrap the cap.
+        Some(tps) => (tps * target_seconds as f64).floor().max(0.0) as usize,
+        None => UNMEASURED_FILL_FLOOR_TOKENS,
+    }
+}
+
+/// PURE: the rate ladder for `model` over `rates` — fresh → stale on its own point, else
+/// the SLOWEST rate any model on this box holds (the biggest model's, in practice — the
+/// same conservatism the decode side uses), else unknown. Mirrors
+/// [`crate::inference::decode_knee::rate_from`] deliberately: one ladder, two rates.
+pub fn rate_from(rates: &BTreeMap<String, PrefillPoint>, model: &str, now_ms: u64) -> MeasuredRate {
+    if let Some((tps, source)) = rates.get(model).and_then(|p| p.own_rate(now_ms)) {
+        return MeasuredRate { tps: Some(tps), source };
+    }
+    let slowest = rates
+        .values()
+        .filter_map(|p| p.own_rate(now_ms).map(|(t, _)| t))
+        .fold(None, |acc: Option<f64>, t| Some(acc.map_or(t, |a: f64| a.min(t))));
+    match slowest {
+        Some(tps) => MeasuredRate { tps: Some(tps), source: RateSource::Conservative },
+        None => MeasuredRate::UNKNOWN,
+    }
+}
+
+/// This box's prefill rate for `model` WITH its provenance — the ladder above. Prefer
+/// this over [`rate_for`] wherever an absence would otherwise become a constant: the
+/// difference between the two is a stale-but-real measurement and a guess.
+pub fn measured_rate_for(model: &str) -> MeasuredRate {
+    let now = now_ms();
+    rate_from(&RATES.lock(), model, now)
 }
 
 static RATES: LazyLock<parking_lot::Mutex<BTreeMap<String, PrefillPoint>>> =
@@ -237,6 +316,99 @@ mod tests {
         assert!(!p.trusted_at(T + FRESH_MS + 1), "an hour-old rate is not this hour's");
         p.observe(200.0, T + FRESH_MS + 1);
         assert_eq!((p.samples, p.tps_ema), (1, 200.0), "a stale point restarts");
+    }
+
+    fn trusted(tps: f64, at: u64) -> PrefillPoint {
+        let mut p = PrefillPoint::default();
+        for _ in 0..MIN_SAMPLES {
+            p.observe(tps, at);
+        }
+        p
+    }
+
+    // what this catches: the conversation fill going back to a constant times a constant.
+    //
+    // It was `PREFILL_TARGET_SECONDS (30) × CONSERVATIVE_PREFILL_TOKENS_PER_S (500)` — a
+    // flat 15,000 tokens on every machine. Measured on the M5 the night it was found
+    // (`inference.prefill.complete`): `ingest_tok_per_s` 70, 90 and 92; the IntelMac
+    // prefills at ~25. So the 500 was 5–20× optimistic, the "30 second" target it existed
+    // to protect was really ~187 s, and `delib.fill.latency_capped persona=Aiko
+    // window_budget=56227 cap=15000` took 27% of a 67,072-token lane away from her while
+    // the cap failed its own stated purpose on every box in the fleet.
+    //
+    // A clip is derived or it is a named floor. Derived here means the target buys what
+    // THIS node prefills; the floor is consulted only where nothing was ever measured,
+    // and on a healthy node the derivation is above it — a floor that outranks the
+    // measurement everywhere is the constant wearing a different hat.
+    #[test]
+    fn the_conversation_fill_cap_is_this_nodes_measured_rate_never_two_constants() {
+        let secs = 30;
+        let fresh = |tps: f64| MeasuredRate { tps: Some(tps), source: RateSource::Fresh };
+
+        // MEASURED → DERIVED. The M5's own numbers, and the IntelMac's.
+        assert_eq!(latency_fill_cap(secs, fresh(70.0)), 2_100);
+        assert_eq!(latency_fill_cap(secs, fresh(92.0)), 2_760);
+        assert_eq!(latency_fill_cap(secs, fresh(25.0)), 750, "the IntelMac buys what it can prefill");
+        // …and the frontier is never clipped to the slow tier's number: the same rule
+        // that shrinks the cap on a 25 t/s box grows it past 15,000 on a fast one.
+        assert_eq!(latency_fill_cap(secs, fresh(2_000.0)), 60_000);
+        // A stale or borrowed-from-another-curve rate is still a MEASUREMENT of this box.
+        assert_eq!(
+            latency_fill_cap(secs, MeasuredRate { tps: Some(70.0), source: RateSource::Stale }),
+            2_100
+        );
+
+        // UNMEASURED → THE NAMED FLOOR, and only then.
+        assert_eq!(latency_fill_cap(secs, MeasuredRate::UNKNOWN), UNMEASURED_FILL_FLOOR_TOKENS);
+        assert_eq!(
+            latency_fill_cap(secs, MeasuredRate { tps: Some(f64::NAN), source: RateSource::Fresh }),
+            UNMEASURED_FILL_FLOOR_TOKENS,
+            "a non-finite rate is an absence, never a quantity"
+        );
+        assert_eq!(
+            latency_fill_cap(secs, MeasuredRate { tps: Some(0.0), source: RateSource::Fresh }),
+            UNMEASURED_FILL_FLOOR_TOKENS,
+            "0 t/s is what an untrusted point reads as — not a measurement"
+        );
+
+        // THE FLOOR IS NEVER LARGER THAN THE DERIVED CAP ON A HEALTHY NODE. 636–676 t/s
+        // is what the deleted constant's own doc cited as measured on the M-series
+        // reference box; a floor above that would bind everywhere and the derivation
+        // would be decoration.
+        assert!(
+            latency_fill_cap(secs, fresh(636.0)) > UNMEASURED_FILL_FLOOR_TOKENS,
+            "a healthy node's derived cap must outrank the unmeasured floor"
+        );
+    }
+
+    // what this catches: an absence being laundered into a constant one rung too early.
+    // The decode side learned this the hard way (#4283): the M5 restarted, every point
+    // went untrusted, the rate read 0.0 and the allowance fell to a floor no thinking
+    // pass could hold. Stale is evidence; a constant is not.
+    #[test]
+    fn the_prefill_rate_ladder_is_fresh_then_stale_then_conservative_then_absent() {
+        let mut rates = BTreeMap::new();
+        assert_eq!(rate_from(&rates, "m", T), MeasuredRate::UNKNOWN, "nothing measured, ever");
+
+        rates.insert("m".to_string(), trusted(400.0, T));
+        let fresh = rate_from(&rates, "m", T);
+        assert_eq!((fresh.source, fresh.tps), (RateSource::Fresh, Some(400.0)));
+
+        // An hour later the same point is stale — still this box's measurement.
+        let stale = rate_from(&rates, "m", T + FRESH_MS + 1);
+        assert_eq!((stale.source, stale.tps), (RateSource::Stale, Some(400.0)));
+
+        // A model with no point of its own borrows the SLOWEST rate the box holds.
+        rates.insert("slow".to_string(), trusted(70.0, T));
+        let borrowed = rate_from(&rates, "never-served", T);
+        assert_eq!((borrowed.source, borrowed.tps), (RateSource::Conservative, Some(70.0)));
+
+        // A point with too few samples is not a rung.
+        let mut thin = BTreeMap::new();
+        let mut p = PrefillPoint::default();
+        p.observe(400.0, T);
+        thin.insert("m".to_string(), p);
+        assert_eq!(rate_from(&thin, "m", T), MeasuredRate::UNKNOWN, "one sample is not a rate");
     }
 
     // what this catches: the record survives a reboot and a corrupt file is forgotten.

@@ -204,22 +204,22 @@ impl PromptFeedback {
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 
-/// The act-latency target the CONVERSATION fill budgets against — how long a
-/// turn's history prefill is allowed to take at [`CONSERVATIVE_PREFILL_TOKENS_PER_S`].
-/// From the act-latency law: human expectations set the bar; a turn that spends
-/// minutes re-reading history before thinking is disqualified regardless of how
-/// smart the answer is. 30s of prefill is already generous — the point is that
-/// window HEADROOM above this is reserve, not default fill.
-// context-budget-exempt: a TIME target, not a token budget — the token cap derives from time x measured-class rate at the call site
+/// The act-latency target the CONVERSATION fill budgets against — how long a turn's
+/// history prefill is allowed to take. From the act-latency law: human expectations set
+/// the bar; a turn that spends minutes re-reading history before thinking is disqualified
+/// regardless of how smart the answer is. Window HEADROOM above this is reserve, not
+/// default fill.
+///
+/// This is the LATENCY INTENT and nothing else — the half of the cap that is a product
+/// decision. The other half, tokens-per-second, is MEASURED on this node
+/// ([`crate::inference::prefill_rate::latency_fill_cap`]); it used to be a companion
+/// constant of 500 t/s, and `30 × 500` made the fill a flat 15,000 tokens on every box in
+/// the fleet. Measured on the M5 the night that was found (`inference.prefill.complete`):
+/// `ingest_tok_per_s` of 70, 90 and 92, and the IntelMac at ~25 — so the constant was
+/// 5–20× optimistic, the "30 second" target was really ~187 s, and the clip took 27% of a
+/// 67,072-token lane away from Aiko while failing its own stated purpose on every machine.
+// context-budget-exempt: a TIME target, not a token budget — the token cap is time x THIS node's MEASURED prefill rate (`prefill_rate::latency_fill_cap`)
 const PREFILL_TARGET_SECONDS: usize = 30;
-
-/// Deliberately UNDER every measured live ingest rate (636–676 t/s on the
-/// M-series reference box, 2026-09-01 probes) so the derived cap over-admits
-/// rather than starves. Upgrade path: derive from the live
-/// `inference.prefill.complete` ingest measurements once the segment probe
-/// lands — capacity follows measurement.
-// context-budget-exempt: a measured throughput floor (tokens/second), not a context-size constant
-const CONSERVATIVE_PREFILL_TOKENS_PER_S: usize = 500;
 
 /// The kind of turn a completion is for — its latency budget and its runaway bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2232,6 +2232,24 @@ impl LlmDeliberationFaculty {
         bound
     }
 
+    /// The conversation fill this turn may cost, and the rate it was derived from.
+    ///
+    /// `PREFILL_TARGET_SECONDS` is the latency INTENT; the tokens it buys are THIS
+    /// node's, read through the same ladder the decode side landed (#4283) — fresh, else
+    /// stale, else the box's most conservative measured rate, and only with nothing ever
+    /// measured a named floor ([`crate::inference::prefill_rate::latency_fill_cap`]).
+    /// Associated, not `&self`: the cap is a property of the BOX, not of the persona.
+    fn latency_fill_cap() -> (usize, crate::inference::prefill_rate::MeasuredRate) {
+        let rate = crate::inference::llama_server::current_serving()
+            .active_model
+            .map(|model| crate::inference::prefill_rate::measured_rate_for(&model))
+            .unwrap_or(crate::inference::prefill_rate::MeasuredRate::UNKNOWN); // unwrap_or: nothing served on this box = nothing measured; the named floor governs and the probe says so
+        (
+            crate::inference::prefill_rate::latency_fill_cap(PREFILL_TARGET_SECONDS, rate),
+            rate,
+        )
+    }
+
     fn holds_work_card(ws: &Workspace) -> bool {
         ws.broadcast
             .iter()
@@ -2486,25 +2504,53 @@ impl LlmDeliberationFaculty {
         // 24-43k in an afternoon and five concurrent 35k prefills serialized
         // acts to 339-888s (measured 2026-09-01, the worst of the day, WITH
         // the best hit rates). So the CONVERSATION fill is capped by a time
-        // target: target seconds × a conservative prefill rate. The window's
+        // target — and the tokens that target buys are THIS node's, never a
+        // constant's: `PREFILL_TARGET_SECONDS × the measured prefill rate`
+        // (`prefill_rate::latency_fill_cap`, the #4283 ladder: fresh → stale →
+        // the box's most conservative curve → a named floor). The window's
         // remaining headroom stays available to everything that earns depth —
         // grounding, the pinned act result, working memory — and to reply
-        // reserve; it is RESERVE, not default fill. The rent ledger (segment
-        // probe) is what will let this cap adapt per-segment; until then the
-        // rate constant is deliberately below every measured ingest
-        // (636-676 t/s live) so the cap over-admits rather than starves.
-        let latency_fill_cap = PREFILL_TARGET_SECONDS * CONSERVATIVE_PREFILL_TOKENS_PER_S;
+        // reserve; it is RESERVE, not default fill.
+        let (derived_fill_cap, fill_rate) = Self::latency_fill_cap();
+        // A LATENCY BUDGET MAY NOT BUY ITSELF A REPEATED ACT. The cap exists to bound
+        // time-to-first-token; clipping away her own last move and its result costs a
+        // WHOLE EXTRA TURN when she re-issues it, so the cap is floored at what that
+        // evidence costs. `fit_messages` then refuses to evict it — this floor is what
+        // makes that refusal satisfiable.
+        let evidence = all_messages.recent_move_evidence();
+        let latency_fill_cap = derived_fill_cap.max(evidence.tokens);
         let fill_budget = all_messages
             .required_tokens()
             .saturating_add(latency_fill_cap);
         let msg_budget = if msg_budget > fill_budget {
+            let shed = all_messages.shed_preview(latency_fill_cap);
             crate::probe!(
                 class = "delib.fill.latency_capped",
                 persona = %self.persona_name,
                 window_budget = msg_budget,
                 cap = latency_fill_cap,
-                "conversation fill capped by the act-latency target — window headroom \
-                 is reserve for content that earns its prefill, never default fill",
+                // A clip is never again invisible: the rate that produced it and where
+                // that rate came from ride the same row. `rate_source="none"` means the
+                // named floor governed and nothing was measured on this box.
+                rate_source = fill_rate.source.label(),
+                measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
+                target_seconds = PREFILL_TARGET_SECONDS,
+                derived_cap = derived_fill_cap,
+                // WHAT THE CLIP COSTS HER, in kind and amount — so "she repeated
+                // herself" is traceable to "we cut the evidence she had already done
+                // it" without anyone opening a capture file. At-least figures: the real
+                // drop rounds up to a quantum.
+                shed_messages = shed.messages,
+                shed_tokens = shed.tokens,
+                shed_own_moves = shed.own_moves,
+                shed_move_results = shed.results,
+                // …and what it is structurally forbidden to cost her.
+                kept_recent_move_messages = evidence.messages,
+                kept_recent_move_tokens = evidence.tokens,
+                "conversation fill capped by the act-latency target at THIS node's \
+                 measured prefill rate — window headroom is reserve for content that \
+                 earns its prefill, never default fill; her own last move and its \
+                 result are held out of the drop",
             );
             fill_budget
         } else {
@@ -3198,6 +3244,30 @@ impl LlmDeliberationFaculty {
         est_tokens(system) + 2 * Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
+    /// How many MESSAGES a cluster walk may cross — how far the front may advance past a
+    /// broken cluster, and how deep the fill cap looks back for her own last move. A
+    /// count of messages, not of tokens or seconds: there is nothing here to measure.
+    const CLUSTER_SCAN_MESSAGES: usize = 6;
+
+    /// HER OWN move: an assistant turn.
+    fn is_own_move(message: &ChatMessage) -> bool {
+        message.role == "assistant"
+    }
+
+    /// The OUTCOME of one of her moves: a tool-result / receipt block.
+    fn is_move_result(message: &ChatMessage) -> bool {
+        let body = message.content_text();
+        body.starts_with("Full result of") || body.starts_with('⚙')
+    }
+
+    /// Does this message CONTINUE a cluster rather than open one? One owner for the
+    /// predicate: the evictor uses it so a window never opens on an answer without its
+    /// question, and [`PromptMessages::recent_move_evidence`] uses it to find the run at
+    /// the END that must not be evicted at all.
+    fn continues_cluster(message: &ChatMessage) -> bool {
+        Self::is_own_move(message) || Self::is_move_result(message)
+    }
+
     /// What this conversation costs whole, with no budget applied — the conversational
     /// half of a turn's demand ([`super::working_set`]).
     fn messages_cost(messages: &[ChatMessage]) -> usize {
@@ -3266,6 +3336,9 @@ impl LlmDeliberationFaculty {
             });
         }
         let history_budget = budget_tokens - required_tokens;
+        // Read BEFORE the history is borrowed for costing: what her own last move and its
+        // outcome cost, so the drop below can refuse to reach them.
+        let evidence = prompt.recent_move_evidence();
         let messages = &prompt.history;
         // Per-message template overhead: `Self::PER_MESSAGE_TEMPLATE_TOKENS`, shared
         // with `messages_cost` so measurement and fitting charge identically.
@@ -3284,6 +3357,28 @@ impl LlmDeliberationFaculty {
             } else {
                 messages.len()
             };
+            // HER OWN LAST MOVE IS THE LAST THING TO GO, never the first.
+            //
+            // Front-dropping is already recency-ordered, so the oldest turns yield first
+            // — but HOW FAR the drop reaches is decided by cost alone, and a tight fill
+            // budget walks it right up to the run at the end: her act, its result, and
+            // the turn that asked for it. That run is the evidence that she ALREADY DID
+            // THE THING. Evict it and she re-issues the same act — which the M5 records
+            // as `persona.act.repeat_short_circuited` ("identical act already satisfied
+            // this turn"), then `persona.act.no_deliverable_yet`, then an hour line with
+            // zero writes that reads as a lazy persona.
+            //
+            // Protected whenever the budget can hold it at all; when it cannot, nothing
+            // here can save it and the ordinary drop stands (stopping short would put the
+            // assembled prompt over the window, which mutes her for the whole tick).
+            // `min`, not `saturating_sub`: the quiet-tick branch above already holds the
+            // LAST message back, and that message is inside the evidence run — subtracting
+            // would reserve one extra old turn and leave the fitted suffix over budget.
+            let drop_end = if evidence.tokens > 0 && evidence.tokens <= history_budget {
+                drop_end.min(messages.len().saturating_sub(evidence.messages))
+            } else {
+                drop_end
+            };
             while start < drop_end && dropped < drop_q {
                 dropped += costs[start];
                 start += 1;
@@ -3299,14 +3394,11 @@ impl LlmDeliberationFaculty {
             // continues a cluster; a plain user turn opens one. Bounded so a
             // pathological run can't eat the window; the causal-thread work
             // (ladder rung 4) replaces this with true causal subtrees.
-            let continues_cluster = |m: &ChatMessage| {
-                let body = m.content_text();
-                m.role == "assistant" || body.starts_with("Full result of") || body.starts_with('⚙')
-            };
             let mut opener_advance = 0usize;
             while start + 1 < messages.len()
-                && opener_advance < 6
-                && continues_cluster(&messages[start])
+                && start < drop_end
+                && opener_advance < Self::CLUSTER_SCAN_MESSAGES
+                && Self::continues_cluster(&messages[start])
             {
                 start += 1;
                 opener_advance += 1;
@@ -3444,7 +3536,84 @@ struct PromptMessages {
     room_updates: Vec<ChatMessage>,
 }
 
+/// Her OWN most recent move and its outcome, priced — the run at the END of the optional
+/// history that a binding fill budget must never reach.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RecentMove {
+    messages: usize,
+    tokens: usize,
+}
+
+/// What a binding fill budget costs her, in KIND and amount. A clip that takes her own
+/// last moves away has to say so on its own receipt: "she repeated herself" must be
+/// traceable to "we cut the evidence she had already done it" without reading a capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ShedPreview {
+    messages: usize,
+    tokens: usize,
+    own_moves: usize,
+    results: usize,
+}
+
 impl PromptMessages {
+    /// Her OWN most recent move and its outcome: the trailing run of assistant turns and
+    /// result blocks at the end of the optional history, plus the turn that OPENED the
+    /// cluster (an act without the ask that produced it is the broken-cluster shape the
+    /// evictor already refuses to leave at the front).
+    ///
+    /// Bounded by [`LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES`] so a pathological run
+    /// of assistant turns cannot turn this protection into the whole budget.
+    fn recent_move_evidence(&self) -> RecentMove {
+        let mut out = RecentMove::default();
+        let mut idx = self.history.len();
+        while idx > 0 && out.messages < LlmDeliberationFaculty::CLUSTER_SCAN_MESSAGES {
+            let message = &self.history[idx - 1];
+            if !LlmDeliberationFaculty::continues_cluster(message) {
+                break;
+            }
+            out.tokens += LlmDeliberationFaculty::message_cost(message);
+            out.messages += 1;
+            idx -= 1;
+        }
+        if out.messages > 0 && idx > 0 {
+            out.tokens += LlmDeliberationFaculty::message_cost(&self.history[idx - 1]);
+            out.messages += 1;
+        }
+        out
+    }
+
+    /// What a `history_budget`-sized fill sheds, in kind and amount — oldest first, whole
+    /// messages, the same ORDER the evictor drops in.
+    ///
+    /// AT LEAST this much: the real drop rounds up to a quantum and may advance past a
+    /// broken cluster opener, so this under-reports rather than over-reports. It is a
+    /// receipt, not a second evictor — the decision stays in one place
+    /// ([`LlmDeliberationFaculty::fit_messages`]).
+    fn shed_preview(&self, history_budget: usize) -> ShedPreview {
+        let mut out = ShedPreview::default();
+        let total: usize = self
+            .history
+            .iter()
+            .map(LlmDeliberationFaculty::message_cost)
+            .sum();
+        let mut must_drop = total.saturating_sub(history_budget);
+        for message in &self.history {
+            if must_drop == 0 {
+                break;
+            }
+            let cost = LlmDeliberationFaculty::message_cost(message);
+            must_drop = must_drop.saturating_sub(cost);
+            out.messages += 1;
+            out.tokens += cost;
+            if LlmDeliberationFaculty::is_move_result(message) {
+                out.results += 1;
+            } else if LlmDeliberationFaculty::is_own_move(message) {
+                out.own_moves += 1;
+            }
+        }
+        out
+    }
+
     fn required_tokens(&self) -> usize {
         self.stimulus
             .iter()
@@ -7667,6 +7836,100 @@ mod tests {
             assert_eq!(fitted.len(), 1);
             assert_eq!(fitted[0].content_text(), "current situation ".repeat(20));
             assert!(faculty.fit_messages(ambient(), ambient_cost - 1).is_err());
+        }
+
+        // what this catches: THE CLIP TAKING AWAY THE EVIDENCE OF WHAT SHE JUST DID.
+        //
+        // The chain, measured on the M5 2026-09-20: the conversation assembly is
+        // sophisticated, a flat cap lands on top of it (`delib.fill.latency_capped
+        // persona=Aiko window_budget=56227 cap=15000`), the drop walks up the history by
+        // COST until it reaches the run at the end — her act and its result — and she
+        // loses the record of her own last moves. She re-issues them:
+        // `persona.act.repeat_short_circuited` ("identical act already satisfied this
+        // turn"), then `persona.act.no_deliverable_yet`, then an hour with zero writes
+        // that reads as a lazy persona. A budget that binds must drop by recency-of-
+        // consequence, and her own last move is the LAST thing to go.
+        #[test]
+        fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let mut history: Vec<ChatMessage> = (0..40)
+                .map(|i| ChatMessage::text("user", format!("old{i} {}", "word ".repeat(95))))
+                .collect();
+            history.push(ChatMessage::text("user", format!("please write the file {}", "word ".repeat(40))));
+            history.push(ChatMessage::text("assistant", format!("calling code/write {}", "word ".repeat(40))));
+            history.push(ChatMessage::text("user", format!("Full result of code/write {}", "word ".repeat(60))));
+            let prompt = || PromptMessages {
+                input_identity: [0; 32],
+                grounding_tokens: 0,
+                grounding_at: 0,
+                history: history.clone(),
+                stimulus: None,
+                latest_result: None,
+                room_updates: Vec::new(),
+            };
+
+            // The run that must survive: her act, its result, and the ask that opened them.
+            let evidence = prompt().recent_move_evidence();
+            assert_eq!(evidence.messages, 3, "act + result + the turn that asked for it");
+            assert!(evidence.tokens > 0);
+
+            // A derived cap far below that evidence is RAISED to it — re-issuing an act
+            // she already ran costs a whole extra turn, which is the opposite of what a
+            // latency budget is for.
+            let starved = 10usize;
+            let budget = prompt().required_tokens() + starved.max(evidence.tokens);
+            assert_eq!(budget, evidence.tokens, "the evidence floors the cap");
+
+            let fitted = faculty
+                .fit_messages(prompt(), budget)
+                .expect("the floored budget fits")
+                .messages;
+            assert!(
+                fitted.iter().any(|m| m.content_text().starts_with("Full result of code/write")),
+                "the RESULT of her last act must survive a binding budget"
+            );
+            assert!(
+                fitted.iter().any(|m| m.content_text().starts_with("calling code/write")),
+                "…and the act itself"
+            );
+            assert!(
+                fitted.iter().any(|m| m.content_text().starts_with("please write the file")),
+                "…and the ask, so the act is never an answer without its question"
+            );
+            assert!(
+                !fitted.iter().any(|m| m.content_text().starts_with("old0 ")),
+                "the OLDEST turns are what a binding budget spends"
+            );
+            assert!(
+                LlmDeliberationFaculty::messages_cost(&fitted) <= budget,
+                "protecting her last move must never push the prompt over the window"
+            );
+
+            // The clip is LOUD: it says what it cost her, in kind and amount, so "she
+            // repeated herself" is traceable without opening a capture file.
+            let shed = prompt().shed_preview(budget);
+            assert!(shed.messages > 0 && shed.tokens > 0, "a binding clip drops something");
+            assert_eq!(
+                (shed.own_moves, shed.results),
+                (0, 0),
+                "what it sheds is old conversation — never her own move or its result"
+            );
+
+            // When the budget cannot hold the evidence at all, nothing here can save it —
+            // and the fit still binds rather than protecting the prompt past the window.
+            let last_cost = LlmDeliberationFaculty::message_cost(
+                history.last().expect("the history ends with her act's result"),
+            );
+            let starving = faculty
+                .fit_messages(prompt(), last_cost)
+                .expect("one whole message always fits its own cost")
+                .messages;
+            assert!(
+                LlmDeliberationFaculty::messages_cost(&starving) <= last_cost,
+                "a budget too small for her last move still binds — a trimmed prompt \
+                 beats a 500 that mutes her for the whole tick"
+            );
         }
 
         // what this catches: the rent ledger's spine (compression-ladder rung
