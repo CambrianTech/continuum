@@ -1958,6 +1958,32 @@ fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineE
                 )));
             }
 
+            // AN AMBIGUOUS EXACT ANCHOR IS A GUESS TOO (2026-09-21, Sahar on
+            // pydata__xarray-7393): `replacen(.., 1)` took the FIRST of several verbatim
+            // occurrences, so a 7-line hunk meant for `stack` landed inside
+            // `reset_index`, where `product_vars` is undefined — a correct edit at the
+            // wrong site, applied silently. The indent-tolerant path below already
+            // refuses 2+ candidates with their line numbers; the exact path now holds
+            // the same law. `all: true` is the explicit "every site" and stays.
+            if !*all {
+                let sites: Vec<usize> = content
+                    .match_indices(search.as_str())
+                    .map(|(at, _)| content[..at].matches('\n').count() + 1)
+                    .collect();
+                if sites.len() > 1 {
+                    let shown: Vec<String> = sites.iter().take(5).map(|l| l.to_string()).collect();
+                    return Err(FileEngineError::EditFailed(format!(
+                        "SEARCH TEXT matches {} locations verbatim (starting at lines {}). \
+                         Applying to the first would be a guess — Sahar's stack hunk landed in \
+                         reset_index this way. Include more surrounding lines so the anchor is \
+                         unique, address the site by number with a line_range edit, or pass \
+                         all=true to change every occurrence on purpose.",
+                        sites.len(),
+                        shown.join(", ")
+                    )));
+                }
+            }
+
             let result = if *all {
                 content.replace(search.as_str(), replace.as_str())
             } else {
@@ -2426,6 +2452,37 @@ mod tests {
             msg.contains("2 locations") && msg.contains("lines 2, 5"),
             "must count and locate the candidates, got:\n{msg}"
         );
+    }
+
+    // what this catches (2026-09-21, Sahar on pydata__xarray-7393): an exact anchor that
+    // occurs in two functions was applied to the FIRST by `replacen(.., 1)` — the hunk
+    // landed in `reset_index` instead of `stack`. Verbatim ambiguity now refuses with the
+    // line numbers, exactly as the whitespace-normalized path does; a unique anchor and
+    // `all: true` are unchanged.
+    #[test]
+    fn an_ambiguous_exact_anchor_refuses_with_line_numbers_instead_of_taking_the_first() {
+        let content = "def reset_index(self):\n    idx = self.idx\n    return idx\n\n\
+                       def stack(self):\n    idx = self.idx\n    return idx\n";
+        let ambiguous = EditMode::SearchReplace {
+            search: "    idx = self.idx\n    return idx\n".to_string(),
+            replace: "    idx = self.idx\n    product_vars = {}\n    return idx\n".to_string(),
+            all: false,
+        };
+        let err = apply_edit(content, &ambiguous).expect_err("two verbatim sites must refuse");
+        let msg = format!("{err}");
+        assert!(msg.contains("2 locations") && msg.contains("lines 2, 6"), "count + lines, got:\n{msg}");
+        // A unique anchor (one more line of context) applies to the site it names.
+        let unique = EditMode::SearchReplace {
+            search: "def stack(self):\n    idx = self.idx\n".to_string(),
+            replace: "def stack(self):\n    product_vars = {}\n    idx = self.idx\n".to_string(),
+            all: false,
+        };
+        let out = apply_edit(content, &unique).expect("a unique anchor applies");
+        assert!(out.contains("def stack(self):\n    product_vars = {}"));
+        assert!(out.starts_with("def reset_index(self):\n    idx = self.idx\n"), "reset_index untouched");
+        // all=true is the explicit every-site edit and still applies everywhere.
+        let every = EditMode::SearchReplace { search: "return idx".to_string(), replace: "return idx  # both".to_string(), all: true };
+        assert_eq!(apply_edit(content, &every).expect("all=true").matches("# both").count(), 2);
     }
 
     // what this catches: the fallback must not swallow the genuinely-absent case — the
