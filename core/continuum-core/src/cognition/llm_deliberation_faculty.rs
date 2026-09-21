@@ -7838,6 +7838,43 @@ mod tests {
             assert!(faculty.fit_messages(ambient(), ambient_cost - 1).is_err());
         }
 
+        // Regression for #4290: a follow-up must not erase protection for the act it asks about.
+        #[test]
+        fn continuity_followup_keeps_completed_action_evidence() {
+            let history = vec![
+                ChatMessage::text("user", "Write the requested file."),
+                ChatMessage::text("assistant", "calling code/write: completed.py"),
+                ChatMessage::text("user", "Full result of code/write: file written successfully."),
+                ChatMessage::text("user", "Now review the file you just wrote."),
+            ];
+            let expected = LlmDeliberationFaculty::messages_cost(&history);
+            let prompt = PromptMessages {
+                input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
+                history, stimulus: None, latest_result: None, room_updates: Vec::new(),
+            };
+            assert!(prompt.recent_move_evidence().tokens >= expected,
+                "a new follow-up cannot make the preceding action and result disposable");
+        }
+
+        // Regression for #4290: insufficient capacity must refuse, not silently forget a completed act.
+        #[test]
+        fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let prompt = PromptMessages {
+                input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
+                history: vec![
+                    ChatMessage::text("user", "Write the requested file. ".repeat(30)),
+                    ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
+                    ChatMessage::text("user", "Full result of code/write: file written successfully."),
+                ],
+                stimulus: None, latest_result: None, room_updates: Vec::new(),
+            };
+            let insufficient = prompt.recent_move_evidence().tokens - 1;
+            assert!(faculty.fit_messages(prompt, insufficient).is_err(),
+                "required action/result continuity must not become optional when it exceeds capacity");
+        }
+
         // what this catches: THE CLIP TAKING AWAY THE EVIDENCE OF WHAT SHE JUST DID.
         //
         // The chain, measured on the M5 2026-09-20: the conversation assembly is
