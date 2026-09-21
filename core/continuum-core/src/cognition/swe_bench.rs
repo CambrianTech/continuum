@@ -2059,7 +2059,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         }
         return Ok(py);
     }
-    // ANY failure below leaves NO half-built env: `bin/python` is the "env is complete"
+    // ANY failure below leaves NO half-built env: the interpreter is the "env is complete"
     // key, so a venv whose deps never installed (the index unreachable, card cffc9c5e)
     // would otherwise be adopted as complete on the next run and grade every attempt
     // ungradeable. Each fatal site still removes on its own; this is the floor under them.
