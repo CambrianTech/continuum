@@ -244,6 +244,20 @@ pub struct CreditTransferIntent {
     pub snapshot: StagedCredit,
 }
 
+/// Destination ownership for a transfer, independent of a review or training.
+/// Create-only acknowledgement retains the source evidence and reservations.
+#[derive(Debug, Clone, Serialize, Deserialize, crate::orm::Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "credit_transfer_acceptance")]
+pub struct CreditTransferAcceptance {
+    #[entity(primary_key)]
+    pub id: Uuid,
+    #[entity(foreign_key("credit_transfer_intent.id", on_delete = "restrict"))]
+    pub transfer_intent_id: Uuid,
+    #[entity(json)]
+    pub receipt: SubmitOutcome,
+}
+
 /// A request id is reserved within its persona's store, not globally across
 /// peers. Reused/ambiguous request ids conservatively refuse overlapping credit.
 /// None denotes the existing benchmark settlement path; Some binds the exact
@@ -354,6 +368,7 @@ pub async fn ensure_storage<T: Transport>(
     for collection in [
         StagedCredit::COLLECTION,
         CreditTransferIntent::COLLECTION,
+        CreditTransferAcceptance::COLLECTION,
         WorkCreditBinding::COLLECTION,
         CreditGenerationReservation::COLLECTION,
         CreditReviewDecision::COLLECTION,
@@ -701,6 +716,60 @@ async fn write_batch<T: Transport>(
         )
         .await?;
     storage_ok(&value, "data/batch", WorkCreditBinding::COLLECTION)
+}
+
+pub(super) async fn transfer_accepted<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    revision: Uuid,
+) -> Result<bool, ClientError> {
+    let prior =
+        read_one::<_, CreditTransferAcceptance>(conn, persona_name, &revision.to_string()).await?;
+    Ok(prior.is_some_and(|prior| {
+        prior.id == revision
+            && prior.transfer_intent_id == revision
+            && prior
+                .receipt
+                .acceptance
+                .as_ref()
+                .is_some_and(|a| a.submission_id == revision)
+    }))
+}
+
+/// Called only after exact-intent reservation and destination identity validation.
+/// A competing successful retry may win this create; a refusal never overwrites it.
+pub(super) async fn accept_transfer<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    revision: Uuid,
+    receipt: SubmitOutcome,
+) -> Result<(), ClientError> {
+    if receipt
+        .acceptance
+        .as_ref()
+        .is_none_or(|a| a.submission_id != revision)
+    {
+        return Err(ClientError::Transport(
+            "destination did not accept this revision".into(),
+        ));
+    }
+    let accepted = CreditTransferAcceptance {
+        id: revision,
+        transfer_intent_id: revision,
+        receipt,
+    };
+    if let Err(error) = write_batch(
+        conn,
+        persona_name,
+        vec![create(revision.to_string(), &accepted)?],
+    )
+    .await
+    {
+        if !transfer_accepted(conn, persona_name, revision).await? {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn reservations(

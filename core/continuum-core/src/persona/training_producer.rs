@@ -1515,7 +1515,7 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             passed,
             staged = rows.len() as u64,
             submitted = submitted as u64,
-            "card verdict checked staged revisions; only acknowledged transfers were removed"
+            "card verdict checked staged revisions; acknowledged transfers retain inspectable evidence"
         );
         crate::modules::citizen_health::note_credit_settled();
     }
@@ -1608,6 +1608,9 @@ async fn settle_staged_row<T: Transport>(
             return Ok(false);
         }
     }
+    if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
+        return Ok(false);
+    }
     let receipt = submit_training(conn, params).await?;
     if receipt
         .acceptance
@@ -1624,18 +1627,19 @@ async fn settle_staged_row<T: Transport>(
         );
         return Ok(false);
     }
-    let deleted = conn.commands().execute_value(
-        "data/delete",
-        json!({ "collection": StagedCredit::COLLECTION, "id": row.id, "dbPath": format!("@persona:{persona_name}") }),
-    ).await?;
-    storage_ok(&deleted, "data/delete", StagedCredit::COLLECTION)?;
+    let replayed = receipt
+        .acceptance
+        .as_ref()
+        .is_some_and(|accepted| accepted.replayed);
+    let dispatch_success = receipt.success;
+    reviewed::accept_transfer(conn, persona_name, row.id, receipt).await?;
     crate::probe!(
         class = "training.credit.transferred",
         persona = %persona_name,
         card = %row.card_id,
         submission = %row.id,
-        replayed = receipt.acceptance.as_ref().is_some_and(|accepted| accepted.replayed),
-        dispatch_success = receipt.success,
+        replayed,
+        dispatch_success,
         "destination durably accepted this staged revision; training is a separate outcome"
     );
     Ok(true)
@@ -2271,11 +2275,15 @@ pub(crate) mod tests {
     use crate::test_env::HomeGuard;
 
     /// A real `DataModule` over a real SQLite adapter, reached through the SAME
-    /// dispatch path production uses — `stage_credit` gets no special seam.
+    /// dispatch and authorization path production uses — a local persona must
+    /// not pass here merely because the fixture omitted the grid trust policy.
     fn data_runtime() -> Arc<CommandExecutor> {
         let registry = Arc::new(crate::runtime::ModuleRegistry::new());
         registry.register(Arc::new(crate::modules::data::DataModule::new()));
-        let executor = Arc::new(CommandExecutor::new(registry.clone()));
+        let executor = Arc::new(
+            CommandExecutor::new(registry.clone())
+                .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
+        );
         registry.install_executor_on_all(executor.clone());
         executor
     }
@@ -3719,7 +3727,26 @@ pub(crate) mod tests {
             .await
             .unwrap());
         let remaining = stored_credit_rows(&data, name).await;
-        assert_eq!(remaining.len(), 2);
+        assert_eq!(
+            remaining.len(),
+            4,
+            "acceptance preserves inspectable source evidence"
+        );
+        assert!(reviewed::transfer_accepted(&data, name, a.id)
+            .await
+            .unwrap());
+        assert!(reviewed::transfer_accepted(&data, name, b.id)
+            .await
+            .unwrap());
+        submit.respond_to("genome/training-trigger/submit", |_| {
+            panic!("acknowledged transfer was dispatched again")
+        });
+        assert!(!settle_staged_row(&conn, persona, name, &a, true)
+            .await
+            .unwrap());
+        assert!(!settle_staged_row(&conn, persona, name, &b, true)
+            .await
+            .unwrap());
         assert!(remaining.iter().any(|row| row.id == mixed.id));
         assert!(remaining.iter().any(|row| row.id == faulted.id));
     }
