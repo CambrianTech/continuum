@@ -3785,6 +3785,25 @@ fn kill_plan(
     plan
 }
 
+/// THE REAPER IS NEVER IN ITS OWN PLAN. The deploy consumer is a CHILD of the core it
+/// stops — the actuator spawns `continuum deploy-consume` from the running core (in its
+/// own process group, but parentage is parentage) — so on a reboot the core's tree
+/// contains the very process walking it. Whether that process survives came down to a
+/// race: if the graceful stop had already taken the core out of the process table when
+/// sysinfo refreshed, the consumer read as init's and was untouched (IntelMac 05:16Z,
+/// staged + kickstarted + verified); if the core was still draining (4 turns in flight),
+/// the consumer read as its child, `Tree(core)` reaped it mid-handoff, and the node had
+/// no core for 40 minutes because the kickstart it owed was never issued (IntelMac
+/// 11:20Z, card 3ef0986c — the launchd `KeepAlive={Crashed}` policy correctly declines
+/// to relaunch a clean stop). Adding ourselves to the keep set gives every ancestor of
+/// the reaper a `Process` step instead of a `Tree` one — the same protection a live
+/// lane gets — so the core still dies and the hand that stops it keeps its grip.
+fn keep_with_self(keep: &[i32]) -> Vec<i32> {
+    let mut with_self = keep.to_vec();
+    with_self.push(std::process::id() as i32);
+    with_self
+}
+
 fn process_parents(sys: &sysinfo::System) -> std::collections::HashMap<i32, i32> {
     sys.processes()
         .values()
@@ -3804,7 +3823,7 @@ fn kill_pid_trees_preserving(roots: &[i32], keep: &[i32]) {
         ProcessRefreshKind::nothing(),
     );
     let parents = process_parents(&sys);
-    for step in kill_plan(roots, &parents, keep) {
+    for step in kill_plan(roots, &parents, &keep_with_self(keep)) {
         #[cfg(windows)]
         {
             let _ = step.command().output();
@@ -6213,6 +6232,42 @@ mod tests {
         assert!(plan
             .iter()
             .all(|kill| matches!(kill, KillStep::Process(_))));
+    }
+
+    // what this catches (IntelMac 2026-09-21 11:20Z, card 3ef0986c): the deploy consumer
+    // is the CORE'S CHILD, so the tree it reaps on a reboot contains itself. With the
+    // consumer in the keep set (what `keep_with_self` adds at the call site), the core
+    // gets a `Process` step — it dies alone — and no step names the consumer or its
+    // branch; without it, `Tree(core)` reaps the hand mid-handoff and the kickstart the
+    // node is owed is never issued. Both directions: the lane keep still holds beside it.
+    #[test]
+    fn the_reaper_is_never_in_its_own_plan() {
+        let (core, consumer, lane, eye) = (100, 200, 300, 400);
+        let parents = std::collections::HashMap::from([
+            (consumer, core),
+            (lane, core),
+            (eye, core),
+            (core, 1),
+        ]);
+        let plan = kill_plan(&[core], &parents, &keep_with_self_for_test(&[lane], consumer));
+        assert_eq!(plan.first(), Some(&KillStep::Process(core)), "the core dies alone, never as a tree");
+        assert!(
+            !plan.iter().any(|s| matches!(s, KillStep::Tree(p) | KillStep::Process(p) if *p == consumer)),
+            "the reaper never appears in its own plan: {plan:?}"
+        );
+        assert!(!plan.iter().any(|s| matches!(s, KillStep::Tree(p) | KillStep::Process(p) if *p == lane)), "the lane keep still holds");
+        assert!(plan.contains(&KillStep::Tree(eye)), "an unprotected sibling is still reaped: {plan:?}");
+        // The pre-fix shape, for contrast: with only the lane kept, the consumer IS in the plan.
+        let unprotected = kill_plan(&[core], &parents, &[lane]);
+        assert!(unprotected.contains(&KillStep::Tree(consumer)), "without the self keep the hand is reaped: {unprotected:?}");
+    }
+
+    /// `keep_with_self` pins the CALLER's pid, which in a test is the test binary; this
+    /// mirrors it with an explicit self so the plan can be asserted for a chosen pid.
+    fn keep_with_self_for_test(keep: &[i32], self_pid: i32) -> Vec<i32> {
+        let mut with_self = keep.to_vec();
+        with_self.push(self_pid);
+        with_self
     }
 
     /// what this catches: the actual BIGMAMA leak. llama-server pid 37148 ran
