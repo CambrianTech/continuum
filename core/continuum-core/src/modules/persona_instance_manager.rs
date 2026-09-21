@@ -603,19 +603,27 @@ impl ServiceModule for PersonaInstanceManagerModule {
         let work = async {
             let mut renewed = 0usize;
             for rt in &runtimes {
-                let held = match crate::persona::airc_runtime::board_held_by(rt.airc().as_ref()).await {
-                    Ok(held) => held,
-                    Err(_) => continue,
-                };
-                for card in held {
-                    let Some(claim_id) = card.claim_id else { continue };
+                let held =
+                    match crate::persona::airc_runtime::scoped_board_held_by(rt.airc().as_ref())
+                        .await
+                    {
+                        Ok(held) => held,
+                        Err(_) => continue,
+                    };
+                for (room, card) in held {
+                    let Some(claim_id) = card.claim_id else {
+                        continue;
+                    };
                     if rt
                         .airc()
-                        .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
-                            card_id: card.card_id,
-                            claim_id,
-                            ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                        })
+                        .heartbeat_work_claim_in(
+                            &room,
+                            airc_lib::HeartbeatWorkClaim {
+                                card_id: card.card_id,
+                                claim_id,
+                                ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                            },
+                        )
                         .await
                         .is_ok()
                     {

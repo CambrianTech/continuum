@@ -749,7 +749,8 @@ impl PersonaAircRuntime {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or_default(); // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
-                        let idle = crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
+                        let idle =
+                            crate::persona::cognition_pulse::work_idle_ms(hb_persona, None, now_ms);
                         if !crate::persona::cognition_pulse::renewal_earned(
                             idle,
                             crate::modules::work::DEFAULT_CLAIM_TTL_MS,
@@ -820,6 +821,14 @@ impl PersonaAircRuntime {
                                 .iter()
                                 .filter(|c| {
                                     !holds_live
+                                        && crate::persona::cognition_pulse::renewal_earned(
+                                            crate::persona::cognition_pulse::work_idle_ms(
+                                                hb_persona,
+                                                Some(c.card_id.as_uuid()),
+                                                now_ms,
+                                            ),
+                                            crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                        )
                                         && c.owner == Some(me)
                                         && c.claim_expires_at_ms.is_some_and(|e| e <= now_ms)
                                         && crate::cognition::bench_round::card_round_is_working(
@@ -860,20 +869,33 @@ impl PersonaAircRuntime {
                     // Renew what the BOARD says she holds (board_held_by) — the roster
                     // reads empty right after a boot, and a lease not renewed in that
                     // window lapses out from under her.
-                    match board_held_by(hb_airc.as_ref()).await {
+                    match scoped_board_held_by(hb_airc.as_ref()).await {
                         Ok(mine) => {
                             let mut renewed = 0usize;
                             let mut failed = 0usize;
-                            for card in &mine {
+                            for (room, card) in &mine {
+                                if !crate::persona::cognition_pulse::renewal_earned(
+                                    crate::persona::cognition_pulse::work_idle_ms(
+                                        hb_persona,
+                                        Some(card.card_id.as_uuid()),
+                                        crate::modules::chat::now_ms(),
+                                    ),
+                                    crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                ) {
+                                    continue;
+                                }
                                 let Some(claim_id) = card.claim_id else {
                                     continue;
                                 };
                                 if let Err(error) = hb_airc
-                                    .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
-                                        card_id: card.card_id,
-                                        claim_id,
-                                        ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                                    })
+                                    .heartbeat_work_claim_in(
+                                        room,
+                                        airc_lib::HeartbeatWorkClaim {
+                                            card_id: card.card_id,
+                                            claim_id,
+                                            ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                        },
+                                    )
                                     .await
                                 {
                                     failed += 1;
@@ -1553,6 +1575,18 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
 /// renewal loop, anything that asks. Never the work roster: it is rebuilt after a boot
 /// and reads empty for its first seconds (2026-09-13 08:40:50Z, a second pull).
 pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>, AircError> {
+    Ok(scoped_board_held_by(airc)
+        .await?
+        .into_iter()
+        .map(|(_, card)| card)
+        .collect())
+}
+
+/// Keep routing provenance beside each held card; renewal must never infer its
+/// room from the persona's changing current-room pointer.
+pub(crate) async fn scoped_board_held_by(
+    airc: &Airc,
+) -> Result<Vec<(airc_lib::Room, airc_lib::WorkCard)>, AircError> {
     // EVERY ROOM SHE STANDS IN, never "the board". airc's `work_board_complete` folds
     // the scope's CURRENT room only — right after a boot that is her home room, so a
     // card held in a run room read as not held: 2026-09-13 09:29:01Z, 13 s after the
@@ -1564,40 +1598,51 @@ pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
-    let rooms: Vec<Uuid> = airc
+    let rooms: Vec<airc_lib::Room> = airc
         .subscription_set()
         .await?
         .all()
-        .map(|sub| sub.as_room().channel.as_uuid())
+        .map(|sub| sub.as_room())
         .collect();
     let mut held = Vec::new();
     for room in rooms {
         // ONE unreadable room must not erase every hold: this fold feeds the renewal loop,
         // and a `?` here made a single bad room read lapse every card she held elsewhere.
-        let board = match crate::persona::room_board_source::RoomBoardReader::work_board(airc, Some(room)).await {
+        let board = match crate::persona::room_board_source::RoomBoardReader::work_board(
+            airc,
+            Some(room.channel.as_uuid()),
+        )
+        .await
+        {
             Ok(board) => board,
             Err(error) => {
                 crate::probe!(
                     class = "persona.claim.board_room_unreadable",
-                    room = %room,
+                    room = %room.channel,
                     error = %error,
                     "a subscribed room's board did not read — her holds elsewhere still count"
                 );
                 continue;
             }
         };
-        held.extend(board.cards.into_iter().filter(|card| {
-            // A settled card is nobody's work, whatever its lease says: a closed card
-            // whose claim fields outlive the close read as HELD, focused her ticks on a
-            // finished room and made the pull think she had work (2026-09-13 14:0xZ).
-            !matches!(
-                card.state,
-                airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
-            ) && card.owner == Some(me)
-                && crate::persona::card_holder::hold_of(card, now_ms)
-                    == crate::persona::card_holder::Hold::Held
-                && !crate::persona::card_holder::claimable_now(card, now_ms)
-        }));
+        held.extend(
+            board
+                .cards
+                .into_iter()
+                .filter(|card| {
+                    // A settled card is nobody's work, whatever its lease says: a closed card
+                    // whose claim fields outlive the close read as HELD, focused her ticks on a
+                    // finished room and made the pull think she had work (2026-09-13 14:0xZ).
+                    !matches!(
+                        card.state,
+                        airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
+                    ) && card.owner == Some(me)
+                        && crate::persona::card_holder::hold_of(card, now_ms)
+                            == crate::persona::card_holder::Hold::Held
+                        && !crate::persona::card_holder::claimable_now(card, now_ms)
+                })
+                .map(|card| (room.clone(), card)),
+        );
     }
     Ok(held)
 }

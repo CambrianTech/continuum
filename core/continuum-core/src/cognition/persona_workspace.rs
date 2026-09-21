@@ -3010,8 +3010,7 @@ mod tests {
         use crate::cognition::tool_executor::CommandToolExecutor;
         use crate::modules::code::{CodeModule, CodeState};
         use crate::routing::CallerIdentity;
-        use crate::runtime::{CommandExecutor, InProcessTransport, ModuleRegistry};
-        use continuum_client::Connection;
+        use crate::runtime::{CommandExecutor, ModuleRegistry};
         use dashmap::DashMap;
 
         /// One core with the REAL `CodeModule` — the single process-global engine map
@@ -3023,17 +3022,14 @@ mod tests {
                 Arc::new(DashMap::new()),
                 tokio::runtime::Handle::current(),
             )))));
-            let executor = Arc::new(CommandExecutor::new(registry));
-            let transport = InProcessTransport::new(
-                executor,
-                Some(CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(persona),
-                )),
+            let executor = Arc::new(
+                CommandExecutor::new(registry)
+                    .with_message_bus(Arc::new(crate::runtime::MessageBus::new())),
             );
             ActingHands {
                 persona_id: persona,
                 persona_name: "Anwen".to_string(),
-                executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
+                executor: Arc::new(CommandToolExecutor::for_persona(executor, persona)),
                 working_memory: Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)),
             }
         }
@@ -3063,6 +3059,57 @@ mod tests {
                 .await
                 .expect("code/list runs");
             out.results[0].content.clone()
+        }
+
+        // Regression: actual foreground hands and background dispatch both record
+        // work; a workspace switch before the task's first poll cannot move it.
+        #[tokio::test]
+        async fn command_work_stays_with_its_card_across_background_dispatch() {
+            use crate::persona::cognition_pulse::work_idle_ms;
+            let home = tempfile::TempDir::new().unwrap();
+            std::fs::write(home.path().join("work.txt"), "work").unwrap();
+            let persona = Uuid::new_v4();
+            let hands = hands_for(persona);
+            drive_create_workspace(&hands, &home.path().to_string_lossy(), &[], "root", false)
+                .await
+                .unwrap();
+            note_acting_root(persona, Some(home.path().to_path_buf()));
+            let (foreground, background, next) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+            note_acting_card(persona, foreground);
+            assert!(listing(&hands).await.contains("work.txt"));
+            assert!(
+                work_idle_ms(persona, Some(foreground), crate::modules::chat::now_ms()).is_some()
+            );
+
+            let exec = hands.executor.command_executor().unwrap();
+            let mut rx = exec.message_bus().unwrap().receiver();
+            note_acting_card(persona, background);
+            let handle = exec.dispatch_background(
+                "code/list",
+                serde_json::json!({"path": "."}),
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona),
+                )),
+            );
+            // Current-thread test: the spawned task has not been polled yet.
+            note_acting_card(persona, next);
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let event = rx.recv().await.unwrap();
+                    if event.name == "command:completed"
+                        && event.payload["handle"] == handle.to_string()
+                    {
+                        assert_eq!(event.payload["success"], true);
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("background completion");
+            let now = crate::modules::chat::now_ms();
+            assert!(work_idle_ms(persona, Some(background), now).is_some());
+            assert_eq!(work_idle_ms(persona, Some(next), now), None);
+            note_acting_root(persona, None);
         }
 
         // what this catches: #312 — the measurement leaving the LIVING persona standing in
