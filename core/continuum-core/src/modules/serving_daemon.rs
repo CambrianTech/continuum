@@ -3766,7 +3766,9 @@ impl ServingDaemonModule {
                 // the requirement at all — IntelMac's 1.5B is 32k trained against a 58k typical
                 // — and a dark node is worse than a starved seat; placement routes her turns to
                 // a seat that holds them. Emitted once per (model, window, lanes).
-                let requirement = demand.typical_prompt_floor();
+                // Typed per-mind allocation already enforces its own requirements.
+                // Only legacy plans need this additional historical floor.
+                let requirement = demand.publication_prompt_floor(&plan);
                 if !crate::cognition::serving_plan::persona_lane_holds(plan.served_context_window, requirement) {
                     let retired = crate::inference::lane_footprint::retire(&plan.base_model.model_id);
                     let previous_stands = self.plan_tx.borrow().is_some();
