@@ -3135,6 +3135,46 @@ impl ServingDaemonModule {
                 .launched_prompt_cache_mib()
                 .or_else(adopted_prompt_cache_mib)
                 .unwrap_or(0);
+            // THE GRANT THE ENGINE HOLDS vs THE ONE TODAY'S DECISION WANTS (2026-09-21).
+            // `--cache-ram` is passed ONCE at spawn and is immutable for the engine's life,
+            // while the derived target is re-computed every tick — so a transient trough at
+            // the instant of launch becomes PERMANENT until something unrelated relaunches
+            // the lane. Measured on the M5: pid 33898 spawned 05:13:22Z with 480 MiB (a
+            // 3-lane/235k-ctx moment left almost nothing affordable) and still held it three
+            // hours later while the decision had recovered to 2,517 MiB. At q8_0's 32 KiB per
+            // token that is 15,360 tokens of cache against deliberation prompts of
+            // 22,612-41,547 — the cache could not hold ONE prefix, so prefix reuse was 0%,
+            // every turn paid full prefill, and a peer's hour line read
+            // `prefix reuse 0% (4k cached / 574k prefilled)` with directed waits p50 211s.
+            //
+            // `serving.prompt_cache.launch` honestly records `applied_mib="unobserved"` —
+            // the engine API does not expose what it actually applied, and inventing a
+            // readback would be worse than saying so. But BOTH numbers in this divergence
+            // are ours: the grant we passed and the target we now want. Nothing compared
+            // them, so the gap was invisible until someone read the engine's argv by hand.
+            // This says it. The RELAUNCH that closes the gap is card ab27b914 (a fifth
+            // sibling beside the window/lane/sight/KV grow-backs); this probe is the
+            // measurement that decision will be judged by, and it ships first on purpose —
+            // a probe changes no live lane, and a lane relaunch is the most dangerous
+            // change this daemon can make.
+            if launched_cache_mib > 0 && target.host_prompt_cache_mib > launched_cache_mib {
+                let held = launched_cache_mib as u64;
+                let wanted = target.host_prompt_cache_mib as u64;
+                crate::probe!(
+                    class = "serving.prompt_cache.divergence",
+                    model = target.model_id(),
+                    held_mib = held,
+                    wanted_mib = wanted,
+                    shortfall_mib = wanted.saturating_sub(held),
+                    ratio_pct = wanted.saturating_mul(100) / held.max(1),
+                    served_window = served_window as u64,
+                    served_lanes = served_lanes as u64,
+                    "the running engine holds LESS host prompt cache than today's decision wants \
+                     — `--cache-ram` is fixed at spawn, so this gap closes only on a relaunch \
+                     (card ab27b914). A grant below ONE conversation makes prefix reuse \
+                     structurally impossible: every context switch is a full re-prefill"
+                );
+            }
             // #106 vision readiness: for a ready lane, resolve the node's VERIFIED
             // vision endpoint. First the MAIN lane — the row's declared Vision, the
             // resolved mmproj, and the server's own `/props modalities` must all

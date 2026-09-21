@@ -140,6 +140,29 @@ pub const CACHE_RAM_MIB: u32 = 4096;
 /// same mistake this function exists to delete.
 pub(crate) const CACHE_RAM_HARD_FLOOR_MIB: u32 = 256;
 
+/// The ONE-CONVERSATION floor in BYTES — the largest single conversation this cache
+/// must be able to hold without thrashing, from this model's own geometry. Below it
+/// every context switch is a guaranteed full re-prefill: the 330x cliff. A
+/// model-specific byte constant here would just be the old mistake wearing a
+/// different name.
+///
+/// Extracted to ONE definition on 2026-09-21 because a second consumer needs the same
+/// answer: the sizing decision below asks it at SPAWN, and the question "is the grant
+/// this engine is still holding big enough?" has to be asked of a RUNNING engine too.
+/// `--cache-ram` is immutable after spawn while the derived target moves every tick, so
+/// an engine can hold a number the substrate stopped believing hours ago — the M5's pid
+/// 33898 held 480 MiB (15,360 tokens at q8_0) against 22,612-41,547-token prompts, which
+/// is well under one conversation, and prefix reuse was 0%. Two places deciding "is this
+/// cache big enough" with two derivations is how that becomes invisible (card ab27b914).
+pub fn one_conversation_bytes(citizen_demand_tokens: &[u32], kv_per_token: u64) -> u64 {
+    citizen_demand_tokens
+        .iter()
+        .copied()
+        .max()
+        .map(|t| kv_per_token.saturating_mul(t as u64))
+        .unwrap_or(0) // unwrap_or: no citizen demand measured = no conversation to hold, not a guessed size
+}
+
 /// Size the host-RAM prompt cache from the WORKLOAD, not from a constant.
 ///
 /// ## Why a constant was wrong
@@ -188,16 +211,7 @@ pub fn host_prompt_cache_mib(
         .iter()
         .map(|t| kv_per_token.saturating_mul(*t as u64))
         .fold(0u64, |a, b| a.saturating_add(b));
-    // The floor is ONE conversation — the largest single one we must not thrash —
-    // derived from this model's own geometry. Below that, every context switch is
-    // a guaranteed full re-prefill: the 330x cliff. A model-specific byte constant
-    // here would just be the old mistake wearing a different name.
-    let floor = citizen_demand_tokens
-        .iter()
-        .copied()
-        .max()
-        .map(|t| kv_per_token.saturating_mul(t as u64))
-        .unwrap_or(0);
+    let floor = one_conversation_bytes(citizen_demand_tokens, kv_per_token);
     let granted = want.max(floor).min(affordable_bytes.max(1));
     let mib = (granted / (1024 * 1024)) as u32;
     mib.max(CACHE_RAM_HARD_FLOOR_MIB)
@@ -599,6 +613,44 @@ mod tests {
     // restore vs 32.9s re-prefill), so undersizing it does not cost a little —
     // it turns every context switch into recomputation. The hallmark is 14
     // personas collaborating; at that bar the constant is catastrophic.
+    // what this catches: the 2026-09-21 M5 shape. A grant can be affordable and still be
+    // structurally useless — below ONE conversation, prefix reuse is not "poor", it is
+    // impossible, because the cache cannot retain a single prefix across a switch. pid
+    // 33898 was spawned at 05:13:22Z with 480 MiB while deliberation prompts measured
+    // 22,612-41,547 tokens at q8_0's 32 KiB/token, and every prefill that hour reported
+    // cached=0. This pins the predicate the relaunch grow-check (card ab27b914) will use,
+    // so the running-engine question and the spawn question can never drift apart.
+    #[test]
+    fn a_grant_below_one_conversation_cannot_hold_a_single_prefix() {
+        let kv = 32 * 1024u64; // q8_0 on the 27B: 32,768 bytes/token, the measured value
+        let mib = |bytes: u64| (bytes / (1024 * 1024)) as u32;
+
+        // The real prompts that hour, largest first — one conversation is the LARGEST,
+        // never the sum: it is the single prefix a switch must not evict.
+        let measured = [22_612u32, 32_594, 37_213, 41_547];
+        let one = super::one_conversation_bytes(&measured, kv);
+        assert_eq!(one, kv * 41_547, "one conversation is the largest, not the total");
+        assert_eq!(mib(one), 1_298, "≈1.3 GiB to hold a single 41.5k-token prefix");
+
+        // The engine held 480 MiB. That is not a small cache, it is a broken one.
+        assert!(480 < mib(one), "480 MiB cannot hold one conversation — reuse is structurally 0");
+
+        // And the sizing function itself refuses to plan below one conversation when the
+        // host can afford it: the floor is the max, even though only one citizen is big.
+        let planned = super::host_prompt_cache_mib(&measured, kv, u64::MAX);
+        assert!(planned >= mib(one), "the plan must hold at least one conversation: {planned}");
+
+        // The trough that produced 480: affordability is a hard ceiling and CAN land under
+        // one conversation. That is exactly when a relaunch must be armed once the ceiling
+        // lifts — the engine cannot grow the grant it was born with.
+        let squeezed = super::host_prompt_cache_mib(&measured, kv, 480 * 1024 * 1024);
+        assert_eq!(squeezed, 480, "the affordability clamp still wins at spawn");
+        assert!(squeezed < mib(one), "and the result is a cache that cannot hold one prefix");
+
+        // Nothing measured = no conversation to hold, never a guessed size.
+        assert_eq!(super::one_conversation_bytes(&[], kv), 0);
+    }
+
     #[test]
     fn the_prompt_cache_is_sized_by_citizens_not_by_slots() {
         let kv = 32 * 1024u64; // ~32 KiB/token, Ornith-class geometry
