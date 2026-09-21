@@ -440,6 +440,26 @@ pub fn ms_since_real_decode() -> Option<u64> {
 // context-budget-exempt: a HYSTERESIS band: how far the served window may drift before a relaunch is worth it. Tolerance, never a cap — it doesn't limit the window, it stops us thrashing it
 const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 
+/// Would relaunching toward `(target_lanes, target_window)` leave every citizen a
+/// NARROWER lane than `(served_lanes, served_window)` serves, in exchange for more
+/// lanes? The grow ladder's one geometry question (card d9d747b2): a lane grow that
+/// costs window is a trade the ladder refuses; a pure lane grow, a window grow (at
+/// any lane count), and an unreadable served side (0) are not. "Narrower" uses the
+/// same tolerance the window check does — a 256-pad or the boot plan's drift under a
+/// served window is not a trade.
+pub(crate) fn lane_grow_would_narrow_the_window(
+    target_lanes: u32,
+    target_window: u32,
+    served_lanes: u32,
+    served_window: u32,
+) -> bool {
+    if served_lanes == 0 || served_window == 0 || target_lanes <= served_lanes {
+        return false;
+    }
+    let tolerance = WINDOW_RELAUNCH_TOLERANCE.max(served_window / 8);
+    target_window.saturating_add(tolerance) < served_window
+}
+
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
 /// The failure mode this guards is the intermittently-wedged fresh lane that answers
 /// EVERY request with ~2 tokens then stops (observed on ephemeral eval lanes: same
@@ -2394,8 +2414,10 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
             // blocked). Grow-only: a down-plan is kept by the daemon's sticky window
             // and never reaches here; a `/props` read failure (served 0/Err) is
             // treated as "window OK" so a probe error never spuriously relaunches.
-            let window_ok = match ctrl.served_context_window().await {
+            let served_window_probe = ctrl.served_context_window().await;
+            let window_ok = match &served_window_probe {
                 Ok(served) => {
+                    let served = *served;
                     // Tolerance is a PERCENTAGE of the served window, floored at the
                     // flat minimum — never a bare flat count. A flat 512 is 0.35% of a
                     // 147k lane, so the boot plan's normal drift (it re-computes against
@@ -2509,7 +2531,45 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                 r.cache_type_or_default().eq_ignore_ascii_case(&planned_kv.cache_type)
                     && r.flash_attn == planned_kv.flash_attn
             });
-            if !window_ok || !lanes_ok || !sight_ok || !kv_ok {
+            // A LANE GROW MUST NOT NARROW THE WINDOW (card d9d747b2, the M5 2026-09-21
+            // 09:29-09:36Z). The four checks are per-axis and grow-only, but a relaunch is
+            // a GEOMETRY change: the plan asked for 5 lanes and, to fit them, sized each at
+            // 36,810 over a lane serving 3 × 78,592. `lanes_ok` fired, the engine relaunched
+            // at 5 × 36,810, the next plan found the window starved and relaunched back to
+            // 3 × 78,592 — every ~3 min, 35 generations reaped in 20, a prompt cache that
+            // could never warm. The window is the requirement and lanes are throughput
+            // (card 18ba6a1b: the window first, then lanes), so a lane-driven relaunch that
+            // would leave every citizen a NARROWER lane than she has is a trade, not a
+            // grow-back, and the ladder refuses it. The opposite trade — a wider window at
+            // fewer lanes — stays allowed: that is the starved-window grow-back this ladder
+            // exists for. A plan that keeps asking is now a probe line, not a relaunch.
+            let served_window_n = served_window_probe.as_ref().ok().copied().unwrap_or(0); // unwrap_or: unreadable = 0 = no served window to compare against, same as window_ok's policy
+            let served_lanes_n = served_lanes_probe.as_ref().ok().copied().unwrap_or(0); // unwrap_or: unreadable = 0 = no served lanes to compare against, same as lanes_ok's policy
+            let refused_trade = !lanes_ok
+                && window_ok
+                && sight_ok
+                && kv_ok
+                && lane_grow_would_narrow_the_window(
+                    target.lanes,
+                    target.context_window,
+                    served_lanes_n,
+                    served_window_n,
+                );
+            if refused_trade {
+                crate::probe!(
+                    class = "serving.grow_refused_trade",
+                    model = target.model_id(),
+                    target_lanes = target.lanes,
+                    target_window = target.context_window,
+                    served_lanes = served_lanes_n,
+                    served_window = served_window_n,
+                    "the plan wants more lanes at a NARROWER window than the lane serves — a \
+                     trade, not a grow-back; refused (card d9d747b2: following it relaunched the \
+                     engine every ~3 min between 5 × 36k and 3 × 78k). The lane keeps its window; \
+                     more lanes come when they fit at it",
+                );
+            }
+            if (!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
@@ -5320,6 +5380,55 @@ mod tests {
             matches!(outcome, EnsureOutcome::Spawned { .. }),
             "1 served slot against a 4-lane plan must relaunch to grow, got {outcome:?}"
         );
+    }
+
+    // what this catches (card d9d747b2, the M5 2026-09-21 09:29-09:36Z): a plan wanting
+    // MORE lanes at a NARROWER window than the lane serves (5 × 36,810 over 3 × 78,592)
+    // must not relaunch — following it thrashed the engine every ~3 min against the
+    // window grow-back and reaped 35 generations in 20 min. Both directions: the trade is
+    // refused and the lane stays; a pure lane grow at the served window still relaunches
+    // (the test above), and a WIDER window at fewer lanes still relaunches (the window is
+    // the requirement, lanes are throughput).
+    #[tokio::test]
+    async fn a_lane_grow_that_would_narrow_the_window_is_refused_as_a_trade() {
+        // The predicate, at the measured numbers and at the edges.
+        assert!(lane_grow_would_narrow_the_window(5, 36_810, 3, 78_592), "the M5 loop's first step");
+        assert!(lane_grow_would_narrow_the_window(4, 34_176, 3, 78_592), "and its second");
+        assert!(!lane_grow_would_narrow_the_window(3, 78_592, 5, 36_810), "wider at fewer lanes is a grow-back");
+        assert!(!lane_grow_would_narrow_the_window(5, 78_592, 3, 78_592), "a pure lane grow");
+        assert!(!lane_grow_would_narrow_the_window(5, 70_000, 3, 78_592), "within the window tolerance (78,592 / 8)");
+        assert!(!lane_grow_would_narrow_the_window(3, 31_000, 1, 2_048), "the 2k → 31k starved case grows both axes");
+        assert!(!lane_grow_would_narrow_the_window(5, 36_810, 0, 0), "an unreadable served side is not a trade");
+        // Fable's 45 s time series on the M5 (09:28-09:42Z): the DOWN steps are crash
+        // respawns under a trough budget, not this ladder (grow-only), and from any of
+        // them a wider plan must still climb out — lanes up or down.
+        assert!(!lane_grow_would_narrow_the_window(4, 34_176, 5, 36_810), "fewer lanes is never a refused trade");
+        assert!(!lane_grow_would_narrow_the_window(1, 19_173, 4, 34_176));
+        assert!(!lane_grow_would_narrow_the_window(3, 78_592, 1, 19_173), "out of the bottom: wider at more lanes");
+        assert!(!lane_grow_would_narrow_the_window(2, 31_141, 1, 19_173), "out of the bottom: wider at more lanes");
+
+        // The ladder on the fake control: served 3 × 78,592, plan 5 × 36,810 → no relaunch.
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_lanes(3)
+            .with_served_window(78_592);
+        let mut t = target("coder-14b");
+        t.lanes = 5;
+        t.context_window = 36_810;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert_eq!(outcome, EnsureOutcome::AlreadyServing, "a trade is refused, the lane keeps its window");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch toward the narrower geometry");
+
+        // The other direction: served 5 × 36,810, plan 3 × 78,592 → relaunches (window grow-back).
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_lanes(5)
+            .with_served_window(36_810);
+        let mut t = target("coder-14b");
+        t.lanes = 3;
+        t.context_window = 78_592;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert!(matches!(outcome, EnsureOutcome::Spawned { .. }), "a wider window at fewer lanes still grows, got {outcome:?}");
     }
 
     // what this catches: the window-grow check must NOT fire on llama.cpp's 256-pad
