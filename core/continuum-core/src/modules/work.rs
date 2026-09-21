@@ -263,22 +263,23 @@ async fn resolve_card_id(
     if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
-    let boards = subscribed_boards(airc)
+    let horizon = board_horizon(airc)
         .await
         .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?;
-    resolve_card_id_in_boards(&boards, s)
+    resolve_card_id_in_boards(&horizon, s)
 }
 
 /// Resolve against an already-read view, so reading a card need not fold the
 /// subscribed boards again after expanding its short id.
 fn resolve_card_id_in_boards(
-    boards: &[(airc_lib::Room, airc_lib::WorkBoardProjection)],
+    horizon: &BoardHorizon,
     s: &str,
 ) -> Result<WorkCardId, CommandError> {
     if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
-    let candidates: Vec<Uuid> = boards
+    let candidates: Vec<Uuid> = horizon
+        .boards
         .iter()
         .flat_map(|(_, board)| {
             board
@@ -288,6 +289,11 @@ fn resolve_card_id_in_boards(
                 .map(|c| c.card_id.as_uuid())
         })
         .collect();
+    // An empty candidate set is the horizon's story to tell (outage, no rooms, or
+    // empty boards), not the resolver's "no cards exist".
+    if candidates.is_empty() {
+        return Err(horizon.not_found(s));
+    }
     crate::id_resolve::resolve(s, &candidates, "card")
         .map(WorkCardId::from_uuid)
         .map_err(CommandError::Invalid)
@@ -426,18 +432,91 @@ pub(crate) async fn board_to_read(
     Ok(projection.snapshot())
 }
 
+/// Every board the caller can see, AND every subscribed room whose board could not
+/// be read this walk. A skipped room is not fatal (the doc on [`board_to_read`]:
+/// a stale run room must not hide the academy) — but it is not SILENT either.
+/// Kimi's `work/get 31c241e2` ran during a daemon outage (2026-09-21, card
+/// cb4dea0f): every board read failed, the walk returned an empty set, and the
+/// resolver told her "no cards exist … there are none to choose from" — a read
+/// failure reported as an absence, and she reasoned from it. The horizon carries
+/// the failures so a miss can say which it was.
+pub(crate) struct BoardHorizon {
+    pub(crate) boards: Vec<(airc_lib::Room, airc_lib::WorkBoardProjection)>,
+    /// `(room name, error)` for each subscribed room skipped this walk.
+    pub(crate) unreadable: Vec<(String, String)>,
+}
+
+impl BoardHorizon {
+    fn readable_room_names(&self) -> Vec<String> {
+        self.boards.iter().map(|(room, _)| room.name.clone()).collect()
+    }
+
+    /// The truthful "card not found" for this walk — see [`card_not_found_in`].
+    fn not_found(&self, requested: &str) -> CommandError {
+        card_not_found_in(&self.readable_room_names(), &self.unreadable, requested)
+    }
+}
+
+/// One sentence per way a card can fail to be found on the boards a citizen can see,
+/// because they call for different next moves: a read failure means RETRY, an empty
+/// subscription means JOIN the card's room, and a readable miss means the card lives
+/// in a room she has not joined. Folding all three into "no cards exist" (the
+/// resolver's empty-candidate line) sent Kimi looking for a fold bug during an outage.
+fn card_not_found_in(
+    readable_rooms: &[String],
+    unreadable: &[(String, String)],
+    requested: &str,
+) -> CommandError {
+    if !unreadable.is_empty() {
+        let failed = unreadable
+            .iter()
+            .map(|(room, err)| format!("{room} ({err})"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let searched = if readable_rooms.is_empty() {
+            "none".to_string()
+        } else {
+            readable_rooms.join(", ")
+        };
+        return CommandError::Internal(format!(
+            "card {requested}: board read FAILED in {} of {} subscribed room(s) — {failed}; \
+             readable boards searched: {searched}. This is a read failure, not an absence: \
+             the card may be on an unreadable board — retry before concluding it does not exist",
+            unreadable.len(),
+            unreadable.len() + readable_rooms.len(),
+        ));
+    }
+    if readable_rooms.is_empty() {
+        return CommandError::NotFound(format!(
+            "card {requested}: you are subscribed to no rooms, so there is no board to \
+             search — join the room that holds the card and retry"
+        ));
+    }
+    CommandError::NotFound(format!(
+        "card {requested}: not on the board of any room you are in ({}) — it lives in a \
+         room you have not joined",
+        readable_rooms.join(", ")
+    ))
+}
+
+pub(crate) async fn board_horizon(airc: &Arc<Airc>) -> Result<BoardHorizon, airc_lib::AircError> {
+    let set = airc.subscription_set().await?;
+    let mut horizon = BoardHorizon { boards: Vec::new(), unreadable: Vec::new() };
+    for sub in set.all() {
+        let room = sub.as_room();
+        match airc.work_board_in(&room).await {
+            Ok(board) => horizon.boards.push((room, board)),
+            Err(e) => horizon.unreadable.push((room.name, e.to_string())),
+        }
+    }
+    Ok(horizon)
+}
+
+/// The readable half of [`board_horizon`], for walks that only need boards.
 pub(crate) async fn subscribed_boards(
     airc: &Arc<Airc>,
 ) -> Result<Vec<(airc_lib::Room, airc_lib::WorkBoardProjection)>, airc_lib::AircError> {
-    let set = airc.subscription_set().await?;
-    let mut boards = Vec::new();
-    for sub in set.all() {
-        let room = sub.as_room();
-        if let Ok(board) = airc.work_board_in(&room).await {
-            boards.push((room, board));
-        }
-    }
-    Ok(boards)
+    board_horizon(airc).await.map(|h| h.boards)
 }
 
 /// Locate `card_id`'s room, switch the caller's current room there, and retry the
@@ -2977,18 +3056,15 @@ impl WorkGet {
     /// Read only the caller's subscribed boards; a card lookup neither joins a
     /// room nor moves focus. Resolution and content use the same board view.
     async fn read_card(airc: &Arc<Airc>, requested: &str) -> Result<WorkGetResult, CommandError> {
-        let boards = subscribed_boards(airc)
+        let horizon = board_horizon(airc)
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
-        let card_id = resolve_card_id_in_boards(&boards, requested)?;
-        let (room, card) = boards
+        let card_id = resolve_card_id_in_boards(&horizon, requested)?;
+        let (room, card) = horizon
+            .boards
             .iter()
             .find_map(|(room, board)| board.card(card_id).map(|c| (room, c)))
-            .ok_or_else(|| {
-                CommandError::NotFound(format!(
-                    "card {requested} is not on any subscribed room's board"
-                ))
-            })?;
+            .ok_or_else(|| horizon.not_found(requested))?;
         use crate::experience::ledger::LedgerStore as _;
         // Best effort: an unreadable ledger is an absence on the card, never a refusal of
         // the card itself.
@@ -3199,6 +3275,42 @@ impl ServiceModule for WorkModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: card cb4dea0f — a board walk that FAILS (daemon outage) must
+    // not report as "no cards exist". Three empty-horizon shapes, three different next
+    // moves, three distinct sentences: unreadable → a read failure to RETRY (and it is an
+    // Internal error, not a NotFound, so the caller's error class tells the truth too);
+    // no subscriptions → JOIN; readable-but-empty → the card is in a room not joined.
+    // Regression for Kimi's `work/get 31c241e2` during the 2026-09-21 airc update.
+    #[test]
+    fn an_empty_board_walk_says_which_kind_of_empty_it_was() {
+        let rooms = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let outage = card_not_found_in(
+            &rooms(&["academy"]),
+            &[("seed10".to_string(), "daemon socket refused".to_string())],
+            "31c241e2",
+        );
+        let msg = outage.to_string();
+        assert!(matches!(outage, CommandError::Internal(_)), "a read failure is not a NotFound: {msg}");
+        assert!(msg.contains("FAILED in 1 of 2 subscribed room(s)"), "{msg}");
+        assert!(msg.contains("seed10 (daemon socket refused)"), "{msg}");
+        assert!(msg.contains("readable boards searched: academy"), "{msg}");
+        assert!(msg.contains("retry"), "{msg}");
+        assert!(!msg.contains("no cards exist"), "{msg}");
+
+        let unjoined = card_not_found_in(&[], &[], "31c241e2");
+        let msg = unjoined.to_string();
+        assert!(matches!(unjoined, CommandError::NotFound(_)), "{msg}");
+        assert!(msg.contains("subscribed to no rooms"), "{msg}");
+        assert!(msg.contains("join the room"), "{msg}");
+
+        let elsewhere = card_not_found_in(&rooms(&["academy", "continuum"]), &[], "31c241e2");
+        let msg = elsewhere.to_string();
+        assert!(matches!(elsewhere, CommandError::NotFound(_)), "{msg}");
+        assert!(msg.contains("any room you are in (academy, continuum)"), "{msg}");
+        assert!(msg.contains("room you have not joined"), "{msg}");
+    }
 
     // what this catches: the card-transition event NAME is the contract between the
     // emitter (`bridge_wire_work_event`) and every subscriber (SWE grade-on-done, board
