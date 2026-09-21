@@ -1,0 +1,27 @@
+diff --git a/CHANGES b/CHANGES
+index e6888146c..32ce16917 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -19,6 +19,7 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* #7886: autodoc: TypeError is raised on mocking generic-typed classes
+ * #7839: autosummary: cannot handle umlauts in function names
+ * #7865: autosummary: Failed to extract summary line when abbreviations found
+ * #7866: autosummary: Failed to extract correct summary line when docstring
+diff --git a/sphinx/ext/autodoc/mock.py b/sphinx/ext/autodoc/mock.py
+index 98a3a3a96..40258a135 100644
+--- a/sphinx/ext/autodoc/mock.py
++++ b/sphinx/ext/autodoc/mock.py
+@@ -52,8 +52,8 @@ class _MockObject:
+     def __mro_entries__(self, bases: Tuple) -> Tuple:
+         return (self.__class__,)
+ 
+-    def __getitem__(self, key: str) -> "_MockObject":
+-        return _make_subclass(key, self.__display_name__, self.__class__)()
++    def __getitem__(self, key: Any) -> "_MockObject":
++        return _make_subclass(str(key), self.__display_name__, self.__class__)()
+ 
+     def __getattr__(self, key: str) -> "_MockObject":
+         return _make_subclass(key, self.__display_name__, self.__class__)()
