@@ -64,6 +64,11 @@ the existing capture owner, with `replay_of` pointing at the original persona an
 cursor. Inspect `replay_persona_id` through `cognition/playback` for its terminal
 record. `selected` is its submission cursor. The original record is unchanged.
 A missing/integrity-damaged request or unsupported model fails explicitly.
+If the request left its model implicit, replay pins the model named by its captured
+terminal response and records `model_from_response: true` in both provenance and
+the command result. It refuses when neither record identifies the model; it never
+uses today's provider default. An explicit request binding takes precedence over
+a response alias. Kimi's captured requests exercise this implicit-binding case.
 
 This experiment consumes inference capacity. It does not reproduce the previous
 KV cache, backend binary, random state, model weights or grid placement; a model

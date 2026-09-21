@@ -41,6 +41,8 @@ pub struct PromptCall {
 
 #[derive(Debug, Serialize)]
 pub struct ReplaySource {
+    /// Whether replay pinned an implicit model using its recorded terminal response.
+    pub model_from_response: bool,
     pub persona_id: Uuid,
     pub cursor: String,
 }
@@ -106,7 +108,9 @@ impl CaptureLease {
         }
     }
     pub fn cursor(&self) -> Option<&str> {
-        self.token.as_ref().map(|token| token.header.cursor.as_str())
+        self.token
+            .as_ref()
+            .map(|token| token.header.cursor.as_str())
     }
     pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) {
         if let Some(token) = self.token.take() {

@@ -70,6 +70,8 @@ pub struct ReplayRequestResult {
     pub selected: String,
     pub source_persona_id: String,
     pub source_selected: String,
+    /// The submitted model was implicit; replay pins the recorded response model.
+    pub model_from_response: bool,
     pub original_max_tokens: Option<u32>,
     pub replay_max_tokens: Option<u32>,
     pub original: Option<ReplayOutcome>,
@@ -110,15 +112,12 @@ fn prepare(
             "unsupported captured-request schema; replay requires schema 4".into(),
         ));
     }
-    let context_window: Option<u32> = serde_json::from_value(submitted["context_window"].take()) // BOUNDARY: decode the persisted capture header, preserving unknown window as None.
-        .map_err(|e| CommandError::Invalid(format!("captured context window: {e}")))?;
-    let mut request: TextGenerationRequest = serde_json::from_value(submitted["request"].take()) // BOUNDARY: consume the existing on-disk request payload into the adapter's typed input.
-        .map_err(|e| CommandError::Invalid(format!("captured request: {e}")))?;
-    if request.model.as_deref().is_none_or(str::is_empty) {
-        return Err(CommandError::Invalid(
-            "capture has no explicit model; replay cannot substitute one".into(),
-        ));
-    }
+    let context_window: Option<u32> =
+        serde_json::from_value(submitted["context_window"].take()) // BOUNDARY: decode the persisted capture header, preserving unknown window as None.
+            .map_err(|e| CommandError::Invalid(format!("captured context window: {e}")))?;
+    let mut request: TextGenerationRequest =
+        serde_json::from_value(submitted["request"].take()) // BOUNDARY: consume the existing on-disk request payload into the adapter's typed input.
+            .map_err(|e| CommandError::Invalid(format!("captured request: {e}")))?;
     let original = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
         Some(value) if !value.is_null() => {
             let response: TextGenerationResponse = serde_json::from_value(value.take()) // BOUNDARY: decode the persisted terminal response for the original outcome comparison.
@@ -127,6 +126,24 @@ fn prepare(
         }
         _ => None,
     };
+    // An implicit provider default is only reproducible when the terminal receipt
+    // identifies what actually served it. Never substitute today's default.
+    let model_from_response = request.model.as_deref().is_none_or(|m| m.trim().is_empty());
+    if model_from_response {
+        request.model = Some(
+            original
+                .as_ref()
+                .filter(|r| !r.model.trim().is_empty())
+                .ok_or_else(|| {
+                    CommandError::Invalid(
+                        "capture has no request or response model; replay cannot substitute one"
+                            .into(),
+                    )
+                })?
+                .model
+                .clone(),
+        );
+    }
     let original_max_tokens = request.max_tokens;
     if let Some(tokens) = p.max_tokens {
         request.max_tokens = Some(tokens);
@@ -151,6 +168,7 @@ fn prepare(
             cause: "captured-request-replay",
             cause_root: None,
             replay_of: Some(ReplaySource {
+                model_from_response,
                 persona_id: persona,
                 cursor: p.selected.clone(),
             }),
@@ -259,6 +277,7 @@ async fn execute(
                 selected,
                 source_persona_id: source.persona_id.to_string(),
                 source_selected: source.cursor,
+                model_from_response: source.model_from_response,
                 original_max_tokens,
                 replay_max_tokens,
                 original,
@@ -393,6 +412,64 @@ mod tests {
             error: None,
             timing: None,
         };
+        // Actual Kimi captures leave request.model null and report the serving
+        // model only at completion. Replay must pin that receipt and expose it.
+        let mut implicit = read();
+        implicit.submitted.as_mut().expect("submitted")["request"]["model"] =
+            serde_json::Value::Null;
+        implicit.terminal = Some(serde_json::json!({"response": &response}));
+        let implicit_replay = prepare(implicit, &p, persona).expect("observed model binding");
+        assert_eq!(
+            implicit_replay.request.model.as_deref(),
+            Some("captured-model")
+        );
+        assert!(
+            implicit_replay
+                .call
+                .replay_of
+                .as_ref()
+                .expect("provenance")
+                .model_from_response
+        );
+        let implicit_id = implicit_replay.call.persona_id;
+        let implicit_sink =
+            JsonlPromptCaptureSink::open(dir.path(), implicit_id).expect("implicit sink");
+        let implicit_capture = CaptureLease::start(
+            Arc::new(implicit_sink),
+            &implicit_replay.call,
+            &implicit_replay.request,
+        );
+        let implicit_cursor = implicit_capture
+            .cursor()
+            .expect("implicit recorded")
+            .to_string();
+        drop(implicit_capture);
+        let recorded = prompt_capture::detail(dir.path(), implicit_id, &implicit_cursor)
+            .expect("binding record");
+        assert_eq!(
+            recorded.submitted.expect("binding submission")["replay_of"]["model_from_response"],
+            true
+        );
+        let mut unknown = read();
+        unknown.submitted.as_mut().expect("submitted")["request"]["model"] =
+            serde_json::Value::Null;
+        unknown.terminal = Some(serde_json::json!({"response": &response}));
+        unknown.terminal.as_mut().expect("terminal")["response"]["model"] = serde_json::json!(" ");
+        assert!(prepare(unknown, &p, persona).is_err());
+        // A request binding takes precedence over a provider's different spelling.
+        let mut explicit = read();
+        explicit.terminal = Some(serde_json::json!({"response": &response}));
+        explicit.terminal.as_mut().expect("terminal")["response"]["model"] =
+            serde_json::json!("provider-alias");
+        let explicit = prepare(explicit, &p, persona).expect("request binding");
+        assert_eq!(explicit.request.model.as_deref(), Some("captured-model"));
+        assert!(
+            !explicit
+                .call
+                .replay_of
+                .expect("request provenance")
+                .model_from_response
+        );
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let adapter = crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()
             .with_responses(vec![response])
