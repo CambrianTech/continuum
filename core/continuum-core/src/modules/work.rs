@@ -2960,6 +2960,14 @@ pub struct WorkGetParams {
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkGetResult {
     pub id: String,
+    /// The board that supplied this receipt; never the caller's current focus.
+    pub room_id: String,
+    /// Availability uses the same holder projection as work/list.
+    pub claimable: bool,
+    pub lease: Option<String>,
+    pub observed_at_ms: u64,
+    pub claim_expires_at_ms: Option<u64>,
+    pub last_heartbeat_at_ms: Option<u64>,
     pub title: String,
     /// The card's full body — the task's requirements/spec, when authored.
     pub body: Option<String>,
@@ -2996,15 +3004,41 @@ impl WorkGet {
             .read(room, card_id.as_uuid())
             .await
             .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
-        Ok(WorkGetResult {
+        Ok(Self::receipt(
+            room,
+            card,
+            ledger,
+            crate::modules::chat::now_ms(),
+        ))
+    }
+
+    fn receipt(
+        room: &airc_lib::Room,
+        card: &airc_work::WorkCard,
+        ledger: Option<crate::experience::ledger::CardLedger>,
+        now_ms: u64,
+    ) -> WorkGetResult {
+        let holder = crate::persona::card_holder::holder(
+            card,
+            Uuid::nil(),
+            now_ms,
+            &crate::persona::card_holder::NoNames,
+        );
+        WorkGetResult {
             id: short8(card.card_id.as_uuid()),
+            room_id: room.channel.as_uuid().to_string(),
+            claimable: holder.claimable(card.state),
+            lease: holder.lease_word().map(str::to_string),
+            observed_at_ms: now_ms,
+            claim_expires_at_ms: card.claim_expires_at_ms,
+            last_heartbeat_at_ms: card.last_heartbeat_at_ms,
             title: card.title.clone(),
             body: card.body.clone(),
             state: state_str(&card.state).to_string(),
             owner: card.owner.map(|o| short8(o.as_uuid())),
             claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
             ledger,
-        })
+        }
     }
 }
 
@@ -3016,7 +3050,7 @@ impl ActionCommand for WorkGet {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Read one work card in full (read-only): title, body (the task's requirements), state, \
-         owner, claim id. Accepts a full or short id from any room you belong to, without \
+         board room, claimability, lease expiry/heartbeat, owner and claim id. Accepts a full or short id from any room you belong to, without \
          changing your current room. This is how you re-check a spec mid-task.";
     type Params = WorkGetParams;
     type Output = WorkGetResult;
@@ -3674,7 +3708,7 @@ mod tests {
                 .await
                 .expect("a local airc scope opens without a daemon"),
         );
-        airc.join("academy").await.expect("join the academy");
+        let academy = airc.join("academy").await.expect("join the academy");
         let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
         let mut request = CreateWorkCard::new(
             repo.clone(),
@@ -3743,12 +3777,42 @@ mod tests {
                 .expect("read the subscribed card");
             assert_eq!(read.id, prefix);
             assert_eq!(read.title, "serve-time pin match gap");
+            assert_eq!(read.room_id, academy.channel.as_uuid().to_string());
+            assert!(read.claimable);
+            assert!(read.lease.is_none());
             assert_eq!(
                 read.body.as_deref(),
                 Some("Review the serving match against the actual source.")
             );
             assert_eq!(read.state, "open");
         }
+        // Regression: a stale owner must not look like live contention in work/get.
+        // Use the real board shape and the shared projection's clock, not a sleep.
+        let boards = subscribed_boards(&airc).await.expect("subscribed boards");
+        let (room, source) = boards
+            .iter()
+            .find_map(|(r, b)| b.card(card).map(|c| (r, c)))
+            .expect("academy card");
+        let mut claimed = source.clone();
+        claimed.owner = Some(PeerId::new());
+        claimed.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
+        claimed.claim_expires_at_ms = Some(100);
+        claimed.last_heartbeat_at_ms = Some(50);
+        let held = WorkGet::receipt(room, &claimed, None, 99);
+        assert!(!held.claimable);
+        assert_eq!(held.lease.as_deref(), Some("held"));
+        let lapsed = WorkGet::receipt(room, &claimed, None, 101);
+        assert!(lapsed.claimable);
+        assert_eq!(lapsed.lease.as_deref(), Some("expired"));
+        assert_eq!(
+            lapsed.owner, held.owner,
+            "historical owner is preserved, not treated as an active hold"
+        );
+        assert_eq!(lapsed.claim_expires_at_ms, Some(100));
+        assert_eq!(lapsed.last_heartbeat_at_ms, Some(50));
+        assert_eq!(lapsed.observed_at_ms, 101);
+        claimed.state = CardState::Review;
+        assert!(!WorkGet::receipt(room, &claimed, None, 101).claimable);
         for id in [
             local_card.as_uuid().to_string(),
             short8(local_card.as_uuid()),
