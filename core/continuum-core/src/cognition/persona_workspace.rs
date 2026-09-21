@@ -853,6 +853,38 @@ fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
     );
 }
 
+/// What the board says became of a card she believed she held, from the ONE holder
+/// projection the board itself renders (`card_holder`). PURE, so every branch is pinned:
+/// a live lease that is not hers → `HeldBy`; a card past the claimable states → `MovedOn`
+/// (its life advanced, not a lapse); otherwise `Lapsed` — the last lease, whoever's, ran
+/// out and nobody holds it. `owner` is never read as authority: an expired claim still
+/// names its last holder, and that holder may be her.
+pub(crate) fn claim_gone_verdict(
+    card: &airc_lib::WorkCard,
+    now_ms: u64,
+) -> crate::cognition::working_memory::ClaimGone {
+    use crate::cognition::working_memory::ClaimGone;
+    use crate::persona::card_holder::{hold_of, refused_by_claim, Hold};
+    if refused_by_claim(card.state) {
+        return ClaimGone::MovedOn {
+            state: crate::modules::work::state_str(&card.state),
+        };
+    }
+    let expired_at_ms = card.claim_expires_at_ms;
+    match hold_of(card, now_ms) {
+        Hold::Held => match card.owner {
+            Some(peer) => ClaimGone::HeldBy {
+                peer: peer.as_uuid(),
+                expires_at_ms: expired_at_ms,
+            },
+            // A live hold with no owner cannot be rendered by the board either; say
+            // lapsed-and-open rather than invent a holder.
+            None => ClaimGone::Lapsed { expired_at_ms },
+        },
+        Hold::Lapsed | Hold::Unclaimed => ClaimGone::Lapsed { expired_at_ms },
+    }
+}
+
 /// Root her hands at her held card's staged checkout for THIS turn — any turn,
 /// not only the work turn. Freya (2026-09-05) edited a file during a room turn
 /// with her hands at home: her home is a copy of the continuum repo, and the
@@ -876,20 +908,37 @@ pub(crate) async fn root_at_held_card(
     // c8303c32, Kimi 2026-09-21): her hands were rooted at a card when the snapshot was
     // written; if the board no longer lists it among her holds, she is told NOW — in her
     // window, before she resumes as its holder — instead of by a submit refusal hours on.
-    // Taken once: the notice is pinned for two turns and never repeated.
+    // The verdict is the board's, through the SAME holder projection the board renders
+    // (`card_holder`), never an owner field read as authority (Astra on #4315: an expired
+    // claim still names its last holder). The belief is consumed only once the board has
+    // ANSWERED; a card no board she stands in shows is UNKNOWN — said as such, and asked
+    // again next turn — never "nobody holds it".
     if let Some(body) = cycle.acting() {
-        if let Some(believed) = body.working_memory.take_restored_acting_card() {
-            if !held.iter().any(|c| c.card_id.as_uuid() == believed) {
-                let (holder, expired_at) = match citizen.card(believed).await {
-                    Some(card) => (card.owner.map(|o| o.as_uuid()), card.claim_expires_at_ms),
-                    None => (None, None),
+        if let Some(believed) = body.working_memory.peek_restored_acting_card() {
+            if held.iter().any(|c| c.card_id.as_uuid() == believed) {
+                // The board agrees with the checkpoint: nothing to say, nothing to keep.
+                body.working_memory.take_restored_acting_card();
+            } else {
+                let verdict = match citizen.card(believed).await {
+                    Some(card) => Some(claim_gone_verdict(&card, crate::modules::chat::now_ms())),
+                    None => None,
                 };
-                body.working_memory.note_claim_gone(believed, holder, expired_at);
+                match verdict {
+                    Some(v) => {
+                        body.working_memory.take_restored_acting_card();
+                        body.working_memory.note_claim_gone(believed, v);
+                    }
+                    // No evidence: say so, keep the belief, ask the board again next turn.
+                    None => body.working_memory.note_claim_gone(
+                        believed,
+                        crate::cognition::working_memory::ClaimGone::Unknown,
+                    ),
+                }
                 crate::probe!(
                     class = "persona.claim.gone_on_wake",
                     peer = %peer_id,
                     card = %believed,
-                    holder = %holder.map(|h| h.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only, "" = nobody
+                    verdict = ?verdict,
                     "her checkpoint rooted her at a card the board no longer counts as hers — told in her window on the first held-card read"
                 );
             }
@@ -1705,6 +1754,60 @@ mod tests {
 
     use tokio::sync::{watch, Notify};
     use tokio::time::timeout;
+
+    // what this catches (Astra's block on #4315): the wake's verdict must come from the
+    // board's holder projection, never from `owner` read as authority. An EXPIRED claim
+    // still names its last holder — which may be HER — so "X took it" from `owner` would
+    // tell Kimi that Kimi took her own card; a card in Review is absent from her live
+    // claims because its life advanced, not because a lease lapsed. Each branch pinned at
+    // a fixed clock.
+    #[test]
+    fn the_wakes_verdict_is_the_boards_never_the_owner_fields() {
+        use crate::cognition::working_memory::ClaimGone;
+        use airc_core::PeerId;
+        use airc_work::{CardState, Priority, RepoId, WorkCard, WorkCardId};
+        let now = 1_000_000u64;
+        let card = |owner: Option<PeerId>, claimed: bool, expires: Option<u64>, state: CardState| WorkCard {
+            card_id: WorkCardId::new(),
+            repo: RepoId::new("CambrianTech/continuum").expect("valid repo id in fixture"),
+            title: "a card".to_string(),
+            body: None,
+            priority: Priority::P2,
+            lane_id: None,
+            state,
+            owner,
+            claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(Uuid::new_v4())),
+            claim_expires_at_ms: expires,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: PeerId::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
+        };
+        let her = PeerId::new();
+        let peer = PeerId::new();
+        // Her own EXPIRED claim: the owner field still says her — the verdict must be Lapsed,
+        // never "her took it".
+        let lapsed_self = card(Some(her), true, Some(now - 1), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&lapsed_self, now), ClaimGone::Lapsed { expired_at_ms: Some(now - 1) });
+        // A peer's LIVE lease: held by them, with the edge.
+        let held = card(Some(peer), true, Some(now + 60_000), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&held, now), ClaimGone::HeldBy { peer: peer.as_uuid(), expires_at_ms: Some(now + 60_000) });
+        // A peer's EXPIRED lease: lapsed and open, the peer is not named as holder.
+        let lapsed_peer = card(Some(peer), true, Some(now - 1), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&lapsed_peer, now), ClaimGone::Lapsed { expired_at_ms: Some(now - 1) });
+        // Review / Merged / Closed: the card moved on — whatever the lease fields say.
+        for state in [CardState::Review, CardState::Merged, CardState::Closed] {
+            let moved = card(Some(her), true, Some(now + 60_000), state);
+            assert!(matches!(claim_gone_verdict(&moved, now), ClaimGone::MovedOn { .. }), "{state:?}");
+        }
+        // Unclaimed and open: lapsed-and-open is the honest word for "nobody holds it".
+        let open = card(None, false, None, CardState::Open);
+        assert_eq!(claim_gone_verdict(&open, now), ClaimGone::Lapsed { expired_at_ms: None });
+    }
 
     // Uses the real persisted schema and WorkingMemory writer, not a second
     // checkpoint model. Explicit legacy root belongs to each temporary fixture.

@@ -330,6 +330,23 @@ pub enum WmKind {
 /// at shutdown / on tick write-through, restored at spawn. Deliberately
 /// EXCLUDES engrams (already durable in sqlite) and dispatched handles (the
 /// checkpoint cannot establish whether their operations are still in flight).
+/// What the BOARD says became of a card her checkpoint believed she held — the input to
+/// [`WorkingMemory::note_claim_gone`], decided by the caller from the holder projection
+/// (`card_holder`), never from an owner field alone (Astra on #4315: an expired claim
+/// still names its last holder, so `owner` is history, not authority; and a card the
+/// caller cannot see is UNKNOWN, not vacant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimGone {
+    /// A live lease on it, someone else's.
+    HeldBy { peer: uuid::Uuid, expires_at_ms: Option<u64> },
+    /// The last lease (hers or anyone's) expired and nobody holds it; open to claim.
+    Lapsed { expired_at_ms: Option<u64> },
+    /// The card left the claimable states (Review / Merged / Closed) — its life advanced.
+    MovedOn { state: &'static str },
+    /// No board she stands in shows the card; nothing may be inferred.
+    Unknown,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VolatileSnapshot {
     pub entries: Vec<WmEntry>,
@@ -979,32 +996,52 @@ impl WorkingMemory {
         self.restored_acting_card.lock().take()
     }
 
+    /// The same belief WITHOUT consuming it — for a read that could not reach a verdict
+    /// (the board did not show the card) and must ask again next turn. Consumed only by
+    /// [`Self::take_restored_acting_card`] once the board has answered.
+    pub fn peek_restored_acting_card(&self) -> Option<uuid::Uuid> {
+        *self.restored_acting_card.lock()
+    }
+
     /// THE EVENT KIMI ASKED FOR FIRST (card c8303c32, 2026-09-21): her checkpoint restored
-    /// a workspace rooted at a card, and the board says the card is no longer hers. Until
+    /// a workspace rooted at a card, and the board no longer counts the card as hers. Until
     /// now the only signal was a submit refusal, hours later — "a checkpoint can restore me
     /// with a workspace and no claim, and right now nothing tells me those two disagree."
     /// A fact into her window, pinned for two turns like `[released]`: the wake's turn and
-    /// the one that decides what to pull. `holder` is the board's word on who has it now
-    /// (`None` = nobody: lapsed and open, `work/claim` takes it back); `expired_at_ms` is
-    /// the lease edge if the board still carries it.
-    pub fn note_claim_gone(&self, card: uuid::Uuid, holder: Option<uuid::Uuid>, expired_at_ms: Option<u64>) {
+    /// the one that decides what to pull. The verdict is the BOARD'S (see [`ClaimGone`]),
+    /// never inferred from an owner field — an expired claim still names its last holder,
+    /// and a card in Review is absent from her live claims for a reason that is not a lapse.
+    pub fn note_claim_gone(&self, card: uuid::Uuid, verdict: ClaimGone) {
         let id8: String = card.simple().to_string().chars().take(8).collect();
-        let when = expired_at_ms
-            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
-            .map(|t| format!(" (lease edge {}Z)", t.format("%H:%M")))
-            .unwrap_or_default();
-        let text = match holder {
-            Some(who) => format!(
-                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed{when} \
-                 and {} took it. Your checkout and your patch are untouched. Do not resume as its \
-                 holder — work/get {card} shows its state; take it back with work/claim only when it \
-                 reads claimable.",
-                who.simple().to_string().chars().take(8).collect::<String>()
+        let edge = |ms: Option<u64>| {
+            ms.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+                .map(|t| format!(" (lease edge {}Z)", t.format("%H:%M")))
+                .unwrap_or_default()
+        };
+        let untouched = "Your checkout and your patch are untouched.";
+        let text = match verdict {
+            ClaimGone::HeldBy { peer, expires_at_ms } => format!(
+                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed and \
+                 {} took it{}. {untouched} Do not resume as its holder — work/get {card} shows \
+                 its state; take it back with work/claim only when it reads claimable.",
+                peer.simple().to_string().chars().take(8).collect::<String>(),
+                edge(expires_at_ms),
             ),
-            None => format!(
-                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed{when} \
-                 and nobody holds it. Your checkout and your patch are untouched — work/claim {card} \
-                 takes it back, then continue from your ledger."
+            ClaimGone::Lapsed { expired_at_ms } => format!(
+                "[claim] card {id8} is NO LONGER YOURS: while you were away your lease lapsed{} \
+                 and nobody holds it. {untouched} work/claim {card} takes it back, then continue \
+                 from your ledger.",
+                edge(expired_at_ms),
+            ),
+            ClaimGone::MovedOn { state } => format!(
+                "[claim] card {id8} is no longer in your hands because it moved to {state} while \
+                 you were away — that is the card's life advancing, not a lapse. {untouched} \
+                 Nothing to re-claim; work/get {card} shows where it stands."
+            ),
+            ClaimGone::Unknown => format!(
+                "[claim] your checkpoint had you working card {id8}, but no board you stand in \
+                 shows it now, so nothing can be said about who holds it. {untouched} \
+                 work/get {card} before assuming it is yours or free."
             ),
         };
         self.pin_fact_for_turns("claim", &text, 2);
@@ -2819,46 +2856,58 @@ mod tests {
         );
     }
 
-    // what this catches (card c8303c32, Kimi 2026-09-21): a checkpoint that rooted her at
-    // a card is restored, the board no longer counts the card as hers, and the only signal
-    // used to be a submit refusal hours later. The wake carries the believed card ONCE
-    // (`take` is consumed), and the notice names the holder — or that nobody holds it and
-    // `work/claim` takes it back — pinned for two work turns like [released], then gone.
-    // Both directions: a snapshot rooted nowhere carries nothing to compare.
+    // what this catches (card c8303c32, Kimi 2026-09-21; Astra's block on #4315): a checkpoint
+    // that rooted her at a card is restored and the board no longer counts the card as hers.
+    // The wake carries the believed card until the board ANSWERS (peek does not consume; take
+    // does), and the notice says what the board said — held by a peer, lapsed and open,
+    // moved on to Review/Merged/Closed, or UNKNOWN because no board she stands in shows it —
+    // never "nobody holds it" from missing visibility, never "X took it" for an expired
+    // owner field that is merely history. Two work turns, then gone.
     #[test]
-    fn a_claim_gone_while_she_slept_is_said_once_on_the_wake_and_names_the_way_back() {
+    fn a_claim_gone_while_she_slept_is_said_from_the_boards_verdict_and_unknown_is_not_vacant() {
         let believed = uuid::Uuid::new_v4();
         let wm = WorkingMemory::new(3);
         let mut snap = wm.snapshot();
         snap.acting_card = Some(believed);
         let woke = WorkingMemory::new(3);
         woke.restore(snap);
-        assert_eq!(woke.take_restored_acting_card(), Some(believed), "the wake reads what the checkpoint believed");
+        assert_eq!(woke.peek_restored_acting_card(), Some(believed), "peek keeps the belief for a read with no verdict");
+        assert_eq!(woke.peek_restored_acting_card(), Some(believed));
+        assert_eq!(woke.take_restored_acting_card(), Some(believed), "take consumes it once the board answered");
         assert_eq!(woke.take_restored_acting_card(), None, "and only once");
 
-        // Re-granted to a peer: told who has it, told not to resume as holder.
         let peer = uuid::Uuid::new_v4();
-        woke.note_claim_gone(believed, Some(peer), Some(1_790_000_000_000));
-        let facts = woke.pinned_facts().join("\n");
-        assert!(facts.contains("[claim]") && facts.contains("NO LONGER YOURS"), "{facts}");
-        assert!(facts.contains(&peer.simple().to_string()[..8]), "names the holder: {facts}");
-        assert!(facts.contains("lease edge"), "carries the lease edge when the board has it: {facts}");
-        assert!(facts.contains("work/claim only when it reads claimable"), "{facts}");
-        // Lapsed and open: told nobody holds it and that work/claim takes it back.
-        woke.note_claim_gone(believed, None, None);
-        let facts = woke.pinned_facts().join("\n");
-        assert!(facts.contains("nobody holds it") && facts.contains(&format!("work/claim {believed}")), "{facts}");
-        assert!(!facts.contains("lease edge"), "no edge invented when the board has none: {facts}");
+        let facts = |wm: &WorkingMemory| wm.pinned_facts().join("\n");
+
+        woke.note_claim_gone(believed, ClaimGone::HeldBy { peer, expires_at_ms: Some(1_790_000_000_000) });
+        let f = facts(&woke);
+        assert!(f.contains("NO LONGER YOURS") && f.contains(&peer.simple().to_string()[..8]) && f.contains("lease edge"), "{f}");
+        assert!(f.contains("only when it reads claimable") && f.contains("untouched"), "{f}");
+
+        woke.note_claim_gone(believed, ClaimGone::Lapsed { expired_at_ms: None });
+        let f = facts(&woke);
+        assert!(f.contains("nobody holds it") && f.contains(&format!("work/claim {believed}")), "{f}");
+        assert!(!f.contains("lease edge"), "no edge invented: {f}");
+
+        woke.note_claim_gone(believed, ClaimGone::MovedOn { state: "review" });
+        let f = facts(&woke);
+        assert!(f.contains("moved to review") && f.contains("not a lapse") && !f.contains("work/claim"), "{f}");
+
+        woke.note_claim_gone(believed, ClaimGone::Unknown);
+        let f = facts(&woke);
+        assert!(f.contains("no board you stand in shows it") && f.contains("before assuming"), "{f}");
+        assert!(!f.contains("nobody holds it") && !f.contains("took it"), "unknown is not vacant and names no thief: {f}");
+
         // Two work turns, then gone — the wake's turn and the one that decides the pull.
         woke.end_of_work_turn();
-        assert!(woke.pinned_facts().join("\n").contains("[claim]"), "still there for the pull decision");
+        assert!(facts(&woke).contains("[claim]"), "still there for the pull decision");
         woke.end_of_work_turn();
-        assert!(!woke.pinned_facts().join("\n").contains("[claim]"), "and not a standing condition");
+        assert!(!facts(&woke).contains("[claim]"), "and not a standing condition");
 
         // A snapshot rooted nowhere has nothing to compare.
         let home = WorkingMemory::new(3);
         home.restore(WorkingMemory::new(3).snapshot());
-        assert_eq!(home.take_restored_acting_card(), None);
+        assert_eq!(home.peek_restored_acting_card(), None);
     }
 
     // what this catches: a rooting fact aging out of the three-deep window mid-turn.
