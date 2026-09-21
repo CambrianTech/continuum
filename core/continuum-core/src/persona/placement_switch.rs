@@ -128,7 +128,7 @@ pub(crate) fn opportunity_cooldown_ms(shape: Option<crate::cognition::resource_a
 /// off-box, so she comes home at once — no cooldown, no beacon read — and the durable
 /// record that named the seat is retired so the next boot does not repeat it.
 pub const SEAT_STARVES_REASON: &str = "seat window below her turn: a lane that cannot serve is no seat";
-pub const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
+pub(crate) const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -179,7 +179,7 @@ pub struct PlacementInputs {
 /// naming the requirement it missed. `None` is honest: an unpublished width, or a mind
 /// whose turn has not been measured yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct SeatFit {
+pub(crate) struct SeatFit {
     /// The seat's per-slot window as ITS beacon published it — never this node's plan for it.
     pub window: Option<u32>,
     /// What her turn needs of a lane, measured.
@@ -211,7 +211,7 @@ pub enum PlacementMove {
 /// Unknown width (an older core's beacon, or a seat that has never published one) is NOT
 /// a refusal — an absence is not a number, and [`crate::cognition::serving_plan::persona_lane_holds`]
 /// already answers the unmeasured-requirement case with the serve floor. Pure.
-pub fn seat_starves(seat_window: Option<u32>, requirement: Option<u32>) -> bool {
+pub(crate) fn seat_starves(seat_window: Option<u32>, requirement: Option<u32>) -> bool {
     seat_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, requirement))
 }
 
@@ -585,7 +585,7 @@ impl PlacementSwitch {
 
     /// Apply one decided move. Returns the org-room line for a move, `None` for Stay/Park
     /// (Park is a probe only — it repeats every tick and would flood the room).
-    pub async fn apply(&self, mv: &PlacementMove, now_ms: u64, fit: SeatFit) -> Option<String> {
+    pub(crate) async fn apply(&self, mv: &PlacementMove, now_ms: u64, fit: SeatFit) -> Option<String> {
         match mv {
             PlacementMove::Stay => None,
             PlacementMove::Park { reason } => {
