@@ -183,6 +183,20 @@ impl DiskReporter for TrackedDir {
     }
 }
 
+/// Every cache class that is a cargo target tree, and therefore takes the shared
+/// [`super::CargoTargetPool`] owner.
+///
+/// ONE list, TWO consumers: the boot registration loop (`ipc/mod.rs`) walks it to give each
+/// class a pool, and `every_cargo_target_class_has_an_owner` asserts no tracked class
+/// matching this shape is missing from it. Before this existed the loop held its own
+/// literal array, so a new cargo tree could be given a row and still reach production with
+/// no pool — which is how `cargo-target-airc` came to hold 9.8 GB that was tracked by
+/// nobody and evicted by nobody (2026-09-21, the M5 at 97%).
+///
+/// Adding a fourth tree means adding it here; both consumers then follow, and the test
+/// fails until it does.
+pub const CARGO_TARGET_CLASSES: [&str; 3] = ["cargo-target", "cargo-target-wt", "cargo-target-airc"];
+
 /// The substrate's known cache classes, rooted under `home` (normally the
 /// user's home directory). These are exactly the directories that produced
 /// the 2026-07-13 creep, each of which needs an eviction owner (wire 2):
@@ -247,6 +261,21 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // writes unbounded data into gets a TrackedDir row and an eviction decision, and
         // hand-sweeping it is exactly the compensation the law exists to end.
         TrackedDir::new("cargo-target-wt", home.join(".continuum/cache/cargo-target-wt")),
+        // THE THIRD CARGO TREE, unregistered until now (2026-09-21, the M5 at 97%: this
+        // directory held 9.8 GB that no reporter could see and no pool could evict). The
+        // airc build gets its own target dir for the same reason worktree builds do —
+        // sharing one target across differently-configured builds is what card d2cda466
+        // was — and the row was simply never added when it appeared. Identical class to
+        // its two siblings: derived artifacts, re-creatable by definition, so it takes
+        // the SAME `CargoTargetPool` owner by being named in the registration loop
+        // (`ipc/mod.rs`) rather than getting a second pool type.
+        //
+        // This is the 2026-07-13 law's own failure mode repeating: `cargo-target-wt`
+        // reached 87 GB unseen because it had no row, the law was written, and then the
+        // next cargo tree to appear went unregistered anyway. A row is not remembered by
+        // a doc; it is remembered by the class-coverage test below refusing an unlisted
+        // class, which is why this lands with its eviction entry in the same change.
+        TrackedDir::new("cargo-target-airc", home.join(".continuum/cache/cargo-target-airc")),
         // The eye's browser profiles. Playwright defaults them into the OS temp dir,
         // where nothing of ours can see or evict them: 337 leaked profiles from 31
         // orphaned browsers accumulated there over a week (card de9b8876). A directory
@@ -512,6 +541,50 @@ impl Daemon for DiskUsageScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-21, the M5 at 97% full): a cargo target tree that has a
+    // TrackedDir row but no eviction owner, because the boot registration loop held its
+    // OWN literal list of classes and nobody updated both places. `cargo-target-airc`
+    // held 9.8 GB that no reporter could see and no pool could evict — the same failure
+    // `cargo-target-wt` had at 87 GB, repeating after the law against it was written,
+    // because a law lives in a doc and this lives in a test.
+    //
+    // The invariant: every tracked class that IS a cargo target tree appears in
+    // `CARGO_TARGET_CLASSES`, which `ipc/mod.rs` walks to hand each one a
+    // `CargoTargetPool`. Add a fourth tree's row without adding it here and this fails.
+    //
+    // Mutation check: dropping "cargo-target-airc" from the const fails the first assert.
+    #[test]
+    fn every_cargo_target_class_has_an_owner() {
+        let dirs = standard_tracked_dirs(std::path::Path::new("/h"));
+        let tracked_cargo: Vec<&str> = dirs
+            .iter()
+            .map(|d| d.class())
+            .filter(|c| c.starts_with("cargo-target"))
+            .collect();
+
+        for class in tracked_cargo {
+            assert!(
+                CARGO_TARGET_CLASSES.contains(&class),
+                "tracked class {class:?} is a cargo target tree with no entry in \
+                 CARGO_TARGET_CLASSES — it has a row (so the scanner sees it) but the boot \
+                 loop in ipc/mod.rs never hands it a CargoTargetPool, so nothing evicts it. \
+                 Add it to the const; both consumers then follow."
+            );
+        }
+
+        // ...and the const names nothing that is not actually tracked, so a stale entry
+        // cannot sit there implying an owner for a class that no longer exists.
+        let tracked: Vec<&str> = dirs.iter().map(|d| d.class()).collect();
+        for class in CARGO_TARGET_CLASSES {
+            assert!(
+                tracked.contains(&class),
+                "CARGO_TARGET_CLASSES names {class:?}, which standard_tracked_dirs does not \
+                 track — the boot loop will look it up, find nothing, and silently register \
+                 no pool at all."
+            );
+        }
+    }
 
     // what this catches: the hf-hub class tracking a path the artifacts are NOT at. It hardcoded
     // `home/.cache/huggingface` while the cold-storage installer relocates HF_HOME — measured on

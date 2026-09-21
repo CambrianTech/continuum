@@ -39,6 +39,7 @@ pub use disk_pressure::{
 };
 pub use disk_reporters::{
     install_tracked_dirs, standard_tracked_dirs, tracked_dir, DiskUsageScanner, TrackedDir,
+    CARGO_TARGET_CLASSES,
 };
 pub use memory_pressure::{
     current_available_bytes, is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot,

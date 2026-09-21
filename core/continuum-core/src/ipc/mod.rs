@@ -1513,7 +1513,7 @@ pub fn start_server(
         // resolve keeps the floor — never a guess, never zero.
         use crate::capacity::system_profile::detect_drives;
         let drives = detect_drives();
-        for class in ["cargo-target", "cargo-target-wt"] {
+        for class in crate::system_resources::CARGO_TARGET_CLASSES {
             if let Some(cargo_dir) = crate::system_resources::tracked_dir(class) {
                 // Resolved per class: the two caches can live on different volumes
                 // (an operator who moves worktree builds to a second drive is exactly
