@@ -182,12 +182,26 @@ const FIRST_ATTACH_PAGE: u32 = 32;
 /// correctness, coalesce the deep backlog into one summary frame so history
 /// never floods the bus, the personas, or the CPU — but keep one page of
 /// recent tail so the room isn't a void on join.
+///
+/// BOTH arms ASK for the daemon's cursor heartbeat. This consumer persists its
+/// watermark and (per the WATERMARK DISCIPLINE below) the heartbeat is its SOLE
+/// advance source — airc #1417 made that frame opt-in per attach to end the WARN
+/// floods on airc-lib's subscribe streams (cards c5466b56 / e28889cc), and this
+/// request never opted in. From that afternoon (2026-09-14 16:27) every cursor
+/// file under `~/.continuum/state/` froze, and every core boot on every node
+/// resumed each room from a week-old watermark: 7,700 events of the fleet room
+/// replayed in three minutes on the IntelMac at 18:15Z on 2026-09-21, feeding the
+/// bus, the chat projection and the capacity ledger (whose fold then judged three
+/// nodes "behind" from beacons published days earlier). Card ac4bca50.
 fn attach_request_for_cursor(channel: RoomId, cursor: Option<IpcCursor>) -> AttachRequest {
     match cursor {
-        Some(cursor) => AttachRequest::new(channel, AttachStart::After(cursor)),
+        Some(cursor) => {
+            AttachRequest::new(channel, AttachStart::After(cursor)).with_cursor_heartbeat()
+        }
         None => AttachRequest::new(channel, AttachStart::FromTranscriptStart)
             .with_coalesced_backlog()
-            .with_backlog_tail(FIRST_ATTACH_PAGE),
+            .with_backlog_tail(FIRST_ATTACH_PAGE)
+            .with_cursor_heartbeat(),
     }
 }
 
@@ -582,6 +596,29 @@ mod tests {
         assert!(
             !resumed.coalesces_backlog(),
             "gap replay after a watermark feeds the transcript writer — never coalesced"
+        );
+    }
+
+    // what this catches (card ac4bca50): the persisted watermark advances ONLY on the
+    // daemon's `AttachCursorAdvanced` heartbeat, and airc #1417 made that frame opt-in
+    // per attach. A request that does not ask never advances its cursor, so every boot
+    // resumes from the last cursor ever written — a week of every room replayed into
+    // perception and the capacity ledger on the IntelMac, 2026-09-21. Both arms must ask.
+    #[test]
+    fn every_attach_asks_for_the_cursor_heartbeat_it_persists() {
+        let channel = RoomId::from_u128(7);
+        assert!(
+            attach_request_for_cursor(channel, None).wants_cursor_heartbeat(),
+            "first attach: the seam summary advances once; the heartbeat keeps it moving"
+        );
+        let cursor = IpcCursor {
+            epoch: 3,
+            counter: 42,
+            event_id: EventId::from_u128(9),
+        };
+        assert!(
+            attach_request_for_cursor(channel, Some(cursor)).wants_cursor_heartbeat(),
+            "resume: no coalesced seam, so the heartbeat is the ONLY advance source"
         );
     }
 

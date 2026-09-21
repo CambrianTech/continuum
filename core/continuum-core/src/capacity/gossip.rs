@@ -204,12 +204,31 @@ pub fn heard_notify() -> &'static tokio::sync::Notify {
     NOTIFY.get_or_init(tokio::sync::Notify::new)
 }
 
+/// Is `incoming_at_ms` a sender-stamped reading OLDER than the `held_at_ms` already
+/// folded for the same peer? Pure, so the rule is pinned: equal is not older (a re-sent
+/// frame is harmless), and an unstamped side (0) is never judged.
+pub(crate) fn replays_an_older_reading(held_at_ms: u64, incoming_at_ms: u64) -> bool {
+    held_at_ms != 0 && incoming_at_ms != 0 && incoming_at_ms < held_at_ms
+}
+
 impl GridCapacityLedger {
     /// Fold one heard offer in (latest per peer wins — capacity is a live reading).
     /// `from_peer` is the transcript event's transport identity, never payload-declared.
     /// Returns `true` when this peer is NEW to the ledger (first offer heard) — the
     /// probe-on-join surface; steady re-offers stay silent.
+    ///
+    /// A ROW NEVER MOVES BACKWARDS: an offer the sender stamped EARLIER than the one
+    /// already held for that peer is a replay (a daemon attach streaming a gap, card
+    /// ac4bca50: a week of the fleet room in three minutes, every frame stamped
+    /// heard-now), not a reading — it is dropped. The comparison is the sender's clock
+    /// against the sender's own clock, so receiver skew never enters; a beacon that
+    /// carries no `at_ms` (0, an older core) cannot be ordered and is folded as before.
     pub fn hear(&self, from_peer: Uuid, offer: CapacityOffer, heard_at_ms: u64) -> bool {
+        if let Some(held) = self.heard.get(&from_peer) {
+            if replays_an_older_reading(held.offer.at_ms, offer.at_ms) {
+                return false;
+            }
+        }
         let is_new = self
             .heard
             .insert(from_peer, HeardOffer { offer, heard_at_ms })
@@ -513,5 +532,37 @@ mod tests {
             RosterHeard::default(),
             "once every peer is silent past the window, nobody is elsewhere"
         );
+    }
+
+    // what this catches (card ac4bca50, 2026-09-21 18:16Z): a daemon attach replaying a
+    // week of the fleet room delivered beacons the senders stamped DAYS ago, each heard
+    // "now"; the fold then said three nodes "run build #5446 — behind; reboot there"
+    // from readings they had long since replaced. A row never moves backwards on the
+    // sender's own clock; a re-sent frame (equal stamp) and an unstamped one (0) fold.
+    #[test]
+    fn a_replayed_older_reading_never_overwrites_a_fresher_row() {
+        let ledger = GridCapacityLedger::default();
+        let peer = Uuid::from_u128(11);
+        let now = 1_790_000_000_000u64;
+        let mut fresh = offer(16, now);
+        fresh.build_number = 5571;
+        assert!(ledger.hear(peer, fresh, now), "first reading is new");
+        let mut replayed = offer(1, now - 3 * 24 * 3600 * 1000);
+        replayed.build_number = 5446;
+        assert!(!ledger.hear(peer, replayed, now + 1), "older stamp: dropped");
+        let held = ledger.heard_offers().into_iter().find(|(p, _)| *p == peer).unwrap().1;
+        assert_eq!((held.build_number, held.gpu_free_bytes_live), (5571, 16 * GB));
+        // Equal stamp (a re-sent frame) and an unstamped older core both fold.
+        let mut resent = offer(8, now);
+        resent.build_number = 5571;
+        ledger.hear(peer, resent, now + 2);
+        let mut unstamped = offer(4, 0);
+        unstamped.build_number = 5572;
+        ledger.hear(peer, unstamped, now + 3);
+        let held = ledger.heard_offers().into_iter().find(|(p, _)| *p == peer).unwrap().1;
+        assert_eq!(held.build_number, 5572, "an unstamped beacon cannot be ordered: not refused");
+        assert!(!replays_an_older_reading(0, 5) && !replays_an_older_reading(5, 0));
+        assert!(!replays_an_older_reading(5, 5));
+        assert!(replays_an_older_reading(6, 5));
     }
 }
