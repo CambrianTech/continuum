@@ -2173,6 +2173,63 @@ mod tests {
         assert!(lane_wait_bound(1, 0, 120_000, 5).is_some());
     }
 
+    // what this catches (card ebce2ba0 — the measured families, one to one): the queue's
+    // estimate is a FLOOR under the mind's own measured turn, never a ceiling over it.
+    //
+    // The M5 2026-09-20 logged `delib.gate.lane_wait bound_secs=165 lane_hold_p50_ms=82918
+    // queue_ahead=0 lanes_serving=2` SIX times, and six generations died with the capture
+    // reading "request future dropped before a terminal response" at 165,843 / 165,844 /
+    // 165,845 / 165,856 / 165,917 / 165,982 ms — each within milliseconds of that bound,
+    // each first in line, none having reached the model. The same derivation at a later
+    // p50 gave the ~412 s (four) and ~485 s (two) families, and 60,009 ms is the floor
+    // itself. A median over TWO recorded lane holds decided how long a mind waits while
+    // the lanes were actually holding four to seven minutes.
+    #[test]
+    fn the_queues_estimate_is_a_floor_under_her_own_measured_turn_never_a_ceiling() {
+        use crate::inference::turn_bound::{effective_bound, effective_bound_with_source, from_expectation, BoundSource};
+        use std::time::Duration;
+        // The exact row: p50 82,918 ms over 2 samples, nobody ahead, 2 lanes serving.
+        let queue = lane_wait_bound(0, 2, 82_918, 2).expect("measured");
+        assert_eq!(queue, Duration::from_millis(165_836), "the 165 s the six minds waited");
+        // A mind whose own turns measure ~7 minutes on this box may not be told a lane is
+        // hopeless in 165 s. Her bound is her expectation with headroom, and it wins.
+        let hers = from_expectation(Some(Duration::from_secs(424))).expect("a measured turn");
+        let (bound, source) = effective_bound_with_source(queue, Some(hers));
+        assert_eq!(source, BoundSource::TurnBound);
+        assert_eq!(bound, hers);
+        assert!(bound > queue, "the measured turn RAISES the wait; 165 s killed healthy work");
+        // AND `LANE_WAIT_CEILING` has stopped being a ceiling on the WAIT. It still
+        // clamps the QUEUE's own estimate (a queue estimate past ten minutes is a starve,
+        // not a queue) — `lane_wait_bound(7, 1, 300_000, 30)` computes 4,800 s and returns
+        // the 600 s ceiling — but her measured turn rides ABOVE that clamp, which is the
+        // whole point: a constant may raise a wait and may never shorten one.
+        let clamped = lane_wait_bound(7, 1, 300_000, 30).expect("measured");
+        assert_eq!(clamped, LANE_WAIT_CEILING, "the queue's estimate is still clamped");
+        assert_eq!(
+            effective_bound(clamped, Some(hers)),
+            hers,
+            "her 848 s turn is NOT capped by the 600 s ceiling — the constant is a floor"
+        );
+        // …and the queue keeps its own number whenever IT is the larger of the two: a
+        // mind with a one-minute turn on a queue two rounds deep waits the queue's 480 s.
+        let deep = lane_wait_bound(3, 2, 120_000, 12).expect("measured");
+        let short = from_expectation(Some(Duration::from_secs(60))).expect("a measured turn");
+        assert_eq!(deep, Duration::from_secs(480));
+        assert_eq!(effective_bound(deep, Some(short)), deep, "the larger of the two, always");
+        // No measured turn (her first, or an unmeasured box) → the queue governs alone,
+        // exactly as before this change.
+        assert_eq!(effective_bound(queue, None), queue);
+        assert_eq!(effective_bound(queue, from_expectation(None)), queue);
+        // THE COMPOSITION INVARIANT the flat ceiling used to carry: the gate must still
+        // trip before the ACT does, now that both are derived. The act covers two turn
+        // bounds, the gate one — so the gate trips first at every measured rate.
+        let (act, _) = crate::inference::turn_bound::act_bound_with_source(
+            crate::cognition::act_observe::TICK_DEADLINE,
+            Some(Duration::from_secs(424)),
+        );
+        assert!(act > bound, "the act must outlast the lane wait it contains");
+    }
+
     // what this catches (the M5, 2026-09-20; Cormac's design word): the reserve is a WAIT
     // guarantee in seconds. A work call is lent the reserved lane only when its occupancy
     // is known and fits the directed budget and nothing directed is pending; an unknown

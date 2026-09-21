@@ -110,6 +110,25 @@ impl CaptureLease {
             );
         }
     }
+    /// ABANDONED BEFORE DISPATCH, SAID BY NAME (card ebce2ba0). A call the substrate
+    /// gave up on at an admission gate — it never reached the model — is still a
+    /// `Cancelled` row, but with a reason instead of the `Drop` impl's generic
+    /// "request future dropped before a terminal response". Those two strings carried
+    /// the SAME meaning for eighteen of fifty generations on the M5 (2026-09-20), so a
+    /// reader could not tell a mind starved at the serving gate from a generation the
+    /// model was still producing when its awaiting side walked away. Naming the seam is
+    /// the whole difference.
+    pub fn abandon(&mut self, reason: &str) {
+        if let Some(token) = self.token.take() {
+            self.sink.terminal(
+                &token,
+                CallStatus::Cancelled,
+                None,
+                Some(reason),
+                self.started.elapsed().as_millis() as u64,
+            );
+        }
+    }
 }
 impl Drop for CaptureLease {
     fn drop(&mut self) {

@@ -88,6 +88,31 @@ pub fn effective_bound_with_source(
     }
 }
 
+/// How many TURN-LENGTHS an ACT is owed. An act is not one generation: it is the wait
+/// for a lane PLUS the generation that follows it (plus the tools it runs). The lane
+/// wait is itself bounded by one turn bound ([`effective_bound`] at the serving gate),
+/// so two turn bounds is the smallest honest cover for the pair — anything less and the
+/// act's own deadline reaps a generation that was still inside its stated bound.
+pub const ACT_BOUND_TURNS: u32 = 2;
+
+/// PURE: the bound one ACT is owed, from the mind's measured expectation, with `floor`
+/// (the named act deadline) as a FLOOR and never a ceiling.
+///
+/// Measured on the M5 2026-09-20 (card ebce2ba0): five generations were dropped mid-flight
+/// at 1,207,290 / 1,228,814 / 1,491,253 / 1,492,283 / 1,492,456 ms — all of them the 25-minute
+/// act deadline expiring, minus however far into the act the generation had started. A turn
+/// whose own stated bound exceeds the act's cannot finish inside the act; the act must be
+/// the larger of the two, or the substrate reaps its own healthy work.
+pub fn act_bound_with_source(
+    floor: Duration,
+    expected: Option<Duration>,
+) -> (Duration, BoundSource) {
+    effective_bound_with_source(
+        floor,
+        from_expectation(expected).map(|b| b.saturating_mul(ACT_BOUND_TURNS)),
+    )
+}
+
 /// The receipt when a bound trips: what bound, who set it, what the mind expected, and
 /// where. `at` names the waiting seam (`pre_stream_headers`, `stream_queue`,
 /// `remote_deadline`); `name` is the lane / model / peer the turn was on. A row whose
@@ -131,6 +156,37 @@ mod tests {
         assert_eq!(effective_bound_with_source(FLOOR, None).1, BoundSource::Floor);
         assert_eq!(effective_bound_with_source(FLOOR, Some(FLOOR)).1, BoundSource::Floor);
         assert_eq!(effective_bound_with_source(FLOOR, Some(long)).1, BoundSource::TurnBound);
+    }
+
+    // what this catches (card ebce2ba0): an ACT covers a lane wait AND the generation
+    // after it, so its bound is TWO turn bounds — and the named act deadline is a FLOOR.
+    // The M5's five mid-flight drops (1,207,290 / 1,228,814 / 1,491,253 / 1,492,283 /
+    // 1,492,456 ms elapsed) were the 25-minute deadline reaping generations that were
+    // still inside their own stated bound. A regression that clamps the act DOWN to the
+    // constant reinstates exactly that.
+    #[test]
+    fn an_act_is_two_turn_bounds_with_the_named_deadline_as_a_floor() {
+        const ACT_FLOOR: Duration = Duration::from_secs(25 * 60);
+        assert_eq!(
+            act_bound_with_source(ACT_FLOOR, None),
+            (ACT_FLOOR, BoundSource::Floor),
+            "unmeasured = the named deadline, never a guess"
+        );
+        // A fast box: 2 minutes a turn. 4 x 120 s = 480 s, under the floor — the floor holds.
+        assert_eq!(
+            act_bound_with_source(ACT_FLOOR, Some(Duration::from_secs(120))),
+            (ACT_FLOOR, BoundSource::Floor)
+        );
+        // The M5's measured shape: ~7 min a turn. 4 x 424 s = 1,696 s — ABOVE the 1,500 s
+        // deadline that was reaping her, so the act now covers the turn it asked for.
+        let (bound, source) = act_bound_with_source(ACT_FLOOR, Some(Duration::from_secs(424)));
+        assert_eq!(source, BoundSource::TurnBound);
+        assert!(bound > ACT_FLOOR, "a turn the deadline cannot hold RAISES the deadline");
+        assert_eq!(bound, Duration::from_secs(424) * TURN_BOUND_HEADROOM * ACT_BOUND_TURNS);
+        // And the act always outlasts the lane wait its own turn bound sets, so the gate
+        // can never eat the whole act: 2x the turn bound vs 1x at the gate.
+        let gate = from_expectation(Some(Duration::from_secs(424))).expect("a bound");
+        assert!(bound >= gate.saturating_mul(2), "act >= lane wait + generation");
     }
 
     // what this catches: the bound is the expectation WITH headroom (an expectation is a

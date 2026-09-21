@@ -70,6 +70,7 @@ pub mod faculty_pulse;
 pub mod focus_policy;
 pub mod generate_recipe;
 pub mod generate_response;
+pub(crate) mod generation_drop;
 pub mod gym;
 pub mod gym_rng;
 pub mod gym_grader;

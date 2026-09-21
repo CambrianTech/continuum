@@ -1238,6 +1238,27 @@ impl LlmDeliberationFaculty {
             let lane_bound_derived = lane_bound.is_some();
             let lane_bound = lane_bound
                 .unwrap_or(crate::cognition::resource_admission::LANE_WAIT_CEILING); // unwrap_or: UNMEASURED lanes get the named ceiling, never a short guess
+            // THE QUEUE'S ESTIMATE IS A FLOOR, NEVER A CEILING (card ebce2ba0). The
+            // derivation above measures the LANES — `rounds x lane_hold_p50 x SLACK`,
+            // clamped — and on the M5 2026-09-20 it was computed over TWO recorded holds
+            // (`lane_hold_p50_ms=82918`, `queue_ahead=0`, `lanes_serving=2`) while the
+            // lanes were actually holding four to seven minutes. It told six minds to
+            // wait 165 s each and then give up first in line, having generated nothing:
+            // six cancelled captures at 165,843 / 165,844 / 165,845 / 165,856 / 165,917 /
+            // 165,982 ms, each within milliseconds of the bound this probe named. Four
+            // more at ~412 s and two at ~485 s are the same derivation at a later p50,
+            // and 60,009 ms is `LANE_WAIT_FLOOR` itself.
+            //
+            // A median of the lanes is not a bound for HER turn. Hers is the same
+            // measured expectation the request already carries on the wire
+            // (`expected_occupancy` x headroom, #4277's `turn_bound`): a mind whose own
+            // turns take five minutes may not be told a lane is hopeless in under two of
+            // them. The queue's number stays the floor — it is the only thing that speaks
+            // when she has no measured turn yet.
+            let expected_turn = self.expected_occupancy();
+            let turn_bound = crate::inference::turn_bound::from_expectation(expected_turn);
+            let (lane_bound, lane_bound_source) =
+                crate::inference::turn_bound::effective_bound_with_source(lane_bound, turn_bound);
             crate::probe!(
                 class = "delib.gate.lane_wait",
                 persona = %self.persona_name,
@@ -1247,6 +1268,10 @@ impl LlmDeliberationFaculty {
                 // The bound she is about to wait under, and what it was derived FROM.
                 bound_secs = lane_bound.as_secs(),
                 bound_derived = lane_bound_derived,
+                // Which of the two sized the wait: `turn_bound` = her own measured turn,
+                // `floor` = the queue's estimate (she has no measured turn yet).
+                bound_source = lane_bound_source.as_str(),
+                turn_bound_secs = turn_bound.map(|b| b.as_secs()).unwrap_or(0), // unwrap_or: 0 = no measured expectation; the queue's estimate governs alone
                 queue_ahead = lane_queue_ahead as u64,
                 lanes_serving = lanes_serving as u64,
                 lane_hold_p50_ms = lane_hold_p50_ms,
@@ -1284,7 +1309,7 @@ impl LlmDeliberationFaculty {
                 // A work call states its own bound on the lane (`expected_occupancy`), so the
                 // reserved lane may be lent to it inside the directed wait budget.
                 let expected = match priority {
-                    crate::cognition::resource_admission::LanePriority::Work => self.expected_occupancy(),
+                    crate::cognition::resource_admission::LanePriority::Work => expected_turn,
                     _ => None,
                 };
                 tokio::select! {
@@ -1296,6 +1321,13 @@ impl LlmDeliberationFaculty {
                             persona = %self.persona_name,
                             "parked self-work lane wait yielded: a directed line is pending"
                         );
+                        // Her CHOICE, not a drop — but the capture lease dies with this
+                        // return, so say which (card ebce2ba0).
+                        if let Some(lease) = &mut capture {
+                            lease.abandon(
+                                "yielded before dispatch: a directed line was pending and she answers first",
+                            );
+                        }
                         return None;
                     }
                 }
@@ -1317,8 +1349,24 @@ impl LlmDeliberationFaculty {
                     lanes_serving = lanes_serving as u64,
                     lane_hold_p50_ms = lane_hold_p50_ms,
                     lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
-                    "the lane wait hit its bound (LANE_WAIT_CEILING when unmeasured, else lane_wait_bound over the measured queue) — deferring without reaching the model; she keeps her act budget and tries again next tick"
+                    bound_source = lane_bound_source.as_str(),
+                    turn_bound_secs = turn_bound.map(|b| b.as_secs()).unwrap_or(0), // unwrap_or: 0 = no measured expectation; the queue's estimate governed alone
+                    "the lane wait hit its bound (her own measured turn when she has one, else the queue's estimate, floored at LANE_WAIT_FLOOR) — deferring without reaching the model; she keeps her act budget and tries again next tick"
                 );
+                // NEVER DISPATCHED, AND THE CAPTURE MUST SAY SO (card ebce2ba0). Without
+                // this the lease's `Drop` wrote "request future dropped before a terminal
+                // response" — the SAME row a generation the model was still producing
+                // writes — and eighteen of fifty captures on the M5 read as dropped
+                // generations when most of them never reached the model at all.
+                if let Some(lease) = &mut capture {
+                    lease.abandon(&format!(
+                        "lane starved before dispatch: waited {}s of a {}s bound ({}) with {} lanes free",
+                        lane_wait_started.elapsed().as_secs(),
+                        lane_bound.as_secs(),
+                        lane_bound_source.as_str(),
+                        crate::cognition::resource_admission::serving_lane_permits_available(),
+                    ));
+                }
                 return None;
             };
             // The node's own queue, measured where SHE waits for it (card c84d885a, S1b):
@@ -1352,15 +1400,39 @@ impl LlmDeliberationFaculty {
                 persona = %self.persona_name,
                 "prefill slot granted — issuing the model call"
             );
+            // THE DROP WITNESS (card ebce2ba0). From here the model IS producing, and
+            // the only thing that still runs if this future is torn down is a `Drop`.
+            // `InFlight` is that Drop: it counts the loss on the hour's ledger and says
+            // what was in flight — the bound this turn stated for itself, how long it had
+            // been running, and (on the non-observing path, which owns the stream) how
+            // much answer, reasoning and how many COMPLETE tool calls were thrown away.
+            // Five generations died here unwitnessed on the M5 2026-09-20 at 1,207,290 /
+            // 1,228,814 / 1,491,253 / 1,492,283 / 1,492,456 ms — the act deadline, whose
+            // own bound is now derived from the same expectation (`act_bound_with_source`).
             if let Some(sink) = ws.token_sink.as_ref() {
-                binding
+                // The CALLER owns this stream (a live Speak), so the witness cannot see
+                // the chunks and reports `observed = false` rather than a false zero.
+                let mut witness =
+                    crate::cognition::generation_drop::InFlight::arm(&self.persona_name, turn_bound, None);
+                let result = binding
                     .adapter
                     .generate_stream_checked(request, sink.clone())
-                    .await
+                    .await;
+                witness.disarm();
+                result
             } else {
                 let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
-                drop(receiver); // No observer: do not retain streamed chunks while awaiting the result.
-                binding.adapter.generate_stream_checked(request, sink).await
+                // The receiver is no longer thrown away: the witness holds it, so a drop
+                // can drain what the model had already produced. Nothing reads it on the
+                // healthy path — the accumulate still comes from the returned response.
+                let mut witness = crate::cognition::generation_drop::InFlight::arm(
+                    &self.persona_name,
+                    turn_bound,
+                    Some(receiver),
+                );
+                let result = binding.adapter.generate_stream_checked(request, sink).await;
+                witness.disarm();
+                result
             }
         };
         // The actual submitted identity survives a provider-owned response ID.
@@ -2203,11 +2275,7 @@ impl LlmDeliberationFaculty {
     /// `None` when any term is unmeasured: an absence is not a number, and the reserve is
     /// then not lent (`resource_admission::reserve_lendable`).
     fn expected_occupancy(&self) -> Option<std::time::Duration> {
-        let shape = LAST_TURN_SHAPE.get(&self.persona_id).map(|s| *s)?;
-        let model = crate::inference::llama_server::current_serving().active_model?;
-        let prefill_tps = crate::inference::prefill_rate::rate_for(&model)?;
-        let decode_tps = crate::inference::decode_knee::tps_for(&model)?;
-        occupancy_of(shape, prefill_tps, decode_tps)
+        expected_occupancy_for(self.persona_id)
     }
 
     /// The bound this turn carries on the wire (`TextGenerationRequest::turn_bound`):
@@ -4563,6 +4631,23 @@ struct TurnShape {
 }
 static LAST_TURN_SHAPE: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, TurnShape>> =
     std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// A MIND'S MEASURED TURN, READABLE FROM OUTSIDE HER FACULTY (card ebce2ba0). The same
+/// number [`LlmDeliberationFaculty::expected_occupancy`] serves — her last turn's shape at
+/// this box's measured prefill and decode rates — exposed so the seams ABOVE the faculty
+/// can size their own bounds from it instead of from a constant. The act deadline
+/// (`act_observe::settle`) is the first such caller: it was reaping generations that were
+/// still inside the bound the request itself carried.
+///
+/// `None` when any term is unmeasured (her first turn, an unmeasured box): an absence is
+/// not a number, and the named constant then governs alone.
+pub(crate) fn expected_occupancy_for(persona_id: uuid::Uuid) -> Option<std::time::Duration> {
+    let shape = LAST_TURN_SHAPE.get(&persona_id).map(|s| *s)?;
+    let model = crate::inference::llama_server::current_serving().active_model?;
+    let prefill_tps = crate::inference::prefill_rate::rate_for(&model)?;
+    let decode_tps = crate::inference::decode_knee::tps_for(&model)?;
+    occupancy_of(shape, prefill_tps, decode_tps)
+}
 
 /// PURE: the wall time one turn of `shape` is expected to occupy the lane at this box's
 /// measured rates — the UNCACHED prompt at `prefill_tps` plus the output at `decode_tps`.
