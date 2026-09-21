@@ -2077,11 +2077,11 @@ async fn build_env_from_scratch(
     py: PathBuf,
 ) -> Result<PathBuf, String> {
     let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir));
-    let uv = which("uv").ok_or_else(|| {
-        "uv is not installed — it builds the per-instance environment (a Rust binary, \
-         install from https://astral.sh/uv)"
-            .to_string()
-    })?;
+    // A missing HOST tool is a failure to LOOK, never a fact about the instance: typed
+    // by its head so the sweep defers and re-tries every tick instead of recording a
+    // standing refusal that only a change in the citizen's WORK can lift (card 1aac0c72:
+    // sphinx-7889 on the 5090 sat unre-graded for hours after uv appeared on the box).
+    let uv = which("uv").ok_or_else(|| uv_missing_is_could_not_look())?;
     let interpreter = interpreter_for_year(instance.year());
     let env_s = env_dir.to_string_lossy().to_string();
     let py_s = py.to_string_lossy().to_string();
@@ -2557,6 +2557,19 @@ const MAX_ERA_OVERRIDES: usize = 8;
 /// re-derived by hand. COULD_NOT_LOOK ≠ NOT_FOUND ([[unknown-is-not-a-quantity]]); a
 /// reader that sees this head defers and looks again, it never records a verdict.
 pub const COULD_NOT_LOOK: &str = "COULD NOT LOOK — ";
+
+/// The reason recorded when `uv` — the one tool that builds every per-instance
+/// environment — is not on this process's PATH. Its head is [`COULD_NOT_LOOK`]: the box
+/// could not look at the instance at all, so no marker stands and the next sweep looks
+/// again (the marker's own invalidation rule, `refusal_stands_at`, watches the WORK's
+/// mtime and cannot see a tool appearing on the host).
+pub fn uv_missing_is_could_not_look() -> String {
+    format!(
+        "{COULD_NOT_LOOK}uv is not installed on this box's PATH — it builds the per-instance \
+         environment (a Rust binary, install from https://astral.sh/uv); nothing about the \
+         instance is known until it is"
+    )
+}
 
 /// Does uv's stderr say the INDEX was unreachable (resolver/network), as opposed to a
 /// package that would not resolve or build? Anchored on uv's/reqwest's own phrasing for
@@ -4187,6 +4200,20 @@ mod tests {
         assert!(!network_failure_signature(""));
         // The head every reader keys on is one substrate sentence, never uv's wording.
         assert!(COULD_NOT_LOOK.starts_with("COULD NOT LOOK"));
+    }
+
+    // what this catches (card 1aac0c72): `uv` missing from the HOST was recorded as the
+    // instance's standing refusal; `refusal_stands_at` lifts a marker only when the
+    // citizen's work changes, so the grade was never re-tried after uv appeared on the
+    // box (sphinx-7889, 5090, 2026-09-21). The reason must carry the COULD_NOT_LOOK head
+    // the sweep defers on, and must never classify as an env fault.
+    #[test]
+    fn a_missing_uv_is_a_could_not_look_never_a_standing_refusal() {
+        use super::{uv_missing_is_could_not_look, COULD_NOT_LOOK};
+        let reason = uv_missing_is_could_not_look();
+        assert!(reason.starts_with(COULD_NOT_LOOK), "{reason}");
+        assert!(reason.contains("astral.sh/uv"), "still says how to fix it: {reason}");
+        assert!(!crate::cognition::swe_verdict_sweep::refusal_is_env_fault(&reason));
     }
 
     // what this catches: the Multilingual harness misread — the marked command not
