@@ -1264,6 +1264,58 @@ impl crate::paging::pool::ResourcePool for MemoryPressureMonitor {
 mod tests {
     use super::*;
 
+    // what this catches: a FOURTH reader of `sysinfo::available_memory()`, which returns
+    // 0 on macOS while `total`/`used` are correct. `available_from` above exists to be the
+    // one derivation every reader shares, and its doc says so — but saying so in a doc did
+    // not stop three callers from using the broken call anyway:
+    //
+    //   bin/continuum.rs        the warm-build gate. A permanent 0 against a 12 GiB
+    //                           threshold meant the gate could NEVER open on a Mac, so
+    //                           every deploy stopped the core first. Measured 2026-09-21:
+    //                           two deploys, `drain Incomplete { in_flight: 7 }` then
+    //                           `{ in_flight: 9 }` — sixteen citizen turns cut — while
+    //                           `memory.pressure` reported avail_mb 9,009 and 8,324 at the
+    //                           same moments, because IT used `available_from`.
+    //   inference/backends/llamacpp.rs   KV-cache sizing at model load. Its own doc says a
+    //                           0 "floors the KV budget to MIN_CTX"; on the unified-memory
+    //                           Macs that comment is about, the floor was unconditional.
+    //   capacity/system_profile.rs       `DeviceCapacity::system_ram_free_bytes`, a
+    //                           permanent zero for anyone budgeting against it.
+    //
+    // A doc comment is not a guard. This is.
+    #[test]
+    fn nothing_reads_sysinfo_available_memory_directly() {
+        fn scan(dir: &std::path::Path, hits: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, hits);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    // THE NEEDLE IS BUILT FROM PARTS so this file does not contain it
+                    // literally. A scanner that spells its own target matches ITSELF —
+                    // the same shape as a `pgrep -f` wait loop matching its own command
+                    // line — and would fail here forever with one hit that is the guard.
+                    let needle = concat!(".", "available_memory()");
+                    for (i, line) in text.lines().enumerate() {
+                        if line.contains(needle) && !line.trim_start().starts_with("//") {
+                            hits.push(format!("{}:{}", path.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        scan(&crate::source_hygiene::crate_src_root(), &mut hits);
+        assert!(
+            hits.is_empty(),
+            "`sysinfo::available_memory()` returns 0 on macOS — use \
+             `system_resources::memory_pressure::available_from(&sys)`, the one derivation \
+             every reader shares. Direct callers found at: {hits:?}"
+        );
+    }
+
     // what this catches (card 948c30c2): the anomaly scan — a full process-table refresh
     // and, on macOS, a `ps` child on its own thread — ran on EVERY 2 s poll for as long
     // as pressure stayed High. It is due on the first tick of an episode, then once per

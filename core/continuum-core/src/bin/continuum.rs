@@ -1503,10 +1503,26 @@ fn warm_build_allowed(free_bytes: u64, script: Option<PathBuf>) -> Result<PathBu
     Ok(script)
 }
 
+/// Available system memory, through the ONE derivation the substrate already owns.
+///
+/// NOT `sysinfo::available_memory()`. That call returns **0 on macOS** while `total`
+/// and `used` are both correct — `system_resources::memory_pressure` found this, says
+/// so in so many words at its own call site, and exists as `available_from` precisely
+/// so "every reader" shares one answer. This function was not one of those readers.
+///
+/// The cost was the whole warm-build path on every Mac. `warm_build_allowed` compares
+/// this against `WARM_BUILD_MIN_FREE_BYTES` (12 GiB), so a permanent 0 meant the gate
+/// could never open: every deploy stopped the core first and built afterwards, and every
+/// stop cut whatever was mid-turn. Measured on the M5 2026-09-21, two consecutive
+/// deploys 35 minutes apart printed `no warm build: 0.0 GiB free` and reported
+/// `cognition (drain Incomplete { in_flight: 7 })` then `{ in_flight: 9 }` — sixteen
+/// citizen turns — while `memory.pressure`, reading `available_from` at the same
+/// moments, published `avail_mb` of 9,009 and 8,324. Two measurements of one quantity,
+/// nine gigabytes apart, and the deploy gate held the one that is always zero here.
 fn available_memory_bytes() -> u64 {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
-    sys.available_memory()
+    continuum_core::system_resources::memory_pressure::available_from(&sys)
 }
 
 /// A per-attempt receipt owned by this invocation, never a cached artifact hint.
