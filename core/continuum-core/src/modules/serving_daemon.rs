@@ -2978,7 +2978,7 @@ impl ServingDaemonModule {
         // the value changes at relaunch boundaries, never mid-serve, so there
         // is zero flap surface (Law 2 — capacity follows measurement, structure
         // does not).
-        let host_prompt_cache_mib = derived_prompt_cache_mib(
+        let prompt_cache = derived_prompt_cache_mib(
             &model.id,
             footprint_for(&model).as_ref(),
             served_ctx,
@@ -2987,6 +2987,10 @@ impl ServingDaemonModule {
             self.system.memory().available_bytes,
             self.system.gpu_memory_mode(),
         );
+        // Kept beside the grant for the divergence receipt below: the predicate that
+        // separates "a bit small" from "structurally cannot cache anything".
+        let one_conversation_mib = prompt_cache.one_conversation_mib;
+        let host_prompt_cache_mib = prompt_cache.mib;
         let target = ServingTarget {
             host_prompt_cache_mib,
             model,
@@ -3143,37 +3147,75 @@ impl ServingDaemonModule {
             // 3-lane/235k-ctx moment left almost nothing affordable) and still held it three
             // hours later while the decision had recovered to 2,517 MiB. At q8_0's 32 KiB per
             // token that is 15,360 tokens of cache against deliberation prompts of
-            // 22,612-41,547 — the cache could not hold ONE prefix, so prefix reuse was 0%,
-            // every turn paid full prefill, and a peer's hour line read
-            // `prefix reuse 0% (4k cached / 574k prefilled)` with directed waits p50 211s.
+            // 22,612-41,547 — under ONE conversation, so prefix reuse was 0%, every turn paid
+            // full prefill, and a peer's hour line read `prefix reuse 0% (4k cached / 574k
+            // prefilled)` with directed waits p50 241s / p90 501s.
             //
-            // `serving.prompt_cache.launch` honestly records `applied_mib="unobserved"` —
-            // the engine API does not expose what it actually applied, and inventing a
-            // readback would be worse than saying so. But BOTH numbers in this divergence
-            // are ours: the grant we passed and the target we now want. Nothing compared
-            // them, so the gap was invisible until someone read the engine's argv by hand.
-            // This says it. The RELAUNCH that closes the gap is card ab27b914 (a fifth
-            // sibling beside the window/lane/sight/KV grow-backs); this probe is the
-            // measurement that decision will be judged by, and it ships first on purpose —
-            // a probe changes no live lane, and a lane relaunch is the most dangerous
-            // change this daemon can make.
-            if launched_cache_mib > 0 && target.host_prompt_cache_mib > launched_cache_mib {
-                let held = launched_cache_mib as u64;
-                let wanted = target.host_prompt_cache_mib as u64;
-                crate::probe!(
-                    class = "serving.prompt_cache.divergence",
-                    model = target.model_id(),
-                    held_mib = held,
-                    wanted_mib = wanted,
-                    shortfall_mib = wanted.saturating_sub(held),
-                    ratio_pct = wanted.saturating_mul(100) / held.max(1),
-                    served_window = served_window as u64,
-                    served_lanes = served_lanes as u64,
-                    "the running engine holds LESS host prompt cache than today's decision wants \
-                     — `--cache-ram` is fixed at spawn, so this gap closes only on a relaunch \
-                     (card ab27b914). A grant below ONE conversation makes prefix reuse \
-                     structurally impossible: every context switch is a full re-prefill"
-                );
+            // `serving.prompt_cache.launch` honestly records `applied_mib="unobserved"` — the
+            // engine API does not expose what it applied, and inventing a readback would be
+            // worse than saying so. But BOTH numbers in this divergence are ours: the grant we
+            // passed and the target we now want. Nothing compared them, so the gap was
+            // invisible until someone read the engine's argv by hand.
+            //
+            // TWO FACTS, NOT ONE (Cormac on #4298). `wanted > held` is ANY shortfall, 1 MiB
+            // included; `held < one conversation` is the structural case where reuse is not
+            // poor but IMPOSSIBLE. Reporting the first while claiming the second is the
+            // one-value-two-meanings shape this probe exists to expose, so both are carried
+            // and `below_one_conversation` names which you are looking at. The threshold comes
+            // from `lane_args::one_conversation_bytes` via the decision — the SAME function
+            // the spawn floor uses, so the relaunch check (card ab27b914) inherits the exact
+            // predicate the test pins, rather than growing a third derivation.
+            //
+            // SAID ONCE PER STATE, never per tick. This sits on the 5-second ready path, and
+            // the M5 gap lasted three hours — ~2,160 identical lines, a rising count that is
+            // not rising evidence, drowning the ledger this card wants read. Same shape as the
+            // sizing receipt's own `LAST_SPOKEN` cell: speak when the divergence APPEARS, when
+            // either number MOVES, and once when it CLOSES.
+            {
+                let held = launched_cache_mib;
+                let wanted = target.host_prompt_cache_mib;
+                let diverged = held > 0 && wanted > held;
+                // Keyed by MODEL as well as the numbers, exactly like the sizing receipt's
+                // own cell: a model switch that happens to produce the same pair is a
+                // different fact and still owes a receipt.
+                let state = diverged
+                    .then(|| (target.model_id().to_owned(), held, wanted, one_conversation_mib));
+                static LAST_DIVERGENCE: parking_lot::Mutex<Option<(String, u32, u32, u32)>> =
+                    parking_lot::Mutex::new(None);
+                // `state` carries a String, so keep the copy we report from: the cell takes
+                // ownership of the new state and hands back the old one.
+                let speaking = state.clone();
+                let previous = say_on_change(&mut *LAST_DIVERGENCE.lock(), state);
+                if let Some(previous) = previous {
+                    match speaking {
+                        Some((_, held, wanted, one_conversation)) => crate::probe!(
+                            class = "serving.prompt_cache.divergence",
+                            model = target.model_id(),
+                            held_mib = held as u64,
+                            wanted_mib = wanted as u64,
+                            shortfall_mib = wanted.saturating_sub(held) as u64,
+                            one_conversation_mib = one_conversation as u64,
+                            below_one_conversation = one_conversation > 0 && held < one_conversation,
+                            served_window = served_window as u64,
+                            served_lanes = served_lanes as u64,
+                            "the running engine holds LESS host prompt cache than today's \
+                             decision wants — `--cache-ram` is fixed at spawn, so this gap \
+                             closes only on a relaunch (card ab27b914). Read \
+                             `below_one_conversation`: true means the grant cannot retain a \
+                             single prefix and reuse is structurally impossible, not merely poor"
+                        ),
+                        None => crate::probe!(
+                            class = "serving.prompt_cache.divergence_closed",
+                            model = target.model_id(),
+                            held_mib = launched_cache_mib as u64,
+                            wanted_mib = target.host_prompt_cache_mib as u64,
+                            was_held_mib = previous.as_ref().map(|(_, h, _, _)| *h).unwrap_or(0) as u64, // unwrap_or: no prior state recorded
+                            was_wanted_mib = previous.as_ref().map(|(_, _, w, _)| *w).unwrap_or(0) as u64, // unwrap_or: as above
+                            "the prompt-cache divergence closed — the engine's grant now meets \
+                             today's decision (a relaunch, or the target fell back to it)"
+                        ),
+                    }
+                }
             }
             // #106 vision readiness: for a ready lane, resolve the node's VERIFIED
             // vision endpoint. First the MAIN lane — the row's declared Vision, the
@@ -4908,7 +4950,7 @@ fn derived_prompt_cache_mib(
     physical_bytes: u64,
     available_bytes: u64,
     memory_mode: Option<crate::gpu::monitor::MemoryMode>,
-) -> u32 {
+) -> PromptCacheGrant {
     // LIVE citizens only. The WorkingSetRegistry persists every persona that
     // EVER recorded demand — measured 2026-08-28, first live fire: citizens=332
     // (weeks of rotated identities), a fictional want that only the
@@ -5008,6 +5050,7 @@ fn derived_prompt_cache_mib(
             model = model_id,
             reason = decision.reason,
             derived_mib = decision.desired_mib as u64,
+            one_conversation_mib = decision.one_conversation_mib as u64,
             afford_mib = afford_field,
             desired_mib = decision.desired_mib as u64,
             applied_mib = "unobserved",
@@ -5026,7 +5069,36 @@ fn derived_prompt_cache_mib(
             "prompt-cache sizing decision, not engine readback; KV estimate excludes draft state and checkpoints"
         );
     }
-    decision.desired_mib
+    PromptCacheGrant {
+        mib: decision.desired_mib,
+        one_conversation_mib: decision.one_conversation_mib,
+    }
+}
+
+/// PURE: does this tick owe a receipt, given what was last said?
+///
+/// `None` = the state is unchanged, stay silent. `Some(previous)` = speak, and `previous`
+/// is what was said before (itself `None` when nothing had been said yet). Extracted from
+/// the divergence cell so the edge behaviour is pinned by a test rather than only by the
+/// live ledger: a probe that sits on the 5-second ready path and fires on PERSISTENCE
+/// rather than CHANGE turns a three-hour condition into ~2,160 identical lines — a rising
+/// count that is not rising evidence (Cormac on #4298).
+fn say_on_change<T: PartialEq>(last: &mut Option<T>, now: Option<T>) -> Option<Option<T>> {
+    if *last == now {
+        None
+    } else {
+        Some(std::mem::replace(last, now))
+    }
+}
+
+/// What the sizing decided, for the ONE caller that builds a [`ServingTarget`]: the grant
+/// to hand the engine, and the ONE-CONVERSATION floor to judge a RUNNING engine by. Both
+/// come from the same `PromptCacheDecision`, so the spawn question ("how big should this
+/// cache be?") and the running-engine question ("is the grant it still holds big enough?")
+/// can never be answered from two different derivations.
+pub(crate) struct PromptCacheGrant {
+    pub(crate) mib: u32,
+    pub(crate) one_conversation_mib: u32,
 }
 
 /// Diagnostic record of the existing sizing law. This deliberately does not
@@ -5042,6 +5114,15 @@ struct PromptCacheDecision {
     kv_per_token: Option<u64>,
     estimated_kv_bytes: Option<u64>,
     affordable_bytes: Option<u64>,
+    /// ONE CONVERSATION in MiB — the largest single prefix this cache must hold without
+    /// thrashing, from `lane_args::one_conversation_bytes` (the same function the sizing
+    /// floor uses). Below it, prefix reuse is not poor but IMPOSSIBLE: every context
+    /// switch is a guaranteed full re-prefill. Carried on the decision so the running
+    /// engine can be judged by the SAME predicate the spawn was sized by — Cormac on
+    /// #4298: extracting the function for a second consumer and then not calling it from
+    /// that consumer is the one-value-two-meanings shape this PR exists to expose.
+    /// 0 = nothing measured (no conversation to hold), never a guessed size.
+    one_conversation_mib: u32,
     /// What the serve's own working set costs HOST RAM — the peak on-device
     /// residency on unified memory, ZERO on a discrete GPU (weights and KV live in
     /// VRAM). This is the term that took the 5090's cache to the 256 MiB floor.
@@ -5118,6 +5199,12 @@ fn prompt_cache_decision(
             })
         }),
         affordable_bytes: None,
+        one_conversation_mib: fp
+            .map(|f| {
+                (crate::inference::lane_args::one_conversation_bytes(demands, f.kv_per_token)
+                    / (1024 * 1024)) as u32
+            })
+            .unwrap_or(0), // unwrap_or: no footprint = the model's geometry is unknown, so one conversation has no size yet
         serve_host_bytes,
         available_bytes,
     };
@@ -6166,6 +6253,44 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (Cormac on #4298): a receipt that fires on PERSISTENCE rather than
+    // CHANGE. `serving.prompt_cache.divergence` sits on the 5-second ready path, and the M5
+    // gap lasted three hours — firing per tick is ~2,160 identical lines carrying the same
+    // two numbers, a rising count that is not rising evidence and drowns the very ledger the
+    // card asks a reader to open. Both EDGES owe a receipt; the middle owes silence.
+    #[test]
+    fn a_divergence_speaks_when_it_appears_and_when_it_closes_never_while_it_persists() {
+        use super::say_on_change;
+        let mut cell: Option<(&str, u32, u32)> = None;
+
+        // Quiet stays quiet — a node whose engine already holds what the decision wants
+        // must never emit a line just for being healthy.
+        assert_eq!(say_on_change(&mut cell, None), None);
+
+        // APPEARS: speak, and the previous state is "nothing had been said".
+        let m5 = ("qwen27b", 480u32, 2_517u32);
+        assert_eq!(say_on_change(&mut cell, Some(m5)), Some(None));
+
+        // PERSISTS: three hours of identical ticks, one receipt total.
+        for _ in 0..2_160 {
+            assert_eq!(say_on_change(&mut cell, Some(m5)), None);
+        }
+
+        // MOVES: the target drifted (3889 -> 2916 -> 2517 happens within minutes), so the
+        // fact changed and owes a new receipt carrying the old numbers.
+        let moved = ("qwen27b", 480u32, 3_889u32);
+        assert_eq!(say_on_change(&mut cell, Some(moved)), Some(Some(m5)));
+
+        // A MODEL SWITCH that happens to produce the same pair is a different fact — this is
+        // why the cell is keyed by model id and not by the numbers alone.
+        let other = ("ornith35b", 480u32, 3_889u32);
+        assert_eq!(say_on_change(&mut cell, Some(other)), Some(Some(moved)));
+
+        // CLOSES: one receipt at the far edge, carrying what it was, then silence again.
+        assert_eq!(say_on_change(&mut cell, None), Some(Some(other)));
+        assert_eq!(say_on_change(&mut cell, None), None);
+    }
+
     // what this catches (2026-09-19, the M5 pinned at one lane across boots): the store is
     // written on the tick a launch SETTLES — cooldown 1 → 0 with the lane serving — and on
     // no other tick: not at spawn (cooling = full), not while cooling, not after (0), not
