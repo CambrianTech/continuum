@@ -2707,14 +2707,8 @@ async fn era_pinned_uv_install(
 }
 
 fn which(bin: &str) -> Option<String> {
-    let path = std::env::var("PATH").ok()?;
-    for dir in path.split(':') {
-        let candidate = Path::new(dir).join(bin);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
+    crate::shell_portable::locate_executable(bin)
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// The test files an instance's own `test_patch` touches — the scope to run.

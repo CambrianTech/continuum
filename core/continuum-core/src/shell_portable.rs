@@ -5,6 +5,28 @@
 
 use std::path::PathBuf;
 
+/// Find a native executable without spawning a shell or interpreting PATH by hand.
+pub fn locate_executable(name: &str) -> Option<PathBuf> {
+    locate_executable_in(name, &std::env::var_os("PATH")?)
+}
+
+fn locate_executable_in(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path).find_map(|dir| {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        if candidate.extension().is_none() {
+            let executable = candidate.with_extension("exe");
+            if executable.is_file() {
+                return Some(executable);
+            }
+        }
+        None
+    })
+}
+
 /// Resolve a bash that is actually a POSIX shell.
 ///
 /// `Command::new("bash")` is WRONG on Windows: PATH lookup finds
@@ -104,6 +126,23 @@ fn is_wsl_shim_dir(dir: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: Windows drive letters, PATH separators and uv.exe must
+    // not make the SWE grader report an installed native prerequisite missing.
+    #[test]
+    fn native_executable_lookup_preserves_platform_path_and_suffix() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("missing tools");
+        let second = root.path().join("installed tools");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        let tool = second.join(name);
+        std::fs::write(&tool, b"fixture").unwrap();
+        let path = std::env::join_paths([first, second]).unwrap();
+        assert_eq!(locate_executable_in("uv", &path), Some(tool));
+        assert_eq!(locate_executable_in("missing", &path), None);
+    }
 
     /// what this catches: the ONE decision this module exists to make. If a
     /// System32 entry ever survives into the candidate list, `bash` resolves to
