@@ -564,6 +564,7 @@ async fn draw_intents(
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
     plan: &[DesiredRole],
     hold: Option<crate::persona::roster_hold::RosterHold>,
+    already_hosted: usize,
 ) -> Result<Vec<PersonaIdentityIntent>, BootstrapPlannedError> {
     let required = plan.len();
     let mut intents: Vec<PersonaIdentityIntent> = Vec::with_capacity(required);
@@ -587,11 +588,19 @@ async fn draw_intents(
             // retry every second — zero residents until an operator intervened. The
             // identities the provider yielded ARE the roster; the plan's surplus seats are
             // the plan's business (a probe names the shortfall), not a boot failure.
-            if !intents.is_empty() {
+            // A TOP-UP THAT DRAWS NOTHING IS ALSO A PARTIAL ROSTER (IntelMac 2026-09-21
+            // 13:00:49Z, Fable's read): the guard above only knew this pass's own draw.
+            // On a reconciler pass the residents from earlier passes are the roster —
+            // `already_hosted` of them — and a plan that opened two more seats than the
+            // provider has names left drew zero at slot 0, so this returned the honest
+            // boot failure for a node that was fully staffed, and the host drained six
+            // live citizens as "partial". The shortfall is the plan's business either way.
+            if !intents.is_empty() || already_hosted > 0 {
                 crate::probe!(
                     class = "persona.host.provider_filled_fewer_seats",
                     seats = required,
                     filled = intents.len(),
+                    already_hosted,
                     drawn,
                     held = hold.is_some(),
                     "the provider ran out of identities (or the hold allows no more) — seating fewer, not failing"
@@ -714,7 +723,7 @@ pub async fn bootstrap_planned(
     // PHASE 1 — draw every identity from the provider. Sequential because the
     // provider hands out one identity at a time (`&mut`), but this is CHEAP: the
     // cost is `bootstrap_one` below, not `next_persona`.
-    let intents = draw_intents(provider, &plan, crate::persona::roster_hold::active()).await?;
+    let intents = draw_intents(provider, &plan, crate::persona::roster_hold::active(), already_hosted).await?;
 
     // PHASE 2 — bootstrap ALL personas CONCURRENTLY (fork/join). The airc keypair
     // ceremony + room join + seed are INDEPENDENT per persona, so a serial loop
@@ -854,7 +863,7 @@ mod tests {
             reason: "test".to_string(),
             exclusive: true,
         };
-        let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
+        let intents = draw_intents(&mut provider, &plan, Some(hold), 0).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
     }
@@ -1165,11 +1174,18 @@ mod tests {
         }
         let mut provider = Yield(["Alpha", "Bravo"].into_iter().collect());
         let plan: Vec<DesiredRole> = (0..5).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
-        let intents = draw_intents(&mut provider, &plan, None).await.expect("a shortfall is not an error");
+        let intents = draw_intents(&mut provider, &plan, None, 0).await.expect("a shortfall is not an error");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Bravo"], "two identities seat two of five planned seats");
         let mut empty = Yield(std::collections::VecDeque::new());
-        assert!(draw_intents(&mut empty, &plan, None).await.is_err(), "NO identity at all is still the honest failure");
+        assert!(draw_intents(&mut empty, &plan, None, 0).await.is_err(), "NO identity at all is still the honest failure");
+        // IntelMac 2026-09-21 13:00:49Z: the SAME empty provider on a TOP-UP pass — six
+        // residents live, the plan wants two more — is a partial roster of zero, never a
+        // boot failure the host would answer by draining the six.
+        let mut empty = Yield(std::collections::VecDeque::new());
+        let top_up: Vec<DesiredRole> = plan[..2].to_vec();
+        let drawn = draw_intents(&mut empty, &top_up, None, 6).await.expect("a top-up that draws nothing is a partial roster");
+        assert!(drawn.is_empty(), "nothing to seat, nothing failed");
     }
 
     // what this catches (2026-09-14): a working round's team hold shrinking the roster —
