@@ -128,26 +128,6 @@ fn is_placeholder_hash(h: &str) -> bool {
     t.is_empty() || t.chars().all(|c| c == '0') || t.starts_with('<')
 }
 
-/// The checkout her hands are rooted at for THIS card — the one place the patch can be
-/// read from. A submit for a card she is not rooted at is refused with the verb that
-/// roots her, never guessed from a workspace listing.
-fn rooted_checkout_for(persona: Uuid, card_id: Uuid) -> Result<std::path::PathBuf, CommandError> {
-    match (
-        crate::cognition::persona_workspace::acting_card_of(persona),
-        crate::cognition::persona_workspace::acting_root_of(persona),
-    ) {
-        (Some(card), Some(root)) if card == card_id => Ok(root),
-        (Some(card), _) => Err(CommandError::Invalid(format!(
-            "your hands are rooted at card {card}, not {card_id} — root at the card you are \
-             submitting (work/get {card_id}) and submit again"
-        ))),
-        _ => Err(CommandError::Invalid(format!(
-            "your hands are not rooted at a card's checkout — root at {card_id} first \
-             (work/get {card_id}); work/submit reads the patch from that checkout"
-        ))),
-    }
-}
-
 /// `workspace/swe/<instance>` names a benchmark checkout; anything else is a repo
 /// worktree and the card id is its instance name.
 fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) -> Option<String> {
@@ -200,19 +180,18 @@ async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -
 /// Parts she supplied herself are kept; the artifact is always recomputed here, so a
 /// placeholder can never reach the board.
 async fn derive_submission(
-    persona: Uuid,
+    checkout: &std::path::Path,
     card_id: Uuid,
     given_instance: Option<String>,
     given_base: Option<String>,
 ) -> Result<DerivedSubmission, CommandError> {
-    let checkout = rooted_checkout_for(persona, card_id)?;
     let is_swe = checkout.iter().any(|c| c == "swe");
     let instance = given_instance
-        .or_else(|| instance_of_checkout(&checkout, card_id))
+        .or_else(|| instance_of_checkout(checkout, card_id))
         .unwrap_or_else(|| card_id.to_string()); // unwrap_or: instance_of_checkout always yields the card id as its floor
     let base_sha = match given_base {
         Some(b) => b,
-        None => base_sha_of(&checkout, &instance, is_swe).await?,
+        None => base_sha_of(checkout, &instance, is_swe).await?,
     };
     let ws = checkout.to_string_lossy().into_owned();
     let patch = crate::commands::benchmark::workspace_candidate_diff_from(&ws, Some(&base_sha))?;
@@ -329,6 +308,13 @@ impl ActionCommand for WorkSubmit {
                 }
             },
         };
+        // A supplied claim id must not bypass ownership before we read local work.
+        // Publication below still validates the current lease against the latest board.
+        if card.owner != Some(airc.peer_id()) || card.claim_id != Some(claim_id) {
+            return Err(CommandError::Denied(
+                "submission requires your matching claim on this card".into(),
+            ));
+        }
         // A complete, real artifact she wrote herself is honoured as-is; anything less
         // — an omitted part, or the manual's zero hash read back as a value — is read
         // off her checkout, and a placeholder says so in the ledger.
@@ -349,7 +335,14 @@ impl ActionCommand for WorkSubmit {
                 p.artifact.clone().unwrap_or(WorkArtifactReference { hash: String::new(), size_bytes: 0, mime: None }), // unwrap_or: guarded by typed_in_full
             )
         } else {
-            let d = derive_submission(runtime.persona_id(), p.card_id, p.instance.clone(), p.base_sha.clone()).await?;
+            // Claim-time staging owns this binding. Ambient turn focus can be home,
+            // another card, or absent after restart; none changes this card's checkout.
+            let checkout = crate::modules::card_staging::checkout_path_for(&runtime.persona_id(), card)
+                .ok_or_else(|| CommandError::Invalid(format!(
+                    "card {} has no staged checkout on this node; staging must be restored before submission",
+                    p.card_id,
+                )))?;
+            let d = derive_submission(&checkout, p.card_id, p.instance.clone(), p.base_sha.clone()).await?;
             (d.instance, d.base_sha, d.artifact)
         };
         crate::probe!(
@@ -927,5 +920,22 @@ mod tests {
         run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
         let err = base_sha_of(dir.path(), "card", false).await.expect_err("no remote, no upstream");
         assert!(err.to_string().contains("pass base_sha"), "{err}");
+        // Regression for Kimi's result5734: submitting an owned staged checkout
+        // requires no temporary acting root (including after focus loss/restart).
+        let base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
+        std::fs::write(dir.path().join("solution.py"), "print('verified work')\n").expect("write patch");
+        let add = run(&["add", "solution.py"]);
+        assert!(add.status.success());
+        let card = uuid::Uuid::new_v4();
+        let derived = super::derive_submission(dir.path(), card, None, Some(base.clone())).await.expect("derive without ambient hands");
+        assert_eq!(derived.instance, card.to_string());
+        assert_eq!(derived.base_sha, base);
+        let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--", "solution.py"]).stdout).expect("diff");
+        assert_eq!(derived.artifact.hash, artifact_of_patch(&expected).hash);
+        assert!(derived.artifact.size_bytes > 0);
+        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
+        let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
+        let empty = super::derive_submission(dir.path(), card, None, Some(clean_base)).await.err().expect("clean checkout refused");
+        assert!(empty.to_string().contains("nothing to submit"));
     }
 }
