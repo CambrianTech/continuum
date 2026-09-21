@@ -668,6 +668,27 @@ pub fn resolve_params(
     Ok(resolved)
 }
 
+/// Spawn may resume the same recipe, but it cannot repurpose somebody's activity.
+fn validate_spawn_binding(
+    name: &str,
+    recipe: &str,
+    posts: &[airc_core::doctrine::WallPostPublished],
+) -> Result<(), CommandError> {
+    let existing = crate::experience::binding::project_binding(posts).map_err(|e| {
+        CommandError::Internal(format!("cannot read recipe for room {name:?}: {e}"))
+    })?;
+    if let Some(binding) = existing {
+        if binding.recipe != recipe {
+            return Err(CommandError::Invalid(format!(
+                "room {name:?} already belongs to recipe {:?}; cannot spawn {recipe:?} \
+                 over it. Choose a new activity name, or join the existing room.",
+                binding.recipe
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Birth a room from a recipe on an ALREADY-RESOLVED airc handle.
 ///
 /// This is the whole of `activity/spawn` minus the caller-identity lookup, split
@@ -775,6 +796,16 @@ pub async fn spawn_activity_room(
         let room = airc.join(name).await.map_err(|source| {
             CommandError::Invalid(format!("could not create room {name:?}: {source}"))
         })?;
+        // A reused name resolves to the SAME room. Read its type before publishing
+        // anything: a benchmark spawn once rebound the live project room, after
+        // which benchmark cleanup evicted its coding peers as "finished".
+        let posts = airc
+            .wall_posts_in(&room, Some(RECIPE_WALL_CATEGORY))
+            .await
+            .map_err(|e| {
+                CommandError::Internal(format!("cannot read recipe for room {name:?}: {e}"))
+            })?;
+        validate_spawn_binding(name, recipe, &posts)?;
         // Every spawned room enters the node's adoption set the moment it exists, so
         // the presence emitter bridges its transcript (chat store + rail) on the next
         // refresh — the same minute, like a bench run room, not never (card 3d4b3d9c).
@@ -797,7 +828,7 @@ pub async fn spawn_activity_room(
         let body = serde_json::to_string(&binding)
             .map_err(|source| CommandError::Internal(format!("encode recipe binding: {source}")))?;
         let post_id = airc
-            .publish_wall_post(RECIPE_WALL_CATEGORY.to_string(), body, None)
+            .publish_wall_post_in(&room, RECIPE_WALL_CATEGORY.to_string(), body, None)
             .await
             .map_err(|source| {
                 CommandError::Internal(format!(
@@ -1413,6 +1444,34 @@ mod tests {
     #[test]
     fn the_recipe_binding_rides_the_shared_wall_category() {
         assert_eq!(RECIPE_WALL_CATEGORY, "recipe");
+    }
+
+    // what this catches: spawning a benchmark named after an existing project
+    // replaced its recipe and let round cleanup remove the project's citizens.
+    #[test]
+    fn spawn_preserves_an_existing_activity_recipe() {
+        let mut post = airc_core::doctrine::WallPostPublished {
+            room_id: RoomId::from_uuid(uuid::Uuid::from_u128(1)),
+            post_id: uuid::Uuid::from_u128(2),
+            category: RECIPE_WALL_CATEGORY.into(),
+            body: r#"{"recipe":"project"}"#.into(),
+            supersedes: None,
+            published_by: airc_core::PeerId::from_u128(3),
+            published_at_ms: 0,
+        };
+        assert!(validate_spawn_binding("team-project", "project", &[]).is_ok());
+        assert!(
+            validate_spawn_binding("team-project", "project", std::slice::from_ref(&post)).is_ok()
+        );
+        let error = validate_spawn_binding(
+            "team-project",
+            "benchmark/hard-rs",
+            std::slice::from_ref(&post),
+        )
+        .expect_err("a new activity cannot overwrite the project's type");
+        assert!(error.to_string().contains("Choose a new activity name"));
+        post.body = "{not json".into();
+        assert!(validate_spawn_binding("team-project", "project", &[post]).is_err());
     }
 
     // what this catches: spawn staying AiSafe. A citizen with an idea creating a
