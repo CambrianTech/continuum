@@ -173,9 +173,13 @@ pub(crate) fn minds_over_the_grid(
     if widest_window == 0 {
         return Vec::new();
     }
+    // The GATE is her need — the post-fit size her held turns measured — when she has
+    // one; her target (the wish with headroom) only until then. A mind whose wish
+    // outgrows every seat but whose turns fit into one is served there and trimmed,
+    // not exiled (card 70706a9e).
     requirements
         .iter()
-        .filter_map(|r| r.window.map(|w| (r.persona, w)))
+        .filter_map(|r| r.window.map(|w| (r.persona, r.need.map_or(w, |n| n.min(w)))))
         .filter(|(_, w)| *w > widest_window)
         .collect()
 }
@@ -446,13 +450,11 @@ impl Inner {
             .map(|p| p.window)
             .max()
             .unwrap_or(0); // unwrap_or: no node offers a plan = no width to exceed; nobody is named
-        let over_the_grid = minds_over_the_grid(
-            &requirements_for(
-                &inputs.minds.iter().map(|m| m.id).collect::<Vec<_>>(),
-                &crate::cognition::working_set::global(),
-            ),
-            widest_window,
+        let requirements = requirements_for(
+            &inputs.minds.iter().map(|m| m.id).collect::<Vec<_>>(),
+            &crate::cognition::working_set::global(),
         );
+        let over_the_grid = minds_over_the_grid(&requirements, widest_window);
         if !over_the_grid.is_empty() {
             crate::probe!(
                 class = "grid.mind.unservable",
@@ -461,8 +463,16 @@ impl Inner {
                     // 8-hex prefixes, the shape a citizen reads on a board line. Spelled
                     // here rather than borrowing `modules::work::short8`, which is private
                     // to that module — a receipt is not a reason to widen someone else's
-                    // surface.
-                    .map(|(m, w)| format!("{}:{w}", m.to_string().chars().take(8).collect::<String>()))
+                    // surface. `need:` when her measured need gated, `wish:` when no held
+                    // turn is known and the target did (card 70706a9e) — the reader must
+                    // never again mistake a pre-fit wish for a lane width.
+                    .map(|(m, w)| {
+                        let gate = match requirements.iter().find(|r| r.persona == *m).and_then(|r| r.need) {
+                            Some(_) => "need",
+                            None => "wish",
+                        };
+                        format!("{}:{gate}:{w}", m.to_string().chars().take(8).collect::<String>())
+                    })
                     .collect::<Vec<_>>()
                     .join(","),
                 count = over_the_grid.len() as u64,
@@ -751,5 +761,21 @@ mod tests {
         assert_eq!(minds_over_the_grid(&reqs, 110_395).len(), 1);
         // A grid offering no plan at all has no width to exceed: nobody is named.
         assert!(minds_over_the_grid(&reqs, 0).is_empty());
+
+        // what this catches (card 70706a9e, Kimi 2026-09-21): the gate is her NEED once
+        // measured — the post-fit size her held turns fitted into — not her wish. Wish
+        // 99,096 × 1.25 = 123,870 named her at a 75,776 grid her turns were fitting into
+        // every time. With a need of 74,000 she is served there; with a need of 80,000
+        // she is still named — the need gates in both directions. A need above the
+        // target is clamped to the target (a floor cannot exceed what it floors).
+        let kimi = Uuid::new_v4();
+        let wish = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25)];
+        assert_eq!(minds_over_the_grid(&wish, 75_776), vec![(kimi, 123_870)], "no need known: the wish gates, as before");
+        let fits = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(74_000)];
+        assert!(minds_over_the_grid(&fits, 75_776).is_empty(), "her held turns fit this grid: served, trimmed, not exiled");
+        let over = vec![LaneRequirement::from_demand(kimi, 99_096, 1.25).with_need(80_000)];
+        assert_eq!(minds_over_the_grid(&over, 75_776), vec![(kimi, 80_000)], "a need the grid cannot hold still names her, by the need");
+        let clamped = vec![LaneRequirement::from_demand(kimi, 60_000, 1.0).with_need(90_000)];
+        assert!(minds_over_the_grid(&clamped, 60_000).is_empty(), "need clamps to the target");
     }
 }

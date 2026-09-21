@@ -2684,6 +2684,22 @@ impl LlmDeliberationFaculty {
                 sample,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
             );
+            // HER NEED — the allocator's gate (card 70706a9e). Only a turn the fit HELD
+            // (the truthful minimum fitted, and something beyond the framing survived)
+            // measures what a lane must hold for her; a starved or emptied turn says
+            // nothing about her and is not recorded, so the need can never be a
+            // window's echo. The wish above stays the target the allocator grows toward.
+            if let Some(need) = crate::cognition::working_set::need_sample(
+                sent.min(u32::MAX as usize) as u32,
+                framing_tokens.min(u32::MAX as usize) as u32,
+                capacity_error.is_none(),
+            ) {
+                reg.record_need(
+                    self.persona_id,
+                    need,
+                    ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
+                );
+            }
         }
         // Only the source's truthful minimum outranks optional conversation.
         // Additional declared list units use actual leftover room after fitting;
