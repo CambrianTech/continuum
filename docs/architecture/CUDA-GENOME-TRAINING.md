@@ -120,7 +120,12 @@ resource daemon's board subscription and retries atomic admission only when
 that board changes. Only typed `InsufficientCapacity` waits; other admission
 errors still fail. The `training.admission.waiting` probe carries the job's
 consumer identity, requested bytes and available bytes, emitting when that
-availability changes. Cancellation drops preparation without spawning a trainer.
+availability changes. The same admission refusal updates the native owner's
+existing status watch: `genome/job-status` reports `waiting_for_capacity` with
+numeric `requiredBytes` and `availableBytes`. These are the latest admission
+observation, not a reservation or a guarantee that the job can eventually fit.
+Waiting remains nonterminal in the board and completion sentinel. Cancellation
+drops preparation without spawning a trainer.
 No additional polling timer or dispatch is created. This does not arrange
 serving migration, guarantee fairness between waiting jobs, or recover queued
 preparations across a core restart; those remain separate acceptance work.

@@ -23,6 +23,19 @@ pub(super) struct PreparedJob {
     pub finish: Box<dyn FnOnce(u64) -> Result<TrainingArtifact, String> + Send>,
 }
 
+/// Backends may describe preparation, but only the job owner can publish
+/// running or terminal states. This shares the existing status channel.
+pub(super) struct PreparationProgress(watch::Sender<TrainingStatus>);
+
+impl PreparationProgress {
+    pub fn waiting_for_capacity(&self, required_bytes: u64, available_bytes: u64) {
+        self.0.send_replace(TrainingStatus::WaitingForCapacity {
+            required_bytes,
+            available_bytes,
+        });
+    }
+}
+
 pub(super) type LossParser = fn(&str) -> Option<(u64, &'static str, f64)>;
 
 impl NativeJobs {
@@ -64,7 +77,7 @@ impl NativeJobs {
         parser: Option<LossParser>,
         finish: impl FnOnce(u64) -> Result<TrainingArtifact, String> + Send + 'static,
     ) -> Result<JobHandle, FineTuningError> {
-        Ok(self.prepare(id, async move {
+        Ok(self.prepare(id, move |_| async move {
             Ok(PreparedJob {
                 command,
                 output,
@@ -74,17 +87,19 @@ impl NativeJobs {
         }))
     }
 
-    pub fn prepare(
+    pub fn prepare<F>(
         &self,
         id: Uuid,
-        prepare: impl std::future::Future<Output = Result<PreparedJob, FineTuningError>>
-            + Send
-            + 'static,
-    ) -> JobHandle {
+        prepare: impl FnOnce(PreparationProgress) -> F + Send + 'static,
+    ) -> JobHandle
+    where
+        F: std::future::Future<Output = Result<PreparedJob, FineTuningError>> + Send + 'static,
+    {
         let (tx, rx) = watch::channel(TrainingStatus::Queued);
         let (cancel, mut cancelled) = watch::channel(false);
         self.slots.insert(id, JobSlot { status: rx, cancel });
         tokio::spawn(async move {
+            let prepare = prepare(PreparationProgress(tx.clone()));
             let prepared = tokio::select! {
                 biased;
                 _ = cancelled.changed() => {
@@ -288,23 +303,46 @@ mod tests {
             vec![],
             DaemonConfig::default(),
         );
-        let held = wait_for_training_memory(daemon.clone(), "serving", 1024)
+        let held = wait_for_training_memory(daemon.clone(), "serving", 1024, |_| {})
             .await
             .unwrap();
-        let mut waiting = Box::pin(wait_for_training_memory(daemon.clone(), "trainer", 512));
+        let mut waiting = Box::pin(wait_for_training_memory(
+            daemon.clone(),
+            "trainer",
+            512,
+            |_| {},
+        ));
         assert!(waiting.as_mut().now_or_never().is_none());
         drop(held);
         let granted = waiting.await.unwrap();
 
         let jobs = NativeJobs::new("capacity-test");
-        let handle = jobs.prepare(Uuid::new_v4(), async move {
-            let _guard = wait_for_training_memory(daemon, "blocked-trainer", 1024)
-                .await
-                .map_err(FineTuningError::Transient)?;
+        let handle = jobs.prepare(Uuid::new_v4(), |progress| async move {
+            let _guard = wait_for_training_memory(daemon, "blocked-trainer", 1024, |available| {
+                progress.waiting_for_capacity(1024, available);
+            })
+            .await
+            .map_err(FineTuningError::Transient)?;
             panic!("cancelled preparation must never acquire capacity");
         });
         let mut status = jobs.slots.get(&handle.local_id).unwrap().status.clone();
-        assert!(matches!(*status.borrow(), TrainingStatus::Queued));
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !matches!(
+                *status.borrow_and_update(),
+                TrainingStatus::WaitingForCapacity { .. }
+            ) {
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            jobs.poll(&handle).unwrap(),
+            TrainingStatus::WaitingForCapacity {
+                required_bytes: 1024,
+                available_bytes: 512
+            }
+        ));
         jobs.cancel(&handle).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while !matches!(*status.borrow_and_update(), TrainingStatus::Cancelled) {
