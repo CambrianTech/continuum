@@ -182,11 +182,6 @@ use protocol::Response;
 // IPC Server State
 // ============================================================================
 
-/// ServerState holds Arc references that are passed to ServiceModules during initialization.
-/// After modules are registered with the runtime, these fields are not accessed directly
-/// by ServerState methods — all command handling goes through runtime.dispatch().
-/// The fields are kept here to ensure the Arc lifetimes outlive the modules.
-#[allow(dead_code)]
 /// The socket path's ONE routing decision: a command string that names a PEER or a
 /// ROOM (`airc://<peer>[@node]/<path>`, `airc://#room/<path>`) is dispatched by the
 /// CommandExecutor, which owns the URI grammar and the remote transport; anything
@@ -202,6 +197,11 @@ fn addressed_elsewhere(command: &str) -> Option<crate::routing::CommandUri> {
     }
 }
 
+/// ServerState holds Arc references that are passed to ServiceModules during initialization.
+/// After modules are registered with the runtime, these fields are not accessed directly
+/// by ServerState methods — all command handling goes through runtime.dispatch().
+/// The fields are kept here to ensure the Arc lifetimes outlive the modules.
+#[allow(dead_code)]
 struct ServerState {
     voice_service: Arc<crate::live::session::voice_service::VoiceService>,
     /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
