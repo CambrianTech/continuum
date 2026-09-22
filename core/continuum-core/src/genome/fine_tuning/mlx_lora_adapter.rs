@@ -132,9 +132,8 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         // lane on unified memory: the bf16 base (44GB) + the 25GB server
         // SIGABRT'd Metal on the first lived-curriculum train (2026-07-10);
         // the 12GB 4-bit conversion coexists. A deliberate, LOGGED preference
-        // for a stronger-fitting artifact — not a fallback: absent the
-        // conversion we train the full base exactly as before, and its OOM
-        // stays loud.
+        // for a local trainable artifact. Without one, admission refuses an
+        // unsized HF id before either tokenizer or trainer can launch.
         let train_base = {
             let q4 = dirs::home_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -168,121 +167,123 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         let local_id = Uuid::new_v4();
         let python = self.python.clone();
         Ok(self.jobs.prepare(local_id, move |progress| async move {
-        let log = runtime::logger(PROVIDER_ID);
-        let schedule = request.schedule.clone().unwrap_or_else(default_schedule);
-        let model_dir = PathBuf::from(&train_base);
-        let batch = effective_batch_size(&request, &schedule);
-        let sequence = schedule.sequence_length;
-        let footprint = tokio::task::spawn_blocking(move || {
-            crate::forge::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
-        }).await.map_err(|error| FineTuningError::LocalTrainerFailed(error.to_string()))?
-            .ok_or_else(|| FineTuningError::InvalidRequest(
-                "MLX training requires a local base with readable safetensors and vocab_size for admission".into()))?;
-        let reservation = crate::forge::training_admission::wait_for_training_memory(
-            crate::resources::ResourceDaemon::global().ok_or_else(||
-                FineTuningError::LocalTrainerFailed("MLX training requires the resource governor".into()))?,
-            &format!("genome-train:{local_id}"), footprint,
-            |available| progress.waiting_for_capacity(footprint, available),
-        ).await.map_err(FineTuningError::Transient)?;
+            let log = runtime::logger(PROVIDER_ID);
+            let schedule = request.schedule.clone().unwrap_or_else(default_schedule);
+            let reservation = admit_training(
+                PathBuf::from(&train_base),
+                effective_batch_size(&request, &schedule),
+                schedule.sequence_length,
+                local_id,
+                &progress,
+                crate::resources::ResourceDaemon::global(),
+            )
+            .await?;
+            let footprint = reservation.bytes();
 
-        // ── Materialize the dataset into MLX's data dir layout ─────
-        let job_dir = job_dir_for(&request, local_id);
-        let data_dir = job_dir.join("data");
-        let adapter_dir = job_dir.join("adapters");
-        std::fs::create_dir_all(&data_dir).map_err(|e| {
-            FineTuningError::LocalTrainerFailed(format!(
-                "create data dir {}: {e}",
-                data_dir.display()
-            ))
-        })?;
-        std::fs::create_dir_all(&adapter_dir).map_err(|e| {
-            FineTuningError::LocalTrainerFailed(format!(
-                "create adapter dir {}: {e}",
-                adapter_dir.display()
-            ))
-        })?;
-        let chat_template =
-            tokenizer_has_chat_template(&python, &job_dir, &train_base).await?;
-        write_mlx_dataset(&data_dir, &request, chat_template)?;
+            // ── Materialize the dataset into MLX's data dir layout ─────
+            let job_dir = job_dir_for(&request, local_id);
+            let data_dir = job_dir.join("data");
+            let adapter_dir = job_dir.join("adapters");
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                FineTuningError::LocalTrainerFailed(format!(
+                    "create data dir {}: {e}",
+                    data_dir.display()
+                ))
+            })?;
+            std::fs::create_dir_all(&adapter_dir).map_err(|e| {
+                FineTuningError::LocalTrainerFailed(format!(
+                    "create adapter dir {}: {e}",
+                    adapter_dir.display()
+                ))
+            })?;
+            let chat_template = tokenizer_has_chat_template(&python, &job_dir, &train_base).await?;
+            write_mlx_dataset(&data_dir, &request, chat_template)?;
 
-        // ── Build the mlx_lm.lora --train invocation ───────────────
+            // ── Build the mlx_lm.lora --train invocation ───────────────
 
-        let lora = request.lora.clone().unwrap_or_else(default_lora);
-        let iters = iters_for(&request, &schedule);
+            let lora = request.lora.clone().unwrap_or_else(default_lora);
+            let iters = iters_for(&request, &schedule);
 
-        // mlx_lm.lora reads rank/scale/dropout ONLY from a `-c` config YAML — there
-        // are no CLI flags for them. Emit it (or mlx silently uses scale 20.0; see
-        // `lora_config_yaml`) into the already-created adapter dir and pass it below.
-        let config_path = adapter_dir.join("mlx_train_config.yaml");
-        let scale = lora.alpha as f64 / (lora.rank.max(1) as f64);
-        std::fs::write(&config_path, lora_config_yaml(&lora)).map_err(|e| {
-            FineTuningError::LocalTrainerFailed(format!(
-                "write mlx lora config {}: {e}",
-                config_path.display()
-            ))
-        })?;
+            // mlx_lm.lora reads rank/scale/dropout ONLY from a `-c` config YAML — there
+            // are no CLI flags for them. Emit it (or mlx silently uses scale 20.0; see
+            // `lora_config_yaml`) into the already-created adapter dir and pass it below.
+            let config_path = adapter_dir.join("mlx_train_config.yaml");
+            let scale = lora.alpha as f64 / (lora.rank.max(1) as f64);
+            std::fs::write(&config_path, lora_config_yaml(&lora)).map_err(|e| {
+                FineTuningError::LocalTrainerFailed(format!(
+                    "write mlx lora config {}: {e}",
+                    config_path.display()
+                ))
+            })?;
 
-        let mut cmd = tokio::process::Command::new(&python);
-        cmd.args(crate::forge::mlx_train::capped_lora_entrypoint(footprint))
-            .arg("--model")
-            .arg(&train_base)
-            .arg("--train")
-            .arg("--data")
-            .arg(&data_dir)
-            .arg("--adapter-path")
-            .arg(&adapter_dir)
-            .arg("--iters")
-            .arg(iters.to_string())
-            .arg("--batch-size")
-            // Clamped to the SMALLEST split: mlx_lm iterates valid with the same
-            // batch size and hard-errors when a split has fewer rows than one
-            // batch ("Dataset must have at least batch_size=4" — killed the
-            // 12-example lived-curriculum train, 2026-07-10). Small datasets are
-            // the NORM for the lived loop (a day's corrections, not a corpus);
-            // the schedule's batch is a ceiling, the data is the floor.
-            .arg(effective_batch_size(&request, &schedule).to_string())
-            .arg("--num-layers")
-            .arg(lora.target_modules.len().max(8).to_string())
-            .arg("--learning-rate")
-            .arg(format!("{:e}", schedule.learning_rate))
-            // Sequence cap is a MEMORY control, not just quality: activation
-            // memory scales with batch × seq × model size, and mlx_lm's silent
-            // 2048 default meant the schedule's sequence_length never reached
-            // the trainer (found on job a96e2341 — Metal OOM at batch 4 beside
-            // a resident llama-server; the operator's 3072 was never applied).
-            .arg("--max-seq-length")
-            .arg(schedule.sequence_length.to_string())
-            .arg("-c")
-            .arg(&config_path);
+            let mut cmd = tokio::process::Command::new(&python);
+            cmd.args(crate::forge::mlx_train::capped_lora_entrypoint(footprint))
+                .arg("--model")
+                .arg(&train_base)
+                .arg("--train")
+                .arg("--data")
+                .arg(&data_dir)
+                .arg("--adapter-path")
+                .arg(&adapter_dir)
+                .arg("--iters")
+                .arg(iters.to_string())
+                .arg("--batch-size")
+                // Clamped to the SMALLEST split: mlx_lm iterates valid with the same
+                // batch size and hard-errors when a split has fewer rows than one
+                // batch ("Dataset must have at least batch_size=4" — killed the
+                // 12-example lived-curriculum train, 2026-07-10). Small datasets are
+                // the NORM for the lived loop (a day's corrections, not a corpus);
+                // the schedule's batch is a ceiling, the data is the floor.
+                .arg(effective_batch_size(&request, &schedule).to_string())
+                .arg("--num-layers")
+                .arg(lora.target_modules.len().max(8).to_string())
+                .arg("--learning-rate")
+                .arg(format!("{:e}", schedule.learning_rate))
+                // Sequence cap is a MEMORY control, not just quality: activation
+                // memory scales with batch × seq × model size, and mlx_lm's silent
+                // 2048 default meant the schedule's sequence_length never reached
+                // the trainer (found on job a96e2341 — Metal OOM at batch 4 beside
+                // a resident llama-server; the operator's 3072 was never applied).
+                .arg("--max-seq-length")
+                .arg(schedule.sequence_length.to_string())
+                .arg("-c")
+                .arg(&config_path);
 
-        log.info(&format!(
-            "spawning mlx_lm.lora: model={} (canonical={}) iters={} batch={} \
+            log.info(&format!(
+                "spawning mlx_lm.lora: model={} (canonical={}) iters={} batch={} \
              rank={} scale={:.1} data={} → adapters={}",
-            train_base,
-            request.base_model,
-            iters,
-            schedule.batch_size,
-            lora.rank,
-            scale,
-            data_dir.display(),
-            adapter_dir.display()
-        ));
+                train_base,
+                request.base_model,
+                iters,
+                schedule.batch_size,
+                lora.rank,
+                scale,
+                data_dir.display(),
+                adapter_dir.display()
+            ));
 
-        let model_id = format!("{PROVIDER_ID}:{}:{}", request.trait_kind, local_id);
-        Ok(super::native_jobs::PreparedJob {
-            command: cmd, output: adapter_dir.clone(), parser: Some(parse_loss_line),
-            finish: Box::new(move |wall_clock_ms| {
-            // Retain the lease until NativeJobs exits or kills and reaps the trainer.
-            let _reservation = reservation;
-            if !adapter_dir.join("adapters.safetensors").is_file() {
-                return Err("MLX exited successfully without adapters.safetensors".into());
-            }
-            Ok(TrainingArtifact {
-                model_id, local_path: Some(adapter_dir), format: ArtifactFormat::MlxAdapterDir,
-                metrics: JobMetrics { wall_clock_ms, ..Default::default() },
+            let model_id = format!("{PROVIDER_ID}:{}:{}", request.trait_kind, local_id);
+            Ok(super::native_jobs::PreparedJob {
+                command: cmd,
+                output: adapter_dir.clone(),
+                parser: Some(parse_loss_line),
+                finish: Box::new(move |wall_clock_ms| {
+                    // Retain the lease until NativeJobs exits or kills and reaps the trainer.
+                    let _reservation = reservation;
+                    if !adapter_dir.join("adapters.safetensors").is_file() {
+                        return Err("MLX exited successfully without adapters.safetensors".into());
+                    }
+                    Ok(TrainingArtifact {
+                        model_id,
+                        local_path: Some(adapter_dir),
+                        format: ArtifactFormat::MlxAdapterDir,
+                        metrics: JobMetrics {
+                            wall_clock_ms,
+                            ..Default::default()
+                        },
+                    })
+                }),
             })
-            }),
-        })
         }))
     }
 
@@ -293,6 +294,40 @@ impl FineTuningAdapter for MlxLoraFineTuner {
     async fn cancel(&self, handle: &JobHandle) -> Result<(), FineTuningError> {
         self.jobs.cancel(handle)
     }
+}
+
+/// The native MLX preparation boundary: size the local artifact before any
+/// tokenizer/trainer subprocess, then wait under the existing resource authority.
+/// Passing the authority explicitly keeps the admission contract testable without
+/// replacing the process-global governor or pretending the host has Metal.
+pub(super) async fn admit_training(
+    model_dir: PathBuf,
+    batch: u32,
+    sequence: u32,
+    local_id: Uuid,
+    progress: &super::native_jobs::PreparationProgress,
+    daemon: Option<std::sync::Arc<crate::resources::ResourceDaemon>>,
+) -> Result<crate::resources::LeaseGuard, FineTuningError> {
+    let footprint = tokio::task::spawn_blocking(move || {
+        crate::forge::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
+    })
+    .await
+    .map_err(|error| FineTuningError::LocalTrainerFailed(error.to_string()))?
+    .ok_or_else(|| FineTuningError::InvalidRequest(
+        "MLX training requires a local base with readable safetensors and vocab_size for admission".into(),
+    ))?;
+    crate::forge::training_admission::wait_for_training_memory(
+        daemon.ok_or_else(|| {
+            FineTuningError::LocalTrainerFailed(
+                "MLX training requires the resource governor".into(),
+            )
+        })?,
+        &format!("genome-train:{local_id}"),
+        footprint,
+        |available| progress.waiting_for_capacity(footprint, available),
+    )
+    .await
+    .map_err(FineTuningError::Transient)
 }
 
 /// Parse an mlx_lm loss line — `Iter 100: Train loss 1.234, …` /
