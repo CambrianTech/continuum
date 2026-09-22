@@ -1840,9 +1840,37 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // streak. Gated on the local lane like the failure stamps above.
         let delivered_something =
             !acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty();
-        match crate::inference::llama_server::classify_real_decode(local_lane, delivered_something)
-        {
+
+        // harness/memory and stripped from `text` so it can NEVER reach the room.
+        let raw_content = acc_content;
+        let (text, reasoning) = extract_reasoning(
+            &raw_content,
+            (!acc_reasoning.is_empty()).then_some(acc_reasoning.as_str()),
+        );
+        let mut finish_reason = finish_reason_str
+            .as_deref()
+            .map(|r| self.map_finish_reason(r))
+            .unwrap_or(FinishReason::Stop);
+        let generation_completed = finish_reason_str.is_some()
+            && !matches!(finish_reason, FinishReason::Error);
+
+        match crate::inference::llama_server::classify_real_decode(
+            local_lane,
+            delivered_something,
+            finish_reason,
+        ) {
             crate::inference::llama_server::RealDecodeOutcome::NotOurLane => {}
+            // The output cap ended it on a HEALTHY lane — the allowance owns this, not
+            // the backend. Surfaced so it is never silent, never charged to the lane.
+            crate::inference::llama_server::RealDecodeOutcome::CappedBeforeOutput => {
+                crate::probe!(
+                    class = "inference.lane.capped_before_output",
+                    model = resp_model.as_deref().unwrap_or("<unknown>"),
+                    response_time_ms,
+                    "the local lane hit its output cap having committed no answer — an \
+                     allowance fault on a working backend, NOT lane wedge evidence"
+                );
+            }
             crate::inference::llama_server::RealDecodeOutcome::ProofOfLife => {
                 crate::inference::llama_server::note_real_decode();
             }
@@ -1887,19 +1915,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 );
             }
         }
-
-        // harness/memory and stripped from `text` so it can NEVER reach the room.
-        let raw_content = acc_content;
-        let (text, reasoning) = extract_reasoning(
-            &raw_content,
-            (!acc_reasoning.is_empty()).then_some(acc_reasoning.as_str()),
-        );
-        let mut finish_reason = finish_reason_str
-            .as_deref()
-            .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
-        let generation_completed = finish_reason_str.is_some()
-            && !matches!(finish_reason, FinishReason::Error);
 
         // Assemble native tool calls from the streamed fragments.
         let mut tool_calls: Option<Vec<ToolCall>> = if acc_tools.is_empty() {
