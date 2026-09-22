@@ -318,10 +318,15 @@ impl HeldTerminate {
 /// parent drained and then asked, a declined or failed consent would strand a drained
 /// core answering ping — the very thing the preflight exists to prevent, moved later
 /// (Astra, 2026-09-22: "declined/failed UAC strands drained core again"). So the order
-/// here is: bind the plan, TAKE the capability and hold it, re-observe the target
-/// THROUGH that same handle, drain, then spend the capability. Every way this can fail before the drain fails
-/// with nothing drained, and after the drain the terminate cannot be refused because
-/// the handle is already in hand.
+/// here is: bind the plan, TAKE the capability and hold it, observe the target THROUGH
+/// that same handle, drain, then spend the capability.
+///
+/// WHAT THAT DOES AND DOES NOT BUY. Every way this can fail before the drain fails with
+/// nothing drained — that part is a guarantee. After the drain, what has been removed is
+/// the ACQUISITION failure: the terminate no longer needs a fresh `OpenProcess` that
+/// could be denied, time out, or find the pid recycled. `TerminateProcess` itself can
+/// still return failure and the code reports it (Astra, review of 4936aac55: "syscall
+/// still returns failure"); a held handle narrows the window, it does not abolish it.
 #[cfg(windows)]
 pub(super) async fn teardown_elevated(plan_path: &Path, plan_sha: &str) -> Result<(), String> {
     let receipt = receipt_path(plan_path);
