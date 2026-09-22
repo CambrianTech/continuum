@@ -177,6 +177,68 @@ pub fn reset_real_decode_failures() {
     REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// What a FINISHED real generation says about the served lane's health.
+///
+/// The classification is pure so it can be tested without touching the process-global
+/// counters it drives ([[a-daemon-test-owns-its-inputs-process-globals-cross-tests]]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealDecodeOutcome {
+    /// Tokens reached the citizen: proof of life, and it ends any failure streak.
+    ProofOfLife,
+    /// The generation finished CLEANLY and delivered nothing — no content, no reasoning,
+    /// no tool call — and the engine said it STOPPED. This is the latched-backend class
+    /// (a Metal compute context that has gone bad still answers 200 and streams a
+    /// well-formed body with zero deltas), and it is the one wedge the liveness record
+    /// could not previously see: the transport never failed, so nothing stamped a
+    /// failure, so `REAL_DECODE_FAILS` stayed 0 while every citizen on the lane got an
+    /// empty turn. A relaunch IS the cure, so this counts against the lane.
+    DeliveredNothing,
+    /// Empty, but the engine said the OUTPUT CAP ended it. The lane is healthy — it
+    /// generated until the allowance ran out and the whole budget went to a reasoning
+    /// channel that never committed an answer. Measured by Cormac on the IntelMac
+    /// 2026-09-22: 2 of 42 settle ticks, `finish_reason` Length, on a lane with 27
+    /// successful generations in the same window. Relaunching it would bounce a working
+    /// backend and fix nothing; the owner is the output allowance
+    /// ([[an-output-allowance-for-a-thinking-model-must-hold-its-reasoning-channel]]).
+    /// Surfaced, never charged to the lane.
+    CappedBeforeOutput,
+    /// Not the local serving lane — a cloud provider's empty turn says nothing about our
+    /// hardware and must never smear this record.
+    NotOurLane,
+}
+
+/// Classify a finished real generation for the lane-health record.
+///
+/// `delivered_something` is the OR of content, reasoning and tool calls: a native tool
+/// turn legitimately carries empty text, so text alone is not the test.
+///
+/// The FINISH REASON separates two empties that read identically in a receipt and have
+/// opposite cures (Cormac's review of #4344, measured across two nodes the same hour):
+/// an empty that STOPPED is a backend that produced nothing and wants a relaunch; an
+/// empty that hit LENGTH is a healthy backend whose output cap ended it, and relaunching
+/// it would bounce a working lane and change nothing. Only the first is the lane's fault.
+pub fn classify_real_decode(
+    local_lane: bool,
+    delivered_something: bool,
+    finish_reason: crate::ai::types::FinishReason,
+) -> RealDecodeOutcome {
+    use crate::ai::types::FinishReason;
+    if !local_lane {
+        return RealDecodeOutcome::NotOurLane;
+    }
+    if delivered_something {
+        return RealDecodeOutcome::ProofOfLife;
+    }
+    match finish_reason {
+        // The cap ended it: the lane generated, the allowance ran out. Healthy hardware.
+        FinishReason::Length => RealDecodeOutcome::CappedBeforeOutput,
+        // Stop / ToolUse-with-no-call / Error, all empty: nothing was produced at all.
+        FinishReason::Stop | FinishReason::ToolUse | FinishReason::Error => {
+            RealDecodeOutcome::DeliveredNothing
+        }
+    }
+}
+
 /// Record that a real generation produced tokens on the served lane. Called from the adapter's
 /// success path — the one place that knows tokens actually came out.
 pub fn note_real_decode() {
@@ -6175,5 +6237,61 @@ mod tests {
         let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, None)], alive);
         assert_eq!(dirs, vec![PathBuf::from("/p/a")]);
         assert!(!complete, "a LIVE record without a dir → incomplete → no sweep");
+    }
+
+    // what this catches: the latched-backend wedge class, AND the empty that must NOT
+    // trigger it. A Metal compute context that has gone bad still answers 200 and streams
+    // a well-formed SSE body with ZERO deltas, so no transport-failure stamp fires and the
+    // lane reads healthy while every citizen on it gets an empty turn. Measured on the M5
+    // 2026-09-22: 2 root Metal OOMs latched the backend, 113 tasks ran prefill and never
+    // generated, 73 empty-completion faults landed on six citizens — and `REAL_DECODE_FAILS`
+    // stayed 0 the whole time.
+    //
+    // The finish reason is load-bearing and was missing from the first cut of this fix
+    // (Cormac's review of #4344). The IntelMac's empties the same hour were `Length` on a
+    // lane with 27 successful generations in the same window: the cap ended the turn, the
+    // backend is fine, and two of them would have bounced a healthy lane for nothing. Same
+    // sentence in the receipt, opposite cure.
+    #[test]
+    fn only_an_empty_that_stopped_is_the_lanes_failure() {
+        use super::{classify_real_decode, RealDecodeOutcome};
+        use crate::ai::types::FinishReason;
+
+        // Nothing produced at all: the relaunch is the cure.
+        assert_eq!(
+            classify_real_decode(true, false, FinishReason::Stop),
+            RealDecodeOutcome::DeliveredNothing,
+            "an empty local-lane generation that STOPPED must count AGAINST the lane — \
+             this is the evidence the heartbeat relaunches on"
+        );
+        // The cap ended it. The backend generated; the allowance ran out. Relaunching
+        // would bounce a working lane and fix nothing — the output allowance owns this.
+        assert_eq!(
+            classify_real_decode(true, false, FinishReason::Length),
+            RealDecodeOutcome::CappedBeforeOutput,
+            "an empty that hit the OUTPUT CAP is an allowance fault on healthy hardware, \
+             never lane wedge evidence"
+        );
+        // Real output is still proof of life whatever ended it, and still ends the streak.
+        assert_eq!(
+            classify_real_decode(true, true, FinishReason::Stop),
+            RealDecodeOutcome::ProofOfLife
+        );
+        assert_eq!(
+            classify_real_decode(true, true, FinishReason::Length),
+            RealDecodeOutcome::ProofOfLife,
+            "a truncated turn still DELIVERED — it is not a wedge, whatever else it is"
+        );
+        // A cloud provider's empty turn says nothing about our hardware. Every finish
+        // reason, so a future refactor cannot let remote traffic smear the local record.
+        for fr in [
+            FinishReason::Stop,
+            FinishReason::Length,
+            FinishReason::ToolUse,
+            FinishReason::Error,
+        ] {
+            assert_eq!(classify_real_decode(false, false, fr), RealDecodeOutcome::NotOurLane);
+            assert_eq!(classify_real_decode(false, true, fr), RealDecodeOutcome::NotOurLane);
+        }
     }
 }
