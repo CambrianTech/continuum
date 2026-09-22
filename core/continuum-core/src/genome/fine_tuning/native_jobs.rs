@@ -274,6 +274,48 @@ pub(super) fn default_lora() -> LoRAHyperparams {
 mod tests {
     use super::*;
 
+    // Regression: capacity contention must wait without allocating, wake on
+    // release, and cancellation must never turn a queued job into a trainer.
+    #[tokio::test]
+    async fn prepared_training_waits_for_capacity_and_remains_cancellable() {
+        use crate::forge::training_admission::wait_for_training_memory;
+        use crate::resources::{
+            capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind,
+        };
+        use futures::FutureExt;
+        let daemon = ResourceDaemon::start(
+            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1024))],
+            vec![],
+            DaemonConfig::default(),
+        );
+        let held = wait_for_training_memory(daemon.clone(), "serving", 1024)
+            .await
+            .unwrap();
+        let mut waiting = Box::pin(wait_for_training_memory(daemon.clone(), "trainer", 512));
+        assert!(waiting.as_mut().now_or_never().is_none());
+        drop(held);
+        let granted = waiting.await.unwrap();
+
+        let jobs = NativeJobs::new("capacity-test");
+        let handle = jobs.prepare(Uuid::new_v4(), async move {
+            let _guard = wait_for_training_memory(daemon, "blocked-trainer", 1024)
+                .await
+                .map_err(FineTuningError::Transient)?;
+            panic!("cancelled preparation must never acquire capacity");
+        });
+        let mut status = jobs.slots.get(&handle.local_id).unwrap().status.clone();
+        assert!(matches!(*status.borrow(), TrainingStatus::Queued));
+        jobs.cancel(&handle).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !matches!(*status.borrow_and_update(), TrainingStatus::Cancelled) {
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        drop(granted);
+    }
+
     #[test]
     fn native_job_child_fixture() {
         if std::env::var_os("CONTINUUM_NATIVE_JOB_CHILD").is_some() {

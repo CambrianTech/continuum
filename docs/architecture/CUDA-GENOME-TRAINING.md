@@ -113,6 +113,18 @@ reattachment to native jobs, and typed per-step progress are not implemented
 here. The shared owner currently exposes job status and persisted diagnostic
 loss records; these limitations must remain visible in acceptance receipts.
 
+Capacity shortage is a queued preparation, not a failed training run. The
+planner emits at least the one-example memory plan even with zero headroom,
+without loading weights. The native job's preparation waits on the existing
+resource daemon's board subscription and retries atomic admission only when
+that board changes. Only typed `InsufficientCapacity` waits; other admission
+errors still fail. The `training.admission.waiting` probe carries the job's
+consumer identity, requested bytes and available bytes, emitting when that
+availability changes. Cancellation drops preparation without spawning a trainer.
+No additional polling timer or dispatch is created. This does not arrange
+serving migration, guarantee fairness between waiting jobs, or recover queued
+preparations across a core restart; those remain separate acceptance work.
+
 The Qwen3.5-family regression caught a text-only AutoModel projection taking
 precedence over the multimodal wrapper. The trainer now preserves the wrapper;
 its config, parameter paths and memory plan include the vision component even

@@ -166,10 +166,13 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             if plan.memory_bytes == 0 {
                 return Err(failure("CUDA planner returned an empty memory requirement"));
             }
-            let reservation = crate::forge::training_admission::acquire_training_memory(
+            let reservation = crate::forge::training_admission::wait_for_training_memory(
+                crate::resources::ResourceDaemon::global()
+                    .ok_or_else(|| failure("CUDA training requires the resource governor"))?,
                 &format!("genome-train:{id}"),
                 plan.memory_bytes,
             )
+            .await
             .map_err(FineTuningError::Transient)?;
             spec.memory_bytes = plan.memory_bytes;
             spec.micro_batch_size = plan.micro_batch_size;
