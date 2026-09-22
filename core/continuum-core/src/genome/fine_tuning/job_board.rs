@@ -153,6 +153,15 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// The exact bytes one ledger row occupies: compact JSON and its newline, built
+/// before any I/O so the append is a single write. PURE, so the two-writer test
+/// below can pin that a row never spans a syscall boundary by construction.
+fn ledger_line(line: &serde_json::Value) -> String {
+    let mut s = line.to_string();
+    s.push('\n');
+    s
+}
+
 impl TrainingJobBoard {
     /// Command-facing read delegates filesystem work to the existing board owner.
     /// One page per request; callers receive continuation rather than a scan loop.
@@ -392,7 +401,14 @@ impl TrainingJobBoard {
                 .create(true)
                 .append(true)
                 .open(path)?;
-            writeln!(f, "{line}")
+            // ONE LINE, ONE write(2). `writeln!(f, "{line}")` on a raw `File` let
+            // `Value`'s Display emit the JSON as dozens of `write_str` fragments, each
+            // its own syscall; O_APPEND makes each SYSCALL land atomically at the end,
+            // not each LINE, so two tasks journaling at once zipped their records
+            // together byte-wise — 136 of 701 lines on the M5 unreadable (card
+            // faed9279), and every later reader of that ledger failed on them forever.
+            // Serialize first, then a single `write_all` of the whole line.
+            f.write_all(ledger_line(line).as_bytes())
         };
         if let Err(e) = write() {
             tracing::warn!(error = %e, ledger = %path.display(), "job-ledger append failed");
@@ -786,4 +802,55 @@ mod tests {
             .contains("not-json"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+    // what this catches (card faed9279): two tasks journaling at once zipped their
+    // rows together byte-wise — `writeln!` on a raw File was one write(2) per Display
+    // fragment, and O_APPEND made each fragment, not each line, the atomic unit. 136 of
+    // 701 lines on the M5 were unreadable, in two shapes (interleaved, and "torn" — a
+    // row whose tail landed after another writer's newline). One serialized line, one
+    // write_all: every row lands whole. Two threads × 1,000 rows → 2,000 rows, every one
+    // parses, every one carries exactly its own writer's id. PROVEN RED before the fix:
+    // with the writer reverted to `writeln!(f, "{line}")`, run 0 line 0 was already
+    // unreadable ("expected `:` at line 1 column 9" — a fragment boundary inside the
+    // first key) on the IntelMac, 2026-09-22. Five runs so a lucky schedule cannot pass
+    // a broken writer.
+    #[test]
+    fn two_writers_never_zip_their_rows_together() {
+        for run in 0..5 {
+            let dir = std::env::temp_dir().join(format!("faed9279-{}-{run}", Uuid::new_v4()));
+            let board = std::sync::Arc::new(TrainingJobBoard::with_ledger(Some(dir.join("jobs-ledger.jsonl"))));
+            let writers: Vec<_> = ["aaaaaaaa", "bbbbbbbb"]
+                .into_iter()
+                .map(|who| {
+                    let board = board.clone();
+                    std::thread::spawn(move || {
+                        for n in 0..1_000u32 {
+                            board.journal(&serde_json::json!({
+                                "event": "registered",
+                                "who": who,
+                                "n": n,
+                                // long enough that Display would split it across many
+                                // fragments — the shape that interleaved in production
+                                "pad": "x".repeat(200),
+                            }));
+                        }
+                    })
+                })
+                .collect();
+            for w in writers {
+                w.join().expect("writer thread");
+            }
+            let text = std::fs::read_to_string(dir.join("jobs-ledger.jsonl")).expect("ledger");
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), 2_000, "run {run}: every row landed, none merged");
+            for (i, line) in lines.iter().enumerate() {
+                let v: serde_json::Value = serde_json::from_str(line)
+                    .unwrap_or_else(|e| panic!("run {run} line {i} unreadable: {e}\n{line}"));
+                let who = v["who"].as_str().expect("who");
+                assert!(who == "aaaaaaaa" || who == "bbbbbbbb", "run {run} line {i}: {who}");
+                assert_eq!(v["pad"].as_str().map(str::len), Some(200), "run {run} line {i}: pad intact");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
 }
