@@ -334,6 +334,63 @@ impl HeldTerminate {
 /// argument keeps the leaf a leaf — and makes the ORDER testable, because a fake drain can
 /// record that it ran after the handle was taken and before it was spent, which a direct
 /// call never could.
+/// A teardown capability that has been TAKEN and is being HELD.
+///
+/// The sequence below is written against this trait rather than against the Windows
+/// handle so the ORDER — take, observe through what was taken, drain, spend — is
+/// provable on any machine. Astra's standing objection to this branch was tests that
+/// exercise helpers instead of orchestration; a Windows-only sequence could only ever
+/// have been asserted in a comment from here.
+#[cfg(any(windows, test))]
+pub(super) trait HeldCapability: Sized {
+    /// The image the HELD process is running. Read through the capability, never by a
+    /// second lookup on the pid.
+    fn image(&self) -> Result<String, String>;
+    /// Spend it. Consumes self: a capability is used once.
+    fn spend(self) -> Result<(), String>;
+}
+
+/// The teardown sequence, generic over the capability so the order is testable without
+/// an OS to kill a process on.
+///
+/// EVERY STEP BEFORE `drain` MUST BE ABLE TO FAIL WITH NOTHING DRAINED. That is the
+/// whole contract (Astra, 2026-09-22: "declined/failed UAC strands drained core again"),
+/// and it is why `drain` is the fourth argument and not the second.
+#[cfg(any(windows, test))]
+pub(super) async fn teardown_sequence<C, T, F, Fut>(
+    plan: &TeardownPlan,
+    take: T,
+    drain: F,
+) -> Result<(String, String), String>
+where
+    C: HeldCapability,
+    T: FnOnce(i32) -> Result<C, String>,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = String>,
+{
+    // THE CAPABILITY COMES FIRST, and everything after it is read THROUGH it. Taking it
+    // kills nothing; what it buys is that the pid stops being a name two different
+    // processes could answer to between the check and the act.
+    let held = take(plan.pid)?;
+    let image = held.image()?;
+    target_is_our_core(plan, &image)?;
+    // Only now, with the capability in hand and the target proven, may anything be
+    // drained. A failure above this line leaves a serving core serving.
+    let graceful = drain().await;
+    held.spend()?;
+    Ok((image, graceful))
+}
+
+#[cfg(windows)]
+impl HeldCapability for HeldTerminate {
+    fn image(&self) -> Result<String, String> {
+        HeldTerminate::image(self)
+    }
+    fn spend(self) -> Result<(), String> {
+        self.terminate()
+    }
+}
+
 #[cfg(windows)]
 pub(super) async fn teardown_elevated<F, Fut>(
     plan_path: &Path,
@@ -347,20 +404,11 @@ where
     let receipt = receipt_path(plan_path);
     let result = async {
         let plan = read_bound_plan(plan_path, plan_sha)?;
-        // THE HANDLE COMES FIRST, and everything after it is read THROUGH it. Opening a
-        // handle kills nothing; what it buys is that the pid stops being a name two
-        // different processes could answer to between the check and the act.
-        let held = HeldTerminate::take(plan.pid)?;
-        let image = held.image()?;
-        target_is_our_core(&plan, &image)?;
+        let (image, graceful) =
+            teardown_sequence(&plan, HeldTerminate::take, drain).await?;
         // The digest is RECORDED, not compared: nobody could have known it in advance
         // (see `target_is_our_core`), but the receipt should say exactly what was ended.
         let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})"));
-        // The drain runs under a capability already held. The caller proves that to the
-        // root's own gate; from in here all that matters is WHEN it runs — after the
-        // handle, before it is spent.
-        let graceful = drain().await;
-        held.terminate()?;
         Ok::<String, String>(format!(
             "elevated teardown: drained ({graceful}) and terminated pid {} running {image} (sha256 {sha})",
             plan.pid
@@ -567,6 +615,113 @@ mod tests {
             .expect("a core that outlived its own deploy runs from the parking space");
         target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.exe")
             .expect("and the ordinary case still passes");
+    }
+
+    // A capability whose every act is RECORDED, so the sequence can be asserted rather
+    // than described. `spend` consumes it, which is the type system carrying the
+    // once-only property the real handle has.
+    #[derive(Default)]
+    struct Recorder {
+        log: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+        image: String,
+    }
+
+    impl HeldCapability for Recorder {
+        fn image(&self) -> Result<String, String> {
+            self.log.borrow_mut().push("image");
+            Ok(self.image.clone())
+        }
+        fn spend(self) -> Result<(), String> {
+            self.log.borrow_mut().push("spend");
+            Ok(())
+        }
+    }
+
+    // what this catches (Astra, 2026-09-22, the standing objection to this branch):
+    // ORCHESTRATION, not helpers. The contract is that NOTHING IS DRAINED until the
+    // capability is in hand and the target is proven — a declined consent, a token
+    // without the privilege, or a recycled pid must each leave a serving core serving.
+    // Until the drain was injected this could only be asserted in a comment; now a fake
+    // capability records the order and the assertion is the order itself.
+    #[tokio::test]
+    async fn nothing_is_drained_before_the_capability_is_held_and_the_target_proven() {
+        let p = plan();
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+        // The happy path: take, observe THROUGH what was taken, drain, spend.
+        let l = log.clone();
+        let taken = l.clone();
+        // Built BEFORE the closure: the sequence borrows the plan, so the closure must
+        // not also reach into it.
+        let ours = format!("{}\\core.exe", p.install_dir);
+        let (image, graceful) = teardown_sequence(
+            &p,
+            move |_pid| {
+                taken.borrow_mut().push("take");
+                Ok(Recorder { log: taken.clone(), image: ours.clone() })
+            },
+            || {
+                l.borrow_mut().push("drain");
+                async { "durable".to_string() }
+            },
+        )
+        .await
+        .expect("a held capability on a proven target completes");
+        assert_eq!(
+            log.borrow().as_slice(),
+            &["take", "image", "drain", "spend"],
+            "the drain runs AFTER the capability is held and the target proven, and the \
+             capability is spent only after the drain"
+        );
+        assert!(image.ends_with("core.exe"));
+        assert_eq!(graceful, "durable");
+
+        // A capability that cannot be TAKEN: nothing observed, nothing drained. This is
+        // the declined-consent and no-privilege case, and it is the one that would
+        // strand a drained core if the order were wrong.
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let l = log.clone();
+        let refused = teardown_sequence::<Recorder, _, _, _>(
+            &p,
+            |_pid| Err("OpenProcess denied".to_string()),
+            || {
+                l.borrow_mut().push("drain");
+                async { String::new() }
+            },
+        )
+        .await
+        .expect_err("no capability must abort before anything is drained");
+        assert!(refused.contains("OpenProcess denied"), "{refused}");
+        assert!(log.borrow().is_empty(), "NOTHING ran: {:?}", log.borrow());
+
+        // A RECYCLED pid: the capability was taken, but what it names is not our core.
+        // The target check sits before the drain precisely so this leaves the world alone.
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let l = log.clone();
+        let taken = l.clone();
+        let wrong = teardown_sequence(
+            &p,
+            move |_pid| {
+                taken.borrow_mut().push("take");
+                Ok(Recorder {
+                    log: taken.clone(),
+                    image: "C:\\Windows\\System32\\notepad.exe".to_string(),
+                })
+            },
+            || {
+                l.borrow_mut().push("drain");
+                async { String::new() }
+            },
+        )
+        .await
+        .expect_err("a recycled pid must abort before anything is drained");
+        assert!(wrong.contains("recycled"), "{wrong}");
+        assert_eq!(
+            log.borrow().as_slice(),
+            &["take", "image"],
+            "it looked, it refused, and it neither drained nor spent: {:?}",
+            log.borrow()
+        );
     }
 
     // what this catches: path spelling read as a different file. The scheduler echoes
