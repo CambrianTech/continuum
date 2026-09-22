@@ -5,4 +5,8 @@ import type { TrainingStatus } from "./fine_tuning/TrainingStatus";
 /**
  * A journal result is historical evidence, not a resumed provider job.
  */
-export type JobStatusOutcome = { success: boolean, status?: TrainingStatus, error?: string, errorKind?: string, source?: JobStatusSource, nextHistoryOffset?: number, };
+export type JobStatusOutcome = { success: boolean, status?: TrainingStatus, error?: string, errorKind?: string, source?: JobStatusSource, nextHistoryOffset?: number, 
+/**
+ * Unreadable rows in this page; retained on disk. Absence is uncertain.
+ */
+malformed?: number, };

@@ -61,6 +61,10 @@ pub struct JobStatusOutcome {
     #[ts(optional)]
     #[ts(type = "number")]
     pub next_history_offset: Option<u64>,
+    /// Unreadable rows in this page; retained on disk. Absence is uncertain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub malformed: Option<u32>,
 }
 
 impl JobStatusOutcome {
@@ -72,6 +76,7 @@ impl JobStatusOutcome {
             error: None,
             error_kind: None,
             next_history_offset: None,
+            malformed: None,
         }
     }
     fn refused(kind: &str, error: String) -> Self {
@@ -82,6 +87,7 @@ impl JobStatusOutcome {
             error: Some(error),
             error_kind: Some(kind.into()),
             next_history_offset: None,
+            malformed: None,
         }
     }
 }
@@ -116,6 +122,16 @@ crate::action_command! {
             Ok(JournalLookup::Incomplete { next_offset }) => {
                 let mut result = JobStatusOutcome::refused("HistoryIncomplete", "history scan incomplete; continue with nextHistoryOffset".into());
                 result.source = Some(JobStatusSource::Journal);
+                result.next_history_offset = Some(next_offset);
+                result
+            },
+            Ok(JournalLookup::Corrupt { observed, malformed, next_offset }) => {
+                let mut result = match observed {
+                    Some(status) => JobStatusOutcome::observed(status, JobStatusSource::Journal),
+                    None => JobStatusOutcome::refused("HistoryCorrupt", "unreadable rows retained; absence is uncertain, continue with nextHistoryOffset".into()),
+                };
+                result.source = Some(JobStatusSource::Journal);
+                result.malformed = Some(malformed);
                 result.next_history_offset = Some(next_offset);
                 result
             },
