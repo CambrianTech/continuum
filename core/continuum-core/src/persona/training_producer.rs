@@ -1782,6 +1782,7 @@ pub(crate) mod tests {
                 lane_id: None,
                 state: airc_work::CardState::Claimed,
                 owner,
+                claim_provenance: None,
                 claim_id: claim,
                 claim_expires_at_ms: None,
                 last_heartbeat_at_ms: None,
@@ -2911,6 +2912,8 @@ pub(crate) mod tests {
         };
         let claim = |card_id, claim_id, holder| {
             WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
+                selected_at_ms: None,
+                origin: airc_work::ClaimOrigin::Unknown,
                 card_id,
                 claim_id,
                 owner: holder,

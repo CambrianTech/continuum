@@ -195,19 +195,19 @@ members = [
 # AIRC #1433 adds accepted signed reviews of exact work submissions, used by
 # the ordinary reviewed-credit consumer. All crates share that public revision.
 # The same revision across all AIRC crates preserves one shared wire contract.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "c3d6e00e3cac0fc13be91d71af233895088365bd" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "c3d6e00e3cac0fc13be91d71af233895088365bd" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "c3d6e00e3cac0fc13be91d71af233895088365bd" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "c3d6e00e3cac0fc13be91d71af233895088365bd" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "c3d6e00e3cac0fc13be91d71af233895088365bd" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "c3d6e00e3cac0fc13be91d71af233895088365bd" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "756d390aabc17a194b0c5496482c7ecb690bb093" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "756d390aabc17a194b0c5496482c7ecb690bb093" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "756d390aabc17a194b0c5496482c7ecb690bb093" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "756d390aabc17a194b0c5496482c7ecb690bb093" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "756d390aabc17a194b0c5496482c7ecb690bb093" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "756d390aabc17a194b0c5496482c7ecb690bb093" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "c3d6e00e3cac0fc13be91d71af233895088365bd" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "756d390aabc17a194b0c5496482c7ecb690bb093" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

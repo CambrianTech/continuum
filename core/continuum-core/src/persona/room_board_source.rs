@@ -827,6 +827,7 @@ mod tests {
             lane_id: None,
             state,
             owner,
+            claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
             claim_expires_at_ms: claimed.then(|| now_unix_ms() + 60_000),
             last_heartbeat_at_ms: None,
