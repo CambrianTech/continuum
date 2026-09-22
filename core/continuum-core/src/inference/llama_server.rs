@@ -6253,7 +6253,7 @@ mod tests {
     // backend is fine, and two of them would have bounced a healthy lane for nothing. Same
     // sentence in the receipt, opposite cure.
     #[test]
-    fn only_an_empty_that_STOPPED_is_the_lanes_failure() {
+    fn only_an_empty_that_stopped_is_the_lanes_failure() {
         use super::{classify_real_decode, RealDecodeOutcome};
         use crate::ai::types::FinishReason;
 
