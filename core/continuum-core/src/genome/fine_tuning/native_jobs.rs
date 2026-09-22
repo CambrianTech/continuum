@@ -316,13 +316,41 @@ mod tests {
         drop(held);
         let granted = waiting.await.unwrap();
 
+        // Exercise the actual MLX admission boundary with local sizing metadata;
+        // these bytes are never loaded as a model or passed to a trainer.
+        let model = tempfile::tempdir().unwrap();
+        std::fs::write(model.path().join("model.safetensors"), [0u8; 896]).unwrap();
+        std::fs::write(model.path().join("config.json"), r#"{"vocab_size":2}"#).unwrap();
+        let (tx, _) = watch::channel(TrainingStatus::Queued);
+        let progress = PreparationProgress(tx);
+        let missing_governor = super::super::mlx_lora_adapter::admit_training(
+            model.path().into(),
+            1,
+            1,
+            Uuid::new_v4(),
+            &progress,
+            None,
+        )
+        .await
+        .err()
+        .expect("sized MLX artifact must require governor");
+        assert!(
+            matches!(missing_governor, FineTuningError::LocalTrainerFailed(ref message)
+            if message.contains("resource governor"))
+        );
         let jobs = NativeJobs::new("capacity-test");
-        let handle = jobs.prepare(Uuid::new_v4(), |progress| async move {
-            let _guard = wait_for_training_memory(daemon, "blocked-trainer", 1024, |available| {
-                progress.waiting_for_capacity(1024, available);
-            })
-            .await
-            .map_err(FineTuningError::Transient)?;
+        let model_dir = model.path().to_path_buf();
+        let id = Uuid::new_v4();
+        let handle = jobs.prepare(id, move |progress| async move {
+            let _guard = super::super::mlx_lora_adapter::admit_training(
+                model_dir,
+                1,
+                1,
+                id,
+                &progress,
+                Some(daemon),
+            )
+            .await?;
             panic!("cancelled preparation must never acquire capacity");
         });
         let mut status = jobs.slots.get(&handle.local_id).unwrap().status.clone();

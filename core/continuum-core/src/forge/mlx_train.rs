@@ -235,16 +235,18 @@ pub fn build_train_argv(
     memory_cap_bytes: u64,
 ) -> Vec<String> {
     let base = build_train_args(spec, config_path);
-    let cap = memory_cap_bytes;
+    let mut argv = capped_lora_entrypoint(memory_cap_bytes);
+    argv.extend(base.into_iter().skip(3));
+    argv
+}
+
+/// Both native MLX training paths enter the same allocator-capped trainer.
+pub(crate) fn capped_lora_entrypoint(cap: u64) -> Vec<String> {
     let wrapper = format!(
         "import sys; import mlx.core as mx; mx.set_memory_limit({cap}); \
 from mlx_lm import lora; sys.argv = ['mlx_lm.lora'] + sys.argv[1:]; lora.main()"
     );
-    // base = ["-m","mlx_lm","lora", <cli…>] — the wrapper replaces the module
-    // dispatch and consumes the same CLI tail.
-    let mut argv = vec!["-c".to_string(), wrapper];
-    argv.extend(base.into_iter().skip(3));
-    argv
+    vec!["-c".to_string(), wrapper]
 }
 
 /// Apply the EXPLICIT, caller-supplied [`MlxBasePrep`] normalizations to an HF
@@ -319,7 +321,7 @@ pub fn prepare_base_for_mlx(
 ///
 /// `vocab_size` comes from the base's own `config.json`. `None` when the dir has
 /// no safetensors or no readable vocab — admission refuses an unsized job.
-fn derive_train_footprint_bytes(
+pub(crate) fn derive_train_footprint_bytes(
     base_model_dir: &std::path::Path,
     batch_size: u32,
     max_seq_length: u32,
