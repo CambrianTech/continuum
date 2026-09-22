@@ -322,8 +322,7 @@ pub fn prepare_base_for_mlx(
 ///               and bounded rather than folded into a magic factor
 ///
 /// `vocab_size` comes from the base's own `config.json`. `None` when the dir has
-/// no safetensors or no readable vocab — the caller treats that as "can't size,
-/// proceed ungoverned" (probed loud) rather than blocking an unsizable job.
+/// no safetensors or no readable vocab — admission refuses an unsized job.
 fn derive_train_footprint_bytes(
     base_model_dir: &std::path::Path,
     batch_size: u32,
@@ -361,24 +360,18 @@ fn derive_train_footprint_bytes(
 ///   granted  → hold the guard for the whole run so serving sees the bytes as taken
 ///   refused  → fail LOUD with the governed numbers (a background forge must not OOM
 ///              the machine — retry when pressure clears; the L3 flywheel re-attempts)
-///   unsized / ungoverned → proceed unleased (can't size, or no daemon on this node)
+///   unsized / no governor → refuse before launching the trainer
 fn acquire_train_slot(
     footprint: Option<u64>,
     base_model_dir: &std::path::Path,
-) -> Result<Option<crate::resources::LeaseGuard>, String> {
-    use crate::resources::ResourceDaemon;
-    let Some(_daemon) = ResourceDaemon::global() else {
-        return Ok(None); // ungoverned node — proceed unleased, behavior unchanged
-    };
-    let Some(footprint) = footprint else {
-        crate::probe!(
-            class = "forge.mlx_train.govern",
-            base = %base_model_dir.display(),
-            "could not size training footprint (no safetensors / unreadable vocab) — proceeding UNGOVERNED"
-        );
-        return Ok(None);
-    };
-    super::training_admission::acquire_training_memory("forge-train", footprint).map(Some)
+) -> Result<crate::resources::LeaseGuard, String> {
+    let footprint = footprint.ok_or_else(|| {
+        format!(
+            "cannot admit MLX training: no memory footprint for {} (requires readable safetensors and vocab_size)",
+            base_model_dir.display()
+        )
+    })?;
+    super::training_admission::acquire_training_memory("forge-train", footprint)
 }
 
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,
@@ -574,7 +567,7 @@ mod tests {
     // magic multiplier — regression for the 2026-07-23 receipt where a factor-sized
     // job was granted, Metal OOM'd at the loss step (the logits allocation), and the
     // live serving lane was dragged into a 503. No safetensors OR no readable
-    // vocab_size → None ("can't size, proceed ungoverned" — probed, never blocking).
+    // vocab_size → None; admission refuses rather than launching unleased.
     #[test]
     fn train_footprint_is_a_sum_of_derived_terms() {
         use std::io::Write;
@@ -592,9 +585,14 @@ mod tests {
             "sum of named terms"
         );
 
-        // vocab missing → None (can't derive the dominant term → ungoverned, probed).
+        // Missing vocabulary cannot establish the dominant allocation term.
         std::fs::write(dir.path().join("config.json"), b"{}").unwrap();
         assert_eq!(derive_train_footprint_bytes(dir.path(), 2, 128), None);
+        let refusal =
+            acquire_train_slot(derive_train_footprint_bytes(dir.path(), 2, 128), dir.path())
+                .err()
+                .expect("unsized training must refuse");
+        assert!(refusal.contains("no memory footprint"));
 
         // No safetensors → None.
         let empty = tempfile::tempdir().unwrap();
@@ -605,8 +603,8 @@ mod tests {
     // what this catches: the allocator-enforcement contract — a governor-sized job's
     // argv pins `mx.set_memory_limit(<grant>)` BEFORE mlx_lm runs (the lease is a
     // contract, not advice: an under-estimated job dies inside its own cap instead of
-    // OOMing the live serving lane), while an unsized job spawns the plain module
-    // dispatch unchanged.
+    // OOMing the live serving lane). The plain argv remains a formatting primitive;
+    // run_mlx_train rejects an unsized job before it can spawn that command.
     #[test]
     fn capped_argv_pins_the_allocator_to_the_grant() {
         let cfg = PathBuf::from("/out/cfg.yaml");
