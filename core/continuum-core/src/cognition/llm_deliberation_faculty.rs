@@ -2689,16 +2689,29 @@ impl LlmDeliberationFaculty {
             // measures what a lane must hold for her; a starved or emptied turn says
             // nothing about her and is not recorded, so the need can never be a
             // window's echo. The wish above stays the target the allocator grows toward.
-            if let Some(need) = crate::cognition::working_set::need_sample(
-                sent.min(u32::MAX as usize) as u32,
-                framing_tokens.min(u32::MAX as usize) as u32,
-                capacity_error.is_none(),
-            ) {
-                reg.record_need(
+            let sent_tokens = sent.min(u32::MAX as usize) as u32;
+            let framing = framing_tokens.min(u32::MAX as usize) as u32;
+            let fit_ok = capacity_error.is_none();
+            match crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok) {
+                Some(need) => reg.record_need(
                     self.persona_id,
                     need,
                     ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
-                );
+                ),
+                // THE UNHELD TURN IS SAID, not skipped (card 39822816): a mind the
+                // allocator labels `wish:` after a deploy carrying #4325 must be
+                // distinguishable, from the ledger alone, between "every turn was
+                // starved", "every turn emptied to the framing", and "this seam was
+                // never reached". One row per unheld turn, with the reason.
+                None => crate::probe!(
+                    class = "persona.need.unheld",
+                    persona = %self.persona_name,
+                    sent_tokens,
+                    framing_tokens = framing,
+                    fit_ok,
+                    reason = if fit_ok { "framing_only" } else { "starved" },
+                    "this turn measured no need — not held, so the wish stays her gate"
+                ),
             }
         }
         // Only the source's truthful minimum outranks optional conversation.
