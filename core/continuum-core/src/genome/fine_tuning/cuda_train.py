@@ -70,10 +70,9 @@ def plan(spec, output):
     # CUDACachingAllocator large slabs: rounding plus one working slab.
     slab = 20 * 1024 * 1024
     logical_budget = max(0, (available // slab - 1) * slab)
-    micro = min(schedule["batchSize"], max(0, (logical_budget - weights - optimizer) // per_example))
-    if micro < 1:
-        raise RuntimeError(f"training needs at least {weights + optimizer + per_example + slab} bytes; "
-                           f"governed/physical availability is {available}")
+    # Planning describes required capacity, not permission to allocate it. Even
+    # with no free memory, return a one-example plan for the owner to queue.
+    micro = min(schedule["batchSize"], max(1, (logical_budget - weights - optimizer) // per_example))
     tokens = micro * sequence
     activations = tokens * int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
     logits = tokens * int(text.vocab_size) * 8

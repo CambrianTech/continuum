@@ -83,6 +83,13 @@ class CudaTrainingTests(unittest.TestCase):
                         "lora":{"rank":4,"alpha":8,"dropout":0.0,"targetModules":["q_proj","v_proj"]}}
                     cuda_train.plan(spec, root / "plan.json")
                     planned = json.loads((root / "plan.json").read_text())
+                    # No free bytes is a queueable plan, not a failed trainer.
+                    spec["availableBytes"] = 0
+                    cuda_train.plan(spec, root / "waiting-plan.json")
+                    waiting = json.loads((root / "waiting-plan.json").read_text())
+                    self.assertEqual(waiting["microBatchSize"], 1)
+                    self.assertGreater(waiting["memoryBytes"], 0)
+                    self.assertEqual(waiting["memoryBytes"], sum(waiting["terms"].values()))
                     # This is a mechanics fixture, not Kimi learning or a model benchmark.
                     spec["schedule"]["batchSize"] = 3
                     spec["availableBytes"] = planned["memoryBytes"]
