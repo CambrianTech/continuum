@@ -45,10 +45,13 @@ pub const STILL_UNATTACHED_REPORT: Duration = Duration::from_secs(60);
 /// thirty seconds is not one that appears faster for being asked more often, and the
 /// node must keep asking for as long as it runs.
 pub fn retry_delay(attempt: u32) -> Duration {
-    let doubled = REATTACH_FLOOR
-        .checked_mul(1u32.checked_shl(attempt.saturating_sub(1).min(16)).unwrap_or(u32::MAX))
-        .unwrap_or(REATTACH_CEILING);
-    doubled.min(REATTACH_CEILING)
+    // Clamped BEFORE the shift, not rescued after it: five doublings already pass the
+    // ceiling (1→2→4→8→16→32 s), so the shift can never overflow and there is no failure
+    // case to swallow. An arithmetic guard whose fallback is itself a policy number is
+    // the shape that hides a bug; this has neither.
+    let doublings = attempt.saturating_sub(1).min(5);
+    let secs = REATTACH_FLOOR.as_secs().saturating_mul(1u64 << doublings);
+    Duration::from_secs(secs).min(REATTACH_CEILING)
 }
 
 /// WHY an attach is not live yet — because the operator's next action differs, and a
