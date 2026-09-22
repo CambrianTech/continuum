@@ -855,6 +855,28 @@ impl TrainingTriggerState {
                         );
                     }
                     DispatchLookup::NotObserved => {}
+                    DispatchLookup::Corrupt {
+                        observed,
+                        malformed,
+                        next_offset,
+                    } => {
+                        if let Some(handle) = observed {
+                            let provider = handle.provider_id.clone();
+                            return self.finish_dispatch(key, &active, handle, provider).await;
+                        }
+                        self.active_dispatches.insert(
+                            key.clone(),
+                            Arc::new(ActiveDispatch {
+                                intent: active.intent.clone(),
+                                batch: active.batch.clone(),
+                                journal_cursor: next_offset,
+                            }),
+                        );
+                        return Ok(DispatchResult::Failed {
+                            kind: "RecoveryRequired",
+                            error: format!("dispatch {id}: {malformed} unreadable journal rows; evidence remains uncertain, not repeated"),
+                        });
+                    }
                 }
                 return Ok(DispatchResult::Failed {
                     kind: "RecoveryRequired",

@@ -45,8 +45,8 @@ pub mod job_create;
 pub mod job_status;
 pub mod teach;
 
-/// Wire shape for `genome/job-status` + `genome/job-cancel`. A single handle;
-/// adapter lookup keys on `jobHandle.providerId`.
+/// Wire shape for `genome/job-cancel`. Status adds its own history continuation.
+/// The adapter is selected by `jobHandle.providerId`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -88,12 +88,14 @@ pub fn command_objects(
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
             #[cfg(test)]
-            test_job_board,
+            test_job_board: test_job_board.clone(),
             #[cfg(test)]
             test_artifacts,
         }),
         Arc::new(job_status::GenomeJobStatus {
             registry: registry.clone(),
+            #[cfg(test)]
+            test_job_board,
         }),
         Arc::new(job_cancel::GenomeJobCancel { registry }),
     ]

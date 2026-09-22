@@ -2,8 +2,8 @@
 import type { JobHandle } from "./fine_tuning/JobHandle";
 
 /**
- * Wire shape for `genome/job-status` + `genome/job-cancel`. A single handle;
- * adapter lookup keys on `jobHandle.providerId`.
+ * Wire shape for `genome/job-cancel`. Status adds its own history continuation.
+ * The adapter is selected by `jobHandle.providerId`.
  */
 export type JobLookupParams = { 
 /**
