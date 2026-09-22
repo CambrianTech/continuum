@@ -3,29 +3,24 @@
 //!
 //! # Why this is a crate and not a module tree in the bin
 //!
-//! It was the latter until 2026-09-22. Being `mod`s inside the bin meant
-//! `cargo test --bin continuum` linked the whole of `continuum-core` — 624,456
-//! lines — to exercise 17 tests over 2,420 lines of pure functions. On Windows
-//! the resulting PDB blew the linker's limit (LNK1140) and the tests could not
-//! run at all.
+//! As `mod`s inside the bin, these tests linked all of `continuum-core` —
+//! 624,456 lines — to exercise 2,420 lines of pure functions. On Windows the
+//! resulting PDB exceeds the linker's limit (LNK1140) and they cannot run at all.
 //!
-//! The extraction is not a refactor of the code: every module moved verbatim.
-//! All five already had zero `crate::` / `continuum_core::` imports and zero
-//! `super::` references outside their own test mods, so the boundary existed by
-//! convention. This crate makes the compiler enforce it.
+//! Nothing here reaches into the core, and nothing here may. A dependency on
+//! `continuum-core` restores the link that made these tests unrunnable, and it
+//! does so silently: they would still pass locally and only Windows would notice.
 //!
-//! **Keep it that way.** A dependency on `continuum-core` here restores the
-//! link that made the tests unrunnable, and it would do so silently — the tests
-//! would still pass locally and only Windows would notice.
+//! Platform-specific modules are gated HERE, at the crate boundary, not inside
+//! the file — a module whose imports are OS-specific must not be exported on
+//! an OS that lacks them, or the crate fails to build for every consumer.
 
 pub mod install_cli;
 pub mod launchd;
 pub mod owned_engines;
 pub mod supervisor_install;
-// WINDOWS ONLY, exactly as the bin gated it. This module imports
-// `std::os::windows` and `windows_sys`; exporting it unconditionally makes the
-// crate fail to build on macOS and Linux. The `#[cfg(windows)]` that used to sit
-// on `mod windows_launch;` in the bin has to move WITH the module — caught in
-// review by Astra, who read the file's imports rather than the diff.
+
+/// Windows process launch and ownership. Imports `std::os::windows` and
+/// `windows_sys`, so it exists only on Windows.
 #[cfg(windows)]
 pub mod windows_launch;

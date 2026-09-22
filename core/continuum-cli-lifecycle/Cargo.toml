@@ -10,10 +10,10 @@ edition = "2021"
 # 17 tests over 2,420 lines of pure functions. On Windows that PDB exceeded the
 # linker's limit (LNK1140, measured by Astra 2026-09-22) — the tests never ran.
 #
-# Nothing here reaches into the core: checked before the move, all five had ZERO
-# `crate::` / `continuum_core::` imports and ZERO `super::` references outside
-# their own test mods. This crate makes that property STRUCTURAL rather than
-# incidental — the compiler now refuses what the convention merely discouraged.
+# Nothing here reaches into the core: all five had zero `crate::` /
+# `continuum_core::` imports and zero `super::` references outside their own test
+# mods. The crate makes that property structural — the compiler now refuses what
+# the convention merely discouraged.
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
