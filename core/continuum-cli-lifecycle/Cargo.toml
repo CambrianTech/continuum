@@ -16,8 +16,17 @@ edition = "2021"
 # incidental — the compiler now refuses what the convention merely discouraged.
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["time", "process", "rt", "macros"] }  # launchd interval + supervisor_install process/timeout — PRODUCTION code, not tests
 sha2 = "0.10"
 base64 = "0.22"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"     # launchd.rs: geteuid() for the root check
+
+[dev-dependencies]
+tempfile = "3"   # install_cli / supervisor_install tests write into a temp root
+uuid = { version = "1", features = ["v4"] }  # test-only: unique temp dirs
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes"] }

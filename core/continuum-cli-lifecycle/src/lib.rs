@@ -22,4 +22,10 @@ pub mod install_cli;
 pub mod launchd;
 pub mod owned_engines;
 pub mod supervisor_install;
+// WINDOWS ONLY, exactly as the bin gated it. This module imports
+// `std::os::windows` and `windows_sys`; exporting it unconditionally makes the
+// crate fail to build on macOS and Linux. The `#[cfg(windows)]` that used to sit
+// on `mod windows_launch;` in the bin has to move WITH the module — caught in
+// review by Astra, who read the file's imports rather than the diff.
+#[cfg(windows)]
 pub mod windows_launch;
