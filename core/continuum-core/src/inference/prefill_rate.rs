@@ -104,6 +104,31 @@ impl PrefillPoint {
         self.last_ms = now_ms;
     }
 
+    /// A TRIPPED BOUND IS A MEASUREMENT. A turn that carried `prompt_tokens` and tripped a
+    /// `bound` before the lane sent headers proves this box prefilled at MOST
+    /// `prompt_tokens / bound` over that wait — an upper bound on the rate, and the only
+    /// evidence such a turn leaves. Feed it as one: the estimate can only come DOWN to
+    /// the bound (a failure is evidence of slowness and nothing else), the point counts a
+    /// sample and refreshes `last_ms` so the ladder keeps serving it, and the next
+    /// completed prefill (a real rate) moves it back up through the ordinary EMA.
+    ///
+    /// Without this the loop is closed the wrong way (card c30a4757, the IntelMac
+    /// 09:15–10:15Z 2026-09-22): the cap admitted 1907 tokens on a stale 63 t/s point
+    /// while llama-server measured 26 t/s; 25 of 29 turns tripped the 300 s floor; a
+    /// trip yields no `observe`, so the point never moved and the 25th trip changed
+    /// exactly as much as the first. The failure destroyed its own measurement.
+    pub fn observe_at_most(&mut self, tps_upper: f64, now_ms: u64) {
+        if !tps_upper.is_finite() || tps_upper <= 0.0 {
+            return;
+        }
+        if now_ms.saturating_sub(self.last_ms) > FRESH_MS {
+            self.samples = 0;
+        }
+        self.tps_ema = if self.samples == 0 { tps_upper } else { self.tps_ema.min(tps_upper) };
+        self.samples = self.samples.saturating_add(1);
+        self.last_ms = now_ms;
+    }
+
     pub fn trusted_at(&self, now_ms: u64) -> bool {
         self.samples >= MIN_SAMPLES && now_ms.saturating_sub(self.last_ms) <= FRESH_MS
     }
@@ -227,6 +252,49 @@ pub fn observe(model: &str, prefill_ms: f64, prefill_tps: f64) {
             samples = p.samples as u64,
             "the measured prefill rate moved — the render budget follows it"
         );
+        save_all(&rates);
+    }
+}
+
+/// Record a TRIPPED pre-first-byte bound for `model` as the upper-bound measurement it
+/// is ([`PrefillPoint::observe_at_most`]): `prompt_tokens` sent, no headers inside
+/// `bound`. Skips our own transients exactly as [`observe`] does — a relaunch under the
+/// request is not the lane's rate. Persists whenever the point moves, so a reboot
+/// starts from what the box proved it could NOT do, not from last hour's optimism.
+pub fn observe_bound(model: &str, prompt_tokens: usize, bound: std::time::Duration) {
+    let secs = bound.as_secs_f64();
+    if prompt_tokens == 0 || !(secs > 0.0) {
+        return;
+    }
+    let tps_upper = prompt_tokens as f64 / secs;
+    let now = now_ms();
+    if let Some(why) = crate::inference::decode_knee::own_transient(now) {
+        crate::probe!(
+            class = "serving.prefill_rate.sample_skipped",
+            model = model,
+            prompt_tokens = prompt_tokens as u64,
+            bound_secs = bound.as_secs(),
+            why,
+            "tripped-bound sample skipped — inside our own transient, the wait is not the lane's"
+        );
+        return;
+    }
+    let mut rates = RATES.lock();
+    let p = rates.entry(model.to_string()).or_default();
+    let before = p.tps_ema;
+    p.observe_at_most(tps_upper, now);
+    crate::probe!(
+        class = "serving.prefill_rate.bounded",
+        model = model,
+        prompt_tokens = prompt_tokens as u64,
+        bound_secs = bound.as_secs(),
+        tps_upper,
+        tps_before = before,
+        tps_after = p.tps_ema,
+        samples = p.samples as u64,
+        "a tripped bound is a prefill measurement — the rate can only come down to it; the next fill cap follows"
+    );
+    if p.tps_ema != before {
         save_all(&rates);
     }
 }
@@ -409,6 +477,51 @@ mod tests {
         p.observe(400.0, T);
         thin.insert("m".to_string(), p);
         assert_eq!(rate_from(&thin, "m", T), MeasuredRate::UNKNOWN, "one sample is not a rate");
+    }
+
+    // what this catches (card c30a4757, the IntelMac 09:15–10:15Z 2026-09-22): a
+    // tripped header wait leaving the rate exactly where it was. The point held a stale
+    // 63 t/s; the cap admitted 1907 tokens; llama-server prefilled at 26; 25 of 29 turns
+    // tripped the 300 s floor and — because only a COMPLETED prefill called `observe` —
+    // none of them moved the point. The failure destroyed its own measurement. A trip
+    // is an upper-bound observation: the rate comes DOWN to prompt/bound, the point
+    // stays served (a sample, a fresh stamp), the next cap follows, and a later real
+    // prefill lifts it back through the ordinary EMA. It never raises the estimate.
+    #[test]
+    fn a_tripped_bound_is_a_prefill_measurement_that_can_only_lower_the_rate() {
+        let secs = 30;
+        let mut p = trusted(63.0, T);
+        let before = latency_fill_cap(secs, rate_from(&[("m".to_string(), p.clone())].into(), "m", T));
+        assert_eq!(before, 1890, "the stale-but-served cap that admitted the failing prompt");
+
+        // 1907 tokens sent, no headers in 300 s: the lane prefilled at most ~6.4 t/s.
+        p.observe_at_most(1907.0 / 300.0, T + 1);
+        assert!(p.tps_ema < 6.4 && p.tps_ema > 6.3, "the rate came down to the bound: {}", p.tps_ema);
+        assert_eq!(p.last_ms, T + 1, "a trip refreshes the point — it is this hour's evidence");
+        assert!(p.trusted_at(T + 1), "still a rung: the ladder serves the lowered rate");
+        let after = latency_fill_cap(secs, rate_from(&[("m".to_string(), p.clone())].into(), "m", T + 1));
+        assert!(after < before && after <= 1907 * secs / 300, "the next cap is derived from the trip: {after}");
+
+        // A bound ABOVE the estimate is not evidence of speed — it changes nothing.
+        let held = p.tps_ema;
+        p.observe_at_most(500.0, T + 2);
+        assert_eq!(p.tps_ema, held, "a trip can never raise the rate");
+
+        // The next completed prefill — a real rate — lifts it back through the EMA.
+        p.observe(26.0, T + 3);
+        assert!(p.tps_ema > held && p.tps_ema < 26.0, "recovery is measured, not assumed: {}", p.tps_ema);
+
+        // Garbage is not a measurement.
+        let same = p.clone();
+        p.observe_at_most(0.0, T + 4);
+        p.observe_at_most(f64::NAN, T + 4);
+        assert_eq!(p, same);
+
+        // A point with NO history takes the bound as its first sample: an unmeasured box
+        // that has just proved it is slow starts from that proof, not from nothing.
+        let mut fresh = PrefillPoint::default();
+        fresh.observe_at_most(10.0, T);
+        assert_eq!((fresh.samples, fresh.tps_ema), (1, 10.0));
     }
 
     // what this catches: the record survives a reboot and a corrupt file is forgotten.

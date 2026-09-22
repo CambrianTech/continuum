@@ -1541,22 +1541,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
-            let approx_tokens = body
-                .get("messages")
-                .and_then(|m| m.as_array())
-                .map(|msgs| {
-                    msgs.iter()
-                        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                        .map(|c| c.len() / 4)
-                        .sum::<usize>()
-                })
-                .unwrap_or(0) as u64; // unwrap_or: unknown size = 0 tokens, the price basis floor
-                                      // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
-                                      // this activity's slot and page its KV onto a now-free slot. The returned
-                                      // guard holds the permit + slot pin for the WHOLE generation (bound into
-                                      // `_admission` at function scope above). A Turn that cannot name both
-                                      // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
-                                      // takes the permit only and lands on the scratch slot below.
+            let approx_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body) as u64;
+            // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
+            // this activity's slot and page its KV onto a now-free slot. The returned
+            // guard holds the permit + slot pin for the WHOLE generation (bound into
+            // `_admission` at function scope above). A Turn that cannot name both
+            // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
+            // takes the permit only and lands on the scratch slot below.
             let turn_key = match class {
                 crate::inference::slots::SlotClass::Turn => request
                     .persona_id
@@ -1627,16 +1618,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // token estimate — an alarm that only fires when the overshoot
                 // is unambiguous.
                 if let Some(served) = served_ctx_by_root().get(self.endpoints().root()) {
-                    let approx_tokens = body
-                        .get("messages")
-                        .and_then(|m| m.as_array())
-                        .map(|msgs| {
-                            msgs.iter()
-                                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                                .map(|c| c.len() / 4)
-                                .sum::<usize>()
-                        })
-                        .unwrap_or(0);
+                    let approx_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body);
                     if approx_tokens > *served as usize {
                         // #3847: the total was measured but never ATTRIBUTED, so
                         // "the prompt is 6x the window" could not be turned into
@@ -1806,6 +1788,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             request_builder,
             body_bytes,
             request.turn_bound,
+            crate::inference::lane_send::FillReceipt {
+                model,
+                prompt_tokens: crate::inference::serving_guard::approx_prompt_tokens(&body),
+            },
         )
         .await?;
 
@@ -2631,6 +2617,7 @@ mod tests {
                     .header("Content-Type", "application/json"),
                 body.clone(),
                 None,
+                crate::inference::lane_send::FillReceipt { model: "fixture", prompt_tokens: 4 },
             ),
         )
         .await
