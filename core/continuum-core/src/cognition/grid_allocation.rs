@@ -150,17 +150,23 @@ impl LanePlan {
     /// new clothes (Astra's review question on this change). What the box serves now is a
     /// seat because it is running.
     ///
-    /// `None` when nothing is served (no model, no lanes, or an unknown window): an
-    /// absence, never a substituted intent and never fabricated capacity.
+    /// `None` when nothing is LIVE — not ready, no model, no lanes, or an unknown window:
+    /// an absence, never a substituted intent and never fabricated capacity.
     pub fn serving(
         snapshot: &crate::inference::llama_server::ServingSnapshot,
         capability_rank: u8,
         decode_tps_per_lane: Option<f32>,
     ) -> Option<Self> {
-        let model_id = snapshot.active_model.clone()?;
-        if snapshot.lanes == 0 || snapshot.served_context_window == 0 {
+        // `is_live`, not just "has a model": a mid-relaunch publish keeps its geometry —
+        // `serving_consumer` flips `ready = false` with `send_modify` and clears nothing
+        // (llama_server's own transitional-publish test builds exactly that shape: lanes 1,
+        // window 32,768, ready false). Seating on it would announce a lane that cannot
+        // serve as capacity — "a lane that cannot serve is no seat", the same sentence the
+        // fall-home path uses. Caught by Astra reviewing this change.
+        if !snapshot.is_live() || snapshot.lanes == 0 || snapshot.served_context_window == 0 {
             return None;
         }
+        let model_id = snapshot.active_model.clone()?;
         Some(Self {
             model_id,
             capability_rank,
@@ -745,6 +751,7 @@ mod tests {
         use crate::inference::llama_server::ServingSnapshot;
         let served = ServingSnapshot {
             active_model: Some("qwen3.8-27b".into()),
+            ready: true,
             lanes: 1,
             served_context_window: 124_160,
             ..ServingSnapshot::empty()
@@ -757,6 +764,7 @@ mod tests {
         // row must NOT be built from these numbers.
         let planned_shrink = ServingSnapshot {
             active_model: Some("qwen3.8-27b".into()),
+            ready: true,
             lanes: 2,
             served_context_window: 5_533,
             ..ServingSnapshot::empty()
@@ -767,12 +775,23 @@ mod tests {
         // Absence, not fabrication: nothing served ⇒ no row, on each of the three ways
         // "nothing" arrives.
         assert!(LanePlan::serving(&ServingSnapshot::empty(), 9, None).is_none(), "no model = no row");
+        // MID-RELAUNCH: geometry retained, `ready` false — `serving_consumer` flips the
+        // flag and clears nothing. A lane that cannot serve is no seat (Astra's review).
         assert!(
-            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            LanePlan::serving(
+                &ServingSnapshot { active_model: Some("m".into()), ready: false, lanes: 1, served_context_window: 32_768, ..ServingSnapshot::empty() },
+                9,
+                None
+            )
+            .is_none(),
+            "a relaunching lane keeps its numbers and must NOT be announced as capacity"
+        );
+        assert!(
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, 9, None).is_none(),
             "zero lanes = no row"
         );
         assert!(
-            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, 9, None).is_none(),
             "unknown window = no row, never a guess"
         );
     }
