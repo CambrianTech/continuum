@@ -18,9 +18,10 @@ use ts_rs::TS;
 pub struct JobStatusParams {
     /// Handle returned by job-create; distinct from the kernel resource handle.
     pub job_handle: JobHandle,
-    /// Continue an incomplete historical scan at the returned byte offset.
+    /// Continue an incomplete scan. An unchanged offset means an unfinished trailing record.
     #[serde(default)]
     #[ts(optional)]
+    #[ts(type = "number")]
     pub history_offset: Option<u64>,
 }
 
@@ -58,6 +59,7 @@ pub struct JobStatusOutcome {
     pub source: Option<JobStatusSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    #[ts(type = "number")]
     pub next_history_offset: Option<u64>,
 }
 

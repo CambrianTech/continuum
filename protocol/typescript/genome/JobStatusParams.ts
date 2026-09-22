@@ -7,6 +7,6 @@ export type JobStatusParams = {
  */
 jobHandle: JobHandle, 
 /**
- * Continue an incomplete historical scan at the returned byte offset.
+ * Continue an incomplete scan. An unchanged offset means an unfinished trailing record.
  */
-historyOffset?: bigint, };
+historyOffset?: number, };
