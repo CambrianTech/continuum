@@ -187,6 +187,21 @@ use protocol::Response;
 /// by ServerState methods — all command handling goes through runtime.dispatch().
 /// The fields are kept here to ensure the Arc lifetimes outlive the modules.
 #[allow(dead_code)]
+/// The socket path's ONE routing decision: a command string that names a PEER or a
+/// ROOM (`airc://<peer>[@node]/<path>`, `airc://#room/<path>`) is dispatched by the
+/// CommandExecutor, which owns the URI grammar and the remote transport; anything
+/// else — a bare name, or the explicit-local `airc:///<path>` — stays on the
+/// name-based `Runtime::route_command` path, byte-for-byte as before. PURE, so the
+/// decision is pinned by a test rather than discovered at the CLI ("Unknown command:
+/// 'airc://…/ping'", card 4fb5895c — #3690's transport was installed and unreachable
+/// from every socket client).
+fn addressed_elsewhere(command: &str) -> Option<crate::routing::CommandUri> {
+    match crate::routing::CommandUri::parse(command) {
+        Ok(crate::routing::CommandUri::Local { .. }) | Err(_) => None,
+        Ok(uri) => Some(uri),
+    }
+}
+
 struct ServerState {
     voice_service: Arc<crate::live::session::voice_service::VoiceService>,
     /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
@@ -211,6 +226,11 @@ struct ServerState {
     /// on any connection binds here, and the interceptor routes perception/observe
     /// + interface/screenshot to whoever is bound. Empty ⇒ those commands fail loud.
     provider_registry: Arc<crate::runtime::ProviderRegistry>,
+    /// The ONE command executor (the same Arc every module and the training
+    /// producer hold) — the owner of URI routing and the remote transport. The
+    /// socket path dispatches a PEER- or ROOM-addressed command through it; a bare
+    /// name keeps the name-based `Runtime::route_command` path (card 4fb5895c).
+    executor: Arc<crate::runtime::CommandExecutor>,
 }
 
 impl ServerState {
@@ -227,6 +247,7 @@ impl ServerState {
         shell_sessions: Arc<DashMap<String, ShellSession>>,
         gpu_manager: Arc<GpuMemoryManager>,
         provider_registry: Arc<crate::runtime::ProviderRegistry>,
+        executor: Arc<crate::runtime::CommandExecutor>,
     ) -> Self {
         Self {
             voice_service,
@@ -240,6 +261,7 @@ impl ServerState {
             runtime,
             gpu_manager,
             provider_registry,
+            executor,
         }
     }
 }
@@ -547,10 +569,25 @@ fn handle_client<S: IpcStream>(
                 let rss_before = current_rss_mb();
                 // Thread the caller so the typed object path sees the REMOTE identity
                 // (composition then propagates remote-not-owner — no escalation).
-                let result = state
-                    .runtime
-                    .route_command(cmd, json_value.clone(), caller.clone())
-                    .await;
+                // A PEER- OR ROOM-ADDRESSED COMMAND GOES TO THE EXECUTOR, which owns the
+                // URI grammar and the remote transport (#3690 installed it; nothing on
+                // the socket path ever reached it — card 4fb5895c: `airc://<peer>/ping`
+                // was refused as "Unknown command" because this path only ever knew
+                // names). A bare name keeps the name-based route exactly as before.
+                let result = match addressed_elsewhere(cmd) {
+                    Some(uri) => Some(
+                        state
+                            .executor
+                            .execute_with_caller(uri, json_value.clone(), caller.clone())
+                            .await,
+                    ),
+                    None => {
+                        state
+                            .runtime
+                            .route_command(cmd, json_value.clone(), caller.clone())
+                            .await
+                    }
+                };
                 let rss_after = current_rss_mb();
                 log_command_rss_delta(cmd, rss_before, rss_after);
 
@@ -686,6 +723,42 @@ fn handle_client<S: IpcStream>(
 
 #[cfg(test)]
 mod tests {
+    // what this catches (card 4fb5895c): the socket path never built a CommandUri, so
+    // `airc://<peer>/ping` was refused as "Unknown command" while #3690's remote transport
+    // sat installed on the executor. A peer- or room-addressed string MUST leave the
+    // name-based route (never dispatch locally under a remote address — the one outcome
+    // the #3690 probe pre-registered as forbidden); a bare name and the explicit-local
+    // form MUST stay on it, byte-for-byte, so nothing that works today changes route.
+    #[test]
+    fn a_peer_or_room_address_leaves_the_name_route_and_a_bare_name_stays() {
+        use crate::routing::CommandUri;
+        let peer = "airc://2f0aed7f-3359-4dd5-9f9b-aaa0b07c6266/ping";
+        assert!(
+            matches!(
+                super::addressed_elsewhere(peer),
+                Some(CommandUri::Peer { .. })
+            ),
+            "a peer-addressed verb goes to the executor's remote transport"
+        );
+        assert!(
+            matches!(
+                super::addressed_elsewhere("airc://room:3be59578-7f1d-5d78-8b17-1eb0834b4643/ping"),
+                Some(CommandUri::Room { .. })
+            ),
+            "a room-addressed verb goes to the executor"
+        );
+        // Bare names and the explicit-local spelling are the local route, unchanged.
+        for local in ["ping", "genome/job-status", "airc:///ping", "commands/list"] {
+            assert!(
+                super::addressed_elsewhere(local).is_none(),
+                "{local} stays name-routed"
+            );
+        }
+        // Garbage is not an address: it stays on the name route and gets the registry's
+        // own "Unknown command … did you mean" sentence rather than a URI parse error.
+        assert!(super::addressed_elsewhere("airc://").is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -3824,6 +3897,7 @@ pub fn start_server(
         shell_sessions,
         gpu_manager,
         provider_registry,
+        Arc::clone(&executor),
     ));
 
     log_info!("ipc", "server", "IPC server ready");
