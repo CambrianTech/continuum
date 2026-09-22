@@ -67,6 +67,7 @@ const SHAPES: &[&str] = &[
 ///
 /// **This number may only ever go DOWN.** A single total, not a per-file map,
 /// for the same reason as the unwrap ratchet: pressure on the whole surface.
+#[cfg(test)]
 const BASELINE_UNJUSTIFIED: usize = 242;
 
 pub struct BoundarySerialization;
@@ -102,7 +103,7 @@ impl SourceRule for BoundarySerialization {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan;
+    use crate::scan;
 
     /// What this catches: a NEW in-process serialization site landing without
     /// naming the boundary it crosses. The assertion is a RATCHET, not a wall —

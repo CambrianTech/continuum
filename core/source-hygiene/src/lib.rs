@@ -100,8 +100,30 @@ pub trait SourceRule {
 /// the process's working directory (a test's cwd is not the crate root under every
 /// runner).
 pub fn crate_src_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    // THE SCANNED CRATE, NOT THIS ONE. These rules used to live inside
+    // `continuum-core`, where `CARGO_MANIFEST_DIR` and "the tree under audit" were
+    // the same directory. They are not the same any more: this crate's manifest dir
+    // is `core/source-hygiene`, and a scan rooted there would walk 2,173 lines of
+    // scanner and report a clean bill of health on a codebase it never opened —
+    // every ratchet silently passing at 0 findings. The audited tree is named
+    // explicitly so that failure is impossible rather than merely unlikely.
+    audited_crate_root().join("src")
 }
+
+/// `core/continuum-core` — the crate these rules audit, resolved from this crate's
+/// own manifest so the answer never depends on the process's working directory.
+fn audited_crate_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent() // core/source-hygiene -> core
+        .map(|core| core.join(AUDITED_CRATE))
+        // unwrap_or_else: a manifest dir with no parent cannot happen under cargo,
+        // and inventing a relative fallback would scan the wrong tree silently.
+        .unwrap_or_else(|| PathBuf::from(AUDITED_CRATE))
+}
+
+/// The crate under audit. One name, one place — a second spelling of this is how a
+/// rule ends up scanning a directory that does not exist and reporting zero.
+const AUDITED_CRATE: &str = "continuum-core";
 
 /// Every `src/` directory in the workspace — this crate's, its sibling crates', and
 /// the apps'.
@@ -121,7 +143,9 @@ pub fn crate_src_root() -> PathBuf {
 /// are skipped, so this stays correct if the layout changes under it.
 pub fn workspace_src_roots() -> Vec<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut roots = vec![manifest.join("src")];
+    // The audited crate's src, not this crate's — same correction as
+    // `crate_src_root`: violations are only ever raised against that tree.
+    let mut roots = vec![crate_src_root()];
     // `core/continuum-core` → `continuum/`. `ancestors()` rather than two `parent()`
     // unwraps: a path shallower than expected yields no root instead of a panic.
     let Some(repo) = manifest.ancestors().nth(2) else {
@@ -315,6 +339,49 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: THE EXTRACTION'S OWN FAILURE MODE, and it is the quiet one.
+    // These rules used to live inside the crate they audit, so `CARGO_MANIFEST_DIR`
+    // and "the tree under audit" were the same directory and could not disagree.
+    // They are different directories now. A `crate_src_root()` that resolves to this
+    // crate — or to anything that does not exist — makes every rule walk an empty or
+    // wrong tree, find nothing, and report GREEN. Forever. No rule fails, no count
+    // rises, and the ratchets look healthier than they have ever been while guarding
+    // nothing at all. Cormac named this exact risk when reviewing the move.
+    //
+    // So the root is asserted to be real, to be the audited crate, and to contain
+    // enough Rust that an empty scan cannot be mistaken for a clean one.
+    #[test]
+    fn the_audited_root_is_the_other_crate_and_actually_has_source_in_it() {
+        let root = super::crate_src_root();
+        assert!(
+            root.is_dir(),
+            "the audited src root does not exist ({}) — every rule would scan nothing \
+             and pass green",
+            root.display()
+        );
+        assert!(
+            root.ends_with("continuum-core/src"),
+            "the audited root must be the AUDITED crate's src, not this scanner's ({})",
+            root.display()
+        );
+        let rust_files = std::fs::read_dir(&root)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
+                    .count()
+            })
+            // unwrap_or: an unreadable root is zero files, which the assert below
+            // rejects — never a silently satisfied precondition.
+            .unwrap_or(0);
+        assert!(
+            rust_files > 0,
+            "the audited root {} contains no .rs files at its top level — a scan \
+             rooted here reports zero findings because there is nothing to find",
+            root.display()
+        );
+    }
+
     use super::*;
 
     /// What this catches: a `//` inside a string literal being read as the start of

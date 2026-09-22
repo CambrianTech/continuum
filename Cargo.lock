@@ -2908,6 +2908,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "similar",
+ "source-hygiene",
  "syn 2.0.117",
  "sysinfo",
  "tempfile",
@@ -10286,6 +10287,10 @@ dependencies = [
  "libc",
  "winapi",
 ]
+
+[[package]]
+name = "source-hygiene"
+version = "0.1.0"
 
 [[package]]
 name = "spin"

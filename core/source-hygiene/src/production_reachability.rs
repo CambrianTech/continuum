@@ -82,6 +82,7 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 /// five defects above were each individually "not worth blocking on" and collectively
 /// cost days. If your new type trips this, the fix is to WIRE it or to not land it
 /// yet; a type with no caller is not finished work.
+#[cfg(test)]
 const BASELINE_UNWIRED: usize = 107;
 
 pub struct ProductionReachability;
@@ -220,7 +221,7 @@ impl CrateRule for ProductionReachability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan_crate;
+    use crate::scan_crate;
 
     /// What this catches: new public machinery landing with nothing that constructs it
     /// — the defect class that hit five times on 2026-08-20 (see the module header),

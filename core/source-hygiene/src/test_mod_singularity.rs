@@ -23,6 +23,7 @@ use super::{SourceFile, SourceRule, Violation};
 /// **This number may only ever go DOWN.** Merging a file's mods into one (nested
 /// themes inside it are fine) lowers it; raising it to green a build is defeating
 /// the guard.
+#[cfg(test)]
 const BASELINE_EXCESS_TEST_MODS: usize = 19;
 
 /// 1-indexed lines of `#[cfg(test)]` attributes that gate a `mod`.
@@ -73,7 +74,7 @@ impl SourceRule for TestModSingularity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan;
+    use crate::scan;
 
     /// What this catches: a NEW second `#[cfg(test)] mod` landing in any file.
     /// If this fails because you added one: fold your tests into the file's
