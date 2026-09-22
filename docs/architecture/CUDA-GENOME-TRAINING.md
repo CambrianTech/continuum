@@ -140,3 +140,26 @@ causal-conv1d and flash-linear-attention are absent. Installed versions/absence
 and actual model class are recorded in training provenance. Correctness and
 GGUF conversion pass; optimized-kernel availability and full-model throughput
 remain explicit acceptance work.
+
+
+### Native MLX admission
+
+The native MLX adapter uses the same prepared-job owner and capacity wait as
+CUDA. It reuses forge's local-artifact footprint calculation and capped MLX
+entry point. A lease remains captured by the completion closure until the
+trainer has exited or been killed and reaped; cancellation while waiting never
+starts the trainer. The tokenizer probe is killed when preparation is dropped.
+
+This requires a local base with readable safetensors and a vocabulary size.
+The existing local Q4 preference is retained. An unresolved HF repository name
+or unsizable artifact fails preparation explicitly; automatic materialization
+is not implemented by this change. The shared footprint calculation remains an
+estimate, and full-model Apple GPU training still requires on-device validation.
+
+Capacity waiting is not a training schedule. Continuous lesson collection can
+proceed while inference is busy, but useful training needs governed placement or
+bounded training opportunities. Checkpoint-and-resume yielding to inference,
+training-age/fairness guarantees, and admission across the fleet are unfinished.
+Neither CUDA nor MLX fixture success establishes learning by a resident persona;
+that requires curriculum provenance, training, held-out evaluation, adoption,
+and demonstrated transfer to new work.

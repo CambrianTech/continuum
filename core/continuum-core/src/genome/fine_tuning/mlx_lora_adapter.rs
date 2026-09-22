@@ -13,13 +13,13 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
+use super::native_jobs::{default_lora, default_schedule, job_dir_for};
 use super::types::{
     ArtifactFormat, JobHandle, JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact,
     TrainingJobRequest, TrainingStatus,
 };
 use crate::inference_capability::probe_hardware_profile;
 use crate::runtime;
-use super::native_jobs::{default_schedule, default_lora, job_dir_for};
 
 /// Stable provider id — matches the model_registry provider convention.
 pub const PROVIDER_ID: &str = "mlx-local";
@@ -104,8 +104,6 @@ impl FineTuningAdapter for MlxLoraFineTuner {
     }
 
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
-        let log = runtime::logger(PROVIDER_ID);
-
         // ── Preconditions (fail loud, name the cause) ──────────────
         if !host_has_metal() {
             return Err(FineTuningError::InvalidRequest(
@@ -168,6 +166,24 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         }
 
         let local_id = Uuid::new_v4();
+        let python = self.python.clone();
+        Ok(self.jobs.prepare(local_id, move |progress| async move {
+        let log = runtime::logger(PROVIDER_ID);
+        let schedule = request.schedule.clone().unwrap_or_else(default_schedule);
+        let model_dir = PathBuf::from(&train_base);
+        let batch = effective_batch_size(&request, &schedule);
+        let sequence = schedule.sequence_length;
+        let footprint = tokio::task::spawn_blocking(move || {
+            crate::forge::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
+        }).await.map_err(|error| FineTuningError::LocalTrainerFailed(error.to_string()))?
+            .ok_or_else(|| FineTuningError::InvalidRequest(
+                "MLX training requires a local base with readable safetensors and vocab_size for admission".into()))?;
+        let reservation = crate::forge::training_admission::wait_for_training_memory(
+            crate::resources::ResourceDaemon::global().ok_or_else(||
+                FineTuningError::LocalTrainerFailed("MLX training requires the resource governor".into()))?,
+            &format!("genome-train:{local_id}"), footprint,
+            |available| progress.waiting_for_capacity(footprint, available),
+        ).await.map_err(FineTuningError::Transient)?;
 
         // ── Materialize the dataset into MLX's data dir layout ─────
         let job_dir = job_dir_for(&request, local_id);
@@ -186,11 +202,11 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             ))
         })?;
         let chat_template =
-            tokenizer_has_chat_template(&self.python, &job_dir, &train_base).await?;
+            tokenizer_has_chat_template(&python, &job_dir, &train_base).await?;
         write_mlx_dataset(&data_dir, &request, chat_template)?;
 
         // ── Build the mlx_lm.lora --train invocation ───────────────
-        let schedule = request.schedule.clone().unwrap_or_else(default_schedule);
+
         let lora = request.lora.clone().unwrap_or_else(default_lora);
         let iters = iters_for(&request, &schedule);
 
@@ -206,9 +222,8 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             ))
         })?;
 
-        let mut cmd = tokio::process::Command::new(&self.python);
-        cmd.arg("-m")
-            .arg("mlx_lm.lora")
+        let mut cmd = tokio::process::Command::new(&python);
+        cmd.args(crate::forge::mlx_train::capped_lora_entrypoint(footprint))
             .arg("--model")
             .arg(&train_base)
             .arg("--train")
@@ -254,7 +269,11 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         ));
 
         let model_id = format!("{PROVIDER_ID}:{}:{}", request.trait_kind, local_id);
-        self.jobs.launch(local_id, cmd, adapter_dir.clone(), Some(parse_loss_line), move |wall_clock_ms| {
+        Ok(super::native_jobs::PreparedJob {
+            command: cmd, output: adapter_dir.clone(), parser: Some(parse_loss_line),
+            finish: Box::new(move |wall_clock_ms| {
+            // Retain the lease until NativeJobs exits or kills and reaps the trainer.
+            let _reservation = reservation;
             if !adapter_dir.join("adapters.safetensors").is_file() {
                 return Err("MLX exited successfully without adapters.safetensors".into());
             }
@@ -262,7 +281,9 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                 model_id, local_path: Some(adapter_dir), format: ArtifactFormat::MlxAdapterDir,
                 metrics: JobMetrics { wall_clock_ms, ..Default::default() },
             })
+            }),
         })
+        }))
     }
 
     async fn poll(&self, handle: &JobHandle) -> Result<TrainingStatus, FineTuningError> {
@@ -317,6 +338,7 @@ async fn tokenizer_has_chat_template(
         FineTuningError::LocalTrainerFailed(format!("write chat-template probe: {e}"))
     })?;
     let out = tokio::process::Command::new(python)
+        .kill_on_drop(true)
         .arg(&probe_path)
         .arg(train_base)
         .output()
@@ -418,8 +440,6 @@ fn iters_for(request: &TrainingJobRequest, schedule: &ScheduleParams) -> u32 {
     let batch = schedule.batch_size.max(1);
     (schedule.epochs.max(1) * n / batch).max(1)
 }
-
-
 
 /// The `-c` config YAML carrying the LoRA knobs mlx_lm.lora has NO CLI flag for
 /// (`rank`/`scale`/`dropout`). This is LOAD-BEARING: without it, mlx_lm silently
