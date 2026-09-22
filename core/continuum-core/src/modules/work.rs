@@ -271,10 +271,7 @@ async fn resolve_card_id(
 
 /// Resolve against an already-read view, so reading a card need not fold the
 /// subscribed boards again after expanding its short id.
-fn resolve_card_id_in_boards(
-    horizon: &BoardHorizon,
-    s: &str,
-) -> Result<WorkCardId, CommandError> {
+fn resolve_card_id_in_boards(horizon: &BoardHorizon, s: &str) -> Result<WorkCardId, CommandError> {
     if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
@@ -474,7 +471,12 @@ impl BoardHorizon {
     /// The truthful "not found" for this walk — see [`not_found_in`]. `label` is the
     /// id kind the caller resolves (`"card"`, `"claim"`), the same word `id_resolve` gets.
     fn not_found(&self, label: &str, requested: &str) -> CommandError {
-        not_found_in(&self.readable_room_names(), &self.unreadable, label, requested)
+        not_found_in(
+            &self.readable_room_names(),
+            &self.unreadable,
+            label,
+            requested,
+        )
     }
 }
 
@@ -531,7 +533,10 @@ fn not_found_in(
 
 pub(crate) async fn board_horizon(airc: &Arc<Airc>) -> Result<BoardHorizon, airc_lib::AircError> {
     let set = airc.subscription_set().await?;
-    let mut horizon = BoardHorizon { boards: Vec::new(), unreadable: Vec::new() };
+    let mut horizon = BoardHorizon {
+        boards: Vec::new(),
+        unreadable: Vec::new(),
+    };
     for sub in set.all() {
         let room = sub.as_room();
         match airc.work_board_in(&room).await {
@@ -608,10 +613,11 @@ pub(crate) async fn claim_following_card_room(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
     ttl_ms: u64,
+    origin: airc_work::ClaimOrigin,
 ) -> Option<Result<ClaimId, airc_lib::AircError>> {
     follow_card_room(airc, card_id, "work/claim").await?;
     Some(
-        airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+        airc.claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin)
             .await,
     )
 }
@@ -621,8 +627,29 @@ pub struct WorkClaim {
     pub registry: PersonaAircRuntimeRegistry,
 }
 
+/// Selection at the command boundary, persisted with the accepted claim.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkClaimOrigin {
+    #[default]
+    Explicit,
+    Automatic,
+}
+
+impl From<WorkClaimOrigin> for airc_work::ClaimOrigin {
+    fn from(origin: WorkClaimOrigin) -> Self {
+        match origin {
+            WorkClaimOrigin::Explicit => Self::Explicit,
+            WorkClaimOrigin::Automatic => Self::Automatic,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkClaimParams {
+    /// Explicit tool choice by default; the automatic pull supplies automatic.
+    #[serde(default)]
+    pub origin: WorkClaimOrigin,
     /// The card id (UUID) to claim — from the board (`airc work board`).
     pub card_id: String,
     /// Lease length in ms before the claim goes stale. Defaults to 30 min;
@@ -688,8 +715,9 @@ impl ActionCommand for WorkClaim {
             }
         }
         let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
+        let origin = p.origin.into();
         let mut claim_attempt = airc
-            .claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+            .claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin)
             .await;
         // FOLLOW THE CARD TO ITS ROOM (#328 accept-or-redirect, live 2026-08-11):
         // Atlas's very first act on her dispatched SWE card was work/claim by full
@@ -707,7 +735,7 @@ impl ActionCommand for WorkClaim {
             claim_attempt,
             Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
         ) {
-            if let Some(retry) = claim_following_card_room(&airc, card_id, ttl_ms).await {
+            if let Some(retry) = claim_following_card_room(&airc, card_id, ttl_ms, origin).await {
                 claim_attempt = retry;
             }
         }
@@ -801,6 +829,10 @@ impl ActionCommand for WorkClaim {
                 // solve would contend for the exclusive warm slot. Recovering a claim
                 // whose session died is a separate, dedup-gated fix.
                 if let Some(claim_id) = already_yours {
+                    if origin == airc_work::ClaimOrigin::Explicit {
+                        airc.select_work_claim(card_id, claim_id).await
+                            .map_err(|e| CommandError::Denied(e.to_string()))?;
+                    }
                     crate::probe!(
                         class = "work.claim",
                         card_id = %card_id.as_uuid(),
@@ -1875,6 +1907,7 @@ impl ActionCommand for WorkState {
             .run(
                 ctx,
                 WorkClaimParams {
+                    origin: WorkClaimOrigin::Explicit,
                     card_id: p.card_id.clone(),
                     ttl_ms: None,
                 },
@@ -3125,7 +3158,11 @@ pub struct WorkGetResult {
 impl WorkGet {
     /// Read only the caller's subscribed boards; a card lookup neither joins a
     /// room nor moves focus. Resolution and content use the same board view.
-    async fn read_card(airc: &Arc<Airc>, requested: &str, reader: Uuid) -> Result<WorkGetResult, CommandError> {
+    async fn read_card(
+        airc: &Arc<Airc>,
+        requested: &str,
+        reader: Uuid,
+    ) -> Result<WorkGetResult, CommandError> {
         let horizon = board_horizon(airc)
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
@@ -3409,7 +3446,12 @@ mod tests {
 
         let elsewhere = not_found_in(&rooms(&["academy", "continuum"]), &[], "card", "31c241e2");
         // The claim path (release/heartbeat) is the same walk with the other label.
-        let claim = not_found_in(&rooms(&["academy"]), &[("seed10".to_string(), "x".to_string())], "claim", "e0ec486b");
+        let claim = not_found_in(
+            &rooms(&["academy"]),
+            &[("seed10".to_string(), "x".to_string())],
+            "claim",
+            "e0ec486b",
+        );
         let msg = claim.to_string();
         assert!(matches!(claim, CommandError::Internal(_)), "{msg}");
         assert!(msg.starts_with("[internal] claim e0ec486b: board read FAILED"), "{msg}");
@@ -3527,6 +3569,8 @@ mod tests {
     fn non_state_work_events_and_non_work_events_do_not_bridge() {
         let claim = wire_work_event(
             airc_work::WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
+                selected_at_ms: None,
+                origin: airc_work::ClaimOrigin::Unknown,
                 card_id: airc_work::WorkCardId::new(),
                 claim_id: airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4()),
                 owner: airc_core::PeerId::from_u128(3),
@@ -3597,6 +3641,7 @@ mod tests {
             lane_id: None,
             state: CardState::Claimed,
             owner: Some(owner),
+            claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
             claim_expires_at_ms: expires_ms,
             last_heartbeat_at_ms: None,
@@ -4004,8 +4049,17 @@ mod tests {
         assert_eq!(lapsed.last_heartbeat_at_ms, Some(50));
         assert_eq!(lapsed.observed_at_ms, 100);
         assert!(!lapsed.is_self);
-        let own = WorkGet::receipt(room, &claimed, None, 100, claimed.owner.expect("owner").as_uuid());
-        assert!(own.is_self, "an expired claim still identifies its own holder");
+        let own = WorkGet::receipt(
+            room,
+            &claimed,
+            None,
+            100,
+            claimed.owner.expect("owner").as_uuid(),
+        );
+        assert!(
+            own.is_self,
+            "an expired claim still identifies its own holder"
+        );
         assert_eq!(own.room, academy.name);
         claimed.state = CardState::Review;
         assert!(!WorkGet::receipt(room, &claimed, None, 100, Uuid::nil()).claimable);

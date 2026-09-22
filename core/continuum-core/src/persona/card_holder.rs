@@ -377,6 +377,7 @@ mod tests {
                 CardState::Open
             },
             owner,
+            claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
             claim_expires_at_ms: expires_ms,
             last_heartbeat_at_ms: None,
