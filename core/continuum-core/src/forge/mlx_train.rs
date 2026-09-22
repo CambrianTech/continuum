@@ -227,19 +227,15 @@ pub fn build_train_args(spec: &MlxTrainSpec, config_path: &Path) -> Vec<String> 
     args
 }
 
-/// The spawn argv: [`build_train_args`]'s `python -m mlx_lm lora …` when uncapped,
-/// or — when the governor sized the job — a `-c` preamble that pins the Metal
-/// allocator to the granted footprint BEFORE `mlx_lm.lora.main()` runs, passing
-/// the CLI args through `sys.argv`. Pure + testable like its sibling.
+/// The spawn argv pins the Metal allocator to the granted bytes before training.
+/// The wrapper passes the existing CLI arguments through unchanged.
 pub fn build_train_argv(
     spec: &MlxTrainSpec,
     config_path: &Path,
-    memory_cap_bytes: Option<u64>,
+    memory_cap_bytes: u64,
 ) -> Vec<String> {
     let base = build_train_args(spec, config_path);
-    let Some(cap) = memory_cap_bytes else {
-        return base;
-    };
+    let cap = memory_cap_bytes;
     let wrapper = format!(
         "import sys; import mlx.core as mx; mx.set_memory_limit({cap}); \
 from mlx_lm import lora; sys.argv = ['mlx_lm.lora'] + sys.argv[1:]; lora.main()"
@@ -455,7 +451,11 @@ pub fn run_mlx_train(
     // them. Fails LOUD if the governor can't fit it — never OOM a live video-chat mid-forge.
     let footprint =
         derive_train_footprint_bytes(&spec.base_model_dir, spec.batch_size, spec.max_seq_length);
-    let _train_lease = acquire_train_slot(footprint, &spec.base_model_dir)?;
+    let train_lease = acquire_train_slot(footprint, &spec.base_model_dir)?;
+    let granted_bytes = train_lease.bytes();
+    if granted_bytes == 0 {
+        return Err("MLX training lease no longer holds memory".into());
+    }
 
     // --- spawn the trainer, STREAMING stdout for live progress ---
     // mlx_lm.lora prints `Iter N: Train loss X, …` lines as it trains; we parse them
@@ -466,8 +466,8 @@ pub fn run_mlx_train(
     // `mx.set_memory_limit(footprint)` before mlx_lm runs, so if reality exceeds
     // the estimate the job fails INSIDE its own cap — the live serving lane never
     // feels it. Estimation accuracy is no longer safety-critical; the lease is a
-    // contract, not advice. Unsized/ungoverned → uncapped, exactly as before.
-    let args = build_train_argv(spec, &config_path, footprint);
+    // contract, not advice. The guard remains held through trainer completion.
+    let args = build_train_argv(spec, &config_path, granted_bytes);
     let mut child = std::process::Command::new(&env.python)
         .args(&args)
         .stdout(std::process::Stdio::piped())
@@ -593,6 +593,12 @@ mod tests {
                 .err()
                 .expect("unsized training must refuse");
         assert!(refusal.contains("no memory footprint"));
+        // The library test process does not run IPC boot, the sole global installer.
+        assert!(crate::resources::ResourceDaemon::global().is_none());
+        let refusal = acquire_train_slot(Some(1 << 30), dir.path())
+            .err()
+            .expect("training without the governor must refuse");
+        assert!(refusal.contains("resource governor"));
 
         // No safetensors → None.
         let empty = tempfile::tempdir().unwrap();
@@ -603,18 +609,17 @@ mod tests {
     // what this catches: the allocator-enforcement contract — a governor-sized job's
     // argv pins `mx.set_memory_limit(<grant>)` BEFORE mlx_lm runs (the lease is a
     // contract, not advice: an under-estimated job dies inside its own cap instead of
-    // OOMing the live serving lane). The plain argv remains a formatting primitive;
-    // run_mlx_train rejects an unsized job before it can spawn that command.
+    // OOMing the live serving lane). Every training argv carries the granted cap.
     #[test]
     fn capped_argv_pins_the_allocator_to_the_grant() {
         let cfg = PathBuf::from("/out/cfg.yaml");
-        let plain = build_train_argv(&spec(), &cfg, None);
+        let plain = build_train_args(&spec(), &cfg);
         assert_eq!(
             &plain[..3],
             &["-m".to_string(), "mlx_lm".into(), "lora".into()]
         );
 
-        let capped = build_train_argv(&spec(), &cfg, Some(12_345_678));
+        let capped = build_train_argv(&spec(), &cfg, 12_345_678);
         assert_eq!(capped[0], "-c");
         assert!(
             capped[1].contains("mx.set_memory_limit(12345678)"),
