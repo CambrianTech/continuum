@@ -4995,11 +4995,18 @@ static LAST_TURN_SHAPE: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, TurnSha
 ///
 /// `None` when any term is unmeasured (her first turn, an unmeasured box): an absence is
 /// not a number, and the named constant then governs alone.
+///
+/// The rates come through the SAME ladder the fill cap reads (fresh → stale → the box's
+/// most conservative → none), not the fresh-only read: a stale 63 t/s point was good
+/// enough to ADMIT a 1907-token prompt on the IntelMac (card c30a4757) while this
+/// function, asking for fresh only, returned `None` and left the 300 s floor to govern
+/// the wait for the prompt that rate had sized. One rate, one meaning: what sizes the
+/// prompt sizes its wait.
 pub(crate) fn expected_occupancy_for(persona_id: uuid::Uuid) -> Option<std::time::Duration> {
     let shape = LAST_TURN_SHAPE.get(&persona_id).map(|s| *s)?;
     let model = crate::inference::llama_server::current_serving().active_model?;
-    let prefill_tps = crate::inference::prefill_rate::rate_for(&model)?;
-    let decode_tps = crate::inference::decode_knee::tps_for(&model)?;
+    let prefill_tps = crate::inference::prefill_rate::measured_rate_for(&model).tps?;
+    let decode_tps = crate::inference::decode_knee::rate_for(&model).tps?;
     occupancy_of(shape, prefill_tps, decode_tps)
 }
 
