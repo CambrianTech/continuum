@@ -44,6 +44,7 @@ pub enum JobStatusSource {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct JobStatusOutcome {
+    /// The inspection succeeded; only `status` supplies evidence about the job.
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -121,6 +122,7 @@ crate::action_command! {
             Ok(JournalLookup::NotObserved) => JobStatusOutcome::refused("UnknownHandle", "no typed terminal receipt for this full handle".into()),
             Ok(JournalLookup::Incomplete { next_offset }) => {
                 let mut result = JobStatusOutcome::refused("HistoryIncomplete", "history scan incomplete; continue with nextHistoryOffset".into());
+                result.success = true; // A page was inspected; continuation is data, not an IPC refusal.
                 result.source = Some(JobStatusSource::Journal);
                 result.next_history_offset = Some(next_offset);
                 result
@@ -130,6 +132,7 @@ crate::action_command! {
                     Some(status) => JobStatusOutcome::observed(status, JobStatusSource::Journal),
                     None => JobStatusOutcome::refused("HistoryCorrupt", "unreadable rows retained; absence is uncertain, continue with nextHistoryOffset".into()),
                 };
+                result.success = true; // Corruption leaves the job unknown, but the page and cursor are readable.
                 result.source = Some(JobStatusSource::Journal);
                 result.malformed = Some(malformed);
                 result.next_history_offset = Some(next_offset);
@@ -204,7 +207,7 @@ mod tests {
             ),
         )
         .unwrap();
-        cmd.test_job_board = Arc::new(TrainingJobBoard::with_ledger(Some(ledger)));
+        cmd.test_job_board = Arc::new(TrainingJobBoard::with_ledger(Some(ledger.clone())));
         let request = crate::runtime::CommandRequest::<JobStatusParams>::from_value(
             serde_json::json!({"jobHandle": handle}),
         )
@@ -214,6 +217,33 @@ mod tests {
         assert!(matches!(out.source, Some(JobStatusSource::Journal)));
         assert!(matches!(out.status, Some(TrainingStatus::Failed { error })
             if error == "capacity refused before weights"));
+        // The public dispatcher must retain inspection pages as JSON, not
+        // success:false (which IPC promotes to a string-only refusal).
+        // Neither an unfinished record nor corruption supplies a job status.
+        for (bytes, kind, cursor, malformed) in [
+            ("{", "HistoryIncomplete", 0_u64, None),
+            ("{broken}\n", "HistoryCorrupt", 9, Some(1)),
+        ] {
+            std::fs::write(&ledger, bytes).unwrap();
+            let result = crate::sdk_codegen::handler::dispatch(
+                &cmd,
+                serde_json::json!({"jobHandle": handle}),
+            )
+            .await
+            .unwrap();
+            let crate::runtime::CommandResult::Json(page) = result else {
+                panic!("history inspection must return JSON");
+            };
+            assert_eq!(page["success"], true);
+            assert!(page.get("status").is_none());
+            assert_eq!(page["source"], "journal");
+            assert_eq!(page["errorKind"], kind);
+            assert_eq!(page["nextHistoryOffset"], cursor);
+            assert_eq!(
+                page.get("malformed").and_then(serde_json::Value::as_u64),
+                malformed
+            );
+        }
     }
 
     // what this catches: a known provider routes to its adapter and returns the polled
