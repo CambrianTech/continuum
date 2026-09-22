@@ -4948,9 +4948,10 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     // hold the privilege either — and a drain already spent by then leaves exactly the
     // stranded core this preflight exists to prevent (Astra, 2026-09-22). The consented
     // child therefore owns both halves for its target: it holds a TERMINATE handle open
-    // ACROSS its own drain, so every failure lands before the drain and the terminate
-    // after it cannot be refused. When this returns Ok the core is already down, and the
-    // request below finds nothing listening — which is the correct reading, not a loss.
+    // ACROSS its own drain, so every acquisition failure lands BEFORE the drain. The
+    // terminate itself can still fail and is still reported — a held handle narrows the
+    // window, it does not abolish it. When this returns Ok the core is already down and
+    // the request below finds nothing listening, which is the correct reading of that.
     if let Some(pid) = may_drain.borrow_authority_for {
         #[cfg(windows)]
         {
