@@ -125,6 +125,29 @@ fn audited_crate_root() -> PathBuf {
 /// rule ends up scanning a directory that does not exist and reporting zero.
 const AUDITED_CRATE: &str = "continuum-core";
 
+/// The repository root, found by ANCHOR rather than by counting directories up.
+///
+/// Every caller here used to say `../..` or `ancestors().nth(2)`, which was correct
+/// only because the scanner happened to sit two levels down. That assumption survived
+/// this crate's move by luck — `core/source-hygiene` is also two levels down — and
+/// Cormac flagged it in review as the one path the empty-scan guard cannot see: a
+/// rule whose root is wrong but EXISTS scans a real directory and finds nothing.
+///
+/// Walking up to the directory that actually holds the workspace manifest removes the
+/// assumption instead of documenting it, so moving this crate anywhere cannot break it.
+/// `None` when no ancestor carries the anchor, which callers turn into a loud failure
+/// rather than a silent empty scan.
+pub fn repo_root() -> Option<PathBuf> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|dir| dir.join(WORKSPACE_ANCHOR).is_file() && dir.join("core").is_dir())
+        .map(Path::to_path_buf)
+}
+
+/// What marks the repository root. The workspace manifest is the honest anchor: it is
+/// the file that DEFINES the tree these rules audit.
+const WORKSPACE_ANCHOR: &str = "Cargo.toml";
+
 /// Every `src/` directory in the workspace — this crate's, its sibling crates', and
 /// the apps'.
 ///
@@ -142,13 +165,12 @@ const AUDITED_CRATE: &str = "continuum-core";
 /// scan does not depend on the process's working directory. Roots that do not exist
 /// are skipped, so this stays correct if the layout changes under it.
 pub fn workspace_src_roots() -> Vec<PathBuf> {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     // The audited crate's src, not this crate's — same correction as
     // `crate_src_root`: violations are only ever raised against that tree.
     let mut roots = vec![crate_src_root()];
-    // `core/continuum-core` → `continuum/`. `ancestors()` rather than two `parent()`
-    // unwraps: a path shallower than expected yields no root instead of a panic.
-    let Some(repo) = manifest.ancestors().nth(2) else {
+    // Anchored, not counted: see `repo_root`. A missing anchor yields the audited
+    // root alone rather than a wrong tree full of nothing.
+    let Some(repo) = repo_root() else {
         return roots;
     };
     for group in ["core", "apps"] {
@@ -350,6 +372,45 @@ mod tests {
     //
     // So the root is asserted to be real, to be the audited crate, and to contain
     // enough Rust that an empty scan cannot be mistaken for a clean one.
+    // what this catches: the depth assumption that survived this crate's move by LUCK.
+    // Every root here used to be `../..` or `ancestors().nth(2)`, correct only because
+    // the scanner sat two levels down — and `core/source-hygiene` happens to sit two
+    // levels down too, so the move could not expose it (Cormac, review of #4346). It is
+    // also the one path `the_audited_root_...` cannot protect: a root that is WRONG but
+    // EXISTS scans a real directory and finds nothing. Anchored resolution has to be
+    // asserted directly or the next crate move reintroduces the bug silently.
+    #[test]
+    fn the_repo_root_is_found_by_anchor_and_is_above_this_crate() {
+        let root = super::repo_root().expect(
+            "no ancestor carries the workspace Cargo.toml — every cross-crate rule \
+             would fall back to the audited root alone",
+        );
+        assert!(
+            root.join("Cargo.toml").is_file() && root.join("core").is_dir(),
+            "{} does not look like the repo root",
+            root.display()
+        );
+        // The audited crate must live UNDER it — the relationship the old `../..`
+        // asserted by arithmetic, now asserted by fact.
+        assert!(
+            super::crate_src_root().starts_with(&root),
+            "audited root {} is not under repo root {}",
+            super::crate_src_root().display(),
+            root.display()
+        );
+        // And it must be the workspace manifest, not some nested crate's Cargo.toml
+        // that happens to sit beside a `core/` directory.
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml"))
+            // unwrap_or_default: an unreadable manifest fails the assert below rather
+            // than passing on an absent string.
+            .unwrap_or_default();
+        assert!(
+            manifest.contains("[workspace]"),
+            "{} is not the WORKSPACE manifest",
+            root.display()
+        );
+    }
+
     #[test]
     fn the_audited_root_is_the_other_crate_and_actually_has_source_in_it() {
         let root = super::crate_src_root();
