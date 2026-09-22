@@ -472,7 +472,15 @@ impl ServiceModule for TrainingCompletionSentinel {
                 // can never poll it again. Claim (drop) it so we don't spin on a dead
                 // provider forever; fail loud naming the cause.
                 if TrainingJobBoard::global()
-                    .claim(job.handle.local_id)
+                    .claim(
+                        job.handle.local_id,
+                        &TrainingStatus::Failed {
+                            error: format!(
+                                "provider {} is no longer registered",
+                                job.handle.provider_id
+                            ),
+                        },
+                    )
                     .is_some()
                 {
                     tracing::warn!(
@@ -485,15 +493,19 @@ impl ServiceModule for TrainingCompletionSentinel {
             };
 
             match adapter.poll(&job.handle).await {
-                Ok(TrainingStatus::Completed { artifact }) => {
+                Ok(status @ TrainingStatus::Completed { .. }) => {
                     // Claim BEFORE spawning so no later tick re-handles this job.
-                    if let Some(job) = TrainingJobBoard::global().claim(job.handle.local_id) {
-                        self.spawn_completion_chain(job, artifact);
+                    if let Some(job) =
+                        TrainingJobBoard::global().claim(job.handle.local_id, &status)
+                    {
+                        if let TrainingStatus::Completed { artifact } = status {
+                            self.spawn_completion_chain(job, artifact);
+                        }
                     }
                 }
-                Ok(TrainingStatus::Failed { error }) => {
+                Ok(ref status @ TrainingStatus::Failed { ref error }) => {
                     if TrainingJobBoard::global()
-                        .claim(job.handle.local_id)
+                        .claim(job.handle.local_id, status)
                         .is_some()
                     {
                         tracing::warn!(
@@ -506,7 +518,7 @@ impl ServiceModule for TrainingCompletionSentinel {
                 }
                 Ok(TrainingStatus::Cancelled) => {
                     if TrainingJobBoard::global()
-                        .claim(job.handle.local_id)
+                        .claim(job.handle.local_id, &TrainingStatus::Cancelled)
                         .is_some()
                     {
                         tracing::info!(
@@ -594,6 +606,8 @@ mod tests {
         // No executor installed, no jobs — tick must still succeed.
         assert!(sentinel.tick().await.is_ok());
         // sanity: a nil-id claim on an empty board yields nothing.
-        assert!(TrainingJobBoard::global().claim(Uuid::nil()).is_none());
+        assert!(TrainingJobBoard::global()
+            .claim(Uuid::nil(), &TrainingStatus::Cancelled)
+            .is_none());
     }
 }

@@ -64,7 +64,7 @@ use std::sync::OnceLock;
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use super::types::JobHandle;
+use super::types::{JobHandle, TrainingStatus};
 
 /// One in-flight training job, plus the context the L3 sentinel needs to run the
 /// eval→page-in chain when it completes WITHOUT re-deriving any of it. Cloned out of
@@ -370,14 +370,24 @@ impl TrainingJobBoard {
 
     /// Atomically remove and return a job — the sentinel's "claim" the instant it
     /// observes a terminal status, BEFORE spawning the eval chain, so no later tick
-    /// re-handles it. `None` if it was already claimed. Journals `terminal/claimed`
-    /// so the ledger's replay sees this id as closed.
-    pub fn claim(&self, local_id: Uuid) -> Option<WatchedJob> {
+    /// re-handles it. `None` if already claimed or not terminal. Journals the
+    /// borrowed typed outcome and correlation so reboot cannot erase why it ended.
+    /// Training completion is not proof the later evaluation/adoption succeeded.
+    pub fn claim(&self, local_id: Uuid, status: &TrainingStatus) -> Option<WatchedJob> {
+        if matches!(
+            status,
+            TrainingStatus::Queued | TrainingStatus::Running { .. }
+        ) {
+            return None;
+        }
         let job = self.jobs.remove(&local_id).map(|(_, job)| job);
-        if job.is_some() {
+        if let Some(job) = &job {
             self.journal(&serde_json::json!({
                 "event": "terminal",
                 "reason": "claimed",
+                "status": status,
+                "handle": &job.handle,
+                "trigger_dispatch_id": job.trigger_dispatch_id,
                 "local_id": local_id.to_string(),
                 "at_ms": now_ms(),
             }));
@@ -518,11 +528,19 @@ mod tests {
             "snapshot sees the registered job"
         );
 
-        let claimed = board.claim(id).expect("first claim returns the job");
+        assert!(board.claim(id, &TrainingStatus::Queued).is_none());
+        assert_eq!(
+            board.len(),
+            1,
+            "a nonterminal observation cannot retire a job"
+        );
+        let claimed = board
+            .claim(id, &TrainingStatus::Cancelled)
+            .expect("first claim returns the job");
         assert_eq!(claimed.handle.local_id, id);
         assert!(board.is_empty(), "claim removes the job from the board");
         assert!(
-            board.claim(id).is_none(),
+            board.claim(id, &TrainingStatus::Cancelled).is_none(),
             "a second claim of the same job must be None — no double-processing"
         );
     }
@@ -554,7 +572,14 @@ mod tests {
         let orphan = Uuid::new_v4();
         previous.register(watched(done, "mlx"));
         previous.register(watched(orphan, "mlx"));
-        previous.claim(done).expect("claim the finished job");
+        previous
+            .claim(
+                done,
+                &TrainingStatus::Failed {
+                    error: "capacity refused before weights".into(),
+                },
+            )
+            .expect("claim the finished job");
         drop(previous);
 
         // "Next boot": replay finds exactly the unclaimed job.
@@ -565,6 +590,17 @@ mod tests {
             "exactly the never-terminal job is orphaned"
         );
         let text = std::fs::read_to_string(&ledger).expect("ledger exists");
+        let terminal: serde_json::Value = text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|row| row["event"] == "terminal" && row["local_id"] == done.to_string())
+            .expect("completed job has a durable outcome");
+        assert_eq!(terminal["status"]["state"], "failed");
+        assert_eq!(
+            terminal["status"]["error"],
+            "capacity refused before weights"
+        );
+        assert_eq!(terminal["handle"]["localId"], done.to_string());
         assert!(
             text.contains("killed-by-reboot") && text.contains(&orphan.to_string()),
             "the orphan's death is journaled: {text}"
