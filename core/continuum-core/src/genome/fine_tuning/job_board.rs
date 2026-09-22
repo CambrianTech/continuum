@@ -487,7 +487,9 @@ impl TrainingJobBoard {
     pub fn claim(&self, local_id: Uuid, status: &TrainingStatus) -> Option<WatchedJob> {
         if matches!(
             status,
-            TrainingStatus::Queued | TrainingStatus::Running { .. }
+            TrainingStatus::Queued
+                | TrainingStatus::WaitingForCapacity { .. }
+                | TrainingStatus::Running { .. }
         ) {
             return None;
         }
@@ -644,6 +646,15 @@ mod tests {
         );
 
         assert!(board.claim(id, &TrainingStatus::Queued).is_none());
+        assert!(board
+            .claim(
+                id,
+                &TrainingStatus::WaitingForCapacity {
+                    required_bytes: 1024,
+                    available_bytes: 512
+                }
+            )
+            .is_none());
         assert_eq!(
             board.len(),
             1,

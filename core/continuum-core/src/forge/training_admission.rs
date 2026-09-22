@@ -19,6 +19,7 @@ pub(crate) async fn wait_for_training_memory(
     daemon: std::sync::Arc<ResourceDaemon>,
     consumer: &str,
     bytes: u64,
+    mut waiting: impl FnMut(u64),
 ) -> Result<LeaseGuard, String> {
     if bytes == 0 {
         return Err("training memory requirement must be measured before admission".into());
@@ -39,6 +40,7 @@ pub(crate) async fn wait_for_training_memory(
                         available_bytes = available,
                         "prepared training waits for governed capacity"
                     );
+                    waiting(available);
                     last_available = Some(available);
                 }
             }

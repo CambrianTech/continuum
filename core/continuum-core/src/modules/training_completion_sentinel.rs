@@ -528,7 +528,11 @@ impl ServiceModule for TrainingCompletionSentinel {
                         );
                     }
                 }
-                Ok(TrainingStatus::Queued | TrainingStatus::Running { .. }) => {
+                Ok(
+                    TrainingStatus::Queued
+                    | TrainingStatus::WaitingForCapacity { .. }
+                    | TrainingStatus::Running { .. },
+                ) => {
                     // Still in flight — leave it on the board for the next tick.
                 }
                 Err(e) => {

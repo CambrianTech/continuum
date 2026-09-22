@@ -110,7 +110,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
         }
         let id = Uuid::new_v4();
         let python = self.python.clone();
-        Ok(self.jobs.prepare(id, async move {
+        Ok(self.jobs.prepare(id, move |progress| async move {
             let directory = job_dir_for(&request, id);
             let adapters = directory.join("adapters");
             tokio::fs::create_dir_all(&adapters)
@@ -171,6 +171,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                     .ok_or_else(|| failure("CUDA training requires the resource governor"))?,
                 &format!("genome-train:{id}"),
                 plan.memory_bytes,
+                |available| progress.waiting_for_capacity(plan.memory_bytes, available),
             )
             .await
             .map_err(FineTuningError::Transient)?;

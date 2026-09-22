@@ -331,6 +331,15 @@ pub struct JobHandle {
 pub enum TrainingStatus {
     /// Job accepted; not yet started running.
     Queued,
+    /// Prepared work waiting for the resource governor. These bytes are the
+    /// latest admission refusal, not a promise that capacity will become free.
+    #[serde(rename_all = "camelCase")]
+    WaitingForCapacity {
+        #[ts(type = "number")]
+        required_bytes: u64,
+        #[ts(type = "number")]
+        available_bytes: u64,
+    },
     /// Running. `progress_pct` is best-effort; some providers report
     /// nothing and the adapter floors it at the epoch percentage.
     #[serde(rename_all = "camelCase")]
