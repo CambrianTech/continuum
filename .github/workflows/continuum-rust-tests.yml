@@ -117,7 +117,7 @@ jobs:
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          cargo test -p continuum-core --lib --no-run --message-format=json > lib-artifacts.jsonl
+          cargo test -p continuum-core --lib --profile dev-fast --no-run --message-format=json > lib-artifacts.jsonl
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
@@ -151,7 +151,9 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         run: |
           set -o pipefail
-          cargo test -p continuum-core --doc BindingIsUnstatable 2>&1 | tee doc-guard.log
+          # Same profile as the --lib build above, deliberately: a different profile
+          # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
+          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
           if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
             echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
             echo "A zero-match filter exits 0, so this is how a renamed or deleted"
