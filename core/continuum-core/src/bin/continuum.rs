@@ -1328,7 +1328,28 @@ impl PreparedCoreService {
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
                     let prev = to.with_extension("prev.exe");
-                    let _ = std::fs::remove_file(&prev);
+                    // `.prev.exe` IS A SINGLE PARKING SPACE, and a running image can be
+                    // RENAMED on Windows (see this function's doc) — so a predecessor that
+                    // was never reaped keeps executing FROM `.prev.exe` and pins that exact
+                    // name. The removal below then fails, and it used to fail silently
+                    // (`let _ = remove_file`), after which the rename reported AccessDenied
+                    // against `to` — naming the CURRENT file for a lock held on a DIFFERENT
+                    // one. Measured 2026-09-22 on Astra's node: two staging attempts denied
+                    // while core 25040 ran from `.prev.exe`, read as a permissions problem
+                    // for an hour. There is no permission to grant; a process is running
+                    // from the file.
+                    if let Err(e) = std::fs::remove_file(&prev) {
+                        if prev.exists() {
+                            return Err(format!(
+                                "a PREVIOUS artifact is still present at {} and could not be \
+                                 removed ({e}) — a process is almost certainly still running \
+                                 from it, which also means the kill before this stage did not \
+                                 take. Staging cannot proceed until that process exits; this \
+                                 is not a file-permission fault",
+                                prev.display()
+                            ));
+                        }
+                    }
                     std::fs::rename(to, &prev)
                         .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
                 }
@@ -3731,6 +3752,15 @@ enum KillStep {
 }
 
 impl KillStep {
+    /// The pid this step targets — the subject whose survival decides whether the
+    /// kill actually happened. A tree kill still has one root, and that root is the
+    /// process whose image pins a staging slot when it refuses to die.
+    fn pid(self) -> i32 {
+        match self {
+            Self::Process(pid) | Self::Tree(pid) => pid,
+        }
+    }
+
     #[cfg(any(windows, test))]
     fn command(self) -> std::process::Command {
         let mut cmd = std::process::Command::new("taskkill");
@@ -3858,7 +3888,35 @@ fn kill_pid_trees_preserving(roots: &[i32], keep: &[i32]) {
     for step in kill_plan(roots, &parents, &keep_with_self(keep)) {
         #[cfg(windows)]
         {
-            let _ = step.command().output();
+            // A KILL IS PROVEN BY THE PROCESS BEING GONE, NEVER BY THE KILLER RETURNING.
+            // This arm was `let _ = step.command().output()` — exit status, stdout and
+            // stderr all discarded — so `taskkill` answering "Access is denied" (the
+            // target runs under the S4U task principal; the caller does not) was
+            // indistinguishable from a successful kill. Downstream then removed the
+            // pidfile and excluded the pid from survivors, and the only place the truth
+            // surfaced was a 60 s handoff timeout that blamed a slow exit
+            // (2026-09-22: Astra's core 25040 outlived two staging attempts this way).
+            let target = step.pid();
+            let out = step.command().output();
+            // The postcondition, observed: still alive means the kill did not happen,
+            // whatever the tool said. Report the tool's own words when it spoke.
+            if pid_alive(target) {
+                let detail = match &out {
+                    Ok(o) => format!(
+                        "taskkill exited {}: {}",
+                        o.status,
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    ),
+                    Err(e) => format!("taskkill could not be run: {e}"),
+                };
+                eprintln!("▶ KILL REFUSED: pid {target} is STILL ALIVE after the kill — {detail}");
+                continuum_core::probe!(
+                    class = "deploy.kill.refused",
+                    pid = target as u64,
+                    detail = %detail,
+                    "a kill returned but the process is still running — staging over its image will be denied"
+                );
+            }
         }
         #[cfg(unix)]
         step.execute();
@@ -5035,6 +5093,23 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-22, Astra's Windows node): a kill step that cannot say
+    // WHICH process it was asked to end. The Windows arm discarded taskkill's Output, so
+    // an "Access is denied" refusal and a successful kill were the same observation —
+    // and the verification that now replaces that silence needs the target pid. A
+    // `pid()` that answered for only one variant would verify the wrong process for the
+    // other, which is worse than not verifying: it would report a healthy kill while the
+    // real target lived on and pinned the staging slot.
+    #[test]
+    fn a_kill_step_names_the_process_whose_survival_disproves_it() {
+        use super::KillStep;
+        assert_eq!(KillStep::Process(4321).pid(), 4321);
+        assert_eq!(KillStep::Tree(4321).pid(), 4321, "a tree kill is still rooted at one pid");
+        // The two shapes differ in BLAST RADIUS, never in subject: whichever the plan
+        // picks, the pid whose survival means the kill did not happen is the same.
+        assert_eq!(KillStep::Process(7).pid(), KillStep::Tree(7).pid());
+    }
+
     // what this catches (card 82af11f5, 2026-09-19): the Windows deploy consumer's
     // verdict vocabulary — no request = nothing owed; the tip already running (short
     // sha as a prefix, git's 7-char floor) = the tracker retires it, never a reboot;
