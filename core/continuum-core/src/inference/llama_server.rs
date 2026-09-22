@@ -177,6 +177,38 @@ pub fn reset_real_decode_failures() {
     REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// What a FINISHED real generation says about the served lane's health.
+///
+/// The classification is pure so it can be tested without touching the process-global
+/// counters it drives ([[a-daemon-test-owns-its-inputs-process-globals-cross-tests]]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealDecodeOutcome {
+    /// Tokens reached the citizen: proof of life, and it ends any failure streak.
+    ProofOfLife,
+    /// The generation finished CLEANLY and delivered nothing — no content, no reasoning,
+    /// no tool call. This is the latched-backend class (a Metal compute context that has
+    /// gone bad still answers 200 and streams a well-formed body with zero deltas), and
+    /// it is the one wedge the liveness record could not previously see: the transport
+    /// never failed, so nothing stamped a failure, so `REAL_DECODE_FAILS` stayed 0 while
+    /// every citizen on the lane got an empty turn.
+    DeliveredNothing,
+    /// Not the local serving lane — a cloud provider's empty turn says nothing about our
+    /// hardware and must never smear this record.
+    NotOurLane,
+}
+
+/// Classify a finished real generation for the lane-health record.
+///
+/// `delivered_something` is the OR of content, reasoning and tool calls: a native tool
+/// turn legitimately carries empty text, so text alone is not the test.
+pub fn classify_real_decode(local_lane: bool, delivered_something: bool) -> RealDecodeOutcome {
+    match (local_lane, delivered_something) {
+        (false, _) => RealDecodeOutcome::NotOurLane,
+        (true, true) => RealDecodeOutcome::ProofOfLife,
+        (true, false) => RealDecodeOutcome::DeliveredNothing,
+    }
+}
+
 /// Record that a real generation produced tokens on the served lane. Called from the adapter's
 /// success path — the one place that knows tokens actually came out.
 pub fn note_real_decode() {
@@ -6175,5 +6207,32 @@ mod tests {
         let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, None)], alive);
         assert_eq!(dirs, vec![PathBuf::from("/p/a")]);
         assert!(!complete, "a LIVE record without a dir → incomplete → no sweep");
+    }
+
+    // what this catches: the latched-backend wedge class. A Metal compute context that
+    // has gone bad still answers 200 and streams a well-formed SSE body with ZERO deltas,
+    // so no transport-failure stamp fires and the lane reads healthy while every citizen
+    // on it gets an empty turn. Measured on the M5 2026-09-22: 2 root Metal OOMs latched
+    // the backend, 113 tasks ran prefill and never generated, 73 empty-completion faults
+    // landed on six citizens — and `REAL_DECODE_FAILS` stayed 0 the whole time. A clean
+    // finish that delivered NOTHING is the lane's failure, so it must classify as one.
+    #[test]
+    fn a_clean_finish_that_delivered_nothing_is_the_lanes_failure() {
+        use super::{classify_real_decode, RealDecodeOutcome};
+        assert_eq!(
+            classify_real_decode(true, false),
+            RealDecodeOutcome::DeliveredNothing,
+            "an empty local-lane generation must count AGAINST the lane — this is the \
+             evidence the heartbeat relaunches on"
+        );
+        assert_eq!(
+            classify_real_decode(true, true),
+            RealDecodeOutcome::ProofOfLife,
+            "real output is still proof of life and still ends the failure streak"
+        );
+        // A cloud provider's empty turn says nothing about our hardware. Both arms, so a
+        // future refactor cannot make remote traffic smear the local record.
+        assert_eq!(classify_real_decode(false, false), RealDecodeOutcome::NotOurLane);
+        assert_eq!(classify_real_decode(false, true), RealDecodeOutcome::NotOurLane);
     }
 }
