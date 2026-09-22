@@ -595,7 +595,7 @@ async fn dispatch(command: &str, args: Vec<String>) -> Result<(), CliError> {
             {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(outcome).unwrap_or_else(|_| outcome.to_string())
+                    serde_json::to_string_pretty(outcome).unwrap_or_else(|_| outcome.to_string()) // boundary: CLI stdout; a Value always encodes, its Display is the same JSON compact
                 );
             }
             return Err(format!("{command}: {e}").into());
