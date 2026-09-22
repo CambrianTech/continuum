@@ -1328,24 +1328,19 @@ impl PreparedCoreService {
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
                     let prev = to.with_extension("prev.exe");
-                    // `.prev.exe` IS A SINGLE PARKING SPACE, and a running image can be
-                    // RENAMED on Windows (see this function's doc) — so a predecessor that
-                    // was never reaped keeps executing FROM `.prev.exe` and pins that exact
-                    // name. The removal below then fails, and it used to fail silently
-                    // (`let _ = remove_file`), after which the rename reported AccessDenied
-                    // against `to` — naming the CURRENT file for a lock held on a DIFFERENT
-                    // one. Measured 2026-09-22 on Astra's node: two staging attempts denied
-                    // while core 25040 ran from `.prev.exe`, read as a permissions problem
-                    // for an hour. There is no permission to grant; a process is running
-                    // from the file.
+                    // `.prev.exe` is a SINGLE parking space, so staging cannot proceed
+                    // while something still holds that exact name. This used to fail
+                    // silently (`let _ = remove_file`) and the rename below then reported
+                    // its error against `to` — naming the CURRENT file for a refusal that
+                    // happened on a DIFFERENT one, which cost an hour of reading on
+                    // 2026-09-22. Report the path that actually refused and the OS's own
+                    // words for why; the cause is not inferable from here.
                     if let Err(e) = std::fs::remove_file(&prev) {
                         if prev.exists() {
                             return Err(format!(
-                                "a PREVIOUS artifact is still present at {} and could not be \
-                                 removed ({e}) — a process is almost certainly still running \
-                                 from it, which also means the kill before this stage did not \
-                                 take. Staging cannot proceed until that process exits; this \
-                                 is not a file-permission fault",
+                                "the previous artifact at {} could not be removed ({e}) and \
+                                 is still present; staging cannot move the current artifact \
+                                 aside onto an occupied name",
                                 prev.display()
                             ));
                         }
@@ -3752,15 +3747,6 @@ enum KillStep {
 }
 
 impl KillStep {
-    /// The pid this step targets — the subject whose survival decides whether the
-    /// kill actually happened. A tree kill still has one root, and that root is the
-    /// process whose image pins a staging slot when it refuses to die.
-    fn pid(self) -> i32 {
-        match self {
-            Self::Process(pid) | Self::Tree(pid) => pid,
-        }
-    }
-
     #[cfg(any(windows, test))]
     fn command(self) -> std::process::Command {
         let mut cmd = std::process::Command::new("taskkill");
@@ -3888,35 +3874,7 @@ fn kill_pid_trees_preserving(roots: &[i32], keep: &[i32]) {
     for step in kill_plan(roots, &parents, &keep_with_self(keep)) {
         #[cfg(windows)]
         {
-            // A KILL IS PROVEN BY THE PROCESS BEING GONE, NEVER BY THE KILLER RETURNING.
-            // This arm was `let _ = step.command().output()` — exit status, stdout and
-            // stderr all discarded — so `taskkill` answering "Access is denied" (the
-            // target runs under the S4U task principal; the caller does not) was
-            // indistinguishable from a successful kill. Downstream then removed the
-            // pidfile and excluded the pid from survivors, and the only place the truth
-            // surfaced was a 60 s handoff timeout that blamed a slow exit
-            // (2026-09-22: Astra's core 25040 outlived two staging attempts this way).
-            let target = step.pid();
-            let out = step.command().output();
-            // The postcondition, observed: still alive means the kill did not happen,
-            // whatever the tool said. Report the tool's own words when it spoke.
-            if pid_alive(target) {
-                let detail = match &out {
-                    Ok(o) => format!(
-                        "taskkill exited {}: {}",
-                        o.status,
-                        String::from_utf8_lossy(&o.stderr).trim()
-                    ),
-                    Err(e) => format!("taskkill could not be run: {e}"),
-                };
-                eprintln!("▶ KILL REFUSED: pid {target} is STILL ALIVE after the kill — {detail}");
-                continuum_core::probe!(
-                    class = "deploy.kill.refused",
-                    pid = target as u64,
-                    detail = %detail,
-                    "a kill returned but the process is still running — staging over its image will be denied"
-                );
-            }
+            let _ = step.command().output();
         }
         #[cfg(unix)]
         step.execute();
@@ -4578,6 +4536,96 @@ impl GracefulStop {
 ///
 /// The request travels the same socket path `ping` uses, so there is no new transport and
 /// no Windows-specific arrangement.
+/// Whether a drain may BEGIN, given whether this caller can actually tear the core
+/// down afterwards. Pure so the rule is testable without an OS.
+///
+/// `system/shutdown.rs` deliberately leaves the process alive after its durable
+/// receipt — the CLI owns teardown, so a drain whose teardown will be refused
+/// strands a drained core still answering ping. Measured 2026-09-22 on Astra's
+/// node: `OpenProcess(25040, TERMINATE)` returned NULL with Win32 error 5, and the
+/// drain had already run.
+fn may_begin_shutdown(authority: Result<(), String>) -> Result<(), String> {
+    authority.map_err(|why| {
+        format!(
+            "refusing to DRAIN a core this caller cannot then tear down ({why}). \
+             The drain is not reversible: system/shutdown leaves the process alive \
+             for the CLI to end, so draining without teardown authority leaves a \
+             drained core still answering ping. No state was touched"
+        )
+    })
+}
+
+/// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the
+/// OS answered.
+#[cfg(windows)]
+fn teardown_authority(pid: i32) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
+    // SAFETY: OpenProcess is a read-only capability query here; the handle is closed
+    // immediately and nothing is terminated by this call.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+    if handle.is_null() {
+        return Err(format!(
+            "OpenProcess(pid {pid}, PROCESS_TERMINATE) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: handle came from a successful OpenProcess above and is closed once.
+    unsafe { CloseHandle(handle) };
+    Ok(())
+}
+
+#[cfg(unix)]
+fn teardown_authority(pid: i32) -> Result<(), String> {
+    // SAFETY: signal 0 performs the permission and existence check WITHOUT delivering
+    // a signal — the standard capability probe.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EPERM) => Err(format!("signal 0 to pid {pid} refused: {err}")),
+        // ESRCH = already gone: nothing to tear down, so nothing to refuse.
+        _ => Ok(()),
+    }
+}
+
+/// The core pid the teardown will have to end, read from the pidfile BEFORE the
+/// drain. `None` means there is nothing to preflight — no pidfile, or one that
+/// names nothing parseable.
+fn core_pid_for_teardown() -> Option<i32> {
+    std::fs::read_to_string(pidfile_for(&socket_path()))
+        .ok()
+        .and_then(|c| c.trim().parse::<i32>().ok())
+}
+
+/// How long a core gets to leave the process table after being asked to stop and
+/// then killed.
+const TEARDOWN_EXIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Wait, bounded, for `pid` to leave the process table.
+///
+/// NOT an immediate `pid_alive` after the kill: SIGTERM and taskkill are both
+/// asynchronous, so a perfectly healthy core is still in the table on the very next
+/// line, and an immediate probe would manufacture "the kill was refused" on every
+/// ordinary stop (Astra, 2026-09-22). Only failing to go within the deadline is
+/// evidence of anything.
+async fn exited_within(pid: i32, deadline: Duration) -> Result<(), String> {
+    let until = std::time::Instant::now() + deadline;
+    while pid_alive(pid) {
+        if std::time::Instant::now() >= until {
+            return Err(format!(
+                "core pid {pid} is still running {}s after being asked to stop and then \
+                 killed; its pidfile is left in place because the process it names still \
+                 exists, and no handoff is issued over a core that did not go",
+                deadline.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Ok(())
+}
+
 async fn request_graceful_stop() -> GracefulStop {
     // Ask whether anything is listening BEFORE spending the stop budget on a socket
     // nobody holds. Without this, `stop` on an already-stopped node waits the full
@@ -4735,6 +4783,12 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
     // answered is already exiting and the sweep finds nothing, and a core that did not
     // answer still has to go. What changes is that the operator is told which of those
     // happened instead of reading the same success line for both.
+    // PREFLIGHT THE TEARDOWN AUTHORITY BEFORE THE DRAIN (Astra, 2026-09-22): the
+    // drain is one-way, so a caller that cannot end the process must refuse here
+    // rather than leave a drained core answering ping.
+    if let Some(pid) = core_pid_for_teardown() {
+        may_begin_shutdown(teardown_authority(pid))?;
+    }
     let graceful = request_graceful_stop().await;
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
@@ -4774,12 +4828,26 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
 
     let mut pidfile_core: Option<i32> = None;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
-        if let Ok(pid) = contents.trim().parse::<i32>() {
-            kill_pid_trees_preserving(&[pid], &keep);
-            pidfile_core = Some(pid);
-            println!("stopping core (pid {pid})");
+        match contents.trim().parse::<i32>() {
+            Ok(pid) => {
+                kill_pid_trees_preserving(&[pid], &keep);
+                println!("stopping core (pid {pid})");
+                // A PIDFILE IS A CLAIM THAT A PROCESS EXISTS. Removing it while the
+                // process exists is what makes every later reader wrong: the sweep
+                // below excludes the pid as handled, the handoff proceeds, and the
+                // only place the truth surfaced was a timeout blaming a slow exit.
+                // So the removal is now CONDITIONAL on the exit being observed, and a
+                // core that did not go aborts the stop with its pid still claimed.
+                exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
+                pidfile_core = Some(pid);
+                let _ = std::fs::remove_file(&pidfile);
+            }
+            // A pidfile that parses to nothing names no process, so nothing can
+            // survive it — it is stale by construction and safe to clear.
+            Err(_) => {
+                let _ = std::fs::remove_file(&pidfile);
+            }
         }
-        let _ = std::fs::remove_file(&pidfile);
     }
     let stopped = pidfile_core.is_some();
 
@@ -5093,21 +5161,71 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
-    // what this catches (2026-09-22, Astra's Windows node): a kill step that cannot say
-    // WHICH process it was asked to end. The Windows arm discarded taskkill's Output, so
-    // an "Access is denied" refusal and a successful kill were the same observation —
-    // and the verification that now replaces that silence needs the target pid. A
-    // `pid()` that answered for only one variant would verify the wrong process for the
-    // other, which is worse than not verifying: it would report a healthy kill while the
-    // real target lived on and pinned the staging slot.
+    // what this catches (2026-09-22, Astra's Windows node): a drain that runs even
+    // though the teardown after it will be refused. `system/shutdown.rs` deliberately
+    // leaves the process alive for the CLI to end, and `OpenProcess(25040, TERMINATE)`
+    // returned NULL/error 5 there — so draining first left a drained core still
+    // answering ping, with no way to end it. The rule must refuse BEFORE the drain and
+    // must say that nothing was touched, because an operator who reads "refused" after
+    // a drain has a different machine in front of them than one who reads it before.
     #[test]
-    fn a_kill_step_names_the_process_whose_survival_disproves_it() {
-        use super::KillStep;
-        assert_eq!(KillStep::Process(4321).pid(), 4321);
-        assert_eq!(KillStep::Tree(4321).pid(), 4321, "a tree kill is still rooted at one pid");
-        // The two shapes differ in BLAST RADIUS, never in subject: whichever the plan
-        // picks, the pid whose survival means the kill did not happen is the same.
-        assert_eq!(KillStep::Process(7).pid(), KillStep::Tree(7).pid());
+    fn a_drain_is_refused_when_the_teardown_after_it_would_be() {
+        use super::may_begin_shutdown;
+        assert!(may_begin_shutdown(Ok(())).is_ok(), "authority present: the stop proceeds");
+        let refused = may_begin_shutdown(Err("OpenProcess denied".to_string()))
+            .expect_err("no teardown authority must refuse the drain");
+        assert!(refused.contains("OpenProcess denied"), "the OS's reason is carried: {refused}");
+        assert!(
+            refused.contains("No state was touched"),
+            "the refusal must say the drain did NOT run: {refused}"
+        );
+    }
+
+    // what this catches: a capability probe that refuses on a pid that is merely GONE.
+    // The pidfile routinely names a core that already exited; if absence read as "no
+    // authority", every ordinary stop would refuse before doing anything. Only an
+    // actual permission denial may refuse.
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_that_no_longer_exists_is_not_a_permission_refusal() {
+        use super::teardown_authority;
+        assert!(
+            teardown_authority(std::process::id() as i32).is_ok(),
+            "a process this caller owns is tearable down"
+        );
+        // Max pid + 1 on every supported unix: nothing can be running there.
+        assert!(
+            teardown_authority(i32::MAX).is_ok(),
+            "already gone is nothing to tear down, never a refusal"
+        );
+    }
+
+    // what this catches (Astra's second objection, 2026-09-22): deciding a kill failed
+    // by probing liveness on the next line. SIGTERM and taskkill are asynchronous, so a
+    // healthy core is still in the table immediately after — an immediate probe would
+    // have reported "kill refused" on every successful deploy. The decider is the
+    // bounded deadline: a pid still present when it expires, and only then.
+    #[tokio::test]
+    async fn only_outliving_the_deadline_is_evidence_that_a_kill_did_not_take() {
+        use super::exited_within;
+        use std::time::Duration;
+        // Our own pid cannot exit, so it stands in for a core that refused to go.
+        let me = std::process::id() as i32;
+        let refused = exited_within(me, Duration::from_millis(300))
+            .await
+            .expect_err("a pid still alive at the deadline is a failed teardown");
+        assert!(refused.contains(&me.to_string()), "the surviving pid is named: {refused}");
+        assert!(
+            refused.contains("pidfile is left in place"),
+            "the claim must survive the process it names: {refused}"
+        );
+        // And a pid that is gone returns without spending the deadline.
+        let started = std::time::Instant::now();
+        assert!(exited_within(i32::MAX, Duration::from_secs(30)).await.is_ok());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "an already-dead pid must not wait out the deadline"
+        );
     }
 
     // what this catches (card 82af11f5, 2026-09-19): the Windows deploy consumer's
