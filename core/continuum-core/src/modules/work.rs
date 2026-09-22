@@ -647,8 +647,17 @@ impl From<WorkClaimOrigin> for airc_work::ClaimOrigin {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkClaimParams {
-    /// Explicit tool choice by default; the automatic pull supplies automatic.
+    /// How this claim was selected — and deliberately NOT part of the projected
+    /// schema. Every `Automatic` setter is Rust-internal (`persona/work_focus.rs`,
+    /// `commands/benchmark.rs`) and builds `airc_work::ClaimOrigin` directly, never
+    /// these params, so on the wire this field can only ever be its default. Offering
+    /// it therefore bought nothing and cost two things: catalog tokens in every
+    /// citizen's turn (#333, the agentic-surface ratchet), and a way for her to declare
+    /// a deliberate claim `automatic` — falsifying the very provenance this field was
+    /// added to preserve. `#[serde(default)]` keeps an omitted field `Explicit`, so the
+    /// wire contract is unchanged; `WorkState` still sets it explicitly in Rust.
     #[serde(default)]
+    #[schemars(skip)]
     pub origin: WorkClaimOrigin,
     /// The card id (UUID) to claim — from the board (`airc work board`).
     pub card_id: String,
@@ -4113,5 +4122,46 @@ mod tests {
             change_verdict("", Some(1), None),
             ChangeVerdict::CouldNotLook(_)
         ));
+    }
+
+    // what this catches: the agentic-surface ratchet (#333), with a name on it and in the
+    // file that owns the field. `origin` is INTERNAL provenance — every `Automatic` setter
+    // (`persona/work_focus.rs`, `commands/benchmark.rs`) builds `airc_work::ClaimOrigin`
+    // directly and not one goes through these params — so projecting it spent catalog
+    // tokens in every citizen's turn on a value she could only ever send wrong. Added
+    // 2026-09-22, it moved the measured agentic surface 12027 -> 12210 past its 12100
+    // ceiling and painted three PRs red off one shared base, none of which had touched
+    // cognition. Re-adding it must fail HERE, in one crate's fast test, rather than in a
+    // cognition ratchet nobody reading work.rs would think to connect to this field.
+    #[test]
+    fn the_claim_origin_is_provenance_not_a_citizens_parameter() {
+        let schema = serde_json::to_value(schemars::schema_for!(WorkClaimParams))
+            .expect("the params schema projects");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("an object schema with properties");
+        assert!(
+            props.contains_key("card_id"),
+            "the citizen's real parameters still project: {props:?}"
+        );
+        assert!(
+            !props.contains_key("origin"),
+            "`origin` is internal provenance and must NOT ride the projected catalog — \
+             this is the growth that broke the 12100 agentic-surface ceiling: {props:?}"
+        );
+        assert!(
+            !schema.to_string().contains("WorkClaimOrigin"),
+            "skipping the field must drop its enum DEFINITION too — the definition is \
+             half the tokens: {schema}"
+        );
+
+        // The wire contract is unchanged: an omitted field is still an EXPLICIT claim,
+        // which is what every citizen-issued `work/claim` is.
+        let p: WorkClaimParams = serde_json::from_value(serde_json::json!({
+            "card_id": "31c241e2-0000-4000-8000-000000000000"
+        }))
+        .expect("origin stays optional on the wire");
+        assert!(matches!(p.origin, WorkClaimOrigin::Explicit));
     }
 }
