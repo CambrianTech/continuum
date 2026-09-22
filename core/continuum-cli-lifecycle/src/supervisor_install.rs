@@ -35,10 +35,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub(super) const CORE_TASK: &str = "ContinuumCore";
-pub(super) const DEPLOY_TASK: &str = "ContinuumDeploy";
+pub const CORE_TASK: &str = "ContinuumCore";
+pub const DEPLOY_TASK: &str = "ContinuumDeploy";
 /// How often the supervisor's sibling asks whether a deploy is owed.
-pub(super) const DEPLOY_EVERY_MIN: u32 = 10;
+pub const DEPLOY_EVERY_MIN: u32 = 10;
 /// A deploy tick may build: 50 min on the 5090, 70 on IntelMac. Four hours is the
 /// wall past which the tick is a hang, not a build.
 const DEPLOY_TIME_LIMIT: &str = "PT4H";
@@ -48,7 +48,7 @@ const DEPLOY_TIME_LIMIT: &str = "PT4H";
 /// so a plan is a plan whichever registrar reads it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct SupervisorPlan {
+pub struct SupervisorPlan {
     /// The core task's command (the hidden-launcher shell).
     pub shell: String,
     /// The core task's arguments (the launcher's `-File … -CorePath …` line).
@@ -63,7 +63,7 @@ pub(super) struct SupervisorPlan {
 
 /// When a task fires.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Trigger {
+pub enum Trigger {
     /// At system startup — the supervisor's trigger: no logon needed.
     Boot,
     /// Every `minutes`, from `start` (ISO 8601 local, no zone), indefinitely.
@@ -74,7 +74,7 @@ pub(super) enum Trigger {
 /// (`schtasks /Create /XML`), which is the one representation that carries an S4U
 /// principal, a boot trigger and restart-on-failure declaratively.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct TaskSpec {
+pub struct TaskSpec {
     pub name: &'static str,
     pub description: String,
     pub user_sid: String,
@@ -186,7 +186,7 @@ fn xml_escape(s: &str) -> String {
 /// from the contract. `present: false` is the whole report for an absent task.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct TaskReport {
+pub struct TaskReport {
     pub present: bool,
     #[serde(default)]
     pub description: String,
@@ -235,7 +235,7 @@ fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, 
 /// One way a registered task differs from the contract. Each names WHAT, so the
 /// receipt can say what the elevation changed — or what it failed to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Drift {
+pub enum Drift {
     Absent,
     /// The principal outlives no session: anything but S4U dies with a logon.
     LogonType(String),
@@ -254,7 +254,7 @@ pub(super) enum Drift {
 
 /// The drift of both tasks from what `plan` would register. Pure; the elevated
 /// step runs only when this is non-empty, and the verify after it demands empty.
-pub(super) fn drift(core: &TaskReport, deploy: &TaskReport, plan: &SupervisorPlan) -> Vec<(&'static str, Drift)> {
+pub fn drift(core: &TaskReport, deploy: &TaskReport, plan: &SupervisorPlan) -> Vec<(&'static str, Drift)> {
     let mut out = Vec::new();
     let core_spec = TaskSpec::core(plan);
     for d in drift_of(core, &core_spec, "MSFT_TaskBootTrigger") {
@@ -312,7 +312,7 @@ fn same_path(a: &str, b: &str) -> bool {
 /// between the write and the consent, but not the argv of a process already spawned
 /// (Fable, review of #4232 — the elevated child would otherwise register a boot task
 /// as ANY account, from a file anyone running as this user can edit).
-pub(super) fn plan_digest(bytes: &[u8]) -> String {
+pub fn plan_digest(bytes: &[u8]) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     h.update(bytes);
@@ -325,7 +325,7 @@ pub(super) fn plan_digest(bytes: &[u8]) -> String {
 /// reads as `(A;;0x1200a9;;;SID)` (FILE_GENERIC_READ|FILE_GENERIC_EXECUTE) or its
 /// alias `FRFX`, and full access `FA` covers it. Any `(D;…;SID)` deny outranks a
 /// grant, so it fails closed. Never reads inherited ACEs as the caller's own grant.
-pub(super) fn caller_has_read_execute(sddl: &str, sid: &str) -> bool {
+pub fn caller_has_read_execute(sddl: &str, sid: &str) -> bool {
     let sid_l = sid.to_ascii_lowercase();
     let mut granted = false;
     for ace in sddl.split('(').skip(1) {
@@ -361,7 +361,7 @@ pub(super) fn caller_has_read_execute(sddl: &str, sid: &str) -> bool {
 /// What one arm of `install` found and did. The orchestrator sums these: a bare
 /// `install` exits non-zero only when drift remains after every arm has run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct ArmReport {
+pub struct ArmReport {
     /// Ways the arm's subject differed from the contract when read.
     pub drift_before: usize,
     /// Ways still differing after the arm ran (equal to `drift_before` under --check).
@@ -380,7 +380,7 @@ impl ArmReport {
 /// The install verb's options. Bare `install` runs EVERY arm (Joel: "you want users
 /// to remember almost nothing"); naming arms restricts it to those.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct InstallOptions {
+pub struct InstallOptions {
     pub supervisor: bool,
     /// The CLI on PATH (`continuum`, `uu`) follows the installed release's CLI.
     pub cli: bool,
@@ -456,7 +456,7 @@ impl InstallOptions {
 /// The arms of `install`, in the order they run: the supervisor must be prepared
 /// before a core can be handed to it; the slot's CLI is fresh only after a stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Arm {
+pub enum Arm {
     Supervisor,
     Core,
     Cli,
@@ -474,7 +474,7 @@ impl Arm {
 
 /// Task XML as `schtasks /Create /XML` reads it: UTF-16LE with a BOM, matching the
 /// document's own `encoding="UTF-16"` declaration.
-pub(super) fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
+pub fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
     let mut bytes = vec![0xFF, 0xFE];
     bytes.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
     std::fs::write(path, bytes).map_err(|e| format!("install: cannot write {}: {e}", path.display()))
@@ -487,7 +487,7 @@ pub(super) fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-pub(super) async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, String> {
+pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, String> {
     use base64::Engine;
     use std::os::windows::process::CommandExt;
     let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
@@ -518,7 +518,7 @@ pub(super) async fn powershell(script: &str, timeout: std::time::Duration) -> Re
 /// its stderr is CLIXML (`#< CLIXML <Objs …><S S="Error">…</S>`) with CR/LF
 /// spelled `_x000D__x000A_`; a consent refusal reads as a 600-byte XML blob
 /// unless it is unwrapped. Plain stderr passes through untouched.
-pub(super) fn plain_stderr(raw: &str) -> String {
+pub fn plain_stderr(raw: &str) -> String {
     if !raw.trim_start().starts_with("#< CLIXML") {
         return raw.trim().to_string();
     }
@@ -551,7 +551,7 @@ pub(super) fn plain_stderr(raw: &str) -> String {
 /// One task, as the scheduler reports it. The name is one of this module's
 /// constants, never operator input.
 #[cfg(windows)]
-pub(super) async fn task_report(name: &str) -> Result<TaskReport, String> {
+pub async fn task_report(name: &str) -> Result<TaskReport, String> {
     let script = format!(
         "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); \
          $n='{name}'; $t=Get-ScheduledTask | Where-Object {{ $_.TaskName -eq $n -and $_.TaskPath -eq '\\' }}; \
@@ -589,7 +589,7 @@ fn receipt_path(plan: &Path) -> PathBuf {
 /// verify by re-reading. `descriptor_cli` reads the installed CLI out of the core
 /// task's description (the release descriptor) — the caller owns that type.
 #[cfg(windows)]
-pub(super) async fn install_supervisor(
+pub async fn install_supervisor(
     check_only: bool,
     descriptor_cli: impl Fn(&str) -> Result<String, String>,
 ) -> Result<ArmReport, String> {
@@ -685,7 +685,7 @@ pub(super) async fn install_supervisor(
 /// The elevated child: register exactly the plan, grant the caller read/execute,
 /// leave a receipt. No query, no decision, no second elevation.
 #[cfg(windows)]
-pub(super) fn install_supervisor_elevated(plan_path: &Path, plan_sha: &str) -> Result<(), String> {
+pub fn install_supervisor_elevated(plan_path: &Path, plan_sha: &str) -> Result<(), String> {
     let receipt = receipt_path(plan_path);
     let result = read_bound_plan(plan_path, plan_sha).and_then(|plan| register_plan(plan_path, plan));
     let text = match &result {
@@ -699,7 +699,7 @@ pub(super) fn install_supervisor_elevated(plan_path: &Path, plan_sha: &str) -> R
 /// The plan the consent was given for, or a refusal: the bytes on disk must hash to
 /// the digest on this process's argv. Pure and pinned — the one gate between "a file
 /// in %TEMP%" and "a task that runs as some account at boot".
-pub(super) fn read_bound_plan(plan_path: &Path, plan_sha: &str) -> Result<SupervisorPlan, String> {
+pub fn read_bound_plan(plan_path: &Path, plan_sha: &str) -> Result<SupervisorPlan, String> {
     let bytes = std::fs::read(plan_path).map_err(|e| format!("cannot read the plan {}: {e}", plan_path.display()))?;
     let actual = plan_digest(&bytes);
     if !actual.eq_ignore_ascii_case(plan_sha) {

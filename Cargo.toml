@@ -15,6 +15,7 @@ members = [
     "core/continuum-airc-protocol",
     # "core/archive" quarantined → legacy/quarantine/archive-worker (#424):
     # its only spawn wiring pointed at a dir that no longer exists.
+    "core/continuum-cli-lifecycle",
     "core/continuum-core",
     "core/expert-pager-policy",
     "core/source-hygiene",

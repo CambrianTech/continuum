@@ -1,0 +1,23 @@
+[package]
+name = "continuum-cli-lifecycle"
+version = "0.1.0"
+edition = "2021"
+
+# THE CLI's PLATFORM LIFECYCLE, EXTRACTED SO ITS TESTS DO NOT LINK THE CORE.
+#
+# These five modules were `mod` declarations inside the `continuum` bin, so
+# `cargo test --bin continuum` linked all 624,456 lines of continuum-core to run
+# 17 tests over 2,420 lines of pure functions. On Windows that PDB exceeded the
+# linker's limit (LNK1140, measured by Astra 2026-09-22) — the tests never ran.
+#
+# Nothing here reaches into the core: checked before the move, all five had ZERO
+# `crate::` / `continuum_core::` imports and ZERO `super::` references outside
+# their own test mods. This crate makes that property STRUCTURAL rather than
+# incidental — the compiler now refuses what the convention merely discouraged.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes"] }
