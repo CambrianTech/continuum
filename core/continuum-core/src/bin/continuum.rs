@@ -4650,7 +4650,7 @@ fn teardown_authority(pid: i32) -> Result<(), String> {
 /// predecessor beside it. The child proves the rest through its own handle.
 #[cfg(windows)]
 async fn installed_core_dir() -> Result<String, String> {
-    let task = CoreServiceTask::query().await?;
+    let task = PreparedCoreService::query().await?;
     let description: CoreServiceDescription = serde_json::from_str(&task.description)
         .map_err(|e| format!("the {} task's descriptor is unreadable ({e}); rerun the installer before escalating", supervisor_install::CORE_TASK))?;
     Path::new(&description.artifact)
