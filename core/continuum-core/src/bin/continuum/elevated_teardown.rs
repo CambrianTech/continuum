@@ -19,11 +19,11 @@
 //!
 //! WHY A PID IS NOT THE PLAN. A pid is reusable, and an elevated `TerminateProcess` on
 //! a number that has been recycled kills something nobody consented to. So the plan
-//! names the pid AND the image the unelevated half observed at that pid AND that
-//! image's digest, and the elevated child re-observes all three before it terminates
-//! anything. That narrows the target to "the process still running the executable we
-//! looked at"; it is not a proof against a reuse that also reloads the same image, and
-//! this module does not claim to be one.
+//! names the pid AND the installation directory, and the child — holding ONE handle
+//! opened for both query and terminate — proves through that handle that the process is
+//! a core of ours living there before it ends anything. That narrows the target to "a
+//! continuum core in the directory we installed into"; it is not a proof against a
+//! reuse that also happens to be one, and this module does not claim to be one.
 //!
 //! WHO MAY SPEND A CONSENT. A consent prompt needs a human at the machine. The deploy
 //! consumer runs under the supervisor, unattended, every ten minutes — escalating from
@@ -46,19 +46,18 @@ use std::path::PathBuf;
 #[cfg(any(windows, test))]
 use serde::{Deserialize, Serialize};
 
-/// What the consent is given for: this process, running this image, whose bytes hash
-/// to this digest. All three are re-checked by the elevated child.
+/// What the consent is given for: this process, if it is a core of ours running out of
+/// this installation directory. Both re-checked by the elevated child, through the
+/// handle it will terminate with.
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TeardownPlan {
     pub pid: i32,
-    /// The executable the unelevated half observed at `pid` — or, when it could not
-    /// observe one (the usual case: that is WHY we are escalating), the image the
-    /// running core reports for itself.
-    pub image_path: String,
-    /// SHA-256 (hex) of `image_path`'s bytes at plan time.
-    pub image_sha256: String,
+    /// The directory the installed core lives in, from the `ContinuumCore` descriptor.
+    /// A DIRECTORY and not a file, because the unelevated half cannot see which image
+    /// the process is actually executing — see `target_is_our_core`.
+    pub install_dir: String,
 }
 
 /// `stop`'s options.
@@ -150,37 +149,63 @@ pub(super) fn bind_plan_bytes(
     serde_json::from_slice(bytes).map_err(|e| format!("the plan is not a TeardownPlan: {e}"))
 }
 
-/// Is the process the elevated child is looking at the one the consent named?
+/// Is the process this handle names one of OUR cores?
+///
+/// WHY THIS IS NOT AN EXPECTED-IMAGE EQUALITY, which is what it was until Astra found
+/// the case that breaks it. The unelevated half cannot open the process — that is the
+/// whole reason it is escalating — so any image it puts in the plan is a GUESS, taken
+/// from the `ContinuumCore` descriptor's `artifact` field. On the node this rail exists
+/// for, that guess is wrong in a specific and predictable way: the descriptor names
+/// `service-b/core.exe` (the new 108b slot) while pid 25040 is executing the RENAMED
+/// predecessor. Gating on equality with a guess does not fail closed, it fails ALWAYS,
+/// and precisely on the broken state we are trying to repair.
+///
+/// So the plan carries what the planner can actually know — the installation directory,
+/// a stable fact from the same descriptor — and the child proves, through the handle it
+/// will terminate with, that the running image is a core of ours living there. A pid
+/// recycled into `notepad.exe` fails the directory; a pid recycled into `llama-server`
+/// (which DOES live in that directory) fails the name. The exact image and its digest
+/// are then reported in the receipt, so what was killed is recorded rather than assumed.
 ///
 /// Pure over what was OBSERVED, so the rule is testable without a process to kill.
 /// Paths compare the way Windows means them — case-insensitively, and `/` spelled `\`
 /// is the same separator — because the scheduler and `QueryFullProcessImageName`
 /// disagree about spelling far more often than they disagree about the file.
 #[cfg(any(windows, test))]
-pub(super) fn target_matches(
-    plan: &TeardownPlan,
-    observed_image: &str,
-    observed_sha: &str,
-) -> Result<(), String> {
+pub(super) fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(), String> {
     let norm = |s: &str| s.replace('/', "\\").trim_matches('"').to_ascii_lowercase();
-    if norm(&plan.image_path) != norm(observed_image) {
+    let root = norm(&plan.install_dir);
+    let root = root.trim_end_matches('\\').to_string();
+    let image = norm(observed_image);
+    if !image.starts_with(&format!("{root}\\")) {
         return Err(format!(
-            "pid {} is running {observed_image}, not the {} the consent named — the pid was \
-             recycled between the plan and the consent; refusing to terminate it",
-            plan.pid, plan.image_path
+            "pid {} is running {observed_image}, which is not under the installation \
+             directory {} the consent named — the pid was recycled; refusing to terminate it",
+            plan.pid, plan.install_dir
         ));
     }
-    if !plan.image_sha256.eq_ignore_ascii_case(observed_sha) {
+    let name = image.rsplit('\\').next().unwrap_or(&image);
+    if !CORE_IMAGE_NAMES.contains(&name) {
         return Err(format!(
-            "the image at {} is not the one the consent was given for (sha {} planned, \
-             {observed_sha} now) — refusing to terminate pid {}",
-            plan.image_path,
-            plan.image_sha256.get(..12).unwrap_or(&plan.image_sha256),
-            plan.pid
+            "pid {} is running {observed_image}, which is in the installation directory but \
+             is not a core image ({}) — refusing to terminate it",
+            plan.pid,
+            CORE_IMAGE_NAMES.join(", ")
         ));
     }
     Ok(())
 }
+
+/// The file names a continuum core can legitimately be executing from. `.prev.exe` is
+/// here deliberately: a core that outlived its own deploy is running from the parking
+/// space, and that is the single most likely state at the moment this rail is used.
+#[cfg(any(windows, test))]
+const CORE_IMAGE_NAMES: &[&str] = &[
+    "core.exe",
+    "core.prev.exe",
+    "continuum-core-server.exe",
+    "continuum-core-server.prev.exe",
+];
 
 /// SHA-256 of a file on disk, read in one shot. Images are tens of megabytes; this is
 /// not a hot path and it runs at most twice per escalation.
@@ -195,40 +220,15 @@ pub(super) fn digest_file(path: &Path) -> Result<String, String> {
 // the OS that has the problem.
 // ---------------------------------------------------------------------------
 
-/// The image `pid` is running, as the OS reports it. Requires a handle — which is
-/// precisely what the unelevated caller does not have, so this is the elevated child's
-/// half of the check.
-#[cfg(windows)]
-pub(super) fn observed_image(pid: i32) -> Result<String, String> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    // SAFETY: a query-only handle, closed on every path below.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32) };
-    if handle.is_null() {
-        return Err(format!(
-            "OpenProcess(pid {pid}, QUERY_LIMITED_INFORMATION) failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let mut buf = [0u16; 32768];
-    let mut len = buf.len() as u32;
-    // SAFETY: `handle` is live, `buf` outlives the call, `len` is its capacity in
-    // UTF-16 units and is updated to the written length.
-    let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len) };
-    // SAFETY: the handle came from OpenProcess above and is closed exactly once.
-    unsafe { CloseHandle(handle) };
-    if ok == 0 {
-        return Err(format!(
-            "QueryFullProcessImageName(pid {pid}) failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(String::from_utf16_lossy(&buf[..len as usize]))
-}
-
-/// A TERMINATE handle, held open. Closed exactly once, on drop.
+/// ONE handle, opened for both QUERY and TERMINATE, held open across everything.
+/// Closed exactly once, on drop.
+///
+/// A HANDLE NAMES A PROCESS; A PID NAMES A SLOT. This first opened a query handle, read
+/// the image, closed it, and re-opened for terminate — so the identity that was
+/// validated and the process that would be killed were two separate lookups of a
+/// recyclable number with nothing tying them together (Astra, review of 41a7dc2f5:
+/// "token alone does not bind target"). Validating on the SAME handle that does the
+/// terminating is what makes the check mean anything.
 ///
 /// The point of holding it rather than re-opening later: between a capability CHECK and
 /// the terminate, the check can stop being true. Holding the handle across the drain
@@ -249,13 +249,24 @@ impl Drop for HeldTerminate {
 
 #[cfg(windows)]
 impl HeldTerminate {
-    /// Take the capability. This is the call that fails when the consented token does
-    /// not hold the privilege either — and it fails BEFORE anything has been drained.
+    /// Take the capability, BEFORE reading anything about the target. This is the call
+    /// that fails when the consented token does not hold the privilege either — and it
+    /// fails before anything has been drained. Opening a handle terminates nothing; what
+    /// it buys is that every check after it describes the process THIS handle names.
     fn take(pid: i32) -> Result<Self, String> {
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
-        // SAFETY: a terminate handle for exactly the consented pid; ownership passes to
-        // the returned value, whose Drop closes it.
-        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        };
+        // SAFETY: ONE handle for exactly the consented pid, opened for the query the
+        // validation needs AND the terminate that follows it; ownership passes to the
+        // returned value, whose Drop closes it.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                0,
+                pid as u32,
+            )
+        };
         if handle.is_null() {
             return Err(format!(
                 "even elevated, OpenProcess(pid {pid}, TERMINATE) failed: {} — the privilege \
@@ -265,6 +276,27 @@ impl HeldTerminate {
             ));
         }
         Ok(Self { pid, handle })
+    }
+
+    /// The image THIS HANDLE's process is running. Read through the handle, never by
+    /// pid: a second lookup by number could answer for a different process wearing the
+    /// same number, which is exactly why the handle is taken first.
+    fn image(&self) -> Result<String, String> {
+        use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+        let mut buf = [0u16; 32768];
+        let mut len = buf.len() as u32;
+        // SAFETY: `self.handle` is live and was opened with QUERY_LIMITED_INFORMATION;
+        // `buf` outlives the call and `len` carries its capacity in UTF-16 units.
+        let ok =
+            unsafe { QueryFullProcessImageNameW(self.handle, 0, buf.as_mut_ptr(), &mut len) };
+        if ok == 0 {
+            return Err(format!(
+                "QueryFullProcessImageName(pid {}) failed: {}",
+                self.pid,
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(String::from_utf16_lossy(&buf[..len as usize]))
     }
 
     /// Spend it.
@@ -286,8 +318,8 @@ impl HeldTerminate {
 /// parent drained and then asked, a declined or failed consent would strand a drained
 /// core answering ping — the very thing the preflight exists to prevent, moved later
 /// (Astra, 2026-09-22: "declined/failed UAC strands drained core again"). So the order
-/// here is: bind the plan, re-observe the target, TAKE the capability and hold it,
-/// drain, then spend the capability. Every way this can fail before the drain fails
+/// here is: bind the plan, TAKE the capability and hold it, re-observe the target
+/// THROUGH that same handle, drain, then spend the capability. Every way this can fail before the drain fails
 /// with nothing drained, and after the drain the terminate cannot be refused because
 /// the handle is already in hand.
 #[cfg(windows)]
@@ -295,16 +327,21 @@ pub(super) async fn teardown_elevated(plan_path: &Path, plan_sha: &str) -> Resul
     let receipt = receipt_path(plan_path);
     let result = async {
         let plan = read_bound_plan(plan_path, plan_sha)?;
-        let image = observed_image(plan.pid)?;
-        let sha = digest_file(Path::new(&image))?;
-        target_matches(&plan, &image, &sha)?;
+        // THE HANDLE COMES FIRST, and everything after it is read THROUGH it. Opening a
+        // handle kills nothing; what it buys is that the pid stops being a name two
+        // different processes could answer to between the check and the act.
         let held = HeldTerminate::take(plan.pid)?;
+        let image = held.image()?;
+        target_is_our_core(&plan, &image)?;
+        // The digest is RECORDED, not compared: nobody could have known it in advance
+        // (see `target_is_our_core`), but the receipt should say exactly what was ended.
+        let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})"));
         // The drain runs under a capability already held, so this is the one place a
         // `MayDrain` is proven by possession rather than by a check.
         let graceful = super::request_graceful_stop(&super::MayDrain::proven_by_held_handle()).await;
         held.terminate()?;
         Ok::<String, String>(format!(
-            "elevated teardown: drained ({graceful:?}) and terminated pid {} running {image}",
+            "elevated teardown: drained ({graceful:?}) and terminated pid {} running {image} (sha256 {sha})",
             plan.pid
         ))
     }
@@ -317,18 +354,15 @@ pub(super) async fn teardown_elevated(plan_path: &Path, plan_sha: &str) -> Resul
     result.map(|_| ())
 }
 
-/// The unelevated half: write the plan, ask for ONE consent, read the receipt, and
-/// verify by the process being GONE rather than by the child's exit code.
+/// The unelevated half: write the plan, ask for ONE consent, read the receipt. Whether
+/// the process actually WENT is proven by the caller on the same bounded deadline the
+/// ordinary teardown uses — an immediate liveness probe after a terminate sees a process
+/// mid-exit, which is the mistake this file already made once (Astra, 2026-09-22).
 #[cfg(windows)]
-pub(super) async fn request_elevated_teardown(
-    pid: i32,
-    image_path: &str,
-    gone: impl Fn(i32) -> bool,
-) -> Result<(), String> {
+pub(super) async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), String> {
     let plan = TeardownPlan {
         pid,
-        image_path: image_path.to_string(),
-        image_sha256: digest_file(Path::new(image_path))?,
+        install_dir: install_dir.to_string(),
     };
     let plan_path =
         std::env::temp_dir().join(format!("continuum-teardown-{}.json", std::process::id()));
@@ -374,15 +408,10 @@ pub(super) async fn request_elevated_teardown(
     if !receipt_text.is_empty() {
         println!("{}", receipt_text.trim());
     }
-    // THE PROCESS BEING GONE IS THE PROOF, not the child's exit code — the whole
-    // defect this module exists for was a kill path that trusted its own return.
-    if !gone(pid) {
-        return Err(format!(
-            "install: the elevated child reported success but pid {pid} is still \
-             running.\n  receipt: {}",
-            if receipt_text.is_empty() { "(none)" } else { receipt_text.trim() }
-        ));
-    }
+    // THE PROCESS BEING GONE IS THE PROOF, not the child's exit code — the whole defect
+    // this module exists for was a kill path that trusted its own return. The caller
+    // proves it on the bounded deadline; an immediate probe here would see a process
+    // that is exiting perfectly normally and call it a survivor.
     Ok(())
 }
 
@@ -393,8 +422,7 @@ mod tests {
     fn plan() -> TeardownPlan {
         TeardownPlan {
             pid: 25040,
-            image_path: "C:\\Users\\a\\.continuum\\bin\\continuum-core-server.exe".to_string(),
-            image_sha256: "a".repeat(64),
+            install_dir: "C:\\Users\\a\\.continuum\\bin".to_string(),
         }
     }
 
@@ -448,9 +476,9 @@ mod tests {
 
     // what this catches (Astra, 2026-09-22: "declined/failed UAC strands drained core
     // again"): splitting the drain and the terminate across the consent boundary. Every
-    // check the child makes before it takes the capability — the plan digest, the image,
-    // the digest of that image — must be able to fail with NOTHING drained, which is only
-    // true while they are refusals rather than partial work. This pins that each of them
+    // check the child makes before the drain — the plan digest, and the identity of the
+    // process behind the handle — must be able to fail with NOTHING drained, which is
+    // only true while they are refusals rather than partial work. This pins that each
     // returns an error naming what it refused, so a reordering that drains first would
     // have to delete an assertion rather than merely pass.
     #[test]
@@ -459,16 +487,17 @@ mod tests {
         let bytes = serde_json::to_vec_pretty(&p).expect("a plan serializes");
         for (what, refusal) in [
             (
-                "digest",
+                "plan digest",
                 bind_plan_bytes(&bytes, &"0".repeat(64), Path::new("plan.json")).unwrap_err(),
             ),
             (
-                "image",
-                target_matches(&p, "C:\\other.exe", &p.image_sha256).unwrap_err(),
+                "outside the installation",
+                target_is_our_core(&p, "C:\\Windows\\System32\\notepad.exe").unwrap_err(),
             ),
             (
-                "image digest",
-                target_matches(&p, &p.image_path, &"c".repeat(64)).unwrap_err(),
+                "inside but not a core",
+                target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\llama-server.exe")
+                    .unwrap_err(),
             ),
         ] {
             assert!(
@@ -478,27 +507,45 @@ mod tests {
         }
     }
 
-    // what this catches: an elevated terminate on a RECYCLED pid. The number alone is
-    // not identity — between writing the plan and the human answering the prompt, the
-    // core can exit and the OS can hand 25040 to anything. The elevated child re-reads
-    // the image and refuses when it is not the one that was consented for.
+    // what this catches: an elevated terminate on a RECYCLED pid. The number alone is not
+    // identity — between writing the plan and the human answering the prompt, the core
+    // can exit and the OS can hand 25040 to anything. Two ways that goes wrong and both
+    // are refused: something else entirely, and something that merely LIVES in our
+    // installation directory (llama-server does, and killing it would take the lane).
     #[test]
     fn a_recycled_pid_is_refused_rather_than_terminated() {
         let p = plan();
-        let other = "C:\\Windows\\System32\\notepad.exe";
-        let refused = target_matches(&p, other, &p.image_sha256)
-            .expect_err("a different image at the same pid must be refused");
+        let elsewhere = "C:\\Windows\\System32\\notepad.exe";
+        let refused = target_is_our_core(&p, elsewhere)
+            .expect_err("a process outside the installation must be refused");
         assert!(refused.contains("recycled"), "the reason must name reuse: {refused}");
-        assert!(refused.contains(other), "the refusal names what is actually there: {refused}");
+        assert!(refused.contains(elsewhere), "the refusal names what is there: {refused}");
 
-        // Same image, different bytes: the file was replaced under us (a staging swap
-        // between the plan and the consent). Also refused.
-        let restaged = target_matches(&p, &p.image_path, &"b".repeat(64))
-            .expect_err("a re-staged image must be refused");
+        let neighbour = "C:\\Users\\a\\.continuum\\bin\\llama-server.exe";
+        let sibling = target_is_our_core(&p, neighbour)
+            .expect_err("our own engine is not our core; terminating it would take the lane");
+        assert!(sibling.contains("not a core image"), "{sibling}");
+
+        // A path that merely STARTS with the directory's characters is not inside it.
+        let lookalike = "C:\\Users\\a\\.continuum\\bin-evil\\core.exe";
         assert!(
-            restaged.contains("not the one the consent was given for"),
-            "the reason must name the digest: {restaged}"
+            target_is_our_core(&p, lookalike).is_err(),
+            "a sibling directory sharing a prefix is not the installation directory"
         );
+    }
+
+    // what this catches, and it is the case that made this gate an installation-directory
+    // proof instead of an expected-image equality (Astra, 2026-09-22): the descriptor
+    // names the NEW slot while the surviving core still executes the RENAMED predecessor.
+    // An equality check against the planner's guess would refuse here — failing not
+    // closed but ALWAYS, and exactly on the broken state this rail exists to repair.
+    #[test]
+    fn a_core_running_from_the_renamed_predecessor_is_still_our_core() {
+        let p = plan();
+        target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.prev.exe")
+            .expect("a core that outlived its own deploy runs from the parking space");
+        target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.exe")
+            .expect("and the ordinary case still passes");
     }
 
     // what this catches: path spelling read as a different file. The scheduler echoes
@@ -508,8 +555,7 @@ mod tests {
     #[test]
     fn windows_path_spelling_is_not_a_different_target() {
         let p = plan();
-        let same_file = "c:/Users/a/.continuum/bin/CONTINUUM-CORE-SERVER.EXE";
-        target_matches(&p, same_file, &p.image_sha256)
-            .expect("case and separator spelling name the same file on Windows");
+        target_is_our_core(&p, "c:/Users/a/.continuum/BIN/CONTINUUM-CORE-SERVER.EXE")
+            .expect("case and separator spelling name the same place on Windows");
     }
 }

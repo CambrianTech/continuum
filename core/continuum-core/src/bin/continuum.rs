@@ -4626,19 +4626,23 @@ fn teardown_authority(pid: i32) -> Result<(), String> {
     }
 }
 
-/// The executable the supervisor was told to run as the core — the `artifact` field of
-/// the `ContinuumCore` task's descriptor, which is the single source of the slot.
+/// The DIRECTORY the supervisor was told to run the core out of — the parent of the
+/// `artifact` field in the `ContinuumCore` descriptor.
 ///
-/// This, and not a read of the live process, is what the teardown plan names: a caller
-/// that cannot open the process cannot ask the OS what it is running either (that is
-/// the whole reason it is escalating). The elevated child re-observes the real image
-/// and refuses when the two disagree, so an out-of-date expectation fails closed.
+/// A directory and not the file, because a caller that cannot open the process cannot
+/// ask the OS which image it is executing (that is the whole reason it is escalating),
+/// and the descriptor's file name is routinely NOT that image: after a staging swap the
+/// descriptor names the new slot while the surviving core runs from the renamed
+/// predecessor beside it. The child proves the rest through its own handle.
 #[cfg(windows)]
-async fn installed_core_image() -> Result<String, String> {
+async fn installed_core_dir() -> Result<String, String> {
     let task = CoreServiceTask::query().await?;
     let description: CoreServiceDescription = serde_json::from_str(&task.description)
         .map_err(|e| format!("the {} task's descriptor is unreadable ({e}); rerun the installer before escalating", supervisor_install::CORE_TASK))?;
-    Ok(description.artifact)
+    Path::new(&description.artifact)
+        .parent()
+        .map(|d| d.display().to_string())
+        .ok_or_else(|| format!("the installed artifact {} has no directory", description.artifact))
 }
 
 /// The core pid the pidfile CLAIMS. `None` means no pidfile, or one that names nothing
@@ -4950,8 +4954,11 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     if let Some(pid) = may_drain.borrow_authority_for {
         #[cfg(windows)]
         {
-            let image = installed_core_image().await?;
-            elevated_teardown::request_elevated_teardown(pid, &image, |p| !pid_alive(p)).await?;
+            let install_dir = installed_core_dir().await?;
+            elevated_teardown::request_elevated_teardown(pid, &install_dir).await?;
+            // Gone is proven the same way every other teardown proves it: the bounded
+            // deadline, never a probe on the next line (Astra, 2026-09-22).
+            exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
         }
         #[cfg(not(windows))]
         {
