@@ -24,6 +24,7 @@ const TENANT_TOKENS: &[&str] = &["cambriantech", "joel"];
 /// Production occurrences when this guard landed (2026-09-05): `airc/discovery.rs`
 /// (the airc installer URL) and `forge/hf_publisher.rs` (the model-card attribution
 /// link). Both name the product's upstream. A NEW one has to argue.
+#[cfg(test)]
 const BASELINE_TENANT_LINES: usize = 2;
 
 pub struct NoTenantIdentityInProduction;
@@ -113,7 +114,7 @@ impl SourceRule for NoRealUserHomePathAnywhere {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan;
+    use crate::scan;
 
     // what this catches: a developer's own home path typed into a fixture (the
     // `C:\Users\joelt` drive-resolver test, 2026-09-18) — the tree describing the

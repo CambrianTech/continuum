@@ -425,6 +425,11 @@ required-features = ["test-fixtures"]
 unexpected_cfgs = "allow"
 
 [dev-dependencies]
+# The hygiene ratchets moved to their own std-only crate so a contributor learns an
+# unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
+# call sites here still use its scanner helpers, so it is a DEV dependency — production
+# builds of continuum-core do not link it and never did.
+source-hygiene = { path = "../source-hygiene" }
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
 

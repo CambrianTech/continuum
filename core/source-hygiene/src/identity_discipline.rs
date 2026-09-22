@@ -25,6 +25,7 @@ use super::{SourceFile, SourceRule, Violation};
 /// landed (2026-08-26), after the ActivityRoom sweep. The survivors are each
 /// deliberate (watch-channel sentinels skipped before cognition, fixture
 /// builders) — listed so a NEW one has to argue, not sneak.
+#[cfg(test)]
 const BASELINE_NIL_ROOM_LINES: usize = 4;
 
 /// Directories whose production halves carry cognition turns — the trees where
@@ -67,6 +68,7 @@ impl SourceRule for NoNilRoomInProductionCognition {
 /// inference path: ZERO. The `persona@room` slot-lease key this rule was
 /// written against died with the typed `ActivityKey` registry (slice B1,
 /// same day). This stays 0 forever.
+#[cfg(test)]
 const BASELINE_STRING_COMPOSITE_KEYS: usize = 0;
 
 /// The serving/inference trees where id-keyed maps live.
@@ -106,7 +108,7 @@ impl SourceRule for NoStringCompositeIdKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan;
+    use crate::scan;
 
     // what this catches: a NEW `Uuid::nil()` landing beside a room field in
     // production cognition — the back door to #425 after ActivityRoom closed the

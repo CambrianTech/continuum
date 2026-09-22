@@ -51,7 +51,7 @@ mod tests {
         let src = include_str!("mod.rs");
         let code: Vec<&str> = src
             .lines()
-            .map(|l| crate::source_hygiene::split_code_and_comment(l).0.trim())
+            .map(|l| source_hygiene::split_code_and_comment(l).0.trim())
             .collect();
 
         // For each `pub mod NAME;` remember whether a cfg attribute sits directly above

@@ -17,6 +17,7 @@ members = [
     # its only spawn wiring pointed at a dir that no longer exists.
     "core/continuum-core",
     "core/expert-pager-policy",
+    "core/source-hygiene",
     "core/continuum-orm-derive",
     "core/continuum-positron",
     "core/inference-grpc",
