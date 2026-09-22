@@ -122,6 +122,20 @@ async fn run() -> Result<(), CliError> {
     let mut args = std::env::args().skip(1);
     let first = args.next().ok_or_else(usage)?;
     let rest: Vec<String> = args.collect();
+    // Identify this executable without contacting or starting a core.
+    if matches!(first.as_str(), "--version" | "-V" | "version") {
+        if !rest.is_empty() {
+            return Err(CliError::Command("usage: continuum --version".into()));
+        }
+        println!(
+            "continuum {} (build {}, sha {}, built {})",
+            env!("CARGO_PKG_VERSION"),
+            env!("CONTINUUM_BUILD_NUMBER"),
+            env!("CONTINUUM_BUILD_GIT_SHA"),
+            env!("CONTINUUM_BUILD_AT"),
+        );
+        return Ok(());
+    }
     // Lifecycle verbs bypass remote command dispatch. Handle their help before
     // any checkout registration, process inspection, stop, build, or launch.
     if local_help_requested(&first, &rest) {
@@ -5319,6 +5333,7 @@ async fn desktop_receipt_line() -> String {
 fn usage() -> String {
     "usage: continuum <start|reboot|stop|desktop|command> [json | --key value ...]  (uu = continuum)\n\
      \n\
+     Version: continuum --version (also -V or version); identifies this CLI offline\n\
      Lifecycle:\n  \
        continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
        continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
