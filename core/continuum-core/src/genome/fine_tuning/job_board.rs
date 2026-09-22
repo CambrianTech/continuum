@@ -117,11 +117,13 @@ pub struct TrainingJobBoard {
 
 /// A bounded evidence read. Neither absence, a partial scan, nor an I/O error
 /// establishes that an uncertain dispatch did not create a provider job.
-pub(crate) enum DispatchLookup {
-    Observed(JobHandle),
+pub(crate) enum JournalLookup<T> {
+    Observed(T),
     NotObserved,
     Incomplete { next_offset: u64 },
 }
+
+pub(crate) type DispatchLookup = JournalLookup<JobHandle>;
 
 static GLOBAL: OnceLock<TrainingJobBoard> = OnceLock::new();
 const DISPATCH_JOURNAL_PAGE_BYTES: u64 = 64 * 1024;
@@ -141,6 +143,21 @@ fn now_ms() -> u128 {
 }
 
 impl TrainingJobBoard {
+    /// Command-facing read delegates filesystem work to the existing board owner.
+    /// One page per request; callers receive continuation rather than a scan loop.
+    pub(crate) async fn terminal_history(
+        handle: JobHandle,
+        offset: u64,
+        #[cfg(test)] board: std::sync::Arc<Self>,
+    ) -> Result<JournalLookup<TrainingStatus>, String> {
+        tokio::task::spawn_blocking(move || {
+            #[cfg(not(test))]
+            let board = Self::global();
+            board.lookup_terminal(&handle, offset)
+        })
+        .await
+        .map_err(|e| format!("training history worker failed: {e}"))?
+    }
     /// Normal path reads the existing live board. Recovery scans at most 64 KiB
     /// of its existing journal per call, with an explicit continuation offset.
     /// Caller performs this filesystem boundary on a blocking worker.
@@ -149,19 +166,99 @@ impl TrainingJobBoard {
         dispatch_id: Uuid,
         offset: u64,
     ) -> Result<DispatchLookup, String> {
-        use std::io::{Read, Seek, SeekFrom};
         if let Some(handle) = self.jobs.iter().find_map(|job| {
             (job.trigger_dispatch_id == Some(dispatch_id)).then(|| job.handle.clone())
         }) {
             return Ok(DispatchLookup::Observed(handle));
         }
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            event: String,
+            #[serde(default)]
+            trigger_dispatch_id: Option<Uuid>,
+            #[serde(default)]
+            local_id: Option<Uuid>,
+            #[serde(default)]
+            provider_id: Option<String>,
+            #[serde(default)]
+            provider_job_id: Option<String>,
+        }
+        self.scan_journal_page(offset, |line| {
+            let entry: Entry = serde_json::from_slice(line)
+                .map_err(|e| format!("malformed training dispatch journal entry: {e}"))?;
+            if entry.event == "registered" && entry.trigger_dispatch_id == Some(dispatch_id) {
+                return Ok(Some(JobHandle {
+                    local_id: entry
+                        .local_id
+                        .ok_or("training dispatch evidence omitted local_id")?,
+                    provider_id: entry
+                        .provider_id
+                        .ok_or("training dispatch evidence omitted provider_id")?,
+                    provider_job_id: entry
+                        .provider_job_id
+                        .ok_or("training dispatch evidence omitted provider_job_id")?,
+                }));
+            }
+            Ok(None)
+        })
+    }
+
+    /// Read only a terminal receipt whose complete provider handle matches.
+    /// Old records without typed status never imply successful training.
+    pub(crate) fn lookup_terminal(
+        &self,
+        handle: &JobHandle,
+        offset: u64,
+    ) -> Result<JournalLookup<TrainingStatus>, String> {
+        #[derive(serde::Deserialize)]
+        struct TerminalEntry {
+            event: String,
+            local_id: Option<Uuid>,
+            handle: Option<JobHandle>,
+            status: Option<TrainingStatus>,
+        }
+        self.scan_journal_page(offset, |line| {
+            let entry: TerminalEntry = serde_json::from_slice(line)
+                .map_err(|e| format!("malformed training journal entry: {e}"))?;
+            if entry.event != "terminal" || entry.local_id != Some(handle.local_id) {
+                return Ok(None);
+            }
+            let Some(recorded) = entry.handle else {
+                return Ok(None);
+            };
+            if recorded.local_id != handle.local_id
+                || recorded.provider_id != handle.provider_id
+                || recorded.provider_job_id != handle.provider_job_id
+            {
+                return Ok(None);
+            }
+            match entry.status {
+                Some(
+                    status @ (TrainingStatus::Completed { .. }
+                    | TrainingStatus::Failed { .. }
+                    | TrainingStatus::Cancelled),
+                ) => Ok(Some(status)),
+                Some(_) => Err("terminal training receipt carries a nonterminal status".into()),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// One bounded filesystem read shared by dispatch recovery and status history.
+    /// Run on a blocking worker; a partial page is never evidence of absence.
+    fn scan_journal_page<T>(
+        &self,
+        offset: u64,
+        mut select: impl FnMut(&[u8]) -> Result<Option<T>, String>,
+    ) -> Result<JournalLookup<T>, String> {
+        use std::io::{Read, Seek, SeekFrom};
         let Some(path) = &self.ledger else {
-            return Ok(DispatchLookup::NotObserved);
+            return Ok(JournalLookup::NotObserved);
         };
         let mut file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(DispatchLookup::NotObserved)
+                return Ok(JournalLookup::NotObserved)
             }
             Err(e) => return Err(format!("read training dispatch journal: {e}")),
         };
@@ -176,7 +273,7 @@ impl TrainingJobBoard {
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         if bytes.is_empty() {
-            return Ok(DispatchLookup::NotObserved);
+            return Ok(JournalLookup::NotObserved);
         }
         let Some(last_newline) = bytes.iter().rposition(|b| *b == b'\n') else {
             if bytes.len() as u64 == DISPATCH_JOURNAL_PAGE_BYTES {
@@ -184,47 +281,23 @@ impl TrainingJobBoard {
                     "training dispatch journal record exceeds the bounded recovery page".into(),
                 );
             }
-            return Ok(DispatchLookup::Incomplete {
+            return Ok(JournalLookup::Incomplete {
                 next_offset: offset,
             });
         };
-        #[derive(serde::Deserialize)]
-        struct Entry {
-            event: String,
-            #[serde(default)]
-            trigger_dispatch_id: Option<Uuid>,
-            #[serde(default)]
-            local_id: Option<Uuid>,
-            #[serde(default)]
-            provider_id: Option<String>,
-            #[serde(default)]
-            provider_job_id: Option<String>,
-        }
         for line in bytes[..=last_newline]
             .split(|b| *b == b'\n')
             .filter(|line| !line.is_empty())
         {
-            let entry: Entry = serde_json::from_slice(line)
-                .map_err(|e| format!("malformed training dispatch journal entry: {e}"))?;
-            if entry.event == "registered" && entry.trigger_dispatch_id == Some(dispatch_id) {
-                return Ok(DispatchLookup::Observed(JobHandle {
-                    local_id: entry
-                        .local_id
-                        .ok_or("training dispatch evidence omitted local_id")?,
-                    provider_id: entry
-                        .provider_id
-                        .ok_or("training dispatch evidence omitted provider_id")?,
-                    provider_job_id: entry
-                        .provider_job_id
-                        .ok_or("training dispatch evidence omitted provider_job_id")?,
-                }));
+            if let Some(value) = select(line)? {
+                return Ok(JournalLookup::Observed(value));
             }
         }
         let next_offset = offset + last_newline as u64 + 1;
         if next_offset < len {
-            Ok(DispatchLookup::Incomplete { next_offset })
+            Ok(JournalLookup::Incomplete { next_offset })
         } else {
-            Ok(DispatchLookup::NotObserved)
+            Ok(JournalLookup::NotObserved)
         }
     }
 
@@ -601,6 +674,12 @@ mod tests {
             "capacity refused before weights"
         );
         assert_eq!(terminal["handle"]["localId"], done.to_string());
+        let handle = watched(done, "mlx").handle;
+        assert!(matches!(next.lookup_terminal(&handle, 0).unwrap(),
+            JournalLookup::Observed(TrainingStatus::Failed { error })
+                if error == "capacity refused before weights"));
+        let foreign = JobHandle { provider_id: "another-provider".into(), ..handle };
+        assert!(matches!(next.lookup_terminal(&foreign, 0).unwrap(), JournalLookup::NotObserved));
         assert!(
             text.contains("killed-by-reboot") && text.contains(&orphan.to_string()),
             "the orphan's death is journaled: {text}"
