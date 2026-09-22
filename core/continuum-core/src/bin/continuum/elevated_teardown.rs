@@ -1,6 +1,6 @@
 //! Ending a core this caller has no handle on, from inside `continuum install`.
 //!
-//! Measured 2026-09-22 on Astra's Windows node: `OpenProcess(25040, TERMINATE)`
+//! Measured 2026-09-22 on the Windows node: `OpenProcess(25040, TERMINATE)`
 //! returned NULL with Win32 error 5, and so did the same call asking only for
 //! `QUERY_LIMITED_INFORMATION`. The core runs under the supervisor's S4U principal;
 //! the CLI does not. There is no permission to grant to the caller — a better-reported
@@ -14,8 +14,7 @@
 //! SHA-256 on the RunAs argv, and the elevated child re-derives that digest from the
 //! bytes it reads before doing the one thing it was consented for. The digest lives on
 //! the argv because a same-user process can rewrite a file in `%TEMP%` between the
-//! write and the consent, but not the argv of a process already spawned (Fable, review
-//! of #4232).
+//! write and the consent, but not the argv of a process already spawned (#4232).
 //!
 //! WHY A PID IS NOT THE PLAN. A pid is reusable, and an elevated `TerminateProcess` on
 //! a number that has been recycled kills something nobody consented to. So the plan
@@ -32,9 +31,9 @@
 //! human typed, which already spends one consent for the supervisor arm. Every
 //! unattended caller refuses instead, and says what it could not do.
 //!
-//! There is no `stop --escalate` for an operator to discover. Joel's contract is that
-//! the same command works every time (`continuum install`), and a repair verb would be
-//! a second thing to know about on the node whose operator does not know it exists.
+//! There is no `stop --escalate` for an operator to discover. The product contract is
+//! that the same command works every time (`continuum install`), and a repair verb would
+//! be a second thing to know about on the node whose operator does not know it exists.
 
 // Gated with the halves that use them: on a non-Windows build without `test`, this
 // module is only `StopOptions` — the argv shape, which every platform parses.
@@ -69,7 +68,7 @@ pub(super) struct TeardownPlan {
 ///
 /// There is deliberately NO `--escalate` for an operator to find: the user-facing
 /// contract is one command, `continuum install`, which reaches this boundary itself
-/// when it has to (Joel, 2026-09-22; Astra's review). A separate repair verb would be a
+/// when it has to. A separate repair verb would be a
 /// second thing to know about, and the node that needs it is the one whose operator
 /// does not know it exists.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -151,8 +150,7 @@ pub(super) fn bind_plan_bytes(
 
 /// Is the process this handle names one of OUR cores?
 ///
-/// WHY THIS IS NOT AN EXPECTED-IMAGE EQUALITY, which is what it was until Astra found
-/// the case that breaks it. The unelevated half cannot open the process — that is the
+/// WHY THIS IS NOT AN EXPECTED-IMAGE EQUALITY.   The unelevated half cannot open the process — that is the
 /// whole reason it is escalating — so any image it puts in the plan is a GUESS, taken
 /// from the `ContinuumCore` descriptor's `artifact` field. On the node this rail exists
 /// for, that guess is wrong in a specific and predictable way: the descriptor names
@@ -226,9 +224,9 @@ pub(super) fn digest_file(path: &Path) -> Result<String, String> {
 /// A HANDLE NAMES A PROCESS; A PID NAMES A SLOT. This first opened a query handle, read
 /// the image, closed it, and re-opened for terminate — so the identity that was
 /// validated and the process that would be killed were two separate lookups of a
-/// recyclable number with nothing tying them together (Astra, review of 41a7dc2f5:
-/// "token alone does not bind target"). Validating on the SAME handle that does the
-/// terminating is what makes the check mean anything.
+/// recyclable number with nothing tying them together: a token alone does not bind a
+/// target. Validating on the SAME handle that does the terminating is what makes the
+/// check mean anything.
 ///
 /// The point of holding it rather than re-opening later: between a capability CHECK and
 /// the terminate, the check can stop being true. Holding the handle across the drain
@@ -317,20 +315,19 @@ impl HeldTerminate {
 /// The drain and the terminate cannot be split across the consent boundary. If the
 /// parent drained and then asked, a declined or failed consent would strand a drained
 /// core answering ping — the very thing the preflight exists to prevent, moved later
-/// (Astra, 2026-09-22: "declined/failed UAC strands drained core again"). So the order
-/// here is: bind the plan, TAKE the capability and hold it, observe the target THROUGH
+/// — a declined or failed consent would strand a drained core again. So the order here is: bind the plan, TAKE the capability and hold it, observe the target THROUGH
 /// that same handle, drain, then spend the capability.
 ///
 /// WHAT THAT DOES AND DOES NOT BUY. Every way this can fail before the drain fails with
 /// nothing drained — that part is a guarantee. After the drain, what has been removed is
 /// the ACQUISITION failure: the terminate no longer needs a fresh `OpenProcess` that
 /// could be denied, time out, or find the pid recycled. `TerminateProcess` itself can
-/// still return failure and the code reports it (Astra, review of 4936aac55: "syscall
-/// still returns failure"); a held handle narrows the window, it does not abolish it.
+/// still return failure and the code reports it; a held handle narrows the window, it
+/// does not abolish it.
 ///
 /// `drain` is INJECTED rather than called from here. The drain speaks the core socket and
 /// lives in the bin root; reaching up for it made this the only module in the tree with a
-/// dependency on its parent (Fable, 2026-09-22: the other five have zero). Taking it as an
+/// dependency on its parent — the other five modules in this tree have zero. Taking it as an
 /// argument keeps the leaf a leaf — and makes the ORDER testable, because a fake drain can
 /// record that it ran after the handle was taken and before it was spent, which a direct
 /// call never could.
@@ -338,8 +335,8 @@ impl HeldTerminate {
 ///
 /// The sequence below is written against this trait rather than against the Windows
 /// handle so the ORDER — take, observe through what was taken, drain, spend — is
-/// provable on any machine. Astra's standing objection to this branch was tests that
-/// exercise helpers instead of orchestration; a Windows-only sequence could only ever
+/// provable on any machine. A test that exercises helpers instead of orchestration proves
+/// nothing about the order; a Windows-only sequence could only ever
 /// have been asserted in a comment from here.
 #[cfg(any(windows, test))]
 pub(super) trait HeldCapability: Sized {
@@ -354,8 +351,8 @@ pub(super) trait HeldCapability: Sized {
 /// an OS to kill a process on.
 ///
 /// EVERY STEP BEFORE `drain` MUST BE ABLE TO FAIL WITH NOTHING DRAINED. That is the
-/// whole contract (Astra, 2026-09-22: "declined/failed UAC strands drained core again"),
-/// and it is why `drain` is the fourth argument and not the second.
+/// whole contract — a declined or failed consent must not strand a drained core — and it
+/// is why `drain` is the fourth argument and not the second.
 #[cfg(any(windows, test))]
 pub(super) async fn teardown_sequence<C, T, F, Fut>(
     plan: &TeardownPlan,
@@ -423,10 +420,42 @@ where
     result.map(|_| ())
 }
 
+/// What a finished elevation MEANS for the caller. Pure, so the one decision that
+/// separates "nothing was touched" from "something ran and may have half-finished" is
+/// pinned by a test rather than living inside a PowerShell call nobody can exercise.
+///
+/// A REFUSED CONSENT IS NOT A FAILED TEARDOWN. The operator declined, the child never
+/// ran, and the core is exactly as it was — that has to be said in those words, because
+/// the alternative reading ("the teardown failed") sends the next reader hunting for
+/// damage that does not exist. Every other outcome carries the child's receipt, or says
+/// plainly that there was none.
+#[cfg(any(windows, test))]
+pub(super) fn elevation_outcome(
+    pid: i32,
+    consent: Result<String, String>,
+    receipt_text: &str,
+) -> Result<(), String> {
+    let Err(why) = consent else { return Ok(()) };
+    if why.contains("canceled by the user") {
+        return Err(format!(
+            "install: the elevation consent was refused — pid {pid} is untouched and still \
+             serving. Nothing was drained, nothing was terminated"
+        ));
+    }
+    Err(format!(
+        "install: the elevated teardown did not complete: {why}\n  receipt: {}",
+        if receipt_text.trim().is_empty() {
+            "(none — the child never ran, or ran and could not write one)"
+        } else {
+            receipt_text.trim()
+        }
+    ))
+}
+
 /// The unelevated half: write the plan, ask for ONE consent, read the receipt. Whether
 /// the process actually WENT is proven by the caller on the same bounded deadline the
 /// ordinary teardown uses — an immediate liveness probe after a terminate sees a process
-/// mid-exit, which is the mistake this file already made once (Astra, 2026-09-22).
+/// mid-exit, which is the mistake this file already made once.
 #[cfg(windows)]
 pub(super) async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), String> {
     let plan = TeardownPlan {
@@ -458,22 +487,7 @@ pub(super) async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Re
     let receipt_text = std::fs::read_to_string(&receipt).unwrap_or_default();
     let _ = std::fs::remove_file(&plan_path);
     let _ = std::fs::remove_file(&receipt);
-    if let Err(why) = elevated {
-        if why.contains("canceled by the user") {
-            return Err(format!(
-                "install: the elevation consent was refused — pid {pid} is untouched \
-                 and still serving"
-            ));
-        }
-        return Err(format!(
-            "install: the elevated teardown did not complete: {why}\n  receipt: {}",
-            if receipt_text.is_empty() {
-                "(none — consent refused or the child never ran)"
-            } else {
-                receipt_text.trim()
-            }
-        ));
-    }
+    elevation_outcome(pid, elevated, &receipt_text)?;
     if !receipt_text.is_empty() {
         println!("{}", receipt_text.trim());
     }
@@ -519,7 +533,7 @@ mod tests {
         assert_eq!(child.plan_sha.as_deref(), Some("abc"));
     }
 
-    // what this catches (Fable, review of #4232, carried to this module): a plan read
+    // what this catches (#4232, carried to this module): a plan read
     // from %TEMP% that is not the plan the human approved. Any same-user process can
     // rewrite that file between the write and the consent; it cannot rewrite the argv
     // of a process already spawned. Without the digest gate, the consent for "terminate
@@ -543,8 +557,8 @@ mod tests {
         );
     }
 
-    // what this catches (Astra, 2026-09-22: "declined/failed UAC strands drained core
-    // again"): splitting the drain and the terminate across the consent boundary. Every
+    // what this catches: splitting the drain and the terminate across the consent
+    // boundary, which strands a drained core when the consent is declined. Every
     // check the child makes before the drain — the plan digest, and the identity of the
     // process behind the handle — must be able to fail with NOTHING drained, which is
     // only true while they are refusals rather than partial work. This pins that each
@@ -604,7 +618,7 @@ mod tests {
     }
 
     // what this catches, and it is the case that made this gate an installation-directory
-    // proof instead of an expected-image equality (Astra, 2026-09-22): the descriptor
+    // proof instead of an expected-image equality: the descriptor
     // names the NEW slot while the surviving core still executes the RENAMED predecessor.
     // An equality check against the planner's guess would refuse here — failing not
     // closed but ALWAYS, and exactly on the broken state this rail exists to repair.
@@ -637,8 +651,7 @@ mod tests {
         }
     }
 
-    // what this catches (Astra, 2026-09-22, the standing objection to this branch):
-    // ORCHESTRATION, not helpers. The contract is that NOTHING IS DRAINED until the
+    // what this catches: ORCHESTRATION, not helpers. The contract is that NOTHING IS DRAINED until the
     // capability is in hand and the target is proven — a declined consent, a token
     // without the privilege, or a recycled pid must each leave a serving core serving.
     // Until the drain was injected this could only be asserted in a comment; now a fake
@@ -722,6 +735,88 @@ mod tests {
             "it looked, it refused, and it neither drained nor spent: {:?}",
             log.borrow()
         );
+    }
+
+    // what this catches (measured on the Windows node 2026-09-22): the core is ALREADY
+    // DRAINED — ingress closed at 21:33:09, gate deliberately not reopening — and the
+    // teardown runs against it anyway. The sequence must still terminate, and the
+    // receipt must carry the drain's own words VERBATIM rather than flattening them,
+    // because "drained (nothing to drain)" and "drained (Durable)" are the difference
+    // between a core that saved just now and one that saved forty minutes ago.
+    #[tokio::test]
+    async fn an_already_drained_core_is_still_terminated_and_the_receipt_says_so() {
+        let p = plan();
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let l = log.clone();
+        let taken = l.clone();
+        let ours = format!("{}\\core.exe", p.install_dir);
+        let (image, graceful) = teardown_sequence(
+            &p,
+            move |_pid| {
+                taken.borrow_mut().push("take");
+                Ok(Recorder { log: taken.clone(), image: ours.clone() })
+            },
+            || {
+                l.borrow_mut().push("drain");
+                // What an already-drained core answers: nothing left to do.
+                async { "NothingRunning".to_string() }
+            },
+        )
+        .await
+        .expect("an already-drained core is still a core that has to go");
+
+        assert_eq!(
+            log.borrow().as_slice(),
+            &["take", "image", "drain", "spend"],
+            "the order does not change because the drain was a no-op: {:?}",
+            log.borrow()
+        );
+        assert_eq!(
+            graceful, "NothingRunning",
+            "the drain's own answer is carried through, not normalised into success"
+        );
+        assert!(image.ends_with("core.exe"));
+    }
+
+    // what this catches: a REFUSED ELEVATION read as a failed teardown. The operator
+    // declined, the child never ran, and the core is exactly as it was — if that reads
+    // as "the teardown failed" the next person hunts for damage that does not exist.
+    // The other arm is the opposite risk: an elevation that DID run and left no receipt
+    // must never be reported as if nothing happened.
+    #[test]
+    fn a_refused_consent_says_nothing_was_touched_and_a_silent_failure_does_not() {
+        use super::elevation_outcome;
+
+        elevation_outcome(25040, Ok("ok".to_string()), "terminated pid 25040")
+            .expect("a completed elevation is not an error");
+
+        let refused = elevation_outcome(
+            25040,
+            Err("Start-Process: The operation was canceled by the user.".to_string()),
+            "",
+        )
+        .expect_err("a declined consent must not read as success");
+        assert!(refused.contains("untouched and still serving"), "{refused}");
+        assert!(
+            refused.contains("Nothing was drained, nothing was terminated"),
+            "the refusal must say what did NOT happen, in those words: {refused}"
+        );
+
+        let silent = elevation_outcome(25040, Err("exit code 1".to_string()), "   ")
+            .expect_err("a failed elevation is an error");
+        assert!(
+            silent.contains("the child never ran, or ran and could not write one"),
+            "an absent receipt is reported as absent, never as nothing-happened: {silent}"
+        );
+        assert!(
+            !silent.contains("untouched"),
+            "only a DECLINED consent may claim the target is untouched: {silent}"
+        );
+
+        let with_receipt =
+            elevation_outcome(25040, Err("exit code 1".to_string()), "elevated teardown failed: X")
+                .expect_err("still an error");
+        assert!(with_receipt.contains("elevated teardown failed: X"), "{with_receipt}");
     }
 
     // what this catches: path spelling read as a different file. The scheduler echoes
