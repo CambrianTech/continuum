@@ -17,6 +17,7 @@ pub mod discovery_state;
 pub mod event_transport;
 pub mod inbound_attach;
 pub mod process;
+pub mod reattach;
 pub mod realtime;
 pub mod realtime_store;
 pub mod realtime_wire;
