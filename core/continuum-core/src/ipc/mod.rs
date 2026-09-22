@@ -2393,7 +2393,7 @@ pub fn start_server(
     let interceptor_airc_deps = persona_bootstrap_deps.clone();
     let airc_interceptor_cell: Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>> =
         Arc::new(tokio::sync::OnceCell::new());
-    if let Some(interceptor_daemon_socket) = interceptor_airc_deps {
+    {
         let cell = airc_interceptor_cell.clone();
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
         // `rt_handle.spawn`, NOT bare `tokio::spawn` — this runs in the SYNCHRONOUS boot
@@ -2401,35 +2401,27 @@ pub fn start_server(
         // ambient Tokio runtime here. Bare `tokio::spawn` panics "there is no reactor running"
         // and kills the IPC listener thread → the socket never binds → the whole core is a
         // zombie (regression from #2051's AircInterceptor block; every sibling spawn in this fn
-        // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
-        // boot on every airc-configured host.
+        // already uses `rt_handle.spawn`).
+        //
+        // UNCONDITIONAL since card e28a0340. This attach used to sit inside
+        // `if let Some(daemon_socket)`, so a core that booted with no daemon never even
+        // spawned the task — and the one attempt it did make on a found socket was a
+        // one-shot whose own error text named "a boot with a reachable airc daemon" as
+        // the remedy. Measured cost: BigMama failed 1,216 times over six hours against a
+        // live pipe; Windows (2026-09-22) restored its daemon under a running core and
+        // still refused every peer-addressed command. The boot socket is now a HINT for
+        // the first attempt — `attach_until_live` re-resolves on every later one.
+        rt_handle.spawn(crate::airc::reattach::attach_until_live(
+            root,
+            "continuum-airc-interceptor",
+            interceptor_airc_deps,
+            cell,
+        ));
         // #2561: the ACTIVITY GATE's owning task — boredom as substrate. Spawned
         // here with every other boot task (rt_handle.spawn: synchronous boot
         // region, no ambient reactor).
         rt_handle.spawn(async move {
             crate::cognition::activity_gate::spawn_activity_gate();
-        });
-        rt_handle.spawn(async move {
-            match airc_lib::Airc::attach_as(
-                root,
-                "continuum-airc-interceptor",
-                interceptor_daemon_socket,
-            )
-            .await
-            {
-                Ok(airc) => {
-                    crate::persona::self_peer::register(airc.peer_id().as_uuid());
-                    // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
-                    // share it as `Arc<Airc>`.
-                    let _ = cell.set(Arc::new(airc));
-                }
-                Err(err) => tracing::error!(
-                    error = %err,
-                    "airc interceptor: attach_as failed — aircPeer command routing stays \
-                     unavailable (commands with aircPeer will fail loud until a boot with a \
-                     reachable airc daemon)"
-                ),
-            }
         });
     }
 
