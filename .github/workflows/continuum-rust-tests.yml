@@ -167,17 +167,43 @@ jobs:
   # Required legacy context mirrors the drift check above; never compile twice.
   ts-rs-binding-drift-detector:
     name: ts-rs binding drift detector
-    needs: cargo-test-continuum-core
+    # AGGREGATE OVER THE SPLIT, so splitting a job cannot weaken a gate.
+    # This job's only purpose has always been to publish a REQUIRED status context for
+    # a check that actually happens inside another job. Moving the doc guard out of
+    # `cargo test --lib` into its own parallel job created a second such case: the new
+    # job's check name is not in the repo's required set, so on its own a red there
+    # would not block a merge — the split would have traded 5.9 min of wall time for a
+    # gate that stopped gating. Rather than ask a human to add a required check (which
+    # is a promise, not a mechanism), the already-required context now fails when
+    # EITHER upstream fails. `!cancelled()` so a genuine failure still reports instead
+    # of being skipped into a green.
+    needs: [cargo-test-continuum-core, cargo-doc-guards]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Mirror the binding-drift verdict from cargo-test-continuum-core
+      - name: Mirror the binding-drift verdict and aggregate the split cargo jobs
         run: |
+          lib='${{ needs.cargo-test-continuum-core.result }}'
+          doc='${{ needs.cargo-doc-guards.result }}'
+          echo "cargo test --lib : $lib"
+          echo "cargo test --doc : $doc"
+          echo ""
           echo "ts-rs binding drift is gated by the 'Verify protocol/typescript/ in sync"
           echo "with Rust source' step inside 'cargo test -p continuum-core --lib'."
-          echo ""
-          echo "That job passed, so the drift check within it passed."
           echo "This job publishes the required status context; it does not re-check."
+          echo ""
+          for name in lib doc; do
+            eval "result=\$$name"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error::the $name cargo job concluded '$result' — failing the"
+                echo "::error::required context so a split job cannot pass unnoticed."
+                exit 1
+                ;;
+            esac
+          done
 
   cargo-doc-guards:
     # THE 5.9-MINUTE STEP THAT WAS COSTING EVERY PR ITS CRITICAL PATH.
