@@ -144,13 +144,16 @@ impl CommandInterceptor for AircInterceptor {
                     )
                 })?;
 
-                // First cut: only inference rides the airc transport. Generic
-                // any-command routing (mirroring grid's dispatch_to_node) is the follow-up.
+                // The `aircPeer` PARAM form is the typed inference hop and nothing else:
+                // every other verb reaches a peer through the URI form, which the socket
+                // path hands to the CommandExecutor's remote transport (#3690; the public
+                // entry landed under card 4fb5895c). Say the working form, never "not
+                // wired yet" — that sentence stood for weeks after the transport existed.
                 if command != AIRC_ROUTED_GENERATE {
                     return Err(format!(
-                        "airc routing for '{command}' isn't wired yet — only \
-                         '{AIRC_ROUTED_GENERATE}' hops to an explicit aircPeer today. \
-                         Generic command-over-airc is the follow-up (mirrors grid dispatch)."
+                        "'{command}' does not take an aircPeer param — only \
+                         '{AIRC_ROUTED_GENERATE}' does. Address any other verb to a peer as a \
+                         URI: `airc://{target}/{command}` (the executor routes it over airc)."
                     ));
                 }
 
