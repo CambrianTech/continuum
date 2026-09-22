@@ -7,4 +7,4 @@ export type AgentStatusParams = {
 /**
  * The agent handle returned by `agent/start`.
  */
-handle: string, };
+agentHandle: string, };

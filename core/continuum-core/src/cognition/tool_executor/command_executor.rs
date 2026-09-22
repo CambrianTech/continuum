@@ -201,7 +201,7 @@ fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) 
         Some(r) => format!(
             "the FULL {} lines were saved as output `{}`. Find the part you need with \
              `tool/output` — easiest, jump straight to what broke with a prebuilt filter: \
-             `{{\"handle\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/\
+             `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/\
              `summary`); for a specific hunt use `\"pattern\":\"<regex>\"`, or read a line \
              range with `startLine`/`endLine`",
             r.lines, r.handle, r.handle,

@@ -2734,7 +2734,7 @@ mod tests {
         assert_eq!(
             legacy.handle.as_deref(),
             Some("some/store.db"),
-            "legacy dbPath aliases onto handle"
+            "dbPath is the wire name of the storage handle (the envelope owns `handle`)"
         );
     }
 
@@ -4137,12 +4137,12 @@ pub struct DataListParams {
     /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
     /// "@persona:<slug>" or "@metrics" to target a specific store.
     ///
-    /// WIRE NOTE: on the flat wire the `handle` key is CLAIMED by the
+    /// On the wire this is `dbPath`: the `handle` key is CLAIMED by the
     /// [`CommandRequest`](crate::runtime::CommandRequest) envelope (a kernel
-    /// `HandleRef`), so a string here never reaches these params under that
-    /// name — callers pass the storage handle as `dbPath` (the alias below),
-    /// same as `data/create`.
-    #[serde(default, alias = "dbPath", skip_serializing_if = "Option::is_none")]
+    /// `HandleRef`), so a string under that name never reached these params and was
+    /// refused (`expected struct HandleRef`). The prose knew; now the type says it, and
+    /// the envelope's schema guard (card ea28d2f6) refuses the bare name at test time.
+    #[serde(default, rename = "dbPath", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub handle: Option<String>,
 }

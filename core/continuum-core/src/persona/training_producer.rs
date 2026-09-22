@@ -1240,9 +1240,9 @@ async fn stage_credit<T: Transport>(
                 // SAME JSON object as its own `handle: Option<HandleRef>`, so a
                 // top-level "handle" is claimed by the ENVELOPE and never reaches the
                 // params' `handle: Option<String>` — the request fails to deserialize
-                // with `invalid type: string, expected struct HandleRef`. The params
-                // declare `#[serde(alias = "dbPath")]` precisely as the escape hatch
-                // from that collision. One word, two meanings, one object.
+                // with `invalid type: string, expected struct HandleRef`. `dbPath` is the
+                // params' WIRE name for it (card ea28d2f6 made that the rename, not an
+                // alias, and the envelope's schema guard refuses the bare name).
                 json!({ "collection": collection, "dbPath": handle }),
             )
             .await?;
