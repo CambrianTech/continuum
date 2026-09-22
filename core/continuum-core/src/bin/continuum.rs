@@ -4875,7 +4875,16 @@ async fn stop(options: elevated_teardown::StopOptions) -> Result<(), String> {
         };
         #[cfg(windows)]
         {
-            return elevated_teardown::teardown_elevated(Path::new(&plan), &sha).await;
+            // The drain is supplied BY THE ROOT, which is where the socket and the
+            // `MayDrain` gate live — the module stays a leaf and the token stays where it
+            // can only be built by a preflight or by a held handle.
+            return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
+                format!(
+                    "{:?}",
+                    request_graceful_stop(&MayDrain::proven_by_held_handle()).await
+                )
+            })
+            .await;
         }
         #[cfg(not(windows))]
         {

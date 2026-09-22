@@ -327,8 +327,23 @@ impl HeldTerminate {
 /// could be denied, time out, or find the pid recycled. `TerminateProcess` itself can
 /// still return failure and the code reports it (Astra, review of 4936aac55: "syscall
 /// still returns failure"); a held handle narrows the window, it does not abolish it.
+///
+/// `drain` is INJECTED rather than called from here. The drain speaks the core socket and
+/// lives in the bin root; reaching up for it made this the only module in the tree with a
+/// dependency on its parent (Fable, 2026-09-22: the other five have zero). Taking it as an
+/// argument keeps the leaf a leaf — and makes the ORDER testable, because a fake drain can
+/// record that it ran after the handle was taken and before it was spent, which a direct
+/// call never could.
 #[cfg(windows)]
-pub(super) async fn teardown_elevated(plan_path: &Path, plan_sha: &str) -> Result<(), String> {
+pub(super) async fn teardown_elevated<F, Fut>(
+    plan_path: &Path,
+    plan_sha: &str,
+    drain: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = String>,
+{
     let receipt = receipt_path(plan_path);
     let result = async {
         let plan = read_bound_plan(plan_path, plan_sha)?;
@@ -341,12 +356,13 @@ pub(super) async fn teardown_elevated(plan_path: &Path, plan_sha: &str) -> Resul
         // The digest is RECORDED, not compared: nobody could have known it in advance
         // (see `target_is_our_core`), but the receipt should say exactly what was ended.
         let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})"));
-        // The drain runs under a capability already held, so this is the one place a
-        // `MayDrain` is proven by possession rather than by a check.
-        let graceful = super::request_graceful_stop(&super::MayDrain::proven_by_held_handle()).await;
+        // The drain runs under a capability already held. The caller proves that to the
+        // root's own gate; from in here all that matters is WHEN it runs — after the
+        // handle, before it is spent.
+        let graceful = drain().await;
         held.terminate()?;
         Ok::<String, String>(format!(
-            "elevated teardown: drained ({graceful:?}) and terminated pid {} running {image} (sha256 {sha})",
+            "elevated teardown: drained ({graceful}) and terminated pid {} running {image} (sha256 {sha})",
             plan.pid
         ))
     }
