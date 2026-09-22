@@ -79,9 +79,15 @@ pub enum FfiError {
     /// The session is closed; further calls won't succeed.
     #[error("connection closed")]
     Closed,
-    /// The substrate received the command but refused it.
+    /// The substrate received the command but refused it. `outcome` is the command's
+    /// own typed result as a JSON string when the refusal carried one (card f4d2fa49),
+    /// else `None` — an FFI caller can parse it for `errorKind` / continuation fields.
     #[error("command `{command}` refused: {reason}")]
-    Refused { command: String, reason: String },
+    Refused {
+        command: String,
+        reason: String,
+        outcome: Option<String>,
+    },
     /// Params/result JSON did not encode or decode.
     #[error("codec error: {0}")]
     Codec(String),
@@ -95,7 +101,15 @@ impl From<ClientError> for FfiError {
         match e {
             ClientError::Connect(m) => FfiError::Connect(m),
             ClientError::Closed => FfiError::Closed,
-            ClientError::Refused { command, reason } => FfiError::Refused { command, reason },
+            ClientError::Refused {
+                command,
+                reason,
+                outcome,
+            } => FfiError::Refused {
+                command,
+                reason,
+                outcome: outcome.map(|v| v.to_string()),
+            },
             ClientError::Codec(m) => FfiError::Codec(m),
             ClientError::Transport(m) => FfiError::Transport(m),
             ClientError::NotImplemented(m) => FfiError::Transport(format!("not implemented: {m}")),
@@ -151,6 +165,7 @@ impl ServeHandler for CommandHandlerAdapter {
             .map_err(|fe| ClientError::Refused {
                 command,
                 reason: fe.to_string(),
+                outcome: None,
             })?;
         serde_json::from_str(&result_json).map_err(|e| ClientError::Codec(e.to_string()))
     }
@@ -410,6 +425,7 @@ mod tests {
             Err(ClientError::Refused {
                 command: "danger".to_string(),
                 reason: "not allowed".to_string(),
+                outcome: None,
             })
         });
         let conn = Connection::new(mock);
@@ -417,7 +433,7 @@ mod tests {
             .await
             .expect_err("refused");
         match err {
-            FfiError::Refused { command, reason } => {
+            FfiError::Refused { command, reason, .. } => {
                 assert_eq!(command, "danger");
                 assert_eq!(reason, "not allowed");
             }

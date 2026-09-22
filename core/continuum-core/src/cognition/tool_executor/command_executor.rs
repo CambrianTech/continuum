@@ -484,6 +484,7 @@ impl ToolExecutor for CommandToolExecutor {
                         );
                         Err(ClientError::Refused {
                             command: command.to_string(),
+                            outcome: None,
                             reason: format!(
                                 "you sent the manual's blank as a value for {}: the example block is a \
                                  SHAPE, and `<replace-with-…>` / a run of zeros marks a field YOU fill \

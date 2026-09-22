@@ -1379,6 +1379,7 @@ fn storage_ok(
     // did not happen.
     Err(ClientError::Refused {
         command: command.to_string(),
+        outcome: None,
         reason: format!(
             "`{collection}`: {}",
             decoded
