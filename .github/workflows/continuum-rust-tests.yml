@@ -146,21 +146,6 @@ jobs:
             exit 1
           fi
 
-      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
-      - name: cargo test -p continuum-core --doc (compile-fail guards)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          set -o pipefail
-          # Same profile as the --lib build above, deliberately: a different profile
-          # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
-          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
-          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
-            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
-            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
-            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
-            exit 1
-          fi
-
       - name: Verify protocol/typescript/ in sync with Rust source
         if: needs.changes.outputs.rust != 'false'
         run: |
@@ -193,6 +178,71 @@ jobs:
           echo ""
           echo "That job passed, so the drift check within it passed."
           echo "This job publishes the required status context; it does not re-check."
+
+  cargo-doc-guards:
+    # THE 5.9-MINUTE STEP THAT WAS COSTING EVERY PR ITS CRITICAL PATH.
+    # Measured 2026-09-22 on a full-cache-hit run: `cargo test --lib` 12.4 min and
+    # `cargo test --doc` 5.9 min ran SERIALLY in one job, so the doc guard added its
+    # whole wall time to every run (18.3 of a ~20 min job). As its own job it runs
+    # CONCURRENTLY with the lib build and costs zero additional wall time — the gate is
+    # unchanged, it just stopped queueing behind a build it does not depend on.
+    # Not made conditional on purpose: a compile-fail guard that only runs when someone
+    # remembers to touch the guarded file is the gate that is not a gate, and a red
+    # canary tip is a fleet-wide deploy outage.
+    name: cargo test -p continuum-core --doc (compile-fail guards)
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.rust != 'false'
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+          cargo --version
+
+      - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
+            cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
+            libclang-dev clang build-essential \
+            libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Cache cargo state
+        if: needs.changes.outputs.rust != 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # SAME shared-key as the lib job: this job compiles the same crate with the
+          # same profile, so it reads the warm cache the lib job already populates
+          # rather than paying a cold build for the privilege of being parallel.
+          shared-key: continuum-rust-1.95
+          cache-on-failure: true
+
+      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
+      - name: cargo test -p continuum-core --doc (compile-fail guards)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          # Same profile as the --lib build above, deliberately: a different profile
+          # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
+          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
+          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
+            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
+            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
+            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            exit 1
+          fi
 
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
