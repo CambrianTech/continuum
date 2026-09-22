@@ -1751,13 +1751,32 @@ impl ActionCommand for WorkRelease {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
-        let mut attempt = airc
-            .release_work_claim(ReleaseWorkClaim {
-                card_id,
-                claim_id,
-                reason: p.reason.clone(),
-            })
-            .await;
+        // Released where the card lives (card e2aea0e6): the room-scoped form when a
+        // subscribed board holds it, so her current room is never moved for a card she
+        // can already see. The join-and-retry below stays ONLY for a card on no board she
+        // stands in (a fresh bench round's run room, 2026-09-05) — there the join is the
+        // way to the card, not a side effect.
+        let mut attempt = match room_holding_card(&airc, card_id).await {
+            Some(room) => {
+                airc.release_work_claim_in(
+                    &room,
+                    ReleaseWorkClaim {
+                        card_id,
+                        claim_id,
+                        reason: p.reason.clone(),
+                    },
+                )
+                .await
+            }
+            None => {
+                airc.release_work_claim(ReleaseWorkClaim {
+                    card_id,
+                    claim_id,
+                    reason: p.reason.clone(),
+                })
+                .await
+            }
+        };
         if matches!(
             attempt,
             Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
@@ -2389,12 +2408,22 @@ impl ActionCommand for WorkHeartbeat {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
-        airc.heartbeat_work_claim(HeartbeatWorkClaim {
+        let request = HeartbeatWorkClaim {
             card_id,
             claim_id,
             ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS),
-        })
-        .await
+        };
+        // THE LEASE IS RENEWED WHERE THE CARD LIVES, not where she stands (card e2aea0e6).
+        // `resolve_card_id` already found the card across every board she is subscribed
+        // to; the current-room verb then re-checked the CURRENT room's board and refused
+        // (`WorkCardNotInCurrentRoom`) whenever she was coordinating in one room while
+        // holding a card in another — Benchy's `work/heartbeat ✗` on d33e928a from the
+        // fleet room, 2026-09-21. The automatic renewal (airc_runtime) already uses the
+        // room-scoped form; the manual verb now does the same, and never moves her room.
+        match room_holding_card(&airc, card_id).await {
+            Some(room) => airc.heartbeat_work_claim_in(&room, request).await,
+            None => airc.heartbeat_work_claim(request).await,
+        }
         .map_err(|e| CommandError::Internal(e.to_string()))?;
         Ok(WorkHeartbeatResult { extended: true })
     }
