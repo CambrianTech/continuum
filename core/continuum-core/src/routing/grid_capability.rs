@@ -28,7 +28,6 @@
 
 use std::sync::Arc;
 
-use airc_core::PeerId;
 use airc_lib::grid_auth::VerifyContext;
 use airc_lib::grid_auth::{
     CredentialKind, GrantProof, GrantVerdict, GrantVerifier, SignedCapabilityGrant,
@@ -244,6 +243,7 @@ impl GrantAuthorizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
     use airc_lib::grid_auth::CapabilityGrant;
 
     // A stub verifier so the grant LOGIC (issuer-pin, key-binding, mesh, expiry,
