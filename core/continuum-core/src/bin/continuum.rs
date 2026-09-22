@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use continuum_client::Connection;
+use continuum_client::{ClientError, Connection};
 use continuum_core::runtime::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use continuum_core::runtime::deploy_provenance::{
@@ -580,11 +580,27 @@ async fn dispatch(command: &str, args: Vec<String>) -> Result<(), CliError> {
     ensure_core_running(command).await?;
     let canonical = canonical_param_names(command).await;
     let params = params_from_args(command, &args, &canonical)?;
-    let result = connection()
-        .commands()
-        .execute_value(command, params)
-        .await
-        .map_err(|e| format!("{command}: {e}"))?;
+    let result = match connection().commands().execute_value(command, params).await {
+        Ok(result) => result,
+        // A REFUSAL WITH DATA SHOWS ITS DATA (card f4d2fa49). A handler that answers
+        // `{ success: false, errorKind, nextHistoryOffset, malformed, … }` is refusing
+        // with the fields the operator needs next; the sentence alone is not enough.
+        // The typed outcome goes to stdout as JSON, the refusal line to stderr as
+        // before, and the exit code is still the refusal's.
+        Err(e) => {
+            if let ClientError::Refused {
+                outcome: Some(outcome),
+                ..
+            } = &e
+            {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(outcome).unwrap_or_else(|_| outcome.to_string())
+                );
+            }
+            return Err(format!("{command}: {e}").into());
+        }
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
