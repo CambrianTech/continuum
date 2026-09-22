@@ -316,9 +316,31 @@ impl Inner {
         // (`plan_serving` applies `knee_lanes`), which is the statement "every lane here
         // decodes at or above the floor"; this number says how fast that is. `None` =
         // never measured, which the allocator reads as an absence, never as a refusal.
-        let local_plan = self.plan_rx.borrow().as_ref().filter(|p| p.fits_on_gpu).map(|p| {
-            LanePlan::of(p, crate::inference::decode_knee::tps_for(&p.base_model.model_id).map(|t| t as f32))
-        });
+        // THIS NODE'S ROW IS ITS SERVED GEOMETRY — no intent in it at all, from either
+        // half. The plan is what the box means to serve NEXT; every foreign row in this
+        // comparison is a peer's LIVE beacon. Reading one side as intent and the other as
+        // live made a node with real capacity rank itself BelowEveryRequirement (Astra,
+        // Windows 2026-09-22: plan 2 x 5,533 against a lane serving 1 x 124,160, zero host
+        // seats; Fable measured served 1 x 39,424 against planned 4 x ~22.9k on the M5).
+        //
+        // `fits_on_gpu` does NOT gate this either, and that is the second half of the same
+        // law (Astra's review question on this branch): whether a PROPOSED layout fits is
+        // an admission-policy statement about a future lane, and letting it suppress the
+        // row would re-hide a healthy live server behind an infeasible intent — the exact
+        // defect in new clothes. What the box is serving right now is a seat because it is
+        // running, not because the next plan is feasible. The rank comes from the registry
+        // via the same `rank_of` every peer row uses, so local and foreign rows are
+        // symmetric in source AND in rank.
+        let local_plan = LanePlan::serving(
+            &serving,
+            rank_of(serving.active_model.as_deref().unwrap_or("")) // unwrap_or: no model = no row anyway; `serving` returns None below
+                .unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
+            serving
+                .active_model
+                .as_deref()
+                .and_then(crate::inference::decode_knee::tps_for)
+                .map(|t| t as f32),
+        );
         let peers = crate::capacity::gossip::global_ledger()
             .foreign_offers_with_age()
             .into_iter()

@@ -132,6 +132,50 @@ impl LanePlan {
         }
     }
 
+    /// THIS NODE'S OWN ROW, read from what it is actually SERVING — the same three
+    /// numbers its capacity beacon publishes (`grid_capacity`: `active_model`, `lanes`,
+    /// `served_context_window`), so the allocator judges this node by exactly what every
+    /// peer judges it by.
+    ///
+    /// The defect this closes (Astra, Windows 2026-09-22, card TBD-on-the-PR): the local
+    /// row came from the PLAN (`plan_rx`, an INTENT) while every foreign row came from the
+    /// peer's SERVED geometry. A node planning 2 lanes × 5,533 while its lane actually
+    /// served 1 × 124,160 judged itself `BelowEveryRequirement` and offered zero seats —
+    /// with live capacity standing right there, and its own beacon telling the grid so.
+    /// One quantity, two meanings, in one comparison.
+    ///
+    /// It takes NO plan, by signature: whether a proposed layout fits the GPU is an
+    /// admission-policy statement about a future lane, and gating the live row on it
+    /// would re-hide a healthy server behind an infeasible intent — the same defect in
+    /// new clothes (Astra's review question on this change). What the box serves now is a
+    /// seat because it is running.
+    ///
+    /// `None` when nothing is LIVE — not ready, no model, no lanes, or an unknown window:
+    /// an absence, never a substituted intent and never fabricated capacity.
+    pub fn serving(
+        snapshot: &crate::inference::llama_server::ServingSnapshot,
+        capability_rank: u8,
+        decode_tps_per_lane: Option<f32>,
+    ) -> Option<Self> {
+        // `is_live`, not just "has a model": a mid-relaunch publish keeps its geometry —
+        // `serving_consumer` flips `ready = false` with `send_modify` and clears nothing
+        // (llama_server's own transitional-publish test builds exactly that shape: lanes 1,
+        // window 32,768, ready false). Seating on it would announce a lane that cannot
+        // serve as capacity — "a lane that cannot serve is no seat", the same sentence the
+        // fall-home path uses. Caught by Astra reviewing this change.
+        if !snapshot.is_live() || snapshot.lanes == 0 || snapshot.served_context_window == 0 {
+            return None;
+        }
+        let model_id = snapshot.active_model.clone()?;
+        Some(Self {
+            model_id,
+            capability_rank,
+            window: snapshot.served_context_window,
+            lanes: snapshot.lanes,
+            decode_tps_per_lane,
+        })
+    }
+
     /// Does one lane of this plan seat a mind of a role with this requirement?
     pub fn holds(&self, req: &Requirement) -> bool {
         self.lanes > 0
@@ -695,6 +739,62 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Astra, Windows 2026-09-22): this node's row in the allocator
+    // coming from its PLAN while every peer's comes from their SERVED beacon. A box
+    // planning a 2 × 5,533 shrink while its lane actually served 1 × 124,160 read as
+    // BelowEveryRequirement and offered zero seats, with live capacity standing there.
+    // The local row must carry the same three numbers `grid_capacity` beacons — and must
+    // be an ABSENCE, never a substituted intent, when nothing is being served.
+    #[test]
+    fn the_local_row_is_the_served_geometry_the_beacon_publishes_or_nothing() {
+        use crate::inference::llama_server::ServingSnapshot;
+        let served = ServingSnapshot {
+            active_model: Some("qwen3.8-27b".into()),
+            ready: true,
+            lanes: 1,
+            served_context_window: 124_160,
+            ..ServingSnapshot::empty()
+        };
+        let row = LanePlan::serving(&served, 9, Some(20.0)).expect("a served lane is a row");
+        assert_eq!((row.lanes, row.window), (1, 124_160), "the beacon's numbers, not the plan's");
+        assert!(row.holds(&coder().requirement), "a 124k lane seats the 64k role");
+
+        // The intent that caused the misjudgement: the same box planning a shrink. Its
+        // row must NOT be built from these numbers.
+        let planned_shrink = ServingSnapshot {
+            active_model: Some("qwen3.8-27b".into()),
+            ready: true,
+            lanes: 2,
+            served_context_window: 5_533,
+            ..ServingSnapshot::empty()
+        };
+        let shrunk = LanePlan::serving(&planned_shrink, 9, Some(20.0)).expect("still a row");
+        assert!(!shrunk.holds(&coder().requirement), "5,533 below 65,536 is the reading that starved the node");
+
+        // Absence, not fabrication: nothing served ⇒ no row, on each of the three ways
+        // "nothing" arrives.
+        assert!(LanePlan::serving(&ServingSnapshot::empty(), 9, None).is_none(), "no model = no row");
+        // MID-RELAUNCH: geometry retained, `ready` false — `serving_consumer` flips the
+        // flag and clears nothing. A lane that cannot serve is no seat (Astra's review).
+        assert!(
+            LanePlan::serving(
+                &ServingSnapshot { active_model: Some("m".into()), ready: false, lanes: 1, served_context_window: 32_768, ..ServingSnapshot::empty() },
+                9,
+                None
+            )
+            .is_none(),
+            "a relaunching lane keeps its numbers and must NOT be announced as capacity"
+        );
+        assert!(
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            "zero lanes = no row"
+        );
+        assert!(
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            "unknown window = no row, never a guess"
+        );
+    }
 
     // ---- fixtures: shapes, not Joel's grid. Numbers are illustrative machine classes. ----
     fn coder() -> Role {
