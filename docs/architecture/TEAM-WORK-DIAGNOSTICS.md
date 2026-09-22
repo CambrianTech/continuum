@@ -64,3 +64,9 @@ retained, expired, unavailable and incomplete evidence; it must never fabricate
 a successful completion from a vanished task. Cancellation is a request until the
 owning operation records the terminal outcome. This is a shared lifecycle follow-up,
 not implemented by the work/get lease fields in this PR.
+
+### Destination acceptance versus training
+
+Legacy card settlement records a create-only credit_transfer_acceptance receipt keyed by its existing immutable credit_transfer_intent. The receipt acknowledges curriculum ownership, not trained weights, evaluation, or activation. Source snapshots and generation reservations remain inspectable; acknowledged exact retries do not redispatch. Missing local acknowledgements retry the same destination submission ID. Different overlapping revisions remain refused by the existing reservation owner. This removes the persona-owned data/delete call rather than weakening authorization. Evidence retention/reclamation is a separate lifecycle concern and is not implemented by this receipt.
+
+The existing SQLite settlement fixture uses GridTrustAuthPolicy so authorization failures cannot disappear in tests. A successful storage round trip without the production policy is insufficient evidence of a working persona command path.
