@@ -46,7 +46,7 @@ pub mod job_status;
 pub mod teach;
 
 /// Wire shape for `genome/job-cancel`. Status adds its own history continuation.
-/// adapter lookup keys on `jobHandle.providerId`.
+/// The adapter is selected by `jobHandle.providerId`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
