@@ -926,6 +926,158 @@ mod tests {
             (trigger, executor, recorder, dir)
         }
 
+        // What this catches (Kimi received-lesson audit): accepted ownership survives provider refusal, restart/tick, and explicit producer replay.
+        #[tokio::test]
+        async fn received_lesson_dispatch_failure_restart_and_retry_preserve_one_batch() {
+            use crate::commands::training_trigger::test_support::build_runtime_with_registry;
+            use crate::genome::fine_tuning::RECORDING_PROVIDER_ID;
+            use crate::persona::domain_classifier::DomainClassifier;
+            use crate::persona::training_producer::{
+                received_submission_id, received_submission_params,
+            };
+            use crate::runtime::ServiceModule;
+
+            let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+            let providers = Arc::new(FineTuningRegistry::new());
+            let (first, executor) =
+                build_runtime_with_registry(adapter.clone(), Some(providers)).await;
+            let recorder = Arc::new(RecordingFineTuningAdapter::new());
+            let persona = Uuid::from_u128(73);
+            let base_model = format!("{RECORDING_BASE_PREFIX}-received-retry");
+            let classifier = DomainClassifier::new();
+            let record: crate::memory::MemoryRecord = serde_json::from_value(serde_json::json!({
+                "id": "lesson-73", "persona_id": persona.to_string(), "memory_type": "shared",
+                "content": "Read Rust compiler diagnostics and verify the correction with cargo check.",
+                "context": { "scope": "rust code", "shared_by": "teacher-9", "original_author": "teacher-9" },
+                "timestamp": "2026-09-23T00:00:00Z", "importance": 0.6, "access_count": 0,
+                "tags": [], "related_to": [], "source": "shared:teacher-9"
+            })).expect("test: persisted received lesson");
+            let request = || {
+                let mut params = received_submission_params(
+                    persona,
+                    "recipient",
+                    &base_model,
+                    &classifier,
+                    &record,
+                );
+                params["minExamples"] = serde_json::json!(1);
+                params["preferredProvider"] = serde_json::json!(RECORDING_PROVIDER_ID);
+                params
+            };
+            let original = request();
+            let submission_id = received_submission_id(persona, &base_model, &record.id);
+            let accepted = executor
+                .execute_json("genome/training-trigger/submit", original.clone())
+                .await
+                .expect("test: accepted then refused dispatch");
+            assert_eq!(accepted["success"], false);
+            assert_eq!(accepted["errorKind"], "DispatchFailed", "{accepted}");
+            assert_eq!(
+                accepted["acceptance"]["submissionId"],
+                submission_id.to_string()
+            );
+            assert_eq!(accepted["acceptance"]["replayed"], false);
+            assert!(accepted.get("jobHandle").is_none());
+            let status = executor
+                .execute_json("genome/training-trigger/status", serde_json::json!({}))
+                .await
+                .expect("test: refused dispatch status");
+            assert_eq!(
+                status["buckets"]
+                    .as_array()
+                    .expect("test: bucket rows")
+                    .len(),
+                1
+            );
+            let dispatch_id = status["buckets"][0]["dispatchId"]
+                .as_str()
+                .expect("test: durable dispatch identity")
+                .to_string();
+            assert_eq!(status["buckets"][0]["dispatch"]["state"], "retryable");
+            assert_eq!(status["buckets"][0]["examplesPending"], 1);
+            first.shutdown().await.expect("test: owner shutdown");
+            drop(executor);
+            drop(first);
+
+            let providers = Arc::new(FineTuningRegistry::new());
+            let (next, executor) =
+                build_runtime_with_registry(adapter, Some(providers.clone())).await;
+            next.tick()
+                .await
+                .expect("test: restore and retry owned dispatch");
+            let status = executor
+                .execute_json("genome/training-trigger/status", serde_json::json!({}))
+                .await
+                .expect("test: recovered status");
+            assert_eq!(
+                status["buckets"]
+                    .as_array()
+                    .expect("test: bucket rows")
+                    .len(),
+                1
+            );
+            assert_eq!(status["buckets"][0]["dispatchId"], dispatch_id);
+            assert_eq!(status["buckets"][0]["dispatch"]["state"], "retryable");
+            assert_eq!(status["buckets"][0]["examplesPending"], 1);
+            // Submit and tick attempted dispatch; neither reached a provider or executed training.
+            assert_eq!(recorder.captured_job_count(), 0);
+
+            providers.register(recorder.clone());
+            let replay = request();
+            assert_eq!(
+                replay, original,
+                "restart reconstructs the same immutable payload"
+            );
+            let dispatched = executor
+                .execute_json("genome/training-trigger/submit", replay.clone())
+                .await
+                .expect("test: explicit received replay");
+            assert_eq!(dispatched["success"], true, "{dispatched}");
+            assert_eq!(dispatched["outcome"], "JobDispatched");
+            assert_eq!(
+                dispatched["acceptance"]["submissionId"],
+                submission_id.to_string()
+            );
+            assert_eq!(dispatched["acceptance"]["replayed"], true);
+            let again = executor
+                .execute_json("genome/training-trigger/submit", replay)
+                .await
+                .expect("test: replay after successful dispatch");
+            assert_eq!(again["outcome"], "AlreadyAccepted", "{again}");
+            assert_eq!(
+                again["acceptance"]["submissionId"],
+                submission_id.to_string()
+            );
+            assert_eq!(again["acceptance"]["replayed"], true);
+            assert_eq!(next.state.pending_bucket_count(), 0);
+            assert_eq!(
+                recorder.captured_job_count(),
+                1,
+                "one successful fixture dispatch, not one attempt"
+            );
+            assert_eq!(recorder.captured_example_count(), 1);
+            {
+                let captures = recorder.captures();
+                let captured = captures.lock().expect("test: captured request");
+                assert_eq!(captured[0].persona_id, persona);
+                assert_eq!(
+                    serde_json::to_value(&captured[0].dataset.examples)
+                        .expect("test: example receipt"),
+                    original["examples"]
+                );
+                let metadata = captured[0].dataset.examples[0]
+                    .metadata
+                    .as_ref()
+                    .expect("test: provenance");
+                assert_eq!(metadata["memoryRecordId"], record.id);
+                assert_eq!(metadata["shared_by"], "teacher-9");
+                assert!(metadata.get("cardId").is_none());
+            }
+            next.shutdown()
+                .await
+                .expect("test: recovered owner shutdown");
+        }
+
         // what this VDD catches: every example submitted across N submits appears
         // EXACTLY ONCE in a dispatched job — no duplicates, no drops, in submission
         // order. The RecordingFineTuningAdapter captures the dispatched TrainingDataset
