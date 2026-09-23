@@ -1,0 +1,33 @@
+[package]
+name = "continuum-cli-lifecycle"
+version = "0.1.0"
+edition = "2021"
+
+# THE CLI's PLATFORM LIFECYCLE, EXTRACTED SO ITS TESTS DO NOT LINK THE CORE.
+#
+# These five modules were `mod` declarations inside the `continuum` bin, so
+# `cargo test --bin continuum` linked all 624,456 lines of continuum-core to run
+# 17 tests over 2,420 lines of pure functions. On Windows that PDB exceeded the
+# linker's limit (LNK1140, measured by Astra 2026-09-22) — the tests never ran.
+#
+# Nothing here reaches into the core: all five had zero `crate::` /
+# `continuum_core::` imports and zero `super::` references outside their own test
+# mods. The crate makes that property structural — the compiler now refuses what
+# the convention merely discouraged.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["time", "process", "rt", "macros"] }  # launchd interval + supervisor_install process/timeout — PRODUCTION code, not tests
+sha2 = "0.10"
+base64 = "0.22"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"     # launchd.rs: geteuid() for the root check
+
+[dev-dependencies]
+tempfile = "3"   # install_cli / supervisor_install tests write into a temp root
+uuid = { version = "1", features = ["v4"] }  # test-only: unique temp dirs
+
+[target.'cfg(windows)'.dependencies]
+chrono = "0.4"
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes"] }

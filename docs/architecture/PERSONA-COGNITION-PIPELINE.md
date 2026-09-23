@@ -249,3 +249,71 @@ If a new concept needs a new location, that location goes in this table in the s
 Written 2026-06-03 after a session that re-discovered the entire pipeline three times under context compression and produced a `will_respond + response_text` chatbot wrapper that posted to airc but bypassed every brain layer. The pattern that caused this is exactly the failure mode this doc exists to break: the model reads the bypass, infers the contract from the bypass, and rebuilds the bypass instead of using the verbs.
 
 This doc is pinned in `CLAUDE.md` as required-first-read for any work on persona / cognition / service_loop. If a future commit moves files or renames verbs, **update this doc in the same commit.** An outdated anchor is worse than no anchor.
+
+## 10. Operational continuity and acceptance contracts
+
+A passing build or responsive server is not evidence that a citizen can work.
+The existing owners must preserve these distinct facts; no separate recovery
+manager or shadow task registry is introduced.
+
+| Boundary | Authoritative state | Required invariant and evidence |
+| --- | --- | --- |
+| Hosting | `ServingSnapshot`, allocator roster, persona registry | An offer uses live served geometry, never proposed configuration. Non-ready retained geometry is not capacity. Verify the same persona identity appears in the runtime registry. |
+| Task choice | AIRC accepted claim and optional selection amendment | Record explicit versus automatic choice at its caller. Heartbeat changes liveness, not intent. Unknown legacy history stays unknown. |
+| Focus and recovery | `persona/work_focus.rs` over projected claims | The latest explicit choice outranks automatic recency. Recovery preserves decision time. An already-held explicit selection changes no lease or dispatch. |
+| Reconciliation | Existing `benchmark_resume` owner | Release only surplus current claims; delayed releases cannot remove a newer claim. Use the same explicit-choice ordering as turn focus. |
+| Coding acceptance | Actual tool result, workspace diff, test receipt | A hosted instance, submitted inference, claimed card, or narration is insufficient. Require the citizen's own useful edit and relevant passing tests, then observe claim survival through a real reconciliation cycle. |
+| Learning acceptance | Existing curriculum, job, evaluation and adoption owners | Collection is not training. Admission is not completion. Training is not improvement. Require linked curriculum provenance, actual trained artifact, held-out comparison, adoption receipt and subsequent work evidence. |
+
+Claim contract regression coverage lives in the existing AIRC projection/replay
+and SDK tests plus Core `work_focus` and `benchmark_resume` fixtures. Mixed-version
+readers tolerate optional claim fields but do not acquire intent-aware behavior;
+full continuity requires the upgraded consumer. Live coding and learning remain
+separate acceptance gates; source tests do not establish them.
+
+### 10.1. Iteration, playback and learning around a continuing citizen
+
+This is the required process, not a claim that its outstanding runtime boundaries
+are already implemented. A deployment may not count as recovery until the live
+acceptance evidence below exists.
+
+1. Integrate related recovery changes on one shared feature branch. Contributors
+   use separate worktrees and agreed file ownership; integration does not mean
+   concurrent writes to one checkout. Run focused existing checks during editing,
+   cheap source checks first, and the full required gate on the integrated revision.
+   Promote one exact tested revision. Record time-to-first-failure and time-to-live.
+2. Use the existing capture and playback owners to inspect a selected episode by
+   persona, task, cycle and request handles. Recorded playback is read-only: it
+   must not execute tools, renew claims, enqueue training or dispatch inference.
+   Missing capture and version mismatches are visible, never filled by invention.
+   A new model run is an explicitly labelled experiment in an isolated workspace;
+   it is not playback and cannot publish effects into the live citizen's task.
+3. Expose a bounded operational view: identity, selected task and claim, active
+   request, serving lane, queue age, last observable tool result, workspace change,
+   test result, recovery state and exact refusal. Keep private reasoning excluded.
+   Distinguish unavailable telemetry, waiting, active work and failure. Silence or
+   an empty preview cannot establish cognitive failure.
+4. Build beside the serving runtime when its existing admission permits. Before
+   handoff, the existing lifecycle owners must drain or reach a supported durable
+   boundary, preserving identity, task choice, completed tool effects and pending
+   input. Acknowledged durable state precedes release of the old owner. Never
+   represent killing a process as graceful checkpointing. Where a boundary is
+   unsupported, defer a routine handoff rather than silently discard a live turn.
+5. Collect eligible experience from real work continuously. The existing resource
+   and training owners admit training on verified spare capacity or an explicit
+   bounded window; waiting admission alone is not scheduling. Publish the reason
+   for waiting and training age alongside inference latency. Yield requires a
+   durable checkpoint receipt (optimizer, RNG and data position as applicable)
+   before releasing a training lease. Cancellation does not imply resumability.
+6. Evaluate a candidate against the serving genome on held-out tasks, retaining
+   provenance, correctness and resource measurements. Adopt only on recorded
+   acceptance at a supported turn/session boundary, preserving the prior artifact
+   for rollback. Prove gain on subsequent useful work. Never change the genome
+   beneath an in-flight request or equate a training completion with improvement.
+
+The first demonstration is one Kimi-authored useful change, its tool and test
+receipts visible in playback, and her same identity/task surviving a real
+reconciliation and supported handoff. The second is a linked learning candidate,
+held-out comparison, adoption receipt and subsequent work measurement. Current
+missing checkpoint/yield and live acceptance remain explicit engineering gaps;
+this contract does not close them by documentation.

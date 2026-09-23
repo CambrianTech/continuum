@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
@@ -121,6 +121,179 @@ impl StatelessCommand {
 }
 
 inventory::collect!(StatelessCommand);
+
+// ─────────────────────── the tool call's own outcome ───────────────────────
+//
+// A ✓ in a room receipt used to mean DISPATCHED, not SUCCEEDED. The executor set
+// `is_error: Some(true)` ONLY on the transport `Err` arm, so a handler that
+// returned failure AS DATA — `ok: false`, `status: Failed`, a stderr and an exit
+// code — took the `Ok` arm and rendered a tick. Measured 2026-09-22 (card
+// f6c50a49, filed 09-15 and then read past for a night): three agents each built
+// a hypothesis about why a citizen was not working, on receipts where every one
+// of her failures showed as a success.
+//
+// The fix is NOT key-scanning the JSON — no handler owes the executor a field
+// name — and NOT forcing failures onto `Err`, which would throw away the very
+// payload the model needs to recover (for `code/run` that payload IS the compiler
+// stderr). The command PROJECTS its own typed result into an outcome.
+//
+// Opt-in BY SUBMISSION, the same way `StatelessCommand` above opts in: the
+// descriptor's `of::<C: CommandSpec>()` is generic over the base trait and cannot
+// see that `C` also implements [`ProjectsOutcome`] (Rust has no specialization),
+// so participation is a second inventory entry rather than a type test. A command
+// that submits nothing keeps today's behaviour byte for byte.
+
+/// What a tool call actually did, as its OWN typed result reports it.
+///
+/// `Running` is not decoration: `code/shell` returns `ShellExecutionStatus::Running`
+/// immediately by design ("always returns immediately with the execution handle"),
+/// so every async shell call rendered a success tick for work that had not
+/// finished. Accepted is not completed, and a receipt must be able to say so.
+// Deliberately NOT a ts-rs export yet: the desktop consumes the act receipt's
+// `state` string (see `PersonaActUpdate`), not this enum, and adding a binding
+// here would require regenerating `protocol/typescript` in the same change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolVerdict {
+    Succeeded,
+    Failed,
+    Running,
+}
+
+/// What the act seam KNOWS about one call's outcome. Three states, because two
+/// would lie: "no projector" and "a projector that could not read its own result"
+/// are different facts, and collapsing them is what let schema drift render as a
+/// success tick (Astra on #4352).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "verdict")]
+pub enum ActVerdict {
+    /// The command never opted in. Byte-for-byte the pre-projection behaviour —
+    /// the transport arm alone decides, and nothing here claims anything.
+    #[default]
+    Unprojected,
+    /// The command read its own declared result and said so.
+    Declared(ToolVerdict),
+    /// A projector IS registered and the dispatched value did not decode as the
+    /// command's own declared `Output`. That is SCHEMA DRIFT — a defect — not an
+    /// outcome, and it must never be quietly rendered as success. The payload is
+    /// preserved untouched; only the claim is withheld.
+    Undecodable,
+}
+
+impl ActVerdict {
+    /// The one question the `is_error` bool can answer. `Running` is deliberately
+    /// NOT a failure, and `Undecodable` is deliberately NOT a success — the latter
+    /// rides the typed field to the receipt instead of being flattened here.
+    pub fn failed(self) -> bool {
+        matches!(self, ActVerdict::Declared(ToolVerdict::Failed))
+    }
+    /// True only where the command itself asserted completion. Used by receipts
+    /// that must not render a tick for work that has not finished or for a result
+    /// nobody could read.
+    pub fn succeeded(self) -> bool {
+        matches!(self, ActVerdict::Declared(ToolVerdict::Succeeded))
+    }
+    /// Accepted-but-unfinished: a handle came back and the work is still running.
+    pub fn running(self) -> bool {
+        matches!(self, ActVerdict::Declared(ToolVerdict::Running))
+    }
+    /// A short stable label for receipts and probes.
+    pub fn label(self) -> &'static str {
+        match self {
+            ActVerdict::Unprojected => "unprojected",
+            ActVerdict::Declared(ToolVerdict::Succeeded) => "succeeded",
+            ActVerdict::Declared(ToolVerdict::Failed) => "failed",
+            ActVerdict::Declared(ToolVerdict::Running) => "running",
+            ActVerdict::Undecodable => "undecodable",
+        }
+    }
+}
+
+/// A command's opt-in projection from its own typed output to a [`ToolVerdict`].
+///
+/// The `DeserializeOwned` bound lands HERE rather than on [`ActionCommand::Output`],
+/// so only commands that opt in pay it — every other command's output keeps the
+/// `TS + Serialize + Send` it has today.
+pub trait ProjectsOutcome: ActionCommand
+where
+    Self::Output: serde::de::DeserializeOwned,
+{
+    /// Read this command's own typed result. No key scanning, no guessing: the
+    /// field being read is one the command already declares and documents.
+    fn outcome(output: &Self::Output) -> ToolVerdict;
+
+    /// The long-running handle this result hands back, when it has one.
+    ///
+    /// Declared by the COMMAND because only the command knows which of its fields
+    /// is the handle. Without it the act seam had to re-parse the result text to
+    /// find `execution_id` — against the FOLDED preview, and matching the command
+    /// name by hand, so a `bash` alias missed it entirely and a flood-sized result
+    /// failed to parse. Defaults to none; a command with no handle ignores it.
+    fn dispatch_handle(_output: &Self::Output) -> Option<uuid::Uuid> {
+        None
+    }
+}
+
+/// One command's registered projector, keyed by the command name the executor
+/// already holds at dispatch.
+///
+/// ONE function pointer, not two. An earlier draft had separate `project` and
+/// `handle` fns and a comment claiming the value was decoded once — it was decoded
+/// twice (Astra on #4352). Both facts come from the same `Output`, so they are read
+/// in a single decode and returned together.
+pub struct OutcomeProjector {
+    name: &'static str,
+    read: fn(&serde_json::Value) -> (ActVerdict, Option<uuid::Uuid>),
+}
+
+impl OutcomeProjector {
+    /// Build a registration from a command name and a single decode-then-read fn
+    /// (what [`crate::register_outcome!`] supplies).
+    pub const fn new(
+        name: &'static str,
+        read: fn(&serde_json::Value) -> (ActVerdict, Option<uuid::Uuid>),
+    ) -> Self {
+        Self { name, read }
+    }
+    /// The command this projector speaks for.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+    /// Decode ONCE and report both the verdict and the command-declared dispatch
+    /// handle. Never `Unprojected` — reaching this function means a projector IS
+    /// registered, so the only outcomes are the command's own
+    /// [`ActVerdict::Declared`] verdict or [`ActVerdict::Undecodable`].
+    pub fn read(&self, value: &serde_json::Value) -> (ActVerdict, Option<uuid::Uuid>) {
+        (self.read)(value)
+    }
+}
+
+inventory::collect!(OutcomeProjector);
+
+/// The projector for `name`, or `None` when that command has not opted in.
+///
+/// Callers MUST pass the CANONICAL name (`tool_dialect::resolve_wire_name`), never
+/// the raw wire name: a model reaching for `bash` or `code_run` would otherwise
+/// miss its own command's projector.
+pub fn outcome_projector(name: &str) -> Option<&'static OutcomeProjector> {
+    inventory::iter::<OutcomeProjector>
+        .into_iter()
+        .find(|p| p.name == name)
+}
+
+/// The act seam's ONE read of a dispatched result: resolve the canonical name,
+/// project if the command opted in, and say which of the three states this is.
+/// Returns the verdict and the command-declared dispatch handle together, because
+/// both come from the SAME decode of the SAME pre-fold value.
+pub fn project_result(
+    canonical_name: &str,
+    value: &serde_json::Value,
+) -> (ActVerdict, Option<uuid::Uuid>) {
+    match outcome_projector(canonical_name) {
+        Some(p) => p.read(value),
+        None => (ActVerdict::Unprojected, None),
+    }
+}
 
 /// Every stateless command object, assembled from `register_stateless_command!`
 /// submissions across the crate — the kernel seeds its command map with these at
@@ -362,5 +535,181 @@ mod tests {
             err.starts_with("test/echo-action: [invalid]"),
             "named + categorized: {err}"
         );
+    }
+
+    /// The ✓-on-failure defect (card f6c50a49). The executor set `is_error` only on
+    /// the transport `Err` arm, so a handler that returned its failure AS DATA took
+    /// the `Ok` arm and rendered a success tick — `code/run` reporting `ok: false`
+    /// with the compiler's stderr, `code/shell` reporting `status: Running` before
+    /// the command had finished. These pin the projection that fixes it.
+    mod outcome_projection {
+        use crate::sdk_codegen::{project_result, ActVerdict, ToolVerdict};
+
+        /// what this catches: the projector silently doing NOTHING. It decodes the
+        /// value the executor actually holds — `execute_value` returns the handler's
+        /// typed `Output` verbatim (`CommandClient::execute` deserializes it straight
+        /// into `R`, no envelope), so a shape change that broke the decode would send
+        /// every verdict back to a tick.
+        #[test]
+        fn a_failing_run_projects_failed_from_its_own_typed_output() {
+            let failed = crate::commands::code::run::CodeRunResult {
+                exit_code: Some(1),
+                ok: false,
+                stdout: String::new(),
+                stderr: "error[E0425]: cannot find value `x`".into(),
+                duration_ms: 12,
+                timed_out: false,
+                interpreter: "rustc".into(),
+            };
+            let value = serde_json::to_value(&failed).expect("serializes");
+            let (verdict, handle) = project_result("code/run", &value);
+            assert_eq!(verdict, ActVerdict::Declared(ToolVerdict::Failed));
+            assert!(verdict.failed(), "a nonzero exit must read as failed");
+            assert_eq!(handle, None, "code/run hands back no running handle");
+        }
+
+        /// what this catches: a run that DID succeed being flagged as an error — the
+        /// opposite regression, which would feed the model a false failure.
+        #[test]
+        fn a_clean_run_projects_succeeded() {
+            let ok = crate::commands::code::run::CodeRunResult {
+                exit_code: Some(0),
+                ok: true,
+                stdout: "hello".into(),
+                stderr: String::new(),
+                duration_ms: 3,
+                timed_out: false,
+                interpreter: "python3".into(),
+            };
+            let value = serde_json::to_value(&ok).expect("serializes");
+            let (verdict, _) = project_result("code/run", &value);
+            assert_eq!(verdict, ActVerdict::Declared(ToolVerdict::Succeeded));
+            assert!(!verdict.failed());
+        }
+
+        /// what this catches: the ACCEPTED-is-not-COMPLETED case collapsing into a
+        /// terminal verdict. `code/shell` documents itself as "always returns
+        /// immediately with the execution handle", so `Running` is the COMMON case,
+        /// not an edge one — mapping it to Succeeded would re-create the defect for
+        /// every async shell call. Also pins that the handle rides along, because the
+        /// act seam registers the dispatch from it instead of re-parsing the text.
+        #[test]
+        fn an_unfinished_shell_projects_running_and_carries_its_handle() {
+            use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
+            let id = uuid::Uuid::new_v4();
+            let running = ShellExecuteResponse {
+                execution_id: id.to_string(),
+                status: ShellExecutionStatus::Running,
+                stdout: None,
+                stderr: None,
+                exit_code: None,
+            };
+            let value = serde_json::to_value(&running).expect("serializes");
+            let (verdict, handle) = project_result("code/shell", &value);
+            assert_eq!(verdict, ActVerdict::Declared(ToolVerdict::Running));
+            assert!(verdict.running() && !verdict.failed() && !verdict.succeeded());
+            assert_eq!(handle, Some(id), "the command declares its own handle");
+        }
+
+        /// what this catches: the poll half drifting from the execute half. They
+        /// share one `ShellExecuteResponse` and must share one reading of it, or a
+        /// single execution could be Failed on one seam and Succeeded on the other.
+        #[test]
+        fn shell_and_shell_poll_read_the_same_execution_the_same_way() {
+            use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
+            for (status, expected) in [
+                (ShellExecutionStatus::Running, ToolVerdict::Running),
+                (ShellExecutionStatus::Completed, ToolVerdict::Succeeded),
+                (ShellExecutionStatus::Failed, ToolVerdict::Failed),
+                (ShellExecutionStatus::TimedOut, ToolVerdict::Failed),
+                (ShellExecutionStatus::Killed, ToolVerdict::Failed),
+            ] {
+                let value = serde_json::to_value(ShellExecuteResponse {
+                    execution_id: uuid::Uuid::new_v4().to_string(),
+                    status: status.clone(),
+                    stdout: None,
+                    stderr: Some("boom".into()),
+                    exit_code: Some(2),
+                })
+                .expect("serializes");
+                assert_eq!(
+                    project_result("code/shell", &value).0,
+                    ActVerdict::Declared(expected),
+                    "{status:?} on execute"
+                );
+                assert_eq!(
+                    project_result("code/shell-poll", &value).0,
+                    ActVerdict::Declared(expected),
+                    "{status:?} on poll"
+                );
+            }
+        }
+
+        /// what this catches — and this test REPLACES one that codified the bug
+        /// (Astra, #4352 review): a REGISTERED projector whose own declared output no
+        /// longer decodes must NOT be indistinguishable from an unregistered command.
+        /// Collapsing both into "no verdict" is what let schema drift render as a
+        /// success tick. `Undecodable` is a third state precisely so the receipt can
+        /// refuse to claim anything.
+        #[test]
+        fn a_registered_projector_that_cannot_decode_says_so_instead_of_succeeding() {
+            let (verdict, handle) =
+                project_result("code/run", &serde_json::json!({"unrelated": true}));
+            assert_eq!(verdict, ActVerdict::Undecodable);
+            assert_ne!(
+                verdict,
+                ActVerdict::Unprojected,
+                "schema drift must not masquerade as a command that never opted in"
+            );
+            assert!(
+                !verdict.succeeded(),
+                "a result nobody could decode is NOT a success"
+            );
+            assert!(
+                !verdict.failed(),
+                "nor is it a failure — the payload is kept and no claim is made"
+            );
+            assert_eq!(handle, None);
+        }
+
+        /// what this catches: the whole mechanism being dead for commands that never
+        /// opted in. They must project `Unprojected`, so their behaviour is
+        /// byte-for-byte what it was before this change.
+        #[test]
+        fn a_command_that_did_not_opt_in_is_unprojected_not_undecodable() {
+            let v = project_result("code/read", &serde_json::json!({"anything": 1})).0;
+            assert_eq!(v, ActVerdict::Unprojected);
+            assert!(!v.failed() && !v.running());
+            assert_eq!(
+                project_result("definitely/not/a/command", &serde_json::json!({})).0,
+                ActVerdict::Unprojected
+            );
+        }
+
+        /// what this catches: a projector keyed on the RAW wire name. The model does
+        /// not always send the canonical one — `code/shell` declares `bash` among its
+        /// aliases and small tiers emit `code_run` — and a lookup that missed those
+        /// would leave the defect fully alive for exactly the calls that hit it most.
+        #[test]
+        fn the_lookup_is_by_canonical_name_so_aliases_resolve() {
+            use crate::cognition::tool_dialect::resolve_wire_name;
+            assert_eq!(resolve_wire_name("bash"), "code/shell");
+            assert_eq!(resolve_wire_name("code_run"), "code/run");
+            let failed = crate::commands::code::run::CodeRunResult {
+                exit_code: Some(2),
+                ok: false,
+                stdout: String::new(),
+                stderr: "boom".into(),
+                duration_ms: 1,
+                timed_out: false,
+                interpreter: "python3".into(),
+            };
+            let value = serde_json::to_value(&failed).expect("serializes");
+            assert_eq!(
+                project_result(&resolve_wire_name("code_run"), &value).0,
+                ActVerdict::Declared(ToolVerdict::Failed),
+                "the underscore form must reach its own command's projector"
+            );
+        }
     }
 }

@@ -2419,7 +2419,10 @@ impl ActionCommand for BenchmarkDispatch {
                         let ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
                         let mut attempt = rt
                             .airc()
-                            .claim_work_card(airc_lib::ClaimWorkCard { card_id, ttl_ms })
+                            .claim_work_card_with_origin(
+                                airc_lib::ClaimWorkCard { card_id, ttl_ms },
+                                airc_work::ClaimOrigin::Automatic,
+                            )
                             .await;
                         // Follow the card to its room, same as work/claim (#328).
                         // Sequential dispatch mints a solve room per card, so the
@@ -2434,6 +2437,7 @@ impl ActionCommand for BenchmarkDispatch {
                                 rt.airc(),
                                 card_id,
                                 ttl_ms,
+                                airc_work::ClaimOrigin::Automatic,
                             )
                             .await
                             {

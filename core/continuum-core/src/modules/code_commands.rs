@@ -47,7 +47,7 @@ use crate::code::types::{
     SearchResult, TreeResult, WriteResult,
 };
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
-use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
 
 /// The persona/owner this tool call acts AS — the authenticated caller identity
 /// (an airc `peer_id`), never a params field. `None` caller is the
@@ -1381,7 +1381,7 @@ impl ActionCommand for CodeShell {
                 .map_err(CommandError::Internal)?;
             shell
                 .get_execution_state(&exec_id)
-                .ok_or_else(|| CommandError::Internal("execution vanished".into()))?
+                .map_err(CommandError::Internal)?
         };
 
         // BOUNDED inline wait: return the moment it completes, or hand back the
@@ -1426,7 +1426,7 @@ pub struct CodeShellPoll {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellPollParams {
-    /// The execution_id handle returned by `code/shell`.
+    /// Full execution_id or an unambiguous hex prefix within your shell session.
     pub execution_id: String,
 }
 
@@ -1453,7 +1453,7 @@ impl ActionCommand for CodeShellPoll {
             .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
         let state_arc = shell
             .get_execution_state(&p.execution_id)
-            .ok_or_else(|| CommandError::NotFound(format!("no execution {}", p.execution_id)))?;
+            .map_err(CommandError::Invalid)?;
         let s = state_arc
             .lock()
             .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
@@ -1470,7 +1470,7 @@ pub struct CodeShellKill {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellKillParams {
-    /// The execution_id handle returned by `code/shell`.
+    /// Full execution_id or an unambiguous hex prefix within your shell session.
     pub execution_id: String,
 }
 
@@ -1807,6 +1807,63 @@ impl ActionCommand for CodeCreateWorkspace {
     }
 }
 
+// ─────────────── the shell's own verdict (card f6c50a49) ────────────────
+
+/// Project a shell execution's OWN declared status into the executor's verdict.
+///
+/// No key scanning and no guessing: `ShellExecutionStatus` is already the typed
+/// terminal state the session computes at
+/// `shell_session.rs` (`status.success()` → `Completed`, else `Failed`), and
+/// `code/shell` documents itself as "always returns immediately with the
+/// execution handle". Reading that field is reading what the command declares.
+///
+/// `Running` is deliberately NOT collapsed into either terminal arm: a handed-back
+/// handle is an ACCEPTED command, not a completed one, and only a carrier that can
+/// say so can stop a receipt from claiming work that has not finished.
+fn shell_verdict(r: &ShellExecuteResponse) -> ToolVerdict {
+    match r.status {
+        ShellExecutionStatus::Running => ToolVerdict::Running,
+        ShellExecutionStatus::Completed => ToolVerdict::Succeeded,
+        // A nonzero exit, a timeout and a kill are all failures the model must
+        // SEE — the stderr that comes with them is the feedback it acts on.
+        ShellExecutionStatus::Failed
+        | ShellExecutionStatus::TimedOut
+        | ShellExecutionStatus::Killed => ToolVerdict::Failed,
+    }
+}
+
+/// The execution handle this response hands back, declared by the COMMAND.
+///
+/// The act seam used to recover this by re-parsing the result TEXT
+/// (`apply.rs`, pre-#4352) — which read the FOLDED preview, so a flood-sized
+/// result no longer parsed, and matched the command name by hand so a `bash`
+/// alias never reached the branch at all. Declared here, it is decoded once from
+/// the pre-fold value alongside the verdict.
+fn shell_handle(r: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+    uuid::Uuid::parse_str(&r.execution_id).ok()
+}
+
+impl crate::sdk_codegen::ProjectsOutcome for CodeShell {
+    fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
+        shell_verdict(output)
+    }
+    fn dispatch_handle(output: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+        shell_handle(output)
+    }
+}
+
+/// The poll half reads the SAME projection, so a `code/shell` handed back as
+/// `Running` and the `code/shell-poll` that later observes it terminal cannot
+/// disagree about what the same execution did.
+impl crate::sdk_codegen::ProjectsOutcome for CodeShellPoll {
+    fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
+        shell_verdict(output)
+    }
+    fn dispatch_handle(output: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+        shell_handle(output)
+    }
+}
+
 // ─────────────────── one registry: descriptors + objects ─────────────────
 
 // Static descriptors → the ONE `command_registry()` the persona surface + grid
@@ -1828,6 +1885,11 @@ crate::register_command!(CodeDiff);
 crate::register_command!(CodeUndo);
 crate::register_command!(CodeHistory);
 crate::register_command!(CodeCreateWorkspace);
+
+// Opt-in outcome projection: ONLY these two commands pay the `DeserializeOwned`
+// bound, and only they change how the executor flags their results.
+crate::register_outcome!(CodeShell);
+crate::register_outcome!(CodeShellPoll);
 
 /// The dep-holding command objects the [`CodeModule`](super::code::CodeModule)
 /// contributes to the kernel's typed object map (via `ServiceModule::commands`),

@@ -80,8 +80,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::cognition::tool_executor::{
-        NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolExecutor,
-        ToolOutcome,
+        CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext,
+        ToolExecutor, ToolOutcome,
     };
     use crate::cognition::workspace::{
         ActingBody, Contribution, Faculty, FacultyId, SalienceArbiter, Workspace,
@@ -121,6 +121,9 @@ mod tests {
                 results,
                 media: Vec::new(),
                 stored_ids: Vec::new(),
+                // Test doubles project nothing — the act seam must behave exactly
+                // as it does for a command that never opted in.
+                verdicts: Vec::new(),
             })
         }
 
@@ -535,6 +538,137 @@ mod tests {
             .expect("engram present")
             .content
             .contains('4'));
+    }
+
+    /// A hand whose result came back RUNNING, through an ALIAS, with a body that has
+    /// already been FOLDED to an unparseable preview — the three conditions the old
+    /// act seam failed on simultaneously.
+    struct FoldedRunningExecutor {
+        handle: Uuid,
+    }
+
+    #[async_trait]
+    impl ToolExecutor for FoldedRunningExecutor {
+        async fn execute_native_batch(
+            &self,
+            calls: &[ToolCall],
+            _context: &ToolExecutionContext,
+            _max_result_chars: usize,
+        ) -> Result<NativeBatchOutcome, ToolError> {
+            let results = calls
+                .iter()
+                .map(|c| crate::ai::types::ToolResult {
+                    tool_use_id: c.id.clone(),
+                    // What a FOLD actually leaves behind: a head-truncated preview of
+                    // the JSON. `serde_json::from_str::<ShellExecuteResponse>` on this
+                    // returns Err — which is precisely why the old re-parse could not
+                    // recover the handle from a flood-sized result.
+                    content: format!("{{\"execution_id\":\"{}\",\"status\":\"runni", self.handle),
+                    is_error: None,
+                    spill_handle: Some("spill-1".into()),
+                })
+                .collect();
+            Ok(NativeBatchOutcome {
+                results,
+                media: Vec::new(),
+                stored_ids: Vec::new(),
+                // The executor decoded the FULL value before folding and carries both
+                // facts forward. This is the handoff under test.
+                verdicts: calls
+                    .iter()
+                    .map(|c| CallVerdict {
+                        tool_use_id: c.id.clone(),
+                        verdict: crate::sdk_codegen::ActVerdict::Declared(
+                            crate::sdk_codegen::ToolVerdict::Running,
+                        ),
+                        dispatch_handle: Some(self.handle),
+                    })
+                    .collect(),
+            })
+        }
+
+        async fn parse_response(
+            &self,
+            _response_text: &str,
+            _model_family: Option<&str>,
+        ) -> Result<ParsedToolBatch, ToolError> {
+            unreachable!("native only")
+        }
+
+        async fn store_outcome(
+            &self,
+            _outcome: &ToolOutcome,
+            _context: &ToolExecutionContext,
+        ) -> Result<Uuid, ToolError> {
+            Ok(Uuid::nil())
+        }
+    }
+
+    // what this catches (Astra on #4352): the CHANGED HANDOFF, under the three
+    // conditions that broke the old one AT ONCE — the call arrives through the
+    // declared alias `bash`, the result is still RUNNING, and its body has already
+    // been folded to an unparseable preview.
+    //
+    // The old seam recovered the handle by `serde_json::from_str::<ShellExecuteResponse>`
+    // on `typed_result.content` behind `call.name.replace('_',"/") == "code/shell"`.
+    // Each half fails here independently: `bash` never matched the name test, and the
+    // folded preview does not parse. A batch-only test with a small body under an 8000
+    // char budget cannot reach either — the body must actually be folded and the name
+    // must actually be an alias, which is what this fixture forces.
+    #[tokio::test]
+    async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
+        let handle = Uuid::new_v4();
+        let exec = Arc::new(FoldedRunningExecutor { handle });
+        let the_body = body(exec.clone(), admission());
+        let wm = the_body.working_memory.clone();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(the_body);
+
+        let call = ToolCall {
+            id: "fold-1".into(),
+            // THE ALIAS, not the canonical name.
+            name: "bash".into(),
+            input: serde_json::json!({ "command": "cargo test --workspace" }),
+        };
+        let acts = match apply_act(
+            &cycle,
+            std::slice::from_ref(&call),
+            "building",
+            Uuid::new_v4(),
+            &ActChain::new(),
+        )
+        .await
+        {
+            ActOutcome::Acted { acts } => acts,
+            other => panic!("expected Acted, got {other:?}"),
+        };
+
+        // The verdict reached the act seam and survived as the command's own word.
+        assert_eq!(
+            acts[0].output.verdict,
+            crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Running),
+            "a running call must arrive at the seam as running, through an alias"
+        );
+
+        // AND THE HANDLE REGISTERED — the half that used to need a successful re-parse.
+        // Without it the completion event has no label to fold against and the finished
+        // build never lands in her working memory.
+        let label = wm.dispatched_label(handle).expect(
+            "the command-declared handle must register the dispatch even though the body was folded and the name was an alias", // JUSTIFIED: the assertion IS that this is Some
+        );
+        assert!(
+            label.contains("cargo test"),
+            "the dispatch is labelled from the call's own command: {label}"
+        );
+
+        // And the folded body proves the old path could NOT have done this.
+        assert!(
+            serde_json::from_str::<crate::code::shell_types::ShellExecuteResponse>(
+                &acts[0].output.result.content
+            )
+            .is_err(),
+            "the fixture's body must genuinely not parse, or this test proves nothing"
+        );
     }
 
     // what this catches: with no hands (no ActingBody on the cycle), the driver
@@ -1076,6 +1210,9 @@ mod tests {
                 results,
                 media: Vec::new(),
                 stored_ids: Vec::new(),
+                // Test doubles project nothing — the act seam must behave exactly
+                // as it does for a command that never opted in.
+                verdicts: Vec::new(),
             })
         }
         async fn parse_response(

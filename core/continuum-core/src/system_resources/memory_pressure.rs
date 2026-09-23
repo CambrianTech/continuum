@@ -1307,7 +1307,7 @@ mod tests {
             }
         }
         let mut hits = Vec::new();
-        scan(&crate::source_hygiene::crate_src_root(), &mut hits);
+        scan(&source_hygiene::crate_src_root(), &mut hits);
         assert!(
             hits.is_empty(),
             "`sysinfo::available_memory()` returns 0 on macOS — use \

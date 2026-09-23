@@ -37,16 +37,29 @@ pub(crate) const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
 const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// What one send carried, for the receipt a tripped wait leaves behind: the model the
+/// lane was asked for and the prompt it was asked to prefill (chars/4 —
+/// `serving_guard::approx_prompt_tokens`, the same estimate the overflow guard uses).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FillReceipt<'a> {
+    pub model: &'a str,
+    pub prompt_tokens: usize,
+}
+
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
 /// typed turn-facing failure, already probed. `body` owns one prepared encoding;
 /// transport retries share its allocation rather than serializing again.
 /// `turn_bound` is the request's own bound (`TextGenerationRequest::turn_bound`); the
-/// header wait is `max(PRE_STREAM_HEADER_TIMEOUT_SECS, turn_bound)`.
+/// header wait is `max(PRE_STREAM_HEADER_TIMEOUT_SECS, turn_bound)`. `fill` is what the
+/// turn sent, so a tripped header wait can be recorded as the prefill measurement it is
+/// (`prefill_rate::observe_bound`, card c30a4757) — the one seam that knows both the
+/// prompt and the wait.
 pub(crate) async fn send_with_lane_retry(
     cfg: &OpenAICompatibleConfig,
     request_builder: reqwest::RequestBuilder,
     body: Vec<u8>,
     turn_bound: Option<std::time::Duration>,
+    fill: FillReceipt<'_>,
 ) -> Result<reqwest::Response, InferenceError> {
     // The header wait in force for THIS turn: the floor, or the request's measured bound
     // above it. Computed once — the relaunch retries below re-arm the same wait.
@@ -92,6 +105,12 @@ pub(crate) async fn send_with_lane_retry(
                     header_source,
                     turn_bound,
                 );
+                // The trip IS a measurement: `prompt_tokens` sent, no headers inside
+                // `header_bound` — the lane prefilled at most that fast. Recorded so the
+                // next fill cap is derived from this failure, not from the last success
+                // (card c30a4757: 25 of 29 turns tripped on a stale rate that no trip
+                // could move).
+                crate::inference::prefill_rate::observe_bound(fill.model, fill.prompt_tokens, header_bound);
                 format!(
                     "{}: no response headers for {}s after POST ({} bound) — lane accepted the \
                      request and went silent (hung prefill / poisoned backend); \

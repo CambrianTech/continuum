@@ -585,9 +585,23 @@ async fn consume_review_credit<T: Transport>(
     {
         return Err(CreditBindingError::WrongSelection);
     }
-    let Some(mut params) = staged_submission_params(persona_id, persona_name, row, true) else {
-        result.state = ReviewedCreditState::IneligibleEvidence;
-        return Ok(result);
+    let mut params = match staged_submission_params(persona_id, persona_name, row, true) {
+        Ok(params) => params,
+        Err(reason) => {
+            // This path ALREADY named its state (`IneligibleEvidence`), so it was
+            // never silent the way the other caller was — but it could not say WHY.
+            // Now it can, from the same named reason.
+            crate::probe!(
+                class = "training.credit.reviewed_ineligible",
+                persona = %persona_name,
+                card = %row.card_id,
+                revision = %row.id,
+                reason,
+                "a reviewed credit's staged revision cannot be submitted — the state was already named, the reason now is too"
+            );
+            result.state = ReviewedCreditState::IneligibleEvidence;
+            return Ok(result);
+        }
     };
     reserve_transfer(conn, persona_name, row, Some(id)).await?;
     let decision = CreditReviewDecision {

@@ -131,6 +131,17 @@ pub struct ToolOutput {
     /// Files touched, from `call.input` — exact membership, immune to head-truncation.
     #[ts(type = "Array<string>")]
     pub paths: Vec<PathBuf>,
+    /// What the COMMAND said about its own outcome, decoded once by the executor
+    /// from the pre-fold value and carried here.
+    ///
+    /// This is why the struct exists: "PRECOMPUTED at the act seam so no consumer
+    /// re-derives from prose". `result.is_error` is a bool and cannot express
+    /// *running* or *undecodable*, so a receipt reading only that bool rendered a
+    /// success tick for a shell that had not finished and for a payload nobody
+    /// could read (card f6c50a49).
+    #[serde(default)]
+    #[ts(skip)]
+    pub verdict: crate::sdk_codegen::ActVerdict,
 }
 
 /// Per-call outcome. Flattens the FIVE return sites of the old `Option<String>`.
@@ -203,8 +214,12 @@ impl Observation {
         humanize_result_content(&self.output.result.content)
     }
 
-    fn is_err(&self) -> bool {
-        self.output.result.is_error == Some(true)
+    pub(crate) fn is_err(&self) -> bool {
+        // The command's own verdict wins where it exists; the transport bool is the
+        // fallback for every command that never opted in. Deliberately NOT true for
+        // `Running` (not finished is not failed) or `Undecodable` (unreadable is not
+        // failed) — those are said by `verdict`, not smuggled through this bool.
+        self.output.verdict.failed() || self.output.result.is_error == Some(true)
     }
 
     /// The RECENCY-channel rendering: the FULL trace working memory keeps so the
@@ -248,7 +263,16 @@ impl Observation {
             &self.call.name,
             &self.call.input,
             intent,
-            self.is_err(),
+            // The command's word where it gave one; the transport bool otherwise.
+            // This channel is re-injected on later turns, so a still-running act
+            // collapsed to "ok — …" here is the mind misremembering its own night.
+            if self.output.verdict == crate::sdk_codegen::ActVerdict::Unprojected
+                && self.output.result.is_error == Some(true)
+            {
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed)
+            } else {
+                self.output.verdict
+            },
             &self.body_text(),
         )
     }
@@ -363,5 +387,100 @@ mod tests {
 
         let none = serde_json::json!({ "query": "needle" });
         assert!(extract_paths(&none).is_empty());
+    }
+
+    /// THE CONSUMER SIDE of card f6c50a49 (Astra, #4352 review: "projector-only
+    /// tests cannot catch the current Running regression at the consumer").
+    /// These assert what the RECEIPT does with a verdict, not what the projector
+    /// produced — the two are different failures and only this one was visible in
+    /// the room.
+    mod verdict_reaches_the_receipt {
+        // The enclosing `tests` mod does not glob its parent, so name what we use.
+        use crate::ai::types::{ToolCall, ToolResult};
+        use super::super::{ActStatus, Observation, ToolOutput, ToolVerb};
+        use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+
+        fn obs(verdict: ActVerdict, is_error: Option<bool>, content: &str) -> Observation {
+            Observation {
+                call: ToolCall {
+                    id: "c1".into(),
+                    name: "code/shell".into(),
+                    input: serde_json::json!({ "command": "cargo test" }),
+                },
+                output: ToolOutput {
+                    result: ToolResult {
+                        tool_use_id: "c1".into(),
+                        content: content.into(),
+                        is_error,
+                        spill_handle: None,
+                    },
+                    verb: ToolVerb::classify("code/shell"),
+                    paths: Vec::new(),
+                    verdict,
+                },
+                status: ActStatus::Executed,
+            }
+        }
+
+        /// what this catches: the whole defect, at the consumer. A command that
+        /// reported its OWN failure as data left `is_error` None, so every receipt
+        /// reading that bool called it a success.
+        #[test]
+        fn a_declared_failure_reads_as_an_error_even_though_the_transport_was_fine() {
+            let o = obs(ActVerdict::Declared(ToolVerdict::Failed), None, "exit 1");
+            assert!(
+                o.is_err(),
+                "the command said it failed; the transport bool being None must not overrule it"
+            );
+        }
+
+        /// what this catches: Running being flattened into either terminal state.
+        /// Not-finished is not failed, and it is certainly not succeeded.
+        #[test]
+        fn a_running_act_is_neither_an_error_nor_a_success() {
+            let o = obs(ActVerdict::Declared(ToolVerdict::Running), None, "handle");
+            assert!(!o.is_err(), "accepted is not failed");
+            assert!(!o.output.verdict.succeeded(), "accepted is not finished");
+            assert!(o.output.verdict.running());
+            assert_eq!(o.output.verdict.label(), "running");
+        }
+
+        /// what this catches: schema drift rendering as either a tick or a cross.
+        /// An unreadable result is an absence of information and the receipt must
+        /// say exactly that.
+        #[test]
+        fn an_undecodable_result_claims_neither_outcome() {
+            let o = obs(ActVerdict::Undecodable, None, "{}");
+            assert!(!o.is_err());
+            assert!(!o.output.verdict.succeeded());
+            assert_eq!(o.output.verdict.label(), "undecodable");
+        }
+
+        /// what this catches: a command that never opted in changing behaviour.
+        /// Its receipt must be byte-for-byte what it was before this change — the
+        /// transport bool alone decides.
+        #[test]
+        fn an_unprojected_command_still_reads_its_transport_bool() {
+            assert!(!obs(ActVerdict::Unprojected, None, "ok").is_err());
+            assert!(
+                obs(ActVerdict::Unprojected, Some(true), "boom").is_err(),
+                "a transport failure must still read as an error with no projector"
+            );
+        }
+
+        /// what this catches: the fix eating the feedback it exists to surface.
+        /// The whole point of marking a failed `code/run` is that the model then
+        /// READS the compiler's stderr and self-corrects — if the content were
+        /// replaced or dropped by the outcome marker, the cross would be useless.
+        #[test]
+        fn marking_a_failure_does_not_touch_the_stderr_the_model_needs() {
+            let stderr = "error[E0425]: cannot find value `x` in this scope";
+            let o = obs(ActVerdict::Declared(ToolVerdict::Failed), None, stderr);
+            assert!(o.is_err());
+            assert_eq!(
+                o.output.result.content, stderr,
+                "the payload is untouched; only the outcome marker changed"
+            );
+        }
     }
 }

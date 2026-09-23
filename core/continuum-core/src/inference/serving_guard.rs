@@ -113,8 +113,17 @@ pub(crate) fn prompt_alone_overflows_served(body: &serde_json::Value, served_win
     if served_window == 0 {
         return None;
     }
-    let prompt_tokens = body
-        .get("messages")
+    let prompt_tokens = approx_prompt_tokens(body);
+    (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
+}
+
+/// The ONE chars/4 estimate of a chat body's prompt — the overflow guard above, the
+/// `serving.ctx_overshoot` alarm, and the tripped-bound prefill measurement
+/// (`prefill_rate::observe_bound`) all size the same prompt; they must size it the same
+/// way. Conservative on purpose: 4 chars/token over-counts English and under-counts
+/// nothing that matters here. Missing/odd bodies estimate 0 (a guard never invents work).
+pub(crate) fn approx_prompt_tokens(body: &serde_json::Value) -> usize {
+    body.get("messages")
         .and_then(|m| m.as_array())
         .map(|msgs| {
             msgs.iter()
@@ -122,8 +131,7 @@ pub(crate) fn prompt_alone_overflows_served(body: &serde_json::Value, served_win
                 .map(|c| c.len() / 4)
                 .sum::<usize>()
         })
-        .unwrap_or(0);
-    (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
+        .unwrap_or(0) // unwrap_or: no messages array = nothing to prefill; 0 is the honest estimate
 }
 
 /// The pre-flight guard as one call. `Ok(())` = the lane guarantees `model` (or this

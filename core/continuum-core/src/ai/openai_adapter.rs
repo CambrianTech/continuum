@@ -1541,22 +1541,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
-            let approx_tokens = body
-                .get("messages")
-                .and_then(|m| m.as_array())
-                .map(|msgs| {
-                    msgs.iter()
-                        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                        .map(|c| c.len() / 4)
-                        .sum::<usize>()
-                })
-                .unwrap_or(0) as u64; // unwrap_or: unknown size = 0 tokens, the price basis floor
-                                      // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
-                                      // this activity's slot and page its KV onto a now-free slot. The returned
-                                      // guard holds the permit + slot pin for the WHOLE generation (bound into
-                                      // `_admission` at function scope above). A Turn that cannot name both
-                                      // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
-                                      // takes the permit only and lands on the scratch slot below.
+            let approx_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body) as u64;
+            // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
+            // this activity's slot and page its KV onto a now-free slot. The returned
+            // guard holds the permit + slot pin for the WHOLE generation (bound into
+            // `_admission` at function scope above). A Turn that cannot name both
+            // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
+            // takes the permit only and lands on the scratch slot below.
             let turn_key = match class {
                 crate::inference::slots::SlotClass::Turn => request
                     .persona_id
@@ -1627,16 +1618,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // token estimate — an alarm that only fires when the overshoot
                 // is unambiguous.
                 if let Some(served) = served_ctx_by_root().get(self.endpoints().root()) {
-                    let approx_tokens = body
-                        .get("messages")
-                        .and_then(|m| m.as_array())
-                        .map(|msgs| {
-                            msgs.iter()
-                                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                                .map(|c| c.len() / 4)
-                                .sum::<usize>()
-                        })
-                        .unwrap_or(0);
+                    let approx_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body);
                     if approx_tokens > *served as usize {
                         // #3847: the total was measured but never ATTRIBUTED, so
                         // "the prompt is 6x the window" could not be turned into
@@ -1806,6 +1788,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             request_builder,
             body_bytes,
             request.turn_bound,
+            crate::inference::lane_send::FillReceipt {
+                model,
+                prompt_tokens: crate::inference::serving_guard::approx_prompt_tokens(&body),
+            },
         )
         .await?;
 
@@ -1838,11 +1824,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // `note_real_decode` (which streaming never stamped, leaving the citizens'
         // primary path invisible to the liveness record). It also ends any failure
         // streak. Gated on the local lane like the failure stamps above.
-        if local_lane
-            && (!acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty())
-        {
-            crate::inference::llama_server::note_real_decode();
-        }
+        let delivered_something =
+            !acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty();
 
         // harness/memory and stripped from `text` so it can NEVER reach the room.
         let raw_content = acc_content;
@@ -1856,6 +1839,68 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .unwrap_or(FinishReason::Stop);
         let generation_completed = finish_reason_str.is_some()
             && !matches!(finish_reason, FinishReason::Error);
+
+        match crate::inference::llama_server::classify_real_decode(
+            local_lane,
+            delivered_something,
+            finish_reason,
+        ) {
+            crate::inference::llama_server::RealDecodeOutcome::NotOurLane => {}
+            // The output cap ended it on a HEALTHY lane — the allowance owns this, not
+            // the backend. Surfaced so it is never silent, never charged to the lane.
+            crate::inference::llama_server::RealDecodeOutcome::CappedBeforeOutput => {
+                crate::probe!(
+                    class = "inference.lane.capped_before_output",
+                    model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
+                    response_time_ms,
+                    "the local lane hit its output cap having committed no answer — an \
+                     allowance fault on a working backend, NOT lane wedge evidence"
+                );
+            }
+            crate::inference::llama_server::RealDecodeOutcome::ProofOfLife => {
+                crate::inference::llama_server::note_real_decode();
+            }
+            crate::inference::llama_server::RealDecodeOutcome::DeliveredNothing => {
+                // A stream that reached EOF CLEANLY having delivered nothing is a FAILED
+                // real generation, not a quiet one — and it was the only wedge class the
+                // liveness record could not see. The failure stamps in `sse_stream` fire on
+                // transport death (read error, mid-stream silence, non-200); a latched Metal
+                // backend does none of that. It answers 200, streams a well-formed SSE body
+                // with zero deltas, and closes. Success was correctly withheld here (the
+                // guard above), but nothing recorded a FAILURE either — so `REAL_DECODE_FAILS`
+                // stayed at 0 and the heartbeat's wedge evidence, which outranks both the
+                // recent-decode trust window and a passing 1-token smoke probe, never fired.
+                //
+                // Measured on the M5 2026-09-22, one llama-server log: 145
+                // `kIOGPUCommandBufferCallbackErrorOutOfMemory` lines resolving to 2 root
+                // Metal OOMs, each latching the backend ("backend is in error state from a
+                // previous command buffer failure - recreate the backend to recover") which
+                // the server never acts on. 113 tasks were then launched and released with
+                // NO generation eval at all — prefill ran, generation never did. Downstream:
+                // 73 `delib.empty_completion` faults across six citizens (Rania, Freya,
+                // Mathis, Esme, Benchy, Cyrus), every one `reasoning_chars = 0`, each after
+                // 30–190s of waiting. The deliberation faculty correctly refuses to launder
+                // that as chosen silence, but the fault stayed PER-CITIZEN: six minds each
+                // retried into the same dead backend for hours because no one told the LANE.
+                //
+                // Empty is the lane's failure, so the lane records it. At
+                // `HEALTH_FAILS_TO_RELAUNCH` (2) consecutive, the heartbeat relaunches and
+                // the Metal backend is recreated — the recovery the server's own log asks
+                // for. Gated on `local_lane` like every other stamp, so a cloud provider's
+                // empty turn can never smear the local record.
+                // [[the-measurement-already-exists-and-nothing-consumes-it]]
+                crate::inference::llama_server::note_real_decode_failure();
+                crate::probe!(
+                    class = "inference.lane.delivered_nothing",
+                    model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
+                    response_time_ms,
+                    consecutive =
+                        crate::inference::llama_server::consecutive_real_decode_failures(),
+                    "the local lane streamed a clean EOF with no content, no reasoning and \
+                     no tool call — counted against the lane, not the citizen"
+                );
+            }
+        }
 
         // Assemble native tool calls from the streamed fragments.
         let mut tool_calls: Option<Vec<ToolCall>> = if acc_tools.is_empty() {
@@ -2631,6 +2676,7 @@ mod tests {
                     .header("Content-Type", "application/json"),
                 body.clone(),
                 None,
+                crate::inference::lane_send::FillReceipt { model: "fixture", prompt_tokens: 4 },
             ),
         )
         .await

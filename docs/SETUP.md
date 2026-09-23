@@ -1,5 +1,34 @@
 # Continuum — Setup
 
+## Native installation: one repeatable command
+
+Once the native `continuum` CLI is available, the user-facing entry point is:
+
+```sh
+continuum install
+```
+
+Use the same command for initial native setup, updates and repair. The installer
+owns detection and convergence of the OS supervisor, core artifact and CLI; users
+should not need to choose recovery flags, edit task definitions or remove executable
+files. Platform support must be reported explicitly rather than silently skipped.
+
+`continuum install --check` is a read-only diagnostic for maintainers. It is not a
+second required step in the normal user workflow. A successful install must verify
+the running revision and supervisor ownership, not merely that copying or task
+registration returned success. Required OS consent belongs in the installer flow.
+
+Interrupted handoffs must be retryable with `continuum install`: preserve persona
+identity and durable work, respect active training and serving ownership, report
+failed stops or locked artifacts accurately, and reuse a validated build when safe.
+These are acceptance requirements. In particular, the Windows interrupted-handoff
+repair is still being implemented; the command must not be described as a proven
+repair for that failure until the live handoff succeeds.
+
+The Docker/WSL instructions below describe the earlier installation path. They
+must not be mixed into recovery instructions for an existing native installation.
+
+
 > **Run forged Qwen3.5 personas on your machine.** Local inference, GPU-accelerated, multi-persona chat, **zero API keys**.
 >
 > **Mac (Metal):** ~50 tok/s solo, ~128 tok/s batched. **Nvidia (CUDA):** ~237 tok/s on RTX 5090. **Same forged model on every node.**

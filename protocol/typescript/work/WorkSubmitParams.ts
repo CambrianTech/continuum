@@ -7,7 +7,7 @@ export type WorkSubmitParams = {
  */
 room: string, 
 /**
- * The card you hold.
+ * Full UUID of the card you hold (from work/get).
  */
 card_id: string, 
 /**

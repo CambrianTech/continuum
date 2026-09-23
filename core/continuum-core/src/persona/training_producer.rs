@@ -1553,15 +1553,27 @@ fn staged_submission_params(
     persona_name: &str,
     row: &StagedCredit,
     passed: bool,
-) -> Option<serde_json::Value> {
+) -> Result<serde_json::Value, &'static str> {
+    // Every arm NAMES itself. This used to be one `Option`, and returning `None`
+    // was the ONLY exit on the settle path that left no trace anywhere — every
+    // other one emits a probe. A row could be skipped forever and the ledger would
+    // show a staged credit that simply never moved, with nothing to read (card
+    // f1771c83: 728 staged rows, 0 completed transfers).
     let eligible_role = match (passed, row.claim_id, row.owner, row.role) {
         (true, Some(_), Some(owner), Some(role)) if owner == persona_id => role,
-        _ => return None,
+        (false, ..) => return Err("card verdict was FAIL — staged credit is discarded, not submitted"),
+        (_, None, ..) => return Err("row carries no claim_id"),
+        (_, _, None, _) => return Err("row carries no owner"),
+        (_, _, Some(owner), _) if owner != persona_id => {
+            return Err("row's owner is a different persona")
+        }
+        _ => return Err("row carries no role"),
     };
     // The full receipts are authoritative, including records written before the
     // scalar served summary existed. Never borrow another row's model.
     let served = served_provenance(&row.receipts)
-        .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())?;
+        .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())
+        .ok_or("no served provenance (model+provider) in this row's receipts")?;
     let stamp = OutcomeStamp {
         card_id: row.card_id,
         role: eligible_role,
@@ -1572,7 +1584,8 @@ fn staged_submission_params(
         &row.prompt,
         &row.completion,
         Some(stamp),
-    )?;
+    )
+    .ok_or("no training plan could be built from this turn's prompt/completion")?;
     let mut params = build_submit_params(
         persona_id,
         persona_name,
@@ -1581,7 +1594,7 @@ fn staged_submission_params(
         "card-credit",
     );
     params["submissionId"] = json!(row.id);
-    Some(params)
+    Ok(params)
 }
 
 async fn settle_staged_row<T: Transport>(
@@ -1591,8 +1604,22 @@ async fn settle_staged_row<T: Transport>(
     row: &StagedCredit,
     passed: bool,
 ) -> Result<bool, ClientError> {
-    let Some(params) = staged_submission_params(persona_id, persona_name, row, passed) else {
-        return Ok(false);
+    let params = match staged_submission_params(persona_id, persona_name, row, passed) {
+        Ok(params) => params,
+        Err(reason) => {
+            // SAY IT. A staged credit that can never settle is a citizen's work
+            // that will never reach her curriculum, and the old silent `None`
+            // meant the only evidence was a row that sat still.
+            crate::probe!(
+                class = "training.credit.settle_ineligible",
+                persona = %persona_name,
+                card = %row.card_id,
+                revision = %row.id,
+                reason,
+                "a staged revision cannot be submitted for settlement — named so a stalled credit is readable instead of invisible"
+            );
+            return Ok(false);
+        }
     };
     match reviewed::reserve_transfer(conn, persona_name, row, None).await {
         Ok(()) => {}
@@ -1670,6 +1697,72 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Card f1771c83: the settle path's ONLY untraced exit.
+    ///
+    /// `staged_submission_params` returning `None` skipped a staged revision with no
+    /// probe anywhere — every other exit on that path names itself. A citizen's
+    /// credit could sit unsettled forever and the only evidence was a row that never
+    /// moved. These pin that each refusal now NAMES its reason.
+    mod a_skipped_credit_names_its_reason {
+        use super::*;
+
+        fn row(claim: Option<Uuid>, owner: Option<Uuid>, role: Option<CreditRole>) -> StagedCredit {
+            StagedCredit {
+                id: Uuid::new_v4(),
+                card_id: Uuid::new_v4(),
+                claim_id: claim,
+                owner,
+                role,
+                receipts: Vec::new(),
+                served: None,
+                prompt: "p".into(),
+                completion: "c".into(),
+                staged_at_ms: 1,
+            }
+        }
+
+        /// what this catches: the reasons collapsing back into one silent `None`.
+        /// Each arm must be distinguishable, because "this card failed" and "this
+        /// row has no provenance" are a normal discard and a defect respectively,
+        /// and a reader who cannot tell them apart learns nothing.
+        #[test]
+        fn each_refusal_is_distinguishable_from_the_others() {
+            let me = Uuid::new_v4();
+            let claim = Some(Uuid::new_v4());
+
+            let fail = staged_submission_params(me, "Kimi", &row(claim, Some(me), Some(CreditRole::Owner)), false)
+                .expect_err("a FAIL verdict submits nothing"); // JUSTIFIED: the test asserts the Err arm
+            assert!(fail.contains("FAIL"), "{fail}");
+
+            let no_claim = staged_submission_params(me, "Kimi", &row(None, Some(me), Some(CreditRole::Owner)), true)
+                .expect_err("no claim"); // JUSTIFIED: asserting the Err arm
+            assert!(no_claim.contains("claim_id"), "{no_claim}");
+
+            let foreign = staged_submission_params(me, "Kimi", &row(claim, Some(Uuid::new_v4()), Some(CreditRole::Owner)), true)
+                .expect_err("another persona's row"); // JUSTIFIED: asserting the Err arm
+            assert!(foreign.contains("owner"), "{foreign}");
+
+            // Distinct reasons, not one catch-all string.
+            assert_ne!(fail, no_claim);
+            assert_ne!(no_claim, foreign);
+        }
+
+        /// what this catches: the provenance gate going quiet again. A row with no
+        /// served model/provider in its receipts is the case that CANNOT be fixed by
+        /// retrying, so it is the one most worth naming out loud.
+        #[test]
+        fn a_row_with_no_served_provenance_says_so() {
+            let me = Uuid::new_v4();
+            let r = row(Some(Uuid::new_v4()), Some(me), Some(CreditRole::Owner));
+            let why = staged_submission_params(me, "Kimi", &r, true)
+                .expect_err("empty receipts carry no provenance"); // JUSTIFIED: asserting the Err arm
+            assert!(
+                why.contains("provenance"),
+                "the unfixable case must name itself: {why}"
+            );
+        }
+    }
 
     // what this catches (card 657e74de): the speech-discipline plan is exactly {burst →
     // PASS} in its OWN bucket at the curated floor — never the chat domain, never a
@@ -1782,6 +1875,7 @@ pub(crate) mod tests {
                 lane_id: None,
                 state: airc_work::CardState::Claimed,
                 owner,
+                claim_provenance: None,
                 claim_id: claim,
                 claim_expires_at_ms: None,
                 last_heartbeat_at_ms: None,
@@ -2958,6 +3052,8 @@ pub(crate) mod tests {
         };
         let claim = |card_id, claim_id, holder| {
             WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
+                selected_at_ms: None,
+                origin: airc_work::ClaimOrigin::Unknown,
                 card_id,
                 claim_id,
                 owner: holder,

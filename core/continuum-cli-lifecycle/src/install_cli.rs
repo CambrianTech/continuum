@@ -23,15 +23,15 @@ use std::path::{Path, PathBuf};
 /// The names a human types. On Windows both carry `.exe` so PowerShell and cmd
 /// resolve them, not only Git bash (the installer's bare `uu` copy resolves in bash
 /// alone). On Unix the second is a symlink to the first.
-pub(super) const CLI_NAMES: [&str; 2] = ["continuum", "uu"];
+pub const CLI_NAMES: [&str; 2] = ["continuum", "uu"];
 
 /// Where the CLI lives for a user: `~/.local/bin`, user-writable, conventionally on
 /// PATH, the same on every OS.
-pub(super) fn cli_dir(home: &Path) -> PathBuf {
+pub fn cli_dir(home: &Path) -> PathBuf {
     home.join(".local").join("bin")
 }
 
-pub(super) fn cli_file_name(name: &str) -> String {
+pub fn cli_file_name(name: &str) -> String {
     if cfg!(windows) {
         format!("{name}.exe")
     } else {
@@ -41,7 +41,7 @@ pub(super) fn cli_file_name(name: &str) -> String {
 
 /// One way the PATH copy differs from the slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum CliDrift {
+pub enum CliDrift {
     /// No `~/.local/bin/<name>` at all.
     Missing(String),
     /// The bytes differ from the slot's CLI: a stale copy.
@@ -50,7 +50,7 @@ pub(super) enum CliDrift {
     NotOnPath(PathBuf),
 }
 
-pub(super) fn digest_file(path: &Path) -> Result<String, String> {
+pub fn digest_file(path: &Path) -> Result<String, String> {
     use sha2::Digest;
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut h = sha2::Sha256::new();
@@ -60,7 +60,7 @@ pub(super) fn digest_file(path: &Path) -> Result<String, String> {
 
 /// The drift of the PATH copies from `slot_cli`. `user_path` is the user's PATH
 /// variable as stored (semicolon- or colon-separated per OS). Pure.
-pub(super) fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<CliDrift>, String> {
+pub fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<CliDrift>, String> {
     let want = digest_file(slot_cli)?;
     let mut out = Vec::new();
     for name in CLI_NAMES {
@@ -79,7 +79,7 @@ pub(super) fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<
 
 /// Does a PATH value name `dir`? Trailing separators and case (on Windows) are not a
 /// difference; `~` is not expanded because the stored user PATH never carries it.
-pub(super) fn path_contains(path_value: &str, dir: &Path) -> bool {
+pub fn path_contains(path_value: &str, dir: &Path) -> bool {
     let norm = |s: &str| {
         let t = s.trim().trim_end_matches(['\\', '/']).replace('/', "\\");
         if cfg!(windows) { t.to_ascii_lowercase() } else { t }
@@ -91,7 +91,7 @@ pub(super) fn path_contains(path_value: &str, dir: &Path) -> bool {
 /// Copy `from` over `to`, retrying for `budget` while another terminal holds the old
 /// file open (Windows: a running CLI's image is locked; the installer waits the same
 /// ten seconds rather than terminating a user's command).
-pub(super) fn copy_with_retry(from: &Path, to: &Path, budget: std::time::Duration) -> Result<(), String> {
+pub fn copy_with_retry(from: &Path, to: &Path, budget: std::time::Duration) -> Result<(), String> {
     let deadline = std::time::Instant::now() + budget;
     loop {
         // Move the live file aside first: a mapped image cannot be overwritten, but it

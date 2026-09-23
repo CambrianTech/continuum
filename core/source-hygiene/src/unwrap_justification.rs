@@ -67,7 +67,14 @@ const SHAPES: &[&str] = &[
 /// `orm/sqlite.rs` 33, `commands/agent/solve.rs` 32. (First measured at 2253; the
 /// correct code-vs-prose split then revealed 14 more that a doc-comment mention of
 /// `#[cfg(test)]` had been hiding — see `scan`.)
-const BASELINE_UNJUSTIFIED: usize = 2264;
+#[cfg(test)]
+const BASELINE_UNJUSTIFIED: usize = 2257;
+// 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
+// own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
+// keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).
+// THE HONEST GAP THIS OPENS: those seven now live in a crate `crate_src_root()` does
+// not audit, so the scanner is currently unscanned. Named here rather than left to be
+// discovered — auditing the auditor is a follow-up, not a silent omission.
 
 pub struct UnwrapJustification;
 
@@ -102,7 +109,7 @@ impl SourceRule for UnwrapJustification {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan;
+    use crate::scan;
 
     /// What this catches: a NEW unjustified unwrap landing anywhere in the crate.
     ///
