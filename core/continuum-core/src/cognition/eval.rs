@@ -2228,25 +2228,13 @@ impl CognitionEval {
         // its line number — never silently dropped. A vanished task would shrink the
         // gym and report a clean score over fewer tasks than intended: the same
         // invisible-degraded-mode as a fallback, which the resolver's fail-loud kills.
-        let parse_jsonl = |text: &str, origin: &str| -> Result<Vec<EvalTask>, CommandError> {
-            text.lines()
-                .enumerate()
-                .map(|(i, l)| (i + 1, l.trim()))
-                .filter(|(_, l)| !l.is_empty())
-                .map(|(n, l)| {
-                    serde_json::from_str::<EvalTask>(l).map_err(|e| {
-                        CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
-                    })
-                })
-                .collect()
-        };
         let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
             let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
             let (origin, text) =
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
-            parse_jsonl(&text, &origin)?
+            crate::cognition::gym::parse_tasks(&text, &origin).map_err(CommandError::Invalid)?
         };
         // Every code task grades hands. See `require_hands_for_code` — applied HERE, after both
         // load paths converge, so an inline task from a command payload obeys the same rule as a
