@@ -81,8 +81,7 @@ mod tests {
 
     use crate::cognition::tool_executor::{
         CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext,
-        ToolExecutor,
-        ToolOutcome,
+        ToolExecutor, ToolOutcome,
     };
     use crate::cognition::workspace::{
         ActingBody, Contribution, Faculty, FacultyId, SalienceArbiter, Workspace,
@@ -594,6 +593,14 @@ mod tests {
             _model_family: Option<&str>,
         ) -> Result<ParsedToolBatch, ToolError> {
             unreachable!("native only")
+        }
+
+        async fn store_outcome(
+            &self,
+            _outcome: &ToolOutcome,
+            _context: &ToolExecutionContext,
+        ) -> Result<Uuid, ToolError> {
+            Ok(Uuid::nil())
         }
     }
 
