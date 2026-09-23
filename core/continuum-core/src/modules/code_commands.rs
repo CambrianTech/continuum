@@ -47,7 +47,7 @@ use crate::code::types::{
     SearchResult, TreeResult, WriteResult,
 };
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
-use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
 
 /// The persona/owner this tool call acts AS — the authenticated caller identity
 /// (an airc `peer_id`), never a params field. `None` caller is the
@@ -1807,6 +1807,46 @@ impl ActionCommand for CodeCreateWorkspace {
     }
 }
 
+// ─────────────── the shell's own verdict (card f6c50a49) ────────────────
+
+/// Project a shell execution's OWN declared status into the executor's verdict.
+///
+/// No key scanning and no guessing: `ShellExecutionStatus` is already the typed
+/// terminal state the session computes at
+/// `shell_session.rs` (`status.success()` → `Completed`, else `Failed`), and
+/// `code/shell` documents itself as "always returns immediately with the
+/// execution handle". Reading that field is reading what the command declares.
+///
+/// `Running` is deliberately NOT collapsed into either terminal arm: a handed-back
+/// handle is an ACCEPTED command, not a completed one, and only a carrier that can
+/// say so can stop a receipt from claiming work that has not finished.
+fn shell_verdict(r: &ShellExecuteResponse) -> ToolVerdict {
+    match r.status {
+        ShellExecutionStatus::Running => ToolVerdict::Running,
+        ShellExecutionStatus::Completed => ToolVerdict::Succeeded,
+        // A nonzero exit, a timeout and a kill are all failures the model must
+        // SEE — the stderr that comes with them is the feedback it acts on.
+        ShellExecutionStatus::Failed
+        | ShellExecutionStatus::TimedOut
+        | ShellExecutionStatus::Killed => ToolVerdict::Failed,
+    }
+}
+
+impl crate::sdk_codegen::ProjectsOutcome for CodeShell {
+    fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
+        shell_verdict(output)
+    }
+}
+
+/// The poll half reads the SAME projection, so a `code/shell` handed back as
+/// `Running` and the `code/shell-poll` that later observes it terminal cannot
+/// disagree about what the same execution did.
+impl crate::sdk_codegen::ProjectsOutcome for CodeShellPoll {
+    fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
+        shell_verdict(output)
+    }
+}
+
 // ─────────────────── one registry: descriptors + objects ─────────────────
 
 // Static descriptors → the ONE `command_registry()` the persona surface + grid
@@ -1828,6 +1868,11 @@ crate::register_command!(CodeDiff);
 crate::register_command!(CodeUndo);
 crate::register_command!(CodeHistory);
 crate::register_command!(CodeCreateWorkspace);
+
+// Opt-in outcome projection: ONLY these two commands pay the `DeserializeOwned`
+// bound, and only they change how the executor flags their results.
+crate::register_outcome!(CodeShell);
+crate::register_outcome!(CodeShellPoll);
 
 /// The dep-holding command objects the [`CodeModule`](super::code::CodeModule)
 /// contributes to the kernel's typed object map (via `ServiceModule::commands`),

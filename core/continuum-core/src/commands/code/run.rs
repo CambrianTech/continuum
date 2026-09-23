@@ -441,7 +441,22 @@ async fn compile_and_run_rust(
         }),
     }
 }
+/// `code/run` reports its own truth in `CodeRunResult.ok` — "whether exit_code ==
+/// Some(0)". Projecting it means a compile failure reads as a FAILURE in the
+/// receipt while `stderr` still reaches the model verbatim: the traceback she needs
+/// to self-correct is untouched, only the outcome marker changes.
+impl crate::sdk_codegen::ProjectsOutcome for CodeRun {
+    fn outcome(output: &CodeRunResult) -> crate::sdk_codegen::ToolVerdict {
+        if output.ok {
+            crate::sdk_codegen::ToolVerdict::Succeeded
+        } else {
+            crate::sdk_codegen::ToolVerdict::Failed
+        }
+    }
+}
+
 crate::register_stateless_command!(CodeRun);
+crate::register_outcome!(CodeRun);
 
 #[cfg(test)]
 mod tests {

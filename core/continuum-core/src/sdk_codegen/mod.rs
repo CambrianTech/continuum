@@ -62,7 +62,10 @@ pub mod conformance;
 pub mod emit;
 pub mod events;
 pub mod handler;
-pub use command::{stateless_command_objects, ActionCommand, DynCommand, StatelessCommand};
+pub use command::{
+    outcome_projector, stateless_command_objects, ActionCommand, DynCommand, OutcomeProjector,
+    ProjectsOutcome, StatelessCommand, ToolVerdict,
+};
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
 pub use events::{event_registry, EventDescriptor, EventSpec};
@@ -556,6 +559,36 @@ inventory::collect!(CommandRegistration);
 /// register_command!(MyCommand);
 /// ```
 #[macro_export]
+/// Opt a command into TRUTHFUL tool receipts — one line at the command's own site.
+///
+/// The command must implement [`sdk_codegen::ProjectsOutcome`]. Without this
+/// submission a command's receipts behave exactly as before: the transport arm
+/// alone decides, and a failure returned as data still renders a tick.
+///
+/// ```ignore
+/// register_outcome!(CodeRun);
+/// ```
+#[macro_export]
+macro_rules! register_outcome {
+    ($cmd:ty) => {
+        inventory::submit! {
+            $crate::sdk_codegen::OutcomeProjector::new(
+                <$cmd as $crate::sdk_codegen::ActionCommand>::NAME,
+                |value| {
+                    // A result that does not decode as this command's own output is
+                    // an ABSENCE of information, never a failure claim — `None` keeps
+                    // the caller on today's behaviour rather than inventing a verdict.
+                    ::serde_json::from_value::<
+                        <$cmd as $crate::sdk_codegen::ActionCommand>::Output,
+                    >(value.clone())
+                    .ok()
+                    .map(|o| <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o))
+                },
+            )
+        }
+    };
+}
+
 macro_rules! register_command {
     ($cmd:ty) => {
         inventory::submit! {

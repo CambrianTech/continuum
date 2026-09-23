@@ -122,6 +122,92 @@ impl StatelessCommand {
 
 inventory::collect!(StatelessCommand);
 
+// ─────────────────────── the tool call's own outcome ───────────────────────
+//
+// A ✓ in a room receipt used to mean DISPATCHED, not SUCCEEDED. The executor set
+// `is_error: Some(true)` ONLY on the transport `Err` arm, so a handler that
+// returned failure AS DATA — `ok: false`, `status: Failed`, a stderr and an exit
+// code — took the `Ok` arm and rendered a tick. Measured 2026-09-22 (card
+// f6c50a49, filed 09-15 and then read past for a night): three agents each built
+// a hypothesis about why a citizen was not working, on receipts where every one
+// of her failures showed as a success.
+//
+// The fix is NOT key-scanning the JSON — no handler owes the executor a field
+// name — and NOT forcing failures onto `Err`, which would throw away the very
+// payload the model needs to recover (for `code/run` that payload IS the compiler
+// stderr). The command PROJECTS its own typed result into an outcome.
+//
+// Opt-in BY SUBMISSION, the same way `StatelessCommand` above opts in: the
+// descriptor's `of::<C: CommandSpec>()` is generic over the base trait and cannot
+// see that `C` also implements [`ProjectsOutcome`] (Rust has no specialization),
+// so participation is a second inventory entry rather than a type test. A command
+// that submits nothing keeps today's behaviour byte for byte.
+
+/// What a tool call actually did, as its OWN typed result reports it.
+///
+/// `Running` is not decoration: `code/shell` returns `ShellExecutionStatus::Running`
+/// immediately by design ("always returns immediately with the execution handle"),
+/// so every async shell call rendered a success tick for work that had not
+/// finished. Accepted is not completed, and a receipt must be able to say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolVerdict {
+    Succeeded,
+    Failed,
+    Running,
+}
+
+/// A command's opt-in projection from its own typed output to an [`ToolVerdict`].
+///
+/// The `DeserializeOwned` bound lands HERE rather than on [`ActionCommand::Output`],
+/// so only commands that opt in pay it — every other command's output keeps the
+/// `TS + Serialize + Send` it has today.
+pub trait ProjectsOutcome: ActionCommand
+where
+    Self::Output: serde::de::DeserializeOwned,
+{
+    /// Read this command's own typed result. No key scanning, no guessing: the
+    /// field being read is one the command already declares and documents.
+    fn outcome(output: &Self::Output) -> ToolVerdict;
+}
+
+/// One command's registered projector, keyed by the command name the executor
+/// already holds at dispatch.
+pub struct OutcomeProjector {
+    name: &'static str,
+    project: fn(&serde_json::Value) -> Option<ToolVerdict>,
+}
+
+impl OutcomeProjector {
+    /// Build a registration from a command name and a decode-then-project fn (what
+    /// [`crate::register_outcome!`] supplies).
+    pub const fn new(
+        name: &'static str,
+        project: fn(&serde_json::Value) -> Option<ToolVerdict>,
+    ) -> Self {
+        Self { name, project }
+    }
+    /// The command this projector speaks for.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+    /// Project a dispatched result. `None` when the value does not decode as this
+    /// command's output — an undecodable result is NOT a failure claim, it is an
+    /// absence of information, and the caller must keep today's behaviour.
+    pub fn project(&self, value: &serde_json::Value) -> Option<ToolVerdict> {
+        (self.project)(value)
+    }
+}
+
+inventory::collect!(OutcomeProjector);
+
+/// The projector for `name`, or `None` when that command has not opted in.
+pub fn outcome_projector(name: &str) -> Option<&'static OutcomeProjector> {
+    inventory::iter::<OutcomeProjector>
+        .into_iter()
+        .find(|p| p.name == name)
+}
+
+
 /// Every stateless command object, assembled from `register_stateless_command!`
 /// submissions across the crate — the kernel seeds its command map with these at
 /// startup (no module needed). Sorted by name for deterministic order.
@@ -362,5 +448,124 @@ mod tests {
             err.starts_with("test/echo-action: [invalid]"),
             "named + categorized: {err}"
         );
+    }
+
+    /// The ✓-on-failure defect (card f6c50a49). The executor set `is_error` only on
+    /// the transport `Err` arm, so a handler that returned its FAILURE AS DATA took
+    /// the `Ok` arm and rendered a success tick — `code/run` reporting `ok: false`
+    /// with the compiler's stderr, `code/shell` reporting `status: Running` before
+    /// the command had finished. These pin the projection that fixes it.
+    mod outcome_projection {
+        use crate::sdk_codegen::{outcome_projector, ToolVerdict};
+
+        /// what this catches: the projector silently doing NOTHING. It decodes the
+        /// value the executor actually holds — `execute_value` returns the handler's
+        /// typed `Output` verbatim (`CommandClient::execute` deserializes it straight
+        /// into `R`, no envelope), so a shape change that broke the decode would send
+        /// every verdict back to `None` and quietly restore the tick.
+        #[test]
+        fn a_failing_run_projects_failed_from_its_own_typed_output() {
+            let failed = crate::commands::code::run::CodeRunResult {
+                exit_code: Some(1),
+                ok: false,
+                stdout: String::new(),
+                stderr: "error[E0425]: cannot find value `x`".into(),
+                duration_ms: 12,
+                timed_out: false,
+                interpreter: "rustc".into(),
+            };
+            let value = serde_json::to_value(&failed).expect("serializes");
+            let p = outcome_projector("code/run").expect("code/run opted in");
+            assert_eq!(
+                p.project(&value),
+                Some(ToolVerdict::Failed),
+                "a nonzero exit must project Failed, not a tick"
+            );
+        }
+
+        /// what this catches: a run that DID succeed being flagged as an error — the
+        /// opposite regression, which would feed the model a false failure.
+        #[test]
+        fn a_clean_run_projects_succeeded() {
+            let ok = crate::commands::code::run::CodeRunResult {
+                exit_code: Some(0),
+                ok: true,
+                stdout: "hello".into(),
+                stderr: String::new(),
+                duration_ms: 3,
+                timed_out: false,
+                interpreter: "python3".into(),
+            };
+            let value = serde_json::to_value(&ok).expect("serializes");
+            let p = outcome_projector("code/run").expect("code/run opted in");
+            assert_eq!(p.project(&value), Some(ToolVerdict::Succeeded));
+        }
+
+        /// what this catches: the ACCEPTED-is-not-COMPLETED case collapsing into a
+        /// terminal verdict. `code/shell` documents itself as "always returns
+        /// immediately with the execution handle", so `Running` is the COMMON case,
+        /// not an edge one — mapping it to Succeeded would re-create the defect for
+        /// every async shell call.
+        #[test]
+        fn an_unfinished_shell_projects_running_not_succeeded() {
+            use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
+            let running = ShellExecuteResponse {
+                execution_id: "exec-1".into(),
+                status: ShellExecutionStatus::Running,
+                stdout: None,
+                stderr: None,
+                exit_code: None,
+            };
+            let value = serde_json::to_value(&running).expect("serializes");
+            let p = outcome_projector("code/shell").expect("code/shell opted in");
+            assert_eq!(p.project(&value), Some(ToolVerdict::Running));
+            assert_ne!(p.project(&value), Some(ToolVerdict::Succeeded));
+        }
+
+        /// what this catches: the poll half drifting from the execute half. They
+        /// share one `ShellExecuteResponse` and must share one reading of it, or a
+        /// single execution could be Failed on one seam and Succeeded on the other.
+        #[test]
+        fn shell_and_shell_poll_read_the_same_execution_the_same_way() {
+            use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
+            for (status, expected) in [
+                (ShellExecutionStatus::Running, ToolVerdict::Running),
+                (ShellExecutionStatus::Completed, ToolVerdict::Succeeded),
+                (ShellExecutionStatus::Failed, ToolVerdict::Failed),
+                (ShellExecutionStatus::TimedOut, ToolVerdict::Failed),
+                (ShellExecutionStatus::Killed, ToolVerdict::Failed),
+            ] {
+                let value = serde_json::to_value(ShellExecuteResponse {
+                    execution_id: "exec-1".into(),
+                    status: status.clone(),
+                    stdout: None,
+                    stderr: Some("boom".into()),
+                    exit_code: Some(2),
+                })
+                .expect("serializes");
+                let ex = outcome_projector("code/shell").expect("registered");
+                let poll = outcome_projector("code/shell-poll").expect("registered");
+                assert_eq!(ex.project(&value), Some(expected), "{status:?} on execute");
+                assert_eq!(poll.project(&value), Some(expected), "{status:?} on poll");
+            }
+        }
+
+        /// what this catches: a projector inventing a verdict from a payload it does
+        /// not understand. An undecodable value is an ABSENCE of information — the
+        /// caller must keep today's behaviour, never receive a manufactured failure.
+        #[test]
+        fn an_undecodable_payload_yields_no_verdict_rather_than_a_failure() {
+            let p = outcome_projector("code/run").expect("registered");
+            assert_eq!(p.project(&serde_json::json!({"unrelated": true})), None);
+        }
+
+        /// what this catches: the whole mechanism being dead for commands that never
+        /// opted in. They must project nothing at all, so their behaviour is byte-for
+        /// -byte what it was before this change.
+        #[test]
+        fn a_command_that_did_not_opt_in_has_no_projector() {
+            assert!(outcome_projector("code/read").is_none());
+            assert!(outcome_projector("definitely/not/a/command").is_none());
+        }
     }
 }

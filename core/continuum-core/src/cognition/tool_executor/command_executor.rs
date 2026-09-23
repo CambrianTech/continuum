@@ -48,7 +48,7 @@ use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
-use crate::sdk_codegen::{command_registry, AccessLevel};
+use crate::sdk_codegen::{command_registry, AccessLevel, ToolVerdict};
 use continuum_client::{ClientError, Connection};
 use std::sync::Arc;
 
@@ -535,10 +535,49 @@ impl ToolExecutor for CommandToolExecutor {
                         // evicted (collapse, never delete — 2026-08-24).
                         let (content, spill_handle) =
                             fold_with_recovery(full, max_result_chars, ctx.persona_id);
+                        // THE TOOL'S OWN VERDICT, when it has one. A dispatch that
+                        // completed is not a tool that SUCCEEDED: `code/run` returns
+                        // `ok: false` with the compiler's stderr, `code/shell` returns
+                        // `status: Running` before the command has finished — and both
+                        // used to render a tick, because `is_error` was set only on the
+                        // transport `Err` arm below (card f6c50a49).
+                        //
+                        // A command that has not opted in projects nothing and keeps
+                        // exactly its old behaviour. An undecodable value likewise: that
+                        // is an ABSENCE of information, never a failure claim.
+                        //
+                        // Resolve through the SAME `tool_dialect` seam the dispatch
+                        // above and `runtime::route_command` use. The name that
+                        // REACHED the command is not always the name on the wire: the
+                        // model may emit `code_run` (charset-legal) or `bash` (a
+                        // trained alias `code/shell` declares), and a projector keyed
+                        // on the canonical name would silently miss both — the exact
+                        // shape of the defect this is fixing.
+                        let canonical = crate::cognition::tool_dialect::resolve_wire_name(
+                            &calls[i].name,
+                        );
+                        let outcome = crate::sdk_codegen::outcome_projector(&canonical)
+                            .and_then(|p| p.project(&value));
                         NativeToolResult {
                             tool_use_id,
                             content,
-                            is_error: None,
+                            is_error: match outcome {
+                                // The fix: a handler that returned its failure as
+                                // DATA took this `Ok` arm and rendered a tick.
+                                Some(ToolVerdict::Failed) => Some(true),
+                                // NOT yet fixed, and deliberately explicit rather
+                                // than swept into a wildcard: `is_error` is a bool,
+                                // so an ACCEPTED-but-unfinished call still renders
+                                // exactly as it does today. Saying "running" needs a
+                                // carrier this struct does not have — 65 literals
+                                // construct it. That is the follow-up, not a freebie.
+                                Some(ToolVerdict::Running) => None,
+                                Some(ToolVerdict::Succeeded) => None,
+                                // No projector, or a payload that did not decode as
+                                // the command's own output: an ABSENCE of a verdict,
+                                // never a claim. Unchanged behaviour.
+                                None => None,
+                            },
                             spill_handle,
                         }
                     }
