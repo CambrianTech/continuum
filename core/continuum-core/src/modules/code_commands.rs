@@ -1832,9 +1832,23 @@ fn shell_verdict(r: &ShellExecuteResponse) -> ToolVerdict {
     }
 }
 
+/// The execution handle this response hands back, declared by the COMMAND.
+///
+/// The act seam used to recover this by re-parsing the result TEXT
+/// (`apply.rs`, pre-#4352) — which read the FOLDED preview, so a flood-sized
+/// result no longer parsed, and matched the command name by hand so a `bash`
+/// alias never reached the branch at all. Declared here, it is decoded once from
+/// the pre-fold value alongside the verdict.
+fn shell_handle(r: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+    uuid::Uuid::parse_str(&r.execution_id).ok()
+}
+
 impl crate::sdk_codegen::ProjectsOutcome for CodeShell {
     fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
         shell_verdict(output)
+    }
+    fn dispatch_handle(output: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+        shell_handle(output)
     }
 }
 
@@ -1844,6 +1858,9 @@ impl crate::sdk_codegen::ProjectsOutcome for CodeShell {
 impl crate::sdk_codegen::ProjectsOutcome for CodeShellPoll {
     fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
         shell_verdict(output)
+    }
+    fn dispatch_handle(output: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+        shell_handle(output)
     }
 }
 

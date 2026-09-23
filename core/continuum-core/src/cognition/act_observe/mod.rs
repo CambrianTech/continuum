@@ -121,6 +121,9 @@ mod tests {
                 results,
                 media: Vec::new(),
                 stored_ids: Vec::new(),
+                // Test doubles project nothing — the act seam must behave exactly
+                // as it does for a command that never opted in.
+                verdicts: Vec::new(),
             })
         }
 
@@ -1076,6 +1079,9 @@ mod tests {
                 results,
                 media: Vec::new(),
                 stored_ids: Vec::new(),
+                // Test doubles project nothing — the act seam must behave exactly
+                // as it does for a command that never opted in.
+                verdicts: Vec::new(),
             })
         }
         async fn parse_response(

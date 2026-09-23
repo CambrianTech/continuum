@@ -5811,6 +5811,7 @@ mod tests {
                             },
                             verb: ToolVerb::classify("code/run"),
                             paths: Vec::new(),
+                            verdict: Default::default(),
                         },
                         status: ActStatus::Executed,
                     }],

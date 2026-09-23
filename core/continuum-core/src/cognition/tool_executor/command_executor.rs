@@ -42,13 +42,13 @@ use uuid::Uuid;
 
 use super::spill;
 use super::types::{
-    NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
+    CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
-use crate::sdk_codegen::{command_registry, AccessLevel, ToolVerdict};
+use crate::sdk_codegen::{command_registry, AccessLevel, ActVerdict};
 use continuum_client::{ClientError, Connection};
 use std::sync::Arc;
 
@@ -509,12 +509,48 @@ impl ToolExecutor for CommandToolExecutor {
             }
         });
 
+        // Filled by the Ok arm below, correlated by tool_use_id (never position).
+        let mut verdicts: Vec<CallVerdict> = Vec::with_capacity(calls.len());
         let results = join_all(dispatches)
             .await
             .into_iter()
             .enumerate()
             .map(|(i, (tool_use_id, outcome))| match outcome {
                 Ok(value) => {
+                    // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
+                    // the FULL value. Ordering is the contract, not an accident: the
+                    // fold below can spill and truncate the rendered text, and the
+                    // old act seam re-parsed that truncated text to recover the same
+                    // facts (apply.rs, pre-#4352) — so a flood-sized result stopped
+                    // parsing and an aliased call (`bash`) never matched at all.
+                    //
+                    // The name is resolved through the SAME `tool_dialect` seam the
+                    // dispatch above and `runtime::route_command` use, so `bash` and
+                    // `code_run` reach their own command's projector.
+                    //
+                    // Three states, never two: a command that did not opt in projects
+                    // `Unprojected` and keeps its old behaviour byte for byte; a
+                    // command that DID opt in but whose own declared `Output` no
+                    // longer decodes projects `Undecodable` — schema drift, a defect,
+                    // and never silently a success (Astra, #4352 review).
+                    let canonical =
+                        crate::cognition::tool_dialect::resolve_wire_name(&calls[i].name);
+                    let (verdict, dispatch_handle) =
+                        crate::sdk_codegen::project_result(&canonical, &value);
+                    if verdict == ActVerdict::Undecodable {
+                        crate::probe!(
+                            class = "tool.call.outcome_undecodable",
+                            persona = %ctx.persona_name,
+                            command = %canonical,
+                            "a registered projector could not decode its own command's declared output — schema drift; the payload is preserved and NO outcome is claimed"
+                        );
+                    }
+                    verdicts.push(CallVerdict {
+                        tool_use_id: tool_use_id.clone(),
+                        verdict,
+                        dispatch_handle,
+                    });
+
                     let full = value.to_string(); // owned render once; both the canvas feed and the fold read it
                     // Canvas feed publishes from the PRE-FOLD content. It used to
                     // hook the post-fold observation in act_observe/apply, where a
@@ -535,61 +571,18 @@ impl ToolExecutor for CommandToolExecutor {
                         // evicted (collapse, never delete — 2026-08-24).
                         let (content, spill_handle) =
                             fold_with_recovery(full, max_result_chars, ctx.persona_id);
-                        // THE TOOL'S OWN VERDICT, when it has one. A dispatch that
-                        // completed is not a tool that SUCCEEDED: `code/run` returns
-                        // `ok: false` with the compiler's stderr, `code/shell` returns
-                        // `status: Running` before the command has finished — and both
-                        // used to render a tick, because `is_error` was set only on the
-                        // transport `Err` arm below (card f6c50a49).
-                        //
-                        // A command that has not opted in projects nothing and keeps
-                        // exactly its old behaviour. An undecodable value likewise: that
-                        // is an ABSENCE of information, never a failure claim.
-                        //
-                        // Resolve through the SAME `tool_dialect` seam the dispatch
-                        // above and `runtime::route_command` use. The name that
-                        // REACHED the command is not always the name on the wire: the
-                        // model may emit `code_run` (charset-legal) or `bash` (a
-                        // trained alias `code/shell` declares), and a projector keyed
-                        // on the canonical name would silently miss both — the exact
-                        // shape of the defect this is fixing.
-                        let canonical = crate::cognition::tool_dialect::resolve_wire_name(
-                            &calls[i].name,
-                        );
-                        let outcome = crate::sdk_codegen::outcome_projector(&canonical)
-                            .and_then(|p| p.project(&value));
                         NativeToolResult {
                             tool_use_id,
                             content,
-                            is_error: match outcome {
-                                // The fix: a handler that returned its failure as
-                                // DATA took this `Ok` arm and rendered a tick.
-                                Some(ToolVerdict::Failed) => Some(true),
-                                // NOT yet fixed, and deliberately explicit rather
-                                // than swept into a wildcard: `is_error` is a bool,
-                                // so an ACCEPTED-but-unfinished call still renders
-                                // exactly as it does today. Saying "running" needs a
-                                // carrier this struct does not have — 65 literals
-                                // construct it. That is the follow-up, not a freebie.
-                                Some(ToolVerdict::Running) => None,
-                                Some(ToolVerdict::Succeeded) => None,
-                                // No projector, or a payload that did not decode as
-                                // the command's own output: an ABSENCE of a verdict,
-                                // never a claim. Unchanged behaviour.
-                                None => None,
-                            },
+                            // The bool can only carry the one question it can answer.
+                            // `Running` and `Undecodable` are NOT failures and must not
+                            // be flattened into one here — they ride the typed
+                            // `CallVerdict` to the receipt, which can say them.
+                            is_error: verdict.failed().then_some(true),
                             spill_handle,
                         }
                     }
                 }
-                // A failed tool call is NOT a batch failure — it's fed back to the
-                // model as an error result so it can recover (retry, fix args,
-                // pick another tool). Batch-level `Err` is reserved for the
-                // executor/transport itself being unavailable. Take the substrate's
-                // OWN reason (e.g. "no Rust module handles command: …") and translate
-                // it into PERSONA-actionable feedback — naming the problem AND
-                // reinforcing `commands/help`/`commands/list` — so she recovers on a
-                // message in her own paradigm, not a developer-internal one.
                 Err(e) => {
                     let raw = match e {
                         ClientError::Refused { reason, .. } => reason,
@@ -598,6 +591,14 @@ impl ToolExecutor for CommandToolExecutor {
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
                     let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
+                    // A transport failure IS a failure, and the typed carrier must
+                    // say the same thing `is_error` does — a receipt that reads one
+                    // field and a glyph that reads the other must never disagree.
+                    verdicts.push(CallVerdict {
+                        tool_use_id: tool_use_id.clone(),
+                        verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
+                        dispatch_handle: None,
+                    });
                     NativeToolResult {
                         tool_use_id,
                         content: truncate_on_boundary(
@@ -615,6 +616,7 @@ impl ToolExecutor for CommandToolExecutor {
             results,
             media: Vec::new(),
             stored_ids: Vec::new(),
+            verdicts,
         })
     }
 

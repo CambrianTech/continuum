@@ -293,6 +293,7 @@ mod tests {
                 },
                 verb: ToolVerb::classify(name),
                 paths: extract_paths(&input),
+                verdict: Default::default(),
             },
             status: ActStatus::Executed,
         }

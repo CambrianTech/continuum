@@ -63,8 +63,8 @@ pub mod emit;
 pub mod events;
 pub mod handler;
 pub use command::{
-    outcome_projector, stateless_command_objects, ActionCommand, DynCommand, OutcomeProjector,
-    ProjectsOutcome, StatelessCommand, ToolVerdict,
+    outcome_projector, project_result, stateless_command_objects, ActVerdict, ActionCommand,
+    DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,
 };
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
@@ -585,14 +585,28 @@ macro_rules! register_outcome {
             $crate::sdk_codegen::OutcomeProjector::new(
                 <$cmd as $crate::sdk_codegen::ActionCommand>::NAME,
                 |value| {
-                    // A result that does not decode as this command's own output is
-                    // an ABSENCE of information, never a failure claim — `None` keeps
-                    // the caller on today's behaviour rather than inventing a verdict.
+                    // A registered projector that cannot decode its OWN declared
+                    // output is SCHEMA DRIFT, not an outcome. It must never collapse
+                    // into "no projector" (which renders success) — the payload is
+                    // preserved and the claim is withheld, loudly.
+                    match ::serde_json::from_value::<
+                        <$cmd as $crate::sdk_codegen::ActionCommand>::Output,
+                    >(value.clone())
+                    {
+                        Ok(o) => $crate::sdk_codegen::ActVerdict::Declared(
+                            <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o),
+                        ),
+                        Err(_) => $crate::sdk_codegen::ActVerdict::Undecodable,
+                    }
+                },
+                |value| {
                     ::serde_json::from_value::<
                         <$cmd as $crate::sdk_codegen::ActionCommand>::Output,
                     >(value.clone())
                     .ok()
-                    .map(|o| <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o))
+                    .and_then(|o| {
+                        <$cmd as $crate::sdk_codegen::ProjectsOutcome>::dispatch_handle(&o)
+                    })
                 },
             )
         }

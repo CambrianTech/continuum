@@ -70,6 +70,8 @@ fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec
                 },
                 verb: ToolVerb::classify(&c.name),
                 paths: extract_paths(&c.input),
+                // No tool ran, so no command spoke. Unprojected is the truth.
+                verdict: Default::default(),
             },
             status: status.clone(),
         })
@@ -448,34 +450,45 @@ pub async fn apply_act(
                 is_error: None,
                 spill_handle: None,
             });
+        // The COMMAND's own verdict, decoded once by the executor from the
+        // PRE-FOLD value and carried here by tool_use_id. Absent (a test double, or
+        // a command that never opted in) ⇒ `Unprojected`, which behaves exactly as
+        // this seam did before.
+        let projected = outcome
+            .verdicts
+            .iter()
+            .find(|v| v.tool_use_id == call.id);
+        let verdict = projected.map(|v| v.verdict).unwrap_or_default();
+
         // PUSHED SHELL COMPLETION, receive side (2026-08-24): a `code/shell` whose
         // inline window elapsed hands back a RUNNING handle. Register that handle as a
         // dispatch NOW so the exit fold's command:completed event (shell_session.rs)
         // has a label to fold against — dispatch_listener drops completions for
         // unregistered handles. Without this she must remember to poll; with it the
         // finished build lands in her working memory like any dispatched background job.
-        if call.name.replace('_', "/") == "code/shell" && typed_result.is_error != Some(true) {
-            if let Ok(resp) = serde_json::from_str::<crate::code::shell_types::ShellExecuteResponse>(
-                &typed_result.content,
-            ) {
-                if resp.status == crate::code::shell_types::ShellExecutionStatus::Running {
-                    if let Ok(handle) = uuid::Uuid::parse_str(&resp.execution_id) {
-                        let label: String = call
-                            .input
-                            .get("command")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("code/shell") // label only — the handle is the key
-                            .chars()
-                            .take(80)
-                            .collect();
-                        body.working_memory.record_dispatch_event(
-                            handle,
-                            &format!("code/shell: {label}"),
-                            "handle handed back — still running",
-                            crate::cognition::working_memory::DispatchStatus::Running,
-                        );
-                    }
-                }
+        //
+        // This used to re-parse `ShellExecuteResponse` out of `typed_result.content`
+        // and match `call.name` by hand. Both halves were broken: the name test was
+        // `replace('_', "/") == "code/shell"`, so a model calling the declared alias
+        // `bash` never reached it; and the content it parsed is the FOLDED preview,
+        // so a flood-sized result no longer decoded. The command now DECLARES its
+        // handle and the executor decodes it once from the full value.
+        if verdict.running() {
+            if let Some(handle) = projected.and_then(|v| v.dispatch_handle) {
+                let label: String = call
+                    .input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(call.name.as_str()) // label only — the handle is the key
+                    .chars()
+                    .take(80)
+                    .collect();
+                body.working_memory.record_dispatch_event(
+                    handle,
+                    &format!("{}: {label}", call.name),
+                    "handle handed back — still running",
+                    crate::cognition::working_memory::DispatchStatus::Running,
+                );
             }
         }
         let obs = Observation {
@@ -484,6 +497,7 @@ pub async fn apply_act(
                 result: typed_result,
                 verb: ToolVerb::classify(&call.name),
                 paths: extract_paths(&call.input),
+                verdict,
             },
             status: ActStatus::Executed,
         };
@@ -510,6 +524,13 @@ pub async fn apply_act(
                     },
                     verb: ToolVerb::classify(&call.name),
                     paths: extract_paths(&call.input),
+                    // A dispatched background call is RUNNING by construction —
+                    // that is what "dispatched" means. Saying so here is what stops
+                    // the receipt rendering a tick for work that has not started
+                    // producing anything yet.
+                    verdict: crate::sdk_codegen::ActVerdict::Declared(
+                        crate::sdk_codegen::ToolVerdict::Running,
+                    ),
                 },
                 status: ActStatus::Executed,
             });
@@ -564,7 +585,13 @@ pub async fn apply_act(
                 actor_name: body.persona_name.clone(),
                 tool: obs.call.name.clone(),
                 summary,
-                ok: obs.output.result.is_error != Some(true),
+                // `ok` keeps its existing meaning for the desktop that already
+                // consumes it: false ONLY for a real failure. A still-RUNNING act
+                // stays `ok: true` here rather than silently reading as a failure in
+                // a client this PR does not change — the truth it could not carry
+                // rides `state` beside it.
+                ok: !obs.is_err(),
+                state: obs.output.verdict.label().to_string(),
                 timestamp: now_ms,
             };
             match serde_json::to_value(&update) {
@@ -615,7 +642,17 @@ pub async fn apply_act(
                 crate::persona::presence_glyph::act_line(
                     &obs.call.name,
                     &object,
-                    obs.output.result.is_error != Some(true),
+                    // The command's own word where it gave one; the transport bool
+                    // only where it did not (an unprojected command is unchanged).
+                    if obs.output.verdict == crate::sdk_codegen::ActVerdict::Unprojected
+                        && obs.output.result.is_error == Some(true)
+                    {
+                        crate::sdk_codegen::ActVerdict::Declared(
+                            crate::sdk_codegen::ToolVerdict::Failed,
+                        )
+                    } else {
+                        obs.output.verdict
+                    },
                 )
             }));
         // The vitals ACT PULSE: executed acts are the thinking-right-now
