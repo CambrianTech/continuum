@@ -2815,8 +2815,8 @@ pub(crate) mod tests {
         let params = WorkSubmitParams {
             room: room.channel.as_uuid().to_string(),
             submission_id: Some(Uuid::new_v4()),
-            card_id: card.as_uuid(),
-            claim_id: Some(claim.as_uuid()),
+            card_id: card.as_uuid().to_string(),
+            claim_id: Some(claim.as_uuid().to_string()),
             instance: Some("generic-project-work".into()),
             base_sha: Some("a".repeat(40)),
             artifact: Some(WorkArtifactReference {
@@ -2907,8 +2907,11 @@ pub(crate) mod tests {
             &ctx,
             WorkSubmissionParams {
                 room: params.room,
-                card_id: card.as_uuid(),
-                submission_id: params.submission_id.expect("the fixture names its submission"),
+                card_id: card.as_uuid().to_string(),
+                submission_id: params
+                    .submission_id
+                    .expect("the fixture names its submission") // expect: the fixture above sets it
+                    .to_string(),
             },
         )
         .await
