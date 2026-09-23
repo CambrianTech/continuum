@@ -84,14 +84,14 @@ pub struct WorkSubmitParams {
     // omitted — the citizen's world has no verb that mints an artifact hash, and
     // before 2026-09-17 every submit she wrote by hand carried zeros and was refused
     // (56 on the M5 in one day; Kimi on the 5090 every turn for a night).
-    /// The card you hold — the handle the board shows you, or its full UUID.
+    /// The card you hold — board handle or full UUID.
     #[ts(type = "string")]
     pub card_id: String,
     /// Minted when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Your claim on the card, as the board shows it; read off the board when omitted.
+    /// Your claim — handle or UUID; read off the board when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub claim_id: Option<String>,
@@ -810,10 +810,10 @@ pub struct WorkSubmission {
 pub struct WorkSubmissionParams {
     /// Submission's activity room.
     pub room: String,
-    /// Parent work card in this room — the handle the board shows, or its full UUID.
+    /// Parent card — board handle or full UUID.
     #[ts(type = "string")]
     pub card_id: String,
-    /// The submission to read, as that card lists it — handle or full UUID.
+    /// The submission to read — handle or full UUID.
     #[ts(type = "string")]
     pub submission_id: String,
 }
@@ -975,7 +975,7 @@ mod tests {
 
     // what this catches (Astra, 2026-09-23): these two verbs typed their id params as
     // `Uuid`, so the 8-char handle the board SHOWS her was refused by serde — before the
-    // handler, before any message could name the problem. Kimi spent a lease on it. The
+    // handler, before any message could name the problem or the form it wanted. The
     // resolution must be the shared strict primitive against a SCOPED candidate set, so
     // that a handle expands, a collision is refused by name, and nothing is repaired.
     #[test]
