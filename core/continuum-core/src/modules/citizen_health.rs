@@ -1163,7 +1163,13 @@ impl ServiceModule for CitizenHealthModule {
                 };
                 let v = verdict(&h);
                 CommandResult::json(&serde_json::json!({
-                    "resident": h.resident, "lanes": h.lanes, "served_window": h.served_window,
+                    // BOTH NUMBERS, because the gap between them is the diagnosis and a
+                    // machine reader must not be left with the one the verdict did NOT use.
+                    // `lanes` stays the hour's PEAK (unchanged meaning for every existing
+                    // consumer); `lanes_sustained` is what the verdict and the rest divided by.
+                    "resident": h.resident, "lanes": h.lanes,
+                    "lanes_sustained": h.lanes_sustained, "lanes_now": h.lanes_now,
+                    "served_window": h.served_window,
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
                     "pulls": h.pulls, "pulls_deferred": h.pulls_deferred, "think_only": h.think_only,
