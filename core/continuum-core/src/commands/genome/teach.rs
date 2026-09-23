@@ -48,6 +48,7 @@ use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::gym_grader::test_grade;
 use crate::cognition::inference_session::resolve_model;
+use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
 use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT, PROVIDER_ID};
 use crate::modules::dataset::DatasetService;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
@@ -187,7 +188,8 @@ pub struct GenomeTeachResult {
     pub run_id: Option<String>,
     /// The dataset name written.
     pub dataset: String,
-    /// The teacher model used (resolved, so the trend row is attributable).
+    /// Resolved model requested for teaching. Actual served model/provider/request
+    /// identities are retained in each dataset row's teacherGenerations metadata.
     pub teacher_model: String,
     /// Absolute path to the dataset directory.
     pub dataset_dir: String,
@@ -434,12 +436,19 @@ fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
 /// the ShareGPT `{"messages":[{role,content},...]}` shape `dataset/*` + `mlx_lm.lora`
 /// consume. Order is preserved — that ordering IS the lesson (task → attempt →
 /// real error → correction → passing answer).
-fn build_sharegpt(messages: &[ChatMessage]) -> Value {
+fn build_sharegpt(messages: &[ChatMessage], receipts: &[GenerationReceipt]) -> Value {
     let msgs: Vec<Value> = messages
         .iter()
         .map(|m| json!({ "role": m.role, "content": message_text(m) }))
         .collect();
-    json!({ "messages": msgs })
+    // The existing dataset writer preserves row metadata. Receipts describe the
+    // actual teacher calls, not an inferred student outcome or training acceptance.
+    json!({ "messages": msgs, "metadata": { "teacherGenerations": receipts } })
+}
+
+struct TeacherGeneration {
+    text: String,
+    receipt: GenerationReceipt,
 }
 
 /// Generate only through the acquired eval-lane adapter. The eval owner may share
@@ -449,7 +458,8 @@ async fn teacher_generate(
     model: &str,
     messages: Vec<ChatMessage>,
     temperature: f32,
-) -> Result<String, CommandError> {
+) -> Result<TeacherGeneration, CommandError> {
+    let request_id = uuid::Uuid::new_v4().to_string();
     let request = TextGenerationRequest {
         messages,
         system_prompt: None,
@@ -468,7 +478,7 @@ async fn teacher_generate(
         tool_choice: None,
         response_format: None,
         active_adapters: None,
-        request_id: None,
+        request_id: Some(request_id.clone()),
         user_id: None,
         room_id: None,
         purpose: Some("genome/teach".to_string()),
@@ -480,7 +490,18 @@ async fn teacher_generate(
         .generate_text(request)
         .await
         .map_err(CommandError::Internal)?;
-    Ok(response.text)
+    let receipt = GenerationReceipt::from_response(request_id, &response);
+    if let GenerationOutcome::Faulted { detail, .. } = &receipt.outcome {
+        // An Ok transport response can still report failed generation. Its partial
+        // text must not reach grading or become an apparently valid example.
+        return Err(CommandError::Internal(format!(
+            "teacher generation faulted: {detail}"
+        )));
+    }
+    Ok(TeacherGeneration {
+        text: response.text,
+        receipt,
+    })
 }
 
 /// Preserve the serving-readiness prerequisite and the eval owner's lane policy.
@@ -584,6 +605,7 @@ async fn synthesize_remediation_with_lane(
             ChatMessage::text("user", &task.prompt),
         ];
 
+        let mut receipts = Vec::new();
         let mut attempts = 0u32;
         let mut last_error: Option<String> = None;
         let mut solved = false;
@@ -609,6 +631,8 @@ async fn synthesize_remediation_with_lane(
                     break;
                 }
             };
+            receipts.push(answer.receipt);
+            let answer = answer.text;
             attempts += 1;
             trajectory.push(ChatMessage::text("assistant", &answer));
 
@@ -633,7 +657,7 @@ async fn synthesize_remediation_with_lane(
             if attempts > 1 {
                 with_correction += 1;
             }
-            examples.push(build_sharegpt(&trajectory));
+            examples.push(build_sharegpt(&trajectory, &receipts));
         }
         outcomes.push(GenomeTeachTaskOutcome {
             id: task.id.clone(),
@@ -745,15 +769,16 @@ async fn synthesize_lived_expansion_with_lane(
                     continue;
                 }
             };
-        if answer.trim().is_empty() {
+        if answer.text.trim().is_empty() {
             continue; // never ship a blank lesson
         }
         // The bare {stimulus → answer} pair — the teacher's scaffold system turn is dropped.
         examples.push(json!({
             "messages": [
                 { "role": "user", "content": stimulus },
-                { "role": "assistant", "content": answer.trim() },
-            ]
+                { "role": "assistant", "content": answer.text.trim() },
+            ],
+            "metadata": { "teacherGenerations": [answer.receipt] }
         }));
     }
     Ok(examples)
@@ -1115,6 +1140,108 @@ mod tests {
         assert!(empty.is_empty());
     }
 
+    // what this catches: a selected model is not proof of who answered; a provider
+    // may return a different model/request id or an Ok envelope containing a fault.
+    // Only public text and canonical receipts cross into persisted dataset rows.
+    #[tokio::test]
+    async fn teacher_rows_preserve_actual_receipts_and_refuse_faulted_output() {
+        use crate::ai::adapter::AIProviderAdapter;
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        use crate::ai::types::{FinishReason, UsageMetrics};
+        use std::sync::{Arc, Mutex};
+
+        let response = TextGenerationResponse {
+            text: "public answer".into(),
+            finish_reason: FinishReason::Stop,
+            model: "actual-teacher".into(),
+            provider: "actual-provider".into(),
+            usage: UsageMetrics::default(),
+            response_time_ms: 1,
+            request_id: "provider-request".into(),
+            content: None,
+            tool_calls: None,
+            reasoning: Some("synthetic-private-reasoning-sentinel".into()),
+            routing: None,
+            error: None,
+            timing: None,
+        };
+        let mut fault = response.clone();
+        fault.finish_reason = FinishReason::Error;
+        let mut error_field = response.clone();
+        error_field.error = Some("provider failure".into());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(
+            HeuristicInferenceAdapter::new()
+                .with_responses(vec![response, fault, error_field])
+                .with_request_recorder(requests.clone()),
+        );
+        let generated = teacher_generate(
+            &adapter,
+            "requested-alias",
+            vec![ChatMessage::text("user", "public task")],
+            0.0,
+        )
+        .await
+        .expect("served response");
+        let submitted = requests.lock().unwrap()[0]
+            .request_id
+            .clone()
+            .expect("assigned at dispatch");
+        assert_eq!(generated.receipt.submitted_request_id, submitted);
+        assert_eq!(
+            generated.receipt.outcome,
+            GenerationOutcome::Served {
+                model: "actual-teacher".into(),
+                provider: "actual-provider".into(),
+                provider_request_id: Some("provider-request".into()),
+            }
+        );
+        let row = build_sharegpt(
+            &[
+                ChatMessage::text("user", "public task"),
+                ChatMessage::text("assistant", generated.text),
+            ],
+            &[generated.receipt],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        DatasetService::split_and_write("teacher", dir.path(), &[row.clone()], 1.0, None).unwrap();
+        let persisted = std::fs::read_to_string(dir.path().join("train.jsonl")).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(persisted.trim()).unwrap(),
+            row
+        );
+        assert!(!persisted.contains("synthetic-private-reasoning-sentinel"));
+        assert!(persisted.contains("actual-teacher"));
+        assert!(!persisted.contains("requested-alias"));
+        let loaded = crate::genome::fine_tuning::TrainingDataset::from_chat_jsonl(
+            &dir.path().join("train.jsonl"),
+            crate::genome::fine_tuning::TrainingSource::TeacherSynthesized,
+        )
+        .unwrap();
+        assert_eq!(loaded.examples[0].metadata.as_ref(), Some(&row["metadata"]));
+        assert_eq!(loaded.examples[0].completion, "public answer");
+        assert!(!serde_json::to_string(&loaded)
+            .unwrap()
+            .contains("synthetic-private-reasoning-sentinel"));
+        for _ in 0..2 {
+            let failed = teacher_generate(
+                &adapter,
+                "requested-alias",
+                vec![ChatMessage::text("user", "public task")],
+                0.0,
+            )
+            .await;
+            assert!(
+                matches!(failed, Err(CommandError::Internal(ref error)) if error.contains("teacher generation faulted")),
+                "a generation fault must never yield text for grading"
+            );
+        }
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_ne!(requests[0].request_id, requests[1].request_id);
+        assert_ne!(requests[1].request_id, requests[2].request_id);
+    }
+
     // what this catches: a validated trajectory flattens to the ShareGPT shape
     // mlx_lm.lora/dataset consume — role+content per turn, ORDER preserved (the
     // write→error→fix→pass ordering IS the lesson). Drift here silently corrupts
@@ -1128,7 +1255,7 @@ mod tests {
             ChatMessage::text("user", "Your solution failed: compile error"),
             ChatMessage::text("assistant", "```rust\nfn add(a:i32,b:i32)->i32{a+b}\n```"),
         ];
-        let v = build_sharegpt(&traj);
+        let v = build_sharegpt(&traj, &[]);
         let msgs = v["messages"].as_array().expect("messages array");
         assert_eq!(msgs.len(), 5);
         assert_eq!(msgs[0]["role"], "system");

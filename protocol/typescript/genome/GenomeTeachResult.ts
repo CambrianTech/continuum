@@ -17,7 +17,8 @@ runId?: string,
  */
 dataset: string, 
 /**
- * The teacher model used (resolved, so the trend row is attributable).
+ * Resolved model requested for teaching. Actual served model/provider/request
+ * identities are retained in each dataset row's teacherGenerations metadata.
  */
 teacherModel: string, 
 /**
