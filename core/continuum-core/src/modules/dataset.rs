@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use ts_rs::TS;
 
+mod candidate;
+pub use candidate::{CandidateReservation, DatasetCandidate};
+
 /// Manifest persisted alongside imported datasets.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(

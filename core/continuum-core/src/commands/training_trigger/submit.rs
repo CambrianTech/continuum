@@ -33,7 +33,7 @@ use crate::sdk_codegen::CommandError;
 /// bucket discriminator + optional per-bucket policy (threshold, LoRA, schedule,
 /// provider preference). All `Option` fields default; first-arrival pins the bucket's
 /// policy and later submits to the same bucket must agree (else `InconsistentBucket`).
-#[derive(Debug, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
