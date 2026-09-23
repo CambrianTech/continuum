@@ -104,12 +104,31 @@ pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String
             ))
         }
     };
+    resolve_prefix(&needle, candidates, label)
+}
+
+/// Resolve an execution handle without repairing malformed input. Unlike the
+/// legacy tolerant ID path, retain every prefix digit so callers can disambiguate
+/// collisions by supplying more characters. Candidates must come from the owner
+/// and caller scope; this function does not grant access to the resolved object.
+pub fn resolve_handle(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+    let s = s.trim();
+    if let Ok(id) = Uuid::parse_str(s) {
+        return Ok(id);
+    }
+    if !(MIN_PREFIX_HEX..32).contains(&s.len()) || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("'{s}' is not a usable {label} handle — give a full UUID or at least {MIN_PREFIX_HEX} leading hex characters"));
+    }
+    resolve_prefix(&s.to_ascii_lowercase(), candidates, label)
+}
+
+fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
     // Candidates are a SET: the same id folded from two boards (a card visible
     // from two subscribed rooms, 2026-09-05, #3722 review) is one card, never an
     // ambiguity between two.
     let mut matches: Vec<&Uuid> = candidates
         .iter()
-        .filter(|id| id.simple().to_string().starts_with(&needle))
+        .filter(|id| id.simple().to_string().starts_with(needle))
         .collect();
     matches.sort();
     matches.dedup();
@@ -140,6 +159,19 @@ pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: an eight-digit collision must be resolvable by giving
+    // more digits, and a cancellation handle must never repair malformed input.
+    #[test]
+    fn strict_handles_preserve_disambiguating_digits() {
+        let a = u("12345678-1000-4000-8000-000000000001");
+        let b = u("12345678-2000-4000-8000-000000000002");
+        assert!(resolve_handle("12345678", &[a, b], "execution").unwrap_err().contains("ambiguous"));
+        assert_eq!(resolve_handle("123456781", &[a, b], "execution"), Ok(a));
+        assert_eq!(resolve_handle(&a.to_string(), &[a, b], "execution"), Ok(a));
+        assert!(resolve_handle("12345678garbage", &[a], "execution").is_err());
+        assert!(resolve_handle("12345678", &[], "execution").is_err());
+    }
 
     fn u(s: &str) -> Uuid {
         Uuid::parse_str(s).unwrap()

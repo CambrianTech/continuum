@@ -8,7 +8,7 @@ export type WorkReviewParams = {
  */
 room: string, 
 /**
- * The review card you hold.
+ * Full UUID of your linked review card, not the task you authored.
  */
 review_card_id: string, 
 /**
