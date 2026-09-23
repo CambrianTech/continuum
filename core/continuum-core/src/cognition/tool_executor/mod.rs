@@ -39,8 +39,8 @@ mod load_harness;
 
 pub use command_executor::CommandToolExecutor;
 pub use types::{
-    MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite, ToolError,
-    ToolExecutionContext, ToolInvocation, ToolOutcome,
+    CallVerdict, MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,
+    ToolError, ToolExecutionContext, ToolInvocation, ToolOutcome,
 };
 
 use async_trait::async_trait;
