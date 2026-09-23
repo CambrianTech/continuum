@@ -23,8 +23,7 @@ claim_id?: string,
  */
 instance?: string, 
 /**
- * The commit your patch is against; omitted uses the recorded worktree creation
- * base (or benchmark dataset base). Legacy worktrees must supply it explicitly.
+ * Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
  */
 base_sha?: string, 
 /**

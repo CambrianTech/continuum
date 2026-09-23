@@ -99,8 +99,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// The commit your patch is against; omitted uses the recorded worktree creation
-    /// base (or benchmark dataset base). Legacy worktrees must supply it explicitly.
+    /// Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
