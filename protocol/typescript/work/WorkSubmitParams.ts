@@ -23,7 +23,7 @@ claim_id?: string,
  */
 instance?: string, 
 /**
- * The commit your patch is against; read from your checkout when omitted.
+ * Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
  */
 base_sha?: string, 
 /**
