@@ -46,6 +46,10 @@ use continuum_cli_lifecycle::windows_launch;
 use continuum_cli_lifecycle::supervisor_install;
 use continuum_cli_lifecycle::install_cli;
 
+// The macOS supervisor arm. Every call site is `cfg(target_os = "macos")`, so the
+// import carries the same gate rather than an allow — a blanket allow would also hide
+// the NEXT unused import in this block.
+#[cfg(target_os = "macos")]
 use continuum_cli_lifecycle::launchd;
 
 // The teardown DECISION lives in the leaf, where it runs on every machine in seconds.

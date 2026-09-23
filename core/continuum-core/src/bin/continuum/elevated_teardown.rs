@@ -13,8 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use continuum_cli_lifecycle::elevated_teardown::{
-    bind_plan_bytes, digest, elevation_outcome, target_is_our_core, teardown_sequence,
-    HeldCapability, TeardownPlan,
+    bind_plan_bytes, digest, elevation_outcome, teardown_sequence, HeldCapability, TeardownPlan,
 };
 
 pub(crate) fn receipt_path(plan: &Path) -> PathBuf {
