@@ -25,6 +25,7 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use crate::sdk_codegen::DynCommand;
 
 pub struct GenomeModule {
+    executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
     decisions: Arc<
         crate::runtime::LateBound<crate::orm::OrmStore<crate::genome::recall_impl::RecallDecision>>,
     >,
@@ -44,6 +45,7 @@ impl GenomeModule {
     pub fn new(registry: Arc<FineTuningRegistry>) -> Self {
         let coordinator = Arc::new(FineTuningCoordinator::new(Arc::clone(&registry)));
         Self {
+            executor: Arc::new(crate::runtime::LateBound::new("genome command executor")),
             decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
             registry,
             coordinator,
@@ -63,6 +65,7 @@ impl GenomeModule {
     ) -> Self {
         let coordinator = Arc::new(FineTuningCoordinator::new(Arc::clone(&registry)));
         Self {
+            executor: Arc::new(crate::runtime::LateBound::new("genome command executor")),
             decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
             registry,
             coordinator,
@@ -86,7 +89,7 @@ impl ServiceModule for GenomeModule {
         ModuleConfig {
             name: "genome",
             priority: ModulePriority::Normal,
-            command_prefixes: &["genome/job-", "genome/recall"],
+            command_prefixes: &["genome/job-", "genome/recall", "genome/teach"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -130,7 +133,14 @@ impl ServiceModule for GenomeModule {
                 decisions: Arc::clone(&self.decisions),
             },
         ));
+        commands.push(Arc::new(crate::commands::genome::teach::GenomeTeach {
+            executor: Arc::clone(&self.executor),
+        }));
         commands
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        self.executor.install(executor);
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
@@ -159,7 +169,8 @@ mod tests {
     #[test]
     fn exposes_training_and_recall_commands() {
         let names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 6);
+        assert!(names.contains(&"genome/teach"));
         assert!(names.contains(&"genome/recall"));
         assert!(names.contains(&"genome/recall/replay"));
         assert!(names.contains(&"genome/job-create"));

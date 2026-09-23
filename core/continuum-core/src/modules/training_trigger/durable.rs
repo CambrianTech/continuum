@@ -24,7 +24,7 @@ use crate::orm::{
 
 /// Present only after this destination has durably accepted the immutable batch.
 /// This does not attest that training ran, or deduplicate a different destination.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

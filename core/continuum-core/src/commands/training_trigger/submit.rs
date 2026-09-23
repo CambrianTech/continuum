@@ -83,7 +83,7 @@ pub struct SubmitParams {
 /// Outcome-as-data extends the legacy envelope with an acceptance receipt.
 /// Receipt presence proves destination ownership independently of dispatch success;
 /// expected domain/storage refusals retain their typed discriminator.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

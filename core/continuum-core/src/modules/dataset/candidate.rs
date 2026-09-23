@@ -52,6 +52,20 @@ struct ReadyManifest {
 }
 
 impl DatasetService {
+    /// Staging area for the existing dataset writer, owned by this reservation.
+    /// These export files are not the ready candidate; publication freezes the
+    /// converted typed request separately before any downstream submission.
+    pub(crate) fn candidate_dataset_directory(
+        &self,
+        reservation: &CandidateReservation,
+    ) -> Result<PathBuf, String> {
+        let directory = self.candidate_directory(reservation.id)?;
+        if directory != reservation.directory {
+            return Err("candidate belongs to a different dataset root".into());
+        }
+        Ok(directory.join("dataset"))
+    }
+
     /// Reserve an identity before synthesis. Already-existing identities,
     /// including incomplete ones, fail without changing their files.
     pub fn reserve_candidate(&self, id: Uuid) -> Result<CandidateReservation, String> {
