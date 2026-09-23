@@ -401,7 +401,7 @@ impl OpenAICompatibleAdapter {
     /// [`PROVIDER_ID`](crate::inference::llama_server::PROVIDER_ID) const — no
     /// name sniffing), and the address exists only when `/props` confirmed
     /// sight, so pixels can never be aimed at a text lane.
-    fn endpoints_for_model(&self, model: &str) -> OpenAiBase {
+    fn endpoints_for_model(&self, model: &str, base: &OpenAiBase) -> OpenAiBase {
         if self.config.provider_id == crate::inference::llama_server::PROVIDER_ID {
             let snap = crate::inference::llama_server::current_serving();
             if snap.vision_ready
@@ -413,7 +413,7 @@ impl OpenAICompatibleAdapter {
                 }
             }
         }
-        self.endpoints()
+        base.clone()
     }
 
     /// Fetch the live model list from the provider's /v1/models endpoint.
@@ -556,35 +556,6 @@ impl OpenAICompatibleAdapter {
     /// and NOT cached — a momentarily-dead server is not a server without LoRA
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
-    /// Stable slot for an ACTIVITY (a persona's conversation in a room — the
-    /// typed [`ActivityKey`](crate::inference::slots::ActivityKey)), discovering
-    /// the backend's slot count on first use (`GET /props` → `total_slots`).
-    /// The adapter owns only the TRANSPORT half (it has the HTTP client); the
-    /// lease itself lives in [`crate::inference::slots`] — the KV concern's
-    /// adapter over the ONE shared paging engine, per
-    /// [[one-paging-engine-many-trait-implementers]]. Returns `None` when the
-    /// backend has no props surface / one slot (latched unsupported) or on a
-    /// transport error (NOT latched — a momentarily-dead server is not a server
-    /// without slots; same discipline as the LoRA probe).
-    /// The reserved scratch slot for this server, if its pool is installed and
-    /// reserved one. Deliberately does NOT probe /props: scratch placement is a
-    /// best-effort courtesy for non-Turn traffic, and the first Turn request
-    /// installs the pool anyway — before that, non-Turn traffic simply runs
-    /// unpinned exactly as it always did.
-    fn scratch_slot_for_root(&self) -> Option<u32> {
-        let root = self.endpoints().root().to_string();
-        // Typed seam: the process-global SlotDirectory hands this adapter its
-        // server's KvSlotPool — the ONE paging-engine implementer for KV slots.
-        let dir: &crate::inference::slots::SlotDirectory = crate::inference::slots::directory();
-        match dir.get(&root) {
-            Some(Some(pool)) => {
-                let pool: std::sync::Arc<crate::inference::slots::KvSlotPool> = pool;
-                pool.scratch_slot()
-            }
-            _ => None,
-        }
-    }
-
     /// Ensure this server's KV slot pool exists — probe `/props` once, install via
     /// `ensure_pool` — and return it. DISCOVERY only: the lease + pin + KV paging live
     /// in [`crate::inference::turn_admission::admit_turn`], which takes this pool. (Was
@@ -592,18 +563,19 @@ impl OpenAICompatibleAdapter {
     /// lives in one place.)
     async fn ensure_slot_pool(
         &self,
+        endpoints: &OpenAiBase,
     ) -> Option<std::sync::Arc<crate::inference::slots::KvSlotPool>> {
-        let root = self.endpoints().root().to_string();
+        let root = endpoints.root();
         let dir = crate::inference::slots::directory();
         // Fast path: this server's state already known (process-global directory —
         // every adapter instance talking to the same server shares ONE assignment).
-        match dir.get(&root) {
+        match dir.get(root) {
             Some(Some(pool)) => return Some(pool),
             Some(None) => return None, // latched unsupported
             None => {}                 // never probed — probe below
         }
         // Probe /props once. Lock is NOT held across the await.
-        let url = self.endpoints().props();
+        let url = endpoints.props();
         let resp = match self.client.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
@@ -629,7 +601,7 @@ impl OpenAICompatibleAdapter {
                     status = status.as_u16() as u64,
                     "props endpoint absent — slot affinity latched OFF for this server",
                 );
-                dir.latch_unsupported(&root);
+                dir.latch_unsupported(root);
             } else {
                 crate::probe!(
                     class = "inference.slot_affinity.deferred",
@@ -661,7 +633,7 @@ impl OpenAICompatibleAdapter {
             .pointer("/default_generation_settings/n_ctx")
             .and_then(|v| v.as_u64())
         {
-            served_ctx_by_root().insert(root.clone(), n_ctx as u32);
+            served_ctx_by_root().insert(root.to_owned(), n_ctx as u32);
         }
         let n_slots = body
             .get("total_slots")
@@ -673,7 +645,7 @@ impl OpenAICompatibleAdapter {
         }
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
-        let pool = dir.ensure_pool(&root, n_slots);
+        let pool = dir.ensure_pool(root, n_slots);
         tracing::info!(
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
@@ -1383,6 +1355,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         let start = Instant::now();
+        let endpoints = self.endpoints();
         let request_id = request
             .request_id
             .clone()
@@ -1431,6 +1404,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             model,
             vision_native,
         );
+
+        // Message content is final here; later extensions only add transport fields.
+        // Carry this estimate through admission, overflow checks and send receipts.
+        let prompt_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body);
 
         // Held for the WHOLE turn: the concurrency permit + slot pin, as one RAII
         // guard bound HERE at function scope so it lives across the generation below
@@ -1541,7 +1518,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
-            let approx_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body) as u64;
+            let approx_tokens = prompt_tokens as u64;
             // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
             // this activity's slot and page its KV onto a now-free slot. The returned
             // guard holds the permit + slot pin for the WHOLE generation (bound into
@@ -1562,17 +1539,18 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r)),
                 _ => None,
             };
-            let root = self.endpoints().root().to_string();
+            let root = endpoints.root();
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool().await;
+            let pool = self.ensure_slot_pool(&endpoints).await;
+            let scratch = pool.as_ref().and_then(|pool| pool.scratch_slot());
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
                 turn_key,
                 pool,
                 &self.client,
-                &root,
+                root,
                 approx_tokens,
             )
             .await;
@@ -1582,7 +1560,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     // Non-Turn: the scratch slot when this server reserved one. When
                     // it did not (≤2 slots), stay unpinned AND drop cache_prompt so
                     // the call cannot PERSIST a stolen cache into a citizen slot.
-                    let scratch = self.scratch_slot_for_root();
                     if scratch.is_none() {
                         if let Some(obj) = body.as_object_mut() {
                             obj.insert("cache_prompt".to_string(), json!(false));
@@ -1617,8 +1594,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // into a diagnosis. Chars/4 is a deliberately conservative
                 // token estimate — an alarm that only fires when the overshoot
                 // is unambiguous.
-                if let Some(served) = served_ctx_by_root().get(self.endpoints().root()) {
-                    let approx_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body);
+                if let Some(served) = served_ctx_by_root().get(endpoints.root()) {
+                    let approx_tokens = prompt_tokens;
                     if approx_tokens > *served as usize {
                         // #3847: the total was measured but never ATTRIBUTED, so
                         // "the prompt is 6x the window" could not be turned into
@@ -1711,7 +1688,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // text-only mind) routes to the snapshot's verified `vision_base_url`.
         // Snapshot-driven: the daemon publishes the address only after `/props`
         // confirmed sight, so this can never aim pixels at a text lane.
-        let url = self.endpoints_for_model(&model).chat_completions();
+        let url = self
+            .endpoints_for_model(model, &endpoints)
+            .chat_completions();
 
         let mut request_builder = self
             .client
@@ -1756,14 +1735,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // large semaphore), held in `_admission` to the end of generation exactly like
         // the slot path. Acquire can't fail: the semaphore is never closed.
         if _admission.is_none() {
-            let root = self.endpoints().root().to_string();
+            let root = endpoints.root();
             _admission = Some(
                 crate::inference::turn_admission::admit_turn(
                     &self.concurrency,
                     None,
                     None,
                     &self.client,
-                    &root,
+                    root,
                     0,
                 )
                 .await,
@@ -1777,7 +1756,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             self.dedicated_lane,
             model,
-            &body,
+            prompt_tokens,
             request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;
@@ -1790,7 +1769,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             request.turn_bound,
             crate::inference::lane_send::FillReceipt {
                 model,
-                prompt_tokens: crate::inference::serving_guard::approx_prompt_tokens(&body),
+                prompt_tokens,
             },
         )
         .await?;
@@ -1837,8 +1816,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .as_deref()
             .map(|r| self.map_finish_reason(r))
             .unwrap_or(FinishReason::Stop);
-        let generation_completed = finish_reason_str.is_some()
-            && !matches!(finish_reason, FinishReason::Error);
+        let generation_completed =
+            finish_reason_str.is_some() && !matches!(finish_reason, FinishReason::Error);
 
         match crate::inference::llama_server::classify_real_decode(
             local_lane,
@@ -2033,7 +2012,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // The measured prefill rate feeds the render budget (`inference::prefill_rate`):
             // what a turn may cost before its first token is derived from what this lane
             // actually prefills at, not from the served window alone.
-            crate::inference::prefill_rate::observe(model, t.prefill_ms, t.prefill_tokens_per_second);
+            crate::inference::prefill_rate::observe(
+                model,
+                t.prefill_ms,
+                t.prefill_tokens_per_second,
+            );
         }
 
         // Plain EOF is accepted by the existing stream reader, but is not proof
@@ -2676,7 +2659,10 @@ mod tests {
                     .header("Content-Type", "application/json"),
                 body.clone(),
                 None,
-                crate::inference::lane_send::FillReceipt { model: "fixture", prompt_tokens: 4 },
+                crate::inference::lane_send::FillReceipt {
+                    model: "fixture",
+                    prompt_tokens: 4,
+                },
             ),
         )
         .await
