@@ -281,6 +281,117 @@ mod tests {
     use serde_json::Value;
     use uuid::Uuid;
 
+    // What this catches: received lessons replayed after loss of the source watermark
+    // must use destination durability, not append another copy with a fresh UUID.
+    #[tokio::test]
+    async fn received_lesson_identity_survives_restart_without_duplicate_examples() {
+        use crate::commands::training_trigger::test_support::build_runtime;
+        use crate::persona::domain_classifier::DomainClassifier;
+        use crate::persona::training_producer::received_submission_params;
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let (first, executor) = build_runtime(adapter.clone(), false).await;
+        let persona = Uuid::from_u128(71);
+        let classifier = DomainClassifier::new();
+        let record: crate::memory::MemoryRecord = serde_json::from_value(serde_json::json!({
+            "id": "lesson-71", "persona_id": persona.to_string(), "memory_type": "shared",
+            "content": "Rust compiler diagnostics identify the actual type error; verify the correction with cargo check.",
+            "context": { "scope": "rust code", "shared_by": "teacher-9", "original_author": "teacher-9" },
+            "timestamp": "2026-09-23T00:00:00Z", "importance": 0.6, "access_count": 0,
+            "tags": [], "related_to": [], "source": "shared:teacher-9"
+        })).expect("test: valid persisted shared lesson");
+        let request =
+            received_submission_params(persona, "recipient", "synthetic", &classifier, &record);
+        let first_receipt = executor
+            .execute_json("genome/training-trigger/submit", request.clone())
+            .await
+            .expect("test: trigger dispatch");
+        assert_eq!(first_receipt["outcome"], "BatchAppended", "{first_receipt}");
+        assert_eq!(
+            first_receipt["acceptance"]["submissionId"],
+            request["submissionId"]
+        );
+        drop(executor);
+        drop(first);
+        let (next, executor) = build_runtime(adapter, false).await;
+        // Rebuild the producer request, just as a fresh dream owner with no watermark does.
+        let replay =
+            received_submission_params(persona, "recipient", "synthetic", &classifier, &record);
+        let receipt = executor
+            .execute_json("genome/training-trigger/submit", replay.clone())
+            .await
+            .expect("test: replay dispatch");
+        assert_eq!(receipt["acceptance"]["replayed"], true, "{receipt}");
+        assert_eq!(
+            receipt["acceptance"]["submissionId"],
+            request["submissionId"]
+        );
+        let key = BucketKey {
+            persona_id: persona,
+            trait_kind: request["traitKind"]
+                .as_str()
+                .expect("test: producer trait")
+                .into(),
+            base_model: "synthetic".into(),
+        };
+        {
+            let batch = next
+                .state
+                .buckets
+                .get(&key)
+                .expect("test: replay hydrated bucket");
+            assert_eq!(batch.examples.len(), 1);
+            let metadata = batch.examples[0]
+                .metadata
+                .as_ref()
+                .expect("test: received provenance");
+            assert_eq!(metadata["memoryRecordId"], record.id);
+            assert_eq!(metadata["shared_by"], "teacher-9");
+            assert!(
+                metadata.get("cardId").is_none(),
+                "received knowledge cannot fabricate work credit"
+            );
+        }
+        let mut changed = record.clone();
+        changed
+            .content
+            .push_str(" The correction must also pass its focused regression.");
+        for conflicting in [
+            received_submission_params(persona, "recipient", "synthetic", &classifier, &changed),
+            received_submission_params(
+                persona,
+                "renamed-recipient",
+                "synthetic",
+                &classifier,
+                &record,
+            ),
+        ] {
+            assert_eq!(conflicting["submissionId"], request["submissionId"]);
+            let refused = executor
+                .execute_json("genome/training-trigger/submit", conflicting)
+                .await
+                .expect("test: conflicting replay dispatch");
+            assert_eq!(refused["errorKind"], "SubmissionConflict", "{refused}");
+            assert!(refused.get("acceptance").is_none());
+        }
+        assert_eq!(
+            next.state
+                .bucket_example_count(persona, &key.trait_kind, "synthetic"),
+            Some(1)
+        );
+        for distinct in [
+            received_submission_params(
+                Uuid::from_u128(72),
+                "recipient",
+                "synthetic",
+                &classifier,
+                &record,
+            ),
+            received_submission_params(persona, "recipient", "another-base", &classifier, &record),
+        ] {
+            assert_ne!(distinct["submissionId"], request["submissionId"]);
+        }
+    }
+
     // What this catches (278afa6c): a BatchAppended receipt must survive a new
     // owner/connection, preserve metadata/order, and dedupe exact retries only.
     #[tokio::test]
