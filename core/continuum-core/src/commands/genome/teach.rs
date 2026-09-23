@@ -26,11 +26,11 @@
 //! defaults to the locally-served model so this RUNS with no external dep; point
 //! `teacher_model` at a stronger peer/gateway model for higher yield.
 //!
-//! ## Non-disruptive
+//! ## Default dataset-only behavior
 //!
-//! This generates a dataset on disk. It does NOT touch the living `:58057` lane's
-//! served genome, fork a persona, or train anything — it produces the corpus a
-//! later `genome/job-create` / native `mlx_lm.lora` run consumes. Procedure is never
+//! By default this generates a dataset on disk. Explicit `training` opt-in
+//! persists a candidate before submitting through the existing training trigger;
+//! completed jobs follow its automatic evaluation/adoption policy. Procedure is never
 //! the artifact: the reflex is LEARNED from these trajectories, never hardcoded as a
 //! run-N-times loop in a class or prompt.
 //!
@@ -52,6 +52,9 @@ use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
 use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT, PROVIDER_ID};
 use crate::modules::dataset::DatasetService;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
+
+mod bridge;
+pub use bridge::{TeachTrainingAction, TeachTrainingResult};
 
 /// Default write→fix→pass task set (one `EvalTask` JSONL row each — needs `test`).
 /// Authoring a harder battery = add lines, no recompile.
@@ -87,6 +90,11 @@ const TEACHER_SYSTEM: &str = "You are an expert Rust engineer. Write correct, id
 )]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachParams {
+    /// Explicit training opt-in. Omit to write a dataset only. Completed training
+    /// follows the existing automatic evaluation/adoption policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub training: Option<TeachTrainingAction>,
     /// Inline tasks. When set, takes precedence over `teach_set`. Each task SHOULD
     /// carry a `test` — only test-validated trajectories become corpus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,6 +185,10 @@ pub struct GenomeTeachTaskOutcome {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachResult {
+    /// Candidate identity and destination acceptance/dispatch, never a learning claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub training: Option<TeachTrainingResult>,
     /// True = this is a fire-and-stream JOB HANDLE (#86), NOT a completed run: teach was
     /// spawned detached and its real result is in the run ledger (poll `genome/teach-status
     /// --run_id`), not in the fields below (which are defaulted on the ack).
@@ -784,10 +796,12 @@ async fn synthesize_lived_expansion_with_lane(
     Ok(examples)
 }
 
-/// Stateless — self-registers onto the ONE registry. Holds no module state; resolves
-/// inference + dataset packaging through their global/associated seams.
-#[derive(Default)]
-pub struct GenomeTeach;
+/// GenomeModule owns the executor needed by explicit training submission.
+/// Dataset-only teaching does not require that executor.
+#[derive(Clone)]
+pub struct GenomeTeach {
+    pub(crate) executor: std::sync::Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
+}
 
 #[async_trait]
 impl ActionCommand for GenomeTeach {
@@ -797,14 +811,15 @@ impl ActionCommand for GenomeTeach {
         "Generate a test-VALIDATED write→error→fix→pass training corpus that teaches the \
          self-verify-and-correct engineering reflex. A teacher model writes Rust, the gym grader \
          compiles+runs it, the REAL error feeds back, and it loops to green — only test-passing \
-         trajectories become multi-turn ShareGPT examples. Writes a dataset without changing \
-         the served genome. Feed the dataset to genome/job-create to forge the gene.";
+         trajectories become multi-turn ShareGPT examples. By default writes a dataset only. \
+         Explicit training prepares or resumes an immutable candidate and submits it through \
+         the existing training/evaluation/adoption pipeline.";
     type Params = GenomeTeachParams;
     type Output = GenomeTeachResult;
 
     async fn run(
         &self,
-        _ctx: &Ctx,
+        ctx: &Ctx,
         p: GenomeTeachParams,
     ) -> Result<GenomeTeachResult, CommandError> {
         // Fire-and-stream (#86): `detach` runs the many-minute corpus-gen IN THE CORE and
@@ -822,8 +837,10 @@ impl ActionCommand for GenomeTeach {
             inner.detach = Some(false);
             inner.run_id = Some(run_id.clone());
             let ledger_run = run_id.clone();
+            let command = self.clone();
+            let ctx = ctx.clone();
             tokio::spawn(async move {
-                let res = GenomeTeach::run_teach(inner).await;
+                let res = command.run_owned(&ctx, inner).await;
                 write_teach_ledger(&ledger_run, res.as_ref().map_err(|e| e.to_string()));
                 match res {
                     Ok(r) => tracing::info!(
@@ -841,104 +858,27 @@ impl ActionCommand for GenomeTeach {
                 ..Default::default()
             });
         }
-        GenomeTeach::run_teach(p).await
+        self.run_owned(ctx, p).await
     }
 }
 
 impl GenomeTeach {
-    /// The corpus-gen body — ctx-free so it runs inline OR from a detached `tokio::spawn`
-    /// (#86 fire-and-stream). Owns its params; reaches serving + dataset packaging via their
-    /// global seams, needing neither `self` nor `ctx`.
-    async fn run_teach(p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+    /// Shared corpus generation. Optional preparation owns the reserved output and
+    /// provenance; the default path only writes the requested dataset.
+    async fn run_teach(
+        p: GenomeTeachParams,
+        mut candidate: Option<bridge::Preparation>,
+    ) -> Result<GenomeTeachResult, CommandError> {
         // Bind this pass's run_id so the emit helpers write LIVE progress to its ledger
         // (cross-process, so `teach-status --run_id` and any widget see the bar advance).
         set_current_teach_run(p.run_id.clone());
-        // Task source: inline → from_experience (the #319 curriculum drain) →
-        // teach_set JSONL → committed default. A missing explicit path is a loud
-        // error (don't silently teach an empty set).
-        let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
-            inline
-        } else if let Some(solver) = p.from_experience.as_deref() {
-            // Her lived, objectively graded failures become her curriculum. Same
-            // citizen layout as the grader that wrote the stream (one resolver),
-            // latest-per-task dedup so a later PASS retires the failure, then the
-            // SAME salience selection every other experience consumer uses.
-            let home = crate::commands::benchmark::continuum_home()?;
-            let (solver_full, solver_dir) =
-                crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
-            let records = crate::cognition::experience::load_experiences(&solver_dir);
-            let latest = crate::cognition::experience::latest_per_task(&records);
-            let teach = crate::cognition::experience::salient_teach_set(
-                &latest,
-                &crate::cognition::experience::ErrorSalience,
-            );
-            // Salient failures the remediation teacher CANNOT consume: objectively
-            // graded but testless (a swe-grade carries no rust `EvalTask.test`), so
-            // `salient_teach_set` filters them out. They reach no learning organ today
-            // (card 6cdaf59f) — count them so an empty remediation drain is not mistaken
-            // for a clean citizen, and so the dead link is loud on the probe stream.
-            let unteachable_salient = {
-                use crate::cognition::experience::SalienceDetector;
-                let d = crate::cognition::experience::ErrorSalience;
-                latest
-                    .iter()
-                    .filter(|r| d.assess(r).is_some())
-                    .filter(|r| r.task.test.is_none())
-                    .count()
-            };
-            crate::probe!(
-                class = "genome.teach.from_experience",
-                solver = solver_full.as_str(),
-                stream_records = records.len() as u64,
-                after_dedup = latest.len() as u64,
-                teachable_failures = teach.len() as u64,
-                unteachable_salient = unteachable_salient as u64,
-                "curriculum drained from the citizen's lived experience stream (#319)",
-            );
-            if teach.is_empty() {
-                // Distinguish a genuinely-clean citizen from a SILENT DEAD LINK. If she
-                // has salient failures the remediation teacher can't consume (testless —
-                // swe-grades), zero teachable is NOT "healthy": her real coding failures
-                // are reaching no learning organ (card 6cdaf59f). Fail LOUD and name it,
-                // never the reassuring all-clear that hid this.
-                if unteachable_salient > 0 {
-                    return Err(CommandError::Invalid(format!(
-                        "{unteachable_salient} salient failure(s) in {solver_full}'s stream \
-                         that the remediation teacher CANNOT consume — objectively graded but \
-                         testless (e.g. swe-grade), so no learning organ reaches them today \
-                         (card 6cdaf59f). This is a DEAD LINK, not a healthy state: her real \
-                         coding failures are not becoming curriculum ({} records, {} after dedup)",
-                        records.len(),
-                        latest.len()
-                    )));
-                }
-                // An empty drain with no unteachable remainder is a genuinely CLEAN state
-                // (no salient failures pending), distinct from a misconfigured teach_set.
-                return Err(CommandError::Invalid(format!(
-                    "no salient failures pending in {solver_full}'s experience stream \
-                     ({} records, {} after latest-per-task dedup) — nothing to learn \
-                     right now, which is a healthy state, not a fault",
-                    records.len(),
-                    latest.len()
-                )));
-            }
-            teach
-        } else {
-            let path = p.teach_set.as_deref().unwrap_or(DEFAULT_TEACH_SET);
-            let text = std::fs::read_to_string(path).map_err(|e| {
-                CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
-            })?;
-            text.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
-                .collect()
-        };
-        if tasks.is_empty() {
-            return Err(CommandError::Invalid(
-                "no tasks to teach (inline `tasks` empty and/or teach_set had no valid rows)"
-                    .into(),
-            ));
+        let source_params = p.clone();
+        let tasks = tokio::task::spawn_blocking(move || select_teach_tasks(source_params))
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))??;
+
+        if let Some(preparation) = candidate.take() {
+            candidate = Some(preparation.bind_source(tasks.clone()).await?);
         }
 
         // Resolve the teacher: explicit → the locally-served model. Fail loud if
@@ -982,13 +922,26 @@ impl GenomeTeach {
                     .join("datasets")
             }
         };
-        let dataset_dir = root.join(&name);
-        let manifest =
-            DatasetService::split_and_write(&name, &dataset_dir, &examples, split_ratio, None)
-                .map_err(CommandError::Internal)?;
-
+        let dataset_dir = match candidate.as_ref() {
+            Some(preparation) => preparation.dataset_dir()?,
+            None => root.join(&name),
+        };
         let tasks_solved = examples.len();
-        Ok(GenomeTeachResult {
+        let manifest = if candidate.is_some() {
+            let name = name.clone();
+            let directory = dataset_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                DatasetService::split_and_write(&name, &directory, &examples, split_ratio, None)
+            })
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))?
+            .map_err(CommandError::Internal)?
+        } else {
+            DatasetService::split_and_write(&name, &dataset_dir, &examples, split_ratio, None)
+                .map_err(CommandError::Internal)?
+        };
+        let result = GenomeTeachResult {
+            training: None,
             detached: false,
             run_id: p.run_id.clone(),
             dataset: name,
@@ -1002,12 +955,111 @@ impl GenomeTeach {
             train_examples: manifest.train_examples,
             eval_examples: manifest.eval_examples,
             outcomes,
-        })
+        };
+        match candidate {
+            Some(preparation) => preparation.publish(result).await,
+            None => Ok(result),
+        }
     }
 }
 
-// Stateless → self-register onto the ONE registry (descriptor + runtime object).
-crate::register_stateless_command!(GenomeTeach);
+fn select_teach_tasks(p: GenomeTeachParams) -> Result<Vec<EvalTask>, CommandError> {
+    // Task source: inline → from_experience (the #319 curriculum drain) →
+    // teach_set JSONL → committed default. A missing explicit path is a loud
+    // error (don't silently teach an empty set).
+    let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
+        inline
+    } else if let Some(solver) = p.from_experience.as_deref() {
+        // Her lived, objectively graded failures become her curriculum. Same
+        // citizen layout as the grader that wrote the stream (one resolver),
+        // latest-per-task dedup so a later PASS retires the failure, then the
+        // SAME salience selection every other experience consumer uses.
+        let home = crate::commands::benchmark::continuum_home()?;
+        let (solver_full, solver_dir) =
+            crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
+        let records = crate::cognition::experience::load_experiences(&solver_dir);
+        let latest = crate::cognition::experience::latest_per_task(&records);
+        let teach = crate::cognition::experience::salient_teach_set(
+            &latest,
+            &crate::cognition::experience::ErrorSalience,
+        );
+        // Salient failures the remediation teacher CANNOT consume: objectively
+        // graded but testless (a swe-grade carries no rust `EvalTask.test`), so
+        // `salient_teach_set` filters them out. They reach no learning organ today
+        // (card 6cdaf59f) — count them so an empty remediation drain is not mistaken
+        // for a clean citizen, and so the dead link is loud on the probe stream.
+        let unteachable_salient = {
+            use crate::cognition::experience::SalienceDetector;
+            let d = crate::cognition::experience::ErrorSalience;
+            latest
+                .iter()
+                .filter(|r| d.assess(r).is_some())
+                .filter(|r| r.task.test.is_none())
+                .count()
+        };
+        crate::probe!(
+            class = "genome.teach.from_experience",
+            solver = solver_full.as_str(),
+            stream_records = records.len() as u64,
+            after_dedup = latest.len() as u64,
+            teachable_failures = teach.len() as u64,
+            unteachable_salient = unteachable_salient as u64,
+            "curriculum drained from the citizen's lived experience stream (#319)",
+        );
+        if teach.is_empty() {
+            // Distinguish a genuinely-clean citizen from a SILENT DEAD LINK. If she
+            // has salient failures the remediation teacher can't consume (testless —
+            // swe-grades), zero teachable is NOT "healthy": her real coding failures
+            // are reaching no learning organ (card 6cdaf59f). Fail LOUD and name it,
+            // never the reassuring all-clear that hid this.
+            if unteachable_salient > 0 {
+                return Err(CommandError::Invalid(format!(
+                    "{unteachable_salient} salient failure(s) in {solver_full}'s stream \
+                         that the remediation teacher CANNOT consume — objectively graded but \
+                         testless (e.g. swe-grade), so no learning organ reaches them today \
+                         (card 6cdaf59f). This is a DEAD LINK, not a healthy state: her real \
+                         coding failures are not becoming curriculum ({} records, {} after dedup)",
+                    records.len(),
+                    latest.len()
+                )));
+            }
+            // An empty drain with no unteachable remainder is a genuinely CLEAN state
+            // (no salient failures pending), distinct from a misconfigured teach_set.
+            return Err(CommandError::Invalid(format!(
+                "no salient failures pending in {solver_full}'s experience stream \
+                     ({} records, {} after latest-per-task dedup) — nothing to learn \
+                     right now, which is a healthy state, not a fault",
+                records.len(),
+                latest.len()
+            )));
+        }
+        teach
+    } else {
+        let path = p.teach_set.as_deref().unwrap_or(DEFAULT_TEACH_SET);
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
+        })?;
+        if p.training.is_some() {
+            crate::cognition::gym::parse_tasks(&text, path).map_err(CommandError::Invalid)?
+        } else {
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
+                .collect()
+        }
+    };
+    if tasks.is_empty() {
+        return Err(CommandError::Invalid(
+            "no tasks to teach (inline `tasks` empty and/or teach_set had no valid rows)".into(),
+        ));
+    }
+
+    Ok(tasks)
+}
+
+// Runtime object is owned by GenomeModule; register its command descriptor once.
+crate::register_command!(GenomeTeach);
 
 /// `genome/teach-status` — the poll half of a long corpus-gen run. `genome/teach` runs
 /// for many minutes (write→grade→fix over a whole task set); this returns the LIVE
