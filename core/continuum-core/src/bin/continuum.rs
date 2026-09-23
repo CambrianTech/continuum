@@ -48,6 +48,13 @@ use continuum_cli_lifecycle::install_cli;
 
 use continuum_cli_lifecycle::launchd;
 
+// The teardown DECISION lives in the leaf; this is the Windows half that spends the
+// capability. Gated at the declaration: every item inside needs `windows_sys`.
+#[cfg(windows)]
+#[path = "continuum/elevated_teardown.rs"]
+mod elevated_teardown;
+use continuum_cli_lifecycle::elevated_teardown::StopOptions;
+
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error("no core answering on {socket}; `{command}` requires a running core. Use `continuum start` explicitly, or wait for the current deploy to finish.")]

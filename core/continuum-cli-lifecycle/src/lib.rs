@@ -15,6 +15,10 @@
 //! the file — a module whose imports are OS-specific must not be exported on
 //! an OS that lacks them, or the crate fails to build for every consumer.
 
+/// The teardown DECISION — which process may be ended, in what order, and what a
+/// refusal means. Pure, so it runs on every machine rather than only the one that
+/// cannot link it.
+pub mod elevated_teardown;
 pub mod install_cli;
 pub mod launchd;
 pub mod owned_engines;
