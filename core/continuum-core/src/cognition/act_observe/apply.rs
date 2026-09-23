@@ -458,7 +458,7 @@ pub async fn apply_act(
             .verdicts
             .iter()
             .find(|v| v.tool_use_id == call.id);
-        let verdict = projected.map(|v| v.verdict).unwrap_or_default();
+        let verdict = projected.map(|v| v.verdict).unwrap_or_default(); // JUSTIFIED: no record for this call means the command never opted in (or a test double built the batch) — `Unprojected` IS the right answer there, never a failure
 
         // PUSHED SHELL COMPLETION, receive side (2026-08-24): a `code/shell` whose
         // inline window elapsed hands back a RUNNING handle. Register that handle as a
