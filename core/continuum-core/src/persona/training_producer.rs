@@ -2812,20 +2812,25 @@ pub(crate) mod tests {
             .await
             .pop()
             .unwrap();
-        let params = WorkSubmitParams {
-            room: room.channel.as_uuid().to_string(),
-            submission_id: Some(Uuid::new_v4()),
-            card_id: card.as_uuid(),
-            claim_id: Some(claim.as_uuid()),
-            instance: Some("generic-project-work".into()),
-            base_sha: Some("a".repeat(40)),
-            artifact: Some(WorkArtifactReference {
-                hash: "b".repeat(64),
-                size_bytes: 20,
-                mime: Some("text/x-diff".into()),
-            }),
-            staged_revision_id: Some(selected.id),
-        };
+        // THROUGH SERDE, CARRYING THE SHORT HANDLES THE BOARD PRINTS (Astra's review of
+        // #4357). The defect these verbs carried was a DESERIALIZATION refusal — a
+        // `Uuid`-typed `card_id` rejected `d61513e4` before any handler ran — so a test
+        // that builds the struct in Rust cannot see it at all. This fixture now arrives
+        // the way a citizen's call actually does: as JSON, in the 8-char form she was
+        // shown, and the assertions below prove the whole path end to end.
+        let short = |id: Uuid| id.simple().to_string().chars().take(8).collect::<String>();
+        let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "room": room.channel.as_uuid().to_string(),
+            "submission_id": Uuid::new_v4().to_string(),
+            "card_id": short(card.as_uuid()),
+            "claim_id": short(claim.as_uuid()),
+            "instance": "generic-project-work",
+            "base_sha": "a".repeat(40),
+            "artifact": { "hash": "b".repeat(64), "size_bytes": 20, "mime": "text/x-diff" },
+            "staged_revision_id": selected.id.to_string(),
+        }))
+        .expect("a citizen's call carries the handles her board printed"); // expect: the fixture's own json, asserted decodable
+        assert_eq!(params.card_id, short(card.as_uuid()), "the handle survives deserialization — it used to be refused here");
         let submit = WorkSubmit {
             registry: registry.clone(),
             executor_slot: slot.clone(),
@@ -2905,11 +2910,16 @@ pub(crate) mod tests {
         }
         .run(
             &ctx,
-            WorkSubmissionParams {
-                room: params.room,
-                card_id: card.as_uuid(),
-                submission_id: params.submission_id.expect("the fixture names its submission"),
-            },
+            // The readback takes handles too, and its submission handle resolves against
+            // THIS CARD's submissions — the card-scoped half of the same change.
+            serde_json::from_value(serde_json::json!({
+                "room": params.room,
+                "card_id": short(card.as_uuid()),
+                "submission_id": short(
+                    params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
+                ),
+            }))
+            .expect("the readback's handles decode"), // expect: the fixture's own json, asserted decodable
         )
         .await
         .unwrap();
