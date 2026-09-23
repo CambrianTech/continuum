@@ -44,12 +44,18 @@ pub struct TurnAdmission {
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, ActivityKey, u32)>,
+    _endpoint: crate::inference::slots::EndpointAdmission,
+    scratch: Option<u32>,
 }
 
 impl TurnAdmission {
     /// The leased slot this turn should pin `id_slot` to, if any.
     pub fn slot(&self) -> Option<u32> {
         self.slot
+    }
+
+    pub(crate) fn scratch_slot(&self) -> Option<u32> {
+        self.scratch
     }
 
     /// The adapter received a complete successful generation in this slot.
@@ -82,7 +88,7 @@ pub async fn admit_turn(
     client: &reqwest::Client,
     root: &str,
     approx_tokens: u64,
-) -> TurnAdmission {
+) -> Result<TurnAdmission, String> {
     // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
     //    semaphore is never closed over the adapter's lifetime.
     let _permit = concurrency
@@ -91,11 +97,20 @@ pub async fn admit_turn(
         .await
         .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
 
+    let endpoint = crate::inference::slots::directory()
+        .endpoint(root)
+        .admit()
+        .await?;
+    // Discovery may have finished before an engine transition. Use the pool
+    // owned by the admitted generation, never that stale discovery result.
+    let pool = endpoint.pool.clone().or(pool);
     let mut admission = TurnAdmission {
         slot: None,
         _pin: None,
         _permit,
         uncommitted: None,
+        scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
+        _endpoint: endpoint,
     };
 
     if let (Some(k), Some(pool)) = (key, pool.as_ref()) {
@@ -145,7 +160,7 @@ pub async fn admit_turn(
         admission.slot = Some(0);
     }
 
-    admission
+    Ok(admission)
 }
 
 /// The page switches this node has completed (ms), newest kept: what a save/restore
@@ -261,8 +276,17 @@ mod tests {
         let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).unwrap();  // test: non-nil ids
 
         // A is admitted: holds the permit and pins the one slot.
-        let adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, "test://admit", 100).await;
-        let slot_a = adm_a.slot().expect("A leased the slot");  // test: a 1-slot pool leases to the first admission
+        let adm_a = admit_turn(
+            &sem,
+            Some(a),
+            Some(pool.clone()),
+            &client,
+            "test://admit",
+            100,
+        )
+        .await
+        .expect("test: endpoint admitted");
+        let slot_a = adm_a.slot().expect("A leased the slot"); // test: a 1-slot pool leases to the first admission
 
         // B tries to lease while A is pinned — eviction must skip the pinned slot, so
         // B cannot take slot_a (the pool has no other slot to give).
@@ -281,7 +305,34 @@ mod tests {
             slot_a,
             "after the turn dropped, the slot must become leasable again"
         );
-        assert_eq!(after_cancel.save_first, None,
-            "an admission dropped without successful generation must not be saved as activity A");
+        assert_eq!(
+            after_cancel.save_first, None,
+            "an admission dropped without successful generation must not be saved as activity A"
+        );
+
+        // The endpoint lease is shared across adapter semaphores. A different
+        // adapter cannot enter while retirement drains this admitted turn.
+        let adm = admit_turn(&sem, Some(b), Some(pool), &client, "test://admit", 100)
+            .await
+            .expect("test: second turn");
+        let endpoint = crate::inference::slots::directory().endpoint("test://admit");
+        let transition = endpoint.transition();
+        tokio::pin!(transition);
+        assert!(futures::poll!(&mut transition).is_pending());
+        let other_adapter = Arc::new(Semaphore::new(1));
+        assert!(
+            admit_turn(&other_adapter, None, None, &client, "test://admit", 0)
+                .await
+                .is_err(),
+            "another adapter cannot bypass endpoint suspension"
+        );
+        drop(adm);
+        drop(transition.await);
+        assert!(
+            admit_turn(&other_adapter, None, None, &client, "test://admit", 0)
+                .await
+                .is_err(),
+            "failed transition remains closed"
+        );
     }
 }

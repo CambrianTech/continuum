@@ -1038,6 +1038,7 @@ struct PageDirState {
 
 struct RetiringPageOwner {
     child: tokio::process::Child,
+    generation: crate::inference::slots::EngineGeneration,
     // None means the registry carried the directory, but its current readability
     // and OS identity lookup are not proof that this owned child has exited.
     reserved_dir: Option<PathBuf>,
@@ -1065,6 +1066,7 @@ impl PageDirState {
             match poll(&mut self.retiring[index].child) {
                 Ok(Some(_)) => {
                     let owner = self.retiring.swap_remove(index);
+                    owner.generation.observed_exit();
                     if let Some(dir) = owner.reserved_dir {
                         if let Some(i) = self.reservations.iter().position(|d| d == &dir) {
                             self.reservations.swap_remove(i);
@@ -1078,11 +1080,15 @@ impl PageDirState {
 }
 
 fn retire_page_owner(
-    child: tokio::process::Child,
+    owned: OwnedEngine,
     reservation: Option<PageDirReservation>,
     signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()>,
 ) {
-    let mut child = child;
+    let OwnedEngine {
+        mut child,
+        generation,
+    } = owned;
+    generation.retiring();
     let mut guard = PAGE_DIR_GUARD.lock();
     if let Err(e) = signal(&mut child) {
         tracing::warn!(error = %e, "could not signal llama-server child; retaining page ownership until verified exit");
@@ -1092,6 +1098,7 @@ fn retire_page_owner(
     let reserved_dir = reservation.and_then(|mut reservation| reservation.0.take());
     guard.retiring.push(RetiringPageOwner {
         child,
+        generation,
         reserved_dir,
     });
     guard.collect_exited();
@@ -2731,6 +2738,11 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     }
 }
 
+struct OwnedEngine {
+    child: tokio::process::Child,
+    generation: crate::inference::slots::EngineGeneration,
+}
+
 /// Owns the supervised `llama-server` child. One per host. `serve` kills any
 /// prior child before launching the new model, so there is never more than one
 /// llama-server competing for the GPU. `Drop` kills the child — the core owning
@@ -2742,7 +2754,7 @@ pub struct LlamaServerProcess {
     client: reqwest::Client,
     /// The live child, if one is running. `std::sync::Mutex` (not tokio) because
     /// it is held only for the brief swap/kill, never across an await.
-    child: Arc<StdMutex<Option<tokio::process::Child>>>,
+    child: Arc<StdMutex<Option<OwnedEngine>>>,
     /// The LoRA genome set (sorted paths) the CURRENT child was launched with —
     /// the truthful record of what `/lora-adapters` holds, since llama.cpp has no
     /// API to query it. `ensure_model_serving` compares this against the desired
@@ -2936,11 +2948,14 @@ impl LlamaServerProcess {
     /// Lets [`wait_ready`] fail LOUD the instant a bring-up dies instead of polling
     /// a dead port for the whole budget.
     fn child_exit_status(&self) -> Option<std::process::ExitStatus> {
-        self.child
-            .lock()
-            .unwrap()
-            .as_mut()
-            .and_then(|c| c.try_wait().ok().flatten())
+        let mut child = self.child.lock().unwrap(); // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
+        child.as_mut().and_then(|owned| {
+            let status = owned.child.try_wait().ok().flatten();
+            if status.is_some() {
+                owned.generation.observed_exit();
+            }
+            status
+        })
     }
 
     /// The tail of this lane's stderr log (`llama-server-<port>.log`, the file the
@@ -3345,6 +3360,14 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
+        if !crate::inference::slots::directory()
+            .endpoint(&self.root)
+            .is_ready()
+        {
+            return Err(LlamaServerError::Unreachable(
+                "owned engine transition has not verified readiness".into(),
+            ));
+        }
         // `/v1/models` reports the id we launched with via `--alias`, so the
         // comparison in `ensure_model_serving` is exact. A connection error
         // means nothing is up (the normal pre-spawn state) → Unreachable.
@@ -3591,6 +3614,8 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn idle(&self) -> Result<(), LlamaServerError> {
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let _transition = endpoint.transition().await;
         let had_own_child = self.child.lock().unwrap().is_some(); // unwrap: poisoned = a prior panic mid-kill; same policy as kill_child's lock
         self.kill_child();
         let (_host, port) = split_host_port(&self.root);
@@ -3634,6 +3659,9 @@ impl LlamaServerControl for LlamaServerProcess {
 
         let (host, port) = split_host_port(&self.root);
 
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let transition = endpoint.transition().await;
+
         // One server at a time: kill the old child before binding the port.
         // Whether we already OWN a child decides if a stale-orphan reap is needed:
         // a relaunch (we own one) frees the port via `kill_child` and must NOT pay
@@ -3641,6 +3669,30 @@ impl LlamaServerControl for LlamaServerProcess {
         // predecessor's orphan may still hold the canonical port.
         let had_own_child = self.child.lock().unwrap().is_some();
         self.kill_child();
+
+        // A freed listener is not proof that the predecessor stopped decoding.
+        // Poll ONLY its retained owned Child; cancelled/failed transitions remain
+        // closed, and the next attempt waits on the same generation's receipt.
+        if let Some(previous) = transition.previous_generation() {
+            let wait = async {
+                let mut tick = tokio::time::interval(Duration::from_millis(100));
+                loop {
+                    tick.tick().await;
+                    PAGE_DIR_GUARD.lock().collect_exited();
+                    if previous.has_exited() {
+                        break;
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), wait)
+                .await
+                .map_err(|_| {
+                    LlamaServerError::Spawn(
+                        "predecessor child exit remains unverified; endpoint stays suspended"
+                            .into(),
+                    )
+                })?;
+        }
 
         // Fresh claim on the live lane: reap a crashed predecessor's orphaned
         // llama-server if its pidfile still names one holding our port, so the
@@ -4262,7 +4314,16 @@ match (child.stderr.take(), log_path) {
             }
         }
 
-        *self.child.lock().unwrap() = Some(child);
+        let generation = transition
+            .start_generation()
+            .map_err(LlamaServerError::Spawn)?;
+        {
+            let mut owned = self.child.lock().unwrap(); // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
+            *owned = Some(OwnedEngine {
+                child,
+                generation: generation.clone(),
+            });
+        }
         // A reservation the handoff could not release (record write failed) lives
         // as long as the child does — beside it, not in this frame.
         *self.retained_page_dir.lock() = page_dir_reservation
@@ -4438,6 +4499,41 @@ match (child.stderr.take(), log_path) {
         if !target.adapters.is_empty() {
             self.zero_adapter_scales().await;
         }
+        let context = self.served_context_window().await?;
+        let slots = self.served_lanes().await?;
+        if context == 0 || slots == 0 || self.child_exit_status().is_some() {
+            return Err(LlamaServerError::Spawn(
+                "engine readiness lacks live slot geometry".into(),
+            ));
+        }
+        // Cold lifecycle metadata for paths already resolved by this launcher.
+        // If any revision is unreadable (including a PATH-only engine name), do
+        // not carry saved eligibility across engines. Never probe to rediscover it.
+        let revisions = std::iter::once(gguf.clone())
+            .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
+            .chain(std::iter::once(PathBuf::from(&self.bin)))
+            .map(|path| {
+                let metadata = std::fs::metadata(&path).ok()?;
+                Some((path, metadata.len(), metadata.modified().ok()?))
+            })
+            .collect::<Option<Vec<_>>>();
+        transition
+            .ready(
+                &self.root,
+                &generation,
+                crate::inference::slots::KvPageContract {
+                    model_id: target.model.id.clone(),
+                    model: gguf,
+                    adapters: target.adapter_paths(),
+                    page_dir: page_dir_ready.then_some(slot_save_dir),
+                    context,
+                    slots,
+                    cache_type: kv_cache_type,
+                    engine: self.bin.clone(),
+                    revisions,
+                },
+            )
+            .map_err(LlamaServerError::Spawn)?;
         Ok(())
     }
 }
@@ -4588,7 +4684,16 @@ mod tests {
         let input = child.stdin.take().expect("child input held open");
         assert!(child.try_wait().expect("child status").is_none());
         let process = LlamaServerProcess::with_root("http://127.0.0.1:1".into());
-        *process.child.lock().expect("fixture child lock") = Some(child);
+        let endpoint = crate::inference::slots::directory().endpoint(&process.root);
+        let transition = endpoint.transition().await;
+        let generation = transition
+            .start_generation()
+            .expect("fixture engine generation");
+        *process.child.lock().expect("fixture child lock") = Some(OwnedEngine {
+            child,
+            generation: generation.clone(),
+        });
+        drop(transition);
         *process.retained_page_dir.lock() = Some(reservation);
         process.kill_child_with(|_| {
             Err(std::io::Error::new(
@@ -4605,6 +4710,10 @@ mod tests {
                 .iter()
                 .any(|owner| owner.child.id() == Some(pid)));
             assert!(guard.reservations.contains(&old));
+            assert!(
+                !generation.has_exited(),
+                "uncertain polling cannot acknowledge engine exit"
+            );
         }
         assert_eq!(
             sweep_stale_page_generations_guarded_in(&current, registry.path()),
@@ -4646,6 +4755,10 @@ mod tests {
             guard.retiring.push(owner);
             guard.collect_exited();
             assert!(!guard.reservations.contains(&old));
+            assert!(
+                generation.has_exited(),
+                "actual child exit supplies the generation receipt"
+            );
         }
         assert_eq!(
             sweep_stale_page_generations_guarded_in(&current, registry.path()),
