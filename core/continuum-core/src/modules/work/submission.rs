@@ -99,7 +99,8 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// The commit your patch is against; read from your checkout when omitted.
+    /// The commit your patch is against; omitted uses the recorded worktree creation
+    /// base (or benchmark dataset base). Legacy worktrees must supply it explicitly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
@@ -207,23 +208,9 @@ fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) -> Option<Str
         .or_else(|| Some(card_id.to_string()))
 }
 
-fn git_stdout(checkout: &std::path::Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(checkout)
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// The commit her patch stands on. A benchmark checkout: the instance's base commit
-/// from the dataset row. A repo worktree: the merge-base with the remote's default
-/// branch (`origin/HEAD`), else the upstream's. Absent = a named refusal, never HEAD
-/// (a diff against HEAD would hide her own commits — the sympy-12481 lesson in
-/// `workspace_candidate_diff_from`).
+/// Use the benchmark dataset base or the immutable repo-worktree creation anchor.
+/// Legacy worktrees require an explicit base; remote refs and HEAD do not prove
+/// where this work began and can include unrelated integration history.
 async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
     if is_swe {
         return crate::commands::benchmark::swe_base_commit_for(instance)
@@ -234,14 +221,7 @@ async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -
                 ))
             });
     }
-    for upstream in ["origin/HEAD", "@{upstream}"] {
-        if let Some(base) = git_stdout(checkout, &["merge-base", "HEAD", upstream]) {
-            return Ok(base);
-        }
-    }
-    Err(CommandError::Invalid(
-        "the worktree has no default-branch merge-base to diff against — pass base_sha".into(),
-    ))
+    airc_lib::work_worktree::creation_base(checkout).map_err(CommandError::Invalid)
 }
 
 /// Read the submission off her checkout: instance, base, and the patch's hash + size.
@@ -1054,9 +1034,11 @@ mod tests {
         let run = |args: &[&str]| {
             std::process::Command::new("git").args(args).current_dir(dir.path()).output().expect("git")
         };
-        run(&["init", "-q"]);
-        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
-        let err = base_sha_of(dir.path(), "card", false).await.expect_err("no remote, no upstream");
+        assert!(run(&["init", "-q"]).status.success());
+        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]).status.success());
+        // A remote default branch is not proof of a legacy worktree's creation base.
+        assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
+        let err = base_sha_of(dir.path(), "card", false).await.expect_err("no recorded creation base");
         assert!(err.to_string().contains("pass base_sha"), "{err}");
         // Regression for Kimi's result5734: submitting an owned staged checkout
         // requires no temporary acting root (including after focus loss/restart).
@@ -1073,6 +1055,14 @@ mod tests {
         assert!(derived.artifact.size_bytes > 0);
         assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
         let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
+        // Regression for Kimi's oversized submissions: advancing the remote default
+        // must neither swallow committed work nor change the stored creation base.
+        assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());
+        assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
+        let recorded = super::derive_submission(dir.path(), card, None, None).await.expect("recorded base includes committed work");
+        assert_eq!(recorded.base_sha, base);
+        assert_eq!(recorded.artifact.hash, derived.artifact.hash);
+        assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
         let empty = super::derive_submission(dir.path(), card, None, Some(clean_base)).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
     }
