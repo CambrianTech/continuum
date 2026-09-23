@@ -6,7 +6,7 @@ use std::sync::Arc;
 use continuum_client::{Connection, Transport};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use ts_rs::TS;
 use uuid::Uuid;
 
