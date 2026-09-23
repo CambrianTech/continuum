@@ -96,6 +96,12 @@ struct Ledger {
     /// one the queueing minds met, not the one the node touched once. Read by
     /// [`lanes_sustained_of`]; `lanes_max` is unchanged and still the peak.
     lane_samples: [AtomicU64; LANE_HIST_LEN],
+    /// WHEN the first and last of those samples were taken. A COUNT is not COVERAGE
+    /// (Astra's review of #4356): sixteen residents pulling through one brief relaunch
+    /// produce two dozen samples inside half a minute, all reading the launch's one lane.
+    /// The span is what separates that burst from an hour.
+    lane_first_sample_ms: AtomicU64,
+    lane_last_sample_ms: AtomicU64,
 }
 
 static LEDGER: Ledger = Ledger {
@@ -117,6 +123,8 @@ static LEDGER: Ledger = Ledger {
     moves_opportunity: AtomicU64::new(0),
     moves_failure: AtomicU64::new(0),
     lane_samples: [const { AtomicU64::new(0) }; LANE_HIST_LEN],
+    lane_first_sample_ms: AtomicU64::new(0),
+    lane_last_sample_ms: AtomicU64::new(0),
 };
 /// A turn ended inside the reasoning channel with no answer and no act (the
 /// `persona.act.think_only` seam) — the allowance did not hold her think.
@@ -157,12 +165,35 @@ const LANE_HIST_LEN: usize = 33;
 /// The hours that motivated this carried 232, 477 and 708 pulls.
 pub const LANE_SUSTAINED_MIN_SAMPLES: u64 = 24;
 
+/// AND the samples must SPAN at least this much of the window before they can actuate a
+/// rest or a wake. A count floor alone does not survive Astra's review of #4356: pulls are
+/// not spread through the hour, they arrive when the roster is polling, so sixteen
+/// residents queueing through one 30-second relaunch clear a 24-sample floor without the
+/// hour having a shape at all — and the median of that burst is the launch's single lane.
+/// Ten minutes is far longer than any relaunch this substrate performs and still a sixth
+/// of the window, so a genuine sustained shortage trips well inside the hour it happens.
+pub const LANE_SUSTAINED_MIN_SPAN_MS: u64 = 10 * 60 * 1_000;
+
 /// The node had `lanes` lanes at a moment work was actually asked of them — fold into the
 /// hour's distribution. Called from [`note_pull`], never on its own: the whole point is
 /// that the sample is taken where the capacity is spent.
 fn note_lane_sample(lanes: u64) {
     let idx = (lanes as usize).min(LANE_HIST_LEN - 1);
     LEDGER.lane_samples[idx].fetch_add(1, Ordering::Relaxed);
+    let now = crate::persona::recall_metadata::now_ms();
+    // First stamp wins for the window; every stamp moves the last. 0 is "no sample yet",
+    // which is why the first write is a compare-exchange and not a `fetch_min`.
+    let _ = LEDGER
+        .lane_first_sample_ms
+        .compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed);
+    LEDGER.lane_last_sample_ms.fetch_max(now, Ordering::Relaxed);
+}
+
+/// How much of the window this hour's lane samples actually cover, first stamp to last.
+fn lane_sample_span_ms() -> u64 {
+    let first = LEDGER.lane_first_sample_ms.load(Ordering::Relaxed);
+    let last = LEDGER.lane_last_sample_ms.load(Ordering::Relaxed);
+    if first == 0 { 0 } else { last.saturating_sub(first) }
 }
 
 /// THE HOUR'S SUSTAINED LANES: the median of the lane counts observed at this window's
@@ -171,12 +202,18 @@ fn note_lane_sample(lanes: u64) {
 /// Pure, so the distributions are hand-computed tests. The median is "the smallest lane
 /// count whose cumulative share passes half the samples" — for the 699 samples that
 /// produced card `6d444769` (`1x155, 2x42, 3x344, 4x154, 5x2, 6x2`) that is **3**, while
-/// `lanes_max` for the same window read **8**. The roster was 16. `16 > 3*2` is starved;
+/// `lanes_max` for the same window read **8** across a window those samples SPANNED (the
+/// guard below), not a burst. The roster was 16. `16 > 3*2` is starved;
 /// `16 > 8*2` is not, which is why the lane-bound rest never fired in three hours at
 /// 98-100% pull deferral and `lane_bound_rested` was 0 in every one of them.
-fn lanes_sustained_of(hist: &[u64; LANE_HIST_LEN]) -> Option<u64> {
+fn lanes_sustained_of(hist: &[u64; LANE_HIST_LEN], span_ms: u64) -> Option<u64> {
     let total: u64 = hist.iter().sum();
-    if total < LANE_SUSTAINED_MIN_SAMPLES {
+    // BOTH floors, and the span is the one that matters (Astra, #4356 review): enough
+    // samples says the hour was BUSY; enough span says the hour was an HOUR. A burst
+    // clears the first on its own, and a burst is exactly the transient the peak exists
+    // to absorb — so below either floor there is no sustained value and the peak stands,
+    // which actuates nothing.
+    if total < LANE_SUSTAINED_MIN_SAMPLES || span_ms < LANE_SUSTAINED_MIN_SPAN_MS {
         return None;
     }
     let half = total / 2;
@@ -191,12 +228,15 @@ fn lanes_sustained_of(hist: &[u64; LANE_HIST_LEN]) -> Option<u64> {
 }
 
 /// The hour's lane distribution, read and reset by the tick.
-fn snapshot_lane_hist_and_reset() -> [u64; LANE_HIST_LEN] {
+fn snapshot_lane_hist_and_reset() -> ([u64; LANE_HIST_LEN], u64) {
     let mut out = [0u64; LANE_HIST_LEN];
     for (i, slot) in LEDGER.lane_samples.iter().enumerate() {
         out[i] = slot.swap(0, Ordering::Relaxed);
     }
-    out
+    let span = lane_sample_span_ms();
+    LEDGER.lane_first_sample_ms.store(0, Ordering::Relaxed);
+    LEDGER.lane_last_sample_ms.store(0, Ordering::Relaxed);
+    (out, span)
 }
 
 /// The same distribution WITHOUT reset, for the read-only `citizen/health` command.
@@ -917,7 +957,8 @@ impl CitizenHealthModule {
         let lanes = LEDGER.lanes_max.swap(lanes_now, Ordering::Relaxed).max(lanes_now);
         // The peak stands when the window had too few pulls to have a shape — a thin hour
         // is not evidence of a shortage.
-        let lanes_sustained = lanes_sustained_of(&snapshot_lane_hist_and_reset()).unwrap_or(lanes); // JUSTIFIED unwrap_or: None means the window had no SHAPE, and the peak is the conservative read — it rests nobody
+        let (lane_hist, lane_span_ms) = snapshot_lane_hist_and_reset();
+        let lanes_sustained = lanes_sustained_of(&lane_hist, lane_span_ms).unwrap_or(lanes); // JUSTIFIED unwrap_or: None means the window had no SHAPE — too few samples, or a burst too brief to be an hour — and the peak is the conservative read, which rests nobody
         let (rounds_working, standing_enabled) = round_supply();
         let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
             crate::cognition::resource_admission::directed_lane_wait_ms();
@@ -1086,7 +1127,7 @@ impl ServiceModule for CitizenHealthModule {
                     lanes: LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64),
                     lanes_now: crate::inference::llama_server::current_serving().lanes as u64,
                     // A read WITHOUT reset here too — the hour's shape as it stands.
-                    lanes_sustained: lanes_sustained_of(&read_lane_hist()).unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: same thin-window fallback as the tick's read — the peak, which rests nobody
+                    lanes_sustained: lanes_sustained_of(&read_lane_hist(), lane_sample_span_ms()).unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: same thin-window fallback as the tick's read — the peak, which rests nobody
                         LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64)
                     }),
                     directed_wait_p50_ms: crate::cognition::resource_admission::directed_lane_wait_ms().0,
@@ -1484,22 +1525,68 @@ mod tests {
         assert_eq!(hist.iter().sum::<u64>(), 699);
         // NEVER 8 in 699 samples, and the receipts for those hours all read `lanes 8`.
         assert_eq!(hist[8], 0);
-        assert_eq!(lanes_sustained_of(&hist), Some(3), "the hour ran on three lanes");
+        let hour = LANE_SUSTAINED_MIN_SPAN_MS;
+        assert_eq!(lanes_sustained_of(&hist, hour), Some(3), "the hour ran on three lanes");
 
         // A SINGLE BAD TICK CANNOT MOVE IT (Cormac's condition on #4244, kept): drop one
         // relaunch sample of 1 lane into an otherwise four-lane hour and the median holds.
         let mut steady = [0u64; LANE_HIST_LEN];
         steady[4] = 99;
         steady[1] = 1;
-        assert_eq!(lanes_sustained_of(&steady), Some(4), "one dip is not the hour");
+        assert_eq!(lanes_sustained_of(&steady, hour), Some(4), "one dip is not the hour");
 
         // A WINDOW WITH NO SHAPE IS NOT EVIDENCE. Below the sample floor there is no
         // median to speak of, and the caller falls back to the peak — which rests nobody.
         let mut thin = [0u64; LANE_HIST_LEN];
         thin[1] = LANE_SUSTAINED_MIN_SAMPLES - 1;
-        assert_eq!(lanes_sustained_of(&thin), None, "a launch window is not an hour");
+        assert_eq!(lanes_sustained_of(&thin, hour), None, "a launch window is not an hour");
         thin[1] += 1;
-        assert_eq!(lanes_sustained_of(&thin), Some(1), "at the floor it has a shape");
+        assert_eq!(lanes_sustained_of(&thin, hour), Some(1), "at the floor it has a shape");
+    }
+
+    // what this catches (Astra's review of #4356): A COUNT IS NOT COVERAGE. Pulls are not
+    // spread evenly through the hour — they arrive when the roster polls — so a dozen
+    // residents queueing through ONE brief relaunch clear any sample floor while every
+    // sample reads the launch's single lane. The median of that burst is 1, and acting on
+    // it would rest the roster for a transient, which is precisely the hazard the peak was
+    // put there to absorb (Cormac, #4244). The SPAN is what tells the two apart.
+    #[test]
+    fn a_burst_of_samples_inside_one_relaunch_is_not_a_sustained_shortage() {
+        // Sixteen residents, each polling twice while the engine relaunches: 32 samples,
+        // comfortably past the count floor, every one of them at one lane.
+        let mut burst = [0u64; LANE_HIST_LEN];
+        burst[1] = 32;
+        assert!(burst.iter().sum::<u64>() > LANE_SUSTAINED_MIN_SAMPLES, "the count floor alone is cleared");
+        let relaunch_ms = 30 * 1_000;
+        assert_eq!(
+            lanes_sustained_of(&burst, relaunch_ms),
+            None,
+            "thirty seconds of queueing is a relaunch, not an hour — the peak stands and nobody rests"
+        );
+        // The SAME distribution spread across a real span IS a sustained shortage, and
+        // that is the whole distinction: the node genuinely held one lane for ten minutes.
+        assert_eq!(
+            lanes_sustained_of(&burst, LANE_SUSTAINED_MIN_SPAN_MS),
+            Some(1),
+            "the same samples, actually spanning the window, are the hour's shape"
+        );
+        // And the guard gates ACTUATION, not just the number: with no sustained value the
+        // caller keeps the peak, so the rest computes against 8 lanes and pages out nobody.
+        let roster: Vec<(uuid::Uuid, MindHour)> = (0..16)
+            .map(|i| (uuid::Uuid::new_v4(), MindHour { lane_grants: i, ..Default::default() }))
+            .collect();
+        let during_relaunch = CitizenHealth {
+            resident: 16,
+            lanes: 8,
+            lanes_sustained: 8, // what `unwrap_or(lanes)` yields when the span guard refuses
+            pulls: 32,
+            pulls_deferred: 32,
+            ..h(16, 8, 15, 0)
+        };
+        assert!(
+            lane_bound_seats(&during_relaunch, &verdict(&during_relaunch), &roster).is_empty(),
+            "a relaunch must never rest the roster"
+        );
     }
 
     // what this catches (card `6d444769`, the defect itself): a roster that is starved on
