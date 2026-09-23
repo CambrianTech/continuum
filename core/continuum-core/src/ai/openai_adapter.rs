@@ -1094,6 +1094,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
         let client = self.client.clone();
         tokio::spawn(async move {
+            let Ok(admission) = crate::inference::slots::directory()
+                .endpoint(&root)
+                .admit()
+                .await
+            else {
+                return;
+            };
+            let pool = admission.pool.as_ref().unwrap_or(&pool); // JUSTIFIED unwrap_or: unmanaged discovery fixtures retain their original pool.
+            if pool.n_slots() == 1 {
+                return;
+            }
             let started = std::time::Instant::now();
             let Some(pg) = pool.lease_paged(key).await else {
                 return; // every slot pinned — the pin-time path will retry
@@ -1544,7 +1555,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
             let pool = self.ensure_slot_pool(&endpoints).await;
-            let scratch = pool.as_ref().and_then(|pool| pool.scratch_slot());
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
                 turn_key,
@@ -1553,7 +1563,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 root,
                 approx_tokens,
             )
-            .await;
+            .await
+            .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
+            let scratch = adm.scratch_slot();
             let placement: Option<u32> = match class {
                 crate::inference::slots::SlotClass::Turn => adm.slot(),
                 _ => {
@@ -1745,7 +1757,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     root,
                     0,
                 )
-                .await,
+                .await
+                .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,
             );
         }
 

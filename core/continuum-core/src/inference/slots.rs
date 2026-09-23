@@ -527,29 +527,229 @@ impl KvSlotPool {
 /// unsupported (no /props surface). The transport-side probe
 /// (the adapter owns the HTTP client) discovers; this directory owns state.
 pub struct SlotDirectory {
-    pools: dashmap::DashMap<String, Option<Arc<KvSlotPool>>>,
+    endpoints: dashmap::DashMap<String, Arc<EndpointSlots>>,
+}
+
+/// Exact launch/page compatibility, supplied by the process owner, never inferred
+/// from the URL. Unknown or changed contracts cannot inherit saved-page eligibility.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct KvPageContract {
+    pub model_id: String,
+    pub model: std::path::PathBuf,
+    pub adapters: Vec<String>,
+    pub page_dir: Option<std::path::PathBuf>,
+    pub context: u32,
+    pub slots: u32,
+    pub cache_type: Option<String>,
+    pub engine: String,
+    /// Cold-path revision evidence for the resolved model, adapters and engine.
+    /// Unknown revisions refuse saved-page carry-over, never guess compatibility.
+    pub revisions: Option<Vec<(std::path::PathBuf, u64, std::time::SystemTime)>>,
+}
+
+struct EndpointState {
+    ready: bool,
+    generation: Option<EngineGeneration>,
+    contract: Option<KvPageContract>,
+    pool: Option<Option<Arc<KvSlotPool>>>,
+}
+
+/// The directory's existing endpoint owner also arbitrates engine transitions.
+/// Admission holds a read lease through HTTP completion; transitions drain those
+/// leases before retiring the engine. Closing survives cancellation of a transition.
+pub(crate) struct EndpointSlots {
+    gate: Arc<tokio::sync::RwLock<()>>,
+    state: Mutex<EndpointState>,
+}
+
+pub(crate) struct EndpointAdmission {
+    _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    pub pool: Option<Arc<KvSlotPool>>,
+}
+
+pub(crate) struct EndpointTransition {
+    endpoint: Arc<EndpointSlots>,
+    _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+/// Travels with the actual owned Child, including after retirement. The exit bit
+/// belongs to this generation even when the endpoint already has a newer child.
+#[derive(Clone)]
+pub(crate) struct EngineGeneration {
+    id: Uuid,
+    exited: Arc<std::sync::atomic::AtomicBool>,
+    endpoint: std::sync::Weak<EndpointSlots>,
+}
+
+impl EngineGeneration {
+    pub(crate) fn retiring(&self) {
+        if let Some(endpoint) = self.endpoint.upgrade() {
+            let mut state = endpoint.state.lock();
+            if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
+                state.ready = false;
+            }
+        }
+    }
+    pub(crate) fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn observed_exit(&self) {
+        self.exited.store(true, Ordering::Release);
+        if let Some(endpoint) = self.endpoint.upgrade() {
+            let mut state = endpoint.state.lock();
+            if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
+                state.ready = false;
+                crate::probe!(
+                    class = "inference.kv_engine.exited",
+                    generation = %self.id,
+                    "owned engine exit observed; endpoint admissions remain closed"
+                );
+                // Do not mutate a ledger while an old HTTP future can still write
+                // it. Replacement readiness drains admissions and replaces it.
+            }
+        }
+    }
+}
+
+impl EndpointSlots {
+    pub(crate) fn is_ready(&self) -> bool {
+        self.state.lock().ready
+    }
+    pub(crate) async fn admit(self: &Arc<Self>) -> Result<EndpointAdmission, String> {
+        if !self.state.lock().ready {
+            return Err("serving endpoint is suspended pending engine readiness".into());
+        }
+        let guard = self.gate.clone().read_owned().await;
+        let state = self.state.lock();
+        if !state.ready {
+            return Err("serving endpoint is suspended pending engine readiness".into());
+        }
+        Ok(EndpointAdmission {
+            _guard: guard,
+            pool: state.pool.as_ref().and_then(Clone::clone),
+        })
+    }
+
+    pub(crate) async fn transition(self: &Arc<Self>) -> EndpointTransition {
+        self.state.lock().ready = false;
+        let guard = self.gate.clone().write_owned().await;
+        // A preceding transition might have reopened while this writer waited.
+        self.state.lock().ready = false;
+        EndpointTransition {
+            endpoint: self.clone(),
+            _guard: guard,
+        }
+    }
+}
+
+impl EndpointTransition {
+    pub(crate) fn previous_generation(&self) -> Option<EngineGeneration> {
+        self.endpoint.state.lock().generation.clone()
+    }
+
+    pub(crate) fn start_generation(&self) -> Result<EngineGeneration, String> {
+        let mut state = self.endpoint.state.lock();
+        if state.generation.as_ref().is_some_and(|g| !g.has_exited()) {
+            return Err("predecessor engine exit remains unverified".into());
+        }
+        let generation = EngineGeneration {
+            id: Uuid::new_v4(),
+            exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            endpoint: Arc::downgrade(&self.endpoint),
+        };
+        state.generation = Some(generation.clone());
+        Ok(generation)
+    }
+
+    pub(crate) fn ready(
+        &self,
+        root: &str,
+        generation: &EngineGeneration,
+        contract: KvPageContract,
+    ) -> Result<(), String> {
+        let mut state = self.endpoint.state.lock();
+        if generation.has_exited()
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.id == generation.id)
+        {
+            return Err("engine generation exited or was superseded before readiness".into());
+        }
+        if state.ready {
+            return if state.contract.as_ref() == Some(&contract) {
+                Ok(())
+            } else {
+                Err("ready engine cannot change its page contract without a transition".into())
+            };
+        }
+        // A fresh assignment ledger prevents old Arc holders/pins from affecting
+        // the new engine. Copy ONLY saved-page eligibility under an exact contract.
+        let pool = Arc::new(KvSlotPool::new(root, contract.slots));
+        if contract.page_dir.is_some()
+            && contract.cache_type.is_some()
+            && contract.revisions.is_some()
+            && state.contract.as_ref() == Some(&contract)
+        {
+            if let Some(Some(old)) = state.pool.as_ref() {
+                *pool.saved.lock() = old.saved.lock().clone();
+            }
+        }
+        state.pool = Some(Some(pool));
+        state.contract = Some(contract);
+        state.ready = true;
+        crate::probe!(
+            class = "inference.kv_engine.ready",
+            endpoint = root,
+            generation = %generation.id,
+            "verified engine generation installed with fresh physical KV attribution"
+        );
+        Ok(())
+    }
 }
 
 impl SlotDirectory {
+    pub(crate) fn endpoint(&self, root: &str) -> Arc<EndpointSlots> {
+        self.endpoints
+            .entry(root.trim_end_matches('/').to_string())
+            .or_insert_with(|| {
+                Arc::new(EndpointSlots {
+                    gate: Arc::new(tokio::sync::RwLock::new(())),
+                    state: Mutex::new(EndpointState {
+                        ready: true,
+                        generation: None,
+                        contract: None,
+                        pool: None,
+                    }),
+                })
+            })
+            .clone()
+    }
     /// `None` entry == latched Unsupported for this server root.
     pub fn latch_unsupported(&self, root: &str) {
-        self.pools.insert(root.to_string(), None);
+        let endpoint = self.endpoint(root);
+        let mut state = endpoint.state.lock();
+        if state.generation.is_none() {
+            state.pool = Some(None);
+        }
     }
 
     /// `Some(Some(pool))` = pool ready; `Some(None)` = latched unsupported;
     /// `None` = never probed (caller should probe /props).
     pub fn get(&self, root: &str) -> Option<Option<Arc<KvSlotPool>>> {
-        self.pools.get(root).map(|e| e.clone())
+        self.endpoint(root).state.lock().pool.clone()
     }
 
     /// Install (or return the already-installed) pool for a probed server.
     /// First writer wins — the probe race resolves to ONE pool per root.
     pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
-        let entry = self
-            .pools
-            .entry(root.to_string())
-            .or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots))));
-        match entry.value() {
+        let endpoint = self.endpoint(root);
+        let mut state = endpoint.state.lock();
+        let entry = state
+            .pool
+            .get_or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots))));
+        match entry {
             Some(pool) => Arc::clone(pool),
             None => {
                 // A racing latch_unsupported won — honor it by returning a
@@ -567,7 +767,7 @@ impl SlotDirectory {
 pub fn directory() -> &'static SlotDirectory {
     static DIR: std::sync::OnceLock<SlotDirectory> = std::sync::OnceLock::new();
     DIR.get_or_init(|| SlotDirectory {
-        pools: dashmap::DashMap::new(),
+        endpoints: dashmap::DashMap::new(),
     })
 }
 
@@ -733,7 +933,7 @@ mod tests {
     #[test]
     fn directory_latch_and_ensure() {
         let dir = SlotDirectory {
-            pools: dashmap::DashMap::new(),
+            endpoints: dashmap::DashMap::new(),
         };
         assert!(dir.get("s1").is_none(), "unprobed root is unknown");
         dir.latch_unsupported("s1");
@@ -741,6 +941,135 @@ mod tests {
         let p = dir.ensure_pool("s2", 4);
         assert_eq!(p.n_slots(), 4);
         assert!(matches!(dir.get("s2"), Some(Some(_))));
+    }
+
+    // What this catches: same-URL restart must restore saved KV, never trust old
+    // physical holders; queued/late work cannot reopen or clear a newer generation.
+    #[tokio::test]
+    async fn endpoint_restart_drains_admission_and_preserves_only_compatible_pages() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let endpoint = dir.endpoint("test://generation");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec!["fixture.lora".into()],
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        let first = endpoint.transition().await;
+        let old = first.start_generation().expect("first engine");
+        first
+            .ready("test://generation", &old, contract.clone())
+            .expect("ready");
+        drop(first);
+        let admitted = endpoint.admit().await.expect("old request");
+        let old_pool = admitted.pool.as_ref().expect("pool").clone();
+        let activity = key(73, 74);
+        old_pool
+            .lease_paged(activity)
+            .await
+            .expect("old physical holder");
+        old_pool.note_saved(activity);
+
+        let transition = endpoint.transition();
+        tokio::pin!(transition);
+        assert!(
+            futures::poll!(&mut transition).is_pending(),
+            "active admission must drain"
+        );
+        assert!(
+            endpoint.admit().await.is_err(),
+            "new admission is closed immediately"
+        );
+        drop(admitted);
+        let transition = transition.await;
+        assert!(
+            transition.start_generation().is_err(),
+            "Rust guard release is not engine exit"
+        );
+        old.observed_exit();
+        let new = transition.start_generation().expect("predecessor exited");
+        transition
+            .ready("test://generation", &new, contract.clone())
+            .expect("replacement ready");
+        // Refreshing readiness for this generation must preserve its current ledger.
+        let new_pool = dir
+            .get("test://generation")
+            .flatten()
+            .expect("replacement pool");
+        let pg = new_pool
+            .lease_paged(activity)
+            .await
+            .expect("returning activity");
+        assert!(pg.restore, "compatible saved page survives restart");
+        assert_eq!(pg.save_first, None, "dead physical KV must never be saved");
+        transition
+            .ready("test://generation", &new, contract.clone())
+            .expect("readiness refresh");
+        old.observed_exit();
+        drop(transition);
+        let admitted = endpoint
+            .admit()
+            .await
+            .expect("late old exit cannot close new generation");
+        assert!(Arc::ptr_eq(
+            admitted.pool.as_ref().expect("pool"),
+            &new_pool
+        ));
+        assert!(!new_pool.lease_paged(activity).await.expect("warm").restore);
+        drop(admitted);
+
+        let transition = endpoint.transition().await;
+        new.observed_exit();
+        let changed = transition.start_generation().expect("new geometry engine");
+        let mut incompatible = contract;
+        incompatible.context += 256; // Same 16k page bucket is not proof of exact compatibility.
+        incompatible.slots = 1;
+        transition
+            .ready("test://generation", &changed, incompatible.clone())
+            .expect("changed ready");
+        drop(transition);
+        let admitted = endpoint.admit().await.expect("changed admission");
+        let pool = admitted.pool.as_ref().expect("changed pool");
+        assert_eq!(pool.n_slots(), 1);
+        assert!(!pool.lease_paged(activity).await.expect("cold").restore);
+        pool.note_saved(activity);
+        drop(admitted);
+        let transition = endpoint.transition().await;
+        changed.observed_exit();
+        let different_model = transition.start_generation().expect("different model");
+        incompatible.model_id = "other-model".into();
+        transition
+            .ready("test://generation", &different_model, incompatible)
+            .expect("different model ready");
+        drop(transition);
+        let admitted = endpoint.admit().await.expect("different model admission");
+        assert!(
+            !admitted
+                .pool
+                .as_ref()
+                .expect("different pool")
+                .lease_paged(activity)
+                .await
+                .expect("cold model")
+                .restore
+        );
+        drop(admitted);
+        drop(endpoint.transition().await); // Failed/cancelled bring-up has no ready receipt.
+        assert!(
+            endpoint.admit().await.is_err(),
+            "transition cancellation must stay closed"
+        );
     }
     // what this catches: the page store growing without bound (it is temporary disk),
     // and the trim removing the page just saved or a page's sidecar surviving its page.
