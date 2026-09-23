@@ -10,10 +10,17 @@
 //! PR must edit to move, and refuses a tree whose pointer disagrees with it.
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     fn repo_root() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repo root")
+        // Anchored on the workspace manifest, not on `../..`. The old form was correct
+        // only because this file sat two levels down, and it survived the move to
+        // `core/source-hygiene` by coincidence rather than by design (Cormac, review of
+        // #4346). A wrong-but-existing root would canonicalize fine and then read the
+        // pin from the wrong tree.
+        crate::repo_root().expect(
+            "no ancestor of CARGO_MANIFEST_DIR carries the workspace Cargo.toml — the \
+             vendored-pin check cannot locate the tree it is asserting about",
+        )
     }
 
     // what this catches: a squash merge (or a stale worktree) moving the vendored

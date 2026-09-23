@@ -320,7 +320,7 @@ impl SourceRule for DerivedBounds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan;
+    use crate::scan;
 
     /// Underived, unjustified bounds at the time this guard landed (2026-09-20).
     ///

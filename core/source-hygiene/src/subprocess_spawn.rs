@@ -93,7 +93,7 @@ impl SourceRule for SubprocessSpawn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_hygiene::scan;
+    use crate::scan;
 
     // what this catches: a new subprocess where a library call belongs — the
     // 2026-09-12 class, where every spawn on the node failed at once and each site
