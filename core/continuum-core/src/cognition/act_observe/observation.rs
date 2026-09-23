@@ -263,7 +263,16 @@ impl Observation {
             &self.call.name,
             &self.call.input,
             intent,
-            self.is_err(),
+            // The command's word where it gave one; the transport bool otherwise.
+            // This channel is re-injected on later turns, so a still-running act
+            // collapsed to "ok — …" here is the mind misremembering its own night.
+            if self.output.verdict == crate::sdk_codegen::ActVerdict::Unprojected
+                && self.output.result.is_error == Some(true)
+            {
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed)
+            } else {
+                self.output.verdict
+            },
             &self.body_text(),
         )
     }

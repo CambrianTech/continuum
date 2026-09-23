@@ -236,39 +236,35 @@ where
 
 /// One command's registered projector, keyed by the command name the executor
 /// already holds at dispatch.
+///
+/// ONE function pointer, not two. An earlier draft had separate `project` and
+/// `handle` fns and a comment claiming the value was decoded once — it was decoded
+/// twice (Astra on #4352). Both facts come from the same `Output`, so they are read
+/// in a single decode and returned together.
 pub struct OutcomeProjector {
     name: &'static str,
-    project: fn(&serde_json::Value) -> ActVerdict,
-    handle: fn(&serde_json::Value) -> Option<uuid::Uuid>,
+    read: fn(&serde_json::Value) -> (ActVerdict, Option<uuid::Uuid>),
 }
 
 impl OutcomeProjector {
-    /// Build a registration from a command name, a decode-then-project fn and a
-    /// decode-then-handle fn (what [`crate::register_outcome!`] supplies).
+    /// Build a registration from a command name and a single decode-then-read fn
+    /// (what [`crate::register_outcome!`] supplies).
     pub const fn new(
         name: &'static str,
-        project: fn(&serde_json::Value) -> ActVerdict,
-        handle: fn(&serde_json::Value) -> Option<uuid::Uuid>,
+        read: fn(&serde_json::Value) -> (ActVerdict, Option<uuid::Uuid>),
     ) -> Self {
-        Self {
-            name,
-            project,
-            handle,
-        }
+        Self { name, read }
     }
     /// The command this projector speaks for.
     pub fn name(&self) -> &'static str {
         self.name
     }
-    /// Project a dispatched result. Never `Unprojected` — reaching this function
-    /// means a projector IS registered, so the only outcomes are the command's own
+    /// Decode ONCE and report both the verdict and the command-declared dispatch
+    /// handle. Never `Unprojected` — reaching this function means a projector IS
+    /// registered, so the only outcomes are the command's own
     /// [`ActVerdict::Declared`] verdict or [`ActVerdict::Undecodable`].
-    pub fn project(&self, value: &serde_json::Value) -> ActVerdict {
-        (self.project)(value)
-    }
-    /// The long-running handle this result carries, when the command declares one.
-    pub fn dispatch_handle(&self, value: &serde_json::Value) -> Option<uuid::Uuid> {
-        (self.handle)(value)
+    pub fn read(&self, value: &serde_json::Value) -> (ActVerdict, Option<uuid::Uuid>) {
+        (self.read)(value)
     }
 }
 
@@ -294,7 +290,7 @@ pub fn project_result(
     value: &serde_json::Value,
 ) -> (ActVerdict, Option<uuid::Uuid>) {
     match outcome_projector(canonical_name) {
-        Some(p) => (p.project(value), p.dispatch_handle(value)),
+        Some(p) => p.read(value),
         None => (ActVerdict::Unprojected, None),
     }
 }

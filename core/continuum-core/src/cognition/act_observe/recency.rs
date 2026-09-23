@@ -196,22 +196,40 @@ pub(super) fn render_act_for_recall(
     name: &str,
     args: &serde_json::Value,
     intent: &str,
-    is_err: bool,
+    verdict: crate::sdk_codegen::ActVerdict,
     body: &str,
 ) -> String {
     const RECALL_INLINE_MAX: usize = 280;
     let args_summary = summarize_args_for_recall(args);
+    let is_err = verdict.failed();
+    // THE COLLAPSED LINE MUST NOT SAY "ok" FOR WORK THAT DID NOT FINISH (Astra on
+    // #4352). This channel is what the Episodic engram re-injects turn after turn —
+    // it is the mind reading its own past — and a long-bodied act that was still
+    // RUNNING, or whose result could not be decoded, took the else-branch below and
+    // was collapsed to "ok — {first line}". The short-body branch is unaffected
+    // because it quotes the body verbatim and asserts nothing.
+    let label = match verdict {
+        v if v.running() => "running —",
+        crate::sdk_codegen::ActVerdict::Undecodable => "unreadable —",
+        _ => "ok —",
+    };
     let outcome = if is_err {
         format!("FAILED:\n{}", truncate_chars(body.trim(), 800))
     } else if body.trim().chars().count() <= RECALL_INLINE_MAX {
         body.trim().to_string()
     } else {
         format!(
-            "ok — {}",
+            "{label} {}",
             truncate_chars(body.trim().lines().next().unwrap_or(""), 140)
         )
     };
-    let mark = if is_err { "⚠ " } else { "" };
+    let mark = if is_err {
+        "⚠ "
+    } else if verdict.running() {
+        "⋯ "
+    } else {
+        ""
+    };
     // Omit "because …" when there's no real stated reason — an empty intent must
     // not render an imitable receipt template (#158).
     let because = if intent.trim().is_empty() {
@@ -228,6 +246,11 @@ pub(super) fn render_act_for_recall(
 
 #[cfg(test)]
 mod tests {
+    use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+    /// The two pre-#4352 states this file used to take as a bare bool.
+    const OK_V: ActVerdict = ActVerdict::Declared(ToolVerdict::Succeeded);
+    const FAIL_V: ActVerdict = ActVerdict::Declared(ToolVerdict::Failed);
+
     use super::*;
 
     /// what this catches: card 0a4c0648 — the receipt renderer embedding the executor's
@@ -308,7 +331,7 @@ mod tests {
         let big = "fn main(){}\n".repeat(200); // a whole "file"
         let args = serde_json::json!({ "file_path": "x.rs", "content": big });
         let ref_ok =
-            render_act_for_recall("code/write", &args, "acting", false, "{\"success\":true}");
+            render_act_for_recall("code/write", &args, "acting", OK_V, "{\"success\":true}");
         assert!(
             ref_ok.contains("content: "),
             "big content arg must collapse to a size"
@@ -324,7 +347,7 @@ mod tests {
             "code/read",
             &serde_json::json!({"file_path":"a"}),
             "acting",
-            false,
+            OK_V,
             "hello",
         );
         assert!(small.contains("→ hello"), "small result stays inline");
@@ -334,7 +357,7 @@ mod tests {
             "code/shell",
             &serde_json::json!({"cmd":"x"}),
             "acting",
-            true,
+            FAIL_V,
             "error: no such file",
         );
         assert!(err.starts_with("⚠"), "errors are highlighted");
@@ -351,7 +374,7 @@ mod tests {
     #[test]
     fn empty_intent_renders_no_because_clause() {
         let args = serde_json::json!({"file_path": "a"});
-        let empty = render_act_for_recall("code/read", &args, "", false, "hi");
+        let empty = render_act_for_recall("code/read", &args, "", OK_V, "hi");
         assert!(!empty.contains("because"), "no fabricated reason: {empty}");
         assert!(
             empty.contains("code/read("),
@@ -361,7 +384,7 @@ mod tests {
             !empty.contains("I ran"),
             "no imitable 'I ran' opener (#158): {empty}"
         );
-        let real = render_act_for_recall("code/read", &args, "checking the header", false, "hi");
+        let real = render_act_for_recall("code/read", &args, "checking the header", OK_V, "hi");
         assert!(
             real.contains("because checking the header"),
             "a real intent still shows"
@@ -451,5 +474,49 @@ mod tests {
         // char-boundary safe on multibyte content (never panics mid-codepoint)
         let multibyte = "日本語".repeat(1_000);
         let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));
+    }
+
+    /// what this catches (Astra on #4352): the COLLAPSE branch saying "ok" for work
+    /// that did not finish. Only a LONG body takes that branch — a short one quotes
+    /// itself verbatim and asserts nothing — so the regression needs a body over
+    /// RECALL_INLINE_MAX. This channel is what the Episodic engram re-injects on
+    /// later turns, which makes it the mind reading its own past: a running shell
+    /// remembered as "ok" is worse than the room glyph being wrong.
+    #[test]
+    fn a_long_bodied_act_that_did_not_finish_is_never_collapsed_to_ok() {
+        let args = serde_json::json!({"command": "cargo test"});
+        let long = "x".repeat(400);
+
+        let running = render_act_for_recall(
+            "code/shell",
+            &args,
+            "building",
+            ActVerdict::Declared(ToolVerdict::Running),
+            &long,
+        );
+        assert!(
+            !running.contains("ok —"),
+            "a running act must not be remembered as ok: {running}"
+        );
+        assert!(running.contains("running —"), "{running}");
+        assert!(running.starts_with("⋯"), "and it carries its own mark: {running}");
+
+        let unreadable =
+            render_act_for_recall("code/run", &args, "running", ActVerdict::Undecodable, &long);
+        assert!(
+            !unreadable.contains("ok —"),
+            "a result nobody could decode must not be remembered as ok: {unreadable}"
+        );
+        assert!(unreadable.contains("unreadable —"), "{unreadable}");
+
+        // The unchanged paths stay unchanged.
+        let ok = render_act_for_recall("code/read", &args, "reading", OK_V, &long);
+        assert!(ok.contains("ok —"), "{ok}");
+        let unprojected =
+            render_act_for_recall("code/read", &args, "reading", ActVerdict::Unprojected, &long);
+        assert!(
+            unprojected.contains("ok —"),
+            "a command that never opted in is byte-for-byte as before: {unprojected}"
+        );
     }
 }

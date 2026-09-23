@@ -585,28 +585,22 @@ macro_rules! register_outcome {
             $crate::sdk_codegen::OutcomeProjector::new(
                 <$cmd as $crate::sdk_codegen::ActionCommand>::NAME,
                 |value| {
-                    // A registered projector that cannot decode its OWN declared
-                    // output is SCHEMA DRIFT, not an outcome. It must never collapse
-                    // into "no projector" (which renders success) — the payload is
-                    // preserved and the claim is withheld, loudly.
+                    // ONE decode, both facts. A registered projector that cannot
+                    // decode its OWN declared output is SCHEMA DRIFT, not an outcome.
+                    // It must never collapse into "no projector" (which renders
+                    // success) — the payload is preserved and the claim is withheld.
                     match ::serde_json::from_value::<
                         <$cmd as $crate::sdk_codegen::ActionCommand>::Output,
                     >(value.clone())
                     {
-                        Ok(o) => $crate::sdk_codegen::ActVerdict::Declared(
-                            <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o),
+                        Ok(o) => (
+                            $crate::sdk_codegen::ActVerdict::Declared(
+                                <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o),
+                            ),
+                            <$cmd as $crate::sdk_codegen::ProjectsOutcome>::dispatch_handle(&o),
                         ),
-                        Err(_) => $crate::sdk_codegen::ActVerdict::Undecodable,
+                        Err(_) => ($crate::sdk_codegen::ActVerdict::Undecodable, None),
                     }
-                },
-                |value| {
-                    ::serde_json::from_value::<
-                        <$cmd as $crate::sdk_codegen::ActionCommand>::Output,
-                    >(value.clone())
-                    .ok()
-                    .and_then(|o| {
-                        <$cmd as $crate::sdk_codegen::ProjectsOutcome>::dispatch_handle(&o)
-                    })
                 },
             )
         }
