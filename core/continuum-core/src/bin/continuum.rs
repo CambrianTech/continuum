@@ -48,6 +48,14 @@ use continuum_cli_lifecycle::install_cli;
 
 use continuum_cli_lifecycle::launchd;
 
+// The teardown DECISION lives in the leaf, where it runs on every machine in seconds.
+// What stays here is the Windows half that spends the capability — gated at the
+// declaration, because every item inside needs `windows_sys`.
+#[cfg(windows)]
+#[path = "continuum/elevated_teardown.rs"]
+mod elevated_teardown;
+use continuum_cli_lifecycle::elevated_teardown::StopOptions;
+
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error("no core answering on {socket}; `{command}` requires a running core. Use `continuum start` explicitly, or wait for the current deploy to finish.")]
@@ -190,7 +198,7 @@ async fn run() -> Result<(), CliError> {
             println!("boot complete — {} steps receipted", receipt.steps.len());
             Ok(())
         }
-        "stop" => stop().await,
+        "stop" => stop(StopOptions::parse(args)?).await,
         // The display-manager door: the core serves the built desktop itself
         // (http::desktop, always-current, browsers attach/detach freely) —
         // this verb just verifies the greeter answers and opens the browser.
@@ -986,6 +994,14 @@ struct RebootOptions {
     prebuilt: Option<PathBuf>,
     service: bool,
     validate_only: bool,
+    /// Is a human AT this machine, able to answer one consent prompt?
+    ///
+    /// NOT a CLI flag, and deliberately: the user-facing contract is one command,
+    /// `continuum install` (Joel, 2026-09-22), so the only caller that sets this is the
+    /// install core arm. Everything else — the deploy consumer above all — runs under
+    /// the supervisor with nobody to see a dialog, and a consent raised there would hang
+    /// the tick until it times out.
+    operator_present: bool,
 }
 
 impl RebootOptions {
@@ -1323,7 +1339,23 @@ impl PreparedCoreService {
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
                     let prev = to.with_extension("prev.exe");
-                    let _ = std::fs::remove_file(&prev);
+                    // `.prev.exe` is a SINGLE parking space, so staging cannot proceed
+                    // while something still holds that exact name. This used to fail
+                    // silently (`let _ = remove_file`) and the rename below then reported
+                    // its error against `to` — naming the CURRENT file for a refusal that
+                    // happened on a DIFFERENT one, which cost an hour of reading on
+                    // 2026-09-22. Report the path that actually refused and the OS's own
+                    // words for why; the cause is not inferable from here.
+                    if let Err(e) = std::fs::remove_file(&prev) {
+                        if prev.exists() {
+                            return Err(format!(
+                                "the previous artifact at {} could not be removed ({e}) and \
+                                 is still present; staging cannot move the current artifact \
+                                 aside onto an occupied name",
+                                prev.display()
+                            ));
+                        }
+                    }
                     std::fs::rename(to, &prev)
                         .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
                 }
@@ -1818,13 +1850,13 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 // ("does not select the requested artifact") — measured 2026-09-19
                 // 05:1xZ, the 5090's first unattended deploy: a 1,145 s build, validated,
                 // then refused at the door. Every hand deploy had done this copy by hand.
-                if options.service && service.is_none() {
-                    if let Some(built) = prebuilt.take() {
-                        let staged = PreparedCoreService::stage(&built, &socket).await?;
-                        service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
-                        prebuilt = Some(staged);
-                    }
-                }
+                //
+                // THE COPY ITSELF NOW HAPPENS AFTER THE STOP — see below. It used to run
+                // here, which made the recovery unreachable on exactly the node that needs
+                // it (Astra, 2026-09-22): a core still running from `.prev.exe` occupies
+                // the one parking space, the move-aside fails, and `reboot` returns before
+                // it ever gets to the stop that would have freed the name. You cannot free
+                // a slot a process is executing from; the teardown has to come first.
             }
             Err(why) => {
                 if options.service {
@@ -1843,7 +1875,19 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // running core, and refusing to continue would leave the node down over a module that
     // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
     // exit code carries it.
-    let _ = stop_with(true).await?;
+    let _ = stop_with_authority(true, options.operator_present).await?;
+    // NOW the slot is free. Staging writes the artifact the supervisor is bound to and
+    // prepares the handoff; the validation that decides whether the core should have been
+    // stopped at all already happened in `prepare_warm_build` above, so nothing is taken
+    // down for an artifact that was never good. What moved is only the COPY, and only to
+    // the side of the stop where the file it must overwrite is no longer executing.
+    if options.service && service.is_none() {
+        if let Some(built) = prebuilt.take() {
+            let staged = PreparedCoreService::stage(&built, &socket).await?;
+            service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
+            prebuilt = Some(staged);
+        }
+    }
     // Keep the launcher's wait as the honesty check that teardown actually took.
     let source = prebuilt
         .as_ref()
@@ -2741,7 +2785,11 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     // Windows hands the built core to the prepared task. macOS `reboot` implies the
     // supervisor when a launchd job exists (stage + kickstart) and builds direct when
     // none does — the same idempotent answer either way.
-    reboot(RebootOptions { service: cfg!(windows), ..Default::default() }).await?;
+    // `install` is a command a human typed, so it may spend ONE consent to borrow the
+    // teardown privilege when this caller has none over the running core — the whole
+    // reason the node in front of us cannot be replaced. Same command every time; the
+    // escalation is inside it, never a second verb the user has to discover.
+    reboot(RebootOptions { service: cfg!(windows), operator_present: true, ..Default::default() }).await?;
     let now = running_build_sha().await;
     match now.as_deref() {
         Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
@@ -4462,6 +4510,9 @@ fn start_log_report(logfile: &str) -> String {
 const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// What the graceful request achieved, if anything.
+// Debug: the elevated child has no console an operator can read — its only voice is the
+// receipt file it writes beside the plan, and the drain's outcome has to reach that.
+#[derive(Debug)]
 enum GracefulStop {
     /// The core ran the broadcast and every module's state reached disk.
     Durable(String),
@@ -4515,7 +4566,189 @@ impl GracefulStop {
 ///
 /// The request travels the same socket path `ping` uses, so there is no new transport and
 /// no Windows-specific arrangement.
-async fn request_graceful_stop() -> GracefulStop {
+/// Whether a drain may BEGIN, given whether this caller can actually tear the core
+/// down afterwards. Pure so the rule is testable without an OS.
+///
+/// `system/shutdown.rs` deliberately leaves the process alive after its durable
+/// receipt — the CLI owns teardown, so a drain whose teardown will be refused
+/// strands a drained core still answering ping. Measured 2026-09-22 on Astra's
+/// node: `OpenProcess(25040, TERMINATE)` returned NULL with Win32 error 5, and the
+/// drain had already run.
+fn may_begin_shutdown(authority: Result<(), String>) -> Result<(), String> {
+    authority.map_err(|why| {
+        format!(
+            "refusing to DRAIN a core this caller cannot then tear down ({why}). \
+             The drain is not reversible: system/shutdown leaves the process alive \
+             for the CLI to end, so draining without teardown authority leaves a \
+             drained core still answering ping. No state was touched — run \
+             `continuum install` at this machine, which may spend one consent to \
+             borrow the privilege this caller does not hold"
+        )
+    })
+}
+
+/// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the
+/// OS answered.
+#[cfg(windows)]
+fn teardown_authority(pid: i32) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
+    // SAFETY: OpenProcess is a read-only capability query here; the handle is closed
+    // immediately and nothing is terminated by this call.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+    if handle.is_null() {
+        let err = std::io::Error::last_os_error();
+        // ABSENCE IS NOT REFUSAL, and Windows spells absence differently from unix: a
+        // pid that is not in the table answers ERROR_INVALID_PARAMETER here where unix
+        // answers ESRCH. Reading it as "no authority" would abandon every stop whose
+        // pidfile is merely stale — which is most of them (Astra, 2026-09-22).
+        if err.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            return Ok(());
+        }
+        return Err(format!("OpenProcess(pid {pid}, PROCESS_TERMINATE) failed: {err}"));
+    }
+    // SAFETY: handle came from a successful OpenProcess above and is closed once.
+    unsafe { CloseHandle(handle) };
+    Ok(())
+}
+
+#[cfg(unix)]
+fn teardown_authority(pid: i32) -> Result<(), String> {
+    // SAFETY: signal 0 performs the permission and existence check WITHOUT delivering
+    // a signal — the standard capability probe.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EPERM) => Err(format!("signal 0 to pid {pid} refused: {err}")),
+        // ESRCH = already gone: nothing to tear down, so nothing to refuse.
+        _ => Ok(()),
+    }
+}
+
+/// The DIRECTORY the supervisor was told to run the core out of — the parent of the
+/// `artifact` field in the `ContinuumCore` descriptor.
+///
+/// A directory and not the file, because a caller that cannot open the process cannot
+/// ask the OS which image it is executing (that is the whole reason it is escalating),
+/// and the descriptor's file name is routinely NOT that image: after a staging swap the
+/// descriptor names the new slot while the surviving core runs from the renamed
+/// predecessor beside it. The child proves the rest through its own handle.
+#[cfg(windows)]
+async fn installed_core_dir() -> Result<String, String> {
+    let task = PreparedCoreService::query().await?;
+    let description: CoreServiceDescription = serde_json::from_str(&task.description)
+        .map_err(|e| format!("the {} task's descriptor is unreadable ({e}); rerun the installer before escalating", supervisor_install::CORE_TASK))?;
+    Path::new(&description.artifact)
+        .parent()
+        .map(|d| d.display().to_string())
+        .ok_or_else(|| format!("the installed artifact {} has no directory", description.artifact))
+}
+
+/// The core pid the pidfile CLAIMS. `None` means no pidfile, or one that names nothing
+/// parseable.
+fn core_pid_for_teardown() -> Option<i32> {
+    std::fs::read_to_string(pidfile_for(&socket_path()))
+        .ok()
+        .and_then(|c| c.trim().parse::<i32>().ok())
+}
+
+/// Every core this stop would have to end.
+///
+/// THE PIDFILE IS NOT SUFFICIENT, and on the node this rail exists for it is already
+/// gone: the old `stop` removed it whether or not the kill took, so the file is absent
+/// while the process still answers ping (Astra, 2026-09-22). Preflighting only the
+/// pidfile would then find nothing to check, pass, and drain a core it cannot end —
+/// the exact failure the preflight is for. The process table is the second source, and
+/// the one that cannot be deleted by a previous mistake.
+fn cores_to_tear_down() -> Vec<i32> {
+    let mut pids: Vec<i32> = core_pid_for_teardown().into_iter().collect();
+    for pid in running_core_pids() {
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+/// Proof that the teardown authority was preflighted.
+///
+/// `request_graceful_stop` takes one, so the drain is not REACHABLE without the check:
+/// deleting the preflight does not weaken a test, it stops compiling. That is the
+/// answer to "a removed preflight call still passes all three" (Astra, 2026-09-22) —
+/// an ordering this load-bearing belongs to the type system, not to a test that has to
+/// remember to look for it.
+struct MayDrain {
+    /// The core whose teardown privilege must be BORROWED after the drain. `None` =
+    /// this caller can end every core itself.
+    borrow_authority_for: Option<i32>,
+}
+
+impl MayDrain {
+    /// The drain is authorised because a TERMINATE handle for the target is HELD OPEN
+    /// across it — capability, not intent (Astra, 2026-09-22: "operator_present is
+    /// intent, not capability"). Only the elevated child can build one of these, and
+    /// only while it is holding the handle it will terminate with.
+    #[cfg(windows)]
+    fn proven_by_held_handle() -> Self {
+        Self { borrow_authority_for: None }
+    }
+}
+
+/// The preflight decision, pure over what the OS answered.
+///
+/// A refusal with no operator present is final and returns before anything is drained.
+/// When the operator is present — `continuum install`, a command a human typed — the
+/// un-endable core is carried forward to have its teardown privilege borrowed instead.
+fn preflight_teardown(
+    pids: &[i32],
+    operator_present: bool,
+    authority: impl Fn(i32) -> Result<(), String>,
+) -> Result<MayDrain, String> {
+    for pid in pids {
+        let Err(why) = authority(*pid) else { continue };
+        if operator_present {
+            eprintln!(
+                "▶ no teardown authority over pid {pid} ({why}); one consent will be asked for after the drain"
+            );
+            return Ok(MayDrain { borrow_authority_for: Some(*pid) });
+        }
+        // Err by construction — `may_begin_shutdown` only dresses an Err in the reason
+        // the drain is being refused. The `map` is how that flows out as this signature.
+        return may_begin_shutdown(Err(why)).map(|()| MayDrain { borrow_authority_for: None });
+    }
+    Ok(MayDrain { borrow_authority_for: None })
+}
+
+/// How long a core gets to leave the process table after being asked to stop and
+/// then killed.
+const TEARDOWN_EXIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Wait, bounded, for `pid` to leave the process table.
+///
+/// NOT an immediate `pid_alive` after the kill: SIGTERM and taskkill are both
+/// asynchronous, so a perfectly healthy core is still in the table on the very next
+/// line, and an immediate probe would manufacture "the kill was refused" on every
+/// ordinary stop (Astra, 2026-09-22). Only failing to go within the deadline is
+/// evidence of anything.
+async fn exited_within(pid: i32, deadline: Duration) -> Result<(), String> {
+    let until = std::time::Instant::now() + deadline;
+    while pid_alive(pid) {
+        if std::time::Instant::now() >= until {
+            return Err(format!(
+                "core pid {pid} is still running {}s after being asked to stop and then \
+                 killed; its pidfile is left in place because the process it names still \
+                 exists, and no handoff is issued over a core that did not go",
+                deadline.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Ok(())
+}
+
+async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulStop {
     // Ask whether anything is listening BEFORE spending the stop budget on a socket
     // nobody holds. Without this, `stop` on an already-stopped node waits the full
     // graceful budget and then reports state loss — 20 seconds to be told, wrongly, that
@@ -4630,7 +4863,38 @@ async fn request_graceful_stop() -> GracefulStop {
     }
 }
 
-async fn stop() -> Result<(), String> {
+async fn stop(options: StopOptions) -> Result<(), String> {
+    // The consented child does ONE thing and returns; it never drains, never sweeps,
+    // never asks for a second consent. Everything it is allowed to do is decided by the
+    // digest on its own argv.
+    if options.elevated {
+        let (plan, sha) = match (&options.plan, &options.plan_sha) {
+            (Some(p), Some(s)) => (p.clone(), s.clone()),
+            // Unreachable: StopOptions::parse binds the three together. Stated as a
+            // refusal rather than an unwrap so the invariant fails loud if that changes.
+            _ => return Err("stop --elevated: no bound plan".to_string()),
+        };
+        #[cfg(windows)]
+        {
+            // The drain is supplied BY THE ROOT, which is where the socket and the
+            // `MayDrain` gate live — the module stays a leaf and the token stays where it
+            // can only be built by a preflight or by a held handle.
+            return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
+                format!(
+                    "{:?}",
+                    request_graceful_stop(&MayDrain::proven_by_held_handle()).await
+                )
+            })
+            .await;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (plan, sha);
+            return Err("stop --elevated is the Windows consent child; this platform's \
+                        teardown needs no borrowed privilege"
+                .to_string());
+        }
+    }
     // The operator verb answers with its EXIT CODE. `stop` returning 0 has meant only
     // "the process is gone"; it now means "the process is gone AND every module's state
     // reached disk", which is the question anyone typing `stop` before an upgrade is
@@ -4666,13 +4930,56 @@ async fn stop() -> Result<(), String> {
 /// that first"). The standalone `stop` verb keeps FULL teardown — an operator
 /// who says stop means everything.
 async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
+    // Unattended callers — the deploy consumer above all — NEVER escalate:
+    // a consent prompt needs a human at the machine, and one raised from the supervisor
+    // would hang the consumer on a dialog nobody can see until the consent times out.
+    stop_with_authority(keep_lanes, false).await
+}
+
+/// `stop_with`, plus whether the operator is present to answer one consent prompt when
+/// this caller turns out to have no authority over the core.
+async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
     // report what reached disk. The kill still runs afterwards either way: a core that
     // answered is already exiting and the sweep finds nothing, and a core that did not
     // answer still has to go. What changes is that the operator is told which of those
     // happened instead of reading the same success line for both.
-    let graceful = request_graceful_stop().await;
+    // PREFLIGHT THE TEARDOWN AUTHORITY BEFORE THE DRAIN (Astra, 2026-09-22): the
+    // drain is one-way, so a caller that cannot end the process must refuse here
+    // rather than leave a drained core answering ping.
+    // A refusal here is only final when nobody can answer for it. With an operator
+    // present the missing privilege is BORROWED after the drain rather than the stop
+    // being abandoned before it — the difference between a clearer error and a node that
+    // comes back.
+    let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
+    // BORROW THE PRIVILEGE BEFORE ANYTHING IS DRAINED, not after. `operator_present` is
+    // INTENT; a consent can still be declined, time out, or land on a token that does not
+    // hold the privilege either — and a drain already spent by then leaves exactly the
+    // stranded core this preflight exists to prevent (Astra, 2026-09-22). The consented
+    // child therefore owns both halves for its target: it holds a TERMINATE handle open
+    // ACROSS its own drain, so every acquisition failure lands BEFORE the drain. The
+    // terminate itself can still fail and is still reported — a held handle narrows the
+    // window, it does not abolish it. When this returns Ok the core is already down and
+    // the request below finds nothing listening, which is the correct reading of that.
+    if let Some(pid) = may_drain.borrow_authority_for {
+        #[cfg(windows)]
+        {
+            let install_dir = installed_core_dir().await?;
+            elevated_teardown::request_elevated_teardown(pid, &install_dir).await?;
+            // Gone is proven the same way every other teardown proves it: the bounded
+            // deadline, never a probe on the next line (Astra, 2026-09-22).
+            exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(format!(
+                "install: no teardown authority over pid {pid}, and this platform has no \
+                 consent boundary to borrow one through — the core runs as another user"
+            ));
+        }
+    }
+    let graceful = request_graceful_stop(&may_drain).await;
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
     // and passed `keep_lanes` because today the two callers are exactly reboot(true)/stop(false).
@@ -4711,12 +5018,26 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
 
     let mut pidfile_core: Option<i32> = None;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
-        if let Ok(pid) = contents.trim().parse::<i32>() {
-            kill_pid_trees_preserving(&[pid], &keep);
-            pidfile_core = Some(pid);
-            println!("stopping core (pid {pid})");
+        match contents.trim().parse::<i32>() {
+            Ok(pid) => {
+                kill_pid_trees_preserving(&[pid], &keep);
+                println!("stopping core (pid {pid})");
+                // A PIDFILE IS A CLAIM THAT A PROCESS EXISTS. Removing it while the
+                // process exists is what makes every later reader wrong: the sweep
+                // below excludes the pid as handled, the handoff proceeds, and the
+                // only place the truth surfaced was a timeout blaming a slow exit.
+                // So the removal is now CONDITIONAL on the exit being observed, and a
+                // core that did not go aborts the stop with its pid still claimed.
+                exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
+                pidfile_core = Some(pid);
+                let _ = std::fs::remove_file(&pidfile);
+            }
+            // A pidfile that parses to nothing names no process, so nothing can
+            // survive it — it is stale by construction and safe to clear.
+            Err(_) => {
+                let _ = std::fs::remove_file(&pidfile);
+            }
         }
-        let _ = std::fs::remove_file(&pidfile);
     }
     let stopped = pidfile_core.is_some();
 
@@ -5030,6 +5351,112 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-22, Astra's Windows node): a drain that runs even
+    // though the teardown after it will be refused. `system/shutdown.rs` deliberately
+    // leaves the process alive for the CLI to end, and `OpenProcess(25040, TERMINATE)`
+    // returned NULL/error 5 there — so draining first left a drained core still
+    // answering ping, with no way to end it. The rule must refuse BEFORE the drain and
+    // must say that nothing was touched, because an operator who reads "refused" after
+    // a drain has a different machine in front of them than one who reads it before.
+    #[test]
+    fn a_drain_is_refused_when_the_teardown_after_it_would_be() {
+        use super::may_begin_shutdown;
+        assert!(may_begin_shutdown(Ok(())).is_ok(), "authority present: the stop proceeds");
+        let refused = may_begin_shutdown(Err("OpenProcess denied".to_string()))
+            .expect_err("no teardown authority must refuse the drain");
+        assert!(refused.contains("OpenProcess denied"), "the OS's reason is carried: {refused}");
+        assert!(
+            refused.contains("No state was touched"),
+            "the refusal must say the drain did NOT run: {refused}"
+        );
+    }
+
+    // what this catches: a capability probe that refuses on a pid that is merely GONE.
+    // The pidfile routinely names a core that already exited; if absence read as "no
+    // authority", every ordinary stop would refuse before doing anything. Only an
+    // actual permission denial may refuse.
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_that_no_longer_exists_is_not_a_permission_refusal() {
+        use super::teardown_authority;
+        assert!(
+            teardown_authority(std::process::id() as i32).is_ok(),
+            "a process this caller owns is tearable down"
+        );
+        // Max pid + 1 on every supported unix: nothing can be running there.
+        assert!(
+            teardown_authority(i32::MAX).is_ok(),
+            "already gone is nothing to tear down, never a refusal"
+        );
+    }
+
+    // what this catches (Astra's review of e275378a2, 2026-09-22): tests that exercise
+    // helpers instead of the orchestration — "a removed preflight call still passes all
+    // three". This one is over the decision the stop path ACTUALLY makes, across every
+    // core it would have to end, and the call itself is now unskippable by construction:
+    // `request_graceful_stop` takes the `MayDrain` only this function produces, so
+    // deleting the preflight does not turn a test green, it stops compiling.
+    #[test]
+    fn the_drain_is_decided_over_every_core_this_stop_would_have_to_end() {
+        use super::preflight_teardown;
+        let refuse_25040 = |pid: i32| {
+            if pid == 25040 { Err("OpenProcess denied".to_string()) } else { Ok(()) }
+        };
+
+        // All endable: drain, nothing to borrow.
+        let ok = preflight_teardown(&[10, 11], false, refuse_25040).expect("owned cores drain");
+        assert!(ok.borrow_authority_for.is_none());
+
+        // THE ONE THAT MATTERS: the un-endable core is not the first in the list. A
+        // preflight that checked only the pidfile's claim — the head of this vector —
+        // would pass here and drain a core it cannot end.
+        let refused = preflight_teardown(&[10, 25040], false, refuse_25040)
+            .err()
+            .expect("a core this caller cannot end must refuse the drain");
+        assert!(refused.contains("OpenProcess denied"), "{refused}");
+        assert!(refused.contains("No state was touched"), "{refused}");
+
+        // Same observation, operator present: carried forward to be borrowed AFTER the
+        // drain rather than abandoning the stop.
+        let escalated = preflight_teardown(&[10, 25040], true, refuse_25040)
+            .expect("an operator present proceeds and borrows the privilege later");
+        assert_eq!(escalated.borrow_authority_for, Some(25040));
+
+        // Nothing running at all is not a refusal — there is no core to be unable to end.
+        assert!(preflight_teardown(&[], false, |_| Err("x".to_string()))
+            .expect("no cores, nothing to preflight")
+            .borrow_authority_for
+            .is_none());
+    }
+
+    // what this catches (Astra's second objection, 2026-09-22): deciding a kill failed
+    // by probing liveness on the next line. SIGTERM and taskkill are asynchronous, so a
+    // healthy core is still in the table immediately after — an immediate probe would
+    // have reported "kill refused" on every successful deploy. The decider is the
+    // bounded deadline: a pid still present when it expires, and only then.
+    #[tokio::test]
+    async fn only_outliving_the_deadline_is_evidence_that_a_kill_did_not_take() {
+        use super::exited_within;
+        use std::time::Duration;
+        // Our own pid cannot exit, so it stands in for a core that refused to go.
+        let me = std::process::id() as i32;
+        let refused = exited_within(me, Duration::from_millis(300))
+            .await
+            .expect_err("a pid still alive at the deadline is a failed teardown");
+        assert!(refused.contains(&me.to_string()), "the surviving pid is named: {refused}");
+        assert!(
+            refused.contains("pidfile is left in place"),
+            "the claim must survive the process it names: {refused}"
+        );
+        // And a pid that is gone returns without spending the deadline.
+        let started = std::time::Instant::now();
+        assert!(exited_within(i32::MAX, Duration::from_secs(30)).await.is_ok());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "an already-dead pid must not wait out the deadline"
+        );
+    }
+
     // what this catches (card 82af11f5, 2026-09-19): the Windows deploy consumer's
     // verdict vocabulary — no request = nothing owed; the tip already running (short
     // sha as a prefix, git's 7-char floor) = the tracker retires it, never a reboot;
