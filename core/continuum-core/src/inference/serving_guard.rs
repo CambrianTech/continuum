@@ -5,8 +5,6 @@
 //! that function was ~1.3k lines doing everything; each concern becomes a module named
 //! for the concern, never the wire format). Behaviour-identical to the inline block.
 
-use serde_json::Value;
-
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
 
 /// Why a generation was refused when the requested model is not guaranteed resident, said
@@ -66,7 +64,9 @@ pub(crate) fn snapshot_guarantees(
 /// readiness gate (#350) cannot cover this: it reads the snapshot BEFORE a deliberation that
 /// takes tens of seconds, so a teardown starting mid-deliberation always outruns it. The gate
 /// stops a turn that was doomed at its start; this stops one that was overtaken in flight.
-pub(crate) fn settled_on_another_model(snap: &crate::inference::llama_server::ServingSnapshot) -> bool {
+pub(crate) fn settled_on_another_model(
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> bool {
     snap.is_live()
 }
 
@@ -109,11 +109,13 @@ pub(crate) fn unguaranteed_model_refusal(
 /// block on an unknown budget). Estimate is chars/4 — the same conservative heuristic as
 /// the `serving.ctx_overshoot` alarm; we only trip on prompt-alone-overflows so a
 /// legitimately-budgeted request (which always leaves reply headroom) is never blocked.
-pub(crate) fn prompt_alone_overflows_served(body: &serde_json::Value, served_window: u32) -> Option<usize> {
+pub(crate) fn prompt_alone_overflows_served(
+    prompt_tokens: usize,
+    served_window: u32,
+) -> Option<usize> {
     if served_window == 0 {
         return None;
     }
-    let prompt_tokens = approx_prompt_tokens(body);
     (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
 }
 
@@ -141,7 +143,7 @@ pub(crate) async fn guard_resident_model(
     cfg: &OpenAICompatibleConfig,
     dedicated_lane: bool,
     model: &str,
-    body: &Value,
+    prompt_tokens: usize,
     caller: &str,
 ) -> Result<(), String> {
     // Pre-flight the single-resident gateway: GUARANTEE our model is the one
@@ -238,19 +240,18 @@ pub(crate) async fn guard_resident_model(
         // same conservative estimate the overshoot alarm uses.
         // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
         if let Some(prompt_tokens) =
-            prompt_alone_overflows_served(&body, snap.served_context_window)
+            prompt_alone_overflows_served(prompt_tokens, snap.served_context_window)
         {
             // The refused size is demand this seat could not hold; it votes on the next
             // plan's window (the 5090's self-sealed 2048, 2026-09-20).
-            crate::cognition::resource_admission::note_refused_prompt(prompt_tokens.min(u32::MAX as usize) as u32);
+            crate::cognition::resource_admission::note_refused_prompt(
+                prompt_tokens.min(u32::MAX as usize) as u32,
+            );
             return Err(format!(
                 "{}: refusing to generate — prompt ~{} tokens ≥ the served per-slot \
                  window of {} (caller: {}). Sending it would 500 and POISON the shared \
                  slot for every later request; fit the prompt to the served window (#175).",
-                cfg.name,
-                prompt_tokens,
-                snap.served_context_window,
-                caller,
+                cfg.name, prompt_tokens, snap.served_context_window, caller,
             ));
         }
     }
@@ -267,17 +268,23 @@ mod tests {
         let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
         // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
         assert_eq!(
-            prompt_alone_overflows_served(&body(48_000), 8_000),
+            prompt_alone_overflows_served(approx_prompt_tokens(&body(48_000)), 8_000),
             Some(12_000),
             "prompt alone over the window must be refused"
         );
         // ~4000 tokens vs an 8000 slot → fits (room for the prompt + a reply) → allow.
-        assert_eq!(prompt_alone_overflows_served(&body(16_000), 8_000), None);
+        assert_eq!(
+            prompt_alone_overflows_served(approx_prompt_tokens(&body(16_000)), 8_000),
+            None
+        );
         // Window unknown (mid-relaunch) → never block, whatever the prompt size.
-        assert_eq!(prompt_alone_overflows_served(&body(48_000), 0), None);
+        assert_eq!(
+            prompt_alone_overflows_served(approx_prompt_tokens(&body(48_000)), 0),
+            None
+        );
         // No messages array → nothing to overflow.
         assert_eq!(
-            prompt_alone_overflows_served(&serde_json::json!({}), 8_000),
+            prompt_alone_overflows_served(approx_prompt_tokens(&serde_json::json!({})), 8_000),
             None
         );
     }
