@@ -181,7 +181,7 @@ where
             teardown_sequence(&plan, HeldTerminate::take, drain).await?;
         // The digest is RECORDED, not compared: nobody could have known it in advance
         // (see `target_is_our_core`), but the receipt should say exactly what was ended.
-        let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})"));
+        let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})")); // unwrap_or_else: the digest is RECORDED, never compared — an unreadable image must not block a teardown that is otherwise proven
         Ok::<String, String>(format!(
             "elevated teardown: drained ({graceful}) and terminated pid {} running {image} (sha256 {sha})",
             plan.pid
@@ -232,7 +232,7 @@ pub(crate) async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Re
     let elevated =
         super::supervisor_install::powershell(&script, std::time::Duration::from_secs(600)).await;
     // unwrap_or_default: an absent receipt is reported below as "none", never as success.
-    let receipt_text = std::fs::read_to_string(&receipt).unwrap_or_default();
+    let receipt_text = std::fs::read_to_string(&receipt).unwrap_or_default(); // unwrap_or_default: an absent receipt is reported below as "none", never as success
     let _ = std::fs::remove_file(&plan_path);
     let _ = std::fs::remove_file(&receipt);
     elevation_outcome(pid, elevated, &receipt_text)?;

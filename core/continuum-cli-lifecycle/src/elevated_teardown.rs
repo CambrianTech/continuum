@@ -104,7 +104,7 @@ pub fn bind_plan_bytes(
             "the teardown plan at {} is not the one the consent was given for \
              (sha {} on argv, {actual} on disk) — refusing to terminate anything",
             shown_as.display(),
-            plan_sha.get(..12).unwrap_or(plan_sha)
+            plan_sha.get(..12).unwrap_or(plan_sha) // unwrap_or: a short digest is still a digest; showing all of it beats hiding it
         ));
     }
     serde_json::from_slice(bytes).map_err(|e| format!("the plan is not a TeardownPlan: {e}"))
@@ -143,7 +143,7 @@ pub fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(
             plan.pid, plan.install_dir
         ));
     }
-    let name = image.rsplit('\\').next().unwrap_or(&image);
+    let name = image.rsplit('\\').next().unwrap_or(&image); // unwrap_or: rsplit always yields once, so this is the no-separator case — the whole string IS the name
     if !CORE_IMAGE_NAMES.contains(&name) {
         return Err(format!(
             "pid {} is running {observed_image}, which is in the installation directory but \
