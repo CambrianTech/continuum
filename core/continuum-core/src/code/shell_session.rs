@@ -489,10 +489,18 @@ impl ShellSession {
         }
     }
 
-    /// Get the execution state arc for a given execution ID.
+    /// Resolve a full execution ID or unique hex prefix in this session only.
     /// Used to await completion without holding the DashMap lock.
-    pub fn get_execution_state(&self, execution_id: &str) -> Option<Arc<Mutex<ExecutionState>>> {
-        self.executions.get(execution_id).cloned()
+    pub fn get_execution_state(&self, execution_id: &str) -> Result<Arc<Mutex<ExecutionState>>, String> {
+        if let Some(state) = self.executions.get(execution_id) {
+            return Ok(state.clone());
+        }
+        let candidates: Vec<Uuid> = self.executions.keys()
+            .map(|id| Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}")))
+            .collect::<Result<_, _>>()?;
+        let id = crate::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
+        self.executions.get(&id.to_string()).cloned()
+            .ok_or_else(|| format!("No execution '{execution_id}' in this shell session"))
     }
 
     /// Poll an execution for new output since the last poll.
@@ -501,10 +509,7 @@ impl ShellSession {
     /// until `finished` is true. Cursor advances automatically — each line
     /// is returned exactly once across polls.
     pub fn poll(&self, execution_id: &str) -> Result<ShellPollResponse, String> {
-        let state_arc = self
-            .executions
-            .get(execution_id)
-            .ok_or_else(|| format!("No execution '{execution_id}'"))?;
+        let state_arc = self.get_execution_state(execution_id)?;
 
         let mut state = state_arc
             .lock()
@@ -518,7 +523,7 @@ impl ShellSession {
         let finished = state.status != ShellExecutionStatus::Running;
 
         Ok(ShellPollResponse {
-            execution_id: execution_id.to_string(),
+            execution_id: state.id.clone(),
             status: state.status.clone(),
             new_stdout,
             new_stderr,
@@ -532,10 +537,7 @@ impl ShellSession {
     /// Sets the kill flag; the background task detects it and terminates
     /// the child process. No-op if already finished.
     pub fn kill(&self, execution_id: &str) -> Result<(), String> {
-        let state_arc = self
-            .executions
-            .get(execution_id)
-            .ok_or_else(|| format!("No execution '{execution_id}'"))?;
+        let state_arc = self.get_execution_state(execution_id)?;
 
         let mut state = state_arc
             .lock()
@@ -634,11 +636,7 @@ impl ShellSession {
         &self,
         execution_id: &str,
     ) -> Result<(Arc<Mutex<ExecutionState>>, Arc<Notify>), String> {
-        let exec_state = self
-            .executions
-            .get(execution_id)
-            .ok_or_else(|| format!("No execution '{execution_id}'"))?
-            .clone();
+        let exec_state = self.get_execution_state(execution_id)?;
         let notify = exec_state
             .lock()
             .map_err(|e| format!("Lock poisoned: {e}"))?
@@ -656,10 +654,7 @@ impl ShellSession {
         execution_id: &str,
         rules: &[SentinelRule],
     ) -> Result<usize, String> {
-        let exec_state = self
-            .executions
-            .get(execution_id)
-            .ok_or_else(|| format!("No execution '{execution_id}'"))?;
+        let exec_state = self.get_execution_state(execution_id)?;
 
         let compiled = CompiledSentinel::compile(rules)?;
         let count = compiled.len();
@@ -1413,10 +1408,17 @@ mod tests {
             .unwrap();
 
         // Poll until finished
+        // Short handles must round-trip to the full ID and cannot cross sessions.
+        let other = ShellSession::new("other", "p2", dir.path()).unwrap();
+        assert!(other.get_execution_state(&exec_id[..8]).is_err());
+        assert!(other.get_execution_state(&exec_id).is_err());
+        assert!(session.get_watch_handles(&exec_id[..8]).is_ok());
+        assert_eq!(session.set_sentinel(&exec_id[..8], &[]).unwrap(), 0);
         let mut all_stdout = Vec::new();
         loop {
             std::thread::sleep(Duration::from_millis(50));
-            let poll = session.poll(&exec_id).unwrap();
+            let poll = session.poll(&exec_id[..8]).unwrap();
+            assert_eq!(poll.execution_id, exec_id);
             all_stdout.extend(poll.new_stdout);
             if poll.finished {
                 assert_eq!(poll.exit_code, Some(0));
@@ -1452,7 +1454,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         // Kill it
-        session.kill(&exec_id).unwrap();
+        session.kill(&exec_id[..8]).unwrap();
 
         // Poll should show killed
         std::thread::sleep(Duration::from_millis(200));

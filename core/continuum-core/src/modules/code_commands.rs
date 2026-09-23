@@ -1381,7 +1381,7 @@ impl ActionCommand for CodeShell {
                 .map_err(CommandError::Internal)?;
             shell
                 .get_execution_state(&exec_id)
-                .ok_or_else(|| CommandError::Internal("execution vanished".into()))?
+                .map_err(CommandError::Internal)?
         };
 
         // BOUNDED inline wait: return the moment it completes, or hand back the
@@ -1426,7 +1426,7 @@ pub struct CodeShellPoll {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellPollParams {
-    /// The execution_id handle returned by `code/shell`.
+    /// Full execution_id or an unambiguous hex prefix within your shell session.
     pub execution_id: String,
 }
 
@@ -1453,7 +1453,7 @@ impl ActionCommand for CodeShellPoll {
             .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
         let state_arc = shell
             .get_execution_state(&p.execution_id)
-            .ok_or_else(|| CommandError::NotFound(format!("no execution {}", p.execution_id)))?;
+            .map_err(CommandError::Invalid)?;
         let s = state_arc
             .lock()
             .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
@@ -1470,7 +1470,7 @@ pub struct CodeShellKill {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellKillParams {
-    /// The execution_id handle returned by `code/shell`.
+    /// Full execution_id or an unambiguous hex prefix within your shell session.
     pub execution_id: String,
 }
 
