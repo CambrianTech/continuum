@@ -302,7 +302,7 @@ impl ActionCommand for WorkSubmit {
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Submit your own claimed work for independent review. Omitted artifact and claim fields derive from your checkout. Publication is not success.";
+        "Submit own work for review; artifact/claim default from checkout. Publication is not success.";
     type Params = WorkSubmitParams;
     type Output = WorkSubmitResult;
 
@@ -591,7 +591,7 @@ impl ActionCommand for WorkReview {
     const NAME: &'static str = "work/review";
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str = "Record a review verdict under your linked reviewer claim. To submit your own work, use work/submit. Does not imply training completion.";
+    const DESCRIPTION: &'static str = "Verdict under a reviewer claim, not training completion. Own work: work/submit.";
     type Params = WorkReviewParams;
     type Output = WorkReviewResult;
 
@@ -801,7 +801,7 @@ impl ActionCommand for WorkSubmission {
     const NAME: &'static str = "work/submission";
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str = "Read an existing submission by submission_id. For task instructions use work/get; to publish your own work use work/submit.";
+    const DESCRIPTION: &'static str = "Read submission_id. Task: work/get. Publish: work/submit.";
     type Params = WorkSubmissionParams;
     type Output = WorkSubmissionResult;
 
