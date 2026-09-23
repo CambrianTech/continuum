@@ -1851,7 +1851,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             crate::inference::llama_server::RealDecodeOutcome::CappedBeforeOutput => {
                 crate::probe!(
                     class = "inference.lane.capped_before_output",
-                    model = resp_model.as_deref().unwrap_or("<unknown>"),
+                    model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
                     response_time_ms,
                     "the local lane hit its output cap having committed no answer — an \
                      allowance fault on a working backend, NOT lane wedge evidence"
@@ -1892,7 +1892,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 crate::inference::llama_server::note_real_decode_failure();
                 crate::probe!(
                     class = "inference.lane.delivered_nothing",
-                    model = resp_model.as_deref().unwrap_or("<unknown>"),
+                    model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
                     response_time_ms,
                     consecutive =
                         crate::inference::llama_server::consecutive_real_decode_failures(),

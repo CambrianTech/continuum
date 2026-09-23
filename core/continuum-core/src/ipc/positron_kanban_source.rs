@@ -605,6 +605,7 @@ mod tests {
             lane_id: None,
             state,
             owner,
+            claim_provenance: None,
             claim_id: None,
             claim_expires_at_ms: None,
             last_heartbeat_at_ms: None,

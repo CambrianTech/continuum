@@ -807,21 +807,19 @@ impl PersonaAircRuntime {
                             // WIP = 1 survives the recovery: if she already holds a LIVE
                             // card, a lapsed one is left for the deck (2026-09-05: a
                             // citizen ended up on two).
-                            let holds_live = snapshot.cards.iter().any(|c| {
-                                c.owner == Some(me)
-                                    && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)
-                            });
+
                             // ONE card per citizen holds through the recovery too: of
-                            // several lapsed holds, only the most recently touched comes
-                            // back; the rest stay on the deck for anyone (2026-09-12: a
+                            // several lapsed holds, prefer the latest explicit choice,
+                            // then recency. Recovery preserves decision time; live
+                            // automatic work cannot suppress an earned explicit choice.
+                            // The rest stay on the deck for anyone (2026-09-12: a
                             // coder recovered four at one boot and pulled nothing for an
                             // hour behind the lane cap).
                             let recoverable = snapshot
                                 .cards
                                 .iter()
                                 .filter(|c| {
-                                    !holds_live
-                                        && crate::persona::cognition_pulse::renewal_earned(
+                                    crate::persona::cognition_pulse::renewal_earned(
                                             crate::persona::cognition_pulse::work_idle_ms(
                                                 hb_persona,
                                                 Some(c.card_id.as_uuid()),
@@ -840,13 +838,28 @@ impl PersonaAircRuntime {
                                                 | airc_work::model::CardState::InProgress
                                         )
                                 })
-                                .max_by_key(|c| c.updated_at_ms);
+                                .max_by_key(|c| (
+                                    crate::persona::work_focus::explicit_choice_key(c.card_id.as_uuid(), c.claim_provenance.as_ref()),
+                                    c.updated_at_ms,
+                                ))
+                                .filter(|candidate| crate::persona::work_focus::recovery_preferred_over_live(
+                                    candidate,
+                                    snapshot.cards.iter().filter(|c| c.owner == Some(me)
+                                        && c.claim_expires_at_ms.is_some_and(|e| e > now_ms)),
+                                ));
                             if let Some(card) = recoverable {
                                 match hb_airc
-                                    .claim_work_card(airc_lib::ClaimWorkCard {
-                                        card_id: card.card_id,
-                                        ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                                    })
+                                    .claim_work_card_with_provenance(
+                                        airc_lib::ClaimWorkCard {
+                                            card_id: card.card_id,
+                                            ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                        },
+                                        card.claim_provenance
+                                            .as_ref()
+                                            .map(|p| p.origin)
+                                            .unwrap_or_default(), // unwrap_or_default: legacy claim has unknown origin
+                                        card.claim_provenance.as_ref().map(|p| p.selected_at_ms),
+                                    )
                                     .await
                                 {
                                     Ok(_) => crate::probe!(
@@ -1501,7 +1514,8 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         let caller = crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(
             self.persona_id,
         ));
-        let params = serde_json::json!({ "card_id": card_id.as_uuid().to_string() });
+        let params =
+            serde_json::json!({ "card_id": card_id.as_uuid().to_string(), "origin": "automatic" });
         match executor
             .execute_with_caller("work/claim", params, Some(caller))
             .await
@@ -1535,9 +1549,11 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             .cards
             .iter()
             .filter(|c| {
-                let owner_resident = c
-                    .owner
-                    .is_some_and(|o| registry.as_ref().is_some_and(|r| r.get(o.as_uuid()).is_some()));
+                let owner_resident = c.owner.is_some_and(|o| {
+                    registry
+                        .as_ref()
+                        .is_some_and(|r| r.get(o.as_uuid()).is_some())
+                });
                 crate::persona::card_holder::claimable_by(c, now_ms, me, owner_resident)
             })
             // A card whose instance carries a STANDING ENV refusal on this box (the
@@ -1578,7 +1594,11 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
                 .map(|r| r.iter().map(|rt| rt.airc().peer_id()).collect())
                 .unwrap_or_default(); // unwrap_or: no registry yet = only me holds here
         holders.insert(self.airc.peer_id());
-        Ok(crate::persona::card_holder::in_flight_by(&board.cards, &holders, now_ms))
+        Ok(crate::persona::card_holder::in_flight_by(
+            &board.cards,
+            &holders,
+            now_ms,
+        ))
     }
 }
 

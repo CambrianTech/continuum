@@ -1,7 +1,7 @@
 //! Classify installed engine images without reaping control clients.
 use std::path::Path;
 
-pub(crate) fn owned_engine_candidate(
+pub fn owned_engine_candidate(
     executable: &Path,
     owned_root: &Path,
     pid: u32,

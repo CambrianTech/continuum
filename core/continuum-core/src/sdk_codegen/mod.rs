@@ -62,7 +62,10 @@ pub mod conformance;
 pub mod emit;
 pub mod events;
 pub mod handler;
-pub use command::{stateless_command_objects, ActionCommand, DynCommand, StatelessCommand};
+pub use command::{
+    outcome_projector, project_result, stateless_command_objects, ActVerdict, ActionCommand,
+    DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,
+};
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
 pub use events::{event_registry, EventDescriptor, EventSpec};
@@ -561,6 +564,44 @@ macro_rules! register_command {
         inventory::submit! {
             $crate::sdk_codegen::CommandRegistration::new(
                 || $crate::sdk_codegen::CommandDescriptor::of::<$cmd>(),
+            )
+        }
+    };
+}
+
+/// Opt a command into TRUTHFUL tool receipts — one line at the command's own site.
+///
+/// The command must implement [`sdk_codegen::ProjectsOutcome`]. Without this
+/// submission a command's receipts behave exactly as before: the transport arm
+/// alone decides, and a failure returned as data still renders a tick.
+///
+/// ```ignore
+/// register_outcome!(CodeRun);
+/// ```
+#[macro_export]
+macro_rules! register_outcome {
+    ($cmd:ty) => {
+        inventory::submit! {
+            $crate::sdk_codegen::OutcomeProjector::new(
+                <$cmd as $crate::sdk_codegen::ActionCommand>::NAME,
+                |value| {
+                    // ONE decode, both facts. A registered projector that cannot
+                    // decode its OWN declared output is SCHEMA DRIFT, not an outcome.
+                    // It must never collapse into "no projector" (which renders
+                    // success) — the payload is preserved and the claim is withheld.
+                    match ::serde_json::from_value::<
+                        <$cmd as $crate::sdk_codegen::ActionCommand>::Output,
+                    >(value.clone())
+                    {
+                        Ok(o) => (
+                            $crate::sdk_codegen::ActVerdict::Declared(
+                                <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o),
+                            ),
+                            <$cmd as $crate::sdk_codegen::ProjectsOutcome>::dispatch_handle(&o),
+                        ),
+                        Err(_) => ($crate::sdk_codegen::ActVerdict::Undecodable, None),
+                    }
+                },
             )
         }
     };

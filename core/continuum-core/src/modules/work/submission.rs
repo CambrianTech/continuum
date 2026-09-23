@@ -84,7 +84,7 @@ pub struct WorkSubmitParams {
     // omitted — the citizen's world has no verb that mints an artifact hash, and
     // before 2026-09-17 every submit she wrote by hand carried zeros and was refused
     // (56 on the M5 in one day; Kimi on the 5090 every turn for a night).
-    /// The card you hold.
+    /// Full UUID of the card you hold (from work/get).
     #[ts(type = "string")]
     pub card_id: Uuid,
     /// Minted when omitted.
@@ -302,7 +302,7 @@ impl ActionCommand for WorkSubmit {
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Publish a claimed artifact, optionally binding staged credit for independent review. Publication is not success.";
+        "Submit own work for review; artifact/claim default from checkout. Publication is not success.";
     type Params = WorkSubmitParams;
     type Output = WorkSubmitResult;
 
@@ -525,7 +525,7 @@ pub struct WorkReviewParams {
     // and her claim on the review card are read off the board from it when the fields
     // below are omitted — a reviewer never had a way to know a submission id or an
     // artifact hash by hand (5204f4b5 sent all-zero ids, 2026-09-16).
-    /// The review card you hold.
+    /// Full UUID of your linked review card, not the task you authored.
     #[ts(type = "string")]
     pub review_card_id: Uuid,
     /// Your verdict.
@@ -591,7 +591,7 @@ impl ActionCommand for WorkReview {
     const NAME: &'static str = "work/review";
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str = "Review an exact submission with evidence under your linked review claim. Does not imply training completion.";
+    const DESCRIPTION: &'static str = "Verdict under a reviewer claim, not training completion. Own work: work/submit.";
     type Params = WorkReviewParams;
     type Output = WorkReviewResult;
 
@@ -801,7 +801,7 @@ impl ActionCommand for WorkSubmission {
     const NAME: &'static str = "work/submission";
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str = "Inspect a submission, signed reviews and local credit receipts. No private prompts or training.";
+    const DESCRIPTION: &'static str = "Read submission_id. Task: work/get. Publish: work/submit.";
     type Params = WorkSubmissionParams;
     type Output = WorkSubmissionResult;
 

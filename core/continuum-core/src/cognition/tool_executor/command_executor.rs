@@ -42,13 +42,13 @@ use uuid::Uuid;
 
 use super::spill;
 use super::types::{
-    NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
+    CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
-use crate::sdk_codegen::{command_registry, AccessLevel};
+use crate::sdk_codegen::{command_registry, AccessLevel, ActVerdict};
 use continuum_client::{ClientError, Connection};
 use std::sync::Arc;
 
@@ -509,12 +509,48 @@ impl ToolExecutor for CommandToolExecutor {
             }
         });
 
+        // Filled by the Ok arm below, correlated by tool_use_id (never position).
+        let mut verdicts: Vec<CallVerdict> = Vec::with_capacity(calls.len());
         let results = join_all(dispatches)
             .await
             .into_iter()
             .enumerate()
             .map(|(i, (tool_use_id, outcome))| match outcome {
                 Ok(value) => {
+                    // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
+                    // the FULL value. Ordering is the contract, not an accident: the
+                    // fold below can spill and truncate the rendered text, and the
+                    // old act seam re-parsed that truncated text to recover the same
+                    // facts (apply.rs, pre-#4352) — so a flood-sized result stopped
+                    // parsing and an aliased call (`bash`) never matched at all.
+                    //
+                    // The name is resolved through the SAME `tool_dialect` seam the
+                    // dispatch above and `runtime::route_command` use, so `bash` and
+                    // `code_run` reach their own command's projector.
+                    //
+                    // Three states, never two: a command that did not opt in projects
+                    // `Unprojected` and keeps its old behaviour byte for byte; a
+                    // command that DID opt in but whose own declared `Output` no
+                    // longer decodes projects `Undecodable` — schema drift, a defect,
+                    // and never silently a success (Astra, #4352 review).
+                    let canonical =
+                        crate::cognition::tool_dialect::resolve_wire_name(&calls[i].name);
+                    let (verdict, dispatch_handle) =
+                        crate::sdk_codegen::project_result(&canonical, &value);
+                    if verdict == ActVerdict::Undecodable {
+                        crate::probe!(
+                            class = "tool.call.outcome_undecodable",
+                            persona = %ctx.persona_name,
+                            command = %canonical,
+                            "a registered projector could not decode its own command's declared output — schema drift; the payload is preserved and NO outcome is claimed"
+                        );
+                    }
+                    verdicts.push(CallVerdict {
+                        tool_use_id: tool_use_id.clone(),
+                        verdict,
+                        dispatch_handle,
+                    });
+
                     let full = value.to_string(); // owned render once; both the canvas feed and the fold read it
                     // Canvas feed publishes from the PRE-FOLD content. It used to
                     // hook the post-fold observation in act_observe/apply, where a
@@ -538,19 +574,15 @@ impl ToolExecutor for CommandToolExecutor {
                         NativeToolResult {
                             tool_use_id,
                             content,
-                            is_error: None,
+                            // The bool can only carry the one question it can answer.
+                            // `Running` and `Undecodable` are NOT failures and must not
+                            // be flattened into one here — they ride the typed
+                            // `CallVerdict` to the receipt, which can say them.
+                            is_error: verdict.failed().then_some(true),
                             spill_handle,
                         }
                     }
                 }
-                // A failed tool call is NOT a batch failure — it's fed back to the
-                // model as an error result so it can recover (retry, fix args,
-                // pick another tool). Batch-level `Err` is reserved for the
-                // executor/transport itself being unavailable. Take the substrate's
-                // OWN reason (e.g. "no Rust module handles command: …") and translate
-                // it into PERSONA-actionable feedback — naming the problem AND
-                // reinforcing `commands/help`/`commands/list` — so she recovers on a
-                // message in her own paradigm, not a developer-internal one.
                 Err(e) => {
                     let raw = match e {
                         ClientError::Refused { reason, .. } => reason,
@@ -559,6 +591,14 @@ impl ToolExecutor for CommandToolExecutor {
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
                     let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
+                    // A transport failure IS a failure, and the typed carrier must
+                    // say the same thing `is_error` does — a receipt that reads one
+                    // field and a glyph that reads the other must never disagree.
+                    verdicts.push(CallVerdict {
+                        tool_use_id: tool_use_id.clone(),
+                        verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
+                        dispatch_handle: None,
+                    });
                     NativeToolResult {
                         tool_use_id,
                         content: truncate_on_boundary(
@@ -576,6 +616,7 @@ impl ToolExecutor for CommandToolExecutor {
             results,
             media: Vec::new(),
             stored_ids: Vec::new(),
+            verdicts,
         })
     }
 
@@ -1051,6 +1092,192 @@ mod tests {
         /// self-registering command, dep-free). The real `for_persona` path.
         fn stateless_surface_hands() -> CommandToolExecutor {
             exec_over(Arc::new(ModuleRegistry::new()), Uuid::new_v4())
+        }
+
+        // ─────── the executor→receipt path for a projected outcome ───────
+        //
+        // Astra on #4352: "Projector-only tests cannot catch the current Running
+        // regression at the consumer." Constructing an `Observation` by hand proves
+        // the MAPPING; it proves nothing about the WIRING. These dispatch a real
+        // command through the real `execute_native_batch` and read what comes back.
+        //
+        // The command is declared HERE rather than reusing `code/run`, because
+        // `code/run` spawns a real interpreter and a CI box that lacks one would
+        // make this test a coin toss.
+
+        #[derive(Debug, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+        pub struct VerdictProbeParams {
+            /// "ok" | "fail" | "running" | "garbage"
+            pub mode: String,
+        }
+
+        #[derive(Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+        pub struct VerdictProbeResult {
+            pub ok: bool,
+            pub running: bool,
+            /// Preserved verbatim through the fold — the feedback the model needs.
+            pub stderr: String,
+            pub handle: Option<String>,
+        }
+
+        #[derive(Default)]
+        pub struct VerdictProbe;
+
+        #[async_trait::async_trait]
+        impl crate::sdk_codegen::ActionCommand for VerdictProbe {
+            const NAME: &'static str = "test/verdict-probe";
+            const ALIASES: &'static [&'static str] = &["probe_alias"];
+            const ACCESS: AccessLevel = AccessLevel::AiSafe;
+            const DESCRIPTION: &'static str = "test-only: returns a chosen outcome shape.";
+            type Params = VerdictProbeParams;
+            type Output = VerdictProbeResult;
+
+            async fn run(
+                &self,
+                _ctx: &crate::sdk_codegen::Ctx,
+                p: VerdictProbeParams,
+            ) -> Result<VerdictProbeResult, crate::sdk_codegen::CommandError> {
+                Ok(VerdictProbeResult {
+                    ok: p.mode == "ok",
+                    running: p.mode == "running",
+                    stderr: if p.mode == "fail" {
+                        "error[E0425]: cannot find value `x`".into()
+                    } else {
+                        String::new()
+                    },
+                    handle: (p.mode == "running")
+                        .then(|| "6f1a0f5e-0000-4000-8000-000000000001".to_string()),
+                })
+            }
+        }
+
+        impl crate::sdk_codegen::ProjectsOutcome for VerdictProbe {
+            fn outcome(o: &VerdictProbeResult) -> crate::sdk_codegen::ToolVerdict {
+                if o.running {
+                    crate::sdk_codegen::ToolVerdict::Running
+                } else if o.ok {
+                    crate::sdk_codegen::ToolVerdict::Succeeded
+                } else {
+                    crate::sdk_codegen::ToolVerdict::Failed
+                }
+            }
+            fn dispatch_handle(o: &VerdictProbeResult) -> Option<uuid::Uuid> {
+                o.handle.as_deref().and_then(|h| uuid::Uuid::parse_str(h).ok())
+            }
+        }
+
+        crate::register_stateless_command!(VerdictProbe);
+        crate::register_outcome!(VerdictProbe);
+
+        /// Dispatch through the REAL batch path and hand back the receipt plus the
+        /// typed carrier, correlated the way the act seam correlates them.
+        async fn dispatch_verdict(
+            mode: &str,
+            name: &str,
+        ) -> (
+            Option<bool>,
+            String,
+            crate::sdk_codegen::ActVerdict,
+            Option<uuid::Uuid>,
+        ) {
+            let exec = stateless_surface_hands();
+            let calls = vec![NativeToolCall {
+                id: "vp".to_string(),
+                name: name.to_string(),
+                input: json!({ "mode": mode }),
+            }];
+            let out = exec
+                .execute_native_batch(&calls, &ctx(), 8000)
+                .await
+                .expect("batch itself succeeds");
+            let r = out
+                .results
+                .iter()
+                .find(|r| r.tool_use_id == "vp")
+                .expect("result correlates by tool_use_id");
+            let v = out.verdicts.iter().find(|v| v.tool_use_id == "vp");
+            (
+                r.is_error,
+                r.content.clone(),
+                v.map(|v| v.verdict).unwrap_or_default(), // JUSTIFIED: absence means unprojected, which is the correct default
+                v.and_then(|v| v.dispatch_handle),
+            )
+        }
+
+        /// what this catches: THE defect, end to end. A command that reports its own
+        /// failure AS DATA takes the executor's `Ok` arm — before #4352 that arm set
+        /// `is_error: None` unconditionally and the room rendered a tick.
+        #[tokio::test]
+        async fn a_failure_returned_as_data_comes_back_flagged_and_keeps_its_stderr() {
+            let (is_error, content, verdict, handle) =
+                dispatch_verdict("fail", "test/verdict-probe").await;
+            assert_eq!(is_error, Some(true), "the command said it failed: {content}");
+            assert_eq!(
+                verdict,
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed)
+            );
+            assert!(
+                content.contains("E0425"),
+                "the stderr the model self-corrects from survives the fold: {content}"
+            );
+            assert_eq!(handle, None);
+        }
+
+        /// what this catches: Running flattened at the executor. `is_error` stays
+        /// None (not-finished is not failed) but the TYPED carrier must say running,
+        /// and the command-declared handle must ride along — that handle is what
+        /// registers the dispatch so the completion folds back into working memory.
+        #[tokio::test]
+        async fn a_running_call_carries_running_and_its_handle_not_an_error() {
+            let (is_error, _c, verdict, handle) =
+                dispatch_verdict("running", "test/verdict-probe").await;
+            assert_eq!(is_error, None, "accepted is not failed");
+            assert_eq!(
+                verdict,
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Running)
+            );
+            assert_eq!(
+                handle,
+                Some(uuid::Uuid::parse_str("6f1a0f5e-0000-4000-8000-000000000001").unwrap()), // JUSTIFIED: a literal the test itself authored
+                "the command declares its handle; the seam no longer re-parses folded text"
+            );
+        }
+
+        /// what this catches: the alias miss. The projector is keyed on the CANONICAL
+        /// name, and a model reaching for a declared alias must still get its own
+        /// command's verdict — otherwise the fix is dead for exactly the calls that
+        /// hit it most (`bash` for `code/shell`).
+        #[tokio::test]
+        async fn a_call_made_through_a_declared_alias_still_gets_its_verdict() {
+            let (is_error, _c, verdict, _h) = dispatch_verdict("fail", "probe_alias").await;
+            assert_eq!(is_error, Some(true), "the alias must reach the projector");
+            assert_eq!(
+                verdict,
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed)
+            );
+        }
+
+        /// what this catches: a command that never opted in changing behaviour at the
+        /// executor. It must project `Unprojected` and leave `is_error` exactly where
+        /// it was.
+        #[tokio::test]
+        async fn an_unprojected_command_is_untouched_at_the_executor() {
+            let exec = stateless_surface_hands();
+            let calls = vec![NativeToolCall {
+                id: "u".to_string(),
+                name: "commands/list".to_string(),
+                input: json!({}),
+            }];
+            let out = exec
+                .execute_native_batch(&calls, &ctx(), 8000)
+                .await
+                .expect("batch ok");
+            assert_eq!(out.results[0].is_error, None);
+            let v = out.verdicts.iter().find(|v| v.tool_use_id == "u");
+            assert!(
+                v.is_none_or(|v| v.verdict == crate::sdk_codegen::ActVerdict::Unprojected),
+                "a command with no projector claims nothing"
+            );
         }
 
         /// Dispatch one native call and return its (is_error, content).

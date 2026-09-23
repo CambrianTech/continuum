@@ -117,7 +117,7 @@ jobs:
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          cargo test -p continuum-core --lib --no-run --message-format=json > lib-artifacts.jsonl
+          cargo test -p continuum-core --lib --profile dev-fast --no-run --message-format=json > lib-artifacts.jsonl
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
@@ -146,19 +146,6 @@ jobs:
             exit 1
           fi
 
-      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
-      - name: cargo test -p continuum-core --doc (compile-fail guards)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          set -o pipefail
-          cargo test -p continuum-core --doc BindingIsUnstatable 2>&1 | tee doc-guard.log
-          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
-            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
-            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
-            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
-            exit 1
-          fi
-
       - name: Verify protocol/typescript/ in sync with Rust source
         if: needs.changes.outputs.rust != 'false'
         run: |
@@ -180,17 +167,108 @@ jobs:
   # Required legacy context mirrors the drift check above; never compile twice.
   ts-rs-binding-drift-detector:
     name: ts-rs binding drift detector
-    needs: cargo-test-continuum-core
+    # AGGREGATE OVER THE SPLIT, so splitting a job cannot weaken a gate.
+    # This job's only purpose has always been to publish a REQUIRED status context for
+    # a check that actually happens inside another job. Moving the doc guard out of
+    # `cargo test --lib` into its own parallel job created a second such case: the new
+    # job's check name is not in the repo's required set, so on its own a red there
+    # would not block a merge — the split would have traded 5.9 min of wall time for a
+    # gate that stopped gating. Rather than ask a human to add a required check (which
+    # is a promise, not a mechanism), the already-required context now fails when
+    # EITHER upstream fails. `!cancelled()` so a genuine failure still reports instead
+    # of being skipped into a green.
+    needs: [cargo-test-continuum-core, cargo-doc-guards]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Mirror the binding-drift verdict from cargo-test-continuum-core
+      - name: Mirror the binding-drift verdict and aggregate the split cargo jobs
         run: |
+          lib='${{ needs.cargo-test-continuum-core.result }}'
+          doc='${{ needs.cargo-doc-guards.result }}'
+          echo "cargo test --lib : $lib"
+          echo "cargo test --doc : $doc"
+          echo ""
           echo "ts-rs binding drift is gated by the 'Verify protocol/typescript/ in sync"
           echo "with Rust source' step inside 'cargo test -p continuum-core --lib'."
-          echo ""
-          echo "That job passed, so the drift check within it passed."
           echo "This job publishes the required status context; it does not re-check."
+          echo ""
+          for name in lib doc; do
+            eval "result=\$$name"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error::the $name cargo job concluded '$result' — failing the"
+                echo "::error::required context so a split job cannot pass unnoticed."
+                exit 1
+                ;;
+            esac
+          done
+
+  cargo-doc-guards:
+    # THE 5.9-MINUTE STEP THAT WAS COSTING EVERY PR ITS CRITICAL PATH.
+    # Measured 2026-09-22 on a full-cache-hit run: `cargo test --lib` 12.4 min and
+    # `cargo test --doc` 5.9 min ran SERIALLY in one job, so the doc guard added its
+    # whole wall time to every run (18.3 of a ~20 min job). As its own job it runs
+    # CONCURRENTLY with the lib build and costs zero additional wall time — the gate is
+    # unchanged, it just stopped queueing behind a build it does not depend on.
+    # Not made conditional on purpose: a compile-fail guard that only runs when someone
+    # remembers to touch the guarded file is the gate that is not a gate, and a red
+    # canary tip is a fleet-wide deploy outage.
+    name: cargo test -p continuum-core --doc (compile-fail guards)
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.rust != 'false'
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+          cargo --version
+
+      - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
+            cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
+            libclang-dev clang build-essential \
+            libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Cache cargo state
+        if: needs.changes.outputs.rust != 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # SAME shared-key as the lib job: this job compiles the same crate with the
+          # same profile, so it reads the warm cache the lib job already populates
+          # rather than paying a cold build for the privilege of being parallel.
+          shared-key: continuum-rust-1.95
+          cache-on-failure: true
+
+      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
+      - name: cargo test -p continuum-core --doc (compile-fail guards)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          # Same profile as the --lib build above, deliberately: a different profile
+          # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
+          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
+          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
+            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
+            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
+            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            exit 1
+          fi
 
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
@@ -234,8 +312,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $helperTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $ownerTest = Join-Path $env:RUNNER_TEMP 'continuum-owned-engine-test.exe'
-          rustc --edition 2021 --test core/continuum-core/src/bin/continuum/owned_engines.rs -o $ownerTest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $ownerTest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # The engine-ownership test used to be compiled here by hand:
+      #   rustc --edition 2021 --test .../bin/continuum/owned_engines.rs
+      # Someone reached for standalone rustc because `cargo test --bin continuum`
+      # links the whole of continuum-core to run it, and on Windows that PDB blows
+      # LNK1140. The hand-rolled invocation covered ONE file of the five.
+      # The crate makes the real thing cheap: all 17 tests, linked against 2,420
+      # lines instead of 624,456.
+      - name: continuum-cli-lifecycle tests (the CLI's platform lifecycle, no core link)
+        if: needs.changes.outputs.rust != 'false'
+        run: cargo test -p continuum-cli-lifecycle

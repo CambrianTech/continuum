@@ -29,17 +29,17 @@ use windows_sys::Win32::System::Threading::{
 
 /// Only the operations the CLI's existing startup observer needs. Dropping this
 /// closes our process handle; it never terminates the detached core.
-pub(super) struct LaunchedCore {
+pub struct LaunchedCore {
     process: OwnedHandle,
     pid: u32,
 }
 
 impl LaunchedCore {
-    pub(super) fn id(&self) -> u32 {
+    pub fn id(&self) -> u32 {
         self.pid
     }
 
-    pub(super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         // Query the wait state first: exit code 259 is also a legal completed
         // program's status, so STILL_ACTIVE alone cannot prove liveness.
         match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } {
@@ -61,7 +61,7 @@ impl LaunchedCore {
 /// the environment inherits this process plus `env`/`env_remove` assignments.
 /// This is deliberately not a general replacement for Command (no raw args,
 /// env_clear, shell/batch dispatch, or implicit PATH executable resolution).
-pub(super) fn spawn_logged(
+pub fn spawn_logged(
     command: &Command,
     stdout: &File,
     stderr: &File,

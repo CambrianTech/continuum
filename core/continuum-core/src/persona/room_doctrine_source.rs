@@ -33,7 +33,6 @@
 use std::sync::Arc;
 
 use airc_core::doctrine::RoomDoctrinePublished;
-use airc_core::PeerId;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
@@ -447,6 +446,7 @@ impl RagSource for RoomDoctrineSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
     use std::sync::Mutex;
     use uuid::Uuid;
 

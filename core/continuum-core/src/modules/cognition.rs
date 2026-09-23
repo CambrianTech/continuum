@@ -186,7 +186,30 @@ impl ServiceModule for CognitionModule {
         checkpoint_residents(CheckpointBoundary::Save).await
     }
 
+    /// Sample the drain's COMPETITOR on a timer that already runs.
+    ///
+    /// `turn_ingress::in_flight()` decides whether a stop tears a citizen mid-thought, and
+    /// until now it was read in exactly two places — both INSIDE `drain()`. So the depth was
+    /// reported only at the moment the drain gave up on it, never before, and the question
+    /// the receipts raise ("was that a busy moment, or a node that is never quiet?") had no
+    /// instrument. Measured 2026-09-22: 89 deploys on the M5, 76 tearing, 0 clean drains,
+    /// 432 turns cut — against one clean drain in 8 on a quieter node. Those two populations
+    /// ask for a fix that is not the same in both cases, and nothing could tell them apart.
+    ///
+    /// This rides cognition's existing 15s tick: no new task, no new cadence, no new concern
+    /// — a `probe!` on a timer that is already ticking, which is what the probe guide asks
+    /// for at a load-bearing seam.
+    ///
+    /// SCOPE, so the number is not over-read: this is the SERVICE-LOOP depth. A
+    /// `cognition/eval` fork calls the faculties directly and runs UNCOUNTED (see
+    /// `turn_ingress`'s own contract), so a 0 here means "no citizen turn", not "nothing
+    /// executing".
     async fn tick(&self) -> Result<(), String> {
+        crate::probe!(
+            class = "cognition.turn_ingress.depth",
+            in_flight = crate::cognition::turn_ingress::in_flight(),
+            "citizens inside a turn right now — the drain budget's competitor, sampled before the drain instead of only at it"
+        );
         checkpoint_residents(CheckpointBoundary::Periodic).await
     }
 

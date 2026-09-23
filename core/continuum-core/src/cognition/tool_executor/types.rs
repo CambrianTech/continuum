@@ -15,6 +15,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::ai::types::ToolResult as NativeToolResult;
+use crate::sdk_codegen::ActVerdict;
 
 /// A tool invocation in the executor-internal shape: name + parameters
 /// (not the native `{id, name, input}` shape used for the provider API
@@ -163,6 +164,33 @@ pub struct NativeBatchOutcome {
     pub media: Vec<MediaItemLite>,
     #[ts(type = "Array<string>")]
     pub stored_ids: Vec<Uuid>,
+    /// What each call's OWN command said about its outcome, correlated by
+    /// `tool_use_id` (never by position — the results vector is filtered and
+    /// re-ordered downstream).
+    ///
+    /// Carried HERE rather than on `ToolResult` for two reasons. `ToolResult` is
+    /// the provider-facing struct with 65 construction sites; and `is_error` is a
+    /// bool, which cannot express *running* or *undecodable* at all. This is the
+    /// executor's own wrapper — it builds every one of these — so the act seam
+    /// receives the verdict instead of re-deriving it from folded prose.
+    #[serde(default)]
+    #[ts(skip)]
+    pub verdicts: Vec<CallVerdict>,
+}
+
+/// One call's projected outcome, decoded ONCE from the pre-fold value.
+///
+/// `dispatch_handle` rides along because it comes from the SAME decode: a
+/// `code/shell` that hands back a running handle needs that handle registered so
+/// the completion folds back into working memory, and recovering it by re-parsing
+/// the (possibly folded) result text is what made the old path miss aliased calls
+/// and flood-sized results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallVerdict {
+    pub tool_use_id: String,
+    pub verdict: ActVerdict,
+    pub dispatch_handle: Option<Uuid>,
 }
 
 /// Output of `parse_response` — tool calls extracted, clean text the

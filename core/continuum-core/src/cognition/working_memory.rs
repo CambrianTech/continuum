@@ -2137,6 +2137,7 @@ mod tests {
                 },
                 verb: ToolVerb::Search,
                 paths: Vec::new(),
+                verdict: Default::default(),
             },
             status: ActStatus::Executed,
         };
@@ -2196,6 +2197,7 @@ mod tests {
                 },
                 verb: ToolVerb::classify(name),
                 paths: Vec::new(),
+                verdict: Default::default(),
             },
             status: ActStatus::Executed,
         };
