@@ -155,9 +155,15 @@ pub fn note_lanes(lanes: u64) {
     LEDGER.lanes_max.fetch_max(lanes, Ordering::Relaxed);
 }
 
-/// Lane buckets, 0..=32 lanes with everything above folded into the last. Small, fixed,
+/// Lane buckets, 0..=31 lanes with everything above folded into the last. Small, fixed,
 /// and lock-free — the node's lane count is a single-digit number and always has been.
-const LANE_HIST_LEN: usize = 33;
+///
+/// THIRTY-TWO, NOT THIRTY-THREE, and the reason is std, not the grid: `Default` is
+/// implemented for `[T; N]` only up to N = 32 (a const-generic blanket impl would
+/// conflict with the unit-length impls), and `Ledger` derives `Default`. A 33rd bucket
+/// costs a `Default` impl by hand for a bucket the node will never reach — it serves
+/// three lanes.
+const LANE_HIST_LEN: usize = 32;
 
 /// Below this many samples the window has no SHAPE, and the peak stands. This is the
 /// guard that keeps Cormac's condition on #4244 intact: a handful of pulls taken while
