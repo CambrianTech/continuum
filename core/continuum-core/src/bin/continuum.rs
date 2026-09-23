@@ -38,20 +38,15 @@ use continuum_core::runtime::deploy_provenance::{
 };
 use serde_json::Value;
 
-#[path = "continuum/owned_engines.rs"]
-mod owned_engines;
+use continuum_cli_lifecycle::owned_engines;
 use owned_engines::owned_engine_candidate;
 
 #[cfg(windows)]
-#[path = "continuum/windows_launch.rs"]
-mod windows_launch;
-#[path = "continuum/supervisor_install.rs"]
-mod supervisor_install;
-#[path = "continuum/install_cli.rs"]
-mod install_cli;
+use continuum_cli_lifecycle::windows_launch;
+use continuum_cli_lifecycle::supervisor_install;
+use continuum_cli_lifecycle::install_cli;
 
-#[path = "continuum/launchd.rs"]
-mod launchd;
+use continuum_cli_lifecycle::launchd;
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {

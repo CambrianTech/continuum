@@ -86,6 +86,7 @@ inventory = "0.3"
 libc = "0.2"     # Process group management (setsid, kill -pgid)
 fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
 toml = "0.8"     # Avatar model manifest parsing
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
 base64 = "0.22"  # Base64 encoding for audio data
 sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 zip = "0.6"     # Extract .vrm from downloaded VRoid avatar archives (provisioning fetch executor)
