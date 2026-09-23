@@ -559,6 +559,16 @@ inventory::collect!(CommandRegistration);
 /// register_command!(MyCommand);
 /// ```
 #[macro_export]
+macro_rules! register_command {
+    ($cmd:ty) => {
+        inventory::submit! {
+            $crate::sdk_codegen::CommandRegistration::new(
+                || $crate::sdk_codegen::CommandDescriptor::of::<$cmd>(),
+            )
+        }
+    };
+}
+
 /// Opt a command into TRUTHFUL tool receipts — one line at the command's own site.
 ///
 /// The command must implement [`sdk_codegen::ProjectsOutcome`]. Without this
@@ -584,16 +594,6 @@ macro_rules! register_outcome {
                     .ok()
                     .map(|o| <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o))
                 },
-            )
-        }
-    };
-}
-
-macro_rules! register_command {
-    ($cmd:ty) => {
-        inventory::submit! {
-            $crate::sdk_codegen::CommandRegistration::new(
-                || $crate::sdk_codegen::CommandDescriptor::of::<$cmd>(),
             )
         }
     };
