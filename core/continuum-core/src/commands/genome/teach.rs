@@ -43,14 +43,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ts_rs::TS;
 
-use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::TextGenerationResponse;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::gym_grader::test_grade;
 use crate::cognition::inference_session::resolve_model;
 use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT, PROVIDER_ID};
-use crate::modules::ai_provider::global_registry;
 use crate::modules::dataset::DatasetService;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -444,16 +442,10 @@ fn build_sharegpt(messages: &[ChatMessage]) -> Value {
     json!({ "messages": msgs })
 }
 
-/// One teacher generation. When `dedicated` is `Some`, it generates against a DEDICATED
-/// bare-base measurement lane (the same isolation `cognition/eval` uses) — never the live
-/// multi-LoRA serving lane, which OOMs the Metal backend on a real generation (#175: the
-/// live lane's 5 co-resident genome LoRAs + big window can't sustain a 300-token decode; a
-/// tiny readiness smoke-decode passes but the real generation wedges → reap/respawn churn →
-/// a 0-corpus teach). When `dedicated` is `None` (the clean lane couldn't be stood up) it
-/// degrades to the live serving lane via the registry — resolved the canonical way, guard
-/// acquired + dropped within the call so it's never held across the multi-task loop.
+/// Generate only through the acquired eval-lane adapter. The eval owner may share
+/// resident weights; an acquisition refusal must never select a different live adapter.
 async fn teacher_generate(
-    dedicated: Option<&std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
+    adapter: &std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     model: &str,
     messages: Vec<ChatMessage>,
     temperature: f32,
@@ -484,32 +476,26 @@ async fn teacher_generate(
         turn_bound: None,
     };
 
-    // Dedicated clean lane: generate directly against its pinned adapter. This is the
-    // path that WORKS — the eval lane proves a bare-base lane sustains real generations
-    // (28/44 on hard-rs) where the live multi-LoRA lane wedges.
-    if let Some(adapter) = dedicated {
-        let response: TextGenerationResponse = adapter
-            .generate_text(request)
-            .await
-            .map_err(CommandError::Internal)?;
-        return Ok(response.text);
-    }
-
-    // Degrade path: no clean lane came up — resolve the live serving adapter the
-    // canonical way. May inherit the #175 OOM, but a shared-lane attempt beats no
-    // attempt, and the reason we're here was already warned loud at spawn.
-    let registry_arc = global_registry();
-    let registry = registry_arc.read().await;
-    let (_provider_id, adapter) = registry
-        .select(Some(PROVIDER_ID), Some(model), InferenceDevice::Auto)
-        .ok_or_else(|| {
-            CommandError::Internal(format!("no adapter serves teacher model '{model}'"))
-        })?;
     let response: TextGenerationResponse = adapter
         .generate_text(request)
         .await
         .map_err(CommandError::Internal)?;
     Ok(response.text)
+}
+
+/// Preserve the serving-readiness prerequisite and the eval owner's lane policy.
+/// Successful acquisition may share resident weights; refusal ends synthesis.
+async fn acquire_teacher_lane(
+    model: &str,
+) -> Result<crate::cognition::eval::EvalLane, CommandError> {
+    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
+        return Err(CommandError::Internal(
+            "no served model became ready within the serving-wait budget -- cannot run the teacher. \
+             Bring up serving (ai/inference/serve) before genome/teach."
+                .to_string(),
+        ));
+    }
+    crate::cognition::eval::spawn_base_eval_lane(model).await
 }
 
 /// The validated corpus a remediation pass produces: the ShareGPT examples (only
@@ -550,48 +536,29 @@ pub async fn synthesize_remediation(
     temperature: f32,
     max_fix_iters: u32,
 ) -> Result<RemediationCorpus, CommandError> {
+    synthesize_remediation_with_lane(
+        tasks,
+        teacher_model,
+        temperature,
+        max_fix_iters,
+        acquire_teacher_lane(teacher_model),
+    )
+    .await
+}
+
+// The lane future keeps acquisition and the generation loop on the same path in tests.
+async fn synthesize_remediation_with_lane(
+    tasks: &[EvalTask],
+    teacher_model: &str,
+    temperature: f32,
+    max_fix_iters: u32,
+    lane: impl std::future::Future<Output = Result<crate::cognition::eval::EvalLane, CommandError>>,
+) -> Result<RemediationCorpus, CommandError> {
+    // Retain the owner for the entire batch, including grading between generations.
+    let teacher_lane = lane.await?;
     let mut examples: Vec<Value> = Vec::new();
     let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
     let mut with_correction = 0usize;
-
-    // WAIT for the served teacher model to be READY before the first generation. The
-    // teacher runs on the local serving lane; if teach launches while serving is
-    // relaunching that lane (a genome page-in, a window grow-back), the first
-    // `generate_text` hits a not-ready lane and — with no readiness gate and no
-    // timeout — HANGS FOREVER, parking the whole job at 0% with no dataset (glass-boxed
-    // 2026-07-21). This is the same race the eval lane fixed; the teacher path needs
-    // the same discipline. A timeout (below) still recovers if the lane wedges mid-run.
-    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
-        return Err(CommandError::Internal(
-            "no served model became ready within the serving-wait budget — cannot run the teacher. \
-             Bring up serving (ai/inference/serve) before genome/teach."
-                .to_string(),
-        ));
-    }
-
-    // Stand up a DEDICATED bare-base measurement lane for the teacher — the SAME isolation
-    // `cognition/eval` uses to score reliably. The live serving lane carries the persona's
-    // co-resident genome LoRAs + a big window; a real 300-token teacher generation OOMs the
-    // Metal backend there (#175), the daemon reaps+respawns, a tiny readiness smoke-decode
-    // re-passes, and the next generation wedges again → churn → a 0-corpus teach. A clean
-    // lane (no LoRA, eval-sized window) sustains the generation exactly as the eval lane
-    // does. Held for the whole loop; its process is killed on drop (#59). On spawn failure
-    // we DEGRADE-LOUD to the live lane (a shared attempt beats no attempt), mirroring the
-    // eval branch's degrade — the reason is visible, never a silent `.ok()`.
-    let dedicated_lane = match crate::cognition::eval::spawn_base_eval_lane(teacher_model).await {
-        Ok(lane) => Some(lane),
-        Err(e) => {
-            tracing::warn!(
-                target: "genome::teach",
-                teacher_model = %teacher_model,
-                error = %e,
-                "dedicated teacher lane failed to come up — DEGRADING to the live serving lane \
-                 (may inherit the #175 multi-LoRA OOM). Fix the lane; a shared-lane teach may yield 0."
-            );
-            None
-        }
-    };
-    let teacher_adapter = dedicated_lane.as_ref().map(|l| l.adapter.clone());
 
     // MILESTONE: started — carries the denominator so a progress bar can size itself
     // before the first (slow) generation.
@@ -629,7 +596,7 @@ pub async fn synthesize_remediation(
         // [[command-async-shape-prefer-stream-never-block]]
         for _ in 0..=max_fix_iters {
             let answer = match teacher_generate(
-                teacher_adapter.as_ref(),
+                &teacher_lane.adapter,
                 teacher_model,
                 trajectory.clone(),
                 temperature,
@@ -715,8 +682,8 @@ const LIVED_TEACHER_SYSTEM: &str = "You are a thoughtful expert. A teammate was 
 /// reason the received axis is: validation is per-CONSOLIDATION by whole-being benchmark
 /// lift (#59), never per-trajectory ([[lived-and-eval-experience-are-one-stream-one-being]]).
 ///
-/// Mirrors [`synthesize_remediation`]'s lane discipline (readiness gate → dedicated
-/// bare-base lane → degrade-loud to the live lane) but has NO grader loop: ONE teacher
+/// Uses the same acquired eval lane as [`synthesize_remediation`], including its
+/// refusal semantics, but has NO grader loop: ONE teacher
 /// generation per stimulus. Two honesty guards: an empty teacher answer is dropped (never
 /// ship a blank lesson), and the teacher's system turn shapes generation but is NOT in the
 /// example — the SFT pair is the bare `{question → answer}`, so the being learns the class
@@ -725,6 +692,21 @@ pub async fn synthesize_lived_expansion(
     stimuli: &[String],
     teacher_model: &str,
     temperature: f32,
+) -> Result<Vec<Value>, CommandError> {
+    synthesize_lived_expansion_with_lane(
+        stimuli,
+        teacher_model,
+        temperature,
+        acquire_teacher_lane(teacher_model),
+    )
+    .await
+}
+
+async fn synthesize_lived_expansion_with_lane(
+    stimuli: &[String],
+    teacher_model: &str,
+    temperature: f32,
+    lane: impl std::future::Future<Output = Result<crate::cognition::eval::EvalLane, CommandError>>,
 ) -> Result<Vec<Value>, CommandError> {
     // Trim + drop blanks up front: nothing to answer, and it decides whether we even need
     // a lane. Empty in → empty out is a legitimate outcome (no fitness gap), never a fault.
@@ -737,32 +719,7 @@ pub async fn synthesize_lived_expansion(
         return Ok(Vec::new());
     }
 
-    // Same readiness discipline as remediation: WAIT for a served lane before the first
-    // generation, or a relaunch race hangs the teacher forever (glass-boxed 2026-07-21).
-    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
-        return Err(CommandError::Internal(
-            "no served model became ready within the serving-wait budget — cannot run the lived \
-             expansion teacher. Bring up serving (ai/inference/serve) first."
-                .to_string(),
-        ));
-    }
-
-    // A DEDICATED bare-base lane (the #175-safe isolation eval + remediation use), degrading
-    // LOUD to the live lane if it can't come up — a shared attempt beats no attempt.
-    let dedicated_lane = match crate::cognition::eval::spawn_base_eval_lane(teacher_model).await {
-        Ok(lane) => Some(lane),
-        Err(e) => {
-            tracing::warn!(
-                target: "genome::teach",
-                teacher_model = %teacher_model,
-                error = %e,
-                "dedicated lived-expansion teacher lane failed to come up — DEGRADING to the live \
-                 serving lane (may inherit the #175 multi-LoRA OOM)."
-            );
-            None
-        }
-    };
-    let teacher_adapter = dedicated_lane.as_ref().map(|l| l.adapter.clone());
+    let teacher_lane = lane.await?;
 
     let mut examples: Vec<Value> = Vec::new();
     for stimulus in stimuli {
@@ -771,27 +728,23 @@ pub async fn synthesize_lived_expansion(
             ChatMessage::text("system", LIVED_TEACHER_SYSTEM),
             ChatMessage::text("user", stimulus),
         ];
-        let answer = match teacher_generate(
-            teacher_adapter.as_ref(),
-            teacher_model,
-            messages,
-            temperature,
-        )
-        .await
-        {
-            Ok(a) => a,
-            Err(e) => {
-                // Fail-loud on the ITEM, resilient on the BATCH — one stimulus failing
-                // must not abort the whole consolidation (same spirit as remediation
-                // breaking one task without killing the run).
-                tracing::warn!(
-                    target: "genome::teach",
-                    error = %e,
-                    "lived-expansion teacher generation failed for one stimulus — skipped"
-                );
-                continue;
-            }
-        };
+        let answer =
+            match teacher_generate(&teacher_lane.adapter, teacher_model, messages, temperature)
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    // Fail-loud on the ITEM, resilient on the BATCH — one stimulus failing
+                    // must not abort the whole consolidation (same spirit as remediation
+                    // breaking one task without killing the run).
+                    tracing::warn!(
+                        target: "genome::teach",
+                        error = %e,
+                        "lived-expansion teacher generation failed for one stimulus — skipped"
+                    );
+                    continue;
+                }
+            };
         if answer.trim().is_empty() {
             continue; // never ship a blank lesson
         }
@@ -819,8 +772,8 @@ impl ActionCommand for GenomeTeach {
         "Generate a test-VALIDATED write→error→fix→pass training corpus that teaches the \
          self-verify-and-correct engineering reflex. A teacher model writes Rust, the gym grader \
          compiles+runs it, the REAL error feeds back, and it loops to green — only test-passing \
-         trajectories become multi-turn ShareGPT examples. Non-disruptive: writes a dataset, never \
-         touches the live serving lane. Feed the dataset to genome/job-create to forge the gene.";
+         trajectories become multi-turn ShareGPT examples. Writes a dataset without changing \
+         the served genome. Feed the dataset to genome/job-create to forge the gene.";
     type Params = GenomeTeachParams;
     type Output = GenomeTeachResult;
 
@@ -1125,6 +1078,42 @@ crate::register_stateless_command!(GenomeTeachStatus);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a refused teacher lane must fail the real synthesis path,
+    // not fall through to registry inference and return an empty/failed-item corpus.
+    #[tokio::test]
+    async fn refused_lane_stops_both_synthesis_paths_before_generation() {
+        let refused = || std::future::ready(Err(CommandError::Internal("lane refused".into())));
+        let tasks = [EvalTask {
+            id: "refused-lane".into(),
+            prompt: "write a function".into(),
+            test: Some("assert!(true);".into()),
+            ..Default::default()
+        }];
+        let remediation =
+            synthesize_remediation_with_lane(&tasks, "teacher", 0.0, 1, refused()).await;
+        assert!(
+            matches!(remediation, Err(CommandError::Internal(ref message)) if message == "lane refused")
+        );
+        let expansion = synthesize_lived_expansion_with_lane(
+            &["a lived question".into()],
+            "teacher",
+            0.0,
+            refused(),
+        )
+        .await;
+        assert!(
+            matches!(expansion, Err(CommandError::Internal(ref message)) if message == "lane refused")
+        );
+
+        // Empty lived input remains a no-op and never polls lane acquisition.
+        let empty = synthesize_lived_expansion_with_lane(&["  ".into()], "teacher", 0.0, async {
+            panic!("empty input acquired a lane")
+        })
+        .await
+        .unwrap();
+        assert!(empty.is_empty());
+    }
 
     // what this catches: a validated trajectory flattens to the ShareGPT shape
     // mlx_lm.lora/dataset consume — role+content per turn, ORDER preserved (the
