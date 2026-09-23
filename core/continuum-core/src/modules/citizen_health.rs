@@ -95,13 +95,14 @@ struct Ledger {
     /// the PULL DECISION — the moment the capacity is actually spent — so the shape is the
     /// one the queueing minds met, not the one the node touched once. Read by
     /// [`lanes_sustained_of`]; `lanes_max` is unchanged and still the peak.
-    lane_samples: [AtomicU64; LANE_HIST_LEN],
-    /// WHEN the first and last of those samples were taken. A COUNT is not COVERAGE
-    /// (Astra's review of #4356): sixteen residents pulling through one brief relaunch
-    /// produce two dozen samples inside half a minute, all reading the launch's one lane.
-    /// The span is what separates that burst from an hour.
-    lane_first_sample_ms: AtomicU64,
-    lane_last_sample_ms: AtomicU64,
+    /// THE HOUR'S LANES, ONE VALUE PER TIME BUCKET. Not a histogram of samples: a
+    /// histogram counts PULLS, and pulls arrive in bursts, so whoever polls most often
+    /// decides the median (Astra's second review of #4356 — a count floor AND a
+    /// first-to-last span floor are both cleared by one stray early sample plus a burst).
+    /// Each bucket contributes exactly once, so an hour is judged by its MINUTES.
+    lane_bucket_max: [AtomicU64; LANE_BUCKETS],
+    /// When this window's bucketing began. 0 = no sample yet this window.
+    lane_window_start_ms: AtomicU64,
 }
 
 static LEDGER: Ledger = Ledger {
@@ -122,9 +123,8 @@ static LEDGER: Ledger = Ledger {
     prompt_prefilled: AtomicU64::new(0),
     moves_opportunity: AtomicU64::new(0),
     moves_failure: AtomicU64::new(0),
-    lane_samples: [const { AtomicU64::new(0) }; LANE_HIST_LEN],
-    lane_first_sample_ms: AtomicU64::new(0),
-    lane_last_sample_ms: AtomicU64::new(0),
+    lane_bucket_max: [const { AtomicU64::new(0) }; LANE_BUCKETS],
+    lane_window_start_ms: AtomicU64::new(0),
 };
 /// A turn ended inside the reasoning channel with no answer and no act (the
 /// `persona.act.think_only` seam) — the allowance did not hold her think.
@@ -155,100 +155,84 @@ pub fn note_lanes(lanes: u64) {
     LEDGER.lanes_max.fetch_max(lanes, Ordering::Relaxed);
 }
 
-/// Lane buckets, 0..=31 lanes with everything above folded into the last. Small, fixed,
-/// and lock-free — the node's lane count is a single-digit number and always has been.
+/// THIRTY buckets of two minutes each, covering the hour's window.
 ///
-/// THIRTY-TWO, NOT THIRTY-THREE, and the reason is std, not the grid: `Default` is
-/// implemented for `[T; N]` only up to N = 32 (a const-generic blanket impl would
-/// conflict with the unit-length impls), and `Ledger` derives `Default`. A 33rd bucket
-/// costs a `Default` impl by hand for a bucket the node will never reach — it serves
-/// three lanes.
-const LANE_HIST_LEN: usize = 32;
+/// Thirty and not sixty for the reason #4356 already learned once: `std` implements
+/// `Default` for `[T; N]` only up to N = 32, and `Ledger` derives it. Two minutes is
+/// also comfortably longer than any relaunch this substrate performs, which is what
+/// makes the per-bucket MAXIMUM absorb one — a bucket that contained a relaunch and
+/// also served normally reports the normal value.
+const LANE_BUCKETS: usize = 30;
+const LANE_BUCKET_MS: u64 = 2 * 60 * 1_000;
 
-/// Below this many samples the window has no SHAPE, and the peak stands. This is the
-/// guard that keeps Cormac's condition on #4244 intact: a handful of pulls taken while
-/// the engine relaunches is a launch window, not an hour, and must not rest the roster.
-/// The hours that motivated this carried 232, 477 and 708 pulls.
-pub const LANE_SUSTAINED_MIN_SAMPLES: u64 = 24;
+/// How many DISTINCT buckets must carry a sample before the hour has a shape. Ten
+/// buckets is twenty minutes of separate two-minute periods — not twenty minutes of
+/// elapsed time between two samples, which is the guard Astra broke: one stray early
+/// sample plus a burst cleared both a count floor and a first-to-last span.
+pub const LANE_MIN_BUCKETS: usize = 10;
 
-/// AND the samples must SPAN at least this much of the window before they can actuate a
-/// rest or a wake. A count floor alone does not survive Astra's review of #4356: pulls are
-/// not spread through the hour, they arrive when the roster is polling, so sixteen
-/// residents queueing through one 30-second relaunch clear a 24-sample floor without the
-/// hour having a shape at all — and the median of that burst is the launch's single lane.
-/// Ten minutes is far longer than any relaunch this substrate performs and still a sixth
-/// of the window, so a genuine sustained shortage trips well inside the hour it happens.
-pub const LANE_SUSTAINED_MIN_SPAN_MS: u64 = 10 * 60 * 1_000;
-
-/// The node had `lanes` lanes at a moment work was actually asked of them — fold into the
-/// hour's distribution. Called from [`note_pull`], never on its own: the whole point is
-/// that the sample is taken where the capacity is spent.
+/// The node had `lanes` lanes at a moment work was actually asked of them — fold into
+/// THIS bucket's maximum. Called from [`note_pull`], never on its own: the sample is
+/// taken where the capacity is spent.
+///
+/// **Maximum within the bucket, deliberately.** A burst of pulls during a relaunch all
+/// read the launch's single lane; if any pull in the same two minutes saw the real lane
+/// count, that is what the bucket reports. The bias is AGAINST resting the roster, which
+/// is the direction an error should take (Cormac's condition on #4244).
 fn note_lane_sample(lanes: u64) {
-    let idx = (lanes as usize).min(LANE_HIST_LEN - 1);
-    LEDGER.lane_samples[idx].fetch_add(1, Ordering::Relaxed);
     let now = crate::persona::recall_metadata::now_ms();
-    // First stamp wins for the window; every stamp moves the last. 0 is "no sample yet",
-    // which is why the first write is a compare-exchange and not a `fetch_min`.
+    // First sample of the window opens the bucketing clock.
     let _ = LEDGER
-        .lane_first_sample_ms
+        .lane_window_start_ms
         .compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed);
-    LEDGER.lane_last_sample_ms.fetch_max(now, Ordering::Relaxed);
+    let start = LEDGER.lane_window_start_ms.load(Ordering::Relaxed);
+    let idx = now
+        .saturating_sub(start)
+        .checked_div(LANE_BUCKET_MS)
+        .unwrap_or(0) as usize; // JUSTIFIED unwrap_or: LANE_BUCKET_MS is a non-zero const, so the division cannot fail
+    // Past the window's end, keep folding into the last bucket rather than wrapping
+    // onto bucket 0 and contaminating the start of the hour.
+    LEDGER.lane_bucket_max[idx.min(LANE_BUCKETS - 1)].fetch_max(lanes, Ordering::Relaxed);
 }
 
-/// How much of the window this hour's lane samples actually cover, first stamp to last.
-fn lane_sample_span_ms() -> u64 {
-    let first = LEDGER.lane_first_sample_ms.load(Ordering::Relaxed);
-    let last = LEDGER.lane_last_sample_ms.load(Ordering::Relaxed);
-    if first == 0 { 0 } else { last.saturating_sub(first) }
-}
-
-/// THE HOUR'S SUSTAINED LANES: the median of the lane counts observed at this window's
-/// pull decisions, or `None` when the window is too thin to have a shape.
+/// THE HOUR'S SUSTAINED LANES: the median over the buckets that carried a sample, or
+/// `None` when too few distinct buckets did.
 ///
-/// Pure, so the distributions are hand-computed tests. The median is "the smallest lane
-/// count whose cumulative share passes half the samples" — for the 699 samples that
-/// produced card `6d444769` (`1x155, 2x42, 3x344, 4x154, 5x2, 6x2`) that is **3**, while
-/// `lanes_max` for the same window read **8** across a window those samples SPANNED (the
-/// guard below), not a burst. The roster was 16. `16 > 3*2` is starved;
+/// Pure, so the shapes are hand-computed tests. This is the statistic the verdict and
+/// both seat remedies divide by. For the window that produced card `6d444769` — 699
+/// pull-time samples reading `1x155, 2x42, 3x344, 4x154, 5x2, 6x2`, spread across the
+/// hour — the per-minute picture is a node that held about three lanes, and `lanes_max`
+/// for the same window read **8**. The roster was 16. `16 > 3*2` is starved;
 /// `16 > 8*2` is not, which is why the lane-bound rest never fired in three hours at
 /// 98-100% pull deferral and `lane_bound_rested` was 0 in every one of them.
-fn lanes_sustained_of(hist: &[u64; LANE_HIST_LEN], span_ms: u64) -> Option<u64> {
-    let total: u64 = hist.iter().sum();
-    // BOTH floors, and the span is the one that matters (Astra, #4356 review): enough
-    // samples says the hour was BUSY; enough span says the hour was an HOUR. A burst
-    // clears the first on its own, and a burst is exactly the transient the peak exists
-    // to absorb — so below either floor there is no sustained value and the peak stands,
-    // which actuates nothing.
-    if total < LANE_SUSTAINED_MIN_SAMPLES || span_ms < LANE_SUSTAINED_MIN_SPAN_MS {
+///
+/// **A burst cannot win here.** Astra's counterexample — one 8-lane sample at t0 and
+/// thirty-two 1-lane samples during a relaunch ten minutes later — touches exactly TWO
+/// buckets, so it is below [`LANE_MIN_BUCKETS`] and yields `None`. Volume buys nothing;
+/// only MINUTES do.
+fn lanes_sustained_of(buckets: &[u64; LANE_BUCKETS]) -> Option<u64> {
+    let mut seen: Vec<u64> = buckets.iter().copied().filter(|&v| v > 0).collect();
+    if seen.len() < LANE_MIN_BUCKETS {
         return None;
     }
-    let half = total / 2;
-    let mut seen = 0u64;
-    for (lanes, count) in hist.iter().enumerate() {
-        seen = seen.saturating_add(*count);
-        if seen > half {
-            return Some(lanes as u64);
-        }
-    }
-    None
+    seen.sort_unstable();
+    Some(seen[seen.len() / 2])
 }
 
-/// The hour's lane distribution, read and reset by the tick.
-fn snapshot_lane_hist_and_reset() -> ([u64; LANE_HIST_LEN], u64) {
-    let mut out = [0u64; LANE_HIST_LEN];
-    for (i, slot) in LEDGER.lane_samples.iter().enumerate() {
+/// The hour's buckets, read and reset by the tick.
+fn snapshot_lane_buckets_and_reset() -> [u64; LANE_BUCKETS] {
+    let mut out = [0u64; LANE_BUCKETS];
+    for (i, slot) in LEDGER.lane_bucket_max.iter().enumerate() {
         out[i] = slot.swap(0, Ordering::Relaxed);
     }
-    let span = lane_sample_span_ms();
-    LEDGER.lane_first_sample_ms.store(0, Ordering::Relaxed);
-    LEDGER.lane_last_sample_ms.store(0, Ordering::Relaxed);
-    (out, span)
+    LEDGER.lane_window_start_ms.store(0, Ordering::Relaxed);
+    out
 }
 
-/// The same distribution WITHOUT reset, for the read-only `citizen/health` command.
-fn read_lane_hist() -> [u64; LANE_HIST_LEN] {
-    let mut out = [0u64; LANE_HIST_LEN];
-    for (i, slot) in LEDGER.lane_samples.iter().enumerate() {
+/// The same buckets WITHOUT reset, for the read-only `citizen/health` command.
+fn read_lane_buckets() -> [u64; LANE_BUCKETS] {
+    let mut out = [0u64; LANE_BUCKETS];
+    for (i, slot) in LEDGER.lane_bucket_max.iter().enumerate() {
         out[i] = slot.load(Ordering::Relaxed);
     }
     out
@@ -483,7 +467,7 @@ pub struct CitizenHealth {
     pub lanes_now: u64,
     /// THE LANES THE HOUR ACTUALLY HELD: the median of the lane counts seen at this
     /// window's pull decisions, falling back to [`CitizenHealth::lanes`] when the window
-    /// is too thin to have a shape ([`LANE_SUSTAINED_MIN_SAMPLES`]).
+    /// carried a sample in fewer than [`LANE_MIN_BUCKETS`] distinct two-minute buckets.
     ///
     /// **The verdict and the rest divide by THIS, not by `lanes`** (card `6d444769`).
     /// `lanes` answers "did the node ever serve N" — a peak, and a `fetch_max` can only
@@ -963,8 +947,7 @@ impl CitizenHealthModule {
         let lanes = LEDGER.lanes_max.swap(lanes_now, Ordering::Relaxed).max(lanes_now);
         // The peak stands when the window had too few pulls to have a shape — a thin hour
         // is not evidence of a shortage.
-        let (lane_hist, lane_span_ms) = snapshot_lane_hist_and_reset();
-        let lanes_sustained = lanes_sustained_of(&lane_hist, lane_span_ms).unwrap_or(lanes); // JUSTIFIED unwrap_or: None means the window had no SHAPE — too few samples, or a burst too brief to be an hour — and the peak is the conservative read, which rests nobody
+        let lanes_sustained = lanes_sustained_of(&snapshot_lane_buckets_and_reset()).unwrap_or(lanes); // JUSTIFIED unwrap_or: too few distinct buckets = the hour has no shape, and the peak is the read that rests nobody
         let (rounds_working, standing_enabled) = round_supply();
         let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
             crate::cognition::resource_admission::directed_lane_wait_ms();
@@ -1133,7 +1116,7 @@ impl ServiceModule for CitizenHealthModule {
                     lanes: LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64),
                     lanes_now: crate::inference::llama_server::current_serving().lanes as u64,
                     // A read WITHOUT reset here too — the hour's shape as it stands.
-                    lanes_sustained: lanes_sustained_of(&read_lane_hist(), lane_sample_span_ms()).unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: same thin-window fallback as the tick's read — the peak, which rests nobody
+                    lanes_sustained: lanes_sustained_of(&read_lane_buckets()).unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: same thin-window fallback as the tick's read — the peak, which rests nobody
                         LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64)
                     }),
                     directed_wait_p50_ms: crate::cognition::resource_admission::directed_lane_wait_ms().0,
@@ -1521,84 +1504,45 @@ mod tests {
         assert!(line(&m5, &v).contains("pulls 430 (424 lane-deferred)"), "the line carries the pulls");
     }
 
-    // what this catches (card `6d444769`): the median of the hour's pull-time lane samples,
-    // and the thin-window guard that keeps a launch from passing as an hour. The
-    // distribution is the REAL one measured on the M5 on 2026-09-23 — 699 samples taken at
-    // the pull gate across the three hours whose receipts all said `lanes 8`.
+    // what this catches (card `6d444769`, and Astra's second review of it): the hour is
+    // judged by its MINUTES, not by its pull volume. Each two-minute bucket contributes
+    // one value — its maximum — so whoever polls most often cannot decide the median.
     #[test]
-    fn the_sustained_lane_count_is_the_median_of_the_hours_pull_samples() {
-        let mut hist = [0u64; LANE_HIST_LEN];
-        hist[1] = 155;
-        hist[2] = 42;
-        hist[3] = 344;
-        hist[4] = 154;
-        hist[5] = 2;
-        hist[6] = 2;
-        assert_eq!(hist.iter().sum::<u64>(), 699);
-        // NEVER 8 in 699 samples, and the receipts for those hours all read `lanes 8`.
-        assert_eq!(hist[8], 0);
-        let hour = LANE_SUSTAINED_MIN_SPAN_MS;
-        assert_eq!(lanes_sustained_of(&hist, hour), Some(3), "the hour ran on three lanes");
+    fn the_sustained_lane_count_is_the_median_over_time_buckets_not_over_samples() {
+        // The window that produced the card: a node holding about three lanes for an
+        // hour, whose `lanes_max` read 8 because it touched eight once.
+        let mut hour = [0u64; LANE_BUCKETS];
+        for (i, b) in hour.iter_mut().enumerate() {
+            *b = if i == 0 { 8 } else { 3 };
+        }
+        assert_eq!(lanes_sustained_of(&hour), Some(3), "one eight-lane bucket is not the hour");
 
-        // A SINGLE BAD TICK CANNOT MOVE IT (Cormac's condition on #4244, kept): drop one
-        // relaunch sample of 1 lane into an otherwise four-lane hour and the median holds.
-        let mut steady = [0u64; LANE_HIST_LEN];
-        steady[4] = 99;
-        steady[1] = 1;
-        assert_eq!(lanes_sustained_of(&steady, hour), Some(4), "one dip is not the hour");
-
-        // A WINDOW WITH NO SHAPE IS NOT EVIDENCE. Below the sample floor there is no
-        // median to speak of, and the caller falls back to the peak — which rests nobody.
-        let mut thin = [0u64; LANE_HIST_LEN];
-        thin[1] = LANE_SUSTAINED_MIN_SAMPLES - 1;
-        assert_eq!(lanes_sustained_of(&thin, hour), None, "a launch window is not an hour");
-        thin[1] += 1;
-        assert_eq!(lanes_sustained_of(&thin, hour), Some(1), "at the floor it has a shape");
-    }
-
-    // what this catches (Astra's review of #4356): A COUNT IS NOT COVERAGE. Pulls are not
-    // spread evenly through the hour — they arrive when the roster polls — so a dozen
-    // residents queueing through ONE brief relaunch clear any sample floor while every
-    // sample reads the launch's single lane. The median of that burst is 1, and acting on
-    // it would rest the roster for a transient, which is precisely the hazard the peak was
-    // put there to absorb (Cormac, #4244). The SPAN is what tells the two apart.
-    #[test]
-    fn a_burst_of_samples_inside_one_relaunch_is_not_a_sustained_shortage() {
-        // Sixteen residents, each polling twice while the engine relaunches: 32 samples,
-        // comfortably past the count floor, every one of them at one lane.
-        let mut burst = [0u64; LANE_HIST_LEN];
-        burst[1] = 32;
-        assert!(burst.iter().sum::<u64>() > LANE_SUSTAINED_MIN_SAMPLES, "the count floor alone is cleared");
-        let relaunch_ms = 30 * 1_000;
+        // ASTRA'S COUNTEREXAMPLE, which defeated the count floor AND the first-to-last
+        // span: one healthy sample at t0, then a burst of one-lane samples ten minutes
+        // later during a relaunch. Thirty-two samples, ten minutes apart — and only TWO
+        // buckets touched, so it is below the bucket floor and buys nothing.
+        let mut burst = [0u64; LANE_BUCKETS];
+        burst[0] = 8;
+        burst[5] = 1; // t=10min, whatever the volume: a bucket's max is one value
         assert_eq!(
-            lanes_sustained_of(&burst, relaunch_ms),
+            lanes_sustained_of(&burst),
             None,
-            "thirty seconds of queueing is a relaunch, not an hour — the peak stands and nobody rests"
+            "volume buys nothing — only distinct minutes do"
         );
-        // The SAME distribution spread across a real span IS a sustained shortage, and
-        // that is the whole distinction: the node genuinely held one lane for ten minutes.
-        assert_eq!(
-            lanes_sustained_of(&burst, LANE_SUSTAINED_MIN_SPAN_MS),
-            Some(1),
-            "the same samples, actually spanning the window, are the hour's shape"
-        );
-        // And the guard gates ACTUATION, not just the number: with no sustained value the
-        // caller keeps the peak, so the rest computes against 8 lanes and pages out nobody.
-        let roster: Vec<(uuid::Uuid, MindHour)> = (0..16)
-            .map(|i| (uuid::Uuid::new_v4(), MindHour { lane_grants: i, ..Default::default() }))
-            .collect();
-        let during_relaunch = CitizenHealth {
-            resident: 16,
-            lanes: 8,
-            lanes_sustained: 8, // what `unwrap_or(lanes)` yields when the span guard refuses
-            pulls: 32,
-            pulls_deferred: 32,
-            ..h(16, 8, 15, 0)
-        };
-        assert!(
-            lane_bound_seats(&during_relaunch, &verdict(&during_relaunch), &roster).is_empty(),
-            "a relaunch must never rest the roster"
-        );
+
+        // A SINGLE RELAUNCH IN A REAL HOUR cannot move the median either (Cormac's
+        // condition on #4244, kept): one bucket at 1 among many at 4.
+        let mut steady = [0u64; LANE_BUCKETS];
+        for b in steady.iter_mut() { *b = 4; }
+        steady[7] = 1;
+        assert_eq!(lanes_sustained_of(&steady), Some(4), "one bad bucket is not the hour");
+
+        // THE FLOOR IS DISTINCT BUCKETS, not elapsed time and not sample count.
+        let mut thin = [0u64; LANE_BUCKETS];
+        for i in 0..LANE_MIN_BUCKETS - 1 { thin[i] = 1; }
+        assert_eq!(lanes_sustained_of(&thin), None, "nine two-minute periods is not an hour");
+        thin[LANE_MIN_BUCKETS - 1] = 1;
+        assert_eq!(lanes_sustained_of(&thin), Some(1), "at the floor it has a shape");
     }
 
     // what this catches (card `6d444769`, the defect itself): a roster that is starved on
@@ -1635,6 +1579,16 @@ mod tests {
         let by_peak = CitizenHealth { lanes_sustained: 8, ..measured.clone() };
         assert_eq!(verdict(&by_peak), Verdict::Reading { acts: 15 });
         assert!(lane_bound_seats(&by_peak, &verdict(&by_peak), &roster).is_empty());
+
+        // AND THE GUARD GATES ACTUATION, not just the statistic. When too few buckets
+        // carried a sample, the caller keeps the PEAK — so a relaunch computes the rest
+        // against 8 lanes and pages out nobody. This is the shape Astra's counterexample
+        // would have produced, asserted on the remedy rather than on the number.
+        let during_relaunch = CitizenHealth { lanes_sustained: 8, pulls: 32, pulls_deferred: 32, ..measured.clone() };
+        assert!(
+            lane_bound_seats(&during_relaunch, &verdict(&during_relaunch), &roster).is_empty(),
+            "a relaunch must never rest the roster"
+        );
     }
 
     // what this catches (Cormac's condition on S3 — the one-direction shape in a fourth
