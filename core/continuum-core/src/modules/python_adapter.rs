@@ -140,22 +140,55 @@ impl PythonCall {
     }
 }
 
-/// Find the best Python 3 interpreter.
-fn find_python() -> Result<String, PythonError> {
-    for candidate in &["python3", "python"] {
-        if let Ok(output) = Command::new(candidate).arg("--version").output() {
-            if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout);
-                if version.contains("3.") || String::from_utf8_lossy(&output.stderr).contains("3.")
-                {
-                    return Ok(candidate.to_string());
+// Process-owned resolution: neither script cwd nor later PATH changes select another interpreter.
+static PYTHON: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+
+/// Resolve Python once and retain its actual executable, including discovery failures.
+pub(crate) fn find_python() -> Result<PathBuf, PythonError> {
+    PYTHON
+        .get_or_init(discover_python)
+        .clone()
+        .map_err(PythonError::NoPython)
+}
+
+/// Keep the first discovery subprocesses off async command workers.
+pub(crate) async fn find_python_async() -> Result<PathBuf, PythonError> {
+    if let Some(resolved) = PYTHON.get() {
+        return resolved.clone().map_err(PythonError::NoPython);
+    }
+    tokio::task::spawn_blocking(find_python)
+        .await
+        .map_err(|error| PythonError::NoPython(format!("interpreter discovery failed: {error}")))?
+}
+
+fn discover_python() -> Result<PathBuf, String> {
+    let args = [
+        "-I",
+        "-S",
+        "-c",
+        "import json, sys; print(json.dumps([sys.version_info.major, sys.executable]))",
+    ];
+    discover_python_from(
+        &[("python3", &args), ("python", &args)],
+        Duration::from_secs(5),
+    )
+}
+
+fn discover_python_from(
+    candidates: &[(&str, &[&str])],
+    timeout: Duration,
+) -> Result<PathBuf, String> {
+    for (candidate, args) in candidates {
+        let outcome = crate::system_resources::bounded_command::probe(candidate, args, timeout);
+        if let Some(stdout) = outcome.stdout_if_ok() {
+            if let Ok((3, executable)) = serde_json::from_str::<(u32, PathBuf)>(stdout) {
+                if executable.is_absolute() && executable.is_file() {
+                    return Ok(executable);
                 }
             }
         }
     }
-    Err(PythonError::NoPython(
-        "No Python 3 found. Install Python 3.10+ for training/conversion features.".into(),
-    ))
+    Err("No usable Python 3 found through python3 or python. Install Python 3 and restart the core to refresh interpreter discovery.".into())
 }
 
 /// Execute a Python script with full lifecycle management.
@@ -273,11 +306,55 @@ pub fn execute(call: &PythonCall) -> Result<PythonResult, PythonError> {
 mod tests {
     use super::*;
 
+    // What this catches: a hanging first alias must be killed and reaped before discovery tries the next candidate.
+    #[test]
+    fn discovery_timeout_continues_to_the_next_candidate() {
+        let executable = std::env::current_exe().expect("test executable");
+        let answer = serde_json::to_string(&(3, &executable)).expect("test discovery receipt");
+        #[cfg(windows)]
+        let (program, hanging, working) = (
+            "powershell.exe",
+            vec![
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ],
+            format!("[Console]::WriteLine('{}')", answer.replace('\'', "''")),
+        );
+        #[cfg(not(windows))]
+        let (program, hanging, working) = (
+            "sh",
+            vec!["-c", "exec sleep 30"],
+            format!("printf '%s' '{}'", answer.replace('\'', "'\\''")),
+        );
+        #[cfg(windows)]
+        let working_args = [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            working.as_str(),
+        ];
+        #[cfg(not(windows))]
+        let working_args = ["-c", working.as_str()];
+        let started = Instant::now();
+        let resolved = discover_python_from(
+            &[(program, &hanging), (program, &working_args)],
+            Duration::from_secs(2),
+        )
+        .expect("second candidate answers after the first times out");
+        assert_eq!(resolved, executable);
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "discovery waited for the hanging candidate"
+        );
+    }
+
     #[test]
     fn test_find_python() {
         let python = find_python();
         assert!(python.is_ok(), "Python 3 should be available");
-        assert!(python.unwrap().contains("python"));
+        assert!(python.unwrap().is_absolute());
     }
 
     #[test]
