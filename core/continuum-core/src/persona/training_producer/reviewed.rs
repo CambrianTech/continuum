@@ -350,6 +350,11 @@ pub struct StagedCreditEvidence {
     pub claim_id: Option<Uuid>,
     #[ts(type = "string | null")]
     pub owner: Option<Uuid>,
+    // u64 -> number, the house convention two fields away in submission.rs
+    // (`submitted_at_ms`, `reviewed_at_ms`). serde sends a JSON NUMBER; without this
+    // ts-rs declares `bigint`, and a client honouring that type throws on
+    // JSON.stringify. Caught as a BLOCKER in review and carried across a rebase.
+    #[ts(type = "number")]
     pub staged_at_ms: u64,
     pub generation_count: usize,
     /// Join keys into the existing capture owner, in dispatch order. Snapshot

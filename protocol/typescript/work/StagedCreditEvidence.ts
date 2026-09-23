@@ -4,7 +4,7 @@
  * Inspectable staging metadata, not authorization to train or an inferred link
  * to an artifact. In particular, the newest turn may only discuss the review.
  */
-export type StagedCreditEvidence = { revision_id: string, claim_id: string | null, owner: string | null, staged_at_ms: bigint, generation_count: number, 
+export type StagedCreditEvidence = { revision_id: string, claim_id: string | null, owner: string | null, staged_at_ms: number, generation_count: number, 
 /**
  * Join keys into the existing capture owner, in dispatch order. Snapshot
  * write time is not their dispatch time; an absent capture stays unknown.
