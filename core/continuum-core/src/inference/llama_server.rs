@@ -5009,7 +5009,9 @@ mod tests {
             .owned();
         control.verified_launch = Some(recorded.clone());
         let mut drifted = launch_target.clone();
-        drifted.context_window /= 2;
+        // Downsize from what the engine actually serves, not the larger original
+        // request: half of 32768 still exceeds this fixture's 11008-token lane.
+        drifted.context_window = recorded.observed_context_window / 2;
         drifted.host_prompt_cache_mib = launch_target.host_prompt_cache_mib.saturating_add(1);
         let admissions = AtomicUsize::new(0);
         let admit = || {

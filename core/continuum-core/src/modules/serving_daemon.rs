@@ -9859,6 +9859,19 @@ mod tests {
         let snap: ServingSnapshot = serde_json::from_value((*event.payload).clone()).unwrap(); // test-only decode of the shared bus payload
         assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
         assert!(snap.ready, "emitted snapshot reflects the live model");
+        // find_recent_event consumes newest first. A fast completion must not
+        // coalesce with admission, or remote consumers remain falsely unavailable.
+        let admission = bus
+            .find_recent_event(SERVING_SNAPSHOT_EVENT)
+            .expect("admission must reach bus consumers before completion");
+        let admission: ServingSnapshot =
+            serde_json::from_value((*admission.payload).clone()).unwrap();
+        assert!(!admission.ready);
+        assert_eq!(admission.loading_model.as_deref(), Some("coder-14b"));
+        assert!(
+            bus.find_recent_event(SERVING_SNAPSHOT_EVENT).is_none(),
+            "one admission and one completion"
+        );
     }
 
     // what this catches (the M5, 2026-09-20 02:4xZ): the board attributing 22.8 GB to a
