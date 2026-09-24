@@ -11,7 +11,7 @@
 //! # The one freeing lever, used honestly
 //!
 //! Serving's only public way to free VRAM is the suppress set
-//! ([`ServingDaemonModule::suppress_sender`](super::serving_daemon::ServingDaemonModule::suppress_sender)):
+//! ([`ServingDaemonModule::intent`](super::serving_daemon::ServingDaemonModule::intent)):
 //! mark the active model id as unloaded, and the daemon's own reconcile drops it
 //! on its next tick — VRAM freed live, no restart. That unload is **async and
 //! multi-second** (kill the child, wait for the GPU to release), so this
@@ -45,13 +45,16 @@
 //! # No new task, no parallel allocator
 //!
 //! This is a thin adapter over handles the daemon already publishes
-//! (`subscribe_serving`, `suppress_sender`) plus a footprint resolver the daemon
+//! (`subscribe_serving`, `intent`) plus a footprint resolver the daemon
 //! supplies from its catalog. It owns no tick, no thread, no lock across an
 //! await — the governor's daemon drives it. The acquire-on-load half (serving
 //! *taking* the lease, and `host_budget` becoming governed headroom) is the
 //! sibling slice that converges the two allocators.
 
-use std::collections::{HashMap, HashSet};
+use super::serving_daemon::ServingIntent;
+#[cfg(test)]
+use super::serving_daemon::ServingIntentSnapshot;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -141,11 +144,10 @@ pub struct ServingConsumer {
     /// report footprint and to confirm an unload/swap actually landed.
     serving: watch::Receiver<ServingSnapshot>,
     /// The full-unload seam: insert an id → the daemon unloads it next reconcile.
-    suppress: watch::Sender<Arc<HashSet<String>>>,
+    intent: ServingIntent,
     /// The re-home seam: set a smaller model id → the daemon's reconcile swaps to
     /// it (candidates intersect to the pin), freeing the delta without going dark
     /// (#105). The tier-down lever.
-    pin: watch::Sender<Option<String>>,
     /// HIGH-WATER RESIDENCY (#438, measured 2026-08-19). The bytes this consumer has
     /// held and has NOT been shown releasing. See `footprint` for why a plan-derived
     /// number alone under-reports by a whole model during every reshape.
@@ -184,16 +186,14 @@ pub struct ServingConsumer {
 impl ServingConsumer {
     pub fn new(
         serving: watch::Receiver<ServingSnapshot>,
-        suppress: watch::Sender<Arc<HashSet<String>>>,
-        pin: watch::Sender<Option<String>>,
+        intent: ServingIntent,
         footprint_of: FootprintFn,
         pool_kind: ResourceKind,
         tier_down: Arc<dyn TierDownPolicy>,
     ) -> Self {
         Self {
             serving,
-            suppress,
-            pin,
+            intent,
             held_high_water: std::sync::atomic::AtomicU64::new(0),
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
@@ -237,24 +237,14 @@ impl ServingConsumer {
     /// unloads it. Idempotent — re-suppressing an already-suppressed id is a
     /// no-op the daemon ignores.
     fn suppress_model(&self, id: &str) {
-        self.suppress.send_modify(|set| {
-            if !set.contains(id) {
-                let mut next = HashSet::clone(set);
-                next.insert(id.to_string());
-                *set = Arc::new(next);
-            }
-        });
+        self.intent.set_suppressed(id, true, false);
     }
 
     /// Force-pin `id` (the re-home target), so the daemon's reconcile intersects
     /// its candidates to that one model and swaps to it — the tier-down carry-out.
     /// Unlike suppress this does NOT go dark: the daemon serves the smaller model.
     fn pin_model(&self, id: &str) {
-        self.pin.send_modify(|p| {
-            if p.as_deref() != Some(id) {
-                *p = Some(id.to_string());
-            }
-        });
+        self.intent.set_pin(Some(id.to_string()), false);
     }
 }
 
@@ -532,16 +522,14 @@ mod tests {
             vision_base_url: None,
             vision_model: None,
         });
-        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
-        let (pin_tx, _prx) = watch::channel(None);
+        let intent = ServingIntent::new(None);
         // Flat resident estimate — the shape (window, lanes) is ignored here so the
         // reclaim handshake tests assert against a stable footprint. The test that
         // the window/lanes actually REACH this fn lives separately below.
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _window: u32, _lanes: u32, _grant: u32| bytes);
         let consumer = ServingConsumer::new(
             serving_rx,
-            suppress_tx,
-            pin_tx,
+            intent,
             footprint_of,
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
@@ -600,14 +588,12 @@ mod tests {
             vision_base_url: None,
             vision_model: None,
         });
-        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
-        let (pin_tx, _prx) = watch::channel(None);
+        let intent = ServingIntent::new(None);
         let footprint_of: FootprintFn =
             Arc::new(move |_id: &str, _w: u32, lanes: u32, _grant: u32| bytes_per_lane * lanes as u64);
         let consumer = ServingConsumer::new(
             serving_rx,
-            suppress_tx,
-            pin_tx,
+            intent,
             footprint_of,
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
@@ -763,12 +749,10 @@ mod tests {
             // weights(1000) + lanes × kv_per_token(10) × window
             1000 + lanes as u64 * 10 * window as u64
         });
-        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
-        let (pin_tx, _prx) = watch::channel(None);
+        let intent = ServingIntent::new(None);
         let consumer = ServingConsumer::new(
             serving_rx,
-            suppress_tx,
-            pin_tx,
+            intent,
             footprint_of,
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
@@ -813,7 +797,18 @@ mod tests {
         let first = consumer.reclaim(ask()).await;
         assert_eq!(first.status, ReclaimStatus::Deferred);
         assert_eq!(first.freed_bytes, 0);
-        assert!(consumer.suppress.borrow().contains("qwen3-coder-30b"));
+        assert!(consumer
+            .intent
+            .snapshot()
+            .suppressed
+            .contains("qwen3-coder-30b"));
+        let revision = consumer.intent.snapshot().revision;
+        consumer.suppress_model("qwen3-coder-30b");
+        assert_eq!(
+            consumer.intent.snapshot().revision,
+            revision,
+            "pressure suppression retry is a no-op"
+        );
 
         // Re-ask while still resident (reconcile not done): still deferred.
         let second = consumer.reclaim(ask()).await;
@@ -844,7 +839,7 @@ mod tests {
     ) -> (
         ServingConsumer,
         watch::Sender<ServingSnapshot>,
-        watch::Receiver<Option<String>>,
+        watch::Receiver<ServingIntentSnapshot>,
     ) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
             loading_model: None,
@@ -862,18 +857,12 @@ mod tests {
             vision_base_url: None,
             vision_model: None,
         });
-        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
-        let (pin_tx, pin_rx) = watch::channel(None);
+        let intent = ServingIntent::new(None);
+        let pin_rx = intent.subscribe();
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32, _grant: u32| current);
-        let consumer = ServingConsumer::new(
-            serving_rx,
-            suppress_tx,
-            pin_tx,
-            footprint_of,
-            ResourceKind::Vram,
-            policy,
-        )
-            .with_inherited_lane(Arc::new(|| None));
+        let consumer =
+            ServingConsumer::new(serving_rx, intent, footprint_of, ResourceKind::Vram, policy)
+                .with_inherited_lane(Arc::new(|| None));
         (consumer, serving_tx, pin_rx)
     }
 
@@ -899,12 +888,19 @@ mod tests {
         assert_eq!(first.status, ReclaimStatus::Deferred);
         assert_eq!(first.freed_bytes, 0);
         assert_eq!(
-            pin_rx.borrow().as_deref(),
+            pin_rx.borrow().pinned.as_deref(),
             Some("coder-7b"),
             "re-home pinned"
         );
+        let revision = pin_rx.borrow().revision;
+        consumer.pin_model("coder-7b");
+        assert_eq!(
+            pin_rx.borrow().revision,
+            revision,
+            "pressure pin retry is a no-op"
+        );
         assert!(
-            !consumer.suppress.borrow().contains("coder-30b"),
+            !consumer.intent.snapshot().suppressed.contains("coder-30b"),
             "tier-down pins, never suppresses — serving must not go dark"
         );
 
@@ -952,11 +948,11 @@ mod tests {
                 .await;
             assert_eq!(out.status, ReclaimStatus::Deferred);
             assert!(
-                pin_rx.borrow().is_none(),
+                pin_rx.borrow().pinned.is_none(),
                 "{reason:?} must not pin/tier-down"
             );
             assert!(
-                consumer.suppress.borrow().contains("coder-30b"),
+                consumer.intent.snapshot().suppressed.contains("coder-30b"),
                 "{reason:?} suppresses for a full unload"
             );
         }
@@ -977,11 +973,11 @@ mod tests {
         let out = consumer.reclaim(ask()).await;
         assert_eq!(out.status, ReclaimStatus::Deferred);
         assert!(
-            pin_rx.borrow().is_none(),
+            pin_rx.borrow().pinned.is_none(),
             "non-shrink proposal must not pin"
         );
         assert!(
-            consumer.suppress.borrow().contains("coder-30b"),
+            consumer.intent.snapshot().suppressed.contains("coder-30b"),
             "falls through to full unload"
         );
     }

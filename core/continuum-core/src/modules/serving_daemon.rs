@@ -365,6 +365,85 @@ pub struct PinFit {
 /// with the autonomic planner by construction.
 pub type PinFitChecker = Arc<dyn Fn(&Model) -> PinFit + Send + Sync>;
 
+/// A coherent process-local intent snapshot. Revision is not persisted across boots.
+#[derive(Clone, Debug)]
+pub struct ServingIntentSnapshot {
+    pub revision: u64,
+    pub pinned: Option<String>,
+    pub suppressed: Arc<HashSet<String>>,
+}
+
+/// Mutation capability for the serving daemon's single intent watch.
+#[derive(Clone)]
+pub struct ServingIntent {
+    state: watch::Sender<ServingIntentSnapshot>,
+}
+
+impl ServingIntent {
+    pub fn new(pinned: Option<String>) -> Self {
+        let (state, _) = watch::channel(ServingIntentSnapshot {
+            revision: 0,
+            pinned,
+            suppressed: Arc::new(HashSet::new()),
+        });
+        Self { state }
+    }
+
+    pub fn snapshot(&self) -> ServingIntentSnapshot {
+        self.state.borrow().clone()
+    }
+    pub fn subscribe(&self) -> watch::Receiver<ServingIntentSnapshot> {
+        self.state.subscribe()
+    }
+
+    /// Explicit accepted requests count even when reaffirming the current value.
+    /// Pressure retries only count when their effective value changes.
+    pub fn set_pin(&self, pinned: Option<String>, explicit: bool) -> Option<String> {
+        let mut previous = None;
+        self.state.send_if_modified(|state| {
+            previous = state.pinned.clone();
+            if !explicit && previous == pinned {
+                return false;
+            }
+            state.revision = state
+                .revision
+                .checked_add(1)
+                .expect("serving intent revision exhausted"); // JUSTIFIED: refuse overflow rather than authorize an old revision again.
+            state.pinned = pinned;
+            true
+        });
+        previous
+    }
+
+    pub fn set_suppressed(&self, model: &str, suppressed: bool, explicit: bool) -> bool {
+        let mut previous = false;
+        self.state.send_if_modified(|state| {
+            previous = state.suppressed.contains(model);
+            if !explicit && previous == suppressed {
+                return false;
+            }
+            state.revision = state
+                .revision
+                .checked_add(1)
+                .expect("serving intent revision exhausted"); // JUSTIFIED: refuse overflow rather than authorize an old revision again.
+            if suppressed {
+                Arc::make_mut(&mut state.suppressed).insert(model.to_string());
+            } else {
+                Arc::make_mut(&mut state.suppressed).remove(model);
+            }
+            true
+        });
+        previous
+    }
+}
+
+/// Internal provenance for the plan. The command still returns only `plan`.
+#[derive(Clone, Debug)]
+struct ServingPlanSnapshot {
+    pub intent_revision: u64,
+    pub plan: Option<ServingPlan>,
+}
+
 pub struct ServingDaemonModule {
     gpu: Arc<GpuMemoryManager>,
     /// Live system memory monitor — the budget comes from what's actually FREE
@@ -384,7 +463,9 @@ pub struct ServingDaemonModule {
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
-    plan_tx: watch::Sender<Option<ServingPlan>>,
+    plan_tx: watch::Sender<ServingPlanSnapshot>,
+    /// Existing read-only wire/grid projection; never used to authorize reconciliation.
+    plan_view_tx: watch::Sender<Option<ServingPlan>>,
     /// The serving-control leaf: owns the supervised `llama-server` child and
     /// reconciles it to the plan. A trait object so tests inject a fake; in
     /// production it is a `LlamaServerProcess` (which kills its child on Drop —
@@ -537,16 +618,9 @@ pub struct ServingDaemonModule {
     /// every placement made under it is flagged on the `serving.k3_placement` probe so the
     /// numbers are never mistaken for real capacity. [[k3-slice2-A-vs-B-decision]]
     measure_force_expert_budget_bytes: Option<u64>,
-    /// Model ids the operator has explicitly UNLOADED — the VRAM-axis "free".
-    /// The daemon is holistically in charge of VRAM, so freeing a lane is a
-    /// runtime act, never a restart: `serving/unload` inserts an id here, the
-    /// next plan recompute excludes it from candidates, and the reconcile drops
-    /// it (relaunch to the next-best fit, or empty) — VRAM freed live.
-    /// `serving/load` removes it, permitting the planner to serve it again when
-    /// it fits the budget. COW `Arc<HashSet>` on a watch so the command writes
-    /// and the plan reads the same authority lock-free; the planner still owns
-    /// the decision (this only ever EXCLUDES, never forces).
-    suppressed: watch::Sender<Arc<HashSet<String>>>,
+    /// One coherent revisioned pin/suppression authority, shared with commands and
+    /// pressure reclaim. Readers never reconstruct intent from separate watches.
+    intent: ServingIntent,
     /// How many minds actually need a concurrent serving lane — the persona
     /// floor, set by the boot wiring BEFORE the first plan and updated if the
     /// population changes. Lanes come from DEMAND ([`plan_serving`] docs):
@@ -617,19 +691,6 @@ pub struct ServingDaemonModule {
     /// `BOOTSTRAP_WORKING_SET` constant that used to stand in for this measurement
     /// and capped every citizen at 8192 tokens of a 128k-capable model.
     working_set: crate::cognition::working_set::WorkingSetRegistry,
-    /// The operator/persona's explicit FORCE-serve pin — the "hard pin" the
-    /// `serving/load` doc names as the future verb, the mechanism behind
-    /// promote/demote (`serving/pin` ↔ `serving/unpin`). `None` = autonomic
-    /// best-fit (the planner picks the most-capable model that fits). `Some(id)`
-    /// = the planner's candidate set is INTERSECTED to just this model, so the
-    /// reconcile serves exactly it (or nothing, honestly, if it no longer fits).
-    /// The dual of `suppressed`: suppress SUBTRACTS from candidates, pin
-    /// INTERSECTS to one. Same lock-free `watch` seam; the daemon still owns the
-    /// reconcile. The fit-gate lives in `serving/pin` (it refuses loud BEFORE
-    /// pinning when the model won't fit a lane), so a set pin is always a model
-    /// that fit at pin time; budget can still shift under it, and then the plan
-    /// degrades honestly (`fits_on_gpu = false`) rather than over-committing.
-    pinned: watch::Sender<Option<String>>,
     /// Set by the sync reconcile at the live → empty transition; `tick()` awaits
     /// the lane teardown (`LlamaServerControl::idle`) and clears it.
     idle_pending: AtomicBool,
@@ -722,9 +783,12 @@ impl ServingDaemonModule {
         catalog: Arc<ModelCatalog>,
         pin_store: crate::modules::serving_pin_store::ServingPinStore,
     ) -> Self {
-        let (plan_tx, _rx) = watch::channel(None);
+        let (plan_tx, _rx) = watch::channel(ServingPlanSnapshot {
+            intent_revision: 0,
+            plan: None,
+        });
+        let (plan_view_tx, _) = watch::channel(None);
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
-        let (suppressed, _urx) = watch::channel(Arc::new(HashSet::new()));
         // The operator's pin is durable intent: seed the channel from the store so the
         // FIRST plan is computed under it (cards 3160b3d0 / 9552a01e — every reboot
         // used to lose the pin and the boot planner served whatever fit).
@@ -778,13 +842,14 @@ impl ServingDaemonModule {
                 }
             }
         };
-        let (pinned, _prx) = watch::channel(honoured);
+        let intent = ServingIntent::new(honoured);
         Self {
             idle_pending: AtomicBool::new(false),
             gpu,
             system,
             resource_daemon,
             plan_tx,
+            plan_view_tx,
             server,
             serving_tx,
             reconciling: Arc::new(AtomicBool::new(false)),
@@ -809,8 +874,7 @@ impl ServingDaemonModule {
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
             catalog,
             pin_store,
-            suppressed,
-            pinned,
+            intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_held_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -1286,7 +1350,7 @@ impl ServingDaemonModule {
     /// Subscribe to the published serving plan. Consumers (scheduler, spawner)
     /// hold the receiver and react to plan changes — the ebb/flow seam.
     pub fn subscribe(&self) -> watch::Receiver<Option<ServingPlan>> {
-        self.plan_tx.subscribe()
+        self.plan_view_tx.subscribe()
     }
 
     /// Subscribe to the published serving SNAPSHOT — the live `(active_model,
@@ -1319,14 +1383,12 @@ impl ServingDaemonModule {
         // catalog snapshot + suppress/pin watches at reclaim time; no lock held across the
         // async handshake (it returns an owned Vec).
         let catalog = self.catalog.clone();
-        let suppressed_rx = self.suppressed.subscribe();
-        let pinned_rx = self.pinned.subscribe();
+        let intent_rx = self.intent.subscribe();
         let candidates: crate::modules::serving_tier_down::TierCandidatesFn =
             Arc::new(move |window: u32, lanes: u32| {
                 let snap = catalog.snapshot();
-                let sup = suppressed_rx.borrow();
-                let pin = pinned_rx.borrow();
-                servable_candidates(&snap, &**sup, &pin)
+                let intent = intent_rx.borrow();
+                servable_candidates(&snap, &intent.suppressed, &intent.pinned)
                     .into_iter()
                     .map(|f| {
                         // Peak (weights + KV + prefill compute reserve), the SAME number
@@ -1344,8 +1406,7 @@ impl ServingDaemonModule {
             });
         let consumer = ServingConsumer::new(
             self.subscribe_serving(),
-            self.suppress_sender(),
-            self.pin_sender(),
+            self.intent.clone(),
             serving_footprint_fn(self.catalog.clone()),
             serving_pool_kind(),
             // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
@@ -1498,10 +1559,11 @@ impl ServingDaemonModule {
     /// What to tell a human when nothing is serving. "No local weights" is a LIE when the
     /// weights are there and every candidate was refused for a nameable reason.
     fn no_candidate_reason(&self) -> String {
+        let intent = self.intent.snapshot();
         let (kept, refused) = servable_candidates_with_refusals(
             &self.catalog.snapshot(),
-            &self.suppressed.borrow(),
-            &self.pinned.borrow(),
+            &intent.suppressed,
+            &intent.pinned,
         );
         if !kept.is_empty() {
             return "a candidate exists but no plan was produced — read serving.plan".to_string();
@@ -1523,9 +1585,8 @@ impl ServingDaemonModule {
     }
 
     fn live_candidates(&self) -> Vec<ModelFootprint> {
-        let suppressed = self.suppressed.borrow();
-        let pinned = self.pinned.borrow();
-        servable_candidates(&self.catalog.snapshot(), &**suppressed, &pinned)
+        let intent = self.intent.snapshot();
+        servable_candidates(&self.catalog.snapshot(), &intent.suppressed, &intent.pinned)
     }
 
     /// The serving budget this host has when the box is OURS — physical capacity at
@@ -1558,33 +1619,9 @@ impl ServingDaemonModule {
         }
     }
 
-    /// The universe the host floor is judged over: everything servable on disk with
-    /// the PIN applied and suppression ignored. A pin is the operator's word — the
-    /// floor's ceiling, never something the floor overrules (Fable's block on #4146:
-    /// the M5 pins Ornith with a higher-ranked 27B on disk; a pin-blind floor read
-    /// every plan under the pin as `Below` and the host published nothing). An
-    /// unload's suppression is intent to MOVE, not licence to sink — it stays ignored
-    /// (#4145).
-    fn floor_candidates(&self) -> Vec<ModelFootprint> {
-        let pinned = self.pinned.borrow();
-        servable_candidates(&self.catalog.snapshot(), &HashSet::new(), &pinned)
-    }
-
-    /// A clone of the suppress-set writer, for the `serving/unload` ·
-    /// `serving/load` commands to mutate the VRAM-axis allocation ledger. The
-    /// daemon stays the authority: the commands only edit the exclude-set; the
-    /// plan + reconcile (owned here) turn that into an actual load/unload.
-    pub fn suppress_sender(&self) -> watch::Sender<Arc<HashSet<String>>> {
-        self.suppressed.clone()
-    }
-
-    /// A clone of the force-pin writer, for the `serving/pin` · `serving/unpin`
-    /// commands (the promote/demote mechanism). The daemon stays the authority:
-    /// the command sets/clears one model id; `live_candidates` intersects to it
-    /// and the plan + reconcile (owned here) turn that into the actual swap. Dual
-    /// of [`Self::suppress_sender`].
-    pub fn pin_sender(&self) -> watch::Sender<Option<String>> {
-        self.pinned.clone()
+    /// The daemon-owned mutation capability; raw watch writers never escape.
+    pub fn intent(&self) -> ServingIntent {
+        self.intent.clone()
     }
 
     /// The synchronous fit-gate `serving/pin` holds: given a candidate model,
@@ -1720,7 +1757,11 @@ impl ServingDaemonModule {
             return;
         }
         let budget = self.host_budget();
-        self.publish_plan(budget, &self.live_candidates(), &self.floor_candidates());
+        let intent = self.intent.snapshot();
+        let catalog = self.catalog.snapshot();
+        let candidates = servable_candidates(&catalog, &intent.suppressed, &intent.pinned);
+        let on_disk = servable_candidates(&catalog, &HashSet::new(), &intent.pinned);
+        self.publish_plan_for_intent(budget, &candidates, &on_disk, intent.revision);
     }
 
     /// Bring the running `llama-server` in line with the published plan. FAST —
@@ -2457,7 +2498,12 @@ impl ServingDaemonModule {
         // single source of truth (task #50). We carry them on the ServingTarget
         // so llama-server's `-c` (= window × lanes) and `--parallel` (= lanes)
         // match exactly what was planned: each slot gets one full served window.
-        let (desired, served_ctx, lanes) = match self.plan_tx.borrow().as_ref() {
+        let planned = self.plan_tx.borrow().clone();
+        let intent = self.intent.snapshot();
+        if planned.intent_revision != intent.revision {
+            return None;
+        }
+        let (desired, served_ctx, lanes) = match planned.plan.as_ref() {
             Some(plan) => (
                 plan.base_model.model_id.clone(),
                 plan.served_context_window,
@@ -2971,21 +3017,6 @@ impl ServingDaemonModule {
         // launcher sources resident from it via `LLAMA_RESIDENT_OVERRIDE`); `None`
         // when resident fits natively OR no override is cached yet (resolver #35).
         let resident_override = self.compute_resident_override(&model);
-        // Division reward attribution (two-speed honesty): record which resident the
-        // spawn ACTUALLY loads so measured tok/s credits the serving tier, never the
-        // bandit's latest unlaunched choice.
-        if let Ok(mut g) = self.served_resident.lock() {
-            *g = resident_override.clone();
-        }
-        if let Ok(mut d) = self.division.lock() {
-            if let Some(act) = d.as_mut() {
-                act.set_served_resident(resident_override.as_deref());
-            }
-        }
-        // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
-        // touches it — the NvmeServingTierPool must never migrate the GGUF the
-        // engine is loading or serving. Model change swaps the registration.
-        self.set_active_artifact(model.gguf_local_path.clone());
         // RESTORE-ECONOMY 1.b: derive the host prompt cache HERE, where footprint,
         // physical memory and the citizen population are all in hand — computed
         // once per serve, carried on the target so the lane's `--cache-ram` and
@@ -3024,9 +3055,28 @@ impl ServingDaemonModule {
 
         // One reconcile at a time. If the swap finds `true`, another is already
         // running; skip rather than stack relaunches.
+        if self.intent.snapshot().revision != planned.intent_revision {
+            return None;
+        }
         if self.reconciling.swap(true, Ordering::AcqRel) {
             return None;
         }
+
+        // Division reward attribution (two-speed honesty): record which resident the
+        // spawn ACTUALLY loads so measured tok/s credits the serving tier, never the
+        // bandit's latest unlaunched choice.
+        if let Ok(mut g) = self.served_resident.lock() {
+            *g = target.resident_override.clone();
+        }
+        if let Ok(mut d) = self.division.lock() {
+            if let Some(act) = d.as_mut() {
+                act.set_served_resident(target.resident_override.as_deref());
+            }
+        }
+        // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
+        // touches it — the NvmeServingTierPool must never migrate the GGUF the
+        // engine is loading or serving. Model change swaps the registration.
+        self.set_active_artifact(target.model.gguf_local_path.clone());
 
         // Consume any pending force-relaunch the liveness heartbeat raised: it means the
         // heartbeat already saw the live lane fail decode, so this reconcile must re-prove
@@ -3045,7 +3095,7 @@ impl ServingDaemonModule {
         // needs for one real turn). The M5, 2026-09-20 17:49Z: with the 27B pinned off at
         // boot the sidecar admitted a 35B against a 2,048-token main lane's headroom, and
         // when the 27B came back it got what was left — one lane at 2,048.
-        let pinned_off: Vec<String> = self.suppressed.borrow().iter().cloned().collect();
+        let pinned_off: Vec<String> = intent.suppressed.iter().cloned().collect();
         let persona_floor: Option<u32> = self.serving_demand().typical_prompt_floor();
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
@@ -3746,11 +3796,50 @@ impl ServingDaemonModule {
     /// `on_disk` is everything servable with only the pin applied — the universe the
     /// host floor is judged over. Both are inputs so the floor is never read from an
     /// ambient catalog.
+    #[cfg(test)]
     fn publish_plan(
         &self,
         budget: HostBudget,
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
+    ) {
+        self.publish_plan_for_intent(budget, candidates, on_disk, self.intent.snapshot().revision);
+    }
+
+    fn publish_plan_snapshot(&self, intent_revision: u64, plan: Option<ServingPlan>) {
+        // Initialization can overlap the authority tick. Serialize both publications
+        // under the private authoritative watch so their final views cannot diverge.
+        // Public projection readers never acquire this private watch; no await here.
+        self.plan_tx.send_modify(|state| {
+            *state = ServingPlanSnapshot {
+                intent_revision,
+                plan: plan.clone(),
+            };
+            let _ = self.plan_view_tx.send_replace(plan);
+        });
+    }
+
+    /// A policy may keep the previous geometry. A new intent may authorize that
+    /// same model, but cannot authorize a model absent from its candidate snapshot.
+    fn retain_plan_for_intent(&self, intent_revision: u64, candidates: &[ModelFootprint]) {
+        let previous = self.plan_tx.borrow().clone();
+        if previous.intent_revision != intent_revision
+            && previous.plan.as_ref().is_some_and(|p| {
+                candidates
+                    .iter()
+                    .any(|c| c.model_id == p.base_model.model_id)
+            })
+        {
+            self.publish_plan_snapshot(intent_revision, previous.plan);
+        }
+    }
+
+    fn publish_plan_for_intent(
+        &self,
+        budget: HostBudget,
+        candidates: &[ModelFootprint],
+        on_disk: &[ModelFootprint],
+        intent_revision: u64,
     ) {
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
@@ -3765,6 +3854,7 @@ impl ServingDaemonModule {
         let incumbent = incumbent_for_plan(
             self.plan_tx
                 .borrow()
+                .plan
                 .as_ref()
                 .map(|p| p.base_model.model_id.clone()),
             (self.inherited_lane)().as_ref(),
@@ -3920,7 +4010,7 @@ impl ServingDaemonModule {
                 let requirement = demand.publication_prompt_floor(&plan);
                 if !crate::cognition::serving_plan::persona_lane_holds(plan.served_context_window, requirement) {
                     let retired = crate::inference::lane_footprint::retire(&plan.base_model.model_id);
-                    let previous_stands = self.plan_tx.borrow().is_some();
+                    let previous_stands = self.plan_tx.borrow().plan.is_some();
                     static LAST_STARVED: parking_lot::Mutex<Option<(String, u32, u32)>> = parking_lot::Mutex::new(None);
                     let key = (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes as u32);
                     let mut last = LAST_STARVED.lock();
@@ -3941,6 +4031,7 @@ impl ServingDaemonModule {
                         *last = Some(key);
                     }
                     if previous_stands {
+                        self.retain_plan_for_intent(intent_revision, candidates);
                         return;
                     }
                 }
@@ -3998,6 +4089,7 @@ impl ServingDaemonModule {
                             );
                             *LAST_REFUSED.lock() = Some(key);
                         }
+                        self.retain_plan_for_intent(intent_revision, candidates);
                         return;
                     }
                     // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
@@ -4051,6 +4143,7 @@ impl ServingDaemonModule {
                                 "fresh plan wants a LESS capable base — holding the \
                                  incumbent plan until the squeeze proves sustained (#368)",
                             );
+                            self.retain_plan_for_intent(intent_revision, candidates);
                             return;
                         }
                         // Sustained: a real squeeze. Adopt, and re-arm the gate.
@@ -4205,7 +4298,7 @@ impl ServingDaemonModule {
                 let spike = spike_of_served.unwrap_or(0);
                 crate::cognition::prefill_throttle::publish_serving(spike, plan.lanes as usize);
                 // send_replace keeps the latest even with no live receivers yet.
-                let _ = self.plan_tx.send_replace(Some(plan));
+                self.publish_plan_snapshot(intent_revision, Some(plan));
             }
             None => {
                 // No servable model on disk. Publish None and say so loudly —
@@ -4231,7 +4324,7 @@ impl ServingDaemonModule {
                         "no servable model on disk — serving plan empty",
                     );
                 }
-                let _ = self.plan_tx.send_replace(None);
+                self.publish_plan_snapshot(intent_revision, None);
             }
         }
     }
@@ -6303,8 +6396,7 @@ impl ServiceModule for ServingDaemonModule {
     /// plan/reconcile loop turns the suppress-set edits into actual (un)loads.
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::serving::command_objects(
-            self.suppress_sender(),
-            self.pin_sender(),
+            self.intent.clone(),
             self.pin_fit_checker(),
             self.subscribe_serving(),
             self.subscribe(),
@@ -7530,13 +7622,7 @@ mod tests {
     async fn publish_plan_drives_the_watch() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let mut daemon = ServingDaemonModule::new(
-            gpu,
-            system,
-            test_resource_daemon(),
-            test_catalog(),
-            test_pin_store(),
-        );
+        let mut daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog(), test_pin_store());
         daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
         daemon.set_leased_in_sent_source(Arc::new(Vec::new));
         let rx = daemon.subscribe();
@@ -7566,6 +7652,20 @@ mod tests {
         // No candidates → None published (no silent serve).
         daemon.publish_plan(budget, &[], &[]);
         assert!(rx.borrow().is_none(), "empty candidates → no plan");
+        // What this catches: publication must retain the revision used to select
+        // candidates, never borrow newer intent and falsely stamp the old plan.
+        let selected_revision = daemon.intent.snapshot().revision;
+        daemon.intent.set_pin(Some("new-user-choice".into()), true);
+        daemon.publish_plan_for_intent(budget, &candidates, &candidates, selected_revision);
+        assert_eq!(daemon.plan_tx.borrow().intent_revision, selected_revision);
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "stale plan cannot dispatch"
+        );
+        assert_ne!(
+            daemon.plan_tx.borrow().intent_revision,
+            daemon.intent.snapshot().revision
+        );
     }
 
     // what this catches: a plan whose window is below the residents' REQUIREMENT is never PUBLISHED —
@@ -7607,10 +7707,40 @@ mod tests {
         );
         // A squeezed budget: the planner's arithmetic yields a window below one coding
         // turn — the daemon refuses to publish it and the good plan stands.
+        daemon
+            .intent
+            .set_pin(Some(good.base_model.model_id.clone()), true);
         daemon.publish_plan(HostBudget { usable_bytes: 9 * GB + 200 * 1_000_000, perf_cores: 6 }, &candidates, &candidates);
         let after = rx.borrow().clone().expect("the previous plan still stands");
+        assert_eq!(
+            daemon.plan_tx.borrow().intent_revision,
+            daemon.intent.snapshot().revision,
+            "held geometry is revalidated under same-value explicit intent"
+        );
         assert_eq!(after.served_context_window, good.served_context_window, "a 2k plan never replaces a real one");
         assert_eq!(after.lanes, good.lanes);
+        let held_revision = daemon.plan_tx.borrow().intent_revision;
+        daemon.intent.set_pin(Some("different-model".into()), true);
+        let different =
+            vec![footprint_from_parts("different-model", GB, 8192, true, None).unwrap()];
+        daemon.publish_plan_for_intent(
+            HostBudget {
+                usable_bytes: 2 * GB,
+                perf_cores: 6,
+            },
+            &different,
+            &different,
+            daemon.intent.snapshot().revision,
+        );
+        assert_eq!(
+            daemon.plan_tx.borrow().intent_revision,
+            held_revision,
+            "refusing a new candidate cannot relabel the excluded old plan as current intent"
+        );
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "excluded retained model cannot dispatch"
+        );
         // With NO plan published (a cold boot) and a requirement the box cannot hold, the
         // best runnable plan is still published — a dark node is worse than a starved seat
         // (Cormac's condition on #4257: IntelMac's 32k-trained 1.5B against a 58k typical).
@@ -8048,18 +8178,14 @@ mod tests {
         );
 
         // serving/unload: pin it OFF → excluded from candidates → lane frees.
-        daemon.suppress_sender().send_modify(|s| {
-            Arc::make_mut(s).insert(id.to_string());
-        });
+        daemon.intent.set_suppressed(id, true, true);
         assert!(
             !daemon.live_candidates().iter().any(|f| f.model_id == id),
             "a suppressed model is excluded → planner drops it → VRAM frees"
         );
 
         // serving/load: permit it again → returns as a candidate (planner decides).
-        daemon.suppress_sender().send_modify(|s| {
-            Arc::make_mut(s).remove(id);
-        });
+        daemon.intent.set_suppressed(id, false, true);
         assert!(
             daemon.live_candidates().iter().any(|f| f.model_id == id),
             "an un-suppressed model returns as a candidate"
@@ -8110,14 +8236,14 @@ mod tests {
         );
 
         // Explicit pin = operator consent → eligibility is bypassed.
-        daemon.pin_sender().send_replace(Some(id.to_string()));
+        daemon.intent.set_pin(Some(id.to_string()), true);
         assert!(
             daemon.live_candidates().iter().any(|f| f.model_id == id),
             "a pinned ineligible model serves — pin is consent"
         );
 
         // Unpin → back off the autonomic plan.
-        daemon.pin_sender().send_replace(None);
+        daemon.intent.set_pin(None, true);
         assert!(
             !daemon.live_candidates().iter().any(|f| f.model_id == id),
             "unpin returns the opponent to benchmark-only invisibility"
@@ -8372,7 +8498,7 @@ mod tests {
         let (budget, candidates) = boot_squeeze();
         daemon.publish_plan(budget, &candidates, &candidates);
 
-        let plan = daemon.plan_tx.borrow().clone().expect("a plan");
+        let plan = daemon.plan_tx.borrow().plan.clone().expect("a plan");
         assert_eq!(
             plan.base_model.model_id, "qwen3-27b",
             "the inherited 27B is ours and its bytes are ours to reclaim — the successor must \
@@ -8394,7 +8520,7 @@ mod tests {
         );
         let (budget, candidates) = boot_squeeze();
         daemon.publish_plan(budget, &candidates, &candidates);
-        let plan = daemon.plan_tx.borrow().clone().expect("a plan");
+        let plan = daemon.plan_tx.borrow().plan.clone().expect("a plan");
         assert_eq!(
             plan.base_model.model_id, "coder-4b",
             "with no incumbent to credit, 6 GB genuinely cannot hold a 19 GB model"
@@ -8417,7 +8543,7 @@ mod tests {
         let (budget, candidates) = boot_squeeze();
         daemon.publish_plan(budget, &candidates, &candidates);
         assert!(
-            daemon.plan_tx.borrow().is_none(),
+            daemon.plan_tx.borrow().plan.is_none(),
             "a 53 GB card whose floor is the 27B must not publish a 4B plan on a 6 GB reading"
         );
         // And when the budget comes back, the 27B is adopted at once.
@@ -8426,7 +8552,12 @@ mod tests {
             perf_cores: budget.perf_cores,
         };
         daemon.publish_plan(recovered, &candidates, &candidates);
-        let plan = daemon.plan_tx.borrow().clone().expect("a plan once the budget returns");
+        let plan = daemon
+            .plan_tx
+            .borrow()
+            .plan
+            .clone()
+            .expect("a plan once the budget returns");
         assert_eq!(plan.base_model.model_id, "qwen3-27b");
     }
 
@@ -8454,7 +8585,7 @@ mod tests {
     #[tokio::test]
     async fn reconcile_brings_planned_model_up() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
+        let mut daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
 
         // Publish a plan (most-capable fitting model = coder-14b).
         let budget = HostBudget {
@@ -8462,6 +8593,37 @@ mod tests {
             perf_cores: 6,
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+        daemon.publish_plan(budget, &candidates, &candidates);
+
+        // What this catches: an intent change during target preparation must not
+        // unprotect the incumbent or attribute an unlaunched resident on refusal.
+        let paths = tempfile::tempdir().expect("isolated artifact paths");
+        let incumbent = paths.path().join("incumbent.gguf");
+        let candidate = paths.path().join("candidate.gguf");
+        daemon.set_active_artifact(Some(incumbent.clone()));
+        *daemon.served_resident.lock().unwrap() = Some(incumbent.clone());
+        let resolver = daemon.model_resolver.clone();
+        let preparing = resolver.clone();
+        let intent = daemon.intent.clone();
+        daemon.set_model_resolver(Arc::new(move |id| {
+            intent.set_pin(Some(id.to_string()), true);
+            preparing(id).map(|mut model| {
+                model.gguf_local_path = Some(candidate.clone());
+                model
+            })
+        }));
+        assert!(daemon.reconcile_to_plan().is_none());
+        assert_eq!(
+            daemon.active_artifact.lock().unwrap().as_ref(),
+            Some(&incumbent)
+        );
+        assert_eq!(
+            daemon.served_resident.lock().unwrap().as_ref(),
+            Some(&incumbent)
+        );
+        assert_eq!(serves.load(Ordering::SeqCst), 0);
+        daemon.set_active_artifact(None);
+        daemon.set_model_resolver(resolver);
         daemon.publish_plan(budget, &candidates, &candidates);
 
         let handle = daemon
@@ -8534,7 +8696,12 @@ mod tests {
         };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates, &candidates);
-        let plan = daemon.plan_tx.borrow().clone().expect("published plan");
+        let plan = daemon
+            .plan_tx
+            .borrow()
+            .plan
+            .clone()
+            .expect("published plan");
         let mut live = ready_snapshot();
         live.active_model = Some("coder-14b".into());
         live.served_context_window = plan.served_context_window;
@@ -8600,7 +8767,7 @@ mod tests {
         daemon.publish_plan(budget, &candidates, &candidates);
         let (plan_window, plan_lanes) = {
             let plan = daemon.plan_tx.borrow();
-            let plan = plan.as_ref().expect("plan published");
+            let plan = plan.plan.as_ref().expect("plan published");
             (plan.served_context_window, plan.lanes)
         };
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
@@ -9178,7 +9345,7 @@ mod tests {
         daemon.publish_plan(budget, &candidates, &candidates);
         let (plan_window, plan_lanes) = {
             let plan = daemon.plan_tx.borrow();
-            let plan = plan.as_ref().expect("plan published");
+            let plan = plan.plan.as_ref().expect("plan published");
             (plan.served_context_window, plan.lanes)
         };
 

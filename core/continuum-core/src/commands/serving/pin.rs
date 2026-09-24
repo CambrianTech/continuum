@@ -34,6 +34,9 @@
 //!
 //! `Privileged` — it dictates what occupies GPU memory on this node.
 
+use crate::modules::serving_daemon::ServingIntent;
+#[cfg(test)]
+use crate::modules::serving_daemon::ServingIntentSnapshot;
 use std::sync::Arc;
 
 use schemars::JsonSchema;
@@ -98,7 +101,7 @@ crate::action_command! {
     /// serving/unpin. On a single-serve host this re-homes the shared base for
     /// everyone on the node.
     pub struct ServingPin {
-        pin: watch::Sender<Option<String>>,
+        intent: ServingIntent,
         fit: PinFitChecker,
         catalog: Arc<ModelCatalog>,
         serving: watch::Receiver<ServingSnapshot>,
@@ -155,7 +158,7 @@ crate::action_command! {
         // 4. Set the pin. live_candidates now intersects to this model; the
         //    daemon's next tick reconciles the live server to it (sub-second to a
         //    few seconds; observe readiness via serving/status).
-        this.pin.send_replace(Some(p.model_id.clone()));
+        this.intent.set_pin(Some(p.model_id.clone()), true);
         this.store.save(&p.model_id);
 
         let detail = match &previous_model {
@@ -241,17 +244,18 @@ mod tests {
         catalog: Arc<ModelCatalog>,
     ) -> (
         ServingPin,
-        watch::Receiver<Option<String>>,
+        watch::Receiver<ServingIntentSnapshot>,
         tempfile::TempDir,
     ) {
-        let (pin, pin_rx) = watch::channel(None);
+        let intent = ServingIntent::new(None);
+        let pin_rx = intent.subscribe();
         let (_tx, serving) = watch::channel(ServingSnapshot::empty());
         // The store lives under a tempdir the test owns. Before 2026-09-16 the command
         // resolved the machine's real home and this test pinned the box it ran on.
         let dir = tempfile::tempdir().expect("tempdir");
         (
             ServingPin {
-                pin,
+                intent,
                 fit,
                 catalog,
                 serving,
@@ -293,9 +297,10 @@ mod tests {
             .expect_err("unknown id must fail loud");
         assert!(matches!(err, CommandError::NotFound(_)));
         assert!(
-            pin_rx.borrow().is_none(),
+            pin_rx.borrow().pinned.is_none(),
             "no pin set on a rejected request"
         );
+        assert_eq!(pin_rx.borrow().revision, 0);
     }
 
     // what this catches: a real model that won't fit a lane is refused loud as
@@ -318,9 +323,10 @@ mod tests {
             .expect_err("over-budget model must be denied");
         assert!(matches!(err, CommandError::Denied(_)));
         assert!(
-            pin_rx.borrow().is_none(),
+            pin_rx.borrow().pinned.is_none(),
             "the pin must NOT be set when the model won't fit"
         );
+        assert_eq!(pin_rx.borrow().revision, 0);
     }
 
     // what this catches: a model with no servable artifact (plan None) is denied
@@ -341,7 +347,8 @@ mod tests {
             .await
             .expect_err("undownloaded model must be denied");
         assert!(matches!(err, CommandError::Denied(_)));
-        assert!(pin_rx.borrow().is_none());
+        assert!(pin_rx.borrow().pinned.is_none());
+        assert_eq!(pin_rx.borrow().revision, 0, "refused pin changes no intent");
     }
 
     // what this catches: a fitting model IS pinned — the watch flips to Some(id),
@@ -370,7 +377,7 @@ mod tests {
         assert_eq!(report.pinned_model, id);
         assert_eq!(report.served_context_window, 8192);
         assert_eq!(
-            pin_rx.borrow().as_deref(),
+            pin_rx.borrow().pinned.as_deref(),
             Some(id.as_str()),
             "the pin watch carries the forced model"
         );
@@ -381,5 +388,90 @@ mod tests {
             .load()
             .expect("the pin is persisted to the command's own store");
         assert_eq!(stored.model_id, id);
+        assert_eq!(pin_rx.borrow().revision, 1);
+        // What this catches: accepted same-value selections and A -> unpin -> A
+        // supersede an old restoration even when the final pin value is identical.
+        cmd.run(
+            &Ctx::default(),
+            ServingPinParams {
+                model_id: id.clone(),
+            },
+        )
+        .await
+        .expect("reaffirm pin");
+        assert_eq!(pin_rx.borrow().revision, 2);
+        super::super::unpin::ServingUnpin {
+            intent: cmd.intent.clone(),
+            store: cmd.store.clone(),
+        }
+        .run(&Ctx::default(), super::super::unpin::ServingUnpinParams {})
+        .await
+        .expect("unpin");
+        cmd.run(
+            &Ctx::default(),
+            ServingPinParams {
+                model_id: id.clone(),
+            },
+        )
+        .await
+        .expect("pin again");
+        assert_eq!(pin_rx.borrow().revision, 4);
+        assert_eq!(pin_rx.borrow().pinned.as_deref(), Some(id.as_str()));
+        let unload = super::super::unload::ServingUnload {
+            intent: cmd.intent.clone(),
+            serving: cmd.serving.clone(),
+            catalog: cmd.catalog.clone(),
+        };
+        unload
+            .run(
+                &Ctx::default(),
+                super::super::unload::ServingUnloadParams {
+                    model_id: id.clone(),
+                },
+            )
+            .await
+            .expect("suppress known model");
+        assert_eq!(pin_rx.borrow().revision, 5);
+        assert!(pin_rx.borrow().suppressed.contains(&id));
+        let load = super::super::load::ServingLoad {
+            intent: cmd.intent.clone(),
+            serving: cmd.serving.clone(),
+            catalog: cmd.catalog.clone(),
+        };
+        for revision in [6, 7] {
+            load.run(
+                &Ctx::default(),
+                super::super::load::ServingLoadParams {
+                    model_id: id.clone(),
+                },
+            )
+            .await
+            .expect("permit or reaffirm known model");
+            assert_eq!(pin_rx.borrow().revision, revision);
+            assert!(!pin_rx.borrow().suppressed.contains(&id));
+        }
+        assert!(load
+            .run(
+                &Ctx::default(),
+                super::super::load::ServingLoadParams {
+                    model_id: "missing-model".into()
+                }
+            )
+            .await
+            .is_err());
+        assert!(unload
+            .run(
+                &Ctx::default(),
+                super::super::unload::ServingUnloadParams {
+                    model_id: "missing-model".into()
+                }
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            pin_rx.borrow().revision,
+            7,
+            "unknown load/unload do not change intent"
+        );
     }
 }
