@@ -2126,6 +2126,38 @@ pub enum EnsureOutcome {
     Degraded { reason: String },
 }
 
+/// Opaque identity of an owned engine, captured before requesting retirement.
+/// It cannot authorize stopping an adopted process or a replacement generation.
+#[derive(Clone)]
+pub struct OwnedEngineIdentity {
+    owner: std::sync::Weak<StdMutex<Option<OwnedEngine>>>,
+    generation: crate::inference::slots::EngineGeneration,
+}
+
+/// Evidence handle, not a capacity lease. Dropping it does not abandon the child.
+#[derive(Clone)]
+pub struct EngineRetirementReceipt {
+    identity: OwnedEngineIdentity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineRetirementStatus {
+    /// Includes failed signalling and unknown process status; ownership is retained.
+    Pending,
+    /// The actual owned child reported exit. Resource admission remains separate.
+    Exited,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EngineRetirementError {
+    #[error("owned engine retirement is unsupported by this controller")]
+    Unsupported,
+    #[error("this controller does not own the requested engine")]
+    NotOwned,
+    #[error("the requested engine generation has been replaced")]
+    StaleGeneration,
+}
+
 /// The serving-control seam. `LlamaServerProcess` is the real impl; tests use a
 /// fake to exercise the pure reconcile decision without a live process.
 #[async_trait]
@@ -2163,6 +2195,28 @@ pub trait LlamaServerControl: Send + Sync {
     /// it. Default is a no-op so test fakes that never model a process still compile.
     async fn idle(&self) -> Result<(), LlamaServerError> {
         Ok(())
+    }
+
+    /// Capture local child identity; an externally adopted endpoint has none.
+    fn owned_engine(&self) -> Option<OwnedEngineIdentity> {
+        None
+    }
+
+    /// Drain and request retirement of exactly this child, never an adopted PID.
+    /// Success returns an observation handle, not evidence of exit or freed memory.
+    async fn retire_owned_engine(
+        &self,
+        _expected: &OwnedEngineIdentity,
+    ) -> Result<EngineRetirementReceipt, EngineRetirementError> {
+        Err(EngineRetirementError::Unsupported)
+    }
+
+    /// Poll the retained process owner. No timer or signal acknowledgement proves exit.
+    fn observe_engine_retirement(
+        &self,
+        _receipt: &EngineRetirementReceipt,
+    ) -> Result<EngineRetirementStatus, EngineRetirementError> {
+        Err(EngineRetirementError::Unsupported)
     }
 
     /// The REAL per-slot context window the running server serves, read from
@@ -2939,6 +2993,73 @@ impl LlamaServerProcess {
         }
     }
 
+    fn check_owned_engine(
+        &self,
+        expected: &OwnedEngineIdentity,
+    ) -> Result<(), EngineRetirementError> {
+        if !expected.owner.ptr_eq(&Arc::downgrade(&self.child)) {
+            return Err(EngineRetirementError::NotOwned);
+        }
+        let child = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic while mutating the owned child.
+        match child.as_ref() {
+            None => Err(EngineRetirementError::NotOwned),
+            Some(owned) if !owned.generation.same_engine(&expected.generation) => {
+                Err(EngineRetirementError::StaleGeneration)
+            }
+            Some(_) => Ok(()),
+        }
+    }
+
+    async fn retire_owned_engine_with(
+        &self,
+        expected: &OwnedEngineIdentity,
+        signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()> + Send,
+    ) -> Result<EngineRetirementReceipt, EngineRetirementError> {
+        self.check_owned_engine(expected)?;
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let transition = endpoint
+            .transition_for_generation(&expected.generation)
+            .await
+            .map_err(|()| EngineRetirementError::StaleGeneration)?;
+        self.retire_owned_engine_drained(expected, &transition, signal)
+    }
+
+    // Shared drained seam: a future save-all owner must pass its existing transition,
+    // rather than reacquiring the endpoint writer through idle(). No awaits after take.
+    fn retire_owned_engine_drained(
+        &self,
+        expected: &OwnedEngineIdentity,
+        transition: &crate::inference::slots::EndpointTransition,
+        signal: impl FnOnce(&mut tokio::process::Child) -> std::io::Result<()>,
+    ) -> Result<EngineRetirementReceipt, EngineRetirementError> {
+        if !transition
+            .previous_generation()
+            .is_some_and(|g| g.same_engine(&expected.generation))
+        {
+            return Err(EngineRetirementError::StaleGeneration);
+        }
+        if !expected.owner.ptr_eq(&Arc::downgrade(&self.child)) {
+            return Err(EngineRetirementError::NotOwned);
+        }
+        let owned = {
+            let mut child = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic while mutating the owned child.
+            match child.as_ref() {
+                None => return Err(EngineRetirementError::NotOwned),
+                Some(owned) if !owned.generation.same_engine(&expected.generation) => {
+                    return Err(EngineRetirementError::StaleGeneration);
+                }
+                Some(_) => child
+                    .take()
+                    .expect("matching child checked under the same lock"), // JUSTIFIED: Some was checked under this still-held child lock.
+            }
+        };
+        let reservation = self.retained_page_dir.lock().take();
+        retire_page_owner(owned, reservation, signal);
+        Ok(EngineRetirementReceipt {
+            identity: expected.clone(),
+        })
+    }
+
     /// Poll `/health` until the server answers 200, THEN prove the compute path
     /// with a one-token decode — only then is the lane truly ready. 503 means
     /// "still loading the model" — keep waiting. A connection error means "not up
@@ -3623,6 +3744,40 @@ impl LlamaServerControl for LlamaServerProcess {
 
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
         self.wedge.clone()
+    }
+
+    fn owned_engine(&self) -> Option<OwnedEngineIdentity> {
+        self.child
+            .lock()
+            .unwrap() // JUSTIFIED: poison means a prior panic while mutating the owned child.
+            .as_ref()
+            .map(|owned| OwnedEngineIdentity {
+                owner: Arc::downgrade(&self.child),
+                generation: owned.generation.clone(),
+            })
+    }
+
+    async fn retire_owned_engine(
+        &self,
+        expected: &OwnedEngineIdentity,
+    ) -> Result<EngineRetirementReceipt, EngineRetirementError> {
+        self.retire_owned_engine_with(expected, tokio::process::Child::start_kill)
+            .await
+    }
+
+    fn observe_engine_retirement(
+        &self,
+        receipt: &EngineRetirementReceipt,
+    ) -> Result<EngineRetirementStatus, EngineRetirementError> {
+        if !receipt.identity.owner.ptr_eq(&Arc::downgrade(&self.child)) {
+            return Err(EngineRetirementError::NotOwned);
+        }
+        PAGE_DIR_GUARD.lock().collect_exited();
+        Ok(if receipt.identity.generation.has_exited() {
+            EngineRetirementStatus::Exited
+        } else {
+            EngineRetirementStatus::Pending
+        })
     }
 
     async fn idle(&self) -> Result<(), LlamaServerError> {
@@ -4658,7 +4813,9 @@ mod tests {
     }
 
     // Regression for #4069: failed signalling and unknown wait must not free
-    // pages while the actual owned process remains alive. All files are isolated.
+    // pages while the actual owned process remains alive. Generation-bound receipts
+    // must refuse foreign/stale requests and survive requester/controller drop.
+    // All files are isolated; no serving endpoint or live model is contacted.
     #[tokio::test]
     async fn retiring_page_owner_requires_observed_child_exit() {
         use super::*;
@@ -4707,13 +4864,41 @@ mod tests {
         });
         drop(transition);
         *process.retained_page_dir.lock() = Some(reservation);
-        process.kill_child_with(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "injected signal failure",
-            ))
-        });
-        drop(process); // A failed signal followed by owner Drop must retain the child.
+        let identity = process.owned_engine().expect("owned identity");
+        let foreign = LlamaServerProcess::with_root("http://127.0.0.1:2".into());
+        assert!(foreign.owned_engine().is_none());
+        assert!(matches!(
+            foreign.retire_owned_engine(&identity).await,
+            Err(EngineRetirementError::NotOwned)
+        ));
+        assert!(process
+            .child
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .child
+            .try_wait()
+            .unwrap()
+            .is_none());
+        let receipt = process
+            .retire_owned_engine_with(&identity, |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected signal failure",
+                ))
+            })
+            .await
+            .expect("retirement remains owned after signal refusal");
+        assert_eq!(
+            process.observe_engine_retirement(&receipt),
+            Ok(EngineRetirementStatus::Pending)
+        );
+        assert_eq!(
+            foreign.observe_engine_retirement(&receipt),
+            Err(EngineRetirementError::NotOwned)
+        );
+        drop(receipt.clone()); // Dropping a requester's observation cannot abandon the child.
         {
             let mut guard = PAGE_DIR_GUARD.lock();
             guard.collect_exited_with(|_| Err(std::io::Error::other("injected unknown status")));
@@ -4777,6 +4962,80 @@ mod tests {
             Some(1)
         );
         assert!(!old.exists());
+        assert_eq!(
+            process.observe_engine_retirement(&receipt),
+            Ok(EngineRetirementStatus::Exited)
+        );
+        assert_eq!(
+            process.observe_engine_retirement(&receipt),
+            Ok(EngineRetirementStatus::Exited)
+        );
+
+        // A receipt for the old child cannot authorize retiring its replacement.
+        let mut replacement = command.spawn().expect("replacement fixture child");
+        let replacement_input = replacement.stdin.take().expect("replacement input");
+        let transition = endpoint.transition().await;
+        let replacement_generation = transition
+            .start_generation()
+            .expect("verified predecessor exit");
+        *process.child.lock().unwrap() = Some(OwnedEngine {
+            child: replacement,
+            generation: replacement_generation.clone(),
+        });
+        drop(transition);
+        assert!(matches!(
+            process.retire_owned_engine(&identity).await,
+            Err(EngineRetirementError::StaleGeneration)
+        ));
+        assert_eq!(
+            process.observe_engine_retirement(&receipt),
+            Ok(EngineRetirementStatus::Exited)
+        );
+        assert!(!replacement_generation.has_exited());
+        assert!(process
+            .child
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .child
+            .try_wait()
+            .unwrap()
+            .is_none());
+        let replacement_identity = process.owned_engine().expect("replacement identity");
+        let replacement_receipt = process
+            .retire_owned_engine_with(&replacement_identity, |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected replacement signal failure",
+                ))
+            })
+            .await
+            .expect("exact replacement retirement remains owned after signal refusal");
+        drop(process); // The retained process owner survives the controller and requester.
+        drop(replacement_input);
+        let mut owner = {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            // Closing stdin may already have produced a terminal receipt.
+            guard.collect_exited();
+            guard
+                .retiring
+                .iter()
+                .position(|owner| owner.generation.same_engine(&replacement_generation))
+                .map(|index| guard.retiring.swap_remove(index))
+        };
+        if let Some(owner) = owner.as_mut() {
+            tokio::time::timeout(std::time::Duration::from_secs(10), owner.child.wait())
+                .await
+                .expect("replacement exits")
+                .expect("replacement exit status");
+        }
+        if let Some(owner) = owner {
+            let mut guard = PAGE_DIR_GUARD.lock();
+            guard.retiring.push(owner);
+            guard.collect_exited();
+        }
+        assert!(replacement_receipt.identity.generation.has_exited());
     }
 
     // what this catches: a debug llama-server hosting a lane silently (BigMama's
