@@ -2130,6 +2130,12 @@ pub enum EnsureOutcome {
 /// fake to exercise the pure reconcile decision without a live process.
 #[async_trait]
 pub trait LlamaServerControl: Send + Sync {
+    /// Scoped physical paging uncertainty requires the normal owned-engine
+    /// replacement path even when model identity and HTTP health are unchanged.
+    fn paging_recovery_required(&self) -> bool {
+        false
+    }
+
     /// The model id the running server reports serving, or `None` if nothing is
     /// up. `Unreachable` = no server answering (a normal pre-spawn state).
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError>;
@@ -3351,6 +3357,12 @@ impl EphemeralServingLane {
 
 #[async_trait]
 impl LlamaServerControl for LlamaServerProcess {
+    fn paging_recovery_required(&self) -> bool {
+        crate::inference::slots::directory()
+            .endpoint(&self.root)
+            .paging_recovery_required()
+    }
+
     fn mmproj_on_lane(&self) -> Option<bool> {
         LlamaServerProcess::mmproj_on_lane(self)
     }

@@ -2436,6 +2436,22 @@ impl ServingDaemonModule {
                 }
             }));
         }
+        // A healthy HTTP control plane cannot acknowledge a cancelled paging
+        // operation. Surface the existing endpoint owner's quarantine before the
+        // unchanged-plan shortcut, then use the normal drain/retire/serve path.
+        if self.server.paging_recovery_required() {
+            let mut live = self.serving_tx.borrow().clone();
+            if live.ready {
+                live.ready = false;
+                live.vision_ready = false;
+                live.vision_base_url = None;
+                live.vision_model = None;
+                live.degraded_reason =
+                    Some("KV paging completion unverified; replacing owned engine".into());
+                Self::emit_serving(self.bus.get(), &live);
+                let _ = self.serving_tx.send_replace(live);
+            }
+        }
         // Pull the desired model id, the host-fit PER-LANE served window, AND
         // the lane count out of the plan in one borrow — both are the planner's
         // single source of truth (task #50). We carry them on the ServingTarget
@@ -7695,6 +7711,7 @@ mod tests {
         /// endpoint is unreadable (`None`); any other value is the fingerprint. A test
         /// bumps it to stand in for the serve loop advancing between smoke misses.
         slots_fp: Arc<AtomicU64>,
+        paging_endpoint: Option<Arc<crate::inference::slots::EndpointSlots>>,
     }
 
     impl FakeServer {
@@ -7707,12 +7724,19 @@ mod tests {
                 smoke_ok: Arc::new(AtomicBool::new(true)),
                 wedge: Default::default(),
                 slots_fp: Default::default(),
+                paging_endpoint: None,
             }
         }
     }
 
     #[async_trait]
     impl LlamaServerControl for FakeServer {
+        fn paging_recovery_required(&self) -> bool {
+            self.paging_endpoint
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.paging_recovery_required())
+        }
+
         fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
             Some(self.wedge.clone())
         }
@@ -8490,6 +8514,59 @@ mod tests {
         assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch");
     }
 
+    // what this catches: paging quarantine must bypass the unchanged healthy
+    // snapshot shortcut and reach the existing reconcile/serve owner.
+    #[tokio::test]
+    async fn paging_quarantine_reconciles_an_unchanged_healthy_plan() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let root = format!("test://reconcile-paging-{}", uuid::Uuid::new_v4());
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let mut server = FakeServer::healthy(serves.clone(), false);
+        assert!(
+            server.smoke_ok.load(Ordering::Relaxed),
+            "control-plane health cannot heal paging uncertainty"
+        );
+        server.paging_endpoint = Some(endpoint.clone());
+        let daemon = daemon_with(Arc::new(server));
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+        daemon.publish_plan(budget, &candidates, &candidates);
+        let plan = daemon.plan_tx.borrow().clone().expect("published plan");
+        let mut live = ready_snapshot();
+        live.active_model = Some("coder-14b".into());
+        live.served_context_window = plan.served_context_window;
+        live.lanes = plan.lanes;
+        live.base_url = format!("{root}/v1");
+        let _ = daemon.serving_tx.send_replace(live);
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "healthy unchanged plan stays resident"
+        );
+        let admission = endpoint.admit().await.expect("initial endpoint admission");
+        admission.quarantine_paging();
+        drop(admission);
+        let replacement = daemon
+            .reconcile_to_plan()
+            .expect("quarantine enters normal replacement");
+        assert!(
+            !daemon.serving_tx.borrow().ready,
+            "publish refusal before replacement awaits"
+        );
+        replacement.await.expect("normal reconcile task");
+        assert_eq!(serves.load(Ordering::SeqCst), 1);
+        assert!(
+            !daemon.serving_tx.borrow().ready,
+            "failed replacement cannot publish ready"
+        );
+        assert!(
+            endpoint.paging_recovery_required(),
+            "only verified generation replacement clears quarantine"
+        );
+    }
+
     /// A lane whose live per-slot window sits at `live_pct` of what the plan
     /// actually affords, ready to have `reconcile_to_plan` driven at it repeatedly.
     /// Returns the daemon and the REAL planned window.
@@ -8798,7 +8875,8 @@ mod tests {
             ok: true,
             smoke_ok: smoke.clone(),
             wedge: Default::default(),
-                slots_fp: Default::default(),
+            slots_fp: Default::default(),
+            paging_endpoint: None,
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -8840,7 +8918,8 @@ mod tests {
             ok: true,
             smoke_ok: smoke.clone(),
             wedge: Default::default(),
-                slots_fp: Default::default(),
+            slots_fp: Default::default(),
+            paging_endpoint: None,
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -8884,7 +8963,8 @@ mod tests {
             ok: true,
             smoke_ok: smoke.clone(),
             wedge: Default::default(),
-                slots_fp: Default::default(),
+            slots_fp: Default::default(),
+            paging_endpoint: None,
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -8929,7 +9009,8 @@ mod tests {
             ok: true,
             smoke_ok: Arc::new(AtomicBool::new(false)),
             wedge: Default::default(),
-                slots_fp: Default::default(),
+            slots_fp: Default::default(),
+            paging_endpoint: None,
         }));
         busy.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
         let _ = busy.serving_tx.send_replace(ready_snapshot());
@@ -8948,7 +9029,8 @@ mod tests {
             ok: true,
             smoke_ok: Arc::new(AtomicBool::new(true)),
             wedge: Default::default(),
-                slots_fp: Default::default(),
+            slots_fp: Default::default(),
+            paging_endpoint: None,
         }));
         quiet.set_decode_age_source(Arc::new(move || Some(window_ms + 1)));
         let _ = quiet.serving_tx.send_replace(ready_snapshot());
@@ -8981,7 +9063,8 @@ mod tests {
             // chance to vouch for a lane the real workload proves broken.
             smoke_ok: Arc::new(AtomicBool::new(true)),
             wedge: Default::default(),
-                slots_fp: Default::default(),
+            slots_fp: Default::default(),
+            paging_endpoint: None,
         }));
         // Fresh decode trust too (a partial stream can stamp it) — must ALSO be outranked.
         let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
@@ -9024,6 +9107,7 @@ mod tests {
             smoke_ok: Arc::new(AtomicBool::new(false)),
             wedge: Default::default(),
             slots_fp: slots_fp.clone(),
+            paging_endpoint: None,
         }));
         // Pin both process-global evidence sources to inert test values — the
         // globals are stamped by unrelated tests under full-suite parallelism

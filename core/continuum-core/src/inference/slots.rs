@@ -192,6 +192,8 @@ pub struct KvSlotPool {
     /// recycled restores its page (at this node's measured switch cost) instead of
     /// re-prefilling (~35s at 22k — the 330× cliff the restore economy names).
     saved: Mutex<std::collections::HashSet<ActivityKey>>,
+    /// Physical-slot admission also excludes concurrent requests for the same key.
+    operations: Vec<Arc<tokio::sync::Semaphore>>,
 }
 
 /// What a Turn must do AROUND its request to honor the KV paging design — the
@@ -207,6 +209,8 @@ pub struct SlotPaging {
     /// This activity has a page on disk and the slot does not currently hold
     /// its (fresher) KV — restore the page before the turn.
     pub restore: bool,
+    /// The physical slot already contains this activity, rather than a new lease.
+    pub already_resident: bool,
 }
 
 /// The page filename for an activity — stable across processes, one file per
@@ -373,6 +377,9 @@ impl KvSlotPool {
             scratch,
             holders: Mutex::new(std::collections::HashMap::new()),
             saved: Mutex::new(std::collections::HashSet::new()),
+            operations: (0..n_slots)
+                .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
+                .collect(),
         }
     }
 
@@ -469,15 +476,45 @@ impl KvSlotPool {
     ///   ours if a page exists; nothing known to save.
     pub async fn lease_paged(&self, key: ActivityKey) -> Option<SlotPaging> {
         let slot = self.lease(key).await?;
+        Some(self.plan_paging(slot, key))
+    }
+
+    /// Resolve the physical index from the pinned assignment, not a prior lease
+    /// that another executor thread could have evicted before the pin.
+    pub(crate) fn pin_slot(&self, key: &ActivityKey) -> Option<(u32, SlotPin)> {
+        let pin = self.pin(key)?;
+        let slot = pin.value()?.slot;
+        Some((slot, pin))
+    }
+
+    /// Hold through paging and generation; pins alone only exclude eviction.
+    pub(crate) async fn acquire_slot(
+        &self,
+        slot: u32,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        let operation = self
+            .operations
+            .get(slot as usize)
+            .ok_or("unknown physical KV slot")?;
+        operation
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "physical KV slot admission closed".to_string())
+    }
+
+    /// Caller holds the physical-slot permit and activity pin before changing attribution.
+    pub(crate) fn plan_paging(&self, slot: u32, key: ActivityKey) -> SlotPaging {
         let prev = self.holders.lock().insert(slot, key);
         let save_first = prev.filter(|p| *p != key);
         let slot_holds_ours = prev == Some(key);
         let restore = !slot_holds_ours && self.saved.lock().contains(&key);
-        Some(SlotPaging {
+        SlotPaging {
             slot,
             save_first,
             restore,
-        })
+            already_resident: slot_holds_ours,
+        }
     }
 
     /// Pin this activity's slot for the duration of a turn. While the returned
@@ -549,6 +586,7 @@ pub(crate) struct KvPageContract {
 
 struct EndpointState {
     ready: bool,
+    paging_uncertain: bool,
     generation: Option<EngineGeneration>,
     contract: Option<KvPageContract>,
     pool: Option<Option<Arc<KvSlotPool>>>,
@@ -563,8 +601,30 @@ pub(crate) struct EndpointSlots {
 }
 
 pub(crate) struct EndpointAdmission {
+    endpoint: Arc<EndpointSlots>,
     _guard: tokio::sync::OwnedRwLockReadGuard<()>,
     pub pool: Option<Arc<KvSlotPool>>,
+}
+
+impl EndpointAdmission {
+    /// Called while this generation's read lease still prevents replacement.
+    pub(crate) fn quarantine_paging(&self) {
+        let mut state = self.endpoint.state.lock();
+        state.paging_uncertain = true;
+        state.ready = false;
+        crate::probe!(
+            class = "inference.kv_page.uncertain",
+            "paging completion unverified; endpoint requires verified engine replacement"
+        );
+    }
+
+    pub(crate) fn check_ready(&self) -> Result<(), String> {
+        if self.endpoint.state.lock().ready {
+            Ok(())
+        } else {
+            Err("serving endpoint suspended; paging or engine completion remains unverified".into())
+        }
+    }
 }
 
 pub(crate) struct EndpointTransition {
@@ -613,6 +673,9 @@ impl EngineGeneration {
 }
 
 impl EndpointSlots {
+    pub(crate) fn paging_recovery_required(&self) -> bool {
+        self.state.lock().paging_uncertain
+    }
     pub(crate) fn is_ready(&self) -> bool {
         self.state.lock().ready
     }
@@ -626,6 +689,7 @@ impl EndpointSlots {
             return Err("serving endpoint is suspended pending engine readiness".into());
         }
         Ok(EndpointAdmission {
+            endpoint: self.clone(),
             _guard: guard,
             pool: state.pool.as_ref().and_then(Clone::clone),
         })
@@ -659,6 +723,7 @@ impl EndpointTransition {
             endpoint: Arc::downgrade(&self.endpoint),
         };
         state.generation = Some(generation.clone());
+        state.paging_uncertain = false;
         Ok(generation)
     }
 
@@ -676,6 +741,12 @@ impl EndpointTransition {
                 .is_some_and(|g| g.id == generation.id)
         {
             return Err("engine generation exited or was superseded before readiness".into());
+        }
+        if state.paging_uncertain {
+            return Err(
+                "uncertain paging requires verified predecessor exit and a new engine generation"
+                    .into(),
+            );
         }
         if state.ready {
             return if state.contract.as_ref() == Some(&contract) {
@@ -718,6 +789,7 @@ impl SlotDirectory {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
                     state: Mutex::new(EndpointState {
                         ready: true,
+                        paging_uncertain: false,
                         generation: None,
                         contract: None,
                         pool: None,
@@ -1081,7 +1153,21 @@ mod tests {
             let p = dir.join(name);
             std::fs::write(&p, vec![0u8; bytes]).unwrap(); // JUSTIFIED unwrap: test scaffolding
             let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age_s);
-            let _ = std::fs::File::open(&p).and_then(|f| f.set_modified(t));
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&p)
+                .expect("fixture timestamp requires a writable handle on Windows");
+            file.set_modified(t).expect("set fixture page age");
+            let observed = file
+                .metadata()
+                .expect("fixture page metadata")
+                .modified()
+                .expect("fixture mtime");
+            let error = observed.duration_since(t).unwrap_or_else(|e| e.duration());
+            assert!(
+                error <= std::time::Duration::from_secs(2),
+                "fixture must establish page age within filesystem granularity; ages differ by 100 seconds"
+            );
         };
         write("a-old.bin", 100, 300);
         write("a-old.bin.ckpt", 10, 300);
