@@ -765,8 +765,16 @@ impl EndpointSlots {
         self: &Arc<Self>,
         expected: &EngineGeneration,
     ) -> Result<EndpointTransition, ()> {
+        self.transition_for_generation_if(expected, &|| true).await
+    }
+
+    pub(crate) async fn transition_for_generation_if(
+        self: &Arc<Self>,
+        expected: &EngineGeneration,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<EndpointTransition, ()> {
         let guard = self.gate.clone().write_owned().await;
-        let mut state = self.state.lock();
+        let state = self.state.lock();
         if !state
             .generation
             .as_ref()
@@ -774,8 +782,11 @@ impl EndpointSlots {
         {
             return Err(());
         }
-        state.ready = false;
         drop(state);
+        if !current() {
+            return Err(());
+        }
+        self.state.lock().ready = false;
         Ok(EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
@@ -1231,6 +1242,10 @@ mod tests {
             .expect("ready");
         drop(first);
         assert!(endpoint.transition_if(&|| false).await.is_err());
+        assert!(endpoint
+            .transition_for_generation_if(&old, &|| false)
+            .await
+            .is_err());
         assert!(
             endpoint.is_ready(),
             "refused lifecycle leaves live readiness untouched"
