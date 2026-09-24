@@ -1087,6 +1087,7 @@ fn retire_page_owner(
     let OwnedEngine {
         mut child,
         generation,
+        ..
     } = owned;
     generation.retiring();
     let mut guard = PAGE_DIR_GUARD.lock();
@@ -2093,6 +2094,8 @@ pub async fn wait_for_serving_window_settle(
 /// detail — never parsed back into control flow ([[protocols-prevent-pain]]).
 #[derive(Debug, thiserror::Error)]
 pub enum LlamaServerError {
+    #[error("serving lifecycle request was superseded before admission")]
+    Superseded,
     /// The server isn't answering — not yet spawned, or down. The reconcile
     /// loop treats this as "no active model" and (re)spawns, rather than failing.
     #[error("llama-server unreachable: {0}")]
@@ -2118,6 +2121,8 @@ pub enum LlamaServerError {
 /// exhaustive so a new state can't be silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnsureOutcome {
+    /// Guarded request lost its intent before lifecycle admission; no mutation.
+    Superseded,
     /// The desired model was already being served — no relaunch.
     AlreadyServing,
     /// We (re)spawned and the server became ready serving `model`.
@@ -2133,6 +2138,27 @@ pub struct OwnedEngineIdentity {
     owner: std::sync::Weak<StdMutex<Option<OwnedEngine>>>,
     generation: crate::inference::slots::EngineGeneration,
 }
+
+impl OwnedEngineIdentity {
+    pub(crate) fn same_engine(&self, other: &Self) -> bool {
+        self.owner.ptr_eq(&other.owner) && self.generation.same_engine(&other.generation)
+    }
+}
+
+/// Original target and observed geometry recorded only after local launch readiness.
+/// This is launch provenance, not a fresh health check or resource reservation.
+#[derive(Clone)]
+pub struct OwnedServingTarget {
+    pub identity: OwnedEngineIdentity,
+    pub target: ServingTarget,
+    pub observed_context_window: u32,
+    pub observed_lanes: u32,
+    pub launched_host_prompt_cache_mib: u32,
+}
+
+/// Checked at the endpoint's drained lifecycle-admission boundary. Once admitted,
+/// the operation may settle even if newer intent arrives; its result keeps its epoch.
+pub type ServingLifecycleCheck<'a> = dyn Fn() -> bool + Send + Sync + 'a;
 
 /// Evidence handle, not a capacity lease. Dropping it does not abandon the child.
 #[derive(Clone)]
@@ -2195,6 +2221,31 @@ pub trait LlamaServerControl: Send + Sync {
     /// it. Default is a no-op so test fakes that never model a process still compile.
     async fn idle(&self) -> Result<(), LlamaServerError> {
         Ok(())
+    }
+
+    async fn serve_if_current(
+        &self,
+        target: &ServingTarget,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
+        if !current() {
+            return Err(LlamaServerError::Superseded);
+        }
+        self.serve(target).await
+    }
+
+    async fn idle_if_current(
+        &self,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
+        if !current() {
+            return Err(LlamaServerError::Superseded);
+        }
+        self.idle().await
+    }
+
+    fn owned_serving_target(&self) -> Option<OwnedServingTarget> {
+        None
     }
 
     /// Capture local child identity; an externally adopted endpoint has none.
@@ -2498,6 +2549,21 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     // lane forever. `false` is the steady state (no per-tick decode load).
     force_probe: bool,
 ) -> EnsureOutcome {
+    ensure_model_serving_if_current(ctrl, target, force_probe, &|| true).await
+}
+
+pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
+    ctrl: &C,
+    target: &ServingTarget,
+    // Force a decode SMOKE-PROBE even on a child we own, bypassing the "trusted
+    // thereafter" short-circuit. The serving daemon's liveness heartbeat sets this after
+    // it has already seen the live lane fail the decode probe on a slow cadence
+    // (#175): a Metal-OOM-poisoned backend answers `/v1/models` 200 while every decode
+    // 500s, so without re-proving decode the owned-child trust would re-adopt the wedged
+    // lane forever. `false` is the steady state (no per-tick decode load).
+    force_probe: bool,
+    current: &ServingLifecycleCheck<'_>,
+) -> EnsureOutcome {
     let active = match ctrl.active_model().await {
         Ok(active) => active,
         Err(LlamaServerError::Unreachable(_)) => None,
@@ -2776,7 +2842,7 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
         // else: genome set differs → fall through to relaunch.
     }
 
-    match ctrl.serve(target).await {
+    match ctrl.serve_if_current(target, current).await {
         Ok(()) => {
             // A fresh lane starts with a CLEAN failure record. `serve` kills the old
             // child, which murders its in-flight turns; their deaths stamp
@@ -2792,6 +2858,7 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                 model: target.model_id().to_string(),
             }
         }
+        Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
         },
@@ -2801,6 +2868,7 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
 struct OwnedEngine {
     child: tokio::process::Child,
     generation: crate::inference::slots::EngineGeneration,
+    verified_target: Option<OwnedServingTarget>,
 }
 
 /// Owns the supervised `llama-server` child. One per host. `serve` kills any
@@ -3746,6 +3814,15 @@ impl LlamaServerControl for LlamaServerProcess {
         self.wedge.clone()
     }
 
+    fn owned_serving_target(&self) -> Option<OwnedServingTarget> {
+        self.child
+            .lock()
+            .unwrap() // JUSTIFIED: poison means prior panic mutating the owned child.
+            .as_ref()
+            .filter(|owned| !owned.generation.has_exited())
+            .and_then(|owned| owned.verified_target.clone())
+    }
+
     fn owned_engine(&self) -> Option<OwnedEngineIdentity> {
         self.child
             .lock()
@@ -3781,8 +3858,18 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn idle(&self) -> Result<(), LlamaServerError> {
+        self.idle_if_current(&|| true).await
+    }
+
+    async fn idle_if_current(
+        &self,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        let _transition = endpoint.transition().await;
+        let _transition = endpoint
+            .transition_if(current)
+            .await
+            .map_err(|()| LlamaServerError::Superseded)?;
         let had_own_child = self.child.lock().unwrap().is_some(); // unwrap: poisoned = a prior panic mid-kill; same policy as kill_child's lock
         self.kill_child();
         let (_host, port) = split_host_port(&self.root);
@@ -3805,6 +3892,14 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
+        self.serve_if_current(target, &|| true).await
+    }
+
+    async fn serve_if_current(
+        &self,
+        target: &ServingTarget,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
@@ -3827,7 +3922,10 @@ impl LlamaServerControl for LlamaServerProcess {
         let (host, port) = split_host_port(&self.root);
 
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        let transition = endpoint.transition().await;
+        let transition = endpoint
+            .transition_if(current)
+            .await
+            .map_err(|()| LlamaServerError::Superseded)?;
 
         // One server at a time: kill the old child before binding the port.
         // Whether we already OWN a child decides if a stale-orphan reap is needed:
@@ -4489,6 +4587,7 @@ match (child.stderr.take(), log_path) {
             *owned = Some(OwnedEngine {
                 child,
                 generation: generation.clone(),
+                verified_target: None,
             });
         }
         // A reservation the handoff could not release (record write failed) lives
@@ -4701,11 +4800,39 @@ match (child.stderr.take(), log_path) {
                 },
             )
             .map_err(LlamaServerError::Spawn)?;
+        self.record_verified_target(&generation, target, context, slots);
         Ok(())
     }
 }
 
 impl LlamaServerProcess {
+    fn record_verified_target(
+        &self,
+        generation: &crate::inference::slots::EngineGeneration,
+        target: &ServingTarget,
+        context: u32,
+        lanes: u32,
+    ) {
+        let mut child = self.child.lock().unwrap(); // JUSTIFIED: poison means prior panic mutating the owned child.
+        if let Some(owned) = child
+            .as_mut()
+            .filter(|owned| owned.generation.same_engine(generation))
+        {
+            owned.verified_target = Some(OwnedServingTarget {
+                identity: OwnedEngineIdentity {
+                    owner: Arc::downgrade(&self.child),
+                    generation: generation.clone(),
+                },
+                target: target.clone(),
+                observed_context_window: context,
+                observed_lanes: lanes,
+                launched_host_prompt_cache_mib: self
+                    .launched_prompt_cache_mib
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            });
+        }
+    }
+
     /// Set every loaded LoRA adapter's GLOBAL scale to 0.0 (dormant catalog —
     /// per-request activation only). Best-effort: a failure logs loud but does
     /// not fail bringup (a lane with active adapters still serves; it is the
@@ -4861,9 +4988,59 @@ mod tests {
         *process.child.lock().expect("fixture child lock") = Some(OwnedEngine {
             child,
             generation: generation.clone(),
+            verified_target: None,
         });
         drop(transition);
         *process.retained_page_dir.lock() = Some(reservation);
+        let launch_target = target("fixture-owned-launch");
+        process.record_verified_target(&generation, &launch_target, 11008, 4);
+        let recorded = process
+            .owned_serving_target()
+            .expect("verified owned provenance");
+        assert_eq!(recorded.target.context_window, launch_target.context_window);
+        assert_eq!(recorded.observed_context_window, 11008);
+        assert_eq!(recorded.observed_lanes, 4);
+        // Feed the actual owner record through the existing reconcile fixture.
+        // An accepted smaller plan must not replace its original launch geometry.
+        let mut control = FakeControl::probe(Ok(Some(launch_target.model.id.clone())))
+            .with_served_window(11008)
+            .with_served_lanes(4)
+            .owned();
+        control.verified_launch = Some(recorded.clone());
+        let mut drifted = launch_target.clone();
+        drifted.context_window /= 2;
+        drifted.host_prompt_cache_mib = launch_target.host_prompt_cache_mib.saturating_add(1);
+        let admissions = AtomicUsize::new(0);
+        let admit = || {
+            admissions.fetch_add(1, Ordering::SeqCst);
+            true
+        };
+        assert_eq!(
+            ensure_model_serving_if_current(&control, &drifted, false, &admit).await,
+            EnsureOutcome::AlreadyServing
+        );
+        assert_eq!(
+            admissions.load(Ordering::SeqCst),
+            0,
+            "already serving never admits a relaunch"
+        );
+        let kept = control
+            .owned_serving_target()
+            .expect("original verified launch");
+        assert_eq!(kept.target.context_window, launch_target.context_window);
+        assert_eq!(
+            kept.target.host_prompt_cache_mib,
+            launch_target.host_prompt_cache_mib
+        );
+        assert!(kept.identity.same_engine(&recorded.identity));
+        assert!(matches!(
+            process.idle_if_current(&|| false).await,
+            Err(LlamaServerError::Superseded)
+        ));
+        assert!(process
+            .owned_engine()
+            .unwrap()
+            .same_engine(&recorded.identity));
         let identity = process.owned_engine().expect("owned identity");
         let foreign = LlamaServerProcess::with_root("http://127.0.0.1:2".into());
         assert!(foreign.owned_engine().is_none());
@@ -4897,6 +5074,10 @@ mod tests {
         assert_eq!(
             foreign.observe_engine_retirement(&receipt),
             Err(EngineRetirementError::NotOwned)
+        );
+        assert!(
+            process.owned_serving_target().is_none(),
+            "retired ownership cannot be advertised as current launch"
         );
         drop(receipt.clone()); // Dropping a requester's observation cannot abandon the child.
         {
@@ -4981,6 +5162,7 @@ mod tests {
         *process.child.lock().unwrap() = Some(OwnedEngine {
             child: replacement,
             generation: replacement_generation.clone(),
+            verified_target: None,
         });
         drop(transition);
         assert!(matches!(
@@ -5484,6 +5666,7 @@ mod tests {
     /// pure reconcile decision is tested without a live process.
     struct FakeControl {
         probe: Result<Option<String>, &'static str>,
+        verified_launch: Option<OwnedServingTarget>,
         /// The genome set the fake reports as currently loaded (sorted paths).
         active_adapters: Vec<String>,
         serve_ok: bool,
@@ -5517,6 +5700,7 @@ mod tests {
         fn probe(probe: Result<Option<String>, &'static str>) -> Self {
             Self {
                 probe,
+                verified_launch: None,
                 active_adapters: Vec::new(),
                 serve_ok: true,
                 serves: AtomicUsize::new(0),
@@ -5576,6 +5760,14 @@ mod tests {
 
     #[async_trait]
     impl LlamaServerControl for FakeControl {
+        fn owned_serving_target(&self) -> Option<OwnedServingTarget> {
+            self.verified_launch.clone()
+        }
+        fn owned_engine(&self) -> Option<OwnedEngineIdentity> {
+            self.verified_launch
+                .as_ref()
+                .map(|launch| launch.identity.clone())
+        }
         async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
             match &self.probe {
                 Ok(v) => Ok(v.clone()),

@@ -722,6 +722,23 @@ impl EndpointSlots {
         })
     }
 
+    /// Drain first, then admit a conditional lifecycle operation. A superseded
+    /// request (or cancellation while queued) must not suspend the current engine.
+    pub(crate) async fn transition_if(
+        self: &Arc<Self>,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<EndpointTransition, ()> {
+        let guard = self.gate.clone().write_owned().await;
+        if !current() {
+            return Err(());
+        }
+        self.state.lock().ready = false;
+        Ok(EndpointTransition {
+            endpoint: self.clone(),
+            _guard: guard,
+        })
+    }
+
     pub(crate) async fn transition(self: &Arc<Self>) -> EndpointTransition {
         self.state.lock().ready = false;
         let guard = self.gate.clone().write_owned().await;
@@ -1071,6 +1088,11 @@ mod tests {
             .ready("test://generation", &old, contract.clone())
             .expect("ready");
         drop(first);
+        assert!(endpoint.transition_if(&|| false).await.is_err());
+        assert!(
+            endpoint.is_ready(),
+            "refused lifecycle leaves live readiness untouched"
+        );
         let admitted = endpoint.admit().await.expect("old request");
         let old_pool = admitted.pool.as_ref().expect("pool").clone();
         let activity = key(73, 74);
@@ -1079,6 +1101,24 @@ mod tests {
             .await
             .expect("old physical holder");
         old_pool.note_saved(activity);
+        let current = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let authority = || current.load(Ordering::Acquire);
+        {
+            let queued = endpoint.transition_if(&authority);
+            tokio::pin!(queued);
+            assert!(futures::poll!(&mut queued).is_pending());
+            current.store(false, Ordering::Release);
+            drop(admitted);
+            assert!(
+                queued.await.is_err(),
+                "intent changed while existing readers drained"
+            );
+        }
+        assert!(endpoint.is_ready());
+        let admitted = endpoint
+            .admit()
+            .await
+            .expect("refused operation preserves admission");
 
         // A cancelled retirement waits for readers without closing the live engine.
         // The queued writer also prevents a later reader from overtaking the drain.
