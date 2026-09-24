@@ -3781,7 +3781,15 @@ fn dod_output_is_infra(exit_code: Option<i32>, out: &str) -> bool {
 }
 
 async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> DodVerdict {
-    let mut command = tokio::process::Command::new("bash");
+    let bash = match crate::shell_portable::locate_bash() {
+        Ok(bash) => bash,
+        Err(why) => {
+            return DodVerdict::InfraError(format!(
+                "DoD `{cmd}` could not RUN (no usable shell): {why}"
+            ));
+        }
+    };
+    let mut command = tokio::process::Command::new(bash);
     command.arg("-lc").arg(cmd);
     if let Some(r) = root {
         command.current_dir(r);
