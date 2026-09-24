@@ -19,6 +19,7 @@ $script:ManifestPs = Join-Path $PSScriptRoot '..\generated\manifest.windows.ps1'
 if (-not (Test-Path $script:ManifestPs)) {
     throw "manifest projection missing: $script:ManifestPs`n  regenerate it with: cargo run -p manifest-gen"
 }
+. (Join-Path $PSScriptRoot 'windows-engine-receipt.ps1')
 . $script:ManifestPs    # defines $script:ContinuumManifest ([ordered] hashtable)
 
 # Fetch a module's projected record; fail loud if the manifest lacks it (a typo
@@ -634,6 +635,7 @@ function Mod-LlamaServer {
         Module-Fail 'llama-server' "llama.cpp submodule missing at $submodule even after init"
     }
 
+    $sourceRevision = (& git -C $submodule rev-parse HEAD 2>$null)
     $head = (& git -C $submodule rev-parse --short HEAD 2>$null)
     if (-not $head) { $head = 'unknown' }
 
@@ -648,6 +650,12 @@ function Mod-LlamaServer {
 
     if ((Test-Path $installBin) -and (Test-Path $stampFile) -and
         ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $stampWant)) {
+        if (Test-Path -LiteralPath (Join-Path $installDir 'engine-install.pending')) { throw 'Engine publication is incomplete; rebuild before reuse.' }
+        # Legacy stamps still serve normally; they do not acquire a new receipt.
+        if (Test-Path -LiteralPath (Join-Path $installDir 'engine-install.json')) {
+            $existingReceipt = Get-CoreEngineReceipt -Directory $installDir
+            if ($existingReceipt.source_revision -cne $sourceRevision -or $existingReceipt.backend -cne $backend) { throw 'Engine receipt differs from requested build.' }
+        }
         Module-Skip 'llama-server' "already current at $installBin ($stampWant)"
         return
     }
@@ -660,10 +668,25 @@ function Mod-LlamaServer {
         if ([IO.Path]::GetFullPath($sourceDir) -eq [IO.Path]::GetFullPath($installDir)) { continue }
         $sourceBin = Join-Path $sourceDir 'llama-server.exe'
         $sourceStamp = Join-Path $sourceDir '.llama-server.stamp'
+        if (Test-Path -LiteralPath (Join-Path $sourceDir 'engine-install.pending')) { continue }
         if ((Test-Path $sourceBin) -and (Test-Path $sourceStamp) -and
             (Get-Content $sourceStamp -Raw).Trim() -eq $stampWant) {
             New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-            Copy-Item -LiteralPath $sourceBin -Destination $installBin -Force -ErrorAction Stop
+            # A receipted engine copies its entire verified application namespace.
+            $sourceReceipt = Join-Path $sourceDir 'engine-install.json'
+            if (Test-Path -LiteralPath $sourceReceipt) {
+                $receipt = Get-CoreEngineReceipt -Directory $sourceDir
+                if ($receipt.source_revision -cne $sourceRevision -or $receipt.backend -cne $backend) { throw 'Source engine receipt differs from requested build.' }
+                Start-CoreEnginePublication -Directory $installDir
+                foreach ($entry in $receipt.files.PSObject.Properties) {
+                    Copy-Item -LiteralPath (Join-Path $sourceDir $entry.Name) -Destination (Join-Path $installDir $entry.Name) -Force -ErrorAction Stop
+                }
+                Copy-CoreEngineReceipt -SourceDirectory $sourceDir -Directory $installDir
+                Get-CoreEngineReceipt -Directory $installDir | Out-Null
+            } else {
+                if ((Test-Path -LiteralPath (Join-Path $installDir 'engine-install.json')) -or (Test-Path -LiteralPath (Join-Path $installDir 'engine-install.pending'))) { throw 'Cannot overwrite a receipted engine with an unreceipted build.' }
+                Copy-Item -LiteralPath $sourceBin -Destination $installBin -Force -ErrorAction Stop
+            }
             if ((Get-FileHash $sourceBin).Hash -ne (Get-FileHash $installBin).Hash) { throw 'Staged inference engine hash mismatch.' }
             Set-Content -LiteralPath $stampFile -Value $stampWant -Encoding ASCII
             Module-Skip 'llama-server' "staged matching engine ($stampWant) without rebuilding"
@@ -704,7 +727,8 @@ function Mod-LlamaServer {
         # the exe to ~/.continuum/bin fails at spawn with "cannot open ggml-base.dll"
         # (live repro 2026-07-24). Static = one self-contained binary (only the CUDA
         # runtime DLLs remain dynamic, and those are on PATH via the toolkit).
-        '-DBUILD_SHARED_LIBS=OFF',
+        '-DBUILD_SHARED_LIBS=OFF', '-DGGML_BACKEND_DL=OFF', '-DGGML_BACKEND_DIR=',
+        "-DGGML_CUDA=$(@{cpu='OFF';cuda='ON'}[$backend])",
         # Static CRT: a standalone child that needs no VC runtime DLLs on a public box.
         '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded')
     if ($backend -eq 'cuda') {
@@ -729,7 +753,45 @@ function Mod-LlamaServer {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $builtBin) { Module-Fail 'llama-server' "build finished but llama-server.exe not found under $buildDir\bin" }
 
+    if ((& git -C $submodule rev-parse HEAD) -cne $sourceRevision) { throw 'Engine source revision changed during build.' }
+    if (& git -C $submodule status --porcelain --untracked-files=all) { throw 'Engine source changed; cannot publish clean-source receipt.' }
+    # Receipt capture belongs to this fresh build; never reconstruct it from a stamp.
+    $cache = Get-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Raw
+    foreach ($setting in @('BUILD_SHARED_LIBS:BOOL=OFF', 'GGML_BACKEND_DL:BOOL=OFF', 'GGML_BACKEND_DIR:PATH=')) {
+        if ($cache -notmatch ('(?m)^' + [regex]::Escape($setting) + '\r?$')) { throw "Engine cache violates receipt contract: $setting" }
+    }
+    $cudaExpected = if ($backend -eq 'cuda') { 'ON' } else { 'OFF' }
+    foreach ($setting in @("GGML_CUDA:BOOL=$cudaExpected", 'CMAKE_BUILD_TYPE:STRING=Release')) {
+        if ($cache -notmatch ('(?m)^' + [regex]::Escape($setting) + '\r?$')) { throw "Engine cache violates receipt contract: $setting" }
+    }
+    if ($cache -notmatch '(?m)^CMAKE_MSVC_RUNTIME_LIBRARY:(STRING|UNINITIALIZED)=MultiThreaded\r?$') { throw 'Engine CRT is not static.' }
+    Assert-CorePreparedPath -Path $installDir -Expected $installDir
+    $runtimeNames = @()
+    if ($backend -eq 'cuda') { $runtimeNames = @(Get-ChildItem -LiteralPath (Join-Path $script:CudaToolkitDir 'bin') -File -Filter '*.dll' | ForEach-Object { $_.Name }) }
+    foreach ($oldDll in @(Get-ChildItem -LiteralPath $installDir -File -Filter '*.dll')) {
+        if ($oldDll.Name -notin $runtimeNames) { throw "Unowned application DLL in engine slot: $($oldDll.Name)" }
+    }
+    Start-CoreEnginePublication -Directory $installDir
     Copy-Item -Force $builtBin $installBin
+    if ($backend -eq 'cuda') {
+        # Pin actual installed toolkit inputs, not a claim of archive provenance.
+        $runtime = Join-Path $script:CudaToolkitDir 'bin'
+        Assert-CorePreparedPath -Path $runtime -Expected $runtime
+        $dlls = @(Get-ChildItem -LiteralPath $runtime -File -Filter '*.dll')
+        if (-not $dlls.Count) { throw 'CUDA toolkit has no application runtime DLLs.' }
+        foreach ($dll in $dlls) {
+            Assert-CorePreparedPath -Path $dll.FullName -Expected $dll.FullName -File
+            Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $installDir $dll.Name) -Force -ErrorAction Stop
+        }
+    }
+    # Use the configured toolchain inspector, not another PATH-selected tool.
+    if ($cache -notmatch '(?m)^CMAKE_LINKER:FILEPATH=([^\r\n]+)') { throw 'Configured engine linker is unknown.' }
+    $dumpbin = Join-Path (Split-Path $Matches[1] -Parent) 'dumpbin.exe'
+    if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Configured engine dependency inspector is missing.' }
+    # Imported platform DLLs remain the explicit Windows/driver contract.
+    & cmake "-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin" "-DENGINE_DIR=$($installDir.Replace('\','/'))" "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))" -P (Join-Path $PSScriptRoot 'verify-engine-imports.cmake')
+    if ($LASTEXITCODE -ne 0) { throw 'Engine application imports could not be bounded.' }
+    Save-CoreEngineReceipt -Directory $installDir -SourceRevision $sourceRevision -Backend $backend
     Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII
     Module-Done 'llama-server'
     Write-Ok "llama-server -> $installBin ($stampWant) -- the serving daemon spawns this"
