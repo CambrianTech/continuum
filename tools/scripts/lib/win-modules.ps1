@@ -598,6 +598,29 @@ function Mod-BuildCore {
     Module-Done 'build'
 }
 
+function Get-CoreEngineBackend {
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { return 'cuda' }
+    return 'cpu'
+}
+
+function Get-CoreEngineRequirement {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    $revision = (& git -C $RepoRoot rev-parse 'HEAD:core/vendor/llama.cpp' 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Cannot resolve the tracked llama.cpp gitlink.' }
+    return [pscustomobject]@{ source_revision = $revision; backend = (Get-CoreEngineBackend) }
+}
+
+function Get-CoreEngineDrift {
+    param([string]$Directory, [Parameter(Mandatory = $true)]$Requirement)
+    try {
+        $receipt = Get-CoreEngineReceipt -Directory $Directory
+        if ($receipt.source_revision -cne $Requirement.source_revision -or $receipt.backend -cne $Requirement.backend) {
+            return 'Installed engine receipt differs from the tracked source/backend.'
+        }
+        return ''
+    } catch { return "Installed engine needs receipt convergence: $_" }
+}
+
 function Mod-LlamaServer {
     # Build the inference engine WE OWN: llama.cpp's `llama-server` (the OpenAI /v1
     # gateway) that continuum's serving daemon spawns as its GPU-backend CHILD
@@ -612,7 +635,8 @@ function Mod-LlamaServer {
     # tiny). The heavy CUDA build tree goes to cold storage so it doesn't bloat C:.
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [string]$InstallDirectory = (Join-Path $env:USERPROFILE '.continuum\bin')
+        [string]$InstallDirectory = (Join-Path $env:USERPROFILE '.continuum\bin'),
+        [switch]$RequireReceipt
     )
 
     $submodule   = Join-Path $RepoRoot 'core\vendor\llama.cpp'
@@ -636,13 +660,16 @@ function Mod-LlamaServer {
     }
 
     $sourceRevision = (& git -C $submodule rev-parse HEAD 2>$null)
+    if ($RequireReceipt) {
+        $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+        if ($sourceRevision -cne $requirement.source_revision) { throw 'Checked-out llama.cpp differs from the tracked gitlink; refusing receipt migration.' }
+    }
     $head = (& git -C $submodule rev-parse --short HEAD 2>$null)
     if (-not $head) { $head = 'unknown' }
 
     # Backend: NVIDIA -> CUDA (matches core/llama/build.rs gating), else CPU.
-    $backend = 'cpu'; $backendDefs = @()
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-        $backend = 'cuda'
+    $backend = Get-CoreEngineBackend; $backendDefs = @()
+    if ($backend -eq 'cuda') {
         $build = (Get-ManifestModule 'build-core').build
         $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($build.cuda_arch)")
     }
@@ -656,8 +683,10 @@ function Mod-LlamaServer {
             $existingReceipt = Get-CoreEngineReceipt -Directory $installDir
             if ($existingReceipt.source_revision -cne $sourceRevision -or $existingReceipt.backend -cne $backend) { throw 'Engine receipt differs from requested build.' }
         }
-        Module-Skip 'llama-server' "already current at $installBin ($stampWant)"
-        return
+        if (-not $RequireReceipt -or (Test-Path -LiteralPath (Join-Path $installDir 'engine-install.json'))) {
+            Module-Skip 'llama-server' "already current at $installBin ($stampWant)"
+            return
+        }
     }
 
     # A new core slot does not require recompiling an unchanged engine. Reuse
@@ -671,9 +700,10 @@ function Mod-LlamaServer {
         if (Test-Path -LiteralPath (Join-Path $sourceDir 'engine-install.pending')) { continue }
         if ((Test-Path $sourceBin) -and (Test-Path $sourceStamp) -and
             (Get-Content $sourceStamp -Raw).Trim() -eq $stampWant) {
-            New-Item -ItemType Directory -Force -Path $installDir | Out-Null
             # A receipted engine copies its entire verified application namespace.
             $sourceReceipt = Join-Path $sourceDir 'engine-install.json'
+            if ($RequireReceipt -and -not (Test-Path -LiteralPath $sourceReceipt)) { continue }
+            New-Item -ItemType Directory -Force -Path $installDir | Out-Null
             if (Test-Path -LiteralPath $sourceReceipt) {
                 $receipt = Get-CoreEngineReceipt -Directory $sourceDir
                 if ($receipt.source_revision -cne $sourceRevision -or $receipt.backend -cne $backend) { throw 'Source engine receipt differs from requested build.' }
@@ -695,6 +725,10 @@ function Mod-LlamaServer {
     }
 
     Module-Start 'llama-server' "building llama-server ($backend, llama.cpp@$head) -- the serving-lane child"
+    if ($RequireReceipt) {
+        Mod-CMake -ExistingOnly
+        Mod-CUDA -ExistingOnly
+    }
     New-Item -ItemType Directory -Force $buildDir, $installDir | Out-Null
 
     # Generator: the "Visual Studio 17 2022" generator needs the CUDA VS MSBuild

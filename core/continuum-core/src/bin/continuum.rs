@@ -1020,6 +1020,11 @@ struct RebootOptions {
     /// the supervisor with nobody to see a dialog, and a consent raised there would hang
     /// the tick until it times out.
     operator_present: bool,
+    /// Internal convergence requirement; the public command remains `install`.
+    #[cfg(windows)]
+    require_engine_receipt: bool,
+    /// Installer-to-reboot transfer binds the entire selected release.
+    service_descriptor_sha: Option<String>,
 }
 
 impl RebootOptions {
@@ -1036,6 +1041,13 @@ impl RebootOptions {
                         .filter(|p| !p.is_empty() && !p.starts_with('-'))
                         .ok_or("reboot --prebuilt requires a core binary path")?;
                     options.prebuilt = Some(PathBuf::from(path));
+                }
+                "--service-descriptor-sha" if options.service_descriptor_sha.is_none() => {
+                    let sha = args
+                        .next()
+                        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .ok_or("--service-descriptor-sha requires a SHA-256 digest")?;
+                    options.service_descriptor_sha = Some(sha.to_ascii_lowercase());
                 }
                 "--force" | "--prebuilt" | "--service" | "--validate-only" => {
                     return Err(format!("duplicate reboot option {arg}"))
@@ -1059,6 +1071,16 @@ impl RebootOptions {
             return Err(
                 "--validate-only requires --prebuilt and cannot combine with --force or --service"
                     .to_string(),
+            );
+        }
+        if options.service_descriptor_sha.is_some()
+            && (!cfg!(windows)
+                || !options.service
+                || options.prebuilt.is_none()
+                || options.validate_only)
+        {
+            return Err(
+                "--service-descriptor-sha requires a Windows prebuilt service handoff".into(),
             );
         }
         Ok(options)
@@ -1161,7 +1183,7 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
 }
 
 #[cfg(any(windows, test))]
-#[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct CoreServiceDescription {
     artifact: String,
@@ -1185,6 +1207,18 @@ struct CoreServiceTask {
 
 #[cfg(any(windows, test))]
 impl CoreServiceTask {
+    fn validate_description_sha(&self, expected: &str) -> Result<(), String> {
+        use sha2::{Digest, Sha256};
+        let actual = format!("{:x}", Sha256::digest(self.description.as_bytes()));
+        if actual != expected {
+            return Err(
+                "installed release changed during installer-to-reboot transfer; refusing teardown"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
         let description: CoreServiceDescription =
             serde_json::from_str(&self.description).map_err(|e| {
@@ -1262,6 +1296,76 @@ struct PreparedCoreService {
 }
 
 impl PreparedCoreService {
+    #[cfg(windows)]
+    fn run_installer_script(script: &str) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        // Like the existing warm build, this foreground operation completes
+        // before the transaction can release its install lease. In particular,
+        // do not apply the read-only scheduler probe's timeout to registration.
+        let status = std::process::Command::new(Self::shell()?)
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format!("installer operation could not start: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "installer operation failed ({status}); see its diagnostics above"
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    async fn engine_drift(repo: &Path) -> Result<String, String> {
+        let task = Self::query().await?;
+        let description: CoreServiceDescription = serde_json::from_str(&task.description)
+            .map_err(|e| format!("installed service descriptor: {e}"))?;
+        let directory = Path::new(&description.engine)
+            .parent()
+            .ok_or("installed engine has no directory")?;
+        let repo = repo.to_string_lossy().replace('\'', "''");
+        Self::powershell(&format!(
+            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}')",
+            directory.to_string_lossy().replace('\'', "''")
+        )).await
+    }
+
+    #[cfg(windows)]
+    async fn prepare_engine(repo: &Path) -> Result<Option<(String, PathBuf)>, String> {
+        if Self::engine_drift(repo).await?.is_empty() {
+            return Ok(None);
+        }
+        warm_build_allowed(available_memory_bytes(), locate_start_script().ok())?;
+        let original = Self::query().await?.description;
+        let receipt = WarmBuildReceipt::create()?;
+        let repo_arg = repo.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'",
+            original.replace('\'', "''"), receipt.0.to_string_lossy().replace('\'', "''")
+        );
+        Self::run_installer_script(&script)?;
+        Ok(Some((original, receipt.artifact()?)))
+    }
+
+    #[cfg(windows)]
+    async fn register_engine(repo: &Path, original: &str, engine: &Path) -> Result<(), String> {
+        if Self::query().await?.description != original {
+            return Err("installed release changed before engine handoff".into());
+        }
+        let mut release: CoreServiceDescription = serde_json::from_str(original)
+            .map_err(|e| format!("installed service descriptor: {e}"))?;
+        release.engine = engine.to_string_lossy().into_owned();
+        let json = serde_json::to_string(&release) // Task Scheduler descriptor crosses the PowerShell process boundary.
+            .map_err(|e| e.to_string())?
+            .replace('\'', "''");
+        let repo = repo.to_string_lossy().replace('\'', "''");
+        Self::run_installer_script(&format!(
+            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; $r='{json}' | ConvertFrom-Json; $drift=Get-CoreEngineDrift -Directory (Split-Path $r.engine) -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}'); if ($drift) {{ throw $drift }}; try {{ Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' }} finally {{ Clear-Elevation }}"
+        ))?;
+        Ok(())
+    }
+
     async fn for_start(socket: &str) -> Result<Option<(Self, PrebuiltCore)>, String> {
         #[cfg(not(any(windows, target_os = "macos")))]
         {
@@ -1696,7 +1800,17 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             candidate.path.display(),
             candidate.build_sha
         );
+        #[cfg(windows)]
+        println!("continuum-install-lease-protocol:1");
         return Ok(());
+    }
+    #[cfg(windows)]
+    let _install_lease = take_install_lease(&PathBuf::from(home_dir()?).join(".continuum"))?;
+    #[cfg(windows)]
+    if let Some(expected) = &options.service_descriptor_sha {
+        PreparedCoreService::query()
+            .await?
+            .validate_description_sha(expected)?;
     }
     let force = options.force;
     let socket = socket_path();
@@ -1842,6 +1956,19 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         .map(|p| p.build_sha.clone())
         .or_else(git_head_short_sha);
     let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
+    #[cfg(windows)]
+    let prepared_engine = if options.require_engine_receipt {
+        Some(std::env::current_dir().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    let prepared_engine = match prepared_engine {
+        Some(repo) => PreparedCoreService::prepare_engine(&repo)
+            .await?
+            .map(|prepared| (repo, prepared)),
+        None => None,
+    };
     // A failed attempted warm build returns without stopping the serving core.
     // Below the headroom line the existing stop-first path remains available.
     if prebuilt.is_none() {
@@ -1889,6 +2016,30 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             }
         }
     }
+    #[cfg(windows)]
+    if let Some((repo, (original, engine))) = &prepared_engine {
+        if PreparedCoreService::query().await?.description != *original {
+            return Err(
+                "installed release changed during preparation; running Core preserved".into(),
+            );
+        }
+        let repo = repo.to_string_lossy().replace('\'', "''");
+        let directory = engine
+            .parent()
+            .ok_or("prepared engine has no directory")?
+            .to_string_lossy()
+            .replace('\'', "''");
+        let drift = PreparedCoreService::powershell(&format!(
+            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}')"
+        )).await?;
+        if !drift.is_empty() {
+            return Err(format!("prepared engine changed before stop: {drift}"));
+        }
+        let candidate = prebuilt
+            .as_ref()
+            .ok_or("engine handoff requires a verified Core artifact")?;
+        PrebuiltCore::prepare(&candidate.path).await?;
+    }
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
     // running core, and refusing to continue would leave the node down over a module that
     // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
@@ -1905,6 +2056,14 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
             prebuilt = Some(staged);
         }
+    }
+    #[cfg(windows)]
+    if let Some((repo, (original, engine))) = &prepared_engine {
+        PreparedCoreService::register_engine(repo, original, engine).await?;
+        let candidate = prebuilt
+            .as_ref()
+            .ok_or("engine handoff requires a verified Core artifact")?;
+        service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
     }
     // Keep the launcher's wait as the honesty check that teardown actually took.
     let source = prebuilt
@@ -2311,6 +2470,26 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
             age_ms / 1000
         )),
     }
+}
+
+/// The installer's existing Windows exclusion, held through the reboot handoff.
+#[cfg(windows)]
+fn take_install_lease(root: &Path) -> Result<std::fs::File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::create_dir_all(root)
+        .map_err(|e| format!("cannot create install lease directory: {e}"))?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(root.join("install.lock"))
+        .map_err(|e| {
+            format!(
+                "another installer/reboot holds the install lease, or it cannot be acquired: {e}"
+            )
+        })
 }
 
 /// RAII deploy claim: published for the length of a swap, released on EVERY exit path
@@ -2788,8 +2967,18 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     // checkout from the working directory, as the consumer does before it.
     std::env::set_current_dir(&repo).map_err(|e| format!("install: cannot enter {}: {e}", repo.display()))?;
     let running = running_build_sha().await;
+    #[cfg(windows)]
+    let engine_drift = PreparedCoreService::engine_drift(&repo).await?;
+    #[cfg(not(windows))]
+    let engine_drift = String::new();
+    if !engine_drift.is_empty() {
+        println!("  engine: {engine_drift}");
+    }
     match running.as_deref() {
-        Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
+        Some(r)
+            if continuum_core::runtime::deploy_tracker::same_commit(r, &head)
+                && engine_drift.is_empty() =>
+        {
             println!("✓ core: converged — running build {r} is HEAD");
             return Ok(ArmReport::converged());
         }
@@ -2807,7 +2996,43 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     // teardown privilege when this caller has none over the running core — the whole
     // reason the node in front of us cannot be replaced. Same command every time; the
     // escalation is inside it, never a second verb the user has to discover.
-    reboot(RebootOptions { service: cfg!(windows), operator_present: true, ..Default::default() }).await?;
+    #[cfg(windows)]
+    let prebuilt = if running
+        .as_deref()
+        .is_some_and(|r| continuum_core::runtime::deploy_tracker::same_commit(r, &head))
+    {
+        let task = PreparedCoreService::query().await?;
+        let release: CoreServiceDescription =
+            serde_json::from_str(&task.description).map_err(|e| e.to_string())?;
+        let cli_sha = binary_build_sha(Path::new(&release.cli)).await?;
+        if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) {
+            return Err(format!("installed CLI reports {cli_sha}, tracked HEAD is {head}; refusing to reuse an unmatched release pair"));
+        }
+        Some(PathBuf::from(release.artifact))
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
+    let prebuilt = None;
+    let options = RebootOptions {
+        service: cfg!(windows),
+        operator_present: true,
+        prebuilt,
+        ..Default::default()
+    };
+    #[cfg(windows)]
+    let options = RebootOptions {
+        require_engine_receipt: true,
+        ..options
+    };
+    reboot(options).await?;
+    #[cfg(windows)]
+    {
+        let drift = PreparedCoreService::engine_drift(&repo).await?;
+        if !drift.is_empty() {
+            return Err(format!("install: engine handoff did not converge: {drift}"));
+        }
+    }
     let now = running_build_sha().await;
     match now.as_deref() {
         Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
@@ -5751,6 +5976,30 @@ mod tests {
             );
         }
         let service = parse(&["--service", "--prebuilt", "core.exe"]);
+        let digest = "a".repeat(64);
+        let bound_service = parse(&[
+            "--service",
+            "--prebuilt",
+            "core.exe",
+            "--service-descriptor-sha",
+            &digest,
+        ]);
+        if cfg!(windows) {
+            assert_eq!(
+                bound_service.unwrap().service_descriptor_sha.as_deref(),
+                Some(digest.as_str())
+            );
+        } else {
+            assert!(bound_service.is_err());
+        }
+        assert!(parse(&[
+            "--prebuilt",
+            "core.exe",
+            "--validate-only",
+            "--service-descriptor-sha",
+            &digest
+        ])
+        .is_err());
         let validate = parse(&["--prebuilt", "core.exe", "--validate-only"]).unwrap();
         assert!(validate.validate_only);
         assert!(!validate.force && !validate.service);
@@ -5772,6 +6021,15 @@ mod tests {
     fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
         let directory = tempfile::tempdir().unwrap();
         let directory = directory.path().canonicalize().unwrap();
+        #[cfg(windows)]
+        {
+            // Receipt migration and direct reboot share the installer's real
+            // exclusive file lease; release permits the next owner to proceed.
+            let lease = super::take_install_lease(&directory).unwrap();
+            assert!(super::take_install_lease(&directory).is_err());
+            drop(lease);
+            assert!(super::take_install_lease(&directory).is_ok());
+        }
         let artifact = directory.join("continuum-core-server.exe");
         let cli = directory.join("continuum.exe");
         let launcher = directory.join("run-service-hidden.ps1");
@@ -5808,6 +6066,19 @@ mod tests {
             build_sha: "123456789".to_string(),
         };
         task.validate(&candidate, &socket, &shell).unwrap();
+        // Engine-only migration can change the selected release without
+        // changing its Core artifact; the transfer binds the full descriptor.
+        {
+            use sha2::{Digest, Sha256};
+            let expected = format!("{:x}", Sha256::digest(task.description.as_bytes()));
+            task.validate_description_sha(&expected).unwrap();
+            let prior = task.description.clone();
+            let mut changed: serde_json::Value = serde_json::from_str(&prior).unwrap();
+            changed["engine"] = serde_json::json!(directory.join("other-engine.exe"));
+            task.description = changed.to_string();
+            assert!(task.validate_description_sha(&expected).is_err());
+            task.description = prior;
+        }
         task.arguments = arguments.replace(
             &artifact.display().to_string(),
             &stale.display().to_string(),
