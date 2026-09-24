@@ -101,7 +101,7 @@ function Get-CorePreparedRelease {
 }
 
 function Resume-CorePreparedRelease {
-    param([string]$RepoRoot, [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'))
+    param([string]$RepoRoot, [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), [IDisposable]$InstallLease)
     $release = Get-CorePreparedRelease -InstallRoot $InstallRoot
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     if ($task -and -not (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))) {
@@ -123,7 +123,7 @@ function Resume-CorePreparedRelease {
     try {
         $env:CONTINUUM_CORE_SOCKET = $release.socket
         Register-CoreServiceRelease -Release $release -RepoRoot $RepoRoot -WorkingDirectory $workingDirectory
-        Invoke-CoreServiceRelease -Release $release -RepoRoot $RepoRoot -WorkingDirectory $workingDirectory
+        Invoke-CoreServiceRelease -Release $release -RepoRoot $RepoRoot -WorkingDirectory $workingDirectory -InstallLease $InstallLease
     } finally {
         if ($null -eq $oldSocket) { Remove-Item Env:CONTINUUM_CORE_SOCKET -ErrorAction SilentlyContinue }
         else { $env:CONTINUUM_CORE_SOCKET = $oldSocket }
