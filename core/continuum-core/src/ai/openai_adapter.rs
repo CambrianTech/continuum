@@ -1067,15 +1067,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.name
     }
 
-    /// RESTORE-AHEAD (compression-ladder rung 1): the scheduler knows this
-    /// activity generates next, so page its KV in NOW, overlapped with the
-    /// caller's prompt assembly. Runs the SAME lease + save/restore protocol
-    /// as the pin-time path — `lease_paged` is idempotent for the same key, so
-    /// when the pin arrives the slot is already warm (`prev == key`) and the
-    /// backstop performs nothing. Pin-time restores were measured queueing
-    /// behind busy slots to the 10s timeout (2026-09-01); this moves the wait
-    /// off the turn's critical path. Fire-and-forget by design: a failed
-    /// warm-ahead costs nothing — the backstop still runs.
+    /// Restore the next activity during prompt assembly through the same
+    /// admission and paging owner as generation. Only a completed restore or
+    /// existing physical residency is warm; failure leaves the turn backstop
+    /// responsible for restoring or prefilling normally.
     fn warm_ahead(&self, persona: uuid::Uuid, room: uuid::Uuid) {
         let Some(key) = crate::inference::slots::ActivityKey::new(persona, room) else {
             return; // nil halves (test workspaces, roomless background) — nothing to warm
@@ -1087,56 +1082,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let Some(Some(pool)) = crate::inference::slots::directory().get(&root) else {
             return;
         };
-        if pool.n_slots() == 1 {
-            // No spare slot: restoration must hold the actual turn permit. This
-            // best-effort task must not restore over transient background KV.
+        if pool.scratch_slot().is_none() {
+            // Without reserved scratch, already-admitted keyless traffic can
+            // select any physical slot and bypass speculative paging admission.
             return;
         }
         let client = self.client.clone();
+        let concurrency = self.concurrency.clone();
         tokio::spawn(async move {
-            let Ok(admission) = crate::inference::slots::directory()
-                .endpoint(&root)
-                .admit()
-                .await
-            else {
-                return;
-            };
-            let pool = admission.pool.as_ref().unwrap_or(&pool); // JUSTIFIED unwrap_or: unmanaged discovery fixtures retain their original pool.
-            if pool.n_slots() == 1 {
-                return;
-            }
-            let started = std::time::Instant::now();
-            let Some(pg) = pool.lease_paged(key).await else {
-                return; // every slot pinned — the pin-time path will retry
-            };
-            if let Some(prev) = pg.save_first {
-                if crate::inference::turn_admission::kv_page_action(
-                    &client, &root, pg.slot, &prev, "save",
-                )
-                .await
-                {
-                    pool.note_saved(prev);
-                }
-            }
-            if pg.restore
-                && !crate::inference::turn_admission::kv_page_action(
-                    &client, &root, pg.slot, &key, "restore",
-                )
-                .await
-            {
-                pool.note_page_lost(&key);
-            }
-            crate::probe!(
-                class = "inference.kv_warm_ahead",
-                persona = %key.persona,
-                room = %key.room,
-                slot = pg.slot as u64,
-                saved_evictee = pg.save_first.is_some(),
-                restored = pg.restore,
-                ms = started.elapsed().as_millis() as u64,
-                "restore-ahead — the scheduler's knowledge of who generates next IS the \
-                 cache prediction; the page lands during prompt assembly, not during the turn",
-            );
+            let _ = crate::inference::turn_admission::warm_ahead(
+                &concurrency,
+                key,
+                pool,
+                &client,
+                &root,
+            )
+            .await;
         });
     }
 
@@ -2750,9 +2711,11 @@ mod tests {
                     if (action == "save" && fail.load(Ordering::SeqCst))
                         || (action == "restore" && restore_fail.load(Ordering::SeqCst))
                     {
-                        StatusCode::INTERNAL_SERVER_ERROR
+                        (StatusCode::BAD_REQUEST, Json(json!({"error": {"code": 400, "type": "invalid_request_error", "message": "fixture page rejected"}})))
                     } else {
-                        StatusCode::OK
+                        let mut receipt = json!({"id_slot": 0, "filename": body["filename"]});
+                        receipt[if action == "save" { "n_saved" } else { "n_restored" }] = json!(4);
+                        (StatusCode::OK, Json(receipt))
                     }
                 }
             }))

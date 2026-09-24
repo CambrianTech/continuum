@@ -39,6 +39,12 @@ pub struct TurnAdmission {
     slot: Option<u32>,
     /// The slot pin — held so eviction cannot reassign this turn's slot mid-decode.
     _pin: Option<SlotPin>,
+    /// Serializes same-slot operations even when distinct adapters admit the key.
+    _slot_permit: Option<OwnedSemaphorePermit>,
+    page_confirmed: bool,
+    restored: bool,
+    saved_evictee: bool,
+    paging_in_flight: bool,
     /// Released after the pin so the next permit holder can lease the free slot.
     _permit: OwnedSemaphorePermit,
     /// A lease is provisional until the adapter observes successful generation.
@@ -58,6 +64,28 @@ impl TurnAdmission {
         self.scratch
     }
 
+    async fn page_action(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        slot: u32,
+        key: &ActivityKey,
+        action: &str,
+    ) -> Result<bool, String> {
+        self.paging_in_flight = true;
+        match kv_page_action(client, root, slot, key, action).await {
+            PageOutcome::Completed => {
+                self.paging_in_flight = false;
+                Ok(true)
+            }
+            PageOutcome::Rejected => {
+                self.paging_in_flight = false;
+                Ok(false)
+            }
+            PageOutcome::Uncertain => Err("KV paging completion unverified; endpoint quarantined until verified engine replacement".into()),
+        }
+    }
+
     /// The adapter received a complete successful generation in this slot.
     pub(crate) fn generation_completed(&mut self) {
         self.uncommitted = None;
@@ -66,6 +94,9 @@ impl TurnAdmission {
 
 impl Drop for TurnAdmission {
     fn drop(&mut self) {
+        if self.paging_in_flight {
+            self._endpoint.quarantine_paging();
+        }
         if let Some((pool, key, slot)) = self.uncommitted.take() {
             pool.forget_resident(slot, key);
         }
@@ -89,6 +120,48 @@ pub async fn admit_turn(
     root: &str,
     approx_tokens: u64,
 ) -> Result<TurnAdmission, String> {
+    admit(concurrency, key, pool, client, root, approx_tokens, false).await
+}
+
+/// Best-effort warm-ahead uses the same paging and provisional-attribution owner
+/// as a turn. No generation follows, so only proven physical warmth is committed.
+pub(crate) async fn warm_ahead(
+    concurrency: &Arc<Semaphore>,
+    key: ActivityKey,
+    pool: Arc<KvSlotPool>,
+    client: &reqwest::Client,
+    root: &str,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let mut admission = admit(concurrency, Some(key), Some(pool), client, root, 0, true).await?;
+    if admission.page_confirmed {
+        admission.uncommitted = None;
+    }
+    if let Some(slot) = admission.slot {
+        crate::probe!(
+            class = "inference.kv_warm_ahead",
+            persona = %key.persona,
+            room = %key.room,
+            slot = slot as u64,
+            saved_evictee = admission.saved_evictee,
+            restored = admission.restored,
+            confirmed = admission.page_confirmed,
+            ms = started.elapsed().as_millis() as u64,
+            "warm-ahead completed through turn paging admission",
+        );
+    }
+    Ok(())
+}
+
+async fn admit(
+    concurrency: &Arc<Semaphore>,
+    key: Option<ActivityKey>,
+    pool: Option<Arc<KvSlotPool>>,
+    client: &reqwest::Client,
+    root: &str,
+    approx_tokens: u64,
+    warm_only: bool,
+) -> Result<TurnAdmission, String> {
     // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
     //    semaphore is never closed over the adapter's lifetime.
     let _permit = concurrency
@@ -107,20 +180,36 @@ pub async fn admit_turn(
     let mut admission = TurnAdmission {
         slot: None,
         _pin: None,
+        _slot_permit: None,
+        page_confirmed: false,
+        restored: false,
+        saved_evictee: false,
+        paging_in_flight: false,
         _permit,
         uncommitted: None,
         scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
         _endpoint: endpoint,
     };
 
+    if warm_only
+        && pool
+            .as_ref()
+            .is_some_and(|pool| pool.scratch_slot().is_none())
+    {
+        return Ok(admission);
+    }
     if let (Some(k), Some(pool)) = (key, pool.as_ref()) {
-        if let Some(pg) = pool.lease_paged(k).await {
-            // 2. PIN synchronously, before any await below — a permit-holding
-            //    returner leases only an UNPINNED slot, so pinning here (there are
-            //    at most lanes-1 other pinned slots while we hold a permit) makes the
-            //    slot we just leased un-evictable for the turn. No await between the
-            //    lease returning and this pin, so no other task can slip in.
-            admission._pin = pool.pin(&k);
+        if pool.lease(k).await.is_some() {
+            // Pin before waiting for the physical-slot permit: a same-activity
+            // returner must await the prior owner without permitting eviction.
+            let Some((slot, pin)) = pool.pin_slot(&k) else {
+                return Ok(admission);
+            };
+            admission._pin = Some(pin);
+            admission._slot_permit = Some(pool.acquire_slot(slot).await?);
+            admission._endpoint.check_ready()?;
+            let pg = pool.plan_paging(slot, k);
+            admission.page_confirmed = pg.already_resident;
             admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
 
             // 3. The context switch onto a now-free slot: page the evictee out,
@@ -130,18 +219,28 @@ pub async fn admit_turn(
                 // A failed or cancelled save may have replaced an older file.
                 // Only a completed save can make this page restorable again.
                 pool.note_page_lost(&prev);
-                if kv_page_action(client, root, pg.slot, &prev, "save").await {
+                if admission
+                    .page_action(client, root, pg.slot, &prev, "save")
+                    .await?
+                {
                     pool.note_saved(prev);
+                    admission.saved_evictee = true;
                 }
             }
-            if pg.restore && !kv_page_action(client, root, pg.slot, &k, "restore").await {
-                // Dead page (geometry swept / file missing): stop offering it; this
-                // turn re-prefills plainly.
-                pool.note_page_lost(&k);
+            if pg.restore {
+                admission.restored = admission
+                    .page_action(client, root, pg.slot, &k, "restore")
+                    .await?;
+                admission.page_confirmed = admission.restored;
+                if !admission.restored {
+                    pool.note_page_lost(&k);
+                }
             }
             // Price basis for the eviction policy (B5): this activity's current
             // prompt size — comparable across slots, which is all eviction needs.
-            pool.note_tail(&k, approx_tokens);
+            if !warm_only {
+                pool.note_tail(&k, approx_tokens);
+            }
             admission.slot = Some(pg.slot);
         }
     } else if let Some(pool) = pool.as_ref().filter(|pool| pool.n_slots() == 1) {
@@ -149,11 +248,16 @@ pub async fn admit_turn(
         // resident before background/anonymous traffic borrows its physical slot.
         // Remove attribution BEFORE the await so cancellation cannot leave the
         // next activity treating transient KV as its own warm tail.
+        admission._slot_permit = Some(pool.acquire_slot(0).await?);
+        admission._endpoint.check_ready()?;
         let (previous, pin) = pool.take_resident(0);
         admission._pin = pin;
         if let Some(previous) = previous {
             pool.note_page_lost(&previous);
-            if kv_page_action(client, root, 0, &previous, "save").await {
+            if admission
+                .page_action(client, root, 0, &previous, "save")
+                .await?
+            {
                 pool.note_saved(previous);
             }
         }
@@ -191,22 +295,24 @@ pub fn kv_page_wedge_bound(measured_p90_ms: u64) -> std::time::Duration {
     KV_PAGE_WEDGE_FLOOR.max(std::time::Duration::from_millis(measured_p90_ms.saturating_mul(3)))
 }
 
-/// Execute one KV page action against the server (`/slots/{id}?action=save|restore`).
-///
-/// The bound is a WEDGE DETECTOR, not a wait-for-the-slot: with permit-first + pin
-/// admission ([`admit_turn`]) a restore is only ever issued into an already-free
-/// slot and never defers behind a live decode; past the bound the server is wedged.
-/// (History: pre-fix this path saw 27/27 restores fail `status=0`, then 55/67 with a
-/// 90s wait; the pin removes the failure mode instead of waiting it out.)
-///
-/// `pub(crate)` so the spawned warm-ahead task drives the SAME seam as admission.
+/// Only a complete server receipt establishes terminal paging state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageOutcome {
+    Completed,
+    Rejected,
+    Uncertain,
+}
+
+/// Execute one page action through the shared turn/warm-ahead boundary. The
+/// measured wedge bound limits waiting, but timeout does not acknowledge remote
+/// completion: the admission owner must quarantine before releasing its lease.
 pub(crate) async fn kv_page_action(
     client: &reqwest::Client,
     root: &str,
     slot: u32,
     key: &ActivityKey,
     action: &str,
-) -> bool {
+) -> PageOutcome {
     let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
     let filename = crate::inference::slots::page_filename(key);
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
@@ -218,8 +324,39 @@ pub(crate) async fn kv_page_action(
         .json(&json!({ "filename": filename }))
         .send()
         .await;
-    let ok = matches!(&resp, Ok(r) if r.status().is_success());
-    let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // 0 = transport error
+    let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // JUSTIFIED unwrap_or: status 0 records transport failure, never success.
+
+    // Headers alone are not a terminal receipt. A disconnected waiter can leave
+    // a queued restore behind; malformed/truncated/default responses fail closed.
+    let outcome = match resp {
+        Ok(response) => match response.json::<serde_json::Value>().await {
+            Ok(body)
+                if (200..300).contains(&status)
+                    && body["id_slot"].as_u64() == Some(slot as u64)
+                    && body["filename"].as_str() == Some(filename.as_str())
+                    && body[if action == "save" {
+                        "n_saved"
+                    } else {
+                        "n_restored"
+                    }]
+                    .as_u64()
+                    .is_some() =>
+            {
+                PageOutcome::Completed
+            }
+            Ok(body)
+                if status == 400
+                    && body["error"]["code"].as_u64() == Some(400)
+                    && body["error"]["type"].as_str() == Some("invalid_request_error")
+                    && body["error"]["message"].as_str().is_some() =>
+            {
+                PageOutcome::Rejected
+            }
+            _ => PageOutcome::Uncertain,
+        },
+        Err(_) => PageOutcome::Uncertain,
+    };
+    let ok = outcome == PageOutcome::Completed;
     let ms = started.elapsed().as_millis() as u64;
     if ok {
         KV_PAGE_SWITCH_MS.note(ms);
@@ -231,6 +368,7 @@ pub(crate) async fn kv_page_action(
         persona = %key.persona,
         room = %key.room,
         ok,
+        terminal = outcome != PageOutcome::Uncertain,
         status = status as u64,
         ms,
         bound_ms = bound.as_millis() as u64,
@@ -238,9 +376,9 @@ pub(crate) async fn kv_page_action(
         node_p90_ms = p90_ms,
         node_measured = measured as u64,
         "KV page context switch — save pages the evictee's state out, restore pages \
-         the returner's state in; `ms` is what it cost HERE (a miss means this turn re-prefills)",
+         the returner's state in; an uncertain receipt quarantines the endpoint",
     );
-    ok
+    outcome
 }
 
 #[cfg(test)]
@@ -334,5 +472,241 @@ mod tests {
                 .is_err(),
             "failed transition remains closed"
         );
+    }
+
+    // what this catches: warm-ahead at 4fe7e312 marked a lease warm even when
+    // no restore occurred, failed, or was cancelled; later turns skipped restore.
+    #[tokio::test]
+    async fn warm_ahead_confirms_only_resident_or_successfully_restored_pages() {
+        use axum::{extract::Path, http::StatusCode, routing::post, Json, Router};
+        use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+
+        let mode = Arc::new(AtomicU8::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let finished = Arc::new(tokio::sync::Notify::new());
+        let app = Router::new().route(
+            "/slots/{slot}",
+            post({
+                let mode = mode.clone();
+                let calls = calls.clone();
+                let entered = entered.clone();
+                let release = release.clone();
+                let finished = finished.clone();
+                move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
+                    let mode = mode.clone();
+                    let calls = calls.clone();
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    let finished = finished.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if mode.load(Ordering::SeqCst) == 1 {
+                            return (StatusCode::BAD_REQUEST, Json(json!({"error": {"code": 400, "type": "invalid_request_error", "message": "Unable to restore slot"}})));
+                        }
+                        if mode.load(Ordering::SeqCst) == 2 {
+                            entered.notify_one();
+                            release.notified().await;
+                            finished.notify_one();
+                        }
+                        if mode.load(Ordering::SeqCst) == 3 {
+                            return (StatusCode::OK, Json(json!({"unverified": true})));
+                        }
+                        (StatusCode::OK, Json(json!({"id_slot": slot, "filename": body["filename"], "n_restored": 10})))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("isolated paging HTTP fixture");
+        let root = format!(
+            "http://{}",
+            listener.local_addr().expect("bound fixture address")
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let contract = crate::inference::slots::KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some("fixture-pages".into()),
+            context: 8192,
+            slots: 3,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        let initial = endpoint.transition().await;
+        let old = initial.start_generation().expect("initial generation");
+        initial
+            .ready(&root, &old, contract.clone())
+            .expect("initial readiness");
+        drop(initial);
+        let pool = endpoint
+            .admit()
+            .await
+            .expect("ready pool")
+            .pool
+            .expect("managed pool");
+        let sem = Arc::new(Semaphore::new(2));
+        let client = reqwest::Client::new();
+        let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("fixture activity");
+
+        // A discovered multi-slot pool is not sufficient: without reserved
+        // scratch, anonymous traffic can still select a speculative restore slot.
+        let small_root = format!("test://warm-two-slot-{}", Uuid::new_v4());
+        let small = crate::inference::slots::directory().ensure_pool(&small_root, 2);
+        small.note_saved(key);
+        let stale_discovery = Arc::new(KvSlotPool::new(&small_root, 3));
+        warm_ahead(&sem, key, stale_discovery, &client, &small_root)
+            .await
+            .expect("authoritative two-slot skip");
+        let cold = small.lease_paged(key).await.expect("small pool lease");
+        assert!(!cold.already_resident);
+        assert!(
+            cold.restore,
+            "skipped warm-ahead must leave the page for the actual turn"
+        );
+
+        // A cold lease has no physical KV to attribute, and must issue no HTTP.
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("cold warm-ahead");
+        let slot = pool.lease(key).await.expect("assigned physical slot");
+        assert!(pool.take_resident(slot).0.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        pool.note_saved(key);
+        mode.store(1, Ordering::SeqCst);
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("failed restore is best effort");
+        assert!(pool.take_resident(slot).0.is_none());
+        let after_failure = pool.lease_paged(key).await.expect("cold after failure");
+        assert!(!after_failure.restore, "failed page is no longer offered");
+        assert!(!after_failure.already_resident);
+        pool.forget_resident(slot, key);
+
+        pool.note_saved(key);
+        mode.store(2, Ordering::SeqCst);
+        let mut queued = {
+            let warming = warm_ahead(&sem, key, pool.clone(), &client, &root);
+            tokio::pin!(warming);
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::select! {
+                    result = &mut warming => panic!("restore completed before cancellation: {result:?}"),
+                    _ = entered.notified() => {}
+                }
+            }).await.expect("restore request reached fixture");
+            let mut queued = Box::pin(admit_turn(
+                &sem,
+                Some(key),
+                Some(pool.clone()),
+                &client,
+                &root,
+                100,
+            ));
+            assert!(futures::poll!(&mut queued).is_pending());
+            queued
+        };
+        assert!(
+            pool.take_resident(slot).0.is_none(),
+            "cancelled restore cannot leave warm attribution"
+        );
+        assert!(
+            queued.as_mut().await.is_err(),
+            "already-admitted same-slot waiter must refuse after quarantine"
+        );
+        drop(queued);
+        assert_eq!(sem.available_permits(), 2);
+        assert!(
+            warm_ahead(&sem, key, pool.clone(), &client, &root)
+                .await
+                .is_err(),
+            "retry must refuse WHILE the old backend request is blocked"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "quarantine sent no replacement request"
+        );
+        let replacement = endpoint.transition().await;
+        assert!(
+            replacement.ready(&root, &old, contract.clone()).is_err(),
+            "same-generation readiness cannot clear quarantine"
+        );
+        assert!(
+            replacement.start_generation().is_err(),
+            "actual predecessor exit still required"
+        );
+        // This acknowledges only the fixture request; local Drop does not claim
+        // that cancelling an HTTP client stops the production backend operation.
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
+            .await
+            .expect("fixture request drained");
+
+        old.observed_exit();
+        let new = replacement
+            .start_generation()
+            .expect("verified predecessor exit");
+        replacement
+            .ready(&root, &new, contract)
+            .expect("new verified generation");
+        drop(replacement);
+        let pool = endpoint
+            .admit()
+            .await
+            .expect("reopened")
+            .pool
+            .expect("fresh pool");
+        mode.store(0, Ordering::SeqCst);
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("successful retry");
+        let restored_calls = calls.load(Ordering::SeqCst);
+        assert_eq!(restored_calls, 3);
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("already resident");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            restored_calls,
+            "confirmed residency skips redundant restore"
+        );
+        assert_eq!(pool.take_resident(slot).0, Some(key));
+
+        // Same-key admission uses the same physical-slot permit even across
+        // adapters. It cannot see or erase a prior owner's provisional holder.
+        let mut turn = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100)
+            .await
+            .expect("turn restore");
+        let other_adapter = Arc::new(Semaphore::new(2));
+        let warming = warm_ahead(&other_adapter, key, pool.clone(), &client, &root);
+        tokio::pin!(warming);
+        assert!(futures::poll!(&mut warming).is_pending());
+        turn.generation_completed();
+        drop(turn);
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut warming)
+            .await
+            .expect("slot released")
+            .expect("warm resident");
+        assert_eq!(pool.take_resident(slot).0, Some(key));
+        mode.store(3, Ordering::SeqCst);
+        assert!(
+            warm_ahead(&sem, key, pool.clone(), &client, &root)
+                .await
+                .is_err(),
+            "a status-only or malformed acknowledgement is uncertain"
+        );
+        assert!(!endpoint.is_ready());
+        assert!(pool.take_resident(slot).0.is_none());
+        server.abort();
     }
 }
