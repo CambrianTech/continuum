@@ -32,8 +32,8 @@ use crate::cognition::serving_plan::{
 use crate::gpu::GpuMemoryManager;
 use crate::inference::lane_registry::LaneRecord;
 use crate::inference::llama_server::{
-    ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
-    LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
+    ensure_model_serving_if_current, serving_v1_url, AdapterEntry, EnsureOutcome,
+    LlamaServerControl, LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
 };
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
 use crate::model_registry::types::{Capability, Model};
@@ -444,6 +444,74 @@ struct ServingPlanSnapshot {
     pub plan: Option<ServingPlan>,
 }
 
+/// Exact local launch provenance acknowledged under one serving intent revision.
+/// Eligibility is queried from the daemon; this receipt alone is not a loan or lease.
+#[derive(Clone)]
+pub struct VerifiedServingCapture {
+    pub launch: crate::inference::llama_server::OwnedServingTarget,
+    pub intent_revision: u64,
+}
+
+/// The existing reconcile gate, armed before spawning so abort-before-first-poll
+/// cannot strand it. Every lifecycle operation, including empty-plan idle, owns it.
+struct ServingOperation(Arc<AtomicBool>);
+impl ServingOperation {
+    fn acquire(gate: Arc<AtomicBool>) -> Option<Self> {
+        gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(Self(gate))
+    }
+}
+impl Drop for ServingOperation {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// A forced health check stays owed if its task is cancelled or superseded.
+/// Completion never clears a newer report raised while this claim was in flight.
+struct ForcedProbe {
+    flag: Arc<AtomicBool>,
+    pending: bool,
+}
+impl ForcedProbe {
+    fn claim(flag: Arc<AtomicBool>) -> Self {
+        let pending = flag.swap(false, Ordering::AcqRel);
+        Self { flag, pending }
+    }
+}
+impl Drop for ForcedProbe {
+    fn drop(&mut self) {
+        if self.pending {
+            self.flag.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn verified_capture(
+    server: &dyn LlamaServerControl,
+    snapshot: &ServingSnapshot,
+    intent_revision: u64,
+) -> Option<VerifiedServingCapture> {
+    if !snapshot.ready || server.paging_recovery_required() {
+        return None;
+    }
+    let launch = server.owned_serving_target()?;
+    if snapshot.active_model.as_deref() != Some(launch.target.model.id.as_str())
+        || snapshot.adapters != launch.target.adapter_paths()
+        || snapshot.served_context_window != launch.observed_context_window
+        || snapshot.lanes != launch.observed_lanes
+        || snapshot.host_prompt_cache_mib != launch.launched_host_prompt_cache_mib
+        || server.owned_engine()? != launch.identity
+    {
+        return None;
+    }
+    Some(VerifiedServingCapture {
+        launch,
+        intent_revision,
+    })
+}
+
 pub struct ServingDaemonModule {
     gpu: Arc<GpuMemoryManager>,
     /// Live system memory monitor — the budget comes from what's actually FREE
@@ -480,6 +548,7 @@ pub struct ServingDaemonModule {
     /// in flight. A tick that finds a reconcile already running skips — no
     /// stacked relaunches thrashing the GPU.
     reconciling: Arc<AtomicBool>,
+    verified_target: watch::Sender<Option<VerifiedServingCapture>>,
     /// Reconcile-tick counter driving the slow liveness HEARTBEAT (fires when
     /// `% HEALTH_PROBE_EVERY_TICKS == 0`). See [`Self::spawn_health_heartbeat_if_due`].
     health_ticks: Arc<AtomicU64>,
@@ -590,7 +659,7 @@ pub struct ServingDaemonModule {
     /// set (#302 invariant 1: the NvmeServingTierPool must never migrate the
     /// resident model out from under the engine). Tracked so a model change
     /// releases the old registration exactly once.
-    active_artifact: std::sync::Mutex<Option<std::path::PathBuf>>,
+    active_artifact: Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     /// The pin actuator's observation state (#281): tails the fork's
     /// routed-expert trace, owns the bandit, and remembers the last
     /// published pin list (the write-churn gate). `None` until the first
@@ -604,11 +673,11 @@ pub struct ServingDaemonModule {
     /// on the governed plan); the LIVE device budget stays #305's board-derived axis —
     /// one budget authority, one tier authority. Rebuilt on model change; `None` until
     /// a MoE serve exists. Same sync-Mutex discipline (never held across await).
-    division: std::sync::Mutex<Option<crate::capacity::division_actuation::DivisionActuator>>,
+    division: Arc<std::sync::Mutex<Option<crate::capacity::division_actuation::DivisionActuator>>>,
     /// The resident-override path the LAST reconcile applied to the spawn — ground truth
     /// for which tier the RUNNING serve actually loaded. Division rewards credit this
     /// tier, never the bandit's latest (unlaunched) choice — two-speed honesty.
-    served_resident: std::sync::Mutex<Option<std::path::PathBuf>>,
+    served_resident: Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -691,9 +760,6 @@ pub struct ServingDaemonModule {
     /// `BOOTSTRAP_WORKING_SET` constant that used to stand in for this measurement
     /// and capped every citizen at 8192 tokens of a 128k-capable model.
     working_set: crate::cognition::working_set::WorkingSetRegistry,
-    /// Set by the sync reconcile at the live → empty transition; `tick()` awaits
-    /// the lane teardown (`LlamaServerControl::idle`) and clears it.
-    idle_pending: AtomicBool,
     /// The long-lived vision SIDECAR lane (#106, `inference::vision_sidecar`):
     /// a small VL model serving beside a text-only mind so every persona has
     /// eyes. Owned here so it lives across reconciles and its child dies with
@@ -789,6 +855,7 @@ impl ServingDaemonModule {
         });
         let (plan_view_tx, _) = watch::channel(None);
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
+        let (verified_target, _) = watch::channel(None);
         // The operator's pin is durable intent: seed the channel from the store so the
         // FIRST plan is computed under it (cards 3160b3d0 / 9552a01e — every reboot
         // used to lose the pin and the boot planner served whatever fit).
@@ -844,7 +911,7 @@ impl ServingDaemonModule {
         };
         let intent = ServingIntent::new(honoured);
         Self {
-            idle_pending: AtomicBool::new(false),
+            verified_target,
             gpu,
             system,
             resource_daemon,
@@ -888,10 +955,10 @@ impl ServingDaemonModule {
             last_plan_probe: Arc::new(std::sync::Mutex::new(None)),
             working_set: crate::cognition::working_set::global(),
             moe_serving: std::sync::Mutex::new(None),
-            active_artifact: std::sync::Mutex::new(None),
+            active_artifact: Arc::new(std::sync::Mutex::new(None)),
             moe_trace_tail: std::sync::Mutex::new(None),
-            division: std::sync::Mutex::new(None),
-            served_resident: std::sync::Mutex::new(None),
+            division: Arc::new(std::sync::Mutex::new(None)),
+            served_resident: Arc::new(std::sync::Mutex::new(None)),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -1351,6 +1418,53 @@ impl ServingDaemonModule {
     /// hold the receiver and react to plan changes — the ebb/flow seam.
     pub fn subscribe(&self) -> watch::Receiver<Option<ServingPlan>> {
         self.plan_view_tx.subscribe()
+    }
+
+    /// A current, ready, owned launch, preserving its original requested target.
+    /// Unknown adopted origins and superseded/in-flight operations are ineligible.
+    pub fn verified_serving_target(&self) -> Option<VerifiedServingCapture> {
+        if self.reconciling.load(Ordering::Acquire) {
+            return None;
+        }
+        let capture = self.verified_target.borrow().clone()?;
+        if capture.intent_revision != self.intent.snapshot().revision {
+            return None;
+        }
+        let current = verified_capture(
+            self.server.as_ref(),
+            &self.serving_tx.borrow(),
+            capture.intent_revision,
+        )?;
+        (current.launch.identity == capture.launch.identity).then_some(capture)
+    }
+
+    fn acknowledge_verified_target(&self, live: &ServingSnapshot, intent_revision: u64) {
+        if self.intent.snapshot().revision == intent_revision {
+            let _ = self.verified_target.send_replace(verified_capture(
+                self.server.as_ref(),
+                live,
+                intent_revision,
+            ));
+        }
+    }
+
+    /// Admission commits physical unavailability before the first lifecycle await.
+    /// Keeping the incumbent/loading identities preserves resource attribution;
+    /// cancellation can no longer leave an old ready snapshot blocking recovery.
+    fn publish_lifecycle_admission(
+        serving: &watch::Sender<ServingSnapshot>,
+        verified: &watch::Sender<Option<VerifiedServingCapture>>,
+        bus: Option<&Arc<MessageBus>>,
+        loading: Option<&str>,
+    ) {
+        let mut snapshot = serving.borrow().clone();
+        snapshot.ready = false;
+        snapshot.ready_verified_at_ms = None;
+        snapshot.loading_model = loading.map(str::to_string);
+        snapshot.degraded_reason = Some("serving lifecycle transition admitted".into());
+        let _ = verified.send_replace(None);
+        Self::emit_serving(bus, &snapshot);
+        let _ = serving.send_replace(snapshot);
     }
 
     /// Subscribe to the published serving SNAPSHOT — the live `(active_model,
@@ -1931,7 +2045,14 @@ impl ServingDaemonModule {
     /// file path protects its per-model dir and vice versa, whichever
     /// layout the artifact uses.
     fn set_active_artifact(&self, path: Option<std::path::PathBuf>) {
-        let Ok(mut current) = self.active_artifact.lock() else {
+        Self::set_active_artifact_in(&self.active_artifact, path);
+    }
+
+    fn set_active_artifact_in(
+        active: &std::sync::Mutex<Option<std::path::PathBuf>>,
+        path: Option<std::path::PathBuf>,
+    ) {
+        let Ok(mut current) = active.lock() else {
             return; // poisoned: the set fails SAFE (protects everything)
         };
         if *current == path {
@@ -2446,6 +2567,13 @@ impl ServingDaemonModule {
     /// Already serving the desired model & ready → no-op. A reconcile already
     /// in flight → skip (the gate). Otherwise spawn the reconcile.
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
+        let operation = ServingOperation::acquire(self.reconciling.clone())?;
+        let planned = self.plan_tx.borrow().clone();
+        let intent = self.intent.snapshot();
+        if planned.intent_revision != intent.revision {
+            return None;
+        }
+
         // External serving pin (misfit / grid design): when the operator pinned an
         // EXTERNAL OpenAI-compatible endpoint via `LLAMA_SERVER_BASE_URL`, this node
         // does NOT own a local GPU serving lane — it ADOPTS the pinned endpoint. We
@@ -2467,6 +2595,7 @@ impl ServingDaemonModule {
             let serving_tx = self.serving_tx.clone();
             let bus = self.bus.get().cloned();
             return Some(tokio::spawn(async move {
+                let _operation = operation;
                 if let Some(snap) = crate::inference::llama_server::probe_external_serving(
                     crate::inference::llama_server::DEFAULT_SERVING_WAIT,
                 )
@@ -2498,11 +2627,6 @@ impl ServingDaemonModule {
         // single source of truth (task #50). We carry them on the ServingTarget
         // so llama-server's `-c` (= window × lanes) and `--parallel` (= lanes)
         // match exactly what was planned: each slot gets one full served window.
-        let planned = self.plan_tx.borrow().clone();
-        let intent = self.intent.snapshot();
-        if planned.intent_revision != intent.revision {
-            return None;
-        }
         let (desired, served_ctx, lanes) = match planned.plan.as_ref() {
             Some(plan) => (
                 plan.base_model.model_id.clone(),
@@ -2510,28 +2634,55 @@ impl ServingDaemonModule {
                 plan.lanes,
             ),
             None => {
-                // Nothing servable on disk → publish "nothing live" so readers
-                // (and a grid allocator) see the gap and route elsewhere — WITH the
-                // cause named. This is the state a fresh install sits in before any
-                // weights are pulled, and it is the one place an operator most needs
-                // the surface to distinguish "no model on this box yet" from "the
-                // serving daemon is broken". `empty()` rendered both identically.
-                self.set_active_artifact(None);
-                let was_live = self.serving_tx.borrow().active_model.is_some();
-                if was_live {
-                    // An empty plan takes the lane DOWN, not just off the books: the
-                    // server that was serving the now-unservable model must die, or
-                    // "idle" is a lie the VRAM contradicts and the next pin double-spawns
-                    // (5090, 2026-09-06 — BigMama: serving/unload said "freed model from
-                    // VRAM; node is idle" while llama-server stayed alive). Once, at the
-                    // live → empty transition; the guard above is not held across the await.
-                    // This arm is sync (reconcile_to_plan); the teardown awaits in tick().
-                    self.idle_pending.store(true, Ordering::SeqCst);
-                    let flipped = ServingSnapshot::degraded(self.no_candidate_reason());
-                    Self::emit_serving(self.bus.get(), &flipped);
-                    let _ = self.serving_tx.send_replace(flipped);
+                let live = self.serving_tx.borrow();
+                if live.active_model.is_none()
+                    && live.loading_model.is_none()
+                    && self.server.owned_engine().is_none()
+                {
+                    return None;
                 }
-                return None;
+                drop(live);
+                let server = self.server.clone();
+                let serving_tx = self.serving_tx.clone();
+                let verified_target = self.verified_target.clone();
+                let intent_owner = self.intent.clone();
+                let revision = planned.intent_revision;
+                let reason = self.no_candidate_reason();
+                let bus = self.bus.get().cloned();
+                return Some(tokio::spawn(async move {
+                    let _operation = operation;
+                    let current = || intent_owner.snapshot().revision == revision;
+                    if !current() {
+                        return;
+                    }
+                    let admit = || {
+                        let intent = intent_owner.state.borrow();
+                        if intent.revision != revision {
+                            return false;
+                        }
+                        drop(intent);
+                        Self::publish_lifecycle_admission(
+                            &serving_tx,
+                            &verified_target,
+                            bus.as_ref(),
+                            None,
+                        );
+                        true
+                    };
+                    match server.idle_if_current(&admit).await {
+                        Ok(()) => {
+                            let _ = verified_target.send_replace(None);
+                            // An admitted retirement request is not a capacity receipt.
+                            // Publish physical unavailability even if newer intent arrived;
+                            // the next normal owner pass reconciles that newer intent.
+                            let snapshot = ServingSnapshot::degraded(reason);
+                            Self::emit_serving(bus.as_ref(), &snapshot);
+                            let _ = serving_tx.send_replace(snapshot);
+                        }
+                        Err(crate::inference::llama_server::LlamaServerError::Superseded) => {}
+                        Err(e) => tracing::warn!(error = %e, "empty-plan retirement failed"),
+                    }
+                }));
             }
         };
 
@@ -2778,6 +2929,7 @@ impl ServingDaemonModule {
                             "lane is serving BELOW plan (or OVER its decode knee) and has not yet earned a re-home: the evidence must persist, not just appear",
                         );
                     }
+                    self.acknowledge_verified_target(&live, planned.intent_revision);
                     return None;
                 }
                 // A living-persona eval is a co-tenant decode slot on THIS lane
@@ -2814,6 +2966,7 @@ impl ServingDaemonModule {
                     // Streak deliberately NOT reset: the demand is genuinely sustained,
                     // the exam is simply first in line. When it drops its lease the
                     // re-home fires on the next tick instead of re-proving from zero.
+                    self.acknowledge_verified_target(&live, planned.intent_revision);
                     return None;
                 }
                 // SYMMETRIC RECEIPT (BigMama's requirement, 2026-08-06): the defect was
@@ -2986,7 +3139,11 @@ impl ServingDaemonModule {
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
         // the registry can't produce the model the plan named, fail loud (empty
         // snapshot) rather than serving something else.
-        let Some(model) = (self.model_resolver)(&desired) else {
+        let resolved = (self.model_resolver)(&desired);
+        if self.intent.snapshot().revision != planned.intent_revision {
+            return None;
+        }
+        let Some(model) = resolved else {
             crate::probe!(
                 class = "serving.reconcile",
                 desired = desired.as_str(),
@@ -3058,34 +3215,20 @@ impl ServingDaemonModule {
         if self.intent.snapshot().revision != planned.intent_revision {
             return None;
         }
-        if self.reconciling.swap(true, Ordering::AcqRel) {
-            return None;
-        }
 
-        // Division reward attribution (two-speed honesty): record which resident the
-        // spawn ACTUALLY loads so measured tok/s credits the serving tier, never the
-        // bandit's latest unlaunched choice.
-        if let Ok(mut g) = self.served_resident.lock() {
-            *g = target.resident_override.clone();
-        }
-        if let Ok(mut d) = self.division.lock() {
-            if let Some(act) = d.as_mut() {
-                act.set_served_resident(target.resident_override.as_deref());
-            }
-        }
-        // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
-        // touches it — the NvmeServingTierPool must never migrate the GGUF the
-        // engine is loading or serving. Model change swaps the registration.
-        self.set_active_artifact(target.model.gguf_local_path.clone());
-
+        let active_artifact = self.active_artifact.clone();
+        let served_resident = self.served_resident.clone();
+        let division = self.division.clone();
         // Consume any pending force-relaunch the liveness heartbeat raised: it means the
         // heartbeat already saw the live lane fail decode, so this reconcile must re-prove
         // decode even on a child we own (else the owned-child trust re-adopts the wedged
         // lane forever, #175). Read+clear here so exactly one reconcile acts on it.
-        let force_probe = self.force_relaunch.swap(false, Ordering::AcqRel);
+        let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
         let serving_tx = self.serving_tx.clone();
-        let reconciling = self.reconciling.clone();
+        let verified_target = self.verified_target.clone();
+        let intent_owner = self.intent.clone();
+        let revision = planned.intent_revision;
         let bus = self.bus.get().cloned();
         let sidecar_slot = self.vision_sidecar.clone();
         let system = self.system.clone();
@@ -3100,29 +3243,65 @@ impl ServingDaemonModule {
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
         let rehome_cooldown = self.rehome_cooldown.clone();
-        // RAII gate-clear (#214): the `reconciling` flag was set `true` at the top of this
-        // reconcile and MUST clear even if the relaunch task panics or is cancelled
-        // mid-await — otherwise ONE failed relaunch (an OOM spawn under a memory squeeze, a
-        // subprocess error, a panic in `ensure_model_serving`) strands the flag `true`, and
-        // then EVERY future reconcile skips at the `swap(true)` gate above, freezing serving
-        // at its current (possibly floored) window forever. Glass-boxed 2026-07-20: after a
-        // benchmark squeeze released and VRAM returned to 55GB free, serving stayed frozen at
-        // 2048 because the gate leaked on the churn's failed relaunch. `Drop` runs on panic
-        // AND on the happy path, so the gate self-heals by construction — a stuck flag can
-        // never outlive the task that set it.
-        struct GateClear(Arc<AtomicBool>);
-        impl Drop for GateClear {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::Release);
-            }
-        }
         // ARM the discrete footprint arm's baseline: every tick until the lane is ready
         // lowers it to the sampled trough (see the field doc — a single read here sees
         // the dying predecessor).
         self.spawn_baseline_vram.store(u64::MAX, Ordering::Relaxed);
         Some(tokio::spawn(async move {
-            let _gate = GateClear(reconciling);
-            let outcome = ensure_model_serving(server.as_ref(), &target, force_probe).await;
+            let _operation = operation;
+            let current = || intent_owner.snapshot().revision == revision;
+            if !current() {
+                return;
+            }
+            let mut force_probe = ForcedProbe::claim(force_relaunch);
+            let admit = || {
+                // This short borrow is the linearization point with intent writers.
+                // No await: once admitted, a physical transition is allowed to settle.
+                let intent = intent_owner.state.borrow();
+                if intent.revision != revision {
+                    return false;
+                }
+                // Division reward attribution (two-speed honesty): record which resident the
+                // spawn ACTUALLY loads so measured tok/s credits the serving tier, never the
+                // bandit's latest unlaunched choice.
+                if let Ok(mut g) = served_resident.lock() {
+                    *g = target.resident_override.clone();
+                }
+                if let Ok(mut d) = division.lock() {
+                    if let Some(act) = d.as_mut() {
+                        act.set_served_resident(target.resident_override.as_deref());
+                    }
+                }
+                // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
+                // touches it — the NvmeServingTierPool must never migrate the GGUF the
+                // engine is loading or serving. Model change swaps the registration.
+                Self::set_active_artifact_in(
+                    &active_artifact,
+                    target.model.gguf_local_path.clone(),
+                );
+
+                drop(intent);
+                Self::publish_lifecycle_admission(
+                    &serving_tx,
+                    &verified_target,
+                    bus.as_ref(),
+                    Some(&desired),
+                );
+                true
+            };
+            let outcome = ensure_model_serving_if_current(
+                server.as_ref(),
+                &target,
+                force_probe.pending,
+                &admit,
+            )
+            .await;
+            if matches!(outcome, EnsureOutcome::Superseded)
+                || (matches!(outcome, EnsureOutcome::AlreadyServing) && !current())
+            {
+                return;
+            }
+            force_probe.pending = false;
             // EVERY LAUNCH GETS THE SETTLE WINDOW A RE-HOME GETS (9/18, the mirror): the
             // cooldown was armed only at the re-home fire point, so a boot's first spawn
             // could be re-homed 40 s later by its own load transient (the weights counted
@@ -3166,7 +3345,7 @@ impl ServingDaemonModule {
                         }
                     }
                 }
-                EnsureOutcome::Degraded { .. } => 0,
+                EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
             // THE LANE COUNT IS THE ENGINE'S TOO. The ensure path asks `/props` for
             // `total_slots` (2026-08-19: "ask the lane, not our memory of it") and
@@ -3195,7 +3374,7 @@ impl ServingDaemonModule {
                         }
                     }
                 }
-                EnsureOutcome::Degraded { .. } => 0,
+                EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
             // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for
             // a lane this core did not spawn (ADOPTED; every deploy leaves the lane up for
@@ -3292,7 +3471,7 @@ impl ServingDaemonModule {
             // endpoint WITH the reason probed loud, so the observe path fails
             // honestly instead of POSTing pixels a text-only lane would drop.
             let vision = match &outcome {
-                EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } if current() => {
                     let declares_vision =
                         target.model.has(crate::model_registry::Capability::Vision);
                     // The sidecar search, ONCE per reconcile — below it names which
@@ -3354,7 +3533,10 @@ impl ServingDaemonModule {
                         // A VL mind: the main lane IS the vision endpoint. Any
                         // sidecar from a previous plan is redundant — drop it
                         // (its Drop kills the child, RAM freed).
-                        *sidecar_slot.lock().await = None;
+                        let mut slot = sidecar_slot.lock().await;
+                        if current() {
+                            *slot = None;
+                        }
                         Some(crate::inference::vision_sidecar::SidecarLane {
                             base_url: serving_v1_url(),
                             model_id: desired.clone(),
@@ -3370,7 +3552,10 @@ impl ServingDaemonModule {
                             persona_floor = persona_floor.unwrap_or(0) as u64, // unwrap_or: guarded by is_some_and
                             "main lane below the residents' requirement — vision sidecar yields its budget to the lane"
                         );
-                        *sidecar_slot.lock().await = None;
+                        let mut slot = sidecar_slot.lock().await;
+                        if current() {
+                            *slot = None;
+                        }
                         None
                     } else if crate::cognition::serving_plan::solve_window_floor() > 0 {
                         // SOLVE REGIME: the eyes yield (2026-08-29, "take every
@@ -3386,7 +3571,10 @@ impl ServingDaemonModule {
                             class = "serving.vision.sidecar_yields_to_solves",
                             "solve floor standing — vision sidecar yields its budget to a second solve lane"
                         );
-                        *sidecar_slot.lock().await = None;
+                        let mut slot = sidecar_slot.lock().await;
+                        if current() {
+                            *slot = None;
+                        }
                         None
                     } else {
                         use crate::inference::vision_sidecar as sidecar;
@@ -3438,9 +3626,12 @@ impl ServingDaemonModule {
                                 match sidecar::plan_sidecar(false, Ok(cand), free) {
                                     sidecar::SidecarVerdict::Spawn => {
                                         let mut slot = sidecar_slot.lock().await;
-                                        match sidecar::ensure_sidecar(&mut slot, cand).await {
-                                            Ok(lane) => {
-                                                crate::probe!(
+                                        if !current() {
+                                            None
+                                        } else {
+                                            match sidecar::ensure_sidecar(&mut slot, cand).await {
+                                                Ok(lane) => {
+                                                    crate::probe!(
                                                     class = "serving.vision.sidecar_up",
                                                     model = lane.model_id.as_str(),
                                                     base_url = lane.base_url.as_str(),
@@ -3455,8 +3646,9 @@ impl ServingDaemonModule {
                                                     why = why.as_str(),
                                                     "vision sidecar could not come up — this                                                      candidate is benched for the rest of the                                                      boot; the next reconcile tries the next row",
                                                 );
-                                                sidecar::mark_candidate_failed(&cand.model.id);
-                                                None
+                                                    sidecar::mark_candidate_failed(&cand.model.id);
+                                                    None
+                                                }
                                             }
                                         }
                                     }
@@ -3484,7 +3676,7 @@ impl ServingDaemonModule {
                         }
                     }
                 }
-                EnsureOutcome::Degraded { .. } => None,
+                _ => None, // Failed or superseded intent cannot begin sidecar lifecycle work.
             };
             let snapshot = snapshot_from_outcome(
                 &outcome,
@@ -3517,6 +3709,12 @@ impl ServingDaemonModule {
                     crate::commands::genome_share::spawn_bootstrap(model.to_string());
                 }
             }
+            let capture = if current() {
+                verified_capture(server.as_ref(), &snapshot, revision)
+            } else {
+                None
+            };
+            let _ = verified_target.send_replace(capture);
             // Emit on the bus first (fan-out to every subscriber + the grid),
             // then update the in-process watch view.
             Self::emit_serving(bus.as_ref(), &snapshot);
@@ -3528,8 +3726,7 @@ impl ServingDaemonModule {
             // AFTER the publish so a reader that sees `has_reconciled()` is guaranteed
             // to also see the published snapshot, never a torn in-between.
             crate::inference::llama_server::mark_first_reconcile();
-            // `_gate` (GateClear) clears `reconciling` on drop here — and, crucially, also
-            // on any panic/cancel above, which the explicit store used to miss.
+            // The operation permit clears the gate on success, cancellation, or panic.
         }))
     }
 
@@ -6233,6 +6430,7 @@ fn snapshot_from_outcome(
         // (live repro 2026-07-24: Windows spawn failed every tick, status
         // showed null/false with no why).
         EnsureOutcome::Degraded { reason } => ServingSnapshot::degraded(reason.clone()),
+        EnsureOutcome::Superseded => ServingSnapshot::degraded("serving intent superseded".into()),
     }
 }
 
@@ -6344,14 +6542,6 @@ impl ServiceModule for ServingDaemonModule {
         // full tick behind the very guard it exists to defeat.
         self.take_reported_wedge();
         let _ = self.reconcile_to_plan();
-        // An empty plan takes the lane DOWN, not just off the books (5090, 2026-09-06:
-        // serving/unload said "freed model from VRAM; node is idle" while llama-server
-        // stayed alive and the next pin double-spawned). Once per live → empty edge.
-        if self.idle_pending.swap(false, Ordering::SeqCst) {
-            if let Err(e) = self.server.idle().await {
-                tracing::warn!(error = %e, "lane teardown on an empty plan failed — the server may still hold VRAM");
-            }
-        }
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
         // `ready` forever and would never notice an OOM-poisoned backend otherwise. Off the
@@ -7842,6 +8032,11 @@ mod tests {
         /// bumps it to stand in for the serve loop advancing between smoke misses.
         slots_fp: Arc<AtomicU64>,
         paging_endpoint: Option<Arc<crate::inference::slots::EndpointSlots>>,
+        verified_reads: Arc<AtomicUsize>,
+        probe_effect: Option<Arc<dyn Fn() + Send + Sync>>,
+        active: Option<String>,
+        serve_started: Option<Arc<tokio::sync::Notify>>,
+        probe_started: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl FakeServer {
@@ -7855,6 +8050,11 @@ mod tests {
                 wedge: Default::default(),
                 slots_fp: Default::default(),
                 paging_endpoint: None,
+                verified_reads: Arc::new(AtomicUsize::new(0)),
+                probe_effect: None,
+                active: None,
+                serve_started: None,
+                probe_started: None,
             }
         }
     }
@@ -7871,8 +8071,24 @@ mod tests {
             Some(self.wedge.clone())
         }
 
+        fn owned_serving_target(
+            &self,
+        ) -> Option<crate::inference::llama_server::OwnedServingTarget> {
+            self.verified_reads.fetch_add(1, Ordering::SeqCst);
+            None
+        }
         async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
-            Err(LlamaServerError::Unreachable("test: nothing up".into()))
+            if let Some(effect) = &self.probe_effect {
+                effect();
+            }
+            if let Some(started) = &self.probe_started {
+                started.notify_one();
+                std::future::pending::<()>().await;
+            }
+            match &self.active {
+                Some(active) => Ok(Some(active.clone())),
+                None => Err(LlamaServerError::Unreachable("test: nothing up".into())),
+            }
         }
         async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
             Ok(Vec::new())
@@ -7883,6 +8099,10 @@ mod tests {
         }
         async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = &self.serve_started {
+                started.notify_one();
+                std::future::pending::<()>().await;
+            }
             if self.ok {
                 Ok(())
             } else {
@@ -8035,11 +8255,51 @@ mod tests {
         let _ = daemon.serving_tx.send_replace(live);
         // Nothing on disk is servable in a test → the reconcile's empty arm.
         daemon.recompute();
-        daemon.tick().await.expect("tick");
-        assert_eq!(idles.load(Ordering::SeqCst), 1, "the lane is taken down at live → empty");
+        let queued = daemon.reconcile_to_plan().expect("empty-plan operation");
+        assert!(daemon.reconcile_to_plan().is_none(), "one operation owner");
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        assert!(
+            !daemon.reconciling.load(Ordering::Acquire),
+            "abort before first poll releases gate"
+        );
+        assert_eq!(idles.load(Ordering::SeqCst), 0);
+        let superseded = daemon.reconcile_to_plan().expect("queued idle");
+        daemon.intent.set_pin(None, true);
+        superseded.await.unwrap();
+        assert_eq!(
+            idles.load(Ordering::SeqCst),
+            0,
+            "newer intent supersedes queued idle"
+        );
         daemon.recompute();
-        daemon.tick().await.expect("tick");
-        assert_eq!(idles.load(Ordering::SeqCst), 1, "still empty: no second teardown");
+        daemon
+            .reconcile_to_plan()
+            .expect("current idle")
+            .await
+            .unwrap();
+        assert_eq!(
+            idles.load(Ordering::SeqCst),
+            1,
+            "the lane is taken down at live → empty"
+        );
+        daemon.recompute();
+        assert!(daemon.reconcile_to_plan().is_none());
+        assert_eq!(
+            idles.load(Ordering::SeqCst),
+            1,
+            "still empty: no second teardown"
+        );
+        daemon
+            .serving_tx
+            .send_modify(|snapshot| snapshot.loading_model = Some("cancelled-boot".into()));
+        daemon
+            .reconcile_to_plan()
+            .expect("empty intent retires an interrupted load")
+            .await
+            .unwrap();
+        assert_eq!(idles.load(Ordering::SeqCst), 2);
+        assert!(daemon.serving_tx.borrow().loading_model.is_none());
     }
 
     fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {
@@ -8635,6 +8895,109 @@ mod tests {
         assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
         assert!(snap.ready);
         assert_eq!(serves.load(Ordering::SeqCst), 1, "served exactly once");
+        assert!(
+            daemon.verified_serving_target().is_none(),
+            "an unowned fixture cannot invent launch provenance"
+        );
+
+        // A no-op probe never crosses lifecycle admission. New intent during
+        // that probe must prevent downstream publication/sidecar actions too.
+        let intent = ServingIntent::new(None);
+        let changed = intent.clone();
+        let mut server = FakeServer::healthy(serves.clone(), true);
+        server.active = Some("coder-14b".into());
+        server.probe_effect = Some(Arc::new(move || {
+            changed.set_pin(Some("coder-14b".into()), true);
+        }));
+        let mut stale = daemon_with(Arc::new(server));
+        stale.intent = intent;
+        stale.publish_plan(budget, &candidates, &candidates);
+        stale.plan_tx.send_modify(|snapshot| {
+            let plan = snapshot.plan.as_mut().unwrap();
+            plan.served_context_window = 11008;
+            plan.lanes = 1;
+        });
+        let queued = stale.reconcile_to_plan().expect("queued serve");
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        assert!(!stale.reconciling.load(Ordering::Acquire));
+        stale
+            .reconcile_to_plan()
+            .expect("probe reconcile")
+            .await
+            .unwrap();
+        assert!(
+            stale.serving_tx.borrow().active_model.is_none(),
+            "superseded no-op cannot publish"
+        );
+        assert_eq!(
+            serves.load(Ordering::SeqCst),
+            1,
+            "no new lifecycle admission"
+        );
+        assert!(stale.active_artifact.lock().unwrap().is_none());
+
+        // Stop inside the real operation future after admission. The old ready
+        // incumbent must already be unavailable, and cancellation releases ownership.
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let mut server = FakeServer::healthy(serves.clone(), true);
+        server.serve_started = Some(entered.clone());
+        let cancelled = daemon_with(Arc::new(server));
+        cancelled.publish_plan(budget, &candidates, &candidates);
+        let mut incumbent = ready_snapshot();
+        incumbent.active_model = Some("previous-model".into());
+        let _ = cancelled.serving_tx.send_replace(incumbent);
+        *cancelled.pending_model_change.lock().unwrap() = Some("coder-14b".into());
+        cancelled
+            .model_change_streak
+            .store(REHOME_SUSTAINED_TICKS, Ordering::Relaxed);
+        cancelled.force_relaunch.store(true, Ordering::Release);
+        let admitted = cancelled.reconcile_to_plan().expect("admitted serve");
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("operation reaches controlled await");
+        assert!(!cancelled.serving_tx.borrow().ready);
+        assert_eq!(
+            cancelled.serving_tx.borrow().active_model.as_deref(),
+            Some("previous-model")
+        );
+        assert_eq!(
+            cancelled.serving_tx.borrow().loading_model.as_deref(),
+            Some("coder-14b")
+        );
+        admitted.abort();
+        assert!(admitted.await.unwrap_err().is_cancelled());
+        assert!(!cancelled.reconciling.load(Ordering::Acquire));
+        assert!(
+            cancelled.force_relaunch.load(Ordering::Acquire),
+            "cancelled forced probe is still owed"
+        );
+        let retry = cancelled
+            .reconcile_to_plan()
+            .expect("cancellation cannot strand recovery");
+        retry.abort();
+        assert!(retry.await.unwrap_err().is_cancelled());
+
+        // The same forced-probe claim survives cancellation during preflight,
+        // before any lifecycle admission or readiness mutation is permitted.
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let mut server = FakeServer::healthy(serves, true);
+        server.probe_started = Some(entered.clone());
+        let probing = daemon_with(Arc::new(server));
+        probing.publish_plan(budget, &candidates, &candidates);
+        probing.force_relaunch.store(true, Ordering::Release);
+        let task = probing.reconcile_to_plan().expect("preflight probe");
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("operation reaches controlled await");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(probing.force_relaunch.load(Ordering::Acquire));
+        assert!(!probing.reconciling.load(Ordering::Acquire));
+        assert!(
+            probing.serving_tx.borrow().loading_model.is_none(),
+            "no admission before probe completes"
+        );
     }
 
     // what this catches: once the desired model is ready, a subsequent reconcile
@@ -8643,7 +9006,9 @@ mod tests {
     #[tokio::test]
     async fn reconcile_is_noop_when_already_serving() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
+        let server = FakeServer::healthy(serves.clone(), true);
+        let verified_reads = server.verified_reads.clone();
+        let daemon = daemon_with(Arc::new(server));
 
         // Pretend coder-14b is already up and ready.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
@@ -8674,6 +9039,27 @@ mod tests {
             "already serving → no reconcile"
         );
         assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch");
+        let reads = verified_reads.load(Ordering::SeqCst);
+        assert!(
+            reads > 0,
+            "same-model retention considers original provenance"
+        );
+        daemon.intent.set_pin(Some("other-model".into()), true);
+        let revision = daemon.intent.snapshot().revision;
+        daemon.plan_tx.send_modify(|snapshot| {
+            snapshot.intent_revision = revision;
+            snapshot.plan.as_mut().unwrap().base_model.model_id = "other-model".into();
+        });
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "first model change is deferred"
+        );
+        assert_eq!(
+            verified_reads.load(Ordering::SeqCst),
+            reads,
+            "a deferred different model cannot restamp the incumbent capture"
+        );
+        assert!(daemon.verified_serving_target().is_none());
     }
 
     // what this catches: paging quarantine must bypass the unchanged healthy
@@ -9037,13 +9423,8 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false)); // wedged compute path
         let daemon = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: smoke.clone(),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -9080,13 +9461,8 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false));
         let daemon = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: smoke.clone(),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -9125,13 +9501,8 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false));
         let daemon = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: smoke.clone(),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -9171,13 +9542,8 @@ mod tests {
 
         // Fresh decode INSIDE the window → trusted, no probe.
         let mut busy = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves: serves.clone(),
-            ok: true,
             smoke_ok: Arc::new(AtomicBool::new(false)),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves.clone(), true)
         }));
         busy.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
         let _ = busy.serving_tx.send_replace(ready_snapshot());
@@ -9191,13 +9557,8 @@ mod tests {
 
         // Stale decode OUTSIDE the window → no live evidence, probe as usual.
         let mut quiet = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: Arc::new(AtomicBool::new(true)),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         quiet.set_decode_age_source(Arc::new(move || Some(window_ms + 1)));
         let _ = quiet.serving_tx.send_replace(ready_snapshot());
@@ -9223,15 +9584,10 @@ mod tests {
     async fn sustained_real_turn_failures_outrank_a_passing_probe() {
         let serves = Arc::new(AtomicUsize::new(0));
         let mut d = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             // The smoke probe WOULD pass — that is the point: it must not get the
             // chance to vouch for a lane the real workload proves broken.
             smoke_ok: Arc::new(AtomicBool::new(true)),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         // Fresh decode trust too (a partial stream can stamp it) — must ALSO be outranked.
         let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
@@ -9267,14 +9623,10 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let slots_fp = Arc::new(AtomicU64::new(1));
         let mut d = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             // Every smoke probe MISSES — the ghost work holds the slots.
             smoke_ok: Arc::new(AtomicBool::new(false)),
-            wedge: Default::default(),
             slots_fp: slots_fp.clone(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         // Pin both process-global evidence sources to inert test values — the
         // globals are stamped by unrelated tests under full-suite parallelism
@@ -9437,10 +9789,11 @@ mod tests {
         };
         daemon.publish_plan(budget, &[], &[]); // no candidates → plan None
 
-        assert!(
-            daemon.reconcile_to_plan().is_none(),
-            "no plan → no reconcile spawned"
-        );
+        daemon
+            .reconcile_to_plan()
+            .expect("empty plan uses the operation owner")
+            .await
+            .unwrap();
         let snap = daemon.subscribe_serving().borrow().clone();
         assert_eq!(snap.active_model, None, "stale snapshot cleared to empty");
         assert!(!snap.ready);
@@ -9506,6 +9859,19 @@ mod tests {
         let snap: ServingSnapshot = serde_json::from_value((*event.payload).clone()).unwrap(); // test-only decode of the shared bus payload
         assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
         assert!(snap.ready, "emitted snapshot reflects the live model");
+        // find_recent_event consumes newest first. A fast completion must not
+        // coalesce with admission, or remote consumers remain falsely unavailable.
+        let admission = bus
+            .find_recent_event(SERVING_SNAPSHOT_EVENT)
+            .expect("admission must reach bus consumers before completion");
+        let admission: ServingSnapshot =
+            serde_json::from_value((*admission.payload).clone()).unwrap();
+        assert!(!admission.ready);
+        assert_eq!(admission.loading_model.as_deref(), Some("coder-14b"));
+        assert!(
+            bus.find_recent_event(SERVING_SNAPSHOT_EVENT).is_none(),
+            "one admission and one completion"
+        );
     }
 
     // what this catches (the M5, 2026-09-20 02:4xZ): the board attributing 22.8 GB to a
