@@ -478,7 +478,12 @@ mod tests {
     // no restore occurred, failed, or was cancelled; later turns skipped restore.
     #[tokio::test]
     async fn warm_ahead_confirms_only_resident_or_successfully_restored_pages() {
-        use axum::{extract::Path, http::StatusCode, routing::post, Json, Router};
+        use axum::{
+            extract::{Path, Query},
+            http::StatusCode,
+            routing::post,
+            Json, Router,
+        };
         use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
         let mode = Arc::new(AtomicU8::new(0));
@@ -494,7 +499,7 @@ mod tests {
                 let entered = entered.clone();
                 let release = release.clone();
                 let finished = finished.clone();
-                move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
+                move |Path(slot): Path<u32>, Query(query): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>| {
                     let mode = mode.clone();
                     let calls = calls.clone();
                     let entered = entered.clone();
@@ -502,18 +507,20 @@ mod tests {
                     let finished = finished.clone();
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
-                        if mode.load(Ordering::SeqCst) == 1 {
+                        if mode.load(Ordering::SeqCst) == 1 || (mode.load(Ordering::SeqCst) == 7 && slot == 1) {
                             return (StatusCode::BAD_REQUEST, Json(json!({"error": {"code": 400, "type": "invalid_request_error", "message": "Unable to restore slot"}})));
                         }
-                        if mode.load(Ordering::SeqCst) == 2 {
+                        if mode.load(Ordering::SeqCst) == 2 || (mode.load(Ordering::SeqCst) == 5 && slot == 1) {
                             entered.notify_one();
                             release.notified().await;
                             finished.notify_one();
                         }
-                        if mode.load(Ordering::SeqCst) == 3 {
+                        if mode.load(Ordering::SeqCst) == 3 || (mode.load(Ordering::SeqCst) == 6 && slot == 1) {
                             return (StatusCode::OK, Json(json!({"unverified": true})));
                         }
-                        (StatusCode::OK, Json(json!({"id_slot": slot, "filename": body["filename"], "n_restored": 10})))
+                        let receipt_slot = if mode.load(Ordering::SeqCst) == 4 && slot == 1 { slot + 1 } else { slot };
+                        let count = if query.get("action").map(String::as_str) == Some("save") { "n_saved" } else { "n_restored" };
+                        (StatusCode::OK, Json(json!({"id_slot": receipt_slot, "filename": body["filename"], (count): 10})))
                     }
                 }
             }),
@@ -657,7 +664,7 @@ mod tests {
             .start_generation()
             .expect("verified predecessor exit");
         replacement
-            .ready(&root, &new, contract)
+            .ready(&root, &new, contract.clone())
             .expect("new verified generation");
         drop(replacement);
         let pool = endpoint
@@ -707,6 +714,144 @@ mod tests {
         );
         assert!(!endpoint.is_ready());
         assert!(pool.take_resident(slot).0.is_none());
+        // What this catches: a drained checkpoint must confirm every resident,
+        // never carry an old saved bit across a failed write or let cancellation
+        // reopen a backend request whose completion is unknown.
+        let other = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("second resident");
+        let unknown_root = format!("test://checkpoint-unknown-{}", Uuid::new_v4());
+        let unknown = crate::inference::slots::directory().endpoint(&unknown_root);
+        let mut unowned = unknown.transition().await;
+        assert!(unowned
+            .checkpoint_residents(&client, &unknown_root)
+            .await
+            .is_err());
+        drop(unowned);
+        let mut prior = new;
+        for behavior in [0, 7, 6, 4, 5] {
+            let mut checkpointing = endpoint.transition().await;
+            prior.observed_exit();
+            let generation = checkpointing
+                .start_generation()
+                .expect("fixture child replacement");
+            let before = calls.load(Ordering::SeqCst);
+            assert!(
+                checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .is_err(),
+                "a new generation cannot checkpoint its predecessor's ledger"
+            );
+            checkpointing
+                .ready(&root, &generation, contract.clone())
+                .expect("verified replacement");
+            let residents = crate::inference::slots::directory()
+                .get(&root)
+                .flatten()
+                .expect("verified pool");
+            residents.plan_paging(0, key);
+            residents.plan_paging(1, other);
+            residents.note_saved(key);
+            residents.note_saved(other);
+            assert!(checkpointing
+                .checkpoint_residents(&client, &unknown_root)
+                .await
+                .is_err());
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before,
+                "identity refusals issue no HTTP"
+            );
+            mode.store(behavior, Ordering::SeqCst);
+            if behavior == 5 {
+                {
+                    let saving = checkpointing.checkpoint_residents(&client, &root);
+                    tokio::pin!(saving);
+                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        tokio::select! {
+                            _ = &mut saving => panic!("checkpoint completed before fixture release"),
+                            _ = entered.notified() => {}
+                        }
+                    }).await.expect("second save reached fixture");
+                    assert!(
+                        endpoint.admit().await.is_err(),
+                        "writer keeps late turns closed"
+                    );
+                }
+                assert!(
+                    endpoint.paging_recovery_required(),
+                    "cancelled save quarantines"
+                );
+                assert!(checkpointing
+                    .ready(&root, &generation, contract.clone())
+                    .is_err());
+                let refused_at = calls.load(Ordering::SeqCst);
+                assert!(checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .is_err());
+                assert_eq!(calls.load(Ordering::SeqCst), refused_at);
+                release.notify_one();
+                tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
+                    .await
+                    .expect("cancelled fixture drained");
+            } else if behavior == 0 {
+                let receipt = checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .expect("both residents saved");
+                assert!(
+                    receipt.transition_for(&prior).is_err(),
+                    "receipt refuses predecessor"
+                );
+                assert!(receipt.transition_for(&generation).is_ok());
+                assert!(
+                    endpoint.admit().await.is_err(),
+                    "receipt retains closed writer"
+                );
+                generation.observed_exit();
+                assert!(
+                    receipt.transition_for(&generation).is_err(),
+                    "exit invalidates receipt"
+                );
+                drop(receipt);
+            } else {
+                assert!(checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .is_err());
+                assert_eq!(
+                    endpoint.paging_recovery_required(),
+                    behavior != 7,
+                    "only terminal rejection proves completion"
+                );
+                assert!(
+                    !generation.has_exited(),
+                    "save refusal never retires the child"
+                );
+            }
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before + 2,
+                "only attributed slots are saved"
+            );
+            residents.take_resident(0);
+            assert!(
+                residents.plan_paging(0, key).restore,
+                "confirmed first save survives partial failure"
+            );
+            residents.take_resident(1);
+            assert_eq!(
+                residents.plan_paging(1, other).restore,
+                behavior == 0,
+                "failed or unconfirmed overwrite invalidates previous saved eligibility"
+            );
+            drop(checkpointing);
+            assert!(
+                !endpoint.is_ready(),
+                "dropping writer never silently reopens"
+            );
+            prior = generation;
+        }
         server.abort();
     }
 }
