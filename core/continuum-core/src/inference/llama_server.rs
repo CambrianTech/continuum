@@ -669,16 +669,12 @@ pub fn main_lane_placement() -> LanePlacement {
 ///
 /// One ask per process even when the answer is "it did not say", so a box whose engine
 /// is silent does not pay a 10 s help probe on every relaunch.
-async fn ensure_engine_kv_support_recorded(bin: &str) {
+async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::process::Command) {
     static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    let probe = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::process::Command::new(bin).arg("--help").output(),
-    )
-    .await;
+    let probe = tokio::time::timeout(Duration::from_secs(10), command.arg("--help").output()).await;
     let (outcome, support, error) = match probe {
         Ok(Ok(out)) => {
             let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1044,6 +1040,7 @@ struct RetiringPageOwner {
     reserved_dir: Option<PathBuf>,
     // Released only by collect_exited after the actual child reports termination.
     _resource_reservation: Option<crate::resources::LeaseGuard>,
+    _engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
 }
 
 impl PageDirState {
@@ -1090,6 +1087,7 @@ fn retire_page_owner(
         mut child,
         generation,
         resource_reservation,
+        engine_install,
         ..
     } = owned;
     generation.retiring();
@@ -1105,6 +1103,7 @@ fn retire_page_owner(
         generation,
         reserved_dir,
         _resource_reservation: resource_reservation,
+        _engine_install: engine_install,
     });
     guard.collect_exited();
 }
@@ -2160,6 +2159,9 @@ impl Eq for OwnedEngineIdentity {}
 /// This is launch provenance, not a fresh health check or resource reservation.
 #[derive(Clone)]
 pub struct OwnedServingTarget {
+    // Original application receipt only; model content and platform dependencies
+    // are not certified by it. Kept private until exact-restore composition.
+    _engine_install_receipt: Option<crate::inference::engine_install::EngineInstallReceipt>,
     pub identity: OwnedEngineIdentity,
     pub target: ServingTarget,
     /// Selected program spelling; a PATH-only name is not an immutable binary identity.
@@ -2886,6 +2888,7 @@ struct OwnedEngine {
     generation: crate::inference::slots::EngineGeneration,
     verified_target: Option<OwnedServingTarget>,
     resource_reservation: Option<crate::resources::LeaseGuard>,
+    engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
 }
 
 /// Owns the supervised `llama-server` child. One per host. `serve` kills any
@@ -3072,6 +3075,7 @@ impl LlamaServerProcess {
         &self,
         child: tokio::process::Child,
         generation: crate::inference::slots::EngineGeneration,
+        engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
     ) {
         let mut owned = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic mutating the owned child.
         *owned = Some(OwnedEngine {
@@ -3079,6 +3083,7 @@ impl LlamaServerProcess {
             generation,
             verified_target: None,
             resource_reservation: self.pending_resource_reservation.lock().take(),
+            engine_install,
         });
     }
 
@@ -3975,8 +3980,68 @@ impl LlamaServerControl for LlamaServerProcess {
             }
         }
 
+        // Cold application hashing stays off runtime workers and before any
+        // endpoint mutation. Legacy launches keep their existing loader behavior.
+        let engine_install =
+            crate::inference::engine_install::EngineInstallReceipt::prepare(self.bin.clone())
+                .await
+                .map_err(LlamaServerError::Spawn)?;
+        let engine_command = || -> Result<tokio::process::Command, LlamaServerError> {
+            match &engine_install {
+                Some(receipt) => receipt.command().map_err(LlamaServerError::Spawn),
+                None => Ok(tokio::process::Command::new(&self.bin)),
+            }
+        };
+
         let (host, port) = split_host_port(&self.root);
 
+        // Resolve path inputs once while the original endpoint is untouched.
+        // Receipted commands use a controlled cwd; relative paths are unsupported
+        // there and must be refused before retiring the current generation.
+        let resolved_mmproj =
+            crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
+        let mtp_draft =
+            crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model);
+        let slot_save_dir = kv_page_dir(
+            &target.model.id,
+            target.served_total_ctx() / target.parallel_lanes().max(1),
+        );
+        let moe_paths = if target.expert_placement.is_some() {
+            moe_glass_box_paths(port)
+        } else {
+            None
+        };
+        if let Some(receipt) = &engine_install {
+            receipt
+                .require_absolute(&gguf)
+                .map_err(LlamaServerError::Spawn)?;
+            receipt
+                .require_absolute(&slot_save_dir)
+                .map_err(LlamaServerError::Spawn)?;
+            for path in target
+                .adapters
+                .iter()
+                .map(|a| &a.path)
+                .chain(target.resident_override.iter())
+                .chain(resolved_mmproj.iter())
+                .chain(mtp_draft.iter())
+            {
+                receipt
+                    .require_absolute(path)
+                    .map_err(LlamaServerError::Spawn)?;
+            }
+            if let Some(paths) = &moe_paths {
+                for path in [&paths.capture, &paths.plan, &paths.trace] {
+                    receipt
+                        .require_absolute(path)
+                        .map_err(LlamaServerError::Spawn)?;
+                }
+            }
+        }
+
+        if let Some(receipt) = &engine_install {
+            receipt.confirm().await.map_err(LlamaServerError::Spawn)?;
+        }
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
         let transition = endpoint
             .transition_if(current)
@@ -4099,7 +4164,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // Ask the ENGINE what KV cache types its build accepts, before deciding. Once
         // per process, bounded, with a named outcome — every probe on a launch path
         // gets both ([[every-probe-on-a-boot-or-launch-path-gets-a-bound-and-a-named-outcome]]).
-        ensure_engine_kv_support_recorded(&self.bin).await;
+        ensure_engine_kv_support_recorded(&self.bin, engine_command()?).await;
         // THE KV CACHE TYPE IS A DECISION, NOT A VARIABLE A HUMAN ONCE EXPORTED
         // (2026-09-20). This used to be two raw `config_env` reads: unset →
         // no `--cache-type-k/v` flag at all (the engine's f16 default, 65,536 B/token
@@ -4170,8 +4235,6 @@ impl LlamaServerControl for LlamaServerProcess {
         // around one model but many"): the row's `serving.mmproj_on_main_lane`
         // decides. Default FALSE (text-only main lane, cache_reuse alive); a
         // VL-first deployment opts in per model and pays the reuse cost knowingly.
-        let resolved_mmproj =
-            crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model);
         // THE ONLY EYES ON THE NODE GO ON THE MAIN LANE (2026-09-18, the 5090 after
         // its reset): Qwen3.8-27B's projector was on disk and resolved, this withhold
         // handed sight to "the sidecar", and the sidecar search — which rightly never
@@ -4235,7 +4298,6 @@ impl LlamaServerControl for LlamaServerProcess {
                  the Vision capability so the row stops claiming sight."
             );
         }
-        let mtp_draft = crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model);
 
         // Slice-3 resolution, same rule as above: look things up HERE, let `lane_args`
         // decide what they mean on a command line.
@@ -4254,7 +4316,6 @@ impl LlamaServerControl for LlamaServerProcess {
         // relaunch that changed geometry orphans its old pages, and the spawn
         // is the one place that knows the new truth. Tracked + eviction-decided
         // in system_resources (the no-new-cache-dir-without-eviction law).
-        let slot_save_dir = kv_page_dir(&target.model.id, total_ctx / lanes.max(1));
         // Remember this geometry ACROSS RUNS: the next boot's plan serves it first, so
         // the pages under this dir are still restorable after a reboot.
         // The geometry is remembered when the launch SETTLES (serving_daemon: cooldown
@@ -4323,7 +4384,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // and is inherited untouched (config over convention — the child gets
         // the parent's env by default; we only fill the ABSENT case).
         if target.expert_placement.is_some() {
-            if let Some(gb) = moe_glass_box_paths(port) {
+            if let Some(gb) = &moe_paths {
                 invocation.inherit_or_default_env(
                     "GGML_MOE_CAPTURE_FILE",
                     gb.capture.as_os_str(),
@@ -4379,7 +4440,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // launch proceeds (the spawn below has its own failure shape).
         let version = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            tokio::process::Command::new(&self.bin).arg("--version").output(),
+            engine_command()?.arg("--version").output(),
         )
         .await
         {
@@ -4429,9 +4490,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // hung → CPU placement, said out loud. See inference/backend_receipt.rs.
         let devices_probe = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            tokio::process::Command::new(&self.bin)
-                .arg("--list-devices")
-                .output(),
+            engine_command()?.arg("--list-devices").output(),
         )
         .await;
         let receipt = match devices_probe {
@@ -4497,7 +4556,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // Apply exactly the finalized data retained with the owned readiness receipt.
         // Inherited keys are intentionally not set here; the child keeps normal
         // process-environment inheritance, including values unknown to this receipt.
-        let mut cmd = tokio::process::Command::new(&self.bin);
+        let mut cmd = engine_command()?;
         cmd.args(&invocation.args);
         for (key, value) in &invocation.envs {
             cmd.env(key, value);
@@ -4511,6 +4570,11 @@ impl LlamaServerControl for LlamaServerProcess {
         // to be born into. Windows has no process groups here; ownership does the job.
         #[cfg(unix)]
         cmd.process_group(0);
+        if let Some(receipt) = &engine_install {
+            receipt.confirm().await.map_err(LlamaServerError::Spawn)?;
+        }
+        // Clone before OS spawn, so allocation cannot strand an uninstalled child.
+        let child_install = engine_install.clone();
         // Admit the generation before creating a child: a refused predecessor
         // cannot leave a newly spawned process outside the retained owner.
         let generation = transition
@@ -4525,7 +4589,7 @@ impl LlamaServerControl for LlamaServerProcess {
         };
         let child_pid = child.id();
         let child_stderr = child.stderr.take();
-        self.install_child(child, generation.clone());
+        self.install_child(child, generation.clone(), child_install);
         // Launch arguments are evidence of what we requested, not a readback of
         // cache capacity or occupancy. Adopted engines do not pass this seam.
         crate::probe!(
@@ -4836,6 +4900,9 @@ impl LlamaServerControl for LlamaServerProcess {
                 "engine readiness lacks live slot geometry".into(),
             ));
         }
+        if let Some(receipt) = &engine_install {
+            receipt.confirm().await.map_err(LlamaServerError::Spawn)?;
+        }
         // Cold lifecycle metadata for paths already resolved by this launcher.
         // If any revision is unreadable (including a PATH-only engine name), do
         // not carry saved eligibility across engines. Never probe to rediscover it.
@@ -4864,7 +4931,14 @@ impl LlamaServerControl for LlamaServerProcess {
                 },
             )
             .map_err(LlamaServerError::Spawn)?;
-        self.record_verified_target(&generation, target, &invocation, context, slots);
+        self.record_verified_target(
+            &generation,
+            target,
+            &invocation,
+            engine_install,
+            context,
+            slots,
+        );
         Ok(())
     }
 }
@@ -4875,6 +4949,7 @@ impl LlamaServerProcess {
         generation: &crate::inference::slots::EngineGeneration,
         target: &ServingTarget,
         invocation: &crate::inference::lane_args::LaneInvocation,
+        engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
         context: u32,
         lanes: u32,
     ) {
@@ -4884,6 +4959,7 @@ impl LlamaServerProcess {
             .filter(|owned| owned.generation.same_engine(generation))
         {
             owned.verified_target = Some(OwnedServingTarget {
+                _engine_install_receipt: engine_install,
                 identity: OwnedEngineIdentity {
                     owner: Arc::downgrade(&self.child),
                     generation: generation.clone(),
@@ -5075,14 +5151,85 @@ mod tests {
         assert!(child.try_wait().expect("child status").is_none());
         let process = LlamaServerProcess::with_root("http://127.0.0.1:1".into());
         *process.pending_resource_reservation.lock() = Some(reserve());
+        #[cfg(windows)]
+        let mut process = process;
         let endpoint = crate::inference::slots::directory().endpoint(&process.root);
         let transition = endpoint.transition().await;
         let generation = transition
             .start_generation()
             .expect("fixture engine generation");
-        process.install_child(child, generation.clone());
+        process.install_child(child, generation.clone(), None);
         drop(transition);
         *process.retained_page_dir.lock() = Some(reservation);
+        #[cfg(windows)]
+        {
+            use sha2::Digest;
+            // Relative adapter paths are valid in the core cwd. A receipted
+            // command must refuse them BEFORE touching this real incumbent.
+            let engine = root.path().canonicalize().unwrap().join("receipt-engine");
+            std::fs::create_dir(&engine).unwrap();
+            let program = engine.join("llama-server.exe");
+            std::fs::write(&program, b"fixture-engine").unwrap();
+            let descriptor = serde_json::json!({
+                "schema": 1, "source_revision": "0123456789012345678901234567890123456789",
+                "backend": "cpu", "build_contract": "static-local-backends-v1",
+                "runtime_origin": "installed-toolkit-bin-snapshot",
+                "platform_contract": "windows-system32-nvidia-driver-v1",
+                "files": {"llama-server.exe": format!("{:x}", sha2::Sha256::digest(b"fixture-engine"))}
+            });
+            std::fs::write(
+                engine.join("engine-install.json"),
+                serde_json::to_vec(&descriptor).unwrap(),
+            )
+            .unwrap();
+            let relative_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+            std::fs::write(relative_root.path().join("adapter.gguf"), b"adapter").unwrap();
+            let weights = engine.join("model.gguf");
+            std::fs::write(&weights, b"model").unwrap();
+            let mut requested = target("relative-receipted-input");
+            requested.model.gguf_local_path = Some(weights);
+            requested.adapters.push(AdapterEntry {
+                alias: "relative".into(),
+                path: PathBuf::from(relative_root.path().file_name().unwrap()).join("adapter.gguf"),
+            });
+            let original =
+                std::mem::replace(&mut process.bin, program.to_string_lossy().into_owned());
+            let admitted = std::sync::atomic::AtomicBool::new(false);
+            std::fs::write(engine.join("engine-install.pending"), b"interrupted copy").unwrap();
+            let incomplete = process
+                .serve_if_current(&requested, &|| {
+                    admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                    true
+                })
+                .await;
+            assert!(
+                matches!(incomplete, Err(LlamaServerError::Spawn(ref why)) if why.contains("publication is incomplete"))
+            );
+            assert!(!admitted.load(std::sync::atomic::Ordering::SeqCst));
+            std::fs::remove_file(engine.join("engine-install.pending")).unwrap();
+            let result = process
+                .serve_if_current(&requested, &|| {
+                    admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                    true
+                })
+                .await;
+            process.bin = original;
+            assert!(
+                matches!(result, Err(LlamaServerError::Spawn(ref why)) if why.contains("requires absolute model/config"))
+            );
+            assert!(!admitted.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(!generation.has_exited());
+            assert!(process
+                .child
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .child
+                .try_wait()
+                .unwrap()
+                .is_none());
+        }
         let launch_target = target("fixture-owned-launch");
         assert!(
             process.owned_serving_target().is_none(),
@@ -5106,7 +5253,7 @@ mod tests {
         );
         invocation.constrain_to_cpu();
         let launched = invocation.clone();
-        process.record_verified_target(&generation, &launch_target, &invocation, 11008, 4);
+        process.record_verified_target(&generation, &launch_target, &invocation, None, 11008, 4);
         // A later resolved choice cannot mutate the already verified generation.
         invocation.args.push("--different-future-policy".into());
         let recorded = process
@@ -5287,7 +5434,7 @@ mod tests {
         let replacement_generation = transition
             .start_generation()
             .expect("verified predecessor exit");
-        process.install_child(replacement, replacement_generation.clone());
+        process.install_child(replacement, replacement_generation.clone(), None);
         drop(transition);
         assert!(matches!(
             process.retire_owned_engine(&identity).await,
@@ -5355,7 +5502,7 @@ mod tests {
             let lane = EphemeralServingLane::with_reservation(process, 1, Some(reserve()));
             let mut child = command.spawn().expect("borrower child");
             let input = child.stdin.take().expect("keep borrower alive");
-            lane.proc.install_child(child, generation.clone());
+            lane.proc.install_child(child, generation.clone(), None);
             drop(transition);
             assert_eq!(held(), 6_000);
             let operation = async move {
