@@ -6532,6 +6532,7 @@ impl ServiceModule for ServingDaemonModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
+        crate::inference::llama_server::collect_retired_engines();
         // The plan is DECIDED on the memory authority's tick now (MEMORY-AUTHORITY-DAEMON:
         // `register_planner_on_authority_tick` runs `recompute()` as an `on_tick` observer,
         // publishing to `plan_tx`) — serving no longer samples memory on its own tick. This

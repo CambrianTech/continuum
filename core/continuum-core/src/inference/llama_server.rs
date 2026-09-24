@@ -1042,6 +1042,8 @@ struct RetiringPageOwner {
     // None means the registry carried the directory, but its current readability
     // and OS identity lookup are not proof that this owned child has exited.
     reserved_dir: Option<PathBuf>,
+    // Released only by collect_exited after the actual child reports termination.
+    _resource_reservation: Option<crate::resources::LeaseGuard>,
 }
 
 impl PageDirState {
@@ -1087,6 +1089,7 @@ fn retire_page_owner(
     let OwnedEngine {
         mut child,
         generation,
+        resource_reservation,
         ..
     } = owned;
     generation.retiring();
@@ -1101,8 +1104,15 @@ fn retire_page_owner(
         child,
         generation,
         reserved_dir,
+        _resource_reservation: resource_reservation,
     });
     guard.collect_exited();
+}
+
+/// Poll the existing retained-child collector from the serving owner's tick.
+/// Unknown status retains both page ownership and the child's resource lease.
+pub(crate) fn collect_retired_engines() {
+    PAGE_DIR_GUARD.lock().collect_exited();
 }
 
 /// RAII reservation of a page dir for a spawn in flight, taken the instant the dir is
@@ -2875,6 +2885,7 @@ struct OwnedEngine {
     child: tokio::process::Child,
     generation: crate::inference::slots::EngineGeneration,
     verified_target: Option<OwnedServingTarget>,
+    resource_reservation: Option<crate::resources::LeaseGuard>,
 }
 
 /// Owns the supervised `llama-server` child. One per host. `serve` kills any
@@ -2889,6 +2900,8 @@ pub struct LlamaServerProcess {
     /// The live child, if one is running. `std::sync::Mutex` (not tokio) because
     /// it is held only for the brief swap/kill, never across an await.
     child: Arc<StdMutex<Option<OwnedEngine>>>,
+    /// Before OS spawn only; transferred atomically to the actual owned child.
+    pending_resource_reservation: parking_lot::Mutex<Option<crate::resources::LeaseGuard>>,
     /// The LoRA genome set (sorted paths) the CURRENT child was launched with —
     /// the truthful record of what `/lora-adapters` holds, since llama.cpp has no
     /// API to query it. `ensure_model_serving` compares this against the desired
@@ -3007,6 +3020,7 @@ impl LlamaServerProcess {
             bin: server_bin(),
             client,
             child: Arc::new(StdMutex::new(None)),
+            pending_resource_reservation: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
@@ -3036,6 +3050,7 @@ impl LlamaServerProcess {
             bin: server_bin(),
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),
+            pending_resource_reservation: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
@@ -3051,7 +3066,23 @@ impl LlamaServerProcess {
         }
     }
 
-    /// Signal the owned child, retaining its pages until its handle proves exit.
+    /// No await between OS spawn and this transfer: cancellation/readiness failure
+    /// cannot release accounting independently of the child that consumes it.
+    fn install_child(
+        &self,
+        child: tokio::process::Child,
+        generation: crate::inference::slots::EngineGeneration,
+    ) {
+        let mut owned = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic mutating the owned child.
+        *owned = Some(OwnedEngine {
+            child,
+            generation,
+            verified_target: None,
+            resource_reservation: self.pending_resource_reservation.lock().take(),
+        });
+    }
+
+    /// Signal the owned child, retaining pages and resources until verified exit.
     fn kill_child(&self) {
         self.kill_child_with(tokio::process::Child::start_kill);
     }
@@ -3296,8 +3327,8 @@ impl Drop for LlamaServerProcess {
 ///
 /// The live persona lane (the global [`serving_root`] snapshot) is never
 /// touched: this spawns a SECOND server on a free port scanned up from a
-/// caller-chosen base, and the child dies when the lane is dropped (inherited
-/// from [`LlamaServerProcess`]'s `Drop`). That isolation is exactly what
+/// caller-chosen base. Dropping the lane requests retirement; the retained child
+/// owner releases its reservation only after observed exit. That isolation is exactly what
 /// [`crate::cognition::eval`]'s genome A/B needs — the humane-eval invariant
 /// (#59) is "measure a copy, never degrade the living persona", and you cannot
 /// measure a gene against its forged base if doing so re-homes the model the
@@ -3459,6 +3490,16 @@ impl EphemeralServingLane {
     ///    device budget). Refusal is LOUD and returns an error — never a quiet second
     ///    engine.
     pub async fn spawn(target: &ServingTarget, base_port: u16) -> Result<Self, LlamaServerError> {
+        Self::spawn_with_reservation(target, base_port, None).await
+    }
+
+    /// Transfer the governed reservation to the process owner before process startup
+    /// awaits. Failed/cancelled startup and normal teardown retain it until exit.
+    pub(crate) async fn spawn_with_reservation(
+        target: &ServingTarget,
+        base_port: u16,
+        reservation: Option<crate::resources::LeaseGuard>,
+    ) -> Result<Self, LlamaServerError> {
         // Held across the spawn await, so a second ephemeral spawn cannot interleave and
         // land on `first_free_port + 1`. A tokio mutex because it spans `.await` — never
         // a std lock across await (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
@@ -3476,7 +3517,7 @@ impl EphemeralServingLane {
         }
         let port = first_free_port(base_port);
         let root = format!("http://{}:{}", DEFAULT_HOST, port);
-        let proc = LlamaServerProcess::with_root(root);
+        let lane = Self::with_reservation(LlamaServerProcess::with_root(root), port, reservation);
         // HARD wall-clock cap on the WHOLE bring-up. `wait_ready`'s budget only
         // bounds the /health poll, and its deadline is checked BETWEEN attempts — so a
         // hang INSIDE an attempt (a stalled `decode_smoke_ok`, a wedged model-mmap, a
@@ -3492,7 +3533,7 @@ impl EphemeralServingLane {
         // a co-resident cold 24B warmup exceeded the old 90s inner budget; the fix raised
         // the inner budget, so this outer cap must follow or it clips the warmup at 120s).
         let spawn_cap = EPHEMERAL_READY_TIMEOUT + Duration::from_secs(30);
-        match tokio::time::timeout(spawn_cap, proc.serve(target)).await {
+        match tokio::time::timeout(spawn_cap, lane.proc.serve(target)).await {
             Ok(res) => res?,
             Err(_) => {
                 return Err(LlamaServerError::NotReady(
@@ -3503,7 +3544,16 @@ impl EphemeralServingLane {
                 ));
             }
         }
-        Ok(Self { proc, port })
+        Ok(lane)
+    }
+
+    fn with_reservation(
+        proc: LlamaServerProcess,
+        port: u16,
+        reservation: Option<crate::resources::LeaseGuard>,
+    ) -> Self {
+        *proc.pending_resource_reservation.lock() = reservation;
+        Self { proc, port }
     }
 
     /// The OpenAI-compatible `/v1` base url a persona's inference adapter points
@@ -4461,12 +4511,21 @@ impl LlamaServerControl for LlamaServerProcess {
         // to be born into. Windows has no process groups here; ownership does the job.
         #[cfg(unix)]
         cmd.process_group(0);
-        let mut child = cmd
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
+        // Admit the generation before creating a child: a refused predecessor
+        // cannot leave a newly spawned process outside the retained owner.
+        let generation = transition
+            .start_generation()
+            .map_err(LlamaServerError::Spawn)?;
+        let mut child = match cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                generation.observed_exit(); // No child was created for this generation.
+                return Err(LlamaServerError::Spawn(format!("{}: {error}", self.bin)));
+            }
+        };
         let child_pid = child.id();
+        let child_stderr = child.stderr.take();
+        self.install_child(child, generation.clone());
         // Launch arguments are evidence of what we requested, not a readback of
         // cache capacity or occupancy. Adopted engines do not pass this seam.
         crate::probe!(
@@ -4511,12 +4570,15 @@ impl LlamaServerControl for LlamaServerProcess {
             )),
             None => offload_watch,
         };
-        
-        let watch: Box<dyn super::child_log::LineWatch> = Box::new(super::placement_watch::ChainWatch(
-            Box::new(super::debug_build_watch::DebugBuildWatch::new(debug_flag.clone())),
-            watch,
-        ));
-match (child.stderr.take(), log_path) {
+
+        let watch: Box<dyn super::child_log::LineWatch> =
+            Box::new(super::placement_watch::ChainWatch(
+                Box::new(super::debug_build_watch::DebugBuildWatch::new(
+                    debug_flag.clone(),
+                )),
+                watch,
+            ));
+        match (child_stderr, log_path) {
             (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path, watch),
             (Some(_), None) => tracing::warn!(
                 probe_class = "serving.llama.stderr_unlogged",
@@ -4537,7 +4599,7 @@ match (child.stderr.take(), log_path) {
         // serve: the server is up and serving; the pidfile is a recovery aid, not a
         // serving precondition. Surface it loud (probe) without aborting.
         if self.is_live_lane {
-            match child.id() {
+            match child_pid {
                 Some(pid) => {
                     if let Err(e) = crate::inference::lane_pidfile::write(pid) {
                         crate::probe!(
@@ -4562,7 +4624,7 @@ match (child.stderr.take(), log_path) {
         // port; the registry is what closes the ephemeral-lane leak. Same as the
         // pidfile, a write failure only DISARMS future reclaim for this lane — it
         // never fails the serve.
-        if let Some(pid) = child.id() {
+        if let Some(pid) = child_pid {
             let role = if self.is_live_lane {
                 crate::inference::lane_registry::LaneRole::Live
             } else {
@@ -4592,17 +4654,6 @@ match (child.stderr.take(), log_path) {
             }
         }
 
-        let generation = transition
-            .start_generation()
-            .map_err(LlamaServerError::Spawn)?;
-        {
-            let mut owned = self.child.lock().unwrap(); // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
-            *owned = Some(OwnedEngine {
-                child,
-                generation: generation.clone(),
-                verified_target: None,
-            });
-        }
         // A reservation the handoff could not release (record write failed) lives
         // as long as the child does — beside it, not in this frame.
         *self.retained_page_dir.lock() = page_dir_reservation
@@ -4969,6 +5020,33 @@ mod tests {
             let _ = std::io::stdin().read(&mut byte);
             return;
         }
+        let resources = crate::resources::ResourceDaemon::start(
+            vec![Arc::new(crate::resources::MockCapacitySource::new(
+                crate::resources::ResourceKind::Vram,
+                10_000,
+            ))],
+            vec![],
+            crate::resources::DaemonConfig::default(),
+        );
+        let reserve = || {
+            resources
+                .acquire_guarded(&crate::resources::LeaseRequest {
+                    consumer_id: "owned-child-fixture".into(),
+                    kind: crate::resources::ResourceKind::Vram,
+                    bytes: 6_000,
+                    ttl_ms: 60_000,
+                    reclaim_policy: crate::resources::ReclaimPolicy::Pinned,
+                })
+                .expect("fixture capacity grant")
+        };
+        let held = || {
+            resources
+                .board()
+                .leases
+                .iter()
+                .map(|l| l.bytes)
+                .sum::<u64>()
+        };
         let root = tempfile::tempdir().expect("isolated pages");
         let registry = tempfile::tempdir().expect("isolated registry");
         let old = root.path().join("retirement-model--c32768");
@@ -4996,16 +5074,13 @@ mod tests {
         let input = child.stdin.take().expect("child input held open");
         assert!(child.try_wait().expect("child status").is_none());
         let process = LlamaServerProcess::with_root("http://127.0.0.1:1".into());
+        *process.pending_resource_reservation.lock() = Some(reserve());
         let endpoint = crate::inference::slots::directory().endpoint(&process.root);
         let transition = endpoint.transition().await;
         let generation = transition
             .start_generation()
             .expect("fixture engine generation");
-        *process.child.lock().expect("fixture child lock") = Some(OwnedEngine {
-            child,
-            generation: generation.clone(),
-            verified_target: None,
-        });
+        process.install_child(child, generation.clone());
         drop(transition);
         *process.retained_page_dir.lock() = Some(reservation);
         let launch_target = target("fixture-owned-launch");
@@ -5125,6 +5200,11 @@ mod tests {
             process.owned_serving_target().is_none(),
             "retired ownership cannot be advertised as current launch"
         );
+        assert_eq!(
+            held(),
+            6_000,
+            "signal failure must retain the real resource grant"
+        );
         drop(receipt.clone()); // Dropping a requester's observation cannot abandon the child.
         {
             let mut guard = PAGE_DIR_GUARD.lock();
@@ -5143,6 +5223,7 @@ mod tests {
             sweep_stale_page_generations_guarded_in(&current, registry.path()),
             Some(0)
         );
+        assert_eq!(held(), 6_000, "unknown status cannot release capacity");
         assert!(old.join("page").is_file());
         {
             let mut guard = PAGE_DIR_GUARD.lock();
@@ -5189,6 +5270,7 @@ mod tests {
             Some(1)
         );
         assert!(!old.exists());
+        assert_eq!(held(), 0, "observed child exit releases its grant");
         assert_eq!(
             process.observe_engine_retirement(&receipt),
             Ok(EngineRetirementStatus::Exited)
@@ -5205,11 +5287,7 @@ mod tests {
         let replacement_generation = transition
             .start_generation()
             .expect("verified predecessor exit");
-        *process.child.lock().unwrap() = Some(OwnedEngine {
-            child: replacement,
-            generation: replacement_generation.clone(),
-            verified_target: None,
-        });
+        process.install_child(replacement, replacement_generation.clone());
         drop(transition);
         assert!(matches!(
             process.retire_owned_engine(&identity).await,
@@ -5264,6 +5342,93 @@ mod tests {
             guard.collect_exited();
         }
         assert!(replacement_receipt.identity.generation.has_exited());
+
+        // What this catches: unwinding the real ephemeral owner after child
+        // installation (error, timeout, cancellation or normal end) must move
+        // BOTH child and grant into retirement, not merely signal then free it.
+        for outcome in ["error", "timeout", "cancel", "complete"] {
+            let process =
+                LlamaServerProcess::with_root(format!("test://borrower-{}", uuid::Uuid::new_v4()));
+            let endpoint = crate::inference::slots::directory().endpoint(&process.root);
+            let transition = endpoint.transition().await;
+            let generation = transition.start_generation().expect("borrower generation");
+            let lane = EphemeralServingLane::with_reservation(process, 1, Some(reserve()));
+            let mut child = command.spawn().expect("borrower child");
+            let input = child.stdin.take().expect("keep borrower alive");
+            lane.proc.install_child(child, generation.clone());
+            drop(transition);
+            assert_eq!(held(), 6_000);
+            let operation = async move {
+                let _owner = lane;
+                match outcome {
+                    "error" => Err::<(), _>("readiness refused"),
+                    "complete" => Ok(()),
+                    _ => std::future::pending().await,
+                }
+            };
+            match outcome {
+                "error" => assert!(operation.await.is_err()),
+                "complete" => assert!(operation.await.is_ok()),
+                "timeout" => assert!(tokio::time::timeout(
+                    std::time::Duration::from_millis(1),
+                    operation
+                )
+                .await
+                .is_err()),
+                "cancel" => {
+                    let mut operation = Box::pin(operation);
+                    assert!(futures::poll!(&mut operation).is_pending());
+                    drop(operation);
+                }
+                _ => unreachable!(),
+            }
+            let mut owner = {
+                let mut guard = PAGE_DIR_GUARD.lock();
+                // A very fast child can already have exited during Drop. Only
+                // that actual receipt permits release; no elapsed-time assertion.
+                assert_eq!(
+                    held(),
+                    if generation.has_exited() { 0 } else { 6_000 },
+                    "{outcome} must not free capacity before observed exit"
+                );
+                guard
+                    .retiring
+                    .iter()
+                    .position(|owner| owner.generation.same_engine(&generation))
+                    .map(|index| guard.retiring.swap_remove(index))
+            };
+            drop(input);
+            if let Some(owner) = owner.as_mut() {
+                tokio::time::timeout(std::time::Duration::from_secs(10), owner.child.wait())
+                    .await
+                    .expect("borrower exits")
+                    .expect("borrower exit status");
+            }
+            if let Some(owner) = owner {
+                PAGE_DIR_GUARD.lock().retiring.push(owner);
+            }
+            collect_retired_engines();
+            assert!(generation.has_exited());
+            assert_eq!(
+                held(),
+                0,
+                "collector releases after actual {outcome} child exit"
+            );
+        }
+
+        // Cancellation before OS spawn has no child to retain the reservation.
+        let lane = EphemeralServingLane::with_reservation(
+            LlamaServerProcess::with_root("test://unspawned-borrower".into()),
+            1,
+            Some(reserve()),
+        );
+        let mut unspawned = Box::pin(async move {
+            let _owner = lane;
+            std::future::pending::<()>().await;
+        });
+        assert!(futures::poll!(&mut unspawned).is_pending());
+        drop(unspawned);
+        assert_eq!(held(), 0, "no child exists before OS spawn");
     }
 
     // what this catches: a debug llama-server hosting a lane silently (BigMama's
