@@ -2152,6 +2152,11 @@ impl Eq for OwnedEngineIdentity {}
 pub struct OwnedServingTarget {
     pub identity: OwnedEngineIdentity,
     pub target: ServingTarget,
+    /// Selected program spelling; a PATH-only name is not an immutable binary identity.
+    pub engine_program: String,
+    /// Final explicit arguments and managed environment. Inherited values and
+    /// artifact contents are not pinned; this is not authority to restore.
+    pub invocation: crate::inference::lane_args::LaneInvocation,
     pub observed_context_window: u32,
     pub observed_lanes: u32,
     pub launched_host_prompt_cache_mib: u32,
@@ -4221,8 +4226,7 @@ impl LlamaServerControl for LlamaServerProcess {
         // third review of #4069). Released after the record carries it.
         let (mut page_dir_reservation, page_dir_ready) =
             PageDirReservation::take_and_create(&slot_save_dir);
-        let mut cmd = tokio::process::Command::new(&self.bin);
-        let invocation = crate::inference::lane_args::base_invocation(
+        let mut invocation = crate::inference::lane_args::base_invocation(
             &gguf,
             &target.model.id,
             &host,
@@ -4257,12 +4261,6 @@ impl LlamaServerControl for LlamaServerProcess {
             max_ubatch: target.model.serving.max_ubatch,
             reasoning_budget: target.model.serving.reasoning_budget,
         });
-        for a in &invocation.args {
-            cmd.arg(a);
-        }
-        for (k, v) in &invocation.envs {
-            cmd.env(k, v);
-        }
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs
         // existed only when an operator hand-exported them before booting the
@@ -4276,15 +4274,21 @@ impl LlamaServerControl for LlamaServerProcess {
         // the parent's env by default; we only fill the ABSENT case).
         if target.expert_placement.is_some() {
             if let Some(gb) = moe_glass_box_paths(port) {
-                if std::env::var_os("GGML_MOE_CAPTURE_FILE").is_none() {
-                    cmd.env("GGML_MOE_CAPTURE_FILE", &gb.capture);
-                }
-                if std::env::var_os("GGML_MOE_PLAN_FILE").is_none() {
-                    cmd.env("GGML_MOE_PLAN_FILE", &gb.plan);
-                }
-                if std::env::var_os("GGML_MOE_TRACE_FILE").is_none() {
-                    cmd.env("GGML_MOE_TRACE_FILE", &gb.trace);
-                }
+                invocation.inherit_or_default_env(
+                    "GGML_MOE_CAPTURE_FILE",
+                    gb.capture.as_os_str(),
+                    std::env::var_os("GGML_MOE_CAPTURE_FILE").is_some(),
+                );
+                invocation.inherit_or_default_env(
+                    "GGML_MOE_PLAN_FILE",
+                    gb.plan.as_os_str(),
+                    std::env::var_os("GGML_MOE_PLAN_FILE").is_some(),
+                );
+                invocation.inherit_or_default_env(
+                    "GGML_MOE_TRACE_FILE",
+                    gb.trace.as_os_str(),
+                    std::env::var_os("GGML_MOE_TRACE_FILE").is_some(),
+                );
             }
         }
         // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
@@ -4435,10 +4439,18 @@ impl LlamaServerControl for LlamaServerProcess {
             }
             crate::inference::backend_receipt::BackendVerdict::ProbeHung => {
                 // Last flag wins in llama-server's parser: pin the lane to the CPU.
-                cmd.arg("--n-gpu-layers").arg("0");
+                invocation.constrain_to_cpu();
             }
             crate::inference::backend_receipt::BackendVerdict::Gpu { .. }
             | crate::inference::backend_receipt::BackendVerdict::CpuByPlan => {}
+        }
+        // Apply exactly the finalized data retained with the owned readiness receipt.
+        // Inherited keys are intentionally not set here; the child keeps normal
+        // process-environment inheritance, including values unknown to this receipt.
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        cmd.args(&invocation.args);
+        for (key, value) in &invocation.envs {
+            cmd.env(key, value);
         }
         // THE LANE IS ITS OWN PROCESS GROUP (card 59052747). A plain child sat in the
         // core's group, so every group-addressed signal aimed at the core — the stop
@@ -4801,7 +4813,7 @@ match (child.stderr.take(), log_path) {
                 },
             )
             .map_err(LlamaServerError::Spawn)?;
-        self.record_verified_target(&generation, target, context, slots);
+        self.record_verified_target(&generation, target, &invocation, context, slots);
         Ok(())
     }
 }
@@ -4811,6 +4823,7 @@ impl LlamaServerProcess {
         &self,
         generation: &crate::inference::slots::EngineGeneration,
         target: &ServingTarget,
+        invocation: &crate::inference::lane_args::LaneInvocation,
         context: u32,
         lanes: u32,
     ) {
@@ -4825,6 +4838,8 @@ impl LlamaServerProcess {
                     generation: generation.clone(),
                 },
                 target: target.clone(),
+                engine_program: self.bin.clone(),
+                invocation: invocation.clone(),
                 observed_context_window: context,
                 observed_lanes: lanes,
                 launched_host_prompt_cache_mib: self
@@ -4994,13 +5009,39 @@ mod tests {
         drop(transition);
         *process.retained_page_dir.lock() = Some(reservation);
         let launch_target = target("fixture-owned-launch");
-        process.record_verified_target(&generation, &launch_target, 11008, 4);
+        assert!(
+            process.owned_serving_target().is_none(),
+            "unverified generation has no launch receipt"
+        );
+        let mut invocation = crate::inference::lane_args::base_invocation(
+            Path::new("/fixture/model.gguf"),
+            launch_target.model_id(),
+            "127.0.0.1",
+            1,
+            launch_target.parallel_lanes(),
+            launch_target.served_total_ctx(),
+            launch_target.host_prompt_cache_mib,
+            Path::new("/fixture/pages"),
+        )
+        .with_options(&crate::inference::lane_args::LaneOptions::default());
+        invocation.inherit_or_default_env(
+            "GGML_MOE_PLAN_FILE",
+            Path::new("/fixture/unused-plan").as_os_str(),
+            true,
+        );
+        invocation.constrain_to_cpu();
+        let launched = invocation.clone();
+        process.record_verified_target(&generation, &launch_target, &invocation, 11008, 4);
+        // A later resolved choice cannot mutate the already verified generation.
+        invocation.args.push("--different-future-policy".into());
         let recorded = process
             .owned_serving_target()
             .expect("verified owned provenance");
         assert_eq!(recorded.target.context_window, launch_target.context_window);
         assert_eq!(recorded.observed_context_window, 11008);
         assert_eq!(recorded.observed_lanes, 4);
+        assert_eq!(recorded.engine_program, process.bin);
+        assert_eq!(recorded.invocation, launched);
         // Feed the actual owner record through the existing reconcile fixture.
         // An accepted smaller plan must not replace its original launch geometry.
         let mut control = FakeControl::probe(Ok(Some(launch_target.model.id.clone())))
@@ -5036,6 +5077,11 @@ mod tests {
             launch_target.host_prompt_cache_mib
         );
         assert!(kept.identity == recorded.identity);
+        assert_eq!(
+            kept.invocation, launched,
+            "AlreadyServing keeps original resolved invocation"
+        );
+        assert_eq!(kept.engine_program, process.bin);
         assert!(matches!(
             process.idle_if_current(&|| false).await,
             Err(LlamaServerError::Superseded)
