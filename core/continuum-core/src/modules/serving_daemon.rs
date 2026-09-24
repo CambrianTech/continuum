@@ -502,7 +502,7 @@ fn verified_capture(
         || snapshot.served_context_window != launch.observed_context_window
         || snapshot.lanes != launch.observed_lanes
         || snapshot.host_prompt_cache_mib != launch.launched_host_prompt_cache_mib
-        || !server.owned_engine()?.same_engine(&launch.identity)
+        || server.owned_engine()? != launch.identity
     {
         return None;
     }
@@ -1435,11 +1435,7 @@ impl ServingDaemonModule {
             &self.serving_tx.borrow(),
             capture.intent_revision,
         )?;
-        current
-            .launch
-            .identity
-            .same_engine(&capture.launch.identity)
-            .then_some(capture)
+        (current.launch.identity == capture.launch.identity).then_some(capture)
     }
 
     fn acknowledge_verified_target(&self, live: &ServingSnapshot, intent_revision: u64) {
@@ -9427,13 +9423,8 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false)); // wedged compute path
         let daemon = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: smoke.clone(),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -9470,13 +9461,8 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false));
         let daemon = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: smoke.clone(),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -9515,13 +9501,8 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let smoke = Arc::new(AtomicBool::new(false));
         let daemon = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: smoke.clone(),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -9561,13 +9542,8 @@ mod tests {
 
         // Fresh decode INSIDE the window → trusted, no probe.
         let mut busy = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves: serves.clone(),
-            ok: true,
             smoke_ok: Arc::new(AtomicBool::new(false)),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves.clone(), true)
         }));
         busy.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
         let _ = busy.serving_tx.send_replace(ready_snapshot());
@@ -9581,13 +9557,8 @@ mod tests {
 
         // Stale decode OUTSIDE the window → no live evidence, probe as usual.
         let mut quiet = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             smoke_ok: Arc::new(AtomicBool::new(true)),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         quiet.set_decode_age_source(Arc::new(move || Some(window_ms + 1)));
         let _ = quiet.serving_tx.send_replace(ready_snapshot());
@@ -9613,15 +9584,10 @@ mod tests {
     async fn sustained_real_turn_failures_outrank_a_passing_probe() {
         let serves = Arc::new(AtomicUsize::new(0));
         let mut d = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             // The smoke probe WOULD pass — that is the point: it must not get the
             // chance to vouch for a lane the real workload proves broken.
             smoke_ok: Arc::new(AtomicBool::new(true)),
-            wedge: Default::default(),
-            slots_fp: Default::default(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         // Fresh decode trust too (a partial stream can stamp it) — must ALSO be outranked.
         let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
@@ -9657,14 +9623,10 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let slots_fp = Arc::new(AtomicU64::new(1));
         let mut d = daemon_with(Arc::new(FakeServer {
-            idles: Arc::new(AtomicUsize::new(0)),
-            serves,
-            ok: true,
             // Every smoke probe MISSES — the ghost work holds the slots.
             smoke_ok: Arc::new(AtomicBool::new(false)),
-            wedge: Default::default(),
             slots_fp: slots_fp.clone(),
-            paging_endpoint: None,
+            ..FakeServer::healthy(serves, true)
         }));
         // Pin both process-global evidence sources to inert test values — the
         // globals are stamped by unrelated tests under full-suite parallelism

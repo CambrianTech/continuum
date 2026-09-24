@@ -2139,11 +2139,12 @@ pub struct OwnedEngineIdentity {
     generation: crate::inference::slots::EngineGeneration,
 }
 
-impl OwnedEngineIdentity {
-    pub(crate) fn same_engine(&self, other: &Self) -> bool {
+impl PartialEq for OwnedEngineIdentity {
+    fn eq(&self, other: &Self) -> bool {
         self.owner.ptr_eq(&other.owner) && self.generation.same_engine(&other.generation)
     }
 }
+impl Eq for OwnedEngineIdentity {}
 
 /// Original target and observed geometry recorded only after local launch readiness.
 /// This is launch provenance, not a fresh health check or resource reservation.
@@ -5032,15 +5033,12 @@ mod tests {
             kept.target.host_prompt_cache_mib,
             launch_target.host_prompt_cache_mib
         );
-        assert!(kept.identity.same_engine(&recorded.identity));
+        assert!(kept.identity == recorded.identity);
         assert!(matches!(
             process.idle_if_current(&|| false).await,
             Err(LlamaServerError::Superseded)
         ));
-        assert!(process
-            .owned_engine()
-            .unwrap()
-            .same_engine(&recorded.identity));
+        assert!(process.owned_engine().unwrap() == recorded.identity);
         let identity = process.owned_engine().expect("owned identity");
         let foreign = LlamaServerProcess::with_root("http://127.0.0.1:2".into());
         assert!(foreign.owned_engine().is_none());
