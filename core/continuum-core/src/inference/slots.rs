@@ -590,6 +590,8 @@ struct EndpointState {
     generation: Option<EngineGeneration>,
     contract: Option<KvPageContract>,
     pool: Option<Option<Arc<KvSlotPool>>>,
+    // An installed ledger can outlive its child until replacement readiness.
+    pool_generation: Option<Uuid>,
 }
 
 /// The directory's existing endpoint owner also arbitrates engine transitions.
@@ -609,13 +611,7 @@ pub(crate) struct EndpointAdmission {
 impl EndpointAdmission {
     /// Called while this generation's read lease still prevents replacement.
     pub(crate) fn quarantine_paging(&self) {
-        let mut state = self.endpoint.state.lock();
-        state.paging_uncertain = true;
-        state.ready = false;
-        crate::probe!(
-            class = "inference.kv_page.uncertain",
-            "paging completion unverified; endpoint requires verified engine replacement"
-        );
+        self.endpoint.quarantine_paging();
     }
 
     pub(crate) fn check_ready(&self) -> Result<(), String> {
@@ -630,6 +626,60 @@ impl EndpointAdmission {
 pub(crate) struct EndpointTransition {
     endpoint: Arc<EndpointSlots>,
     _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+/// Confirmed saves of every attributed resident. Retains the exclusive writer
+/// borrow; revalidates generation and installed ledger before exposing that same
+/// transition for composition. Lifecycle mutation through the returned transition
+/// requires a fresh validation before reuse. This proves neither launch dependency
+/// identity nor child exit/resource capacity.
+pub(crate) struct ResidentCheckpoint<'a> {
+    transition: &'a mut EndpointTransition,
+    generation: EngineGeneration,
+    pool: Arc<KvSlotPool>,
+}
+
+impl ResidentCheckpoint<'_> {
+    /// Keep the original drained writer for eventual lifecycle composition.
+    pub(crate) fn transition_for(
+        &self,
+        expected: &EngineGeneration,
+    ) -> Result<&EndpointTransition, String> {
+        if !self.generation.same_engine(expected) || self.generation.has_exited() {
+            return Err("resident checkpoint generation exited or does not match".into());
+        }
+        let state = self.transition.endpoint.state.lock();
+        if state.paging_uncertain
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.same_engine(expected))
+            || state.pool_generation != Some(expected.id)
+            || !state
+                .pool
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_some_and(|p| Arc::ptr_eq(p, &self.pool))
+        {
+            return Err("resident checkpoint generation is no longer current".into());
+        }
+        Ok(self.transition)
+    }
+}
+
+// A backend request can outlive its cancelled Rust future. Quarantine while the
+// writer is still held, matching TurnAdmission's existing read-lease rule.
+struct CheckpointSave {
+    endpoint: Arc<EndpointSlots>,
+    pending: bool,
+}
+
+impl Drop for CheckpointSave {
+    fn drop(&mut self) {
+        if self.pending {
+            self.endpoint.quarantine_paging();
+        }
+    }
 }
 
 /// Travels with the actual owned Child, including after retirement. The exit bit
@@ -677,6 +727,16 @@ impl EngineGeneration {
 }
 
 impl EndpointSlots {
+    fn quarantine_paging(&self) {
+        let mut state = self.state.lock();
+        state.paging_uncertain = true;
+        state.ready = false;
+        crate::probe!(
+            class = "inference.kv_page.uncertain",
+            "paging completion unverified; endpoint requires verified engine replacement"
+        );
+    }
+
     pub(crate) fn paging_recovery_required(&self) -> bool {
         self.state.lock().paging_uncertain
     }
@@ -752,6 +812,86 @@ impl EndpointSlots {
 }
 
 impl EndpointTransition {
+    /// Save only known physical residents after all endpoint readers have drained.
+    /// Refusal never reopens the endpoint or retires its owned child.
+    pub(crate) async fn checkpoint_residents(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+    ) -> Result<ResidentCheckpoint<'_>, String> {
+        use super::turn_admission::{kv_page_action, PageOutcome};
+
+        if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
+            return Err("checkpoint URL does not identify the held endpoint".into());
+        }
+        let (generation, pool) = {
+            let mut state = self.endpoint.state.lock();
+            if state.paging_uncertain {
+                return Err("checkpoint refused: paging completion remains uncertain".into());
+            }
+            let generation = state
+                .generation
+                .clone()
+                .ok_or("checkpoint requires an owned generation")?;
+            if generation.has_exited() || state.pool_generation != Some(generation.id) {
+                return Err("checkpoint requires this live generation's verified pool".into());
+            }
+            if state
+                .contract
+                .as_ref()
+                .and_then(|c| c.page_dir.as_ref())
+                .is_none()
+            {
+                return Err("checkpoint requires a verified page directory".into());
+            }
+            let pool = state
+                .pool
+                .as_ref()
+                .and_then(Clone::clone)
+                .ok_or("checkpoint requires a known slot pool")?;
+            state.ready = false;
+            (generation, pool)
+        };
+        let mut residents: Vec<_> = pool
+            .holders
+            .lock()
+            .iter()
+            .map(|(&slot, &key)| (slot, key))
+            .collect();
+        residents.sort_unstable_by_key(|(slot, _)| *slot);
+        for (slot, key) in residents {
+            if generation.has_exited() {
+                return Err("checkpoint engine exited before save".into());
+            }
+            pool.note_page_lost(&key);
+            let mut save = CheckpointSave {
+                endpoint: self.endpoint.clone(),
+                pending: true,
+            };
+            match kv_page_action(client, root, slot, &key, "save").await {
+                PageOutcome::Completed => {
+                    save.pending = false;
+                    pool.note_saved(key);
+                }
+                PageOutcome::Rejected => {
+                    save.pending = false;
+                    return Err(format!("checkpoint save rejected for slot {slot}"));
+                }
+                PageOutcome::Uncertain => {
+                    return Err(format!("checkpoint save completion uncertain for slot {slot}; endpoint quarantined"));
+                }
+            }
+        }
+        if generation.has_exited() {
+            return Err("checkpoint engine exited before completion".into());
+        }
+        Ok(ResidentCheckpoint {
+            transition: self,
+            generation,
+            pool,
+        })
+    }
+
     pub(crate) fn previous_generation(&self) -> Option<EngineGeneration> {
         self.endpoint.state.lock().generation.clone()
     }
@@ -812,6 +952,7 @@ impl EndpointTransition {
             }
         }
         state.pool = Some(Some(pool));
+        state.pool_generation = Some(generation.id);
         state.contract = Some(contract);
         state.ready = true;
         crate::probe!(
@@ -837,6 +978,7 @@ impl SlotDirectory {
                         generation: None,
                         contract: None,
                         pool: None,
+                        pool_generation: None,
                     }),
                 })
             })
