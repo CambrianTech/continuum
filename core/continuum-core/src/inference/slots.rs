@@ -582,6 +582,10 @@ pub(crate) struct EngineGeneration {
 }
 
 impl EngineGeneration {
+    pub(crate) fn same_engine(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+
     pub(crate) fn retiring(&self) {
         if let Some(endpoint) = self.endpoint.upgrade() {
             let mut state = endpoint.state.lock();
@@ -628,6 +632,29 @@ impl EndpointSlots {
         Ok(EndpointAdmission {
             _guard: guard,
             pool: state.pool.as_ref().and_then(Clone::clone),
+        })
+    }
+
+    /// Queue a writer without suspending a replacement on behalf of a stale caller.
+    /// Tokio's fair writer queue bars later admissions while existing readers drain.
+    pub(crate) async fn transition_for_generation(
+        self: &Arc<Self>,
+        expected: &EngineGeneration,
+    ) -> Result<EndpointTransition, ()> {
+        let guard = self.gate.clone().write_owned().await;
+        let mut state = self.state.lock();
+        if !state
+            .generation
+            .as_ref()
+            .is_some_and(|g| g.same_engine(expected))
+        {
+            return Err(());
+        }
+        state.ready = false;
+        drop(state);
+        Ok(EndpointTransition {
+            endpoint: self.clone(),
+            _guard: guard,
         })
     }
 
@@ -981,6 +1008,21 @@ mod tests {
             .expect("old physical holder");
         old_pool.note_saved(activity);
 
+        // A cancelled retirement waits for readers without closing the live engine.
+        // The queued writer also prevents a later reader from overtaking the drain.
+        {
+            let retirement = endpoint.transition_for_generation(&old);
+            tokio::pin!(retirement);
+            assert!(futures::poll!(&mut retirement).is_pending());
+            let later = endpoint.admit();
+            tokio::pin!(later);
+            assert!(futures::poll!(&mut later).is_pending());
+        }
+        assert!(
+            endpoint.is_ready(),
+            "cancelled pre-retirement drain changes no state"
+        );
+
         let transition = endpoint.transition();
         tokio::pin!(transition);
         assert!(
@@ -1018,6 +1060,11 @@ mod tests {
             .expect("readiness refresh");
         old.observed_exit();
         drop(transition);
+        assert!(endpoint.transition_for_generation(&old).await.is_err());
+        assert!(
+            endpoint.is_ready(),
+            "stale retirement cannot suspend replacement"
+        );
         let admitted = endpoint
             .admit()
             .await
