@@ -95,6 +95,11 @@ pub struct GenomeTeachParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub training: Option<TeachTrainingAction>,
+    /// Explicitly allow the serving owner to checkpoint and temporarily retire
+    /// its current local model when this teacher cannot coexist. Default false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub exclusive_teacher: Option<bool>,
     /// Inline tasks. When set, takes precedence over `teach_set`. Each task SHOULD
     /// carry a `test` — only test-validated trajectories become corpus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -589,6 +594,28 @@ async fn synthesize_remediation_with_lane(
 ) -> Result<RemediationCorpus, CommandError> {
     // Retain the owner for the entire batch, including grading between generations.
     let teacher_lane = lane.await?;
+    synthesize_remediation_with_adapter(
+        tasks,
+        teacher_model,
+        temperature,
+        max_fix_iters,
+        &teacher_lane.adapter,
+        None,
+    )
+    .await
+}
+
+/// The existing generation/grading loop borrows its adapter for the entire batch.
+/// The serving owner can keep a private borrower and its cleanup obligation outside
+/// this future; only the validated corpus leaves that owner.
+pub(crate) async fn synthesize_remediation_with_adapter(
+    tasks: &[EvalTask],
+    teacher_model: &str,
+    temperature: f32,
+    max_fix_iters: u32,
+    adapter: &std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+    cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
+) -> Result<RemediationCorpus, CommandError> {
     let mut examples: Vec<Value> = Vec::new();
     let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
     let mut with_correction = 0usize;
@@ -598,6 +625,11 @@ async fn synthesize_remediation_with_lane(
     emit_teach_milestone("started", 0, tasks.len(), 0);
 
     for task in tasks {
+        if cancellation.is_some_and(|cancel| *cancel.borrow()) {
+            return Err(CommandError::Internal(
+                "teacher batch cancelled between tasks".into(),
+            ));
+        }
         // Only test-graded tasks can be validated → become corpus. A task with no
         // `test` is dropped with a named reason, never silently passed.
         let Some(test) = task.test.as_deref() else {
@@ -629,20 +661,21 @@ async fn synthesize_remediation_with_lane(
         // — a timeout is a guess about health, and guessing is the smell we're removing.
         // [[command-async-shape-prefer-stream-never-block]]
         for _ in 0..=max_fix_iters {
-            let answer = match teacher_generate(
-                &teacher_lane.adapter,
-                teacher_model,
-                trajectory.clone(),
-                temperature,
-            )
-            .await
-            {
-                Ok(a) => a,
-                Err(e) => {
-                    last_error = Some(format!("teacher generation failed: {e}"));
-                    break;
-                }
-            };
+            if cancellation.is_some_and(|cancel| *cancel.borrow()) {
+                return Err(CommandError::Internal(
+                    "teacher batch cancelled between attempts".into(),
+                ));
+            }
+            let answer =
+                match teacher_generate(adapter, teacher_model, trajectory.clone(), temperature)
+                    .await
+                {
+                    Ok(a) => a,
+                    Err(e) => {
+                        last_error = Some(format!("teacher generation failed: {e}"));
+                        break;
+                    }
+                };
             receipts.push(answer.receipt);
             let answer = answer.text;
             attempts += 1;
@@ -800,6 +833,9 @@ async fn synthesize_lived_expansion_with_lane(
 /// Dataset-only teaching does not require that executor.
 #[derive(Clone)]
 pub struct GenomeTeach {
+    pub(crate) serving: std::sync::Arc<
+        crate::runtime::LateBound<crate::modules::serving_daemon::ServingDaemonModule>,
+    >,
     pub(crate) executor: std::sync::Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
 }
 
@@ -866,6 +902,7 @@ impl GenomeTeach {
     /// Shared corpus generation. Optional preparation owns the reserved output and
     /// provenance; the default path only writes the requested dataset.
     async fn run_teach(
+        &self,
         p: GenomeTeachParams,
         mut candidate: Option<bridge::Preparation>,
     ) -> Result<GenomeTeachResult, CommandError> {
@@ -897,7 +934,23 @@ impl GenomeTeach {
             examples,
             outcomes,
             with_correction,
-        } = synthesize_remediation(&tasks, &teacher_model, temperature, max_fix_iters).await?;
+        } = if p.exclusive_teacher.unwrap_or(false) {
+            let serving = self.serving.cloned().ok_or_else(|| {
+                CommandError::Internal("teacher serving owner is not installed".into())
+            })?;
+            serving
+                .run_teacher_batch(
+                    crate::modules::serving_daemon::academy_batch::TeacherBatchRequest {
+                        tasks: tasks.clone(),
+                        teacher_model: teacher_model.clone(),
+                        temperature,
+                        max_fix_iters,
+                    },
+                )
+                .await?
+        } else {
+            synthesize_remediation(&tasks, &teacher_model, temperature, max_fix_iters).await?
+        };
 
         if examples.is_empty() {
             return Err(CommandError::Internal(format!(

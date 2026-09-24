@@ -2282,6 +2282,35 @@ pub struct EngineRetirementReceipt {
     identity: OwnedEngineIdentity,
 }
 
+/// Retry authority minted from one original owned launch. Only the controller's
+/// shared spawn path can advance the expected generation; callers cannot relabel
+/// an ordinary or foreign successor as part of this restoration.
+pub struct OwnedRestoreSession {
+    original: OwnedServingTarget,
+    expected: parking_lot::Mutex<crate::inference::slots::EngineGeneration>,
+    _pages: PageDirReservation,
+    suspension: parking_lot::Mutex<Option<crate::inference::slots::EndpointSuspension>>,
+}
+
+impl OwnedRestoreSession {
+    pub(crate) fn was_suspended(&self) -> bool {
+        self.suspension.lock().is_some()
+    }
+
+    pub(crate) fn attempt_identity(&self) -> OwnedEngineIdentity {
+        OwnedEngineIdentity {
+            owner: self.original.identity.owner.clone(),
+            generation: self.expected.lock().clone(),
+        }
+    }
+
+    pub(crate) fn attempt_retirement(&self) -> EngineRetirementReceipt {
+        EngineRetirementReceipt {
+            identity: self.attempt_identity(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineRetirementStatus {
     /// Includes failed signalling and unknown process status; ownership is retained.
@@ -2381,6 +2410,46 @@ pub trait LlamaServerControl: Send + Sync {
     ) -> Result<(), LlamaServerError> {
         Err(LlamaServerError::Spawn(
             "exact local restoration is unsupported by this controller".into(),
+        ))
+    }
+
+    async fn begin_owned_restore(
+        &self,
+        _original: &OwnedServingTarget,
+    ) -> Result<OwnedRestoreSession, LlamaServerError> {
+        Err(LlamaServerError::Spawn(
+            "owned restore sessions are unsupported".into(),
+        ))
+    }
+
+    async fn checkpoint_owned_restore(
+        &self,
+        _session: &OwnedRestoreSession,
+        _current: &ServingLifecycleCheck<'_>,
+    ) -> Result<EngineRetirementReceipt, LlamaServerError> {
+        Err(LlamaServerError::Spawn(
+            "owned checkpoint retirement is unsupported".into(),
+        ))
+    }
+
+    async fn resume_owned_checkpoint(
+        &self,
+        _session: &OwnedRestoreSession,
+        _current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
+        Err(LlamaServerError::Spawn(
+            "owned checkpoint resume is unsupported".into(),
+        ))
+    }
+
+    async fn restore_owned_session(
+        &self,
+        _session: &OwnedRestoreSession,
+        _reservation: Option<crate::resources::LeaseGuard>,
+        _current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
+        Err(LlamaServerError::Spawn(
+            "owned restore sessions are unsupported".into(),
         ))
     }
 
@@ -3028,6 +3097,8 @@ pub struct LlamaServerProcess {
     child: Arc<StdMutex<Option<OwnedEngine>>>,
     /// Before OS spawn only; transferred atomically to the actual owned child.
     pending_resource_reservation: parking_lot::Mutex<Option<crate::resources::LeaseGuard>>,
+    // Retains the exact startup generation even when readiness already retired it.
+    last_started: parking_lot::Mutex<Option<crate::inference::slots::EngineGeneration>>,
     /// The LoRA genome set (sorted paths) the CURRENT child was launched with —
     /// the truthful record of what `/lora-adapters` holds, since llama.cpp has no
     /// API to query it. `ensure_model_serving` compares this against the desired
@@ -3147,6 +3218,7 @@ impl LlamaServerProcess {
             client,
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
+            last_started: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
@@ -3177,6 +3249,7 @@ impl LlamaServerProcess {
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
+            last_started: parking_lot::Mutex::new(None),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
@@ -3201,6 +3274,7 @@ impl LlamaServerProcess {
         engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
         local_inputs: Option<crate::inference::launch_inputs::LocalLaunchInputs>,
     ) {
+        *self.last_started.lock() = Some(generation.clone());
         let mut owned = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic mutating the owned child.
         *owned = Some(OwnedEngine {
             child,
@@ -3580,6 +3654,7 @@ fn ephemeral_admission_refusal(
 pub struct EphemeralServingLane {
     proc: LlamaServerProcess,
     port: u16,
+    spawn_permit: Option<tokio::sync::MutexGuard<'static, ()>>,
 }
 
 impl EphemeralServingLane {
@@ -3630,10 +3705,20 @@ impl EphemeralServingLane {
         base_port: u16,
         reservation: Option<crate::resources::LeaseGuard>,
     ) -> Result<Self, LlamaServerError> {
+        let mut lane = Self::prepare_with_reservation(target, base_port, reservation).await?;
+        lane.start(target).await?;
+        Ok(lane)
+    }
+
+    pub(crate) async fn prepare_with_reservation(
+        target: &ServingTarget,
+        base_port: u16,
+        reservation: Option<crate::resources::LeaseGuard>,
+    ) -> Result<Self, LlamaServerError> {
         // Held across the spawn await, so a second ephemeral spawn cannot interleave and
         // land on `first_free_port + 1`. A tokio mutex because it spans `.await` — never
         // a std lock across await (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
-        let _permit = EPHEMERAL_SPAWN_GATE.lock().await;
+        let permit = EPHEMERAL_SPAWN_GATE.lock().await;
         let resident = reconcile_ephemeral_census();
         if let Some(reason) = ephemeral_admission_refusal(target, &resident) {
             crate::probe!(
@@ -3647,7 +3732,32 @@ impl EphemeralServingLane {
         }
         let port = first_free_port(base_port);
         let root = format!("http://{}:{}", DEFAULT_HOST, port);
-        let lane = Self::with_reservation(LlamaServerProcess::with_root(root), port, reservation);
+        let mut lane =
+            Self::with_reservation(LlamaServerProcess::with_root(root), port, reservation);
+        lane.spawn_permit = Some(permit);
+        Ok(lane)
+    }
+
+    /// The owner stores this lane before awaiting startup, retaining its generation
+    /// receipt on timeout, readiness error or cancellation.
+    pub(crate) async fn start(&mut self, target: &ServingTarget) -> Result<(), LlamaServerError> {
+        self.start_inner(target, false).await
+    }
+
+    /// The exclusive teacher holds a device grant; a backend fallback cannot
+    /// silently change that admitted workload into a host-memory CPU load.
+    pub(crate) async fn start_gpu(
+        &mut self,
+        target: &ServingTarget,
+    ) -> Result<(), LlamaServerError> {
+        self.start_inner(target, true).await
+    }
+
+    async fn start_inner(
+        &mut self,
+        target: &ServingTarget,
+        require_gpu: bool,
+    ) -> Result<(), LlamaServerError> {
         // HARD wall-clock cap on the WHOLE bring-up. `wait_ready`'s budget only
         // bounds the /health poll, and its deadline is checked BETWEEN attempts — so a
         // hang INSIDE an attempt (a stalled `decode_smoke_ok`, a wedged model-mmap, a
@@ -3655,15 +3765,39 @@ impl EphemeralServingLane {
         // 2026-07-19: an ephemeral eval lane hung 11 min with no process and free VRAM,
         // no timeout ever firing — a silent glacial wedge that violated fail-loud. This
         // net guarantees the eval fails LOUD after the lane's own load budget instead.
-        // On timeout `proc` drops → its `Drop` kills any child it launched. Eval lanes
-        // only; the live lane keeps its own (fail-loud-not-fast) bring-up policy.
+        // On timeout the owning caller retires this lane (ordinary callers drop
+        // it; an explicit batch retains its exit receipt). The live lane keeps
+        // its own bring-up policy.
         // MUST exceed the ephemeral `wait_ready` budget (EPHEMERAL_READY_TIMEOUT) + margin
         // so the INNER deadline fires first with its specific `/health`/decode reason —
         // otherwise this coarse net pre-empts the diagnostic error (glass-boxed 2026-07-21:
         // a co-resident cold 24B warmup exceeded the old 90s inner budget; the fix raised
         // the inner budget, so this outer cap must follow or it clips the warmup at 120s).
         let spawn_cap = EPHEMERAL_READY_TIMEOUT + Duration::from_secs(30);
-        match tokio::time::timeout(spawn_cap, lane.proc.serve(target)).await {
+        let startup = async {
+            if require_gpu {
+                let prepared = self.proc.prepare_local_launch(target).await?;
+                // Flags are last-wins: the backend probe appends its CPU verdict.
+                let offload = prepared
+                    .invocation
+                    .args
+                    .windows(2)
+                    .rev()
+                    .find(|pair| pair[0] == "--n-gpu-layers")
+                    .and_then(|pair| pair[1].parse::<i64>().ok());
+                if !offload.is_some_and(|layers| layers != 0) {
+                    return Err(LlamaServerError::Spawn(
+                        "private teacher requires GPU offload; backend CPU fallback refused".into(),
+                    ));
+                }
+                self.proc
+                    .launch_prepared(Arc::new(prepared), &|| true, None, None)
+                    .await
+            } else {
+                self.proc.serve(target).await
+            }
+        };
+        match tokio::time::timeout(spawn_cap, startup).await {
             Ok(res) => res?,
             Err(_) => {
                 return Err(LlamaServerError::NotReady(
@@ -3674,7 +3808,8 @@ impl EphemeralServingLane {
                 ));
             }
         }
-        Ok(lane)
+        self.spawn_permit.take();
+        Ok(())
     }
 
     fn with_reservation(
@@ -3683,7 +3818,35 @@ impl EphemeralServingLane {
         reservation: Option<crate::resources::LeaseGuard>,
     ) -> Self {
         *proc.pending_resource_reservation.lock() = reservation;
-        Self { proc, port }
+        Self {
+            proc,
+            port,
+            spawn_permit: None,
+        }
+    }
+
+    /// Request teardown without losing the observation handle on failed startup.
+    /// The private batch owner retains this lane until this returns Exited.
+    pub(crate) async fn finish(&mut self) -> Result<EngineRetirementStatus, LlamaServerError> {
+        self.spawn_permit.take();
+        let generation = self.proc.last_started.lock().clone();
+        let Some(generation) = generation else {
+            self.proc.pending_resource_reservation.lock().take();
+            return Ok(EngineRetirementStatus::Exited);
+        };
+        let identity = OwnedEngineIdentity {
+            owner: Arc::downgrade(&self.proc.child),
+            generation,
+        };
+        if self.proc.owned_engine().as_ref() == Some(&identity) {
+            self.proc
+                .retire_owned_engine(&identity)
+                .await
+                .map_err(|e| LlamaServerError::Spawn(e.to_string()))?;
+        }
+        self.proc
+            .observe_engine_retirement(&EngineRetirementReceipt { identity })
+            .map_err(|e| LlamaServerError::Spawn(e.to_string()))
     }
 
     /// The OpenAI-compatible `/v1` base url a persona's inference adapter points
@@ -4087,7 +4250,7 @@ impl LlamaServerControl for LlamaServerProcess {
         current: &ServingLifecycleCheck<'_>,
     ) -> Result<(), LlamaServerError> {
         let prepared = self.prepare_local_launch(target).await?;
-        self.launch_prepared(Arc::new(prepared), current, None)
+        self.launch_prepared(Arc::new(prepared), current, None, None)
             .await
     }
 
@@ -4112,22 +4275,103 @@ impl LlamaServerControl for LlamaServerProcess {
         original: &OwnedServingTarget,
         current: &ServingLifecycleCheck<'_>,
     ) -> Result<(), LlamaServerError> {
+        let session = self.begin_owned_restore(original).await?;
+        self.restore_owned_session(&session, None, current).await
+    }
+
+    async fn begin_owned_restore(
+        &self,
+        original: &OwnedServingTarget,
+    ) -> Result<OwnedRestoreSession, LlamaServerError> {
         self.validate_owned_launch(original).await?;
-        if !original.identity.generation.has_exited() {
-            return Err(LlamaServerError::Spawn(
-                "original child exit is not confirmed".into(),
-            ));
-        }
         let prepared = original
             .prepared
             .as_ref()
             .ok_or_else(|| LlamaServerError::Spawn("original launch was not captured".into()))?;
-        self.launch_prepared(
-            prepared.clone(),
-            current,
-            Some(&original.identity.generation),
-        )
-        .await
+        Ok(OwnedRestoreSession {
+            original: original.clone(),
+            expected: parking_lot::Mutex::new(original.identity.generation.clone()),
+            _pages: PageDirReservation::take(&prepared.slot_save_dir),
+            suspension: parking_lot::Mutex::new(None),
+        })
+    }
+
+    async fn checkpoint_owned_restore(
+        &self,
+        session: &OwnedRestoreSession,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<EngineRetirementReceipt, LlamaServerError> {
+        self.validate_owned_launch(&session.original).await?;
+        let expected = &session.original.identity;
+        self.check_owned_engine(expected)
+            .map_err(|e| LlamaServerError::Spawn(e.to_string()))?;
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let mut transition = endpoint
+            .transition_for_generation_if(&expected.generation, current)
+            .await
+            .map_err(|()| LlamaServerError::Superseded)?;
+        *session.suspension.lock() = Some(
+            transition
+                .capture_suspension(&expected.generation)
+                .map_err(LlamaServerError::Spawn)?,
+        );
+        let checkpoint = transition
+            .checkpoint_residents(&self.client, &self.root)
+            .await
+            .map_err(LlamaServerError::Spawn)?;
+        self.validate_owned_launch(&session.original).await?;
+        if !current() {
+            return Err(LlamaServerError::Superseded);
+        }
+        let drained = checkpoint
+            .transition_for(&expected.generation)
+            .map_err(LlamaServerError::Spawn)?;
+        self.retire_owned_engine_drained(expected, drained, tokio::process::Child::start_kill)
+            .map_err(|e| LlamaServerError::Spawn(e.to_string()))
+    }
+
+    async fn resume_owned_checkpoint(
+        &self,
+        session: &OwnedRestoreSession,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
+        self.check_owned_engine(&session.original.identity)
+            .map_err(|e| LlamaServerError::Spawn(e.to_string()))?;
+        let suspension =
+            session.suspension.lock().clone().ok_or_else(|| {
+                LlamaServerError::Spawn("original endpoint was not suspended".into())
+            })?;
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let transition = endpoint
+            .transition_for_generation_if(&session.original.identity.generation, current)
+            .await
+            .map_err(|()| LlamaServerError::Superseded)?;
+        self.check_owned_engine(&session.original.identity)
+            .map_err(|e| LlamaServerError::Spawn(e.to_string()))?;
+        transition
+            .resume_suspension(&suspension, current)
+            .map_err(LlamaServerError::Spawn)
+    }
+
+    async fn restore_owned_session(
+        &self,
+        session: &OwnedRestoreSession,
+        reservation: Option<crate::resources::LeaseGuard>,
+        current: &ServingLifecycleCheck<'_>,
+    ) -> Result<(), LlamaServerError> {
+        self.validate_owned_launch(&session.original).await?;
+        let expected = session.expected.lock().clone();
+        if !expected.has_exited() {
+            return Err(LlamaServerError::Spawn(
+                "restore attempt child exit is not confirmed".into(),
+            ));
+        }
+        let prepared =
+            session.original.prepared.as_ref().ok_or_else(|| {
+                LlamaServerError::Spawn("original launch was not captured".into())
+            })?;
+        self.launch_prepared(prepared.clone(), current, Some(session), reservation)
+            .await
     }
 }
 
@@ -4638,13 +4882,15 @@ impl LlamaServerProcess {
         &self,
         prepared: Arc<PreparedLocalLaunch>,
         current: &ServingLifecycleCheck<'_>,
-        restore_generation: Option<&crate::inference::slots::EngineGeneration>,
+        restore_session: Option<&OwnedRestoreSession>,
+        mut reservation: Option<crate::resources::LeaseGuard>,
     ) -> Result<(), LlamaServerError> {
         if prepared.engine_program != self.bin || prepared.endpoint != self.root {
             return Err(LlamaServerError::Spawn(
                 "prepared launch belongs to another endpoint".into(),
             ));
         }
+        let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
         if restoring {
             prepared.validate_restoration(&self.root, &self.bin).await?;
@@ -4665,7 +4911,7 @@ impl LlamaServerProcess {
             inputs.validate().await.map_err(LlamaServerError::Spawn)?;
         }
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        let transition = match restore_generation {
+        let transition = match restore_generation.as_ref() {
             Some(expected) => {
                 endpoint
                     .transition_for_generation_if(expected, &|| {
@@ -4863,6 +5109,12 @@ impl LlamaServerProcess {
         let generation = transition
             .start_generation()
             .map_err(LlamaServerError::Spawn)?;
+        *self.last_started.lock() = Some(generation.clone());
+        // No await separates generation creation, receipt advance and actual child
+        // installation. A failed OS spawn marks this exact generation exited.
+        if let Some(session) = restore_session {
+            *session.expected.lock() = generation.clone();
+        }
         let mut child = match cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -4872,6 +5124,9 @@ impl LlamaServerProcess {
         };
         let child_pid = child.id();
         let child_stderr = child.stderr.take();
+        if let Some(grant) = reservation.take() {
+            *self.pending_resource_reservation.lock() = Some(grant);
+        }
         self.install_child(child, generation.clone(), child_install, child_inputs);
         // Launch arguments are evidence of what we requested, not a readback of
         // cache capacity or occupancy. Adopted engines do not pass this seam.
@@ -5906,7 +6161,7 @@ mod tests {
         // What this catches: unwinding the real ephemeral owner after child
         // installation (error, timeout, cancellation or normal end) must move
         // BOTH child and grant into retirement, not merely signal then free it.
-        for outcome in ["error", "timeout", "cancel", "complete"] {
+        for outcome in ["error", "timeout", "cancel", "complete", "finish"] {
             let process =
                 LlamaServerProcess::with_root(format!("test://borrower-{}", uuid::Uuid::new_v4()));
             let endpoint = crate::inference::slots::directory().endpoint(&process.root);
@@ -5920,16 +6175,32 @@ mod tests {
             drop(transition);
             assert_eq!(held(), 6_000);
             let operation = async move {
-                let _owner = lane;
+                let mut owner = lane;
                 match outcome {
                     "error" => Err::<(), _>("readiness refused"),
                     "complete" => Ok(()),
+                    "finish" => {
+                        tokio::time::timeout(Duration::from_secs(10), async {
+                            let mut tick = tokio::time::interval(Duration::from_millis(10));
+                            while owner.finish().await.unwrap() != EngineRetirementStatus::Exited {
+                                tick.tick().await;
+                            }
+                            assert_eq!(
+                                owner.finish().await.unwrap(),
+                                EngineRetirementStatus::Exited,
+                                "terminal finish remains observable without surrendering the owner"
+                            );
+                        })
+                        .await
+                        .unwrap();
+                        Ok(())
+                    }
                     _ => std::future::pending().await,
                 }
             };
             match outcome {
                 "error" => assert!(operation.await.is_err()),
-                "complete" => assert!(operation.await.is_ok()),
+                "complete" | "finish" => assert!(operation.await.is_ok()),
                 "timeout" => assert!(tokio::time::timeout(
                     std::time::Duration::from_millis(1),
                     operation
@@ -6140,9 +6411,10 @@ mod tests {
             .await
             .unwrap();
             drop(listener);
+            let session = process.begin_owned_restore(&captured).await.unwrap();
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
-                process.restore_owned_launch(&captured, &|| {
+                process.restore_owned_session(&session, None, &|| {
                     admitted.store(true, std::sync::atomic::Ordering::SeqCst);
                     true
                 }),
@@ -6173,6 +6445,148 @@ mod tests {
                 .await;
             assert!(matches!(stale, Err(LlamaServerError::Superseded)));
             assert!(!admitted.load(std::sync::atomic::Ordering::SeqCst));
+            // The batch's original session retains its own failed-startup successor,
+            // unlike a fresh replay of the old capture. Retry requires actual exit.
+            let first_attempt = session.attempt_identity();
+            let retired = process.retire_owned_engine(&first_attempt).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let mut tick = tokio::time::interval(Duration::from_millis(10));
+                while process.observe_engine_retirement(&retired).unwrap()
+                    != EngineRetirementStatus::Exited
+                {
+                    tick.tick().await;
+                }
+            })
+            .await
+            .unwrap();
+            let retry = tokio::time::timeout(
+                Duration::from_secs(10),
+                process.restore_owned_session(&session, None, &|| true),
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(retry, Err(LlamaServerError::Spawn(ref why)) if why.contains("exited during bring-up"))
+            );
+            assert!(
+                session.attempt_identity() != first_attempt,
+                "shared spawn alone advances retry authority"
+            );
+            let retired = process
+                .retire_owned_engine(&session.attempt_identity())
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let mut tick = tokio::time::interval(Duration::from_millis(10));
+                while process.observe_engine_retirement(&retired).unwrap()
+                    != EngineRetirementStatus::Exited
+                {
+                    tick.tick().await;
+                }
+            })
+            .await
+            .unwrap();
+            let transition = endpoint.transition().await;
+            let foreign_generation = transition.start_generation().unwrap();
+            let mut foreign_child = command.spawn().unwrap();
+            let foreign_input = foreign_child.stdin.take().unwrap();
+            process.install_child(
+                foreign_child,
+                foreign_generation.clone(),
+                prepared.engine_install.clone(),
+                prepared.local_inputs.as_ref().ok().cloned(),
+            );
+            drop(transition);
+            admitted.store(false, std::sync::atomic::Ordering::SeqCst);
+            let foreign = process
+                .restore_owned_session(&session, None, &|| {
+                    admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                    true
+                })
+                .await;
+            assert!(matches!(foreign, Err(LlamaServerError::Superseded)));
+            assert!(!admitted.load(std::sync::atomic::Ordering::SeqCst));
+
+            // Drive the connected daemon transaction with this actual child and
+            // original local inputs. The helper cancels AFTER checkpoint/exit;
+            // where.exe is an actual restore spawn, never claimed model readiness.
+            process.record_verified_target(
+                &foreign_generation,
+                &prepared.target,
+                &prepared.invocation,
+                Some(prepared.clone()),
+                11008,
+                4,
+            );
+            let transition = endpoint.transition().await;
+            transition
+                .ready(
+                    &process.root,
+                    &foreign_generation,
+                    crate::inference::slots::KvPageContract {
+                        model_id: prepared.target.model.id.clone(),
+                        model: prepared.gguf.clone(),
+                        adapters: vec![],
+                        page_dir: Some(prepared.slot_save_dir.clone()),
+                        context: 11008,
+                        slots: 4,
+                        cache_type: Some("q8_0".into()),
+                        engine: process.bin.clone(),
+                        revisions: Some(vec![]),
+                    },
+                )
+                .unwrap();
+            drop(transition);
+            let pool = endpoint.admit().await.unwrap().pool.unwrap();
+            let key = crate::inference::slots::ActivityKey::new(
+                uuid::Uuid::new_v4(),
+                uuid::Uuid::new_v4(),
+            )
+            .unwrap();
+            let sem = Arc::new(tokio::sync::Semaphore::new(4));
+            let mut turn = crate::inference::turn_admission::admit_turn(
+                &sem,
+                Some(key),
+                Some(pool),
+                &process.client,
+                &process.root,
+                10,
+            )
+            .await
+            .unwrap();
+            turn.generation_completed();
+            drop(turn);
+            let saves = Arc::new(AtomicUsize::new(0));
+            let app = axum::Router::new().route("/slots/{slot}", axum::routing::post({
+                let saves = saves.clone();
+                move |axum::extract::Path(slot): axum::extract::Path<u32>,
+                    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+                    axum::Json(body): axum::Json<serde_json::Value>| {
+                    let saves = saves.clone();
+                    async move {
+                        assert_eq!(query.get("action").map(String::as_str), Some("save"));
+                        saves.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({"id_slot":slot,"filename":body["filename"],"n_saved":10}))
+                    }
+                }
+            }));
+            let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+                .await
+                .unwrap();
+            let http = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let root = process.root.clone();
+            let process = Arc::new(process);
+            crate::modules::serving_daemon::tests::exercise_cancelled_exclusive_teacher(
+                process.clone(),
+                foreign_generation,
+                &root,
+                http,
+                saves,
+            )
+            .await;
+            drop(foreign_input);
             drop(process);
             collect_retired_engines();
         }
