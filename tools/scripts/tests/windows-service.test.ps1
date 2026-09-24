@@ -5,9 +5,52 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
+. (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Engine application receipts reject changed candidate sets and bytes using
+    # real temporary files, without building/installing/spawning an engine.
+    $engineFixture = Join-Path $scratch 'receipt engine'
+    New-Item -ItemType Directory -Path $engineFixture | Out-Null
+    [IO.File]::WriteAllText((Join-Path $engineFixture 'llama-server.exe'), 'engine')
+    $runtimeFixture = Join-Path $engineFixture 'cublas64_12.dll'
+    [IO.File]::WriteAllText($runtimeFixture, 'before')
+    Start-CoreEnginePublication -Directory $engineFixture
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
+    if (-not $refused) { throw 'Incomplete fresh engine publication looked legacy.' }
+    Save-CoreEngineReceipt -Directory $engineFixture -SourceRevision ('a' * 40) -Backend cuda
+    Get-CoreEngineReceipt -Directory $engineFixture | Out-Null
+    $newCandidate = Join-Path $engineFixture 'ggml-cuda-new.dll'
+    [IO.File]::WriteAllText($newCandidate, 'candidate')
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'membership changed' }
+    if (-not $refused) { throw 'Added backend candidate was accepted.' }
+    Remove-Item -LiteralPath $newCandidate
+    $priorTime = (Get-Item -LiteralPath $runtimeFixture).LastWriteTimeUtc
+    [IO.File]::WriteAllText($runtimeFixture, 'after!')
+    (Get-Item -LiteralPath $runtimeFixture).LastWriteTimeUtc = $priorTime
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'input changed' }
+    if (-not $refused) { throw 'Same-length backdated runtime replacement was accepted.' }
+    [IO.File]::WriteAllText($runtimeFixture, 'before')
+    $engineCopy = Join-Path $scratch 'receipt copied slot'
+    New-Item -ItemType Directory -Path $engineCopy | Out-Null
+    Get-ChildItem -LiteralPath $engineFixture -File | Where-Object { $_.Name -ne 'engine-install.json' } | Copy-Item -Destination $engineCopy
+    Start-CoreEnginePublication -Directory $engineCopy
+    [IO.File]::WriteAllText((Join-Path $engineCopy 'cublas64_12.dll'), 'broken')
+    $refused = $false
+    try { Copy-CoreEngineReceipt -SourceDirectory $engineFixture -Directory $engineCopy } catch { $refused = $_ -match 'bytes differ' }
+    if (-not $refused -or -not (Test-Path -LiteralPath (Join-Path $engineCopy 'engine-install.pending'))) { throw 'Failed slot copy lost its incomplete state.' }
+    Copy-Item -LiteralPath $runtimeFixture -Destination (Join-Path $engineCopy 'cublas64_12.dll') -Force
+    Copy-CoreEngineReceipt -SourceDirectory $engineFixture -Directory $engineCopy
+    Get-CoreEngineReceipt -Directory $engineCopy | Out-Null
+    Remove-Item -LiteralPath (Join-Path $engineCopy 'cublas64_12.dll')
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $true }
+    if (-not $refused) { throw 'Missing runtime file was accepted.' }
+    Write-Output 'PASS: engine receipt pins application bytes, membership and copied-slot inputs'
     # Regression for 81021ff6: the real scheduler projects SID registration as
     # an account name. Resolve via Windows without broadening caller ownership.
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
