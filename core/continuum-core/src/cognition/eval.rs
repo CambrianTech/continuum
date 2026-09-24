@@ -165,15 +165,14 @@ fn stable_window_rung(window: u32) -> u32 {
 /// [`EvalLane`] handle that references it, so N concurrent eval / `agent/solve` tasks on
 /// the SAME base model share ONE lane instead of each cold-spawning a competitor that
 /// fights the others for the GPU. The llama-server process + governed VRAM lease tear
-/// down by RAII the instant the LAST handle drops — one authority, lanes lease, nothing
+/// down when the LAST handle drops; accounting waits for actual exit — one authority, nothing
 /// fights ([[resource-authority-is-a-system-concern]], #56).
 ///
 /// Named fields, NOT a positional tuple, so new lane state threads as ONE field
 /// ([[structs-by-reference-not-massive-param-lists]]).
 pub(crate) struct EvalLaneInner {
-    /// The throwaway server; kills its process on drop (#59). Declared FIRST so it drops
-    /// (kills the process, frees the physical VRAM) BEFORE `_vram_lease` releases the
-    /// accounting — same release order the pre-share struct guaranteed. `None` for a
+    /// The throwaway server requests retirement on drop (#59); its process owner
+    /// retains the governed reservation until actual child exit. `None` for a
     /// gateway-routed lane on an EXTERNAL provider (#310): the model is served by someone
     /// else's process (ds4 sidecar, cloud row) — there is nothing to spawn, hold, or kill.
     lane: Option<crate::inference::llama_server::EphemeralServingLane>,
@@ -186,11 +185,6 @@ pub(crate) struct EvalLaneInner {
     pub(crate) served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     placement: PlacementEvidence,
-    /// The governed VRAM reservation this lane holds while it runs (#56/G1). RAII:
-    /// released when the last handle drops, AFTER `lane`'s process is killed. `None` on a
-    /// CPU-spilled lane or an ungoverned node. Held so a concurrent serving tick sees the
-    /// eval's bytes as taken and won't tier up into them.
-    _vram_lease: Option<crate::resources::LeaseGuard>,
 }
 
 /// A cheap, cloneable handle to a (possibly shared) [`EvalLaneInner`]. Field reads
@@ -314,12 +308,9 @@ const LEDGER_FAIL_ANSWER_CHARS: usize = 1_200;
 /// it is NOT a conservative reserve that idles the GPU.
 const GPU_PLACEMENT_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Wall-clock TTL for the eval lane's governed VRAM lease (#56/G1). Generous — a
-/// cold 14B+ load plus a full benchmark run. RAII ([`crate::resources::LeaseGuard`])
-/// releases the bytes the instant the lane drops; this TTL is ONLY the self-healing
-/// backstop that returns the reservation to the board if the whole PROCESS is
-/// SIGKILLed mid-eval without ever running `Drop` — no stranded reservation, nothing
-/// static ([[memory-system-is-fully-dynamic-nothing-static]]).
+/// Wall-clock TTL for the eval lane's governed VRAM lease (#56/G1). Expiry
+/// makes a lease eligible for the governor's reclaim protocol; it is not proof
+/// of child exit. The process owner retains the RAII guard until actual exit.
 const EVAL_LANE_LEASE_TTL_MS: u64 = 30 * 60 * 1000;
 
 /// Where a coexisting eval lane runs + WHY. Rides out on the eval result so a CPU
@@ -762,14 +753,15 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
         "loading_lane",
         &format!("cold-loading gene eval lane ({})", gene.name),
     );
-    let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
+    let lane =
+        EphemeralServingLane::spawn_with_reservation(&target, EVAL_LANE_BASE_PORT, vram_lease)
+            .await
+            .map_err(|e| {
+                CommandError::Internal(format!(
                 "could not bring up the ephemeral eval lane for gene '{}' on base '{base_id}': {e}",
                 gene.name
             ))
-        })?;
+            })?;
 
     // 5. Point a fresh adapter at the lane (NOT the global serving root — this
     //    override is what keeps the measurement off the living persona's lane).
@@ -823,7 +815,6 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
             adapter: std::sync::Arc::new(adapter),
             served_ctx,
             placement: placement_evidence,
-            _vram_lease: vram_lease,
         }),
     })
 }
@@ -897,13 +888,14 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         "loading_lane",
         &format!("cold-loading eval lane for {base_id}"),
     );
-    let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
-                "could not bring up the ephemeral eval lane for base '{base_id}': {e}"
-            ))
-        })?;
+    let lane =
+        EphemeralServingLane::spawn_with_reservation(&target, EVAL_LANE_BASE_PORT, vram_lease)
+            .await
+            .map_err(|e| {
+                CommandError::Internal(format!(
+                    "could not bring up the ephemeral eval lane for base '{base_id}': {e}"
+                ))
+            })?;
     let mut adapter =
         crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
             .with_runtime_base_url(lane.root().to_string())
@@ -922,7 +914,6 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
         placement: placement_evidence,
-        _vram_lease: vram_lease,
     })
 }
 
@@ -1040,7 +1031,6 @@ async fn share_live_serving_lane(base: &crate::model_registry::Model) -> Option<
             free_vram_bytes: None,
             footprint_bytes: None,
         },
-        _vram_lease: None,
     })
 }
 
@@ -1103,7 +1093,6 @@ async fn build_external_eval_lane_inner(
             free_vram_bytes: None,
             footprint_bytes: None,
         },
-        _vram_lease: None,
     })
 }
 
