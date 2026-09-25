@@ -2,8 +2,8 @@
 
 export type ServingCacheProbeParams = { 
 /**
- * The slot to pin both requests to (default 0). Use a slot no citizen
- * holds, or accept evicting her warm prefix for one probe.
+ * The slot to pin both requests to. Default: the server's scratch slot, which no
+ * citizen holds; without one, slot 0, whose resident is saved and detached first.
  */
 slot?: number, 
 /**
