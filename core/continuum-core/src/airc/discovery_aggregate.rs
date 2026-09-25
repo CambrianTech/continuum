@@ -121,6 +121,46 @@ pub const DISCOVERY_PATIENCE: std::time::Duration = std::time::Duration::from_se
 /// Cadence between probes while the daemon is coming back.
 pub const DISCOVERY_RETRY_CADENCE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// When a recovery last STARTED a daemon, process-wide. The patience budget is measured
+/// from here rather than from the probe that found the socket dead.
+///
+/// A daemon the core starts itself needs time to answer — on this fleet as much as
+/// 60–70 s, because the answer waits behind the event store it opens (2.4 GB on the
+/// 5090, 2026-09-25). Charging that time against the window that decides whether to
+/// BELIEVE the daemon is what left the node dark for four days: recovery started a
+/// daemon at 19:28:40.940341, the 45 s budget was already spent on the probe that
+/// preceded it, discovery settled `kind=degraded` 146 µs later, the core refused to
+/// boot (`--mode=full-citizen requires AIRC Healthy`), and the daemon it had just
+/// started died with it — every restart repeating the same pass, and no hand inside
+/// the substrate able to break it (an operator had to start a daemon out-of-band).
+static DAEMON_STARTED_AT: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+fn note_daemon_started() {
+    if let Ok(mut at) = DAEMON_STARTED_AT.lock() {
+        *at = Some(std::time::Instant::now());
+    }
+}
+
+fn daemon_started_at() -> Option<std::time::Instant> {
+    DAEMON_STARTED_AT.lock().ok().and_then(|at| *at)
+}
+
+/// PURE: how long the retry loop has effectively waited — from its own start, or from
+/// the moment a recovery started a daemon, whichever is LATER. A started daemon resets
+/// the budget once; its own start time is never charged against it.
+pub fn effective_elapsed(
+    started: std::time::Instant,
+    daemon_started: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> std::time::Duration {
+    let origin = match daemon_started {
+        Some(d) if d > started => d,
+        _ => started,
+    };
+    now.saturating_duration_since(origin)
+}
+
 /// A failure that a daemon restart explains — worth another probe. Install
 /// and configuration failures are not: waiting cannot change them.
 pub fn is_transient(d: &AircDiscovery) -> bool {
@@ -161,12 +201,16 @@ pub async fn discover_with_patience() -> AircDiscovery {
     loop {
         let d = discover().await;
         attempt += 1;
-        if !should_retry(&d, started.elapsed(), DISCOVERY_PATIENCE) {
+        // The budget runs from the loop's start OR from a daemon this pass started,
+        // whichever is later (see `DAEMON_STARTED_AT`).
+        let waited = effective_elapsed(started, daemon_started_at(), std::time::Instant::now());
+        if !should_retry(&d, waited, DISCOVERY_PATIENCE) {
             if attempt > 1 {
                 crate::probe!(
                     class = "airc.discovery.settled",
                     attempts = attempt,
                     waited_ms = started.elapsed().as_millis() as u64,
+                    waited_since_daemon_start_ms = waited.as_millis() as u64,
                     kind = d.kind(),
                     "airc discovery settled after waiting for the daemon"
                 );
@@ -177,6 +221,7 @@ pub async fn discover_with_patience() -> AircDiscovery {
             class = "airc.discovery.retry",
             attempt = attempt,
             waited_ms = started.elapsed().as_millis() as u64,
+            waited_since_daemon_start_ms = waited.as_millis() as u64,
             kind = d.kind(),
             reason = ?d.reason(),
             "airc daemon not answering yet — probing again (a restart in progress, not a missing install)"
@@ -235,6 +280,12 @@ async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
     let started = std::time::Instant::now();
     let start = tokio::time::timeout(std::time::Duration::from_secs(30), Command::new("airc").arg("status").output()).await;
     let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
+    if start_ok || socket.exists() {
+        // A daemon was started. Whether it answers within THIS function's wait or not,
+        // the patience loop now measures its budget from here — a slow daemon is a
+        // daemon, and the verdict must not be the one its own start time bought.
+        note_daemon_started();
+    }
     let mut answered = false;
     while started.elapsed() < std::time::Duration::from_secs(25) {
         if socket.exists() && discover_peer_id(socket).await.is_ok() {
@@ -360,6 +411,47 @@ mod discovery_failure_mapping_tests {
             DiscoveryFailure::UnparseablePeerId(raw, err_msg)
             if raw == "xyz" && !err_msg.is_empty()
         ));
+    }
+
+    // what this catches (the 5090, 2026-09-25, four days dark): the core started a
+    // daemon and then refused to boot on the verdict its own start time had bought —
+    // the 45 s budget was spent by the probe that preceded the recovery, so discovery
+    // settled `degraded` 146 µs after `airc.daemon.recovered` and the daemon died with
+    // the core. A daemon this pass STARTED resets the budget once, so a daemon that
+    // needs 60–70 s to answer (2.4 GB event store) is still waited for; a recovery
+    // OLDER than the loop never extends it, and with no recovery nothing changes.
+    #[test]
+    fn a_started_daemon_resets_the_patience_budget_and_a_stale_one_never_extends_it() {
+        use std::time::Duration;
+        let t0 = std::time::Instant::now();
+        let spent = t0 + DISCOVERY_PATIENCE + Duration::from_secs(8); // the incident: 53 s of a 45 s budget
+        let restarting = AircDiscovery::Degraded {
+            reason: DiscoveryFailure::StaleSocket(PathBuf::from("/tmp/x.sock"), "gone".into()),
+            partial: PartialDiscovery::default(),
+        };
+
+        // No recovery: the budget is spent and the verdict stands (unchanged behavior).
+        let none = effective_elapsed(t0, None, spent);
+        assert!(!should_retry(&restarting, none, DISCOVERY_PATIENCE), "spent budget, nothing started");
+
+        // A daemon started just before the verdict: the budget runs from THERE, so the
+        // loop keeps probing instead of refusing the daemon it just started.
+        let daemon_at = spent - Duration::from_millis(1);
+        let after = effective_elapsed(t0, Some(daemon_at), spent);
+        assert!(after < Duration::from_secs(1), "measured from the daemon's start, got {after:?}");
+        assert!(should_retry(&restarting, after, DISCOVERY_PATIENCE), "a started daemon is waited for");
+
+        // Still bounded: once the daemon's own window is spent, the verdict settles.
+        let long = effective_elapsed(t0, Some(daemon_at), daemon_at + DISCOVERY_PATIENCE + Duration::from_secs(1));
+        assert!(!should_retry(&restarting, long, DISCOVERY_PATIENCE), "the reset is once, not forever");
+
+        // A recovery from BEFORE this loop cannot extend this loop's budget.
+        let older = effective_elapsed(t0, Some(t0 - Duration::from_secs(300)), spent);
+        assert_eq!(older, spent.saturating_duration_since(t0), "an older start is ignored");
+
+        // A failure waiting cannot fix is still refused on the first probe.
+        let fatal = AircDiscovery::Unreachable { reason: DiscoveryFailure::AutoInstallDisabled };
+        assert!(!should_retry(&fatal, Duration::ZERO, DISCOVERY_PATIENCE), "not transient");
     }
 
     /// `stale_socket_from_status_err` MUST construct a `StaleSocket`
