@@ -3899,7 +3899,7 @@ static LIVE_GRADES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashM
     std::sync::LazyLock::new(Default::default);
 
 fn live_grade_ids() -> std::collections::HashSet<String> {
-    LIVE_GRADES.lock().expect("live-grade registry poisoned").keys().cloned().collect()
+    LIVE_GRADES.lock().expect("live-grade registry poisoned").keys().cloned().collect() // a poisoned registry means a grade panicked holding it; the count is no longer trustworthy
 }
 
 /// A grade's hold on its checkout. The checkout exists for the grade and for nothing
@@ -3920,7 +3920,7 @@ impl GradeCheckoutHold {
     fn take(instance_id: &str) -> Self {
         *LIVE_GRADES
             .lock()
-            .expect("live-grade registry poisoned")
+            .expect("live-grade registry poisoned") // a poisoned registry means a grade panicked holding it; the count is no longer trustworthy
             .entry(instance_id.to_string())
             .or_default() += 1;
         Self {
@@ -3933,7 +3933,7 @@ impl GradeCheckoutHold {
 impl Drop for GradeCheckoutHold {
     fn drop(&mut self) {
         let last = {
-            let mut live = LIVE_GRADES.lock().expect("live-grade registry poisoned");
+            let mut live = LIVE_GRADES.lock().expect("live-grade registry poisoned"); // a poisoned registry means a grade panicked holding it; the count is no longer trustworthy
             let n = live.get_mut(&self.instance_id).map(|n| {
                 *n -= 1;
                 *n
@@ -3969,7 +3969,7 @@ fn sweep_orphan_grade_checkouts(root: &Path, live: &std::collections::HashSet<St
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let id = name.split(".cloning-").next().unwrap_or(&name);
+        let id = name.split(".cloning-").next().unwrap_or(&name); // split always yields a first piece; the fallback is unreachable
         if live.contains(id) {
             continue;
         }
