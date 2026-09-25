@@ -31,6 +31,23 @@ def model_class(config):
     raise ValueError(f"no installed Transformers trainer for {config.model_type}")
 
 
+# Per-vocab-entry bytes the loss peak costs, per supervised token.
+#
+# transformers' ForCausalLMLoss upcasts the WHOLE logits tensor
+# (`loss_utils.py`: `logits = logits.float()`), so the peak holds the bf16
+# logits (2), their fp32 copy (4), and the fp32 gradient of that copy (4) at
+# once, plus the shifted copy cross-entropy makes internally.
+#
+# This was 8, and 8 is what let a plan be admitted and then die inside its own
+# admission: the 5090, 2026-09-25 00:23Z, Kimi's job b73456e6 — the governor
+# admitted the plan, the trainer honoured it ("28.91 GiB allowed"), held
+# 27.36 GiB, and the final `logits.float()` asked for 1.89 GiB more. A planner
+# whose estimate is under the true peak is not a budget; it is a guess that
+# gets a job killed after it has paid for the weights. Erring HIGH costs a
+# smaller micro-batch; erring low costs the whole run.
+LOGITS_BYTES_PER_TOKEN = 12
+
+
 def plan(spec, output):
     import torch
     from accelerate import init_empty_weights
@@ -66,7 +83,7 @@ def plan(spec, output):
     available = min(free, spec.get("availableBytes", free))
     sequence = schedule["sequenceLength"]
     per_example = sequence * (int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
-                              + int(text.vocab_size) * 8)
+                              + int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN)
     # CUDACachingAllocator large slabs: rounding plus one working slab.
     slab = 20 * 1024 * 1024
     logical_budget = max(0, (available // slab - 1) * slab)
@@ -75,7 +92,7 @@ def plan(spec, output):
     micro = min(schedule["batchSize"], max(1, (logical_budget - weights - optimizer) // per_example))
     tokens = micro * sequence
     activations = tokens * int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
-    logits = tokens * int(text.vocab_size) * 8
+    logits = tokens * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN
     terms = dict(weights=weights, optimizer=optimizer, activations=activations, logits=logits)
     terms["allocator"] = slab + (-sum(terms.values()) % slab)
     write_json(output, {"memoryBytes": sum(terms.values()), "terms": terms,
@@ -255,4 +272,27 @@ if __name__ == "__main__":
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()
     spec = json.loads(args.config.read_text(encoding="utf-8"))
-    (plan if args.plan else train)(spec, args.output)
+    try:
+        (plan if args.plan else train)(spec, args.output)
+    except BaseException as failure:
+        # THE PEAK IS ONLY USEFUL WHEN IT KILLED THE RUN. `training-provenance.json`
+        # records peakAllocatedBytes on success, which is exactly the case where
+        # nobody needs it; the OOM above left a traceback and no numbers, so the
+        # estimate that caused it could not be calibrated from its own failure.
+        # Best-effort, and it never masks the original: the raise below is
+        # unconditional ([[fallbacks-are-illegal-fail-loud]]).
+        if not args.plan:
+            try:
+                import torch as measured
+                write_json(args.output / "training-failure.json", {
+                    "error": str(failure)[:2000],
+                    "peakAllocatedBytes": (measured.cuda.max_memory_allocated()
+                                           if measured.cuda.is_available() else None),
+                    "budgetBytes": spec.get("memoryBytes"),
+                    "microBatchSize": spec.get("microBatchSize"),
+                    "sequenceLength": (spec.get("schedule") or {}).get("sequenceLength"),
+                    "logitsBytesPerToken": LOGITS_BYTES_PER_TOKEN,
+                })
+            except BaseException:
+                pass
+        raise
