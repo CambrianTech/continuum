@@ -212,14 +212,59 @@ the rule must honour:
   walk above puts M5 coders on Ornith, M5 coder genomes are trained for Ornith.
 - **The curriculum is the portable genome. Adapters are compiled per base.** This is the
   foundry-as-JIT shape in [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md): the
-  datasets and graded turns a persona earned transfer to any base, and an adapter is
-  that curriculum compiled for one architecture. Until a direct transfer exists,
-  re-training from the same curriculum on the new base IS the transfer, scheduled as a
-  training period like any other.
-- **Direct adapter transfer is NOT built.** Nothing in `genome/` maps an adapter across
-  bases; the only prior thinking is research-grade (cross-model head transplant in
-  [SENTINEL-AI-NEURAL-PLASTICITY.md](../papers/SENTINEL-AI-NEURAL-PLASTICITY.md)). Joel has
-  ideas for this; they belong here when written down.
+  datasets and graded turns a persona earned carry to any base, and an adapter is that
+  curriculum compiled for one architecture.
+
+### Horizontal gene transfer (HGT): moving a gene to another base
+
+**Joel, 2026-09-25:** *"We should call it horizontal gene transfer and make it also a
+command. Everything a command, event and handle ideology."*
+
+In biology, horizontal gene transfer is how an organism acquires a gene from outside its
+lineage. Here it moves a persona's trained gene (a LoRA adapter for one trait) onto a
+different base model, so a change of base, which the state walk above can require,
+does not cost her the skill.
+
+**Shape.** It follows the substrate's three primitives
+([AI-COMMAND-NAMESPACE.md](AI-COMMAND-NAMESPACE.md)): adapter polymorphism, the handle
+pattern, and capture. It mirrors `genome/job-create`, the command it builds on.
+
+| Command | Does | Returns |
+|---|---|---|
+| `genome/transfer` | Moves one gene (persona + trait, or a gene handle) onto a target base model. A coordinator picks a capable transfer strategy; `preferredStrategy` is honoured only if capable. | a transfer handle + the selected strategy, or `success=false` with the reason (never a silent fallback) |
+| `genome/transfer-status` | Reads the handle's phase and receipts | phase, progress, the child job handle(s) |
+| `genome/transfer-cancel` | Cancels through the owner; cleanup stays owned | terminal receipt |
+
+**Events** on the bus, so a citizen in the room perceives a transfer through the same
+ViewState pipe as a person does (never a log file): `genome:transfer:started`,
+`genome:transfer:progress`, `genome:transfer:completed`, `genome:transfer:refused`.
+
+**Strategies** implement one trait, registered like every other adapter:
+
+1. **`recompile`** (buildable now). It retrains the gene's curriculum on the target base
+   through `genome/job-create`. That command already takes `base-model`, `dataset-name`
+   and `eval-set`, so no new training machinery is needed. The gene's dataset and gym are
+   the portable part; this strategy recompiles them for a new architecture.
+2. **Direct strategies** (not built; Joel's ideas go here), which map an adapter's learned
+   deltas across architectures without retraining from scratch. They plug in as further
+   implementations of the same trait, with the same handle and events, and callers never
+   change. The prior thinking is research-grade (cross-model head transplant in
+   [SENTINEL-AI-NEURAL-PLASTICITY.md](../papers/SENTINEL-AI-NEURAL-PLASTICITY.md)).
+
+**Adoption is gated by measurement, exactly like a newly trained gene.** A transferred gene
+is paged into a live persona only after it measures on the SAME gym as its source, and
+it must reach the source's score within a stated margin. The training completion
+sentinel already refuses to adopt a gene with no eval set; HGT inherits that refusal. A
+transfer whose gene cannot be measured is refused, never adopted on trust.
+
+**Lineage is recorded.** A transferred gene carries its provenance (source gene, source
+base, strategy, measured score on both bases) in the genome repository, so a gene's
+horizontal ancestry is as inspectable as its training history.
+
+**Who asks for it.** The planner does, when the state walk would serve a persona on a
+base where she lacks a gene her activity uses. It requests the transfer as a scheduled
+training period (the standing-periods actuator), and it prices the gene's absence in the
+meantime. Operators and citizens can also issue the command directly, as with any command.
 
 ### Acceptance tests for the rule
 
@@ -229,6 +274,9 @@ the rule must honour:
 - **Batch ignores the floor:** a teacher period on the M5 selects the 27B although it
   fails the interactive floor.
 - **Unmeasured is eligible:** a model with no curve is not excluded by speed.
+- **HGT adoption is measured:** a `recompile` transfer of a gene from base A to base B
+  is adopted only when its score on the source gym is within the stated margin of the
+  source's; a transfer with no gym is refused, and the refusal event names why.
 - **Genome pricing:** a persona holding adapters for base A is served on A over a bare
   base B that outranks A statically, until B's advantage exceeds the adapters' measured
   value. The margin is stated in the test.
@@ -236,8 +284,8 @@ the rule must honour:
   once across the trace (the same hysteresis contract as the learned window floor).
 
 **Status:** design, not built. Owner of the planner change: the serving lane (Claude, M5).
-Academy and training periods: BigMama (5090), per the standing-periods actuator. Adapter
-transfer: open; Joel's design.
+Academy and training periods: BigMama (5090), per the standing-periods actuator. HGT: `recompile` is buildable
+on `genome/job-create`; direct strategies are Joel's design.
 
 ## The smell to catch yourself on
 
