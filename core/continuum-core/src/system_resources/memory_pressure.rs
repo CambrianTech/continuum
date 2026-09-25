@@ -87,6 +87,59 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// drop below High re-arms the immediate read for the next episode.
 const ANOMALY_SCAN_EVERY: Duration = Duration::from_secs(30);
 
+/// How often a PERSISTING anomaly is re-said in the org room. The scan re-reads every
+/// [`ANOMALY_SCAN_EVERY`] (30 s) — right for the probe, far too often for a room. The
+/// room hears the first crossing at once, then a reminder at this cadence while the
+/// same process stays over the floor.
+const ANOMALY_SAY_EVERY: Duration = Duration::from_secs(30 * 60);
+
+/// PURE: should this anomaly be said in the org room now? Yes the first time a process
+/// is named (`last_said` none), then once per [`ANOMALY_SAY_EVERY`].
+fn anomaly_line_due(last_said: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last_said.is_none_or(|at| now.saturating_duration_since(at) >= ANOMALY_SAY_EVERY)
+}
+
+/// Last time each named process was said, so a long episode is one line plus reminders.
+static ANOMALY_SAID: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// SAY THE ANOMALY WHERE A PERSON OR A PEER WILL SEE IT. `memory.pressure.anomaly` was
+/// written after fseventsd held 26.6 GB (2026-09-08) and NOTHING read it: the probe file
+/// rotates within the hour, so fseventsd grew to 14 GB again on 2026-09-24 and the only
+/// record was a line no one saw. A root-owned process is not ours to kill — the remedy
+/// needs a person or a peer — so the substrate's job is to TELL someone, once, promptly.
+fn say_anomaly(name: &str, pid: u32, rss_bytes: u64, total_bytes: u64) {
+    let now = std::time::Instant::now();
+    {
+        let mut said = ANOMALY_SAID.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned map is still the last-said times; recover it
+        if !anomaly_line_due(said.get(name).copied(), now) {
+            return;
+        }
+        said.insert(name.to_string(), now);
+    }
+    let gb = |b: u64| b / (1024 * 1024 * 1024);
+    let remedy = if name.contains("fseventsd") {
+        " fseventsd is root-owned: `sudo killall fseventsd` restarts it (it respawns empty)."
+    } else {
+        ""
+    };
+    let line = format!(
+        "[memory] {name} (pid {pid}) holds {} GB of this node's {} GB — over a quarter of physical memory, and not the model server. Left alone it degrades every continuum function and can take the machine down.{remedy}",
+        gb(rss_bytes),
+        gb(total_bytes),
+    );
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move { crate::modules::grid::say_in_org_room(&line).await });
+        }
+        Err(_) => crate::probe!(
+            class = "memory.pressure.anomaly_not_said",
+            process = %name,
+            "no async runtime on the monitor thread — the anomaly stays in the probe only"
+        ),
+    }
+}
+
 /// PURE: is the anomaly scan due on this tick? Due on the first tick at High or above
 /// (`last_scan` none), and thereafter once per [`ANOMALY_SCAN_EVERY`]; never below High.
 fn anomaly_scan_due(level: PressureLevel, last_scan: Option<Duration>, since_start: Duration) -> bool {
@@ -942,6 +995,7 @@ impl MemoryPressureMonitor {
                             source = "sysinfo",
                             "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
                         );
+                        say_anomaly(&name, pid.as_u32(), mem, total);
                     }
                     // sysinfo cannot read root-owned processes' memory on macOS (fseventsd
                     // at 26.6 GB reported 0 on 2026-09-08) — `ps` can. Bounded to 2 s.
@@ -964,6 +1018,7 @@ impl MemoryPressureMonitor {
                                         source = "ps",
                                         "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
                                     );
+                                    say_anomaly(&p.name, p.pid, p.rss_bytes, total);
                                 }
                             }
                             // A read that could not complete is said, never an empty list
@@ -1314,6 +1369,19 @@ mod tests {
              `system_resources::memory_pressure::available_from(&sys)`, the one derivation \
              every reader shares. Direct callers found at: {hits:?}"
         );
+    }
+
+    // what this catches: the org-room line for a memory anomaly firing every 30 s scan
+    // for as long as fseventsd stays huge (a flood), or never firing again for a process
+    // that stays over the floor for hours (silence). First crossing: said at once. Same
+    // process: reminded once per ANOMALY_SAY_EVERY, never more often.
+    #[test]
+    fn a_memory_anomaly_is_said_once_then_reminded_not_flooded() {
+        let t0 = std::time::Instant::now();
+        assert!(anomaly_line_due(None, t0), "the first crossing is said at once");
+        assert!(!anomaly_line_due(Some(t0), t0 + Duration::from_secs(30)), "the next 30 s scan is not a new line");
+        assert!(!anomaly_line_due(Some(t0), t0 + ANOMALY_SAY_EVERY - Duration::from_secs(1)), "still inside the reminder window");
+        assert!(anomaly_line_due(Some(t0), t0 + ANOMALY_SAY_EVERY), "a persisting anomaly is reminded");
     }
 
     // what this catches (card 948c30c2): the anomaly scan — a full process-table refresh

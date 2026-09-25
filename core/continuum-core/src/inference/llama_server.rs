@@ -522,6 +522,23 @@ pub(crate) fn lane_grow_would_narrow_the_window(
     target_window.saturating_add(tolerance) < served_window
 }
 
+/// Is this relaunch a GROW that the closed memory gate forbids? The gate closes at
+/// sustained Critical pressure and its contract is that subsystems refuse new
+/// allocations (`is_memory_gate_closed`) — and a relaunch toward more lanes or a wider
+/// window is the largest elective allocation this node makes. Eval and Whisper read the
+/// gate; the grow ladder did not. Measured on the M5 2026-09-23: the engine settled at
+/// 8 lanes × 35,328 while `memory.pressure` read Critical for 39 consecutive samples,
+/// 36.8 GB resident on a 69 GB box. And fseventsd has twice taken over a quarter of the
+/// machine (26.6 GB 2026-09-08, 14 GB 2026-09-24) — growing into THAT is how an
+/// unattended node goes down.
+///
+/// Only the lane and window axes are refused. A KV-type or sight relaunch is a
+/// DECISION change, not necessarily a larger footprint, and stays allowed. Pure, so the
+/// test does not touch the process-global gate.
+pub(crate) fn grow_refused_by_memory_gate(gate_closed: bool, window_ok: bool, lanes_ok: bool) -> bool {
+    gate_closed && (!window_ok || !lanes_ok)
+}
+
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
 /// The failure mode this guards is the intermittently-wedged fresh lane that answers
 /// EVERY request with ~2 tokens then stops (observed on ephemeral eval lanes: same
@@ -2904,7 +2921,25 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                      more lanes come when they fit at it",
                 );
             }
-            if (!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade {
+            let gate_closed = crate::system_resources::is_memory_gate_closed();
+            let refused_pressure = !refused_trade && grow_refused_by_memory_gate(gate_closed, window_ok, lanes_ok);
+            if refused_pressure {
+                crate::probe!(
+                    class = "serving.grow_refused_memory_gate",
+                    model = target.model_id(),
+                    target_lanes = target.lanes,
+                    target_window = target.context_window,
+                    served_lanes = served_lanes_n,
+                    served_window = served_window_n,
+                    window_ok,
+                    lanes_ok,
+                    "the plan wants a larger engine but the memory gate is CLOSED (sustained \
+                     Critical) — refused; the lane keeps its geometry. Growing into a machine \
+                     that is already short is how an unattended node goes down. The grow is \
+                     re-asked every tick and proceeds once the gate reopens",
+                );
+            }
+            if (!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade && !refused_pressure {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
@@ -6985,6 +7020,20 @@ mod tests {
     // refused and the lane stays; a pure lane grow at the served window still relaunches
     // (the test above), and a WIDER window at fewer lanes still relaunches (the window is
     // the requirement, lanes are throughput).
+    // what this catches: the grow ladder allocating through a CLOSED memory gate. The M5
+    // settled at 8 lanes × 35,328 during 39 consecutive Critical samples (2026-09-23), and
+    // fseventsd has twice held over a quarter of the machine. A grow on either axis is
+    // refused while the gate is closed; a decision-only relaunch (KV type, sight) is not,
+    // and nothing is refused while the gate is open.
+    #[test]
+    fn a_closed_memory_gate_refuses_a_lane_or_window_grow() {
+        assert!(grow_refused_by_memory_gate(true, true, false), "more lanes through a closed gate");
+        assert!(grow_refused_by_memory_gate(true, false, true), "a wider window through a closed gate");
+        assert!(grow_refused_by_memory_gate(true, false, false), "both");
+        assert!(!grow_refused_by_memory_gate(true, true, true), "geometry matches: a KV/sight relaunch is not a grow");
+        assert!(!grow_refused_by_memory_gate(false, false, false), "an open gate refuses nothing");
+    }
+
     #[tokio::test]
     async fn a_lane_grow_that_would_narrow_the_window_is_refused_as_a_trade() {
         // The predicate, at the measured numbers and at the edges.
