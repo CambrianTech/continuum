@@ -564,6 +564,35 @@ on canary 2026-09-25:
 events. They are wired by the type system, not by name, so they are out of scope for the
 name graph. The later step is to record them as edges when the runtime constructs them.
 
+### Time: every artifact carries two stamps, and time is passed in
+
+**Joel, 2026-09-25:** *"Everything is timestamped and tied back historically into the
+substrate ledgers per concern. Shift the result forward or backward in time from
+synchronization performed by fast optical flow and later SLAM sensor fusion. We have the
+same needs in our minds and systems."* And: *"Rust makes it work deterministically."*
+
+- **Two stamps per artifact.** The first is when the source it describes was captured
+  (the frame, the transcript line, the decode sample). The second is when the result was
+  computed. Independent algorithms finish at different times about the same moment. A
+  consumer fusing them aligns on the source stamp and uses the gap to shift a late result
+  to the present. That is how a slow detector's box is re-anchored onto the current frame
+  by optical flow, and later by SLAM. The same holds for a mind: a recall, a perception
+  fact or a lane measurement is about a moment already past when it is read.
+- **Ledgers per concern.** Stamped results land in their concern's ledger (the
+  substrate's capture and replay path), so history, replay and later refinement come
+  with the stamps rather than by extra plumbing.
+- **Determinism is the ownership model plus one discipline.** Rust makes data races
+  and unhandled states unrepresentable (ownership, `Send`/`Sync`, exhaustive `match`,
+  no unwrap). Replay determinism additionally needs time and inputs passed IN, never read
+  from the wall clock inside the logic. `decode_knee::knee(floor, now_ms)` is the shape.
+  A recorded run then reproduces exactly, and a new algorithm stacked into the graph can
+  be tried against yesterday's recorded inputs before it touches a live mind.
+- **Speed is measured, not hoped for.** Declarations are static and built once at boot.
+  The undeclared-name check is one set insert per NEW name, not per event. Producers with
+  no live consumer can pause, so the net should be less work. Each module moved onto the
+  graph shows before-and-after VDD evidence that it is at least as fast (this doc's
+  consumer-migration rule).
+
 ### Slices
 
 1. `emissions()` on the trait (default empty), the pure graph builder and orphan
