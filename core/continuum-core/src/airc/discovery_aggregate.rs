@@ -161,6 +161,17 @@ pub fn effective_elapsed(
     now.saturating_duration_since(origin)
 }
 
+/// PURE: the origin the patience budget is measured from, frozen at the FIRST daemon
+/// start newer than the loop's own start. Once set it never moves, so a start from a
+/// later retry cannot extend the budget; a start older than the loop is ignored.
+pub fn frozen_reset_origin(
+    frozen: Option<std::time::Instant>,
+    loop_started: std::time::Instant,
+    daemon_started: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    frozen.or(daemon_started.filter(|d| *d > loop_started))
+}
+
 /// A failure that a daemon restart explains — worth another probe. Install
 /// and configuration failures are not: waiting cannot change them.
 pub fn is_transient(d: &AircDiscovery) -> bool {
@@ -198,12 +209,17 @@ pub fn should_retry(
 pub async fn discover_with_patience() -> AircDiscovery {
     let started = std::time::Instant::now();
     let mut attempt: u32 = 0;
+    let mut reset_origin: Option<std::time::Instant> = None;
     loop {
         let d = discover().await;
         attempt += 1;
-        // The budget runs from the loop's start OR from a daemon this pass started,
-        // whichever is later (see `DAEMON_STARTED_AT`).
-        let waited = effective_elapsed(started, daemon_started_at(), std::time::Instant::now());
+        // The budget runs from the loop's start OR from the FIRST daemon this pass
+        // started, whichever is later (see `DAEMON_STARTED_AT`). Frozen once seen: every
+        // retry re-runs recovery when the socket is unheld, so a daemon that keeps dying
+        // would otherwise move the origin forward each time and the budget would never
+        // expire — boot looping on daemon starts, never settling a verdict.
+        reset_origin = frozen_reset_origin(reset_origin, started, daemon_started_at());
+        let waited = effective_elapsed(started, reset_origin, std::time::Instant::now());
         if !should_retry(&d, waited, DISCOVERY_PATIENCE) {
             if attempt > 1 {
                 crate::probe!(
@@ -448,6 +464,21 @@ mod discovery_failure_mapping_tests {
         // A recovery from BEFORE this loop cannot extend this loop's budget.
         let older = effective_elapsed(t0, Some(t0 - Duration::from_secs(300)), spent);
         assert_eq!(older, spent.saturating_duration_since(t0), "an older start is ignored");
+
+        // Review of #4386: a daemon that keeps dying re-runs recovery on every retry, so
+        // DAEMON_STARTED_AT moves forward each time. The origin freezes at the FIRST start
+        // newer than the loop, so a second, later start cannot extend the budget.
+        let first = frozen_reset_origin(None, t0, Some(daemon_at));
+        assert_eq!(first, Some(daemon_at), "the first start in this pass sets the origin");
+        let second_start = daemon_at + DISCOVERY_PATIENCE;
+        let still = frozen_reset_origin(first, t0, Some(second_start));
+        assert_eq!(still, Some(daemon_at), "a later start never moves a frozen origin");
+        let end = daemon_at + DISCOVERY_PATIENCE + Duration::from_secs(1);
+        assert!(
+            !should_retry(&restarting, effective_elapsed(t0, still, end), DISCOVERY_PATIENCE),
+            "with a daemon dying and restarting, the budget still expires once"
+        );
+        assert_eq!(frozen_reset_origin(None, t0, Some(t0 - Duration::from_secs(5))), None, "an older start is ignored");
 
         // A failure waiting cannot fix is still refused on the first probe.
         let fatal = AircDiscovery::Unreachable { reason: DiscoveryFailure::AutoInstallDisabled };
