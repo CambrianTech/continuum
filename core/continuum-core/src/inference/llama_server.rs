@@ -1949,16 +1949,45 @@ pub fn external_serving_pin() -> Option<String> {
 /// persona's real turns, where a genuine wedge (every turn 500s) surfaces LOUD on
 /// the first turn — not silently faked. Cheap, off the HTTP layer, so no slot
 /// contention and no probe storm.
-///
-/// Also the liveness question a slow KV page switch asks before it is allowed to
-/// call the engine dead ([`crate::inference::turn_admission::kv_page_action`]):
-/// `/health` is answered off the slot queue, so a busy engine still answers it.
-pub(crate) async fn external_health_ok(root: &str, client: &reqwest::Client) -> bool {
+async fn external_health_ok(root: &str, client: &reqwest::Client) -> bool {
     let url = format!("{root}/health");
     matches!(
         client.get(&url).timeout(PROBE_TIMEOUT).send().await,
         Ok(resp) if resp.status().is_success()
     )
+}
+
+/// A fingerprint of everything the engine's slots have done: per slot, the task id
+/// plus prompt tokens processed plus tokens decoded, summed. It changes whenever any
+/// slot prefills, decodes, or picks up a new task, so two equal reads with a wait
+/// between them mean the engine's queue did not move. Pure; `None` if the body is not
+/// the `/slots` array.
+pub(crate) fn slots_progress_fingerprint(slots: &serde_json::Value) -> Option<u64> {
+    let slots = slots.as_array()?;
+    Some(slots.iter().fold(0u64, |acc, slot| {
+        let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0); // JUSTIFIED unwrap_or: an absent counter contributes nothing to the sum; progress is a CHANGE, never a level
+        acc.wrapping_add(n(&slot["id_task"]))
+            .wrapping_add(n(&slot["n_prompt_tokens_processed"]))
+            .wrapping_add(n(&slot["next_token"][0]["n_decoded"]))
+    }))
+}
+
+/// Read the engine's progress fingerprint from `GET /slots` (bounded like every probe
+/// here). `None` when the engine does not answer — which a caller treats as not
+/// progressing. Asked by a slow KV page switch before it may call the engine stuck
+/// ([`crate::inference::turn_admission::kv_page_action`]).
+pub(crate) async fn engine_progress(root: &str, client: &reqwest::Client) -> Option<u64> {
+    let url = format!("{root}/slots");
+    let body: serde_json::Value = client
+        .get(&url)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    slots_progress_fingerprint(&body)
 }
 
 async fn external_active_model(v1_url: &str, client: &reqwest::Client) -> Option<String> {

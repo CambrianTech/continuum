@@ -304,30 +304,41 @@ pub(crate) enum PageOutcome {
     Uncertain,
 }
 
-/// Await `work`, treating each `bound` as a liveness checkpoint rather than a verdict:
-/// if `alive()` says the engine still answers, keep waiting (and report the checkpoint
-/// through `on_busy`); only an engine that does not answer ends the wait, as `None`.
-/// Pure over its inputs so the rule is testable on a paused clock.
-async fn wait_while_engine_answers<T, W, A, AF>(
+/// Await `work`, treating each `bound` as a PROGRESS checkpoint rather than a verdict.
+/// At each checkpoint `progress()` reads the engine's work fingerprint; the wait goes on
+/// only while it has moved since the last read, i.e. the engine's queue is advancing and
+/// this switch will be reached. An unchanged fingerprint (the queue is stuck, even if the
+/// server still answers) or no answer at all ends the wait as `None`. The first read is
+/// taken at the start, so a stall is recognised at the first checkpoint.
+///
+/// Why progress and not liveness (Cormac's review of #4387): `/health` is answered off
+/// the slot queue, so it stays healthy through exactly the queue-side stall the bound
+/// exists to catch, and the caller would hold its pin with no way out.
+async fn wait_while_engine_progresses<T, W, P, PF>(
     work: W,
     bound: std::time::Duration,
-    mut alive: A,
+    mut progress: P,
     mut on_busy: impl FnMut(u64),
 ) -> Option<T>
 where
     W: std::future::Future<Output = T>,
-    A: FnMut() -> AF,
-    AF: std::future::Future<Output = bool>,
+    P: FnMut() -> PF,
+    PF: std::future::Future<Output = Option<u64>>,
 {
     tokio::pin!(work);
+    let mut last = progress().await;
     let mut busy_checkpoints: u64 = 0;
     loop {
         tokio::select! {
             done = &mut work => return Some(done),
             _ = tokio::time::sleep(bound) => {
-                if !alive().await {
-                    return None;
+                let now = progress().await;
+                match (last, now) {
+                    (_, None) => return None,
+                    (Some(before), Some(after)) if before == after => return None,
+                    _ => {}
                 }
+                last = now;
                 busy_checkpoints += 1;
                 on_busy(busy_checkpoints);
             }
@@ -336,8 +347,9 @@ where
 }
 
 /// Execute one page action through the shared turn/warm-ahead boundary. The
-/// measured wedge bound is a liveness checkpoint (see [`wait_while_engine_answers`]):
-/// a busy engine keeps its switch; only a silent one makes the outcome uncertain, and
+/// measured wedge bound is a progress checkpoint (see [`wait_while_engine_progresses`]):
+/// a switch queued behind a moving engine keeps waiting; a stalled or silent engine
+/// makes the outcome uncertain, and
 /// uncertainty never acknowledges remote completion — the admission owner must
 /// quarantine before releasing its lease.
 pub(crate) async fn kv_page_action(
@@ -358,18 +370,18 @@ pub(crate) async fn kv_page_action(
     // 4 lanes prefilling): a restore ran 50.8 s against a 50.8 s bound (3 × p90), was
     // abandoned as uncertain, quarantined the endpoint and replaced the whole engine —
     // 9 minutes with every citizen dark, back at 3 × 18.7k instead of 4 × 26k. So at
-    // each bound the engine is ASKED whether it is alive (`/health`, answered off the
-    // slot queue); an engine that answers keeps its switch, and only one that does not
-    // answer turns the switch uncertain. A real hang still ends here — as a silent
-    // engine — and a dead one ends sooner, when its socket drops.
+    // each bound the engine's `/slots` work fingerprint is read: while it moves, the
+    // queue this switch sits in is moving and the switch keeps waiting. A queue that
+    // stops moving, or an engine that stops answering, turns the switch uncertain at
+    // that checkpoint, and a dead engine ends it sooner when its socket drops.
     let send = client
         .post(&url)
         .json(&json!({ "filename": filename }))
         .send();
-    let resp = wait_while_engine_answers(
+    let resp = wait_while_engine_progresses(
         send,
         bound,
-        || crate::inference::llama_server::external_health_ok(root.trim_end_matches('/'), client),
+        || crate::inference::llama_server::engine_progress(root.trim_end_matches('/'), client),
         |busy_checkpoints| {
             crate::probe!(
                 class = "inference.kv_page.busy_not_dead",
@@ -378,8 +390,8 @@ pub(crate) async fn kv_page_action(
                 waited_ms = started.elapsed().as_millis() as u64,
                 bound_ms = bound.as_millis() as u64,
                 busy_checkpoints,
-                "a page switch outlived its bound on an engine that still answers \
-                 /health — waiting on it, not replacing the engine",
+                "a page switch outlived its bound while the engine's queue kept moving \
+                 — waiting on it, not replacing the engine",
             );
         },
     )
@@ -461,23 +473,63 @@ mod tests {
     use uuid::Uuid;
 
     // what this catches (M5, 2026-09-25): a page switch slower than its bound on an
-    // engine that still answers was abandoned as uncertain and cost every citizen a
-    // 9-minute engine replacement. Busy must wait; only a silent engine ends the wait.
+    // engine whose queue was moving was abandoned as uncertain and cost every citizen a
+    // 9-minute engine replacement. Busy must wait. And (Cormac, #4387) a switch stuck on
+    // a queue that stopped moving must NOT wait forever just because the server answers:
+    // the wait ends at the first checkpoint that sees no progress, or no answer.
     #[tokio::test(start_paused = true)]
-    async fn a_slow_page_switch_waits_on_a_live_engine_and_only_a_silent_one_ends_it() {
+    async fn a_slow_page_switch_waits_while_the_engine_progresses_and_ends_when_it_stalls() {
         let bound = std::time::Duration::from_secs(10);
         let slow = async {
             tokio::time::sleep(bound * 3 + std::time::Duration::from_secs(1)).await;
             "receipt"
         };
+        let mut tick = 0u64;
         let mut seen = Vec::new();
-        let got = wait_while_engine_answers(slow, bound, || async { true }, |n| seen.push(n)).await;
-        assert_eq!(got, Some("receipt"), "a busy engine keeps its switch");
+        let got = wait_while_engine_progresses(
+            slow,
+            bound,
+            || { tick += 1; let t = tick; async move { Some(t) } },
+            |n| seen.push(n),
+        )
+        .await;
+        assert_eq!(got, Some("receipt"), "a moving queue keeps the switch");
         assert_eq!(seen, vec![1, 2, 3], "each bound is a reported checkpoint, not a verdict");
 
-        let hung = std::future::pending::<&str>();
-        let got = wait_while_engine_answers(hung, bound, || async { false }, |_| {}).await;
-        assert_eq!(got, None, "an engine that stops answering ends the wait as uncertain");
+        let stalled = wait_while_engine_progresses(
+            std::future::pending::<&str>(),
+            bound,
+            || async { Some(42) },
+            |_| {},
+        )
+        .await;
+        assert_eq!(stalled, None, "an answering engine whose queue does not move ends the wait");
+
+        let silent = wait_while_engine_progresses(
+            std::future::pending::<&str>(),
+            bound,
+            || async { None },
+            |_| {},
+        )
+        .await;
+        assert_eq!(silent, None, "an engine that stops answering ends the wait");
+    }
+
+    // what this catches: the fingerprint moves when any slot prefills, decodes or takes
+    // a new task, and a body that is not the /slots array reads as no answer.
+    #[test]
+    fn the_slots_fingerprint_moves_with_any_slot_work() {
+        use crate::inference::llama_server::slots_progress_fingerprint as fp;
+        let a = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 5}]},
+                       {"id_task": 3, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0}]}]);
+        let decoded = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 6}]},
+                             {"id_task": 3, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0}]}]);
+        let new_task = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 5}]},
+                              {"id_task": 4, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0}]}]);
+        assert_ne!(fp(&a), fp(&decoded), "a decoded token is progress");
+        assert_ne!(fp(&a), fp(&new_task), "a new task is progress");
+        assert_eq!(fp(&a), fp(&a.clone()), "no work, no change");
+        assert_eq!(fp(&json!({"error": "no slots"})), None, "not the slots array");
     }
 
     // what this catches: the restore-into-busy-slot bug at its source — while a turn
