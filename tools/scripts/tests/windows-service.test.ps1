@@ -5,9 +5,195 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
+. (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Engine application receipts reject changed candidate sets and bytes using
+    # real temporary files, without building/installing/spawning an engine.
+    $engineFixture = Join-Path $scratch 'receipt engine'
+    New-Item -ItemType Directory -Path $engineFixture | Out-Null
+    [IO.File]::WriteAllText((Join-Path $engineFixture 'llama-server.exe'), 'engine')
+    $runtimeFixture = Join-Path $engineFixture 'cublas64_12.dll'
+    [IO.File]::WriteAllText($runtimeFixture, 'before')
+    Start-CoreEnginePublication -Directory $engineFixture
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
+    if (-not $refused) { throw 'Incomplete fresh engine publication looked legacy.' }
+    Save-CoreEngineReceipt -Directory $engineFixture -SourceRevision ('a' * 40) -Backend cuda
+    Get-CoreEngineReceipt -Directory $engineFixture | Out-Null
+    $newCandidate = Join-Path $engineFixture 'ggml-cuda-new.dll'
+    [IO.File]::WriteAllText($newCandidate, 'candidate')
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'membership changed' }
+    if (-not $refused) { throw 'Added backend candidate was accepted.' }
+    Remove-Item -LiteralPath $newCandidate
+    $priorTime = (Get-Item -LiteralPath $runtimeFixture).LastWriteTimeUtc
+    [IO.File]::WriteAllText($runtimeFixture, 'after!')
+    (Get-Item -LiteralPath $runtimeFixture).LastWriteTimeUtc = $priorTime
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'input changed' }
+    if (-not $refused) { throw 'Same-length backdated runtime replacement was accepted.' }
+    [IO.File]::WriteAllText($runtimeFixture, 'before')
+    $engineCopy = Join-Path $scratch 'receipt copied slot'
+    New-Item -ItemType Directory -Path $engineCopy | Out-Null
+    Get-ChildItem -LiteralPath $engineFixture -File | Where-Object { $_.Name -ne 'engine-install.json' } | Copy-Item -Destination $engineCopy
+    Start-CoreEnginePublication -Directory $engineCopy
+    [IO.File]::WriteAllText((Join-Path $engineCopy 'cublas64_12.dll'), 'broken')
+    $refused = $false
+    try { Copy-CoreEngineReceipt -SourceDirectory $engineFixture -Directory $engineCopy } catch { $refused = $_ -match 'bytes differ' }
+    if (-not $refused -or -not (Test-Path -LiteralPath (Join-Path $engineCopy 'engine-install.pending'))) { throw 'Failed slot copy lost its incomplete state.' }
+    Copy-Item -LiteralPath $runtimeFixture -Destination (Join-Path $engineCopy 'cublas64_12.dll') -Force
+    Copy-CoreEngineReceipt -SourceDirectory $engineFixture -Directory $engineCopy
+    Get-CoreEngineReceipt -Directory $engineCopy | Out-Null
+    Remove-Item -LiteralPath (Join-Path $engineCopy 'cublas64_12.dll')
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $true }
+    if (-not $refused) { throw 'Missing runtime file was accepted.' }
+    Write-Output 'PASS: engine receipt pins application bytes, membership and copied-slot inputs'
+    # Receipt migration must use the existing source/slot owners even when the
+    # source SHA and legacy stamp are already current. No compiler is invoked.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        function Get-CoreEngineBackend { 'cpu' }
+        function git { $global:LASTEXITCODE = 0; if ($args -contains '--short') { 'aaaaaaa' } else { 'a' * 40 } }
+        function Module-Skip { }
+        function Module-Start { throw 'fixture: real build branch selected' }
+        function Module-Fail { param($Name, $Message) throw $Message }
+        $profile = Join-Path $scratch 'migration-profile'
+        $sourceRepo = Join-Path $scratch 'migration-source'
+        $server = Join-Path $sourceRepo 'core\vendor\llama.cpp\tools\server'
+        New-Item -ItemType Directory -Path $server -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $server 'CMakeLists.txt') -Value 'fixture'
+        $root = Join-Path $profile '.continuum\bin'
+        $source = Join-Path $root 'engine-a'
+        $destination = Join-Path $root 'engine-b'
+        $third = Join-Path $root 'engine-c'
+        New-Item -ItemType Directory -Path $source, $destination, $third -Force | Out-Null
+        foreach ($slot in @($source, $destination)) {
+            [IO.File]::WriteAllText((Join-Path $slot 'llama-server.exe'), 'legacy')
+            Set-Content -LiteralPath (Join-Path $slot '.llama-server.stamp') -Value 'aaaaaaa:cpu'
+        }
+        $oldProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $profile
+            $requirement = Get-CoreEngineRequirement -RepoRoot $sourceRepo
+            if (-not (Get-CoreEngineDrift -Directory $source -Requirement $requirement)) { throw 'Legacy stamp was called converged.' }
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $destination -RequireReceipt }
+            catch { $refused = $_ -match 'real build branch selected' }
+            if (-not $refused -or (Test-Path (Join-Path $destination 'engine-install.json')) -or
+                [IO.File]::ReadAllText((Join-Path $source 'llama-server.exe')) -cne 'legacy') {
+                throw 'Legacy destination/source shortcut bypassed receipt migration or changed the incumbent.'
+            }
+            # Ordinary compatible reuse retains its prior behavior.
+            Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $destination
+            Save-CoreEngineReceipt -Directory $source -SourceRevision ('a' * 40) -Backend cpu
+            $sourceHash = (Get-FileHash (Join-Path $source 'engine-install.json')).Hash
+            Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $destination -RequireReceipt
+            if ((Get-CoreEngineDrift -Directory $destination -Requirement $requirement) -or
+                (Get-FileHash (Join-Path $destination 'engine-install.json')).Hash -cne $sourceHash) {
+                throw 'Verified reuse did not preserve the original receipt.'
+            }
+            Start-CoreEnginePublication -Directory $source
+            Start-CoreEnginePublication -Directory $destination
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $third -RequireReceipt }
+            catch { $refused = $_ -match 'real build branch selected' }
+            if (-not $refused) { throw 'Pending source was reused.' }
+            Remove-Item -LiteralPath (Join-Path $source 'engine-install.pending')
+            [IO.File]::WriteAllText((Join-Path $source 'llama-server.exe'), 'broken')
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $third -RequireReceipt }
+            catch { $refused = $_ -match 'input changed' }
+            if (-not $refused -or (Test-Path (Join-Path $third 'engine-install.json'))) { throw 'Invalid source was recertified.' }
+            [IO.File]::WriteAllText((Join-Path $source 'llama-server.exe'), 'legacy')
+            Remove-Item -LiteralPath (Join-Path $destination 'engine-install.pending')
+            $script:migrationDescription = (@{ engine = (Join-Path $source 'llama-server.exe') } | ConvertTo-Json -Compress)
+            function Get-ScheduledTask { [pscustomobject]@{ Description = $script:migrationDescription } }
+            function Get-CimInstance { [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $third 'llama-server.exe') } }
+            $receiptPath = Join-Path $scratch 'prepared-engine-path'
+            Prepare-CoreServiceEngine -RepoRoot $sourceRepo -Description $script:migrationDescription -ReceiptPath $receiptPath
+            if ([IO.File]::ReadAllText($receiptPath) -cne (Join-Path $destination 'llama-server.exe') -or
+                (Get-FileHash (Join-Path $source 'engine-install.json')).Hash -cne $sourceHash) {
+                throw 'Preparation selected a live/registered engine or changed its receipt.'
+            }
+            $refused = $false
+            try { Prepare-CoreServiceEngine -RepoRoot $sourceRepo -Description '{}' -ReceiptPath $receiptPath }
+            catch { $refused = $_ -match 'release changed before' }
+            if (-not $refused) { throw 'Stale installed selection reached preparation.' }
+        } finally { $env:USERPROFILE = $oldProfile }
+    }
+    Write-Output 'PASS: receipt migration selects verified reuse or checked build without legacy/pending bypass'
+    # The CLI starts a fresh PowerShell, so receipt validation cannot depend on
+    # functions that happen to have been dot-sourced by this fixture's parent.
+    $coldScript = @"
+`$ErrorActionPreference='Stop'
+. '$($repo.Replace("'", "''"))/tools/scripts/lib/windows-service.ps1'
+. '$($repo.Replace("'", "''"))/tools/scripts/lib/win-modules.ps1'
+`$drift=Get-CoreEngineDrift -Directory '$($engineFixture.Replace("'", "''"))' -Requirement ([pscustomobject]@{source_revision='$('a' * 40)';backend='cuda'})
+if (`$drift) { throw `$drift }
+"@
+    $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+    $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($coldScript))
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $child = [Diagnostics.Process]::Start($info)
+    try {
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit(120000)) { $child.Kill(); $child.WaitForExit(); throw 'Cold engine receipt query timed out.' }
+        if ($child.ExitCode -ne 0) { throw "Cold engine receipt query failed: $($stdout.Result) $($stderr.Result)" }
+    } finally { $child.Dispose() }
+    # The actual handoff function transfers the installer's exclusive lease
+    # before invoking reboot. Stop at the scheduler boundary, before PATH writes.
+    & {
+        $lockPath = Join-Path $scratch 'handoff-install.lock'
+        $lease = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $marker = Join-Path $scratch 'handoff-acquired'
+        $cli = Join-Path $scratch 'handoff-cli.ps1'
+        $core = Join-Path $scratch 'handoff-core.exe'
+        [IO.File]::WriteAllText($core, 'fixture-core')
+        @"
+if (`$args -contains '--validate-only') { Write-Output 'continuum-install-lease-protocol:1'; `$global:LASTEXITCODE = 0; return }
+if (`$args -notcontains '--service-descriptor-sha') { throw 'Missing selected descriptor binding' }
+`$owned = [IO.File]::Open('$($lockPath.Replace("'", "''"))', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } finally { `$owned.Dispose() }
+`$global:LASTEXITCODE = 0
+"@ | Set-Content -LiteralPath $cli
+        function Get-ScheduledTask {
+            $busy = $false
+            try { $unexpected = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $unexpected.Dispose() }
+            catch [IO.IOException] { $busy = $true }
+            if (-not $busy) { throw 'Post-handoff tail lost the installation lease.' }
+            throw 'fixture: handoff completed before scheduler check'
+        }
+        try {
+            $busy = $false
+            try { $unexpected = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $unexpected.Dispose() }
+            catch [IO.IOException] { $busy = $true }
+            if (-not $busy) { throw 'Installer lease was not exclusive before handoff.' }
+            $stopped = $false
+            try { Invoke-CoreServiceRelease -Release ([pscustomobject]@{ cli = $cli; artifact = $core }) -RepoRoot $scratch -InstallLease $lease }
+            catch { $stopped = $_ -match 'handoff completed before scheduler check' }
+            if (-not $stopped -or -not (Test-Path -LiteralPath $marker)) { throw 'Reboot did not receive the released installation lease.' }
+        } finally { $lease.Dispose() }
+        # A legacy prepared CLI cannot inherit an unsupported lock protocol.
+        Set-Content -LiteralPath $cli -Value "Write-Output 'prebuilt validated'; `$global:LASTEXITCODE = 0"
+        $lease = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $refused = $false
+            try { Invoke-CoreServiceRelease -Release ([pscustomobject]@{ cli = $cli; artifact = $core }) -RepoRoot $scratch -InstallLease $lease }
+            catch { $refused = $_ -match 'lacks the verified installation lease protocol' }
+            $busy = $false
+            try { $unexpected = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $unexpected.Dispose() }
+            catch [IO.IOException] { $busy = $true }
+            if (-not $refused -or -not $busy) { throw 'Legacy CLI refusal lost installer ownership.' }
+        } finally { $lease.Dispose() }
+    }
+    Write-Output 'PASS: installer registration-to-reboot lease transfer permits exclusive reacquisition'
     # Regression for 81021ff6: the real scheduler projects SID registration as
     # an account name. Resolve via Windows without broadening caller ownership.
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

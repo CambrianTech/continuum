@@ -928,6 +928,44 @@ pub fn plan_received(classifier: &DomainClassifier, topic: &str, lesson: &str) -
     }
 }
 
+/// Destination replay key for one persisted lesson, recipient and training base.
+/// Nested namespaces avoid delimiter collisions. Content is deliberately excluded:
+/// changing an already accepted record must raise SubmissionConflict, not mint credit.
+/// The version binds producer semantics too: changed names, classifier output, quality
+/// or eval policy conflict under v1. A deliberate migration must define its own replay
+/// policy before changing this revision; a deploy must not silently retrain old lessons.
+pub(crate) fn received_submission_id(persona: Uuid, base_model: &str, record_id: &str) -> Uuid {
+    let version = Uuid::new_v5(&Uuid::NAMESPACE_URL, b"continuum:received-lesson:v1");
+    let recipient = Uuid::new_v5(&version, persona.as_bytes());
+    let base = Uuid::new_v5(&recipient, base_model.as_bytes());
+    Uuid::new_v5(&base, record_id.as_bytes())
+}
+
+/// Preserve durable source identity through the existing received-lesson producer.
+/// Received provenance is not a work verdict or a staged-credit binding.
+pub(crate) fn received_submission_params(
+    persona: Uuid,
+    persona_name: &str,
+    base_model: &str,
+    classifier: &DomainClassifier,
+    record: &crate::memory::MemoryRecord,
+) -> serde_json::Value {
+    let episode = crate::cognition::experience::ExperienceRecord::from_shared_lesson(record);
+    let plan = plan_received(classifier, &episode.task.prompt, &episode.answer);
+    let mut params =
+        build_submit_params(persona, persona_name, base_model, &plan, "received-lesson");
+    params["submissionId"] = json!(received_submission_id(persona, base_model, &record.id));
+    let metadata = &mut params["examples"][0]["metadata"];
+    metadata["memoryRecordId"] = json!(record.id);
+    metadata["memoryTimestamp"] = json!(record.timestamp);
+    for field in ["shared_by", "original_author", "scope", "session"] {
+        if let Some(value) = record.context.get(field) {
+            metadata[field] = value.clone();
+        }
+    }
+    params
+}
+
 /// THE GATE BECOMES A LESSON (card 657e74de; Joel: "ideally they learn too"). Every
 /// echo shape gated at the Speak seam (`framing_echo`, `not_speech`) returns a Pass
 /// the citizen never sees — the substrate silences her and she learns nothing, so
@@ -1561,7 +1599,9 @@ fn staged_submission_params(
     // f1771c83: 728 staged rows, 0 completed transfers).
     let eligible_role = match (passed, row.claim_id, row.owner, row.role) {
         (true, Some(_), Some(owner), Some(role)) if owner == persona_id => role,
-        (false, ..) => return Err("card verdict was FAIL — staged credit is discarded, not submitted"),
+        (false, ..) => {
+            return Err("card verdict was FAIL — staged credit is discarded, not submitted")
+        }
         (_, None, ..) => return Err("row carries no claim_id"),
         (_, _, None, _) => return Err("row carries no owner"),
         (_, _, Some(owner), _) if owner != persona_id => {
@@ -1731,16 +1771,31 @@ pub(crate) mod tests {
             let me = Uuid::new_v4();
             let claim = Some(Uuid::new_v4());
 
-            let fail = staged_submission_params(me, "Kimi", &row(claim, Some(me), Some(CreditRole::Owner)), false)
-                .expect_err("a FAIL verdict submits nothing"); // JUSTIFIED: the test asserts the Err arm
+            let fail = staged_submission_params(
+                me,
+                "Kimi",
+                &row(claim, Some(me), Some(CreditRole::Owner)),
+                false,
+            )
+            .expect_err("a FAIL verdict submits nothing"); // JUSTIFIED: the test asserts the Err arm
             assert!(fail.contains("FAIL"), "{fail}");
 
-            let no_claim = staged_submission_params(me, "Kimi", &row(None, Some(me), Some(CreditRole::Owner)), true)
-                .expect_err("no claim"); // JUSTIFIED: asserting the Err arm
+            let no_claim = staged_submission_params(
+                me,
+                "Kimi",
+                &row(None, Some(me), Some(CreditRole::Owner)),
+                true,
+            )
+            .expect_err("no claim"); // JUSTIFIED: asserting the Err arm
             assert!(no_claim.contains("claim_id"), "{no_claim}");
 
-            let foreign = staged_submission_params(me, "Kimi", &row(claim, Some(Uuid::new_v4()), Some(CreditRole::Owner)), true)
-                .expect_err("another persona's row"); // JUSTIFIED: asserting the Err arm
+            let foreign = staged_submission_params(
+                me,
+                "Kimi",
+                &row(claim, Some(Uuid::new_v4()), Some(CreditRole::Owner)),
+                true,
+            )
+            .expect_err("another persona's row"); // JUSTIFIED: asserting the Err arm
             assert!(foreign.contains("owner"), "{foreign}");
 
             // Distinct reasons, not one catch-all string.
@@ -1785,7 +1840,11 @@ pub(crate) mod tests {
         assert!(plan.stamp.is_none());
         // and the token is the one the Speak seam decides silence on
         assert_eq!(
-            crate::cognition::deliberation_parse::decision_from_response(SILENCE_COMPLETION, None, &[]),
+            crate::cognition::deliberation_parse::decision_from_response(
+                SILENCE_COMPLETION,
+                None,
+                &[]
+            ),
             crate::cognition::workspace::Decision::pass()
         );
         // the bucket is measurable: its gym exists, so the sentinel can adopt or refuse
@@ -2812,20 +2871,29 @@ pub(crate) mod tests {
             .await
             .pop()
             .unwrap();
-        let params = WorkSubmitParams {
-            room: room.channel.as_uuid().to_string(),
-            submission_id: Some(Uuid::new_v4()),
-            card_id: card.as_uuid(),
-            claim_id: Some(claim.as_uuid()),
-            instance: Some("generic-project-work".into()),
-            base_sha: Some("a".repeat(40)),
-            artifact: Some(WorkArtifactReference {
-                hash: "b".repeat(64),
-                size_bytes: 20,
-                mime: Some("text/x-diff".into()),
-            }),
-            staged_revision_id: Some(selected.id),
-        };
+        // THROUGH SERDE, CARRYING THE SHORT HANDLES THE BOARD PRINTS (Astra's review of
+        // #4357). The defect these verbs carried was a DESERIALIZATION refusal — a
+        // `Uuid`-typed `card_id` rejected `d61513e4` before any handler ran — so a test
+        // that builds the struct in Rust cannot see it at all. This fixture now arrives
+        // the way a citizen's call actually does: as JSON, in the 8-char form she was
+        // shown, and the assertions below prove the whole path end to end.
+        let short = |id: Uuid| id.simple().to_string().chars().take(8).collect::<String>();
+        let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "room": room.channel.as_uuid().to_string(),
+            "submission_id": Uuid::new_v4().to_string(),
+            "card_id": short(card.as_uuid()),
+            "claim_id": short(claim.as_uuid()),
+            "instance": "generic-project-work",
+            "base_sha": "a".repeat(40),
+            "artifact": { "hash": "b".repeat(64), "size_bytes": 20, "mime": "text/x-diff" },
+            "staged_revision_id": selected.id.to_string(),
+        }))
+        .expect("a citizen's call carries the handles her board printed"); // expect: the fixture's own json, asserted decodable
+        assert_eq!(
+            params.card_id,
+            short(card.as_uuid()),
+            "the handle survives deserialization — it used to be refused here"
+        );
         let submit = WorkSubmit {
             registry: registry.clone(),
             executor_slot: slot.clone(),
@@ -2879,13 +2947,27 @@ pub(crate) mod tests {
                 room: params.room.clone(),
                 review_id: Some(Uuid::new_v4()),
                 card_id: Some(card.as_uuid()),
-                submission_id: Some(params.submission_id.expect("the fixture names its submission")),
-                artifact: Some(params.artifact.clone().expect("the fixture names its artifact")),
+                submission_id: Some(
+                    params
+                        .submission_id
+                        .expect("the fixture names its submission"),
+                ),
+                artifact: Some(
+                    params
+                        .artifact
+                        .clone()
+                        .expect("the fixture names its artifact"),
+                ),
                 review_card_id: review_card.as_uuid(),
                 review_claim_id: Some(review_claim.as_uuid()),
                 outcome: ReviewOutcome::Passed,
                 evidence_text: None,
-                evidence: Some(params.artifact.clone().expect("the fixture names its artifact")),
+                evidence: Some(
+                    params
+                        .artifact
+                        .clone()
+                        .expect("the fixture names its artifact"),
+                ),
             },
         )
         .await
@@ -2926,12 +3008,18 @@ pub(crate) mod tests {
         }
         .run(
             &ctx,
-            WorkSubmissionParams {
-                room: params.room,
-                card_id: card.as_uuid(),
-                submission_id: params.submission_id.expect("the fixture names its submission"),
-                include_staged_evidence: true,
-            },
+            // The readback takes handles too, and its submission handle resolves against
+            // THIS CARD's submissions — the card-scoped half of the same change. The
+            // evidence opt-in rides the same decode, so one fixture proves both.
+            serde_json::from_value(serde_json::json!({
+                "room": params.room,
+                "card_id": short(card.as_uuid()),
+                "submission_id": short(
+                    params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
+                ),
+                "include_staged_evidence": true,
+            }))
+            .expect("the readback's handles decode"), // expect: the fixture's own json, asserted decodable
         )
         .await
         .unwrap();

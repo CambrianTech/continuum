@@ -7,7 +7,7 @@ export type WorkSubmitParams = {
  */
 room: string, 
 /**
- * Full UUID of the card you hold (from work/get).
+ * The card you hold — board handle or full UUID.
  */
 card_id: string, 
 /**
@@ -15,7 +15,7 @@ card_id: string,
  */
 submission_id?: string, 
 /**
- * Your claim; defaults to board.
+ * Your claim — handle or UUID; defaults to board.
  */
 claim_id?: string, 
 /**
@@ -23,7 +23,7 @@ claim_id?: string,
  */
 instance?: string, 
 /**
- * Base commit; defaults to checkout.
+ * Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
  */
 base_sha?: string, 
 /**

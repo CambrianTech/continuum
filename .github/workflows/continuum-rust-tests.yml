@@ -132,6 +132,23 @@ jobs:
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
 
+      # --lib never runs the CLI's handoff admission tests. Use this existing
+      # Linux native job/profile; Windows still type-checks its platform branches
+      # and runs the real PowerShell filesystem/lease suite below.
+      - name: CLI installed-release handoff regressions
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          for test in \
+            tests::prebuilt_reboot_options_are_explicit_and_strict \
+            tests::service_reboot_rejects_stale_action_and_artifact_before_teardown; do
+            cargo test -p continuum-core --bin continuum --profile dev-fast "$test" -- --exact 2>&1 | tee cli-handoff.log
+            if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
+              echo "::error::The exact CLI handoff regression did not execute: $test"
+              exit 1
+            fi
+          done
+
       # These tests share a database schema; run serially and reject zero matches.
       - name: cargo test -p continuum-core --lib (Postgres, --ignored)
         if: needs.changes.outputs.rust != 'false'

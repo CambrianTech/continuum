@@ -1189,6 +1189,11 @@ impl ActionCommand for CodeSearch {
                 break;
             }
             let r = search::search_files(&root, &p.pattern, p.file_glob.as_deref(), remaining);
+            if !r.success {
+                // Preserve the search owner's typed refusal; an invalid regex/glob is
+                // not a successful empty search with orientation guidance.
+                return Ok(r);
+            }
             total_matches += r.total_matches;
             files_searched += r.files_searched;
             matches.extend(r.matches);
@@ -2243,6 +2248,43 @@ mod tests {
         assert_eq!(small.total_matches, 2);
         assert_eq!(small.matches.len(), 2, "under threshold keeps every line");
         assert!(small.error.is_none(), "no note on a small result");
+
+        // Regression: the real command must retain search_files' parse failures,
+        // while a valid empty glob still returns successful orientation guidance.
+        for (pattern, glob, expected_error) in [
+            ("(", None, "Invalid regex"),
+            ("needle", Some("["), "Invalid glob"),
+        ] {
+            let refused = cmd
+                .run(
+                    &Ctx::default(),
+                    CodeSearchParams {
+                        pattern: pattern.to_string(),
+                        file_glob: glob.map(str::to_string),
+                        max_results: None,
+                    },
+                )
+                .await
+                .expect("search refusal is outcome data");
+            assert!(!refused.success, "invalid syntax must not become empty success");
+            assert!(refused.matches.is_empty());
+            assert!(refused.error.as_deref().unwrap().contains(expected_error));
+        }
+        let empty = cmd
+            .run(
+                &Ctx::default(),
+                CodeSearchParams {
+                    pattern: "needle".to_string(),
+                    file_glob: Some("*.missing".to_string()),
+                    max_results: None,
+                },
+            )
+            .await
+            .expect("valid empty search runs");
+        assert!(empty.success, "orientation guidance is not a parse refusal");
+        assert_eq!(empty.files_searched, 0);
+        assert!(empty.matches.is_empty());
+        assert!(empty.error.as_deref().unwrap().contains("No files matched glob"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

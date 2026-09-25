@@ -34,6 +34,8 @@ pub mod backends;
 pub mod batching_probe;
 pub mod child_log;
 pub mod backend_receipt;
+pub(crate) mod engine_install;
+mod launch_inputs;
 pub mod debug_build_watch;
 pub mod coordinator;
 pub mod coordinator_pool;

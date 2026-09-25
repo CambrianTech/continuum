@@ -6,11 +6,11 @@ export type WorkSubmissionParams = {
  */
 room: string, 
 /**
- * Parent work-card UUID in this room.
+ * Parent card — board handle or full UUID.
  */
 card_id: string, 
 /**
- * Accepted submission UUID.
+ * The submission to read — handle or full UUID.
  */
 submission_id: string, 
 /**
