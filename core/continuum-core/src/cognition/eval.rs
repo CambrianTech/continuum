@@ -572,6 +572,17 @@ fn eval_lane_memory_veto(
     Ok(())
 }
 
+fn eval_lane_request(bytes: u64) -> crate::resources::LeaseRequest {
+    crate::resources::LeaseRequest {
+        consumer_id: "eval-lane".to_string(),
+        kind: crate::resources::ResourceKind::Vram,
+        bytes,
+        ttl_ms: EVAL_LANE_LEASE_TTL_MS,
+        // The actual process owner retains this grant through observed child exit.
+        reclaim_policy: crate::resources::ReclaimPolicy::Pinned,
+    }
+}
+
 /// Ask the ONE resource authority for this eval lane's VRAM slot (#56/G1) and
 /// decide GPU/CPU from the answer. Returns `(placement, reason, held-lease,
 /// observed-free-vram)`. Split out so the acquire/refuse/ungoverned branching is
@@ -589,21 +600,10 @@ fn acquire_eval_lane_slot(
     Option<crate::resources::LeaseGuard>,
     Option<u64>,
 ) {
-    use crate::resources::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
+    use crate::resources::{LeaseError, ResourceDaemon};
     match (ResourceDaemon::global(), footprint) {
         (Some(daemon), Some(fp)) => {
-            let req = LeaseRequest {
-                consumer_id: "eval-lane".to_string(),
-                kind: ResourceKind::Vram,
-                bytes: fp,
-                ttl_ms: EVAL_LANE_LEASE_TTL_MS,
-                // A bounded, first-class measurement lane is not yanked mid-eval
-                // ([[first-class-citizens-even-during-benchmarks]]); the RAII guard
-                // returns the bytes the moment the lane finishes. Graceful yield-
-                // under-pressure (the eval negotiating early release) is the piece-3
-                // follow-up, not this slice.
-                reclaim_policy: ReclaimPolicy::Pinned,
-            };
+            let req = eval_lane_request(fp);
             match daemon.acquire_guarded(&req) {
                 Ok(guard) => {
                     let remaining = governed_vram_available();
@@ -917,6 +917,135 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     })
 }
 
+/// Share only an already served local base or an external provider. This does not
+/// consult or populate the cloneable warm pool used by ordinary eval callers.
+pub(crate) async fn share_teacher_lane(
+    base: &crate::model_registry::Model,
+    serving: &crate::inference::llama_server::ServingSnapshot,
+) -> Result<Option<EvalLane>, CommandError> {
+    let inner = if base.provider != crate::inference::llama_server::PROVIDER_ID {
+        Some(build_external_eval_lane_inner(base).await?)
+    } else {
+        share_live_serving_lane_from_snapshot(base, serving).await
+    };
+    Ok(inner.map(|inner| EvalLane {
+        inner: std::sync::Arc::new(inner),
+    }))
+}
+
+/// A batch-only borrower. Its process and adapter never enter WARM_EVAL_LANES;
+/// the serving owner stores this value before starting its child.
+pub(crate) struct PrivateTeacherLane {
+    lane: crate::inference::llama_server::EphemeralServingLane,
+    target: crate::inference::llama_server::ServingTarget,
+    adapter: Option<std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
+}
+
+impl PrivateTeacherLane {
+    pub(crate) async fn prepare(
+        base: &crate::model_registry::Model,
+        daemon: &std::sync::Arc<crate::resources::ResourceDaemon>,
+    ) -> Result<Option<Self>, CommandError> {
+        use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
+        if base.provider != PROVIDER_ID {
+            return Err(CommandError::Invalid(
+                "private local borrower requires a local model".into(),
+            ));
+        }
+        let footprint = eval_lane_footprint(base).ok_or_else(|| {
+            CommandError::Internal("private teacher requires a known model footprint".into())
+        })?;
+        // Same pressure/RAM veto as ordinary eval, but return the capacity refusal
+        // to the owner so it can negotiate an explicit window rather than waiting
+        // for incumbent memory that cannot free until that negotiation occurs.
+        if refuse_eval_lane_under_memory_pressure(Some(footprint)).is_err() {
+            return Ok(None);
+        }
+        let lease = match daemon.acquire_guarded(&eval_lane_request(footprint)) {
+            Ok(lease) => lease,
+            Err(crate::resources::LeaseError::InsufficientCapacity { .. }) => return Ok(None),
+            Err(error) => {
+                return Err(CommandError::Internal(format!(
+                    "private teacher admission failed: {error:?}"
+                )))
+            }
+        };
+        let placement = crate::inference::llama_server::LanePlacement::Gpu;
+        let target = ServingTarget {
+            host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
+            context_window: plan_eval_lane_ctx(base),
+            model: base.clone(),
+            lanes: 1,
+            adapters: vec![],
+            placement,
+            expert_placement: None,
+            resident_override: None,
+            vision_sidecar: false,
+        };
+        let lane = EphemeralServingLane::prepare_with_reservation(
+            &target,
+            EVAL_LANE_BASE_PORT,
+            Some(lease),
+        )
+        .await
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+        Ok(Some(Self {
+            lane,
+            target,
+            adapter: None,
+        }))
+    }
+
+    pub(crate) async fn start(&mut self) -> Result<(), CommandError> {
+        use crate::ai::adapter::AIProviderAdapter;
+
+        self.lane
+            .start_gpu(&self.target)
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
+            crate::inference::llama_server::PROVIDER_ID,
+        )
+        .with_runtime_base_url(self.lane.root().to_string())
+        .with_default_model(self.target.model.id.clone())
+        .with_dedicated_lane();
+        adapter.initialize().await.map_err(CommandError::Internal)?;
+        self.adapter = Some(std::sync::Arc::new(adapter));
+        Ok(())
+    }
+
+    pub(crate) async fn synthesize(
+        &self,
+        tasks: &[EvalTask],
+        temperature: f32,
+        max_fix_iters: u32,
+    ) -> Result<crate::commands::genome::teach::RemediationCorpus, CommandError> {
+        let adapter = self
+            .adapter
+            .as_ref()
+            .ok_or_else(|| CommandError::Internal("private teacher is not ready".into()))?;
+        crate::commands::genome::teach::synthesize_remediation_with_adapter(
+            tasks,
+            &self.target.model.id,
+            temperature,
+            max_fix_iters,
+            adapter,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn finish(
+        &mut self,
+    ) -> Result<crate::inference::llama_server::EngineRetirementStatus, CommandError> {
+        self.adapter.take();
+        self.lane
+            .finish()
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))
+    }
+}
+
 /// Measurement "lane" for a base the LIVE serving lane is ALREADY holding — the local
 /// sibling of the external-provider route below (#310). Returns `None`, falling through
 /// to a dedicated cold-load, whenever sharing would not be honest.
@@ -940,10 +1069,17 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
 /// returned handle owns nothing (`lane: None`, no lease), so dropping a measurement can
 /// never tear down the living persona's lane.
 async fn share_live_serving_lane(base: &crate::model_registry::Model) -> Option<EvalLaneInner> {
+    share_live_serving_lane_from_snapshot(base, &crate::inference::llama_server::current_serving())
+        .await
+}
+
+async fn share_live_serving_lane_from_snapshot(
+    base: &crate::model_registry::Model,
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> Option<EvalLaneInner> {
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::PROVIDER_ID;
 
-    let snap = crate::inference::llama_server::current_serving();
     // `served_context_window == 0` only ever appears on the empty/not-yet-served
     // snapshot; a lane with no known window cannot be budgeted against honestly.
     if !snap.ready
@@ -2975,7 +3111,11 @@ pub(crate) struct LessonSink {
 impl LessonSink {
     /// `None` when the living self is not resident to teach (measured but
     /// unteachable — the caller logs it once).
-    pub(crate) fn open(persona_uuid: &uuid::Uuid, room: uuid::Uuid, tasks: &[EvalTask]) -> Option<Self> {
+    pub(crate) fn open(
+        persona_uuid: &uuid::Uuid,
+        room: uuid::Uuid,
+        tasks: &[EvalTask],
+    ) -> Option<Self> {
         let answers: Vec<String> = tasks
             .iter()
             .map(|t| t.expect.clone())
@@ -4854,37 +4994,44 @@ async fn run_pass(
         let mut redrive_round = 0u32;
         if let Some(dod) = &t.dod_shell {
             loop {
-            let verdict = run_dod(task_root.map(std::path::Path::new), dod).await;
-            let (dod_ok, dod_out) = match verdict {
-                DodVerdict::Pass(m) => (true, m),
-                DodVerdict::Fail(m) => (false, m),
-                DodVerdict::InfraError(m) => {
-                    // The grader itself broke — do NOT re-drive (nothing to fix) and
-                    // do NOT score as a miss; mark it infra and leave the loop.
-                    crate::probe!(
-                        class = "eval.task.dod_infra",
-                        task = %t.id,
-                        "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
-                    );
-                    dod_infra = Some(m.clone());
-                    presettle_dod = Some((false, m));
+                let verdict = run_dod(task_root.map(std::path::Path::new), dod).await;
+                let (dod_ok, dod_out) = match verdict {
+                    DodVerdict::Pass(m) => (true, m),
+                    DodVerdict::Fail(m) => (false, m),
+                    DodVerdict::InfraError(m) => {
+                        // The grader itself broke — do NOT re-drive (nothing to fix) and
+                        // do NOT score as a miss; mark it infra and leave the loop.
+                        crate::probe!(
+                            class = "eval.task.dod_infra",
+                            task = %t.id,
+                            "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
+                        );
+                        dod_infra = Some(m.clone());
+                        presettle_dod = Some((false, m));
+                        break;
+                    }
+                };
+                if dod_ok || redrive_round >= DOD_REDRIVES {
+                    presettle_dod = Some((dod_ok, dod_out));
                     break;
                 }
-            };
-            if dod_ok || redrive_round >= DOD_REDRIVES {
-                presettle_dod = Some((dod_ok, dod_out));
-                break;
-            }
-            redrive_round += 1;
-            {
-                crate::probe!(
-                    class = "eval.task.red_build_redrive",
-                    task = %t.id,
-                    round = redrive_round as u64,
-                    "settled on a RED DoD — handing her the verdict with a bounded re-drive"
-                );
-                let tail: String = dod_out.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
-                let red_delivery = crate::persona::rag_budget::RagDelivery {
+                redrive_round += 1;
+                {
+                    crate::probe!(
+                        class = "eval.task.red_build_redrive",
+                        task = %t.id,
+                        round = redrive_round as u64,
+                        "settled on a RED DoD — handing her the verdict with a bounded re-drive"
+                    );
+                    let tail: String = dod_out
+                        .chars()
+                        .rev()
+                        .take(4000)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let red_delivery = crate::persona::rag_budget::RagDelivery {
                     source_id: "airc".to_string(),
                     items: vec![crate::persona::rag_budget::RagItem {
                         content: format!(

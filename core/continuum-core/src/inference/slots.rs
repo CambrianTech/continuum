@@ -639,6 +639,15 @@ pub(crate) struct ResidentCheckpoint<'a> {
     pool: Arc<KvSlotPool>,
 }
 
+/// Exact live ledger suspended by one owned operation, not a new page contract.
+#[derive(Clone)]
+pub(crate) struct EndpointSuspension {
+    endpoint: Arc<EndpointSlots>,
+    generation: EngineGeneration,
+    pool: Arc<KvSlotPool>,
+    contract: KvPageContract,
+}
+
 impl ResidentCheckpoint<'_> {
     /// Keep the original drained writer for eventual lifecycle composition.
     pub(crate) fn transition_for(
@@ -823,6 +832,62 @@ impl EndpointSlots {
 }
 
 impl EndpointTransition {
+    pub(crate) fn capture_suspension(
+        &self,
+        expected: &EngineGeneration,
+    ) -> Result<EndpointSuspension, String> {
+        let state = self.endpoint.state.lock();
+        if expected.has_exited()
+            || state.paging_uncertain
+            || state.pool_generation != Some(expected.id)
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.same_engine(expected))
+        {
+            return Err("cannot suspend an unknown or uncertain live ledger".into());
+        }
+        Ok(EndpointSuspension {
+            endpoint: self.endpoint.clone(),
+            generation: expected.clone(),
+            pool: state
+                .pool
+                .as_ref()
+                .and_then(Clone::clone)
+                .ok_or("missing live ledger")?,
+            contract: state.contract.clone().ok_or("missing live page contract")?,
+        })
+    }
+
+    pub(crate) fn resume_suspension(
+        &self,
+        original: &EndpointSuspension,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(), String> {
+        if !Arc::ptr_eq(&self.endpoint, &original.endpoint) || !current() {
+            return Err("suspended endpoint or intent changed".into());
+        }
+        let mut state = self.endpoint.state.lock();
+        if original.generation.has_exited()
+            || state.paging_uncertain
+            || state.pool_generation != Some(original.generation.id)
+            || state.contract.as_ref() != Some(&original.contract)
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.same_engine(&original.generation))
+            || !state
+                .pool
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_some_and(|p| Arc::ptr_eq(p, &original.pool))
+        {
+            return Err("suspended live ledger changed or paging is uncertain".into());
+        }
+        state.ready = true;
+        Ok(())
+    }
+
     /// Save only known physical residents after all endpoint readers have drained.
     /// Refusal never reopens the endpoint or retires its owned child.
     pub(crate) async fn checkpoint_residents(
@@ -1272,6 +1337,27 @@ mod tests {
             );
         }
         assert!(endpoint.is_ready());
+        // Rejected checkpoint recovery resumes the exact live ledger, never
+        // constructs a new pool or resurrects invalidated saved-page eligibility.
+        let suspended = endpoint.transition_for_generation(&old).await.unwrap();
+        let receipt = suspended.capture_suspension(&old).unwrap();
+        old_pool.note_page_lost(&activity);
+        assert!(suspended.resume_suspension(&receipt, &|| false).is_err());
+        assert!(!endpoint.is_ready());
+        suspended.resume_suspension(&receipt, &|| true).unwrap();
+        drop(suspended);
+        let resumed = endpoint.admit().await.unwrap();
+        assert!(Arc::ptr_eq(resumed.pool.as_ref().unwrap(), &old_pool));
+        assert!(
+            old_pool
+                .lease_paged(activity)
+                .await
+                .unwrap()
+                .already_resident
+        );
+        assert!(!old_pool.saved.lock().contains(&activity));
+        old_pool.note_saved(activity); // Preserve the restart portion's fixture input.
+        drop(resumed);
         let admitted = endpoint
             .admit()
             .await

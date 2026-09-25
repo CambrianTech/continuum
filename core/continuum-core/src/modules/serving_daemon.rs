@@ -21,6 +21,8 @@
 //! no lock held across await — the `watch::Sender` is the only shared state and
 //! its `send` takes `&self`. cbar's pipeline-stage pattern in Rust dress.
 
+pub(crate) mod academy_batch;
+
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
@@ -548,6 +550,7 @@ pub struct ServingDaemonModule {
     /// in flight. A tick that finds a reconcile already running skips — no
     /// stacked relaunches thrashing the GPU.
     reconciling: Arc<AtomicBool>,
+    academy_batch: parking_lot::Mutex<Option<academy_batch::BatchSlot>>,
     verified_target: watch::Sender<Option<VerifiedServingCapture>>,
     /// Reconcile-tick counter driving the slow liveness HEARTBEAT (fires when
     /// `% HEALTH_PROBE_EVERY_TICKS == 0`). See [`Self::spawn_health_heartbeat_if_due`].
@@ -920,6 +923,7 @@ impl ServingDaemonModule {
             server,
             serving_tx,
             reconciling: Arc::new(AtomicBool::new(false)),
+            academy_batch: parking_lot::Mutex::new(None),
             health_ticks: Arc::new(AtomicU64::new(0)),
             health_fails: Arc::new(AtomicU8::new(0)),
             health_probing: Arc::new(AtomicBool::new(false)),
@@ -6533,6 +6537,7 @@ impl ServiceModule for ServingDaemonModule {
 
     async fn tick(&self) -> Result<(), String> {
         crate::inference::llama_server::collect_retired_engines();
+        self.poll_teacher_batch();
         // The plan is DECIDED on the memory authority's tick now (MEMORY-AUTHORITY-DAEMON:
         // `register_planner_on_authority_tick` runs `recompute()` as an `on_tick` observer,
         // publishing to `plan_tx`) — serving no longer samples memory on its own tick. This
@@ -6566,6 +6571,14 @@ impl ServiceModule for ServingDaemonModule {
         self.lower_spawn_baseline_to_the_trough();
         self.sample_lane_footprint();
         Ok(())
+    }
+
+    async fn drain(&self) -> Result<u32, String> {
+        self.interrupt_teacher_batch()
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        self.interrupt_teacher_batch().map(|_| ())
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
@@ -6602,7 +6615,7 @@ impl ServiceModule for ServingDaemonModule {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // what this catches (Cormac on #4298): a receipt that fires on PERSISTENCE rather than
     // CHANGE. `serving.prompt_cache.divergence` sits on the 5-second ready path, and the M5
     // gap lasted three hours — firing per tick is ~2,160 identical lines carrying the same
@@ -8301,6 +8314,312 @@ mod tests {
             .unwrap();
         assert_eq!(idles.load(Ordering::SeqCst), 2);
         assert!(daemon.serving_tx.borrow().loading_model.is_none());
+    }
+
+    // What this catches: the explicit command's real owner must retain a shared
+    // generation after caller cancellation, reject overlapping batches, and return
+    // the existing graded corpus/actual receipt without retiring resident weights.
+    #[tokio::test]
+    async fn explicit_teacher_batch_keeps_shared_generation_owned_until_terminal() {
+        // The real shared adapter consumes the process-wide serving watch. Run
+        // this boot-wiring fixture in a fresh copy of the existing test binary,
+        // so its OnceLock cannot capture or contaminate parallel test daemons.
+        const CHILD_ENV: &str = "CONTINUUM_SHARED_TEACHER_FIXTURE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+            child.args([
+                "--exact",
+                "modules::serving_daemon::tests::explicit_teacher_batch_keeps_shared_generation_owned_until_terminal",
+                "--nocapture",
+            ]).env(CHILD_ENV, "1").kill_on_drop(true);
+            #[cfg(windows)]
+            child.creation_flags(0x08000000); // CREATE_NO_WINDOW: no interactive fixture console.
+            let output = child.output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "isolated shared teacher fixture failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        crate::model_registry::init_global().expect("model registry for real teacher adapter");
+        use crate::cognition::eval::EvalTask;
+        use crate::modules::serving_daemon::academy_batch::TeacherBatchRequest;
+        use axum::{routing::post, Router};
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route("/v1/chat/completions", post({
+            let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+            move || {
+                let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    entered.notify_one();
+                    release.acquire().await.unwrap().forget();
+                    let chunk = serde_json::json!({
+                        "id":"owned-teacher-fixture", "model":"teacher-fixture",
+                        "choices":[{"index":0,"delta":{"content":"```rust\nfn answer() -> i32 { 2 }\n```"},"finish_reason":null}]
+                    });
+                    let end = serde_json::json!({"id":"owned-teacher-fixture","model":"teacher-fixture",
+                        "choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+                        "usage":{"prompt_tokens":10,"completion_tokens":12,"total_tokens":22}});
+                    ([("content-type", "text/event-stream")], format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"))
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let http = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let serves = Arc::new(AtomicUsize::new(0));
+        let mut configured = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
+        configured.set_model_resolver(Arc::new(|id| {
+            let mut model = fake_model(id);
+            model.provider = crate::inference::llama_server::PROVIDER_ID.into();
+            Some(model)
+        }));
+        let daemon = Arc::new(configured);
+        let mut snapshot = ServingSnapshot::empty();
+        snapshot.active_model = Some("teacher-fixture".into());
+        snapshot.base_url = format!("{root}/v1");
+        snapshot.ready = true;
+        snapshot.served_context_window = 32768;
+        snapshot.lanes = 2;
+        daemon.serving_tx.send_replace(snapshot);
+        assert!(
+            crate::inference::llama_server::install_serving_state(daemon.subscribe_serving()),
+            "fresh child must install this fixture daemon's serving authority"
+        );
+        crate::inference::llama_server::mark_first_reconcile();
+        let task: EvalTask = serde_json::from_value(serde_json::json!({
+            "id":"owned-task", "prompt":"Write answer returning two", "lang":"rust", "test":"assert_eq!(answer(), 2);"
+        })).unwrap();
+        let request = |tasks| TeacherBatchRequest {
+            tasks,
+            teacher_model: "teacher-fixture".into(),
+            temperature: 0.0,
+            max_fix_iters: 0,
+        };
+        let first_owner = daemon.clone();
+        let first_request = request(vec![task.clone()]);
+        let mut first =
+            tokio::spawn(async move { first_owner.run_teacher_batch(first_request).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                _ = entered.notified() => {},
+                result = &mut first => match result {
+                    Ok(Err(error)) => panic!("teacher returned before HTTP generation: {error}"),
+                    Ok(Ok(corpus)) => panic!("teacher returned {} examples before HTTP generation", corpus.examples.len()),
+                    Err(error) => panic!("teacher task ended before HTTP generation: {error}"),
+                },
+            }
+        }).await.expect("teacher must reach fixture HTTP within its existing budget");
+        assert!(daemon.reconciling.load(Ordering::Acquire));
+        release.add_permits(1);
+        let corpus = tokio::time::timeout(Duration::from_secs(20), first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(corpus.examples.len(), 1);
+        assert!(
+            corpus.examples[0]["metadata"]["teacherGenerations"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 1
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            while daemon.reconciling.load(Ordering::Acquire) {
+                tick.tick().await;
+                daemon.poll_teacher_batch();
+            }
+        })
+        .await
+        .unwrap();
+        let next_owner = daemon.clone();
+        let next_request = request(vec![task.clone(), task]);
+        let mut next =
+            tokio::spawn(async move { next_owner.run_teacher_batch(next_request).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                _ = entered.notified() => {},
+                result = &mut next => match result {
+                    Ok(Err(error)) => panic!("teacher returned before HTTP generation: {error}"),
+                    Ok(Ok(corpus)) => panic!("teacher returned {} examples before HTTP generation", corpus.examples.len()),
+                    Err(error) => panic!("teacher task ended before HTTP generation: {error}"),
+                },
+            }
+        }).await.expect("teacher must reach fixture HTTP within its existing budget");
+        next.abort();
+        assert!(next.await.err().expect("cancelled command").is_cancelled());
+        assert!(
+            daemon.reconciling.load(Ordering::Acquire),
+            "caller cancellation does not cancel shared decoding"
+        );
+        assert!(daemon.run_teacher_batch(request(vec![])).await.is_err());
+        release.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            while daemon.reconciling.load(Ordering::Acquire) {
+                tick.tick().await;
+                daemon.poll_teacher_batch();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "cancelled batch schedules no second task"
+        );
+        assert_eq!(
+            serves.load(Ordering::SeqCst),
+            0,
+            "same-model sharing does not retire or spawn"
+        );
+        assert!(daemon.serving_tx.borrow().ready);
+        http.abort();
+    }
+
+    // Called by the existing real-child fixture, which supplies original validated
+    // inputs, a real child, and the actual HTTP checkpoint acknowledgement.
+    #[cfg(windows)]
+    pub(crate) async fn exercise_cancelled_exclusive_teacher(
+        server: Arc<dyn LlamaServerControl>,
+        generation: crate::inference::slots::EngineGeneration,
+        root: &str,
+        checkpoint_http: JoinHandle<()>,
+        saves: Arc<AtomicUsize>,
+    ) {
+        use crate::modules::serving_daemon::academy_batch::TeacherBatchRequest;
+        let original = server.owned_serving_target().unwrap();
+        let mut teacher = original.target.model.clone();
+        teacher.id = "exclusive-teacher-fixture".into();
+        teacher.provider = crate::inference::llama_server::PROVIDER_ID.into();
+        let mut configured = daemon_with(server.clone());
+        configured.set_model_resolver(Arc::new(move |_| Some(teacher.clone())));
+        let daemon = Arc::new(configured);
+        let mut prior = ServingSnapshot::empty();
+        prior.active_model = Some(original.target.model.id.clone());
+        prior.adapters = original.target.adapter_paths();
+        prior.base_url = format!("{root}/v1");
+        prior.ready = true;
+        prior.served_context_window = original.observed_context_window;
+        prior.lanes = original.observed_lanes;
+        prior.host_prompt_cache_mib = original.launched_host_prompt_cache_mib;
+        daemon.serving_tx.send_replace(prior.clone());
+        daemon.acknowledge_verified_target(&prior, daemon.intent.snapshot().revision);
+        assert!(daemon.verified_serving_target().is_some());
+        let available = daemon
+            .resource_daemon
+            .board()
+            .kinds
+            .iter()
+            .find(|kind| kind.kind == ResourceKind::Vram)
+            .unwrap()
+            .available_bytes;
+        let pressure = daemon
+            .resource_daemon
+            .acquire_guarded(&crate::resources::LeaseRequest {
+                consumer_id: "exclusive-fixture-pressure".into(),
+                kind: ResourceKind::Vram,
+                bytes: available,
+                ttl_ms: u64::MAX,
+                reclaim_policy: crate::resources::ReclaimPolicy::Pinned,
+            })
+            .unwrap();
+        let owner = daemon.clone();
+        let caller = tokio::spawn(async move {
+            owner
+                .run_teacher_batch(TeacherBatchRequest {
+                    tasks: vec![],
+                    teacher_model: "exclusive-teacher-fixture".into(),
+                    temperature: 0.0,
+                    max_fix_iters: 0,
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            while !generation.has_exited() {
+                assert!(
+                    !caller.is_finished(),
+                    "checkpoint/retirement must be reached through the owner"
+                );
+                tick.tick().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            saves.load(Ordering::SeqCst),
+            1,
+            "save confirmed before observed original exit"
+        );
+        assert!(daemon.reconciling.load(Ordering::Acquire));
+        caller.abort();
+        assert!(caller
+            .await
+            .err()
+            .expect("cancelled command")
+            .is_cancelled());
+        checkpoint_http.abort();
+        let _ = checkpoint_http.await;
+        // Only now make capacity available. Caller cancellation cannot surrender
+        // the cleanup obligation or turn actual exit into a resource grant.
+        drop(pressure);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            while server.owned_engine().is_none() {
+                tick.tick().await;
+                daemon.poll_teacher_batch();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(server.owned_engine().unwrap() != original.identity);
+        assert!(
+            daemon
+                .resource_daemon
+                .board()
+                .leases
+                .iter()
+                .any(|lease| lease.consumer_id == SERVING_CONSUMER_ID && lease.bytes > 0),
+            "shared restore spawn must own an actual serving grant"
+        );
+        assert!(
+            !daemon.serving_tx.borrow().ready,
+            "non-model child cannot fabricate restore success"
+        );
+        daemon.intent.set_pin(None, true);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            while daemon.reconciling.load(Ordering::Acquire) {
+                tick.tick().await;
+                daemon.poll_teacher_batch();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            server.owned_engine().is_none(),
+            "failed restore child must exit before releasing operation"
+        );
+        assert!(!daemon
+            .resource_daemon
+            .board()
+            .leases
+            .iter()
+            .any(|lease| lease.consumer_id == SERVING_CONSUMER_ID));
+        assert!(
+            !daemon.serving_tx.borrow().ready,
+            "new intent is left to normal reconcile"
+        );
     }
 
     fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {

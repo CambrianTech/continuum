@@ -3498,9 +3498,10 @@ pub fn start_server(
             ),
         );
 
-        runtime.register(Arc::new(crate::modules::genome::GenomeModule::new(
-            ft_registry,
-        )));
+        runtime.register(Arc::new(
+            crate::modules::genome::GenomeModule::new(ft_registry)
+                .with_teacher_serving(serving_daemon.clone()),
+        ));
 
         // TrainingCompletionSentinel: L3 of the dev-task continuous-learning loop.
         // Polls in-flight training jobs (the TrainingJobBoard the trigger writes to);
