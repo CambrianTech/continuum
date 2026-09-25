@@ -9,6 +9,11 @@ export type GenomeTeachParams = {
  */
 training?: TeachTrainingAction, 
 /**
+ * Explicitly allow the serving owner to checkpoint and temporarily retire
+ * its current local model when this teacher cannot coexist. Default false.
+ */
+exclusiveTeacher?: boolean, 
+/**
  * Inline tasks. When set, takes precedence over `teach_set`. Each task SHOULD
  * carry a `test` — only test-validated trajectories become corpus.
  */

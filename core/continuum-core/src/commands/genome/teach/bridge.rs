@@ -425,7 +425,7 @@ impl GenomeTeach {
         p: GenomeTeachParams,
     ) -> Result<GenomeTeachResult, CommandError> {
         if p.training.is_none() {
-            return Self::run_teach(p, None).await;
+            return self.run_teach(p, None).await;
         }
         if p.output_dir.is_some() {
             return Err(CommandError::Invalid(
@@ -468,7 +468,7 @@ impl GenomeTeach {
                 })
                 .await
                 .map_err(|e| CommandError::Internal(e.to_string()))??;
-                Self::run_teach(generate_params, Some(preparation)).await
+                self.run_teach(generate_params, Some(preparation)).await
             },
         )
         .await
