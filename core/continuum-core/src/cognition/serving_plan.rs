@@ -884,9 +884,10 @@ pub fn plan_serving(
         // the most minds at their requirement, which on a roomy box is every resident; the
         // knee is what this box's decode can actually serve. Measured on the M5
         // 2026-09-25 22:10Z: knee 2 (demand_lanes=2), the allocator seated 8, the engine
-        // relaunched at 8 lanes, and every stream decoded at ~3 t/s. Fewer lanes only
-        // widen each lane's window, so every seated mind still gets her requirement; the
-        // shed minds queue (and page), exactly as the knee intends.
+        // relaunched at 8 lanes, and every stream decoded at ~3 t/s. Shedding lanes keeps
+        // the allocator's per-mind window (the served window below still starts from
+        // `a.window`), so every seated mind still gets her requirement; the shed minds
+        // queue (and page), exactly as the knee intends.
         Some(a) => a.lanes.min(demand_lanes.max(1)),
         None => (1..=lane_cap)
             .rev()
