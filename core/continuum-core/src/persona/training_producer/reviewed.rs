@@ -336,6 +336,81 @@ pub struct ReviewedCredit {
     pub destination: Option<SubmitOutcome>,
 }
 
+/// Inspectable staging metadata, not authorization to train or an inferred link
+/// to an artifact. In particular, the newest turn may only discuss the review.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/work/StagedCreditEvidence.ts"
+)]
+pub struct StagedCreditEvidence {
+    #[ts(type = "string")]
+    pub revision_id: Uuid,
+    #[ts(type = "string | null")]
+    pub claim_id: Option<Uuid>,
+    #[ts(type = "string | null")]
+    pub owner: Option<Uuid>,
+    // u64 -> number, the house convention two fields away in submission.rs
+    // (`submitted_at_ms`, `reviewed_at_ms`). serde sends a JSON NUMBER; without this
+    // ts-rs declares `bigint`, and a client honouring that type throws on
+    // JSON.stringify. Caught as a BLOCKER in review and carried across a rebase.
+    #[ts(type = "number")]
+    pub staged_at_ms: u64,
+    pub generation_count: usize,
+    /// Join keys into the existing capture owner, in dispatch order. Snapshot
+    /// write time is not their dispatch time; an absent capture stays unknown.
+    pub generation_request_ids: Vec<String>,
+    pub matches_submission_claim: bool,
+    pub predates_submission: bool,
+}
+
+/// The existing credit owner projects its own rows. Consumers never receive the
+/// prompt/completion, and an incomplete store response is an error, not "no work".
+pub async fn staged_evidence<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    submitted: &airc_work::WorkSubmission,
+) -> Result<Vec<StagedCreditEvidence>, ClientError> {
+    ensure_storage(conn, persona_name).await?;
+    let value = conn
+        .commands()
+        .execute_value(
+            "data/list",
+            json!({
+                "collection": StagedCredit::COLLECTION,
+                "dbPath": format!("@persona:{persona_name}"),
+                "filter": {"cardId": submitted.card_id.as_uuid().to_string()},
+            }),
+        )
+        .await?;
+    let rows = staged_credit_from_list(value)?;
+    let mut evidence = Vec::with_capacity(rows.len());
+    for row in rows {
+        if row.card_id != submitted.card_id.as_uuid() {
+            return Err(ClientError::Transport(
+                "staged credit query returned another card".into(),
+            ));
+        }
+        evidence.push(StagedCreditEvidence {
+            revision_id: row.id,
+            claim_id: row.claim_id,
+            owner: row.owner,
+            staged_at_ms: row.staged_at_ms,
+            generation_count: row.receipts.len(),
+            generation_request_ids: row
+                .receipts
+                .into_iter()
+                .map(|receipt| receipt.submitted_request_id)
+                .collect(),
+            matches_submission_claim: row.claim_id == Some(submitted.claim_id.as_uuid())
+                && row.owner == Some(submitted.publisher.as_uuid()),
+            predates_submission: row.staged_at_ms <= submitted.submitted_at_ms,
+        });
+    }
+    evidence.sort_by_key(|row| (row.staged_at_ms, row.revision_id));
+    Ok(evidence)
+}
+
 impl ReviewedCredit {
     pub fn pending(state: ReviewedCreditState) -> Self {
         Self {

@@ -78,7 +78,7 @@ pub struct WorkSubmit {
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
 )]
 pub struct WorkSubmitParams {
-    /// The room the card lives in (id or name).
+    /// Card room (ID/name).
     pub room: String,
     // The card you hold. Everything below is DERIVED from it and your checkout when
     // omitted — the citizen's world has no verb that mints an artifact hash, and
@@ -91,11 +91,11 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Your claim — handle or UUID; read off the board when omitted.
+    /// Your claim — handle or UUID; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub claim_id: Option<String>,
-    /// Benchmark instance name; read from your checkout when omitted.
+    /// Instance; defaults to checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
@@ -103,10 +103,11 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
-    /// SHA-256 + size of your patch; computed when omitted.
+    /// Patch hash/size; computed if omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
+    /// Revision UUID (not artifact/submission ID); bind before publish or no credit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
@@ -536,7 +537,7 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
 )]
 pub struct WorkReviewParams {
-    /// The room the review card lives in (id or name).
+    /// Review room (ID/name).
     pub room: String,
     // The REVIEW card she holds. The parent card, its latest submission and artifact,
     // and her claim on the review card are read off the board from it when the fields
@@ -547,7 +548,7 @@ pub struct WorkReviewParams {
     pub review_card_id: Uuid,
     /// Your verdict.
     pub outcome: ReviewOutcome,
-    /// What you ran and saw; becomes the review's evidence.
+    /// What you ran and saw; the review's evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence_text: Option<String>,
@@ -555,23 +556,23 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_id: Option<Uuid>,
-    /// The card under review; read from the review card when omitted.
+    /// Parent card; defaults to review parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub card_id: Option<Uuid>,
-    /// The submission reviewed; the latest when omitted.
+    /// Submission; defaults to latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Its artifact; read off the board when omitted.
+    /// Artifact; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
-    /// Your claim on the review card; read off the board when omitted.
+    /// Review claim; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_claim_id: Option<Uuid>,
-    /// A typed evidence reference instead of evidence_text.
+    /// Typed evidence instead of evidence_text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence: Option<WorkArtifactReference>,
@@ -795,6 +796,9 @@ pub struct WorkSubmissionParams {
     /// The submission to read — handle or full UUID.
     #[ts(type = "string")]
     pub submission_id: String,
+    /// Inspect only: no binding/training. Claim match is not causality.
+    #[serde(default)]
+    pub include_staged_evidence: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -811,6 +815,8 @@ pub struct WorkSubmissionResult {
     pub reviews: Vec<WorkReviewResult>,
     pub credit: Option<reviewed::ReviewedCredit>,
     pub credit_error: Option<String>,
+    pub staged_evidence: Option<Vec<reviewed::StagedCreditEvidence>>,
+    pub staged_evidence_error: Option<String>,
 }
 
 #[async_trait]
@@ -873,8 +879,13 @@ impl ActionCommand for WorkSubmission {
                         .into(),
                 )
             })?;
+        let mut staged_evidence = None;
+        let mut staged_evidence_error = None;
         let credit = async {
             let Some(owner) = self.registry.get(submitted.publisher.as_uuid()) else {
+                if p.include_staged_evidence {
+                    staged_evidence_error = Some("publisher is not resident on this node".into());
+                }
                 return Ok(reviewed::ReviewedCredit::pending(
                     reviewed::ReviewedCreditState::PublisherNotResident,
                 ));
@@ -894,6 +905,12 @@ impl ActionCommand for WorkSubmission {
                     crate::identity::PeerId::from_uuid(owner.persona_id()),
                 )),
             ));
+            if p.include_staged_evidence {
+                match reviewed::staged_evidence(&conn, owner.agent_name(), submitted).await {
+                    Ok(rows) => staged_evidence = Some(rows),
+                    Err(error) => staged_evidence_error = Some(error.to_string()),
+                }
+            }
             reviewed::credit_status(&conn, owner.agent_name(), submission_uuid)
                 .await
                 .map_err(|e| CommandError::Internal(e.to_string()))
@@ -936,6 +953,8 @@ impl ActionCommand for WorkSubmission {
             reviews,
             credit,
             credit_error,
+            staged_evidence,
+            staged_evidence_error,
         })
     }
 }

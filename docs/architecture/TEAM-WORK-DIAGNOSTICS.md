@@ -70,3 +70,58 @@ not implemented by the work/get lease fields in this PR.
 Legacy card settlement records a create-only credit_transfer_acceptance receipt keyed by its existing immutable credit_transfer_intent. The receipt acknowledges curriculum ownership, not trained weights, evaluation, or activation. Source snapshots and generation reservations remain inspectable; acknowledged exact retries do not redispatch. Missing local acknowledgements retry the same destination submission ID. Different overlapping revisions remain refused by the existing reservation owner. This removes the persona-owned data/delete call rather than weakening authorization. Evidence retention/reclamation is a separate lifecycle concern and is not implemented by this receipt.
 
 The existing SQLite settlement fixture uses GridTrustAuthPolicy so authorization failures cannot disappear in tests. A successful storage round trip without the production policy is insufficient evidence of a working persona command path.
+
+## Inspect the experience behind a reviewed artifact
+
+`work/submission` with `include_staged_evidence: true` projects retained revision
+metadata from the publisher's existing training-credit store: revision, captured
+claim and owner, staging timestamp, generation count, and comparison with the
+accepted submission's claim and publication time. It exposes no prompt or
+completion. Missing residency, unreadable storage and incomplete query results
+are not an empty successful evidence set. Ordinary inspection omits this extra
+store query unless requested.
+
+This diagnoses the observed Kimi failure: a signed independent review exists,
+but learning credit is `unbound` because publication omitted `staged_revision_id`.
+Several turns can share a card; a later turn can discuss its review rather than
+produce its patch. Matching a claim, predating publication, or being the newest
+revision is not proof that a revision produced the artifact. This command does
+not choose a revision, attach retrospective credit, resubmit work, or train it.
+Reservations and eligibility are still checked by the existing binding owner.
+
+A final turn snapshot can also replace an earlier revision after its submit
+action. Therefore a staging time later than publication is not proof that the
+underlying experience happened later. Compare execution/generation provenance;
+do not turn the diagnostic timestamp comparison into an eligibility gate.
+The projection includes submitted generation request IDs in dispatch order,
+which join the existing capture owner. It does not manufacture a dispatch clock
+when a capture is absent.
+
+Kimi's acceptance requirements for the eventual receipt are explicit: artifact
+hash and base revision; captured versus published claim; work/dispatch time
+distinct from snapshot write time; exclusions with reasons; separately identified
+grade, signed review and credit binding. A challenge should reference an exact
+receipt/revision and return its provenance, with the dispute retained as card
+evidence. These are follow-up requirements, not capabilities this inspection
+change claims to implement. The full grader's owning node, pending prerequisite
+and execution receipt must also be visible in the activity rather than known only
+to the coordinating agents.
+
+Reclaim is another boundary: Kimi identified that her edits preceded the claim
+used for publication. Inspection confirmed an older retained revision under a
+different claim. CapturedCredit freezes the claim at turn selection; it is not
+relabelled at snapshot write time. Consequently submitted-claim equality is a
+diagnostic comparison, not a complete contribution-eligibility policy. The
+current binder requires exact equality. A successor must distinguish permission
+to publish now from evidence of earlier authorized contributions, prove the
+artifact/provenance connection across reclaims, and retain generation reservations.
+Do not weaken the existing authorization check merely to make old work train.
+
+The automatic handoff must carry the source owner's immutable selection through
+typed execution context, before artifact publication. The turn's credit capture
+already owns the revision and generation receipts; the submission handler owns
+the accepted card, claim and artifact. Join those authorities explicitly, retaining
+the same selection across a lost acknowledgment. Do not recover a missing causal
+edge by picking the newest database row or reading remembered prose. Until that
+handoff is implemented and exercised, an accepted review is review evidence,
+not proof of training or learned improvement.

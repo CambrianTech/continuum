@@ -12,4 +12,8 @@ card_id: string,
 /**
  * The submission to read — handle or full UUID.
  */
-submission_id: string, };
+submission_id: string, 
+/**
+ * Inspect only: no binding/training. Claim match is not causality.
+ */
+include_staged_evidence: boolean, };

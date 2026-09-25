@@ -2981,6 +2981,27 @@ pub(crate) mod tests {
             reviewed.credit.unwrap().state,
             reviewed::ReviewedCreditState::IndependentReviewRequired
         );
+        let later_revision = Uuid::new_v4();
+        let another_claim = CapturedCredit {
+            card_id: card.as_uuid(),
+            claim: Some(ClaimReceipt {
+                claim_id: Uuid::new_v4(),
+                owner: airc.peer_id(),
+                role: CreditRole::Owner,
+            }),
+        };
+        stage_credit(
+            &capture.conn,
+            name,
+            &another_claim,
+            vec![served_receipt("another-claim-request", "served-model")],
+            "private later prompt".into(),
+            "private later completion".into(),
+            later_revision,
+            &[],
+        )
+        .await
+        .unwrap();
         let inspected = WorkSubmission {
             registry,
             executor_slot: slot,
@@ -2988,13 +3009,15 @@ pub(crate) mod tests {
         .run(
             &ctx,
             // The readback takes handles too, and its submission handle resolves against
-            // THIS CARD's submissions — the card-scoped half of the same change.
+            // THIS CARD's submissions — the card-scoped half of the same change. The
+            // evidence opt-in rides the same decode, so one fixture proves both.
             serde_json::from_value(serde_json::json!({
                 "room": params.room,
                 "card_id": short(card.as_uuid()),
                 "submission_id": short(
                     params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
                 ),
+                "include_staged_evidence": true,
             }))
             .expect("the readback's handles decode"), // expect: the fixture's own json, asserted decodable
         )
@@ -3003,6 +3026,31 @@ pub(crate) mod tests {
         assert_eq!(inspected.submission.publisher, persona);
         assert_eq!(inspected.reviews.len(), 1);
         assert_eq!(inspected.reviews[0].reviewer, persona);
+        // Regression: Kimi's accepted review exposed only "unbound", with no
+        // way to inspect the source-owned revision without reading private text.
+        let evidence = inspected.staged_evidence.as_ref().unwrap();
+        assert_eq!(evidence.len(), 2);
+        let original = evidence
+            .iter()
+            .find(|row| row.revision_id == selected.id)
+            .unwrap();
+        assert!(original.matches_submission_claim);
+        assert!(original.predates_submission);
+        assert_eq!(original.generation_count, selected.receipts.len());
+        assert_eq!(original.generation_request_ids, vec!["public-command-request"]);
+        let later = evidence
+            .iter()
+            .find(|row| row.revision_id == later_revision)
+            .unwrap();
+        assert!(
+            !later.matches_submission_claim,
+            "newest is not automatically the selected experience"
+        );
+        assert!(inspected.staged_evidence_error.is_none());
+        let public_evidence = serde_json::to_string(evidence).unwrap();
+        assert!(!public_evidence.contains(&selected.prompt));
+        assert!(!public_evidence.contains(&selected.completion));
+        assert!(!public_evidence.contains("private later"));
         assert_eq!(
             inspected.credit.unwrap().state,
             reviewed::ReviewedCreditState::AwaitingReview
