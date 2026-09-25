@@ -176,12 +176,28 @@ impl TrainingDataset {
                     i + 1
                 ));
             }
+            // Audit provenance belongs to the example, not just its JSONL wrapper.
+            // Retain the existing top-level skillAxis mapping when both are present.
+            let mut metadata = match row.get("metadata") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::Object(object)) => Some(object.clone()),
+                Some(_) => {
+                    return Err(format!(
+                        "{}:{}: metadata must be an object or null",
+                        path.display(),
+                        i + 1,
+                    ))
+                }
+            };
+            if let Some(axis) = row.get("skillAxis") {
+                metadata
+                    .get_or_insert_with(serde_json::Map::new)
+                    .insert("skillAxis".into(), axis.clone());
+            }
             examples.push(TrainingExample {
                 prompt,
                 completion,
-                metadata: row
-                    .get("skillAxis")
-                    .map(|a| serde_json::json!({ "skillAxis": a })),
+                metadata: metadata.map(serde_json::Value::Object),
             });
         }
         if examples.is_empty() {
@@ -497,6 +513,27 @@ mod tests {
         let err =
             TrainingDataset::from_chat_jsonl(&bad, TrainingSource::OperatorCurated).unwrap_err();
         assert!(err.contains("not the assistant turn"), "{err}");
+        // Metadata pass-through cannot discard producer receipts or overwrite the
+        // established top-level skill-axis field with conflicting nested metadata.
+        let mut row = serde_json::json!({
+            "messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}],
+            "metadata": {"sourceRevision": "immutable-source", "skillAxis": "nested"},
+            "skillAxis": "operational",
+        });
+        std::fs::write(&good, serde_json::to_vec(&row).unwrap()).unwrap();
+        let ds =
+            TrainingDataset::from_chat_jsonl(&good, TrainingSource::TeacherSynthesized).unwrap();
+        assert_eq!(
+            ds.examples[0].metadata.as_ref().unwrap(),
+            &serde_json::json!({
+                "sourceRevision": "immutable-source", "skillAxis": "operational",
+            })
+        );
+        row["metadata"] = serde_json::json!(["not an object"]);
+        std::fs::write(&good, serde_json::to_vec(&row).unwrap()).unwrap();
+        let error = TrainingDataset::from_chat_jsonl(&good, TrainingSource::TeacherSynthesized)
+            .unwrap_err();
+        assert!(error.contains("metadata must be an object"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -26,11 +26,11 @@
 //! defaults to the locally-served model so this RUNS with no external dep; point
 //! `teacher_model` at a stronger peer/gateway model for higher yield.
 //!
-//! ## Non-disruptive
+//! ## Default dataset-only behavior
 //!
-//! This generates a dataset on disk. It does NOT touch the living `:58057` lane's
-//! served genome, fork a persona, or train anything — it produces the corpus a
-//! later `genome/job-create` / native `mlx_lm.lora` run consumes. Procedure is never
+//! By default this generates a dataset on disk. Explicit `training` opt-in
+//! persists a candidate before submitting through the existing training trigger;
+//! completed jobs follow its automatic evaluation/adoption policy. Procedure is never
 //! the artifact: the reflex is LEARNED from these trajectories, never hardcoded as a
 //! run-N-times loop in a class or prompt.
 //!
@@ -43,16 +43,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ts_rs::TS;
 
-use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::TextGenerationResponse;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::gym_grader::test_grade;
 use crate::cognition::inference_session::resolve_model;
+use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
 use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT, PROVIDER_ID};
-use crate::modules::ai_provider::global_registry;
 use crate::modules::dataset::DatasetService;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
+
+mod bridge;
+pub use bridge::{TeachTrainingAction, TeachTrainingResult};
 
 /// Default write→fix→pass task set (one `EvalTask` JSONL row each — needs `test`).
 /// Authoring a harder battery = add lines, no recompile.
@@ -88,6 +90,11 @@ const TEACHER_SYSTEM: &str = "You are an expert Rust engineer. Write correct, id
 )]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachParams {
+    /// Explicit training opt-in. Omit to write a dataset only. Completed training
+    /// follows the existing automatic evaluation/adoption policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub training: Option<TeachTrainingAction>,
     /// Inline tasks. When set, takes precedence over `teach_set`. Each task SHOULD
     /// carry a `test` — only test-validated trajectories become corpus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,6 +185,10 @@ pub struct GenomeTeachTaskOutcome {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachResult {
+    /// Candidate identity and destination acceptance/dispatch, never a learning claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub training: Option<TeachTrainingResult>,
     /// True = this is a fire-and-stream JOB HANDLE (#86), NOT a completed run: teach was
     /// spawned detached and its real result is in the run ledger (poll `genome/teach-status
     /// --run_id`), not in the fields below (which are defaulted on the ack).
@@ -189,7 +200,8 @@ pub struct GenomeTeachResult {
     pub run_id: Option<String>,
     /// The dataset name written.
     pub dataset: String,
-    /// The teacher model used (resolved, so the trend row is attributable).
+    /// Resolved model requested for teaching. Actual served model/provider/request
+    /// identities are retained in each dataset row's teacherGenerations metadata.
     pub teacher_model: String,
     /// Absolute path to the dataset directory.
     pub dataset_dir: String,
@@ -436,28 +448,30 @@ fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
 /// the ShareGPT `{"messages":[{role,content},...]}` shape `dataset/*` + `mlx_lm.lora`
 /// consume. Order is preserved — that ordering IS the lesson (task → attempt →
 /// real error → correction → passing answer).
-fn build_sharegpt(messages: &[ChatMessage]) -> Value {
+fn build_sharegpt(messages: &[ChatMessage], receipts: &[GenerationReceipt]) -> Value {
     let msgs: Vec<Value> = messages
         .iter()
         .map(|m| json!({ "role": m.role, "content": message_text(m) }))
         .collect();
-    json!({ "messages": msgs })
+    // The existing dataset writer preserves row metadata. Receipts describe the
+    // actual teacher calls, not an inferred student outcome or training acceptance.
+    json!({ "messages": msgs, "metadata": { "teacherGenerations": receipts } })
 }
 
-/// One teacher generation. When `dedicated` is `Some`, it generates against a DEDICATED
-/// bare-base measurement lane (the same isolation `cognition/eval` uses) — never the live
-/// multi-LoRA serving lane, which OOMs the Metal backend on a real generation (#175: the
-/// live lane's 5 co-resident genome LoRAs + big window can't sustain a 300-token decode; a
-/// tiny readiness smoke-decode passes but the real generation wedges → reap/respawn churn →
-/// a 0-corpus teach). When `dedicated` is `None` (the clean lane couldn't be stood up) it
-/// degrades to the live serving lane via the registry — resolved the canonical way, guard
-/// acquired + dropped within the call so it's never held across the multi-task loop.
+struct TeacherGeneration {
+    text: String,
+    receipt: GenerationReceipt,
+}
+
+/// Generate only through the acquired eval-lane adapter. The eval owner may share
+/// resident weights; an acquisition refusal must never select a different live adapter.
 async fn teacher_generate(
-    dedicated: Option<&std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
+    adapter: &std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     model: &str,
     messages: Vec<ChatMessage>,
     temperature: f32,
-) -> Result<String, CommandError> {
+) -> Result<TeacherGeneration, CommandError> {
+    let request_id = uuid::Uuid::new_v4().to_string();
     let request = TextGenerationRequest {
         messages,
         system_prompt: None,
@@ -476,7 +490,7 @@ async fn teacher_generate(
         tool_choice: None,
         response_format: None,
         active_adapters: None,
-        request_id: None,
+        request_id: Some(request_id.clone()),
         user_id: None,
         room_id: None,
         purpose: Some("genome/teach".to_string()),
@@ -484,32 +498,37 @@ async fn teacher_generate(
         turn_bound: None,
     };
 
-    // Dedicated clean lane: generate directly against its pinned adapter. This is the
-    // path that WORKS — the eval lane proves a bare-base lane sustains real generations
-    // (28/44 on hard-rs) where the live multi-LoRA lane wedges.
-    if let Some(adapter) = dedicated {
-        let response: TextGenerationResponse = adapter
-            .generate_text(request)
-            .await
-            .map_err(CommandError::Internal)?;
-        return Ok(response.text);
-    }
-
-    // Degrade path: no clean lane came up — resolve the live serving adapter the
-    // canonical way. May inherit the #175 OOM, but a shared-lane attempt beats no
-    // attempt, and the reason we're here was already warned loud at spawn.
-    let registry_arc = global_registry();
-    let registry = registry_arc.read().await;
-    let (_provider_id, adapter) = registry
-        .select(Some(PROVIDER_ID), Some(model), InferenceDevice::Auto)
-        .ok_or_else(|| {
-            CommandError::Internal(format!("no adapter serves teacher model '{model}'"))
-        })?;
     let response: TextGenerationResponse = adapter
         .generate_text(request)
         .await
         .map_err(CommandError::Internal)?;
-    Ok(response.text)
+    let receipt = GenerationReceipt::from_response(request_id, &response);
+    if let GenerationOutcome::Faulted { detail, .. } = &receipt.outcome {
+        // An Ok transport response can still report failed generation. Its partial
+        // text must not reach grading or become an apparently valid example.
+        return Err(CommandError::Internal(format!(
+            "teacher generation faulted: {detail}"
+        )));
+    }
+    Ok(TeacherGeneration {
+        text: response.text,
+        receipt,
+    })
+}
+
+/// Preserve the serving-readiness prerequisite and the eval owner's lane policy.
+/// Successful acquisition may share resident weights; refusal ends synthesis.
+async fn acquire_teacher_lane(
+    model: &str,
+) -> Result<crate::cognition::eval::EvalLane, CommandError> {
+    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
+        return Err(CommandError::Internal(
+            "no served model became ready within the serving-wait budget -- cannot run the teacher. \
+             Bring up serving (ai/inference/serve) before genome/teach."
+                .to_string(),
+        ));
+    }
+    crate::cognition::eval::spawn_base_eval_lane(model).await
 }
 
 /// The validated corpus a remediation pass produces: the ShareGPT examples (only
@@ -550,48 +569,29 @@ pub async fn synthesize_remediation(
     temperature: f32,
     max_fix_iters: u32,
 ) -> Result<RemediationCorpus, CommandError> {
+    synthesize_remediation_with_lane(
+        tasks,
+        teacher_model,
+        temperature,
+        max_fix_iters,
+        acquire_teacher_lane(teacher_model),
+    )
+    .await
+}
+
+// The lane future keeps acquisition and the generation loop on the same path in tests.
+async fn synthesize_remediation_with_lane(
+    tasks: &[EvalTask],
+    teacher_model: &str,
+    temperature: f32,
+    max_fix_iters: u32,
+    lane: impl std::future::Future<Output = Result<crate::cognition::eval::EvalLane, CommandError>>,
+) -> Result<RemediationCorpus, CommandError> {
+    // Retain the owner for the entire batch, including grading between generations.
+    let teacher_lane = lane.await?;
     let mut examples: Vec<Value> = Vec::new();
     let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
     let mut with_correction = 0usize;
-
-    // WAIT for the served teacher model to be READY before the first generation. The
-    // teacher runs on the local serving lane; if teach launches while serving is
-    // relaunching that lane (a genome page-in, a window grow-back), the first
-    // `generate_text` hits a not-ready lane and — with no readiness gate and no
-    // timeout — HANGS FOREVER, parking the whole job at 0% with no dataset (glass-boxed
-    // 2026-07-21). This is the same race the eval lane fixed; the teacher path needs
-    // the same discipline. A timeout (below) still recovers if the lane wedges mid-run.
-    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
-        return Err(CommandError::Internal(
-            "no served model became ready within the serving-wait budget — cannot run the teacher. \
-             Bring up serving (ai/inference/serve) before genome/teach."
-                .to_string(),
-        ));
-    }
-
-    // Stand up a DEDICATED bare-base measurement lane for the teacher — the SAME isolation
-    // `cognition/eval` uses to score reliably. The live serving lane carries the persona's
-    // co-resident genome LoRAs + a big window; a real 300-token teacher generation OOMs the
-    // Metal backend there (#175), the daemon reaps+respawns, a tiny readiness smoke-decode
-    // re-passes, and the next generation wedges again → churn → a 0-corpus teach. A clean
-    // lane (no LoRA, eval-sized window) sustains the generation exactly as the eval lane
-    // does. Held for the whole loop; its process is killed on drop (#59). On spawn failure
-    // we DEGRADE-LOUD to the live lane (a shared attempt beats no attempt), mirroring the
-    // eval branch's degrade — the reason is visible, never a silent `.ok()`.
-    let dedicated_lane = match crate::cognition::eval::spawn_base_eval_lane(teacher_model).await {
-        Ok(lane) => Some(lane),
-        Err(e) => {
-            tracing::warn!(
-                target: "genome::teach",
-                teacher_model = %teacher_model,
-                error = %e,
-                "dedicated teacher lane failed to come up — DEGRADING to the live serving lane \
-                 (may inherit the #175 multi-LoRA OOM). Fix the lane; a shared-lane teach may yield 0."
-            );
-            None
-        }
-    };
-    let teacher_adapter = dedicated_lane.as_ref().map(|l| l.adapter.clone());
 
     // MILESTONE: started — carries the denominator so a progress bar can size itself
     // before the first (slow) generation.
@@ -617,6 +617,7 @@ pub async fn synthesize_remediation(
             ChatMessage::text("user", &task.prompt),
         ];
 
+        let mut receipts = Vec::new();
         let mut attempts = 0u32;
         let mut last_error: Option<String> = None;
         let mut solved = false;
@@ -629,7 +630,7 @@ pub async fn synthesize_remediation(
         // [[command-async-shape-prefer-stream-never-block]]
         for _ in 0..=max_fix_iters {
             let answer = match teacher_generate(
-                teacher_adapter.as_ref(),
+                &teacher_lane.adapter,
                 teacher_model,
                 trajectory.clone(),
                 temperature,
@@ -642,6 +643,8 @@ pub async fn synthesize_remediation(
                     break;
                 }
             };
+            receipts.push(answer.receipt);
+            let answer = answer.text;
             attempts += 1;
             trajectory.push(ChatMessage::text("assistant", &answer));
 
@@ -666,7 +669,7 @@ pub async fn synthesize_remediation(
             if attempts > 1 {
                 with_correction += 1;
             }
-            examples.push(build_sharegpt(&trajectory));
+            examples.push(build_sharegpt(&trajectory, &receipts));
         }
         outcomes.push(GenomeTeachTaskOutcome {
             id: task.id.clone(),
@@ -715,8 +718,8 @@ const LIVED_TEACHER_SYSTEM: &str = "You are a thoughtful expert. A teammate was 
 /// reason the received axis is: validation is per-CONSOLIDATION by whole-being benchmark
 /// lift (#59), never per-trajectory ([[lived-and-eval-experience-are-one-stream-one-being]]).
 ///
-/// Mirrors [`synthesize_remediation`]'s lane discipline (readiness gate → dedicated
-/// bare-base lane → degrade-loud to the live lane) but has NO grader loop: ONE teacher
+/// Uses the same acquired eval lane as [`synthesize_remediation`], including its
+/// refusal semantics, but has NO grader loop: ONE teacher
 /// generation per stimulus. Two honesty guards: an empty teacher answer is dropped (never
 /// ship a blank lesson), and the teacher's system turn shapes generation but is NOT in the
 /// example — the SFT pair is the bare `{question → answer}`, so the being learns the class
@@ -725,6 +728,21 @@ pub async fn synthesize_lived_expansion(
     stimuli: &[String],
     teacher_model: &str,
     temperature: f32,
+) -> Result<Vec<Value>, CommandError> {
+    synthesize_lived_expansion_with_lane(
+        stimuli,
+        teacher_model,
+        temperature,
+        acquire_teacher_lane(teacher_model),
+    )
+    .await
+}
+
+async fn synthesize_lived_expansion_with_lane(
+    stimuli: &[String],
+    teacher_model: &str,
+    temperature: f32,
+    lane: impl std::future::Future<Output = Result<crate::cognition::eval::EvalLane, CommandError>>,
 ) -> Result<Vec<Value>, CommandError> {
     // Trim + drop blanks up front: nothing to answer, and it decides whether we even need
     // a lane. Empty in → empty out is a legitimate outcome (no fitness gap), never a fault.
@@ -737,32 +755,7 @@ pub async fn synthesize_lived_expansion(
         return Ok(Vec::new());
     }
 
-    // Same readiness discipline as remediation: WAIT for a served lane before the first
-    // generation, or a relaunch race hangs the teacher forever (glass-boxed 2026-07-21).
-    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
-        return Err(CommandError::Internal(
-            "no served model became ready within the serving-wait budget — cannot run the lived \
-             expansion teacher. Bring up serving (ai/inference/serve) first."
-                .to_string(),
-        ));
-    }
-
-    // A DEDICATED bare-base lane (the #175-safe isolation eval + remediation use), degrading
-    // LOUD to the live lane if it can't come up — a shared attempt beats no attempt.
-    let dedicated_lane = match crate::cognition::eval::spawn_base_eval_lane(teacher_model).await {
-        Ok(lane) => Some(lane),
-        Err(e) => {
-            tracing::warn!(
-                target: "genome::teach",
-                teacher_model = %teacher_model,
-                error = %e,
-                "dedicated lived-expansion teacher lane failed to come up — DEGRADING to the live \
-                 serving lane (may inherit the #175 multi-LoRA OOM)."
-            );
-            None
-        }
-    };
-    let teacher_adapter = dedicated_lane.as_ref().map(|l| l.adapter.clone());
+    let teacher_lane = lane.await?;
 
     let mut examples: Vec<Value> = Vec::new();
     for stimulus in stimuli {
@@ -771,45 +764,44 @@ pub async fn synthesize_lived_expansion(
             ChatMessage::text("system", LIVED_TEACHER_SYSTEM),
             ChatMessage::text("user", stimulus),
         ];
-        let answer = match teacher_generate(
-            teacher_adapter.as_ref(),
-            teacher_model,
-            messages,
-            temperature,
-        )
-        .await
-        {
-            Ok(a) => a,
-            Err(e) => {
-                // Fail-loud on the ITEM, resilient on the BATCH — one stimulus failing
-                // must not abort the whole consolidation (same spirit as remediation
-                // breaking one task without killing the run).
-                tracing::warn!(
-                    target: "genome::teach",
-                    error = %e,
-                    "lived-expansion teacher generation failed for one stimulus — skipped"
-                );
-                continue;
-            }
-        };
-        if answer.trim().is_empty() {
+        let answer =
+            match teacher_generate(&teacher_lane.adapter, teacher_model, messages, temperature)
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    // Fail-loud on the ITEM, resilient on the BATCH — one stimulus failing
+                    // must not abort the whole consolidation (same spirit as remediation
+                    // breaking one task without killing the run).
+                    tracing::warn!(
+                        target: "genome::teach",
+                        error = %e,
+                        "lived-expansion teacher generation failed for one stimulus — skipped"
+                    );
+                    continue;
+                }
+            };
+        if answer.text.trim().is_empty() {
             continue; // never ship a blank lesson
         }
         // The bare {stimulus → answer} pair — the teacher's scaffold system turn is dropped.
         examples.push(json!({
             "messages": [
                 { "role": "user", "content": stimulus },
-                { "role": "assistant", "content": answer.trim() },
-            ]
+                { "role": "assistant", "content": answer.text.trim() },
+            ],
+            "metadata": { "teacherGenerations": [answer.receipt] }
         }));
     }
     Ok(examples)
 }
 
-/// Stateless — self-registers onto the ONE registry. Holds no module state; resolves
-/// inference + dataset packaging through their global/associated seams.
-#[derive(Default)]
-pub struct GenomeTeach;
+/// GenomeModule owns the executor needed by explicit training submission.
+/// Dataset-only teaching does not require that executor.
+#[derive(Clone)]
+pub struct GenomeTeach {
+    pub(crate) executor: std::sync::Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
+}
 
 #[async_trait]
 impl ActionCommand for GenomeTeach {
@@ -819,14 +811,15 @@ impl ActionCommand for GenomeTeach {
         "Generate a test-VALIDATED write→error→fix→pass training corpus that teaches the \
          self-verify-and-correct engineering reflex. A teacher model writes Rust, the gym grader \
          compiles+runs it, the REAL error feeds back, and it loops to green — only test-passing \
-         trajectories become multi-turn ShareGPT examples. Non-disruptive: writes a dataset, never \
-         touches the live serving lane. Feed the dataset to genome/job-create to forge the gene.";
+         trajectories become multi-turn ShareGPT examples. By default writes a dataset only. \
+         Explicit training prepares or resumes an immutable candidate and submits it through \
+         the existing training/evaluation/adoption pipeline.";
     type Params = GenomeTeachParams;
     type Output = GenomeTeachResult;
 
     async fn run(
         &self,
-        _ctx: &Ctx,
+        ctx: &Ctx,
         p: GenomeTeachParams,
     ) -> Result<GenomeTeachResult, CommandError> {
         // Fire-and-stream (#86): `detach` runs the many-minute corpus-gen IN THE CORE and
@@ -844,8 +837,10 @@ impl ActionCommand for GenomeTeach {
             inner.detach = Some(false);
             inner.run_id = Some(run_id.clone());
             let ledger_run = run_id.clone();
+            let command = self.clone();
+            let ctx = ctx.clone();
             tokio::spawn(async move {
-                let res = GenomeTeach::run_teach(inner).await;
+                let res = command.run_owned(&ctx, inner).await;
                 write_teach_ledger(&ledger_run, res.as_ref().map_err(|e| e.to_string()));
                 match res {
                     Ok(r) => tracing::info!(
@@ -863,104 +858,27 @@ impl ActionCommand for GenomeTeach {
                 ..Default::default()
             });
         }
-        GenomeTeach::run_teach(p).await
+        self.run_owned(ctx, p).await
     }
 }
 
 impl GenomeTeach {
-    /// The corpus-gen body — ctx-free so it runs inline OR from a detached `tokio::spawn`
-    /// (#86 fire-and-stream). Owns its params; reaches serving + dataset packaging via their
-    /// global seams, needing neither `self` nor `ctx`.
-    async fn run_teach(p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+    /// Shared corpus generation. Optional preparation owns the reserved output and
+    /// provenance; the default path only writes the requested dataset.
+    async fn run_teach(
+        p: GenomeTeachParams,
+        mut candidate: Option<bridge::Preparation>,
+    ) -> Result<GenomeTeachResult, CommandError> {
         // Bind this pass's run_id so the emit helpers write LIVE progress to its ledger
         // (cross-process, so `teach-status --run_id` and any widget see the bar advance).
         set_current_teach_run(p.run_id.clone());
-        // Task source: inline → from_experience (the #319 curriculum drain) →
-        // teach_set JSONL → committed default. A missing explicit path is a loud
-        // error (don't silently teach an empty set).
-        let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
-            inline
-        } else if let Some(solver) = p.from_experience.as_deref() {
-            // Her lived, objectively graded failures become her curriculum. Same
-            // citizen layout as the grader that wrote the stream (one resolver),
-            // latest-per-task dedup so a later PASS retires the failure, then the
-            // SAME salience selection every other experience consumer uses.
-            let home = crate::commands::benchmark::continuum_home()?;
-            let (solver_full, solver_dir) =
-                crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
-            let records = crate::cognition::experience::load_experiences(&solver_dir);
-            let latest = crate::cognition::experience::latest_per_task(&records);
-            let teach = crate::cognition::experience::salient_teach_set(
-                &latest,
-                &crate::cognition::experience::ErrorSalience,
-            );
-            // Salient failures the remediation teacher CANNOT consume: objectively
-            // graded but testless (a swe-grade carries no rust `EvalTask.test`), so
-            // `salient_teach_set` filters them out. They reach no learning organ today
-            // (card 6cdaf59f) — count them so an empty remediation drain is not mistaken
-            // for a clean citizen, and so the dead link is loud on the probe stream.
-            let unteachable_salient = {
-                use crate::cognition::experience::SalienceDetector;
-                let d = crate::cognition::experience::ErrorSalience;
-                latest
-                    .iter()
-                    .filter(|r| d.assess(r).is_some())
-                    .filter(|r| r.task.test.is_none())
-                    .count()
-            };
-            crate::probe!(
-                class = "genome.teach.from_experience",
-                solver = solver_full.as_str(),
-                stream_records = records.len() as u64,
-                after_dedup = latest.len() as u64,
-                teachable_failures = teach.len() as u64,
-                unteachable_salient = unteachable_salient as u64,
-                "curriculum drained from the citizen's lived experience stream (#319)",
-            );
-            if teach.is_empty() {
-                // Distinguish a genuinely-clean citizen from a SILENT DEAD LINK. If she
-                // has salient failures the remediation teacher can't consume (testless —
-                // swe-grades), zero teachable is NOT "healthy": her real coding failures
-                // are reaching no learning organ (card 6cdaf59f). Fail LOUD and name it,
-                // never the reassuring all-clear that hid this.
-                if unteachable_salient > 0 {
-                    return Err(CommandError::Invalid(format!(
-                        "{unteachable_salient} salient failure(s) in {solver_full}'s stream \
-                         that the remediation teacher CANNOT consume — objectively graded but \
-                         testless (e.g. swe-grade), so no learning organ reaches them today \
-                         (card 6cdaf59f). This is a DEAD LINK, not a healthy state: her real \
-                         coding failures are not becoming curriculum ({} records, {} after dedup)",
-                        records.len(),
-                        latest.len()
-                    )));
-                }
-                // An empty drain with no unteachable remainder is a genuinely CLEAN state
-                // (no salient failures pending), distinct from a misconfigured teach_set.
-                return Err(CommandError::Invalid(format!(
-                    "no salient failures pending in {solver_full}'s experience stream \
-                     ({} records, {} after latest-per-task dedup) — nothing to learn \
-                     right now, which is a healthy state, not a fault",
-                    records.len(),
-                    latest.len()
-                )));
-            }
-            teach
-        } else {
-            let path = p.teach_set.as_deref().unwrap_or(DEFAULT_TEACH_SET);
-            let text = std::fs::read_to_string(path).map_err(|e| {
-                CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
-            })?;
-            text.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
-                .collect()
-        };
-        if tasks.is_empty() {
-            return Err(CommandError::Invalid(
-                "no tasks to teach (inline `tasks` empty and/or teach_set had no valid rows)"
-                    .into(),
-            ));
+        let source_params = p.clone();
+        let tasks = tokio::task::spawn_blocking(move || select_teach_tasks(source_params))
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))??;
+
+        if let Some(preparation) = candidate.take() {
+            candidate = Some(preparation.bind_source(tasks.clone()).await?);
         }
 
         // Resolve the teacher: explicit → the locally-served model. Fail loud if
@@ -1004,13 +922,26 @@ impl GenomeTeach {
                     .join("datasets")
             }
         };
-        let dataset_dir = root.join(&name);
-        let manifest =
-            DatasetService::split_and_write(&name, &dataset_dir, &examples, split_ratio, None)
-                .map_err(CommandError::Internal)?;
-
+        let dataset_dir = match candidate.as_ref() {
+            Some(preparation) => preparation.dataset_dir()?,
+            None => root.join(&name),
+        };
         let tasks_solved = examples.len();
-        Ok(GenomeTeachResult {
+        let manifest = if candidate.is_some() {
+            let name = name.clone();
+            let directory = dataset_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                DatasetService::split_and_write(&name, &directory, &examples, split_ratio, None)
+            })
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))?
+            .map_err(CommandError::Internal)?
+        } else {
+            DatasetService::split_and_write(&name, &dataset_dir, &examples, split_ratio, None)
+                .map_err(CommandError::Internal)?
+        };
+        let result = GenomeTeachResult {
+            training: None,
             detached: false,
             run_id: p.run_id.clone(),
             dataset: name,
@@ -1024,12 +955,111 @@ impl GenomeTeach {
             train_examples: manifest.train_examples,
             eval_examples: manifest.eval_examples,
             outcomes,
-        })
+        };
+        match candidate {
+            Some(preparation) => preparation.publish(result).await,
+            None => Ok(result),
+        }
     }
 }
 
-// Stateless → self-register onto the ONE registry (descriptor + runtime object).
-crate::register_stateless_command!(GenomeTeach);
+fn select_teach_tasks(p: GenomeTeachParams) -> Result<Vec<EvalTask>, CommandError> {
+    // Task source: inline → from_experience (the #319 curriculum drain) →
+    // teach_set JSONL → committed default. A missing explicit path is a loud
+    // error (don't silently teach an empty set).
+    let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
+        inline
+    } else if let Some(solver) = p.from_experience.as_deref() {
+        // Her lived, objectively graded failures become her curriculum. Same
+        // citizen layout as the grader that wrote the stream (one resolver),
+        // latest-per-task dedup so a later PASS retires the failure, then the
+        // SAME salience selection every other experience consumer uses.
+        let home = crate::commands::benchmark::continuum_home()?;
+        let (solver_full, solver_dir) =
+            crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
+        let records = crate::cognition::experience::load_experiences(&solver_dir);
+        let latest = crate::cognition::experience::latest_per_task(&records);
+        let teach = crate::cognition::experience::salient_teach_set(
+            &latest,
+            &crate::cognition::experience::ErrorSalience,
+        );
+        // Salient failures the remediation teacher CANNOT consume: objectively
+        // graded but testless (a swe-grade carries no rust `EvalTask.test`), so
+        // `salient_teach_set` filters them out. They reach no learning organ today
+        // (card 6cdaf59f) — count them so an empty remediation drain is not mistaken
+        // for a clean citizen, and so the dead link is loud on the probe stream.
+        let unteachable_salient = {
+            use crate::cognition::experience::SalienceDetector;
+            let d = crate::cognition::experience::ErrorSalience;
+            latest
+                .iter()
+                .filter(|r| d.assess(r).is_some())
+                .filter(|r| r.task.test.is_none())
+                .count()
+        };
+        crate::probe!(
+            class = "genome.teach.from_experience",
+            solver = solver_full.as_str(),
+            stream_records = records.len() as u64,
+            after_dedup = latest.len() as u64,
+            teachable_failures = teach.len() as u64,
+            unteachable_salient = unteachable_salient as u64,
+            "curriculum drained from the citizen's lived experience stream (#319)",
+        );
+        if teach.is_empty() {
+            // Distinguish a genuinely-clean citizen from a SILENT DEAD LINK. If she
+            // has salient failures the remediation teacher can't consume (testless —
+            // swe-grades), zero teachable is NOT "healthy": her real coding failures
+            // are reaching no learning organ (card 6cdaf59f). Fail LOUD and name it,
+            // never the reassuring all-clear that hid this.
+            if unteachable_salient > 0 {
+                return Err(CommandError::Invalid(format!(
+                    "{unteachable_salient} salient failure(s) in {solver_full}'s stream \
+                         that the remediation teacher CANNOT consume — objectively graded but \
+                         testless (e.g. swe-grade), so no learning organ reaches them today \
+                         (card 6cdaf59f). This is a DEAD LINK, not a healthy state: her real \
+                         coding failures are not becoming curriculum ({} records, {} after dedup)",
+                    records.len(),
+                    latest.len()
+                )));
+            }
+            // An empty drain with no unteachable remainder is a genuinely CLEAN state
+            // (no salient failures pending), distinct from a misconfigured teach_set.
+            return Err(CommandError::Invalid(format!(
+                "no salient failures pending in {solver_full}'s experience stream \
+                     ({} records, {} after latest-per-task dedup) — nothing to learn \
+                     right now, which is a healthy state, not a fault",
+                records.len(),
+                latest.len()
+            )));
+        }
+        teach
+    } else {
+        let path = p.teach_set.as_deref().unwrap_or(DEFAULT_TEACH_SET);
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
+        })?;
+        if p.training.is_some() {
+            crate::cognition::gym::parse_tasks(&text, path).map_err(CommandError::Invalid)?
+        } else {
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
+                .collect()
+        }
+    };
+    if tasks.is_empty() {
+        return Err(CommandError::Invalid(
+            "no tasks to teach (inline `tasks` empty and/or teach_set had no valid rows)".into(),
+        ));
+    }
+
+    Ok(tasks)
+}
+
+// Runtime object is owned by GenomeModule; register its command descriptor once.
+crate::register_command!(GenomeTeach);
 
 /// `genome/teach-status` — the poll half of a long corpus-gen run. `genome/teach` runs
 /// for many minutes (write→grade→fix over a whole task set); this returns the LIVE
@@ -1126,6 +1156,144 @@ crate::register_stateless_command!(GenomeTeachStatus);
 mod tests {
     use super::*;
 
+    // what this catches: a refused teacher lane must fail the real synthesis path,
+    // not fall through to registry inference and return an empty/failed-item corpus.
+    #[tokio::test]
+    async fn refused_lane_stops_both_synthesis_paths_before_generation() {
+        let refused = || std::future::ready(Err(CommandError::Internal("lane refused".into())));
+        let tasks = [EvalTask {
+            id: "refused-lane".into(),
+            prompt: "write a function".into(),
+            test: Some("assert!(true);".into()),
+            ..Default::default()
+        }];
+        let remediation =
+            synthesize_remediation_with_lane(&tasks, "teacher", 0.0, 1, refused()).await;
+        assert!(
+            matches!(remediation, Err(CommandError::Internal(ref message)) if message == "lane refused")
+        );
+        let expansion = synthesize_lived_expansion_with_lane(
+            &["a lived question".into()],
+            "teacher",
+            0.0,
+            refused(),
+        )
+        .await;
+        assert!(
+            matches!(expansion, Err(CommandError::Internal(ref message)) if message == "lane refused")
+        );
+
+        // Empty lived input remains a no-op and never polls lane acquisition.
+        let empty = synthesize_lived_expansion_with_lane(&["  ".into()], "teacher", 0.0, async {
+            panic!("empty input acquired a lane")
+        })
+        .await
+        .unwrap();
+        assert!(empty.is_empty());
+    }
+
+    // what this catches: a selected model is not proof of who answered; a provider
+    // may return a different model/request id or an Ok envelope containing a fault.
+    // Only public text and canonical receipts cross into persisted dataset rows.
+    #[tokio::test]
+    async fn teacher_rows_preserve_actual_receipts_and_refuse_faulted_output() {
+        use crate::ai::adapter::AIProviderAdapter;
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        use crate::ai::types::{FinishReason, UsageMetrics};
+        use std::sync::{Arc, Mutex};
+
+        let response = TextGenerationResponse {
+            text: "public answer".into(),
+            finish_reason: FinishReason::Stop,
+            model: "actual-teacher".into(),
+            provider: "actual-provider".into(),
+            usage: UsageMetrics::default(),
+            response_time_ms: 1,
+            request_id: "provider-request".into(),
+            content: None,
+            tool_calls: None,
+            reasoning: Some("synthetic-private-reasoning-sentinel".into()),
+            routing: None,
+            error: None,
+            timing: None,
+        };
+        let mut fault = response.clone();
+        fault.finish_reason = FinishReason::Error;
+        let mut error_field = response.clone();
+        error_field.error = Some("provider failure".into());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(
+            HeuristicInferenceAdapter::new()
+                .with_responses(vec![response, fault, error_field])
+                .with_request_recorder(requests.clone()),
+        );
+        let generated = teacher_generate(
+            &adapter,
+            "requested-alias",
+            vec![ChatMessage::text("user", "public task")],
+            0.0,
+        )
+        .await
+        .expect("served response");
+        let submitted = requests.lock().unwrap()[0]
+            .request_id
+            .clone()
+            .expect("assigned at dispatch");
+        assert_eq!(generated.receipt.submitted_request_id, submitted);
+        assert_eq!(
+            generated.receipt.outcome,
+            GenerationOutcome::Served {
+                model: "actual-teacher".into(),
+                provider: "actual-provider".into(),
+                provider_request_id: Some("provider-request".into()),
+            }
+        );
+        let row = build_sharegpt(
+            &[
+                ChatMessage::text("user", "public task"),
+                ChatMessage::text("assistant", generated.text),
+            ],
+            &[generated.receipt],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        DatasetService::split_and_write("teacher", dir.path(), &[row.clone()], 1.0, None).unwrap();
+        let persisted = std::fs::read_to_string(dir.path().join("train.jsonl")).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(persisted.trim()).unwrap(),
+            row
+        );
+        assert!(!persisted.contains("synthetic-private-reasoning-sentinel"));
+        assert!(persisted.contains("actual-teacher"));
+        assert!(!persisted.contains("requested-alias"));
+        let loaded = crate::genome::fine_tuning::TrainingDataset::from_chat_jsonl(
+            &dir.path().join("train.jsonl"),
+            crate::genome::fine_tuning::TrainingSource::TeacherSynthesized,
+        )
+        .unwrap();
+        assert_eq!(loaded.examples[0].metadata.as_ref(), Some(&row["metadata"]));
+        assert_eq!(loaded.examples[0].completion, "public answer");
+        assert!(!serde_json::to_string(&loaded)
+            .unwrap()
+            .contains("synthetic-private-reasoning-sentinel"));
+        for _ in 0..2 {
+            let failed = teacher_generate(
+                &adapter,
+                "requested-alias",
+                vec![ChatMessage::text("user", "public task")],
+                0.0,
+            )
+            .await;
+            assert!(
+                matches!(failed, Err(CommandError::Internal(ref error)) if error.contains("teacher generation faulted")),
+                "a generation fault must never yield text for grading"
+            );
+        }
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_ne!(requests[0].request_id, requests[1].request_id);
+        assert_ne!(requests[1].request_id, requests[2].request_id);
+    }
+
     // what this catches: a validated trajectory flattens to the ShareGPT shape
     // mlx_lm.lora/dataset consume — role+content per turn, ORDER preserved (the
     // write→error→fix→pass ordering IS the lesson). Drift here silently corrupts
@@ -1139,7 +1307,7 @@ mod tests {
             ChatMessage::text("user", "Your solution failed: compile error"),
             ChatMessage::text("assistant", "```rust\nfn add(a:i32,b:i32)->i32{a+b}\n```"),
         ];
-        let v = build_sharegpt(&traj);
+        let v = build_sharegpt(&traj, &[]);
         let msgs = v["messages"].as_array().expect("messages array");
         assert_eq!(msgs.len(), 5);
         assert_eq!(msgs[0]["role"], "system");

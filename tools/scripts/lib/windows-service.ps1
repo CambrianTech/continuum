@@ -123,6 +123,48 @@ function Protect-CoreBuildOutput {
     Write-Output 'Preserved the running Cargo image; the build can link its replacement without stopping the core.'
 }
 
+function Select-CoreEngineSlot {
+    param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor)
+    $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
+    # Engines have an independent lifetime: a warm lane can outlive its core.
+    # Keep room for that mapped engine, the registered release, and a candidate.
+    $engines = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'llama-server.exe' })
+    if (@($engines | Where-Object { -not $_.ExecutablePath }).Count) { throw 'Cannot inspect running inference engine paths.' }
+    $enginePaths = @($engines | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
+    if ($Descriptor.engine) { $enginePaths += ConvertTo-CoreImagePath $Descriptor.engine }
+    $engineSlot = $null
+    foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
+        $candidate = Join-Path $root $name
+        if (-not @($enginePaths | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            $engineSlot = $candidate; break
+        }
+    }
+    if (-not $engineSlot) { throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.' }
+    return $engineSlot
+}
+
+function Prepare-CoreServiceEngine {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][string]$ReceiptPath)
+    # The calling reboot holds install.lock across preparation and handoff.
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+    if ($task.Description -cne $Description) { throw 'Installed release changed before engine preparation.' }
+    $release = $Description | ConvertFrom-Json -ErrorAction Stop
+    $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+    $slot = Select-CoreEngineSlot -Descriptor $release
+    Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory $slot -RequireReceipt
+    $after = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+    if ($after.source_revision -cne $requirement.source_revision -or $after.backend -cne $requirement.backend) {
+        throw 'Tracked engine requirement changed during preparation.'
+    }
+    $drift = Get-CoreEngineDrift -Directory $slot -Requirement $requirement
+    if ($drift) { throw $drift }
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+    if ($task.Description -cne $Description) { throw 'Installed release changed during engine preparation.' }
+    [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
+}
+
 function New-CoreServiceRelease {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -162,20 +204,7 @@ function New-CoreServiceRelease {
         if ($occupied.Count -eq 0) { $slot = $candidate; break }
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
-    # Engines have an independent lifetime: a warm lane can outlive its core.
-    # Keep room for that mapped engine, the registered release, and a candidate.
-    $engines = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'llama-server.exe' })
-    if (@($engines | Where-Object { -not $_.ExecutablePath }).Count) { throw 'Cannot inspect running inference engine paths.' }
-    $enginePaths = @($engines | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
-    if ($descriptor.engine) { $enginePaths += ConvertTo-CoreImagePath $descriptor.engine }
-    $engineSlot = $null
-    foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
-        $candidate = Join-Path $root $name
-        if (-not @($enginePaths | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
-            $engineSlot = $candidate; break
-        }
-    }
-    if (-not $engineSlot) { throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.' }
+    $engineSlot = Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor
     New-Item -ItemType Directory -Force -Path $slot | Out-Null
     foreach ($name in @('continuum.exe', 'continuum-core-server.exe')) {
         $source = Join-Path $TargetDirectory ('release\' + $name)
@@ -274,13 +303,42 @@ function Register-CoreServiceRelease {
 
 function Invoke-CoreServiceRelease {
     param([Parameter(Mandatory = $true)]$Release, [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [string]$WorkingDirectory = $RepoRoot)
+        [string]$WorkingDirectory = $RepoRoot, [Parameter(Mandatory = $true)][IO.FileStream]$InstallLease)
+    $leasePath = $InstallLease.Name
+    # Keep the validated CLI's lease capability and its paired Core bytes fixed
+    # across the brief lock transfer; a concurrent reboot cannot swap the files
+    # between capability validation and execution.
+    $cliPin = [IO.File]::Open($Release.cli, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $corePin = $null
+    try {
+    $corePin = [IO.File]::Open($Release.artifact, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     Push-Location $WorkingDirectory
     try {
-        & $Release.cli reboot --prebuilt $Release.artifact --service
+        # Saved releases can contain older CLIs. Prove this candidate implements
+        # the same lease protocol while the installer still owns exclusion.
+        $validation = @(& $Release.cli reboot --prebuilt $Release.artifact --validate-only)
+        if ($LASTEXITCODE -ne 0 -or 'continuum-install-lease-protocol:1' -cnotin $validation) {
+            throw 'Prepared CLI lacks the verified installation lease protocol; prepare a current release before handoff.'
+        }
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try { $descriptorSha = [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($Release | ConvertTo-Json -Compress)))).Replace('-', '').ToLowerInvariant() }
+        finally { $hash.Dispose() }
+        # Registration reserves the candidate slot across this transfer. Reboot
+        # reacquires the same lease and validates its descriptor before stopping.
+        $InstallLease.Dispose()
+        & $Release.cli reboot --prebuilt $Release.artifact --service --service-descriptor-sha $descriptorSha
         if ($LASTEXITCODE -ne 0) { throw 'Guarded service handoff failed; installer did not report success.' }
     } finally { Pop-Location }
+    } finally {
+        if ($corePin) { $corePin.Dispose() }
+        $cliPin.Dispose()
+    }
+    # A newer installer may win the transfer back. Never overwrite its public
+    # CLI or PATH with this invocation's older selected release.
+    $tailLease = [IO.File]::Open($leasePath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+    if ($task.Description -cne ($Release | ConvertTo-Json -Compress)) { throw 'Installed release changed after handoff; public CLI was preserved.' }
     if ($task.State -ne 'Running') { throw 'The core answered, but its prepared supervisor is not running.' }
     # Other terminals can briefly have the old CLI image open on Windows.
     # Retry file contention without terminating those user commands.
@@ -305,4 +363,5 @@ function Invoke-CoreServiceRelease {
         $env:PATH = $clientDir + ';' + $env:PATH
     }
     Module-Done 'run'
+    } finally { $tailLease.Dispose() }
 }

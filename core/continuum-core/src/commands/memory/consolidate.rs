@@ -18,7 +18,7 @@
 //! second" discipline.
 //!
 //! Zero new serving code: it reuses the corpus read (`data/list`, the hydrate pattern) and
-//! the producer's [`build_submit_params`]/[`plan_received`] — one payload contract for the
+//! the producer's [`received_submission_params`] — one payload contract for the
 //! live-turn and received-lesson sources alike.
 
 use std::future::Future;
@@ -28,7 +28,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::experience::ExperienceRecord;
 use crate::commands::training_trigger::submit::SubmitOutcome;
 use crate::log_info;
 use crate::logging::TimingGuard;
@@ -36,7 +35,9 @@ use crate::memory::MemoryRecord;
 use crate::modules::data::DataListResult;
 use crate::modules::memory::MemoryState;
 use crate::persona::domain_classifier::DomainClassifier;
-use crate::persona::training_producer::{build_submit_params, plan_received, submit_training};
+use crate::persona::training_producer::{
+    received_submission_id, received_submission_params, submit_training,
+};
 use crate::routing::CallerIdentity;
 use crate::runtime::InProcessTransport;
 use crate::sdk_codegen::CommandError;
@@ -62,7 +63,7 @@ pub struct MemoryConsolidateParams {
     /// after this (rfc3339, lexicographically ordered). Omit to consolidate all (the
     /// explicit first run). The autonomic tick persists [`ConsolidateResult::latest_consolidated_ts`]
     /// and passes it back here next cycle. A partial timestamp group may be retried;
-    /// this watermark does not provide exactly-once delivery into the trigger.
+    /// stable lesson identities let the destination recognize accepted replays.
     #[serde(default)]
     #[ts(optional)]
     pub since_timestamp: Option<String>,
@@ -94,7 +95,8 @@ pub struct ConsolidateResult {
     /// Newest timestamp in the contiguous prefix of fully accepted timestamp groups.
     /// No refused or unprocessed lesson is skipped. `None` if no group completed, even
     /// when part of the first group was accepted. Retrying a partial group can replay
-    /// accepted examples; DispatchFailed also retains examples in a volatile bucket.
+    /// accepted examples with the same durable identity. Dispatch failure after
+    /// acceptance does not prevent advancing: the destination owns that retry.
     #[serde(default)]
     #[ts(optional)]
     pub latest_consolidated_ts: Option<String>,
@@ -107,7 +109,8 @@ fn shared_lessons_from_list(
     listed: serde_json::Value,
     since: Option<&str>,
 ) -> Result<Vec<MemoryRecord>, CommandError> {
-    let listed: DataListResult = serde_json::from_value(listed).map_err(|e| { // Decode the Value-native data/list response once; owned rows move into the typed receipt.
+    let listed: DataListResult = serde_json::from_value(listed).map_err(|e| {
+        // Decode the Value-native data/list response once; owned rows move into the typed receipt.
         CommandError::Internal(format!("memory/consolidate: invalid data/list result: {e}"))
     })?;
     if listed.items.len() != listed.total as usize {
@@ -136,7 +139,8 @@ fn shared_lessons_from_list(
             ),
             other => other,
         };
-        let record: MemoryRecord = serde_json::from_value(data).map_err(|e| { // Decode one persisted ORM row at corpus hydration; no typed-to-Value round trip.
+        let record: MemoryRecord = serde_json::from_value(data).map_err(|e| {
+            // Decode one persisted ORM row at corpus hydration; no typed-to-Value round trip.
             CommandError::Internal(format!(
                 "memory/consolidate: invalid shared-lesson row {index}: {e}; watermark unchanged"
             ))
@@ -153,9 +157,12 @@ fn shared_lessons_from_list(
 
 /// Commit only complete timestamp groups. A strict timestamp cursor cannot represent
 /// a partially accepted group, so stop on the first refusal and leave that group for
-/// retry. This is at-least-once retry behavior, not trigger-side deduplication.
+/// retry. The matching acceptance identity proves destination ownership; the trigger
+/// checks its immutable payload and bucket before issuing that receipt.
 async fn consolidate_in_order<'a, F, Fut>(
     records: &'a [MemoryRecord],
+    persona: uuid::Uuid,
+    base_model: &str,
     mut submit: F,
 ) -> ConsolidateResult
 where
@@ -170,7 +177,11 @@ where
     for group in records.chunk_by(|a, b| a.timestamp == b.timestamp) {
         for record in group {
             match submit(record).await {
-                Ok(outcome) if outcome.success => {}
+                Ok(outcome)
+                    if outcome.acceptance.as_ref().is_some_and(|receipt| {
+                        receipt.submission_id
+                            == received_submission_id(persona, base_model, &record.id)
+                    }) => {}
                 Ok(outcome) => {
                     log_info!(
                         "module", "memory_consolidate",
@@ -218,14 +229,15 @@ crate::action_command! {
             "persona",
         )
         .map_err(CommandError::Invalid)?;
-        let persona_name = p.persona_name.clone().unwrap_or_else(|| p.persona_id.to_string());
+        let canonical_persona: crate::identity::PersonaRef = persona_uuid.to_string().into();
+        let persona_name = p.persona_name.clone().unwrap_or_else(|| persona_uuid.to_string());
 
         let executor = this.state.executor().map_err(CommandError::Internal)?;
 
         // Read the persona's SHARED lessons from durable truth (the rows memory/share wrote),
         // filtered server-side to memory_type "shared" — the same data/list path hydrate uses.
         let mut filter = serde_json::json!({
-            "persona_id": p.persona_id, "memory_type": "shared"
+            "persona_id": canonical_persona, "memory_type": "shared"
         });
         if let Some(since) = &p.since_timestamp {
             filter["timestamp"] = serde_json::json!({ "$gt": since });
@@ -235,7 +247,7 @@ crate::action_command! {
                 "data/list",
                 serde_json::json!({
                     "collection": super::MEMORIES_COLLECTION,
-                    "dbPath": super::persona_db_handle(&p.persona_id),
+                    "dbPath": super::persona_db_handle(&canonical_persona),
                     "filter": filter,
                     "sort": [
                         { "field": "timestamp", "direction": "asc" },
@@ -259,17 +271,14 @@ crate::action_command! {
             )),
         ));
         let classifier = DomainClassifier::new();
-        let result = consolidate_in_order(&records, |record| {
+        let result = consolidate_in_order(&records, persona_uuid, &p.base_model, |record| {
             let conn = &conn;
             let classifier = &classifier;
             let persona_name = &persona_name;
             let base_model = &p.base_model;
             async move {
-                // ONE source of truth for received → (topic, lesson): from_shared_lesson.
-                let episode = ExperienceRecord::from_shared_lesson(record);
-                let plan = plan_received(classifier, &episode.task.prompt, &episode.answer);
-                let params = build_submit_params(
-                    persona_uuid, persona_name, base_model, &plan, "received-lesson"
+                let params = received_submission_params(
+                    persona_uuid, persona_name, base_model, classifier, record
                 );
                 submit_training(conn, params).await
             }
@@ -323,6 +332,8 @@ mod tests {
     // treating Ok(success:false) as acceptance cannot evade this regression.
     #[tokio::test]
     async fn rejected_lesson_stops_at_the_last_complete_timestamp_group() {
+        let persona = uuid::Uuid::from_u128(7);
+        let base_model = "synthetic";
         let first = "2026-09-08T00:00:00Z";
         let tied = "2026-09-08T01:00:00Z";
         let last = "2026-09-08T02:00:00Z";
@@ -380,6 +391,27 @@ mod tests {
                 Some(first),
             ),
             (
+                "tie-b",
+                "wrong-receipt",
+                vec!["first", "tie-a", "tie-b"],
+                2,
+                Some(first),
+            ),
+            (
+                "tie-b",
+                "no-receipt",
+                vec!["first", "tie-a", "tie-b"],
+                2,
+                Some(first),
+            ),
+            (
+                "tie-b",
+                "accepted-dispatch-failed",
+                vec!["first", "tie-a", "tie-b", "later"],
+                4,
+                Some(last),
+            ),
+            (
                 "none",
                 "none",
                 vec!["first", "tie-a", "tie-b", "later"],
@@ -390,14 +422,25 @@ mod tests {
             let transport = MockTransport::new();
             for record in &records {
                 let should_fail = record.id == refused;
+                let expected_id = super::received_submission_id(persona, base_model, &record.id);
                 transport.respond_to("genome/training-trigger/submit", move |_| {
                     if !should_fail {
                         return Ok(json!({
                             "success": true, "outcome": "BatchAppended",
+                            "acceptance": { "submissionId": expected_id, "replayed": false },
                             "currentCount": 1, "threshold": 16,
                         }));
                     }
                     match failure {
+                        "accepted-dispatch-failed" => Ok(json!({
+                            "success": false, "errorKind": "DispatchFailed",
+                            "acceptance": { "submissionId": expected_id, "replayed": false },
+                        })),
+                        "wrong-receipt" => Ok(json!({
+                            "success": true,
+                            "acceptance": { "submissionId": uuid::Uuid::nil(), "replayed": false },
+                        })),
+                        "no-receipt" => Ok(json!({ "success": true })),
                         "transport" => Err(ClientError::Transport("connection lost".into())),
                         "malformed" => Ok(json!({ "outcome": "BatchAppended" })),
                         kind => Ok(json!({
@@ -408,7 +451,7 @@ mod tests {
             }
             let conn = Connection::new(transport);
             let mut calls = Vec::new();
-            let result = consolidate_in_order(&records, |record| {
+            let result = consolidate_in_order(&records, persona, base_model, |record| {
                 calls.push(record.id.as_str());
                 submit_training(&conn, json!({}))
             })

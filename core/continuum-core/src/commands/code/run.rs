@@ -84,7 +84,7 @@ pub struct CodeRunResult {
     /// The interpreter / toolchain that ran the code, as a path or PATH name — so a
     /// "no module named numpy" is read against the environment it actually ran in
     /// (card 533c2d78: a held checkout's prepared env python when there is one, else
-    /// the PATH `python3`; `rustc` for Rust).
+    /// the resolved system Python executable; `rustc` for Rust).
     #[serde(default)]
     pub interpreter: String,
 }
@@ -126,8 +126,7 @@ impl ActionCommand for CodeRun {
         match params.lang.as_str() {
             "rust" | "rs" => {}
             "python" | "python3" | "py" => {
-                let dir =
-                    std::env::temp_dir().join(format!("cu-coderun-{}", uuid::Uuid::new_v4()));
+                let dir = std::env::temp_dir().join(format!("cu-coderun-{}", uuid::Uuid::new_v4()));
                 std::fs::create_dir_all(&dir).map_err(|e| {
                     CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
                 })?;
@@ -146,9 +145,13 @@ impl ActionCommand for CodeRun {
                 // the interpreter, not the bug. code/shell already runs in the prepared
                 // env; the snippet runner ran the system python. Same resolver as the
                 // [env] fact: the caller's rooted card checkout → its prepared env.
-                let interpreter = crate::modules::code_commands::held_env_python_for(ctx)
-                    .await
-                    .unwrap_or_else(|| std::path::PathBuf::from("python3")); // unwrap_or_else: no held checkout or no prepared env = the PATH interpreter, named in the result
+                let interpreter =
+                    match crate::modules::code_commands::held_env_python_for(ctx).await {
+                        Some(interpreter) => Ok(interpreter),
+                        None => crate::modules::python_adapter::find_python_async()
+                            .await
+                            .map_err(|error| CommandError::Internal(format!("code/run: {error}"))),
+                    };
                 let shape = script_shape(&params.code);
                 crate::probe!(
                     class = "code.run.shape",
@@ -157,7 +160,12 @@ impl ActionCommand for CodeRun {
                     chars = params.code.chars().count() as u64,
                     "what a python snippet is — a program, or the tree walked / a shell called from python"
                 );
-                let result = run_python(&dir, cwd.as_deref(), &params.code, timeout, &interpreter).await;
+                let result = match interpreter {
+                    Ok(interpreter) => {
+                        run_python(&dir, cwd.as_deref(), &params.code, timeout, &interpreter).await
+                    }
+                    Err(error) => Err(error),
+                };
                 let _ = std::fs::remove_dir_all(&dir);
                 // THE FASTER HAND, NAMED IN THE RESULT (never a refusal — Joel 2026-09-15:
                 // python over shell for anything cross-OS; the Rust hands over both). A
@@ -177,10 +185,12 @@ impl ActionCommand for CodeRun {
                     r
                 });
             }
-            other => return Err(CommandError::Invalid(format!(
-                "code/run: unsupported lang '{other}' — supported: rust, python. \
+            other => {
+                return Err(CommandError::Invalid(format!(
+                    "code/run: unsupported lang '{other}' — supported: rust, python. \
                  For anything else use code/shell (any command; long runs hand back a handle)"
-            ))),
+                )))
+            }
         }
 
         // Fresh temp dir per run, removed afterward. The code is written verbatim — no
@@ -245,7 +255,11 @@ pub(crate) async fn run_bounded(
     };
     let stdout = drain_out.await.unwrap_or_default();
     let stderr = drain_err.await.unwrap_or_default();
-    Ok(BoundedOutput { stdout, stderr, status })
+    Ok(BoundedOutput {
+        stdout,
+        stderr,
+        status,
+    })
 }
 
 /// The timeout verdict, appended AFTER whatever the child managed to write.
@@ -267,7 +281,7 @@ fn timeout_note(partial_stderr: &str, secs: u64, hint: &str) -> String {
 /// Run a complete Python program under the same wall-clock + kill_on_drop
 /// contract as the Rust path. Same ground-truth shape: a traceback is the run
 /// result (ok=false), never hidden; `Err` is reserved for a missing
-/// interpreter. python3 resolves from PATH like rustc does.
+/// interpreter. The caller supplies the managed environment or resolved system Python.
 /// The marker that makes a python snippet tree exploration rather than a program, if
 /// any: `subprocess` / `os.system` / `os.popen` (a shell called from python), `os.walk`
 /// / `os.listdir` / `os.scandir` / `glob.glob` / `os.path.exists` / pathlib's
@@ -275,8 +289,16 @@ fn timeout_note(partial_stderr: &str, secs: u64, hint: &str) -> String {
 /// (a repro reads its fixture). Informational: the result names the faster hand.
 pub(crate) fn script_shape(code: &str) -> Option<&'static str> {
     const MARKERS: [&str; 10] = [
-        "subprocess", "os.system(", "os.popen(", "os.walk(", "os.listdir(", "os.scandir(",
-        "glob.glob(", "os.path.exists(", ".rglob(", ".iterdir(",
+        "subprocess",
+        "os.system(",
+        "os.popen(",
+        "os.walk(",
+        "os.listdir(",
+        "os.scandir(",
+        "glob.glob(",
+        "os.path.exists(",
+        ".rglob(",
+        ".iterdir(",
     ];
     MARKERS.iter().copied().find(|m| code.contains(m))
 }
@@ -299,9 +321,9 @@ async fn run_python(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let child = cmd
-        .spawn()
-        .map_err(|e| CommandError::Internal(format!("code/run: {interpreter_label} spawn failed: {e}")))?;
+    let child = cmd.spawn().map_err(|e| {
+        CommandError::Internal(format!("code/run: {interpreter_label} spawn failed: {e}"))
+    })?;
     let started = std::time::Instant::now();
     let out = run_bounded(child, timeout)
         .await
@@ -406,9 +428,9 @@ async fn compile_and_run_rust(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let child = child
-        .spawn()
-        .map_err(|e| CommandError::Internal(format!("code/run: failed to spawn compiled binary: {e}")))?;
+    let child = child.spawn().map_err(|e| {
+        CommandError::Internal(format!("code/run: failed to spawn compiled binary: {e}"))
+    })?;
     let out = run_bounded(child, timeout)
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: binary wait failed: {e}")))?;
@@ -655,7 +677,8 @@ mod tests {
     // what this catches: the python path actually RUNS a program end-to-end and
     // returns ground truth (stdout + ok) — the 2026-08-24 harness-friction fix
     // (23 refused python acts in one night) staying real, not just an accepted
-    // lang string.
+    // lang string. The receipt must name the actual executable, including on Windows
+    // where python3 may be an unusable App Execution Alias while python works.
     #[tokio::test]
     async fn python_runs_and_returns_ground_truth() {
         let r = CodeRun
@@ -663,14 +686,19 @@ mod tests {
                 &Ctx::default(),
                 CodeRunParams {
                     lang: "python".into(),
-                    code: "print(2+2)".into(),
+                    code: "import json, sys\nprint(2+2)\nprint(json.dumps(sys.executable))".into(),
                     timeout_secs: None,
                 },
             )
             .await
             .expect("python must run");
         assert!(r.ok, "clean exit: {r:?}");
-        assert_eq!(r.stdout.trim(), "4");
+        let mut lines = r.stdout.lines();
+        assert_eq!(lines.next(), Some("4"));
+        let actual: std::path::PathBuf =
+            serde_json::from_str(lines.next().expect("Python executable receipt")).unwrap();
+        assert!(actual.is_absolute());
+        assert_eq!(std::path::PathBuf::from(&r.interpreter), actual);
     }
     // what this catches: a timed-out run losing everything it printed before the kill
     // (QA from Joaquin, 2026-09-13, card ba846f38 — bare "timedOut" was the longest dead
@@ -679,20 +707,35 @@ mod tests {
     async fn a_timed_out_run_returns_what_it_printed_before_the_kill() {
         let dir = std::env::temp_dir().join(format!("code-run-partial-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let interpreter = crate::modules::python_adapter::find_python_async()
+            .await
+            .expect("Python 3");
         let out = run_python(
             &dir,
             None,
             "import sys, time\nprint('partial-evidence', flush=True)\nsys.stderr.write('warming\\n'); sys.stderr.flush()\ntime.sleep(30)\nprint('never')\n",
             std::time::Duration::from_secs(1),
-            std::path::Path::new("python3"),
+            &interpreter,
         )
         .await
-        .expect("python3 on PATH");
+        .expect("resolved Python");
         assert!(out.timed_out, "the run must report the kill");
-        assert_eq!(out.interpreter, "python3", "the result names the interpreter that ran");
-        assert!(out.stdout.contains("partial-evidence"), "partial stdout survives: {:?}", out.stdout);
+        assert_eq!(
+            out.interpreter,
+            interpreter.display().to_string(),
+            "the result names the interpreter that ran"
+        );
+        assert!(
+            out.stdout.contains("partial-evidence"),
+            "partial stdout survives: {:?}",
+            out.stdout
+        );
         assert!(!out.stdout.contains("never"));
-        assert!(out.stderr.contains("warming") && out.stderr.contains("killed: exceeded the 1s"), "stderr keeps the partial text AND the verdict: {:?}", out.stderr);
+        assert!(
+            out.stderr.contains("warming") && out.stderr.contains("killed: exceeded the 1s"),
+            "stderr keeps the partial text AND the verdict: {:?}",
+            out.stderr
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -701,6 +744,7 @@ mod tests {
     // on "no module named numpy" — the interpreter, not the bug. With an interpreter
     // resolved for the run, THAT program runs and the result names it.
     #[tokio::test]
+    #[cfg(unix)]
     async fn a_snippet_runs_under_the_interpreter_it_was_given_and_names_it() {
         let dir = std::env::temp_dir().join(format!("code-run-interp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
@@ -709,11 +753,18 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap(); // JUSTIFIED unwrap: test scaffolding
+            let permissions = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(&fake, permissions).unwrap(); // JUSTIFIED unwrap: test scaffolding
         }
-        let out = run_python(&dir, None, "print('never')", std::time::Duration::from_secs(5), &fake)
-            .await
-            .expect("fake interpreter spawns");
+        let out = run_python(
+            &dir,
+            None,
+            "print('never')",
+            std::time::Duration::from_secs(5),
+            &fake,
+        )
+        .await
+        .expect("fake interpreter spawns");
         assert!(out.ok);
         assert_eq!(out.stdout.trim(), "from-the-prepared-env");
         assert_eq!(out.interpreter, fake.display().to_string());
@@ -725,18 +776,54 @@ mod tests {
     // walks the tree still runs but its result leads with the one-act Rust hand.
     #[tokio::test]
     async fn a_snippet_runs_in_the_given_root_and_tree_walking_is_named_not_refused() {
-        assert_eq!(script_shape("import subprocess\nsubprocess.run(['grep','-r','x','.'])"), Some("subprocess"));
-        assert_eq!(script_shape("for r,d,f in os.walk('.'): print(f)"), Some("os.walk("));
-        assert_eq!(script_shape("src = open('a.py').read()\nassert 'def f' in src"), None, "reading a fixture is a program");
+        assert_eq!(
+            script_shape("import subprocess\nsubprocess.run(['grep','-r','x','.'])"),
+            Some("subprocess")
+        );
+        assert_eq!(
+            script_shape("for r,d,f in os.walk('.'): print(f)"),
+            Some("os.walk(")
+        );
+        assert_eq!(
+            script_shape("src = open('a.py').read()\nassert 'def f' in src"),
+            None,
+            "reading a fixture is a program"
+        );
         let root = std::env::temp_dir().join(format!("code-run-root-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap(); // JUSTIFIED unwrap: test scaffolding
         std::fs::write(root.join("marker.txt"), b"here").unwrap(); // JUSTIFIED unwrap: test scaffolding
         let dir = root.join("scratch");
         std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
-        let out = run_python(&dir, Some(&root), "print(open('marker.txt').read())", std::time::Duration::from_secs(10), std::path::Path::new("python3"))
+        let interpreter = crate::modules::python_adapter::find_python_async()
             .await
-            .expect("python3 on PATH");
-        assert_eq!(out.stdout.trim(), "here", "relative paths resolve at the given root");
+            .expect("Python 3");
+        let out = run_python(
+            &dir,
+            Some(&root),
+            "print(open('marker.txt').read())",
+            std::time::Duration::from_secs(10),
+            &interpreter,
+        )
+        .await
+        .expect("resolved Python");
+        assert_eq!(
+            out.stdout.trim(),
+            "here",
+            "relative paths resolve at the given root"
+        );
+        // A broken prepared interpreter must fail explicitly, never run system Python instead.
+        let missing = root.join("missing-managed-python");
+        let error = run_python(
+            &dir,
+            Some(&root),
+            "print('must not run')",
+            std::time::Duration::from_secs(10),
+            &missing,
+        )
+        .await
+        .expect_err("broken managed interpreter must not fall back");
+        assert!(error.to_string().contains("missing-managed-python"));
+        assert!(error.to_string().contains("spawn failed"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

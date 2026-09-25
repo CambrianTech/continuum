@@ -93,10 +93,35 @@ pub struct LaneInvocation {
     /// Positional CLI arguments, in order.
     pub args: Vec<String>,
     /// Environment variables the child must be spawned with, as `(key, value)`.
-    pub envs: Vec<(String, String)>,
+    pub envs: Vec<(String, std::ffi::OsString)>,
+    /// Managed keys deliberately left inherited because they were present when
+    /// resolved. Values are NOT captured; this is not a hermetic environment.
+    /// Other inherited variables are outside this invocation's provenance.
+    pub inherited_env_keys: Vec<String>,
 }
 
 impl LaneInvocation {
+    /// Preserve an operator's inherited override, otherwise assign the managed
+    /// default. Resolution supplies presence; this pure owner never reads env.
+    pub(crate) fn inherit_or_default_env(
+        &mut self,
+        key: &str,
+        default: &std::ffi::OsStr,
+        inherited: bool,
+    ) {
+        if inherited {
+            self.inherited_env_keys.push(key.to_string());
+        } else {
+            self.envs.push((key.to_string(), default.to_os_string()));
+        }
+    }
+
+    /// Preserve the backend verdict's last-wins CPU constraint in the SAME
+    /// invocation that reaches Command, after the model's original placement.
+    pub(crate) fn constrain_to_cpu(&mut self) {
+        pair(&mut self.args, "--n-gpu-layers", "0");
+    }
+
     /// Value of the flag named `flag`, if present — i.e. the argument that follows
     /// it. Test-facing convenience so assertions read as intent
     /// (`inv.value_of("--parallel")`) rather than as index arithmetic, which is its
@@ -349,6 +374,7 @@ pub fn base_invocation(
             arg("--jinja"),
         ],
         envs: Vec::new(),
+        inherited_env_keys: Vec::new(),
     }
 }
 
@@ -596,8 +622,10 @@ impl LaneInvocation {
             }
         }
         if let Some(ov) = opts.resident_override {
-            self.envs
-                .push(("LLAMA_RESIDENT_OVERRIDE".to_string(), ov.to_string_lossy().into_owned()));
+            self.envs.push((
+                "LLAMA_RESIDENT_OVERRIDE".to_string(),
+                ov.to_string_lossy().into_owned().into(),
+            ));
         }
         self
     }
@@ -817,7 +845,9 @@ mod tests {
     // with its own justification, not a drive-by.
     #[test]
     fn the_base_invocation_needs_no_environment() {
-        assert!(inv(2, 16_384).envs.is_empty());
+        let base = inv(2, 16_384);
+        assert!(base.envs.is_empty());
+        assert!(base.inherited_env_keys.is_empty());
     }
 
     // what this catches: a conditional silently becoming unconditional (or vice versa).
@@ -847,6 +877,16 @@ mod tests {
             ..LaneOptions::default()
         });
         assert_eq!(cpu.value_of("--n-gpu-layers"), Some("0"));
+        // A hung backend probe constrains the already assembled GPU invocation.
+        // Preserve its last-wins ordering in the receipt as well as the command.
+        let original = gpu.args.clone();
+        let mut constrained = gpu;
+        constrained.constrain_to_cpu();
+        assert_eq!(&constrained.args[..original.len()], &original);
+        assert_eq!(
+            &constrained.args[original.len()..],
+            &["--n-gpu-layers", "0"]
+        );
     }
 
     // what this catches: THE 2026-08-20 SPAWN FAILURE, as a test instead of an outage.
@@ -878,9 +918,70 @@ mod tests {
         });
         assert_eq!(
             i.envs,
-            vec![("LLAMA_RESIDENT_OVERRIDE".to_string(), "/models/fit.gguf".to_string())]
+            vec![(
+                "LLAMA_RESIDENT_OVERRIDE".to_string(),
+                std::ffi::OsString::from("/models/fit.gguf")
+            )]
         );
-        assert!(!i.args.iter().any(|a| a.contains("fit.gguf")), "must not leak into args");
+        assert!(
+            !i.args.iter().any(|a| a.contains("fit.gguf")),
+            "must not leak into args"
+        );
+        // Managed MoE defaults share the same environment owner. Inherited
+        // operator settings are named but never overwritten or copied as values.
+        let mut managed = i;
+        let original_args = managed.args.clone();
+        managed.inherit_or_default_env(
+            "GGML_MOE_CAPTURE_FILE",
+            Path::new("/trace/capture").as_os_str(),
+            false,
+        );
+        managed.inherit_or_default_env(
+            "GGML_MOE_PLAN_FILE",
+            Path::new("/trace/unused-plan").as_os_str(),
+            true,
+        );
+        managed.inherit_or_default_env(
+            "GGML_MOE_TRACE_FILE",
+            Path::new("/trace/events").as_os_str(),
+            false,
+        );
+        assert_eq!(managed.args, original_args);
+        assert_eq!(
+            managed.envs.len(),
+            3,
+            "resident override plus two explicit defaults"
+        );
+        assert_eq!(
+            managed.envs[1],
+            (
+                "GGML_MOE_CAPTURE_FILE".to_string(),
+                std::ffi::OsString::from("/trace/capture")
+            )
+        );
+        assert_eq!(
+            managed.envs[2],
+            (
+                "GGML_MOE_TRACE_FILE".to_string(),
+                std::ffi::OsString::from("/trace/events")
+            )
+        );
+        assert_eq!(managed.inherited_env_keys, vec!["GGML_MOE_PLAN_FILE"]);
+        assert!(managed
+            .envs
+            .iter()
+            .all(|(key, _)| key != "GGML_MOE_PLAN_FILE"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let raw = std::ffi::OsString::from_vec(vec![b'/', 0xff]);
+            let mut native = LaneInvocation::default();
+            native.inherit_or_default_env("GGML_MOE_TRACE_FILE", &raw, false);
+            assert_eq!(
+                native.envs[0].1, raw,
+                "native path bytes survive without lossy conversion"
+            );
+        }
     }
 
     // what this catches: KV quant emitting only one half of the pair. K and V are

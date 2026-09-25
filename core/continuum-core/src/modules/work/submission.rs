@@ -84,22 +84,22 @@ pub struct WorkSubmitParams {
     // omitted — the citizen's world has no verb that mints an artifact hash, and
     // before 2026-09-17 every submit she wrote by hand carried zeros and was refused
     // (56 on the M5 in one day; Kimi on the 5090 every turn for a night).
-    /// Full UUID of the card you hold (from work/get).
+    /// The card you hold — board handle or full UUID.
     #[ts(type = "string")]
-    pub card_id: Uuid,
+    pub card_id: String,
     /// Minted when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub submission_id: Option<Uuid>,
-    /// Your claim on the card; read off the board when omitted.
+    /// Your claim — handle or UUID; read off the board when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
-    pub claim_id: Option<Uuid>,
+    pub claim_id: Option<String>,
     /// Benchmark instance name; read from your checkout when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub instance: Option<String>,
-    /// The commit your patch is against; read from your checkout when omitted.
+    /// Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
@@ -110,6 +110,30 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
+}
+
+/// Expand an id the citizen was SHOWN into its canonical [`Uuid`].
+///
+/// These two verbs typed their id params as `Uuid`, so a short handle was refused by
+/// SERDE — before the handler existed, before any message could name the problem, and
+/// with no hint that a longer form was wanted. Every surface displays ids in the 8-char
+/// short form (`card d61513e4`), which is the only form she has in front of her.
+///
+/// Three properties, and they are why this is not a tolerant deserializer:
+/// - **Strict.** [`crate::id_resolve::resolve_handle`], not the repairing `resolve`. A
+///   malformed id is refused, and every supplied digit is kept so a collision can be
+///   disambiguated by typing more of it.
+/// - **Scoped.** Candidates are supplied by the caller from the ONE room's board it has
+///   already read, or the ONE card's submissions — never a global set. An ambiguity is
+///   refused against a narrow, named population.
+/// - **Not an authorization.** Resolving an id grants nothing; the holder and ownership
+///   guards downstream are untouched and still run on the canonical id.
+fn resolve_shown(raw: &str, candidates: &[uuid::Uuid], label: &str) -> Result<Uuid, CommandError> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(CommandError::Invalid(format!("a {label} id is required")));
+    }
+    crate::id_resolve::resolve_handle(raw, candidates, label).map_err(CommandError::Invalid)
 }
 
 /// What a submit is made of when the citizen only names her card: her checkout for
@@ -183,23 +207,9 @@ fn instance_of_checkout(checkout: &std::path::Path, card_id: Uuid) -> Option<Str
         .or_else(|| Some(card_id.to_string()))
 }
 
-fn git_stdout(checkout: &std::path::Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(checkout)
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// The commit her patch stands on. A benchmark checkout: the instance's base commit
-/// from the dataset row. A repo worktree: the merge-base with the remote's default
-/// branch (`origin/HEAD`), else the upstream's. Absent = a named refusal, never HEAD
-/// (a diff against HEAD would hide her own commits — the sympy-12481 lesson in
-/// `workspace_candidate_diff_from`).
+/// Use the benchmark dataset base or the immutable repo-worktree creation anchor.
+/// Legacy worktrees require an explicit base; remote refs and HEAD do not prove
+/// where this work began and can include unrelated integration history.
 async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -> Result<String, CommandError> {
     if is_swe {
         return crate::commands::benchmark::swe_base_commit_for(instance)
@@ -210,14 +220,7 @@ async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -
                 ))
             });
     }
-    for upstream in ["origin/HEAD", "@{upstream}"] {
-        if let Some(base) = git_stdout(checkout, &["merge-base", "HEAD", upstream]) {
-            return Ok(base);
-        }
-    }
-    Err(CommandError::Invalid(
-        "the worktree has no default-branch merge-base to diff against — pass base_sha".into(),
-    ))
+    airc_lib::work_worktree::creation_base(checkout).map_err(CommandError::Invalid)
 }
 
 /// Read the submission off her checkout: instance, base, and the patch's hash + size.
@@ -315,39 +318,53 @@ impl ActionCommand for WorkSubmit {
         let runtime = persona_runtime(&self.registry, ctx, "work/submit")?;
         let airc = runtime.airc();
         let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
-        let card_id = WorkCardId::from_uuid(p.card_id);
         // Validate before allocating a durable binding. The SDK validates again
         // against its own latest projection immediately before publication.
         let board = airc
             .work_board_in(&room)
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
+        // THE BOARD IS READ FIRST so the handle resolves against THIS room's cards and
+        // nothing wider. A full UUID passes straight through and never consults the set.
+        let snapshot = board.snapshot();
+        let card_uuid = resolve_shown(
+            &p.card_id,
+            &snapshot.cards.iter().map(|c| c.card_id.as_uuid()).collect::<Vec<_>>(),
+            "card",
+        )?;
+        let card_id = WorkCardId::from_uuid(card_uuid);
         let card = board.card(card_id).ok_or_else(|| {
             CommandError::NotFound(format!(
                 "card {} is absent from the board of room {} — you asked for '{}'. If that \
                  is not the room you meant, the card is on another board and this submit \
                  went to the wrong one",
-                p.card_id,
+                card_uuid,
                 room_label(&room.name, room.channel.as_uuid()),
                 p.room
             ))
         })?;
         // The claim is HERS on THIS card, read off the board — a typed id she would
         // otherwise have to remember from a claim receipt three turns ago.
-        let claim_id = match p.claim_id {
-            Some(c) => ClaimId::from_uuid(c),
+        let claim_id = match p.claim_id.as_deref() {
+            // Scoped to THIS card's own claim — the narrowest set there is, so a handle
+            // from a stale receipt is refused by name rather than silently accepted.
+            Some(c) => ClaimId::from_uuid(resolve_shown(
+                c,
+                &card.claim_id.map(|id| id.as_uuid()).into_iter().collect::<Vec<_>>(),
+                "claim",
+            )?),
             None => match (card.owner, card.claim_id) {
                 (Some(owner), Some(claim)) if owner == airc.peer_id() => claim,
                 (Some(owner), _) => {
                     return Err(CommandError::Invalid(format!(
                         "card {} is held by {owner}, not by you — only the holder submits",
-                        p.card_id
+                        card_uuid
                     )))
                 }
                 _ => {
                     return Err(CommandError::Invalid(format!(
                         "card {} is not claimed — claim it (work/claim) before submitting",
-                        p.card_id
+                        card_uuid
                     )))
                 }
             },
@@ -355,7 +372,7 @@ impl ActionCommand for WorkSubmit {
         // A supplied claim id must not bypass ownership before we read local work
         // (#4309). Publication below still validates the current lease against the
         // latest board. The decision is pure so both refusals are pinned by a test.
-        holder_guard(card.owner, airc.peer_id(), card.claim_id, claim_id, p.card_id)?;
+        holder_guard(card.owner, airc.peer_id(), card.claim_id, claim_id, card_uuid)?;
         // A complete, real artifact she wrote herself is honoured as-is; anything less
         // — an omitted part, or the manual's zero hash read back as a value — is read
         // off her checkout, and a placeholder says so in the ledger.
@@ -365,7 +382,7 @@ impl ActionCommand for WorkSubmit {
         if matches!(&p.artifact, Some(a) if is_placeholder_hash(&a.hash)) {
             crate::probe!(
                 class = "work.submit.placeholder_artifact",
-                card = %p.card_id,
+                card = %card_uuid,
                 "artifact.hash was a placeholder (zeros / a manual blank) — deriving the real one from her checkout"
             );
         }
@@ -385,14 +402,14 @@ impl ActionCommand for WorkSubmit {
                      the card (work/claim) and it is staged for you. If a re-claim does not \
                      produce one, that is a substrate fault — say so in the room rather than \
                      re-doing the work, your patch is not the problem.",
-                    p.card_id,
+                    card_uuid,
                 )))?;
-            let d = derive_submission(&checkout, p.card_id, p.instance.clone(), p.base_sha.clone()).await?;
+            let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone()).await?;
             (d.instance, d.base_sha, d.artifact)
         };
         crate::probe!(
             class = "work.submit.shaped",
-            card = %p.card_id,
+            card = %card_uuid,
             instance = %instance,
             base = %&base_sha_text[..base_sha_text.len().min(9)],
             size_bytes = artifact_ref.size_bytes,
@@ -441,7 +458,7 @@ impl ActionCommand for WorkSubmit {
                 SubmissionSelection {
                     submission_id,
                     room_id: room.channel.as_uuid(),
-                    card_id: p.card_id,
+                    card_id: card_uuid,
                     claim_id: claim_id.as_uuid(),
                     staged_revision_id: revision,
                     instance: candidate.instance.clone(),
@@ -772,12 +789,12 @@ pub struct WorkSubmission {
 pub struct WorkSubmissionParams {
     /// Submission's activity room.
     pub room: String,
-    /// Parent work-card UUID in this room.
+    /// Parent card — board handle or full UUID.
     #[ts(type = "string")]
-    pub card_id: Uuid,
-    /// Accepted submission UUID.
+    pub card_id: String,
+    /// The submission to read — handle or full UUID.
     #[ts(type = "string")]
-    pub submission_id: Uuid,
+    pub submission_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -819,13 +836,35 @@ impl ActionCommand for WorkSubmission {
             .work_board_in(&room)
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
-        let submitted = board
-            .card(WorkCardId::from_uuid(p.card_id))
-            .and_then(|card| {
-                card.submissions
-                    .iter()
-                    .find(|s| s.submission_id.as_uuid() == p.submission_id)
-            })
+        // ROOM-SCOPED for the card, then CARD-SCOPED for the submission — each handle is
+        // resolved against the narrowest population that can contain it, so an ambiguous
+        // prefix names the candidates it actually collided with.
+        let snapshot = board.snapshot();
+        let card_uuid = resolve_shown(
+            &p.card_id,
+            &snapshot.cards.iter().map(|c| c.card_id.as_uuid()).collect::<Vec<_>>(),
+            "card",
+        )?;
+        let card = board.card(WorkCardId::from_uuid(card_uuid)).ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "card {card_uuid} is absent from the board of room {} — to read a card use \
+                 work/get, to publish your own work use work/submit",
+                room_label(&room.name, room.channel.as_uuid()),
+            ))
+        })?;
+        let submission_uuid = resolve_shown(
+            &p.submission_id,
+            &card
+                .submissions
+                .iter()
+                .map(|s| s.submission_id.as_uuid())
+                .collect::<Vec<_>>(),
+            "submission",
+        )?;
+        let submitted = card
+            .submissions
+            .iter()
+            .find(|s| s.submission_id.as_uuid() == submission_uuid)
             .ok_or_else(|| {
                 CommandError::NotFound(
                     "submission is absent from this card and room — this verb inspects a SUBMISSION by \
@@ -855,7 +894,7 @@ impl ActionCommand for WorkSubmission {
                     crate::identity::PeerId::from_uuid(owner.persona_id()),
                 )),
             ));
-            reviewed::credit_status(&conn, owner.agent_name(), p.submission_id)
+            reviewed::credit_status(&conn, owner.agent_name(), submission_uuid)
                 .await
                 .map_err(|e| CommandError::Internal(e.to_string()))
         }
@@ -883,8 +922,8 @@ impl ActionCommand for WorkSubmission {
             .collect();
         Ok(WorkSubmissionResult {
             submission: WorkSubmitResult {
-                submission_id: p.submission_id,
-                card_id: p.card_id,
+                submission_id: submission_uuid,
+                card_id: card_uuid,
                 room_id: room.channel.as_uuid(),
                 publisher: submitted.publisher.as_uuid(),
                 artifact: (&submitted.artifact).into(),
@@ -910,8 +949,41 @@ mod tests {
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
-    use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, room_label, short8};
+    use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
     use std::path::Path;
+
+    // what this catches (Astra, 2026-09-23): these two verbs typed their id params as
+    // `Uuid`, so the 8-char handle the board SHOWS her was refused by serde — before the
+    // handler, before any message could name the problem or the form it wanted. The
+    // resolution must be the shared strict primitive against a SCOPED candidate set, so
+    // that a handle expands, a collision is refused by name, and nothing is repaired.
+    #[test]
+    fn a_verb_accepts_the_handle_its_board_showed_and_refuses_an_ambiguous_one() {
+        let a = uuid::Uuid::parse_str("d61513e4-a332-4cd3-a208-5bf0e8acd50d").expect("fixture id"); // expect: a literal id in a test
+        let b = uuid::Uuid::parse_str("d61599ff-0000-4000-8000-000000000000").expect("fixture id"); // expect: a literal id in a test
+        let other = uuid::Uuid::parse_str("7de5b691-0000-4000-8000-000000000000").expect("fixture id"); // expect: a literal id in a test
+
+        // THE HANDLE SHE WAS SHOWN. This is the call that used to fail at deserialization.
+        assert_eq!(resolve_shown("d61513e4", &[a, other], "card").expect("resolves"), a); // expect: asserted to resolve
+
+        // A full UUID passes straight through and never consults the set — so an empty
+        // board (an outage, a wrong room) cannot turn a correct id into a miss.
+        assert_eq!(resolve_shown(&a.to_string(), &[], "card").expect("passes through"), a); // expect: asserted to pass
+
+        // AMBIGUITY IS REFUSED, NOT GUESSED, and supplying more digits disambiguates —
+        // the whole reason this uses the strict handle resolver and not the repairing one.
+        let ambiguous = resolve_shown("d615", &[a, b], "card").expect_err("two cards share d615"); // expect_err: asserted ambiguous
+        assert!(format!("{ambiguous:?}").contains("d615"), "the refusal names the prefix that collided");
+        assert_eq!(resolve_shown("d61513e4", &[a, b], "card").expect("more digits decide"), a); // expect: asserted to resolve
+
+        // A MISS IS A MISS. An id that matches nothing is refused against the named
+        // population rather than silently reaching a lookup that reports the card absent.
+        assert!(resolve_shown("deadbeef", &[a, other], "card").is_err());
+
+        // Too short to disambiguate, and empty, are both named refusals — never a match.
+        assert!(resolve_shown("d6", &[a, other], "card").is_err());
+        assert!(resolve_shown("   ", &[a, other], "card").is_err());
+    }
 
     // what this catches (Kimi's work/submit, 2026-09-21): "card X is absent from this room"
     // is true and useless — she asked for one room name, `resolve_room` turned it into a
@@ -961,9 +1033,11 @@ mod tests {
         let run = |args: &[&str]| {
             std::process::Command::new("git").args(args).current_dir(dir.path()).output().expect("git")
         };
-        run(&["init", "-q"]);
-        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
-        let err = base_sha_of(dir.path(), "card", false).await.expect_err("no remote, no upstream");
+        assert!(run(&["init", "-q"]).status.success());
+        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]).status.success());
+        // A remote default branch is not proof of a legacy worktree's creation base.
+        assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
+        let err = base_sha_of(dir.path(), "card", false).await.expect_err("no recorded creation base");
         assert!(err.to_string().contains("pass base_sha"), "{err}");
         // Regression for Kimi's result5734: submitting an owned staged checkout
         // requires no temporary acting root (including after focus loss/restart).
@@ -980,6 +1054,14 @@ mod tests {
         assert!(derived.artifact.size_bytes > 0);
         assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
         let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
+        // Regression for Kimi's oversized submissions: advancing the remote default
+        // must neither swallow committed work nor change the stored creation base.
+        assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());
+        assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
+        let recorded = super::derive_submission(dir.path(), card, None, None).await.expect("recorded base includes committed work");
+        assert_eq!(recorded.base_sha, base);
+        assert_eq!(recorded.artifact.hash, derived.artifact.hash);
+        assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
         let empty = super::derive_submission(dir.path(), card, None, Some(clean_base)).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
     }
