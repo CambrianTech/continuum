@@ -1260,7 +1260,10 @@ mod tests {
                  EVIDENCE — small, and the only thing that can answer what she wrote — and \
                  reclaim the bulky re-creatable clones/venvs instead. Corrected 2026-08-18: \
                  this entry read \"everything under it is re-creatable\", which the 25 \
-                 patches already sitting there had falsified since before it was written",
+                 patches already sitting there had falsified since before it was written. \
+                 The `swe/grades` sub-class is owned in-file since 2026-09-25: \
+                 `GradeCheckoutHold` removes a grade's tree when the grade ends and the \
+                 next grade sweeps any tree no live grade holds",
             ),
             // Steady-state owner ALREADY EXISTS in-file: RAII drop on every in-process
             // return path + the provision-time orphan sweep for worlds a killed process

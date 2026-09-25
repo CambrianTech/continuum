@@ -3883,9 +3883,106 @@ pub async fn gold_gate(instance: &SweInstance) -> SweVerdict {
 /// clears and re-stages, so the checkout is pristine by construction rather than by a reset we
 /// have to remember to call.
 pub async fn ensure_grade_checkout(instance: &SweInstance) -> Result<PathBuf, String> {
-    let dir = swe_cache_dir().join("grades").join(&instance.instance_id);
+    let root = swe_cache_dir().join("grades");
+    let dir = root.join(&instance.instance_id);
+    // Debris from a grade whose process died is swept here, off the async thread: a
+    // Django checkout is ~100k files and removing it is seconds of blocking I/O.
+    let live = live_grade_ids();
+    let _ = tokio::task::spawn_blocking(move || sweep_orphan_grade_checkouts(&root, &live)).await;
     clone_at(instance, &dir).await?;
     Ok(dir)
+}
+
+/// Grades in flight in THIS process, counted per instance (two grades of one instance
+/// share one path — the tree goes only when the last of them finishes).
+static LIVE_GRADES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn live_grade_ids() -> std::collections::HashSet<String> {
+    LIVE_GRADES.lock().expect("live-grade registry poisoned").keys().cloned().collect()
+}
+
+/// A grade's hold on its checkout. The checkout exists for the grade and for nothing
+/// after it: `clone_at` re-stages it from the base commit on every grade, so a tree
+/// kept past its grade is never read again — it only sits on disk.
+///
+/// Measured 2026-09-25 (M5): 914,676 retained files under `benchmarks/swe/grades`,
+/// every one indexed by Spotlight, and fseventsd grown to 14 GB with grading re-writing
+/// thousands of those files per minute. Dropping the hold removes the tree (RAII covers
+/// every return path of `grade`, including cancellation); a process that dies mid-grade
+/// leaves its tree for [`sweep_orphan_grade_checkouts`] at the next grade.
+struct GradeCheckoutHold {
+    instance_id: String,
+    dir: PathBuf,
+}
+
+impl GradeCheckoutHold {
+    fn take(instance_id: &str) -> Self {
+        *LIVE_GRADES
+            .lock()
+            .expect("live-grade registry poisoned")
+            .entry(instance_id.to_string())
+            .or_default() += 1;
+        Self {
+            instance_id: instance_id.to_string(),
+            dir: swe_cache_dir().join("grades").join(instance_id),
+        }
+    }
+}
+
+impl Drop for GradeCheckoutHold {
+    fn drop(&mut self) {
+        let last = {
+            let mut live = LIVE_GRADES.lock().expect("live-grade registry poisoned");
+            let n = live.get_mut(&self.instance_id).map(|n| {
+                *n -= 1;
+                *n
+            });
+            if n == Some(0) {
+                live.remove(&self.instance_id);
+            }
+            n == Some(0)
+        };
+        if !last {
+            return;
+        }
+        let dir = self.dir.clone();
+        let remove = move || {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    crate::probe!(class = "swe.grade_checkout_release_failed", dir = %dir.display(), error = %e);
+                }
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => drop(h.spawn_blocking(remove)),
+            Err(_) => remove(),
+        }
+    }
+}
+
+/// Remove every grade checkout (and dead `.cloning-*` staging tree) under `root` whose
+/// instance is not in `live`. Any tree here that no live grade holds is debris: the next
+/// grade of that instance re-clones from the base commit regardless.
+fn sweep_orphan_grade_checkouts(root: &Path, live: &std::collections::HashSet<String>) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let id = name.split(".cloning-").next().unwrap_or(&name);
+        if live.contains(id) {
+            continue;
+        }
+        let path = entry.path();
+        let gone = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        if gone.is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        crate::probe!(class = "swe.grade_checkouts_swept", root = %root.display(), removed = removed);
+    }
+    removed
 }
 
 /// The gate's decision, as a pure function of the pristine FAIL_TO_PASS run.
@@ -3965,6 +4062,7 @@ pub fn pristine_gate(pre: &[(String, bool)]) -> PristineGate {
 }
 
 pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerdict {
+    let _hold = GradeCheckoutHold::take(&instance.instance_id);
     let mut verdict = SweVerdict {
         instance_id: instance.instance_id.clone(),
         ..Default::default()
@@ -4194,6 +4292,23 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 
 #[cfg(test)]
 mod tests {
+    // what this catches: grade checkouts retained forever (914k files on the M5,
+    // 2026-09-25, fseventsd at 14 GB) — and the opposite failure, a sweep that deletes
+    // the tree or staging clone of a grade still in flight.
+    #[test]
+    fn the_orphan_sweep_removes_dead_grade_trees_and_spares_live_ones() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for d in ["live-1", "live-1.cloning-7-0", "dead-2", "dead-2.cloning-7-1"] {
+            std::fs::create_dir_all(root.path().join(d).join("src")).unwrap();
+        }
+        let live: std::collections::HashSet<String> = ["live-1".to_string()].into();
+        assert_eq!(super::sweep_orphan_grade_checkouts(root.path(), &live), 2);
+        assert!(root.path().join("live-1").exists());
+        assert!(root.path().join("live-1.cloning-7-0").exists());
+        assert!(!root.path().join("dead-2").exists());
+        assert!(!root.path().join("dead-2.cloning-7-1").exists());
+    }
+
     // what this catches: card cffc9c5e — uv's transport failure read as the instance's
     // env verdict. The signature must fire on the exact stderr the outage produced and
     // stay silent on a resolution / build failure, which IS an env fact.
