@@ -299,10 +299,14 @@ merged, pruned, quantized. Every such transformation takes the HGT shape (a comm
 handle, events, pluggable strategies that declare what they can serve) and obeys two
 rules:
 
-- **Lineage is a chain, not a field.** Each operation appends its step (operation,
-  strategy, input gene, target base, measured scores) to the gene's provenance. A gene
-  pulled from the world carries its whole history, so which transformation cost which
-  skill can be measured, not guessed.
+- **Lineage is an append-only, content-addressed graph.** Joel: *"Like the opposite of
+  a telomere, it's like a blockchain graph."* A telomere shortens with every division.
+  A gene's record only grows. Each operation is a node that hashes its inputs: the
+  parent gene(s), strategy, target base, and measured scores. It is a DAG, not a chain,
+  because a merge has several parents (the same shape as git's history, or a Merkle
+  DAG). Because each node commits to its parents' hashes, the history is tamper-evident.
+  A peer can verify a traded gene's ancestry without trusting whoever sent it, and which
+  transformation cost which skill can be measured, not guessed.
 - **Trust is measurement, never origin.** A gene from any source, whether ours, a peer
   node's, or a stranger's on Hugging Face, is adopted into a live persona only after it
   scores on the local gym for its trait. The same gate that adopts a freshly trained or
