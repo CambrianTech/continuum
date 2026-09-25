@@ -309,6 +309,28 @@ rules:
   transferred gene adopts an imported one. That gate is what lets an open, unbounded
   pool of experts stay safe to page in.
 
+**The alloy carries the lineage, and lineages teach the teachers.** Joel, 2026-09-25:
+*"The alloy contains provenance and evidence, with an entirely new way to learn and
+develop better learning from the lineages as they compete naturally within the mesh,
+strategies that worked, and not only that, our teachers and curricula get better."*
+The forge alloy already records provenance and evidence for a published artifact. A
+gene's lineage chain (every step, the strategy used, and the measured scores before and
+after) lives in its alloy, so it travels with the gene wherever the gene is traded.
+Across the mesh, many lineages of the same trait compete on measured scores. That
+record credits more than the gene:
+
+- **Strategies.** Which transfer, distill or merge methods preserved skill for which
+  model-family pairs. This becomes the evidence behind each strategy's declared pairs,
+  measured instead of assumed.
+- **Teachers.** Which teacher models produced curricula whose descendants scored
+  highest. That evidence feeds teacher selection in the academy.
+- **Curricula.** Which datasets and gyms produced genes that kept their skill through
+  later transfers. A curriculum whose genes survive transformation is worth more than one
+  whose genes only score on their first base.
+
+So the flywheel improves the way it learns, not just what it learns. Credit flows back
+up the lineage to whatever produced a strong descendant.
+
 **Who asks for it.** The planner does, when the state walk would serve a persona on a
 base where she lacks a gene her activity uses. It requests the transfer as a scheduled
 training period (the standing-periods actuator), and it prices the gene's absence in the
