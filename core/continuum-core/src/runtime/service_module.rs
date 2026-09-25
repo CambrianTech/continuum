@@ -399,6 +399,15 @@ pub trait ServiceModule: Send + Sync + Any {
         Vec::new()
     }
 
+    /// Artifacts / bus events this module PUBLISHES — the mirror of
+    /// [`Self::artifact_subscriptions`], in the same `ArtifactSelector` vocabulary.
+    /// The runtime builds the declared dataflow graph from both at boot and names every
+    /// one-sided wire (`runtime.event_graph`; see `runtime::event_graph`). Default:
+    /// declares nothing, which the graph reports honestly as an undeclared producer.
+    fn emissions(&self) -> Vec<ArtifactSelector> {
+        Vec::new()
+    }
+
     /// Wake policy override. Returning `None` means "use the cadence
     /// implied by `ModuleConfig.tick_interval`" — `Some(Periodic)` if
     /// `tick_interval` is set, `Some(EventDriven)` if not. Returning

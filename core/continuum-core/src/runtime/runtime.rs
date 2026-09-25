@@ -187,6 +187,34 @@ impl Runtime {
             );
         }
 
+        // The declared dataflow graph (CBAR gap #2): name every one-sided wire once at
+        // boot, beside the command parity audit above. Not an error yet: production is
+        // being declared module by module, so the unfed count starts high and ratchets
+        // down (docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md § The Declared Dataflow
+        // Graph). The dead `event_subscriptions` are named so their modules move to a
+        // live path.
+        let edges = self.registry.event_edges();
+        let graph = super::event_graph::orphans(&edges, &[]);
+        let dead_subscriptions: Vec<&'static str> = modules
+            .iter()
+            .filter_map(|name| self.registry.get_by_name(name))
+            .filter(|m| !m.config().event_subscriptions.is_empty())
+            .map(|m| m.config().name)
+            .collect();
+        crate::probe!(
+            class = "runtime.event_graph",
+            modules = edges.len() as u64,
+            declared_producers = edges.iter().filter(|e| !e.emits.is_empty()).count() as u64,
+            declared_consumers = edges.iter().filter(|e| !e.consumes.is_empty()).count() as u64,
+            unfed = graph.unfed.len() as u64,
+            unread = graph.unread.len() as u64,
+            unfed_list = ?graph.unfed,
+            unread_list = ?graph.unread,
+            dead_bus_subscriptions = ?dead_subscriptions,
+            "the declared dataflow graph: consumers no module declares it feeds, productions \
+             nobody reads, and bus subscriptions on the dispatch path with no live caller"
+        );
+
         // Per-module init deadline. A module's `initialize()` is meant to be fast
         // (in-memory wiring; heavy work is detached / tick-driven), so 60s is a
         // wedged-init backstop, NOT a normal budget — it bounds the airc-120s-hang
