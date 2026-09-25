@@ -1949,7 +1949,11 @@ pub fn external_serving_pin() -> Option<String> {
 /// persona's real turns, where a genuine wedge (every turn 500s) surfaces LOUD on
 /// the first turn — not silently faked. Cheap, off the HTTP layer, so no slot
 /// contention and no probe storm.
-async fn external_health_ok(root: &str, client: &reqwest::Client) -> bool {
+///
+/// Also the liveness question a slow KV page switch asks before it is allowed to
+/// call the engine dead ([`crate::inference::turn_admission::kv_page_action`]):
+/// `/health` is answered off the slot queue, so a busy engine still answers it.
+pub(crate) async fn external_health_ok(root: &str, client: &reqwest::Client) -> bool {
     let url = format!("{root}/health");
     matches!(
         client.get(&url).timeout(PROBE_TIMEOUT).send().await,

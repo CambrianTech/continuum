@@ -282,8 +282,9 @@ pub fn kv_page_switch_ms() -> (u64, u64, u32) {
     KV_PAGE_SWITCH_MS.p50_p90()
 }
 
-/// The bound past which a page switch is a WEDGE, not a slow switch: the floor, raised
-/// to three times this node's measured p90. Pure.
+/// The interval at which a slow page switch asks whether the engine is still alive: the
+/// floor, raised to three times this node's measured p90. Past it a switch is only a
+/// WEDGE if the engine also stops answering `/health`. Pure.
 ///
 /// The bound was a flat 10 s from the day the M5 measured a restore at ~0.1 s — on
 /// unified memory the KV already lives in host RAM. On a discrete card a page is
@@ -303,9 +304,42 @@ pub(crate) enum PageOutcome {
     Uncertain,
 }
 
+/// Await `work`, treating each `bound` as a liveness checkpoint rather than a verdict:
+/// if `alive()` says the engine still answers, keep waiting (and report the checkpoint
+/// through `on_busy`); only an engine that does not answer ends the wait, as `None`.
+/// Pure over its inputs so the rule is testable on a paused clock.
+async fn wait_while_engine_answers<T, W, A, AF>(
+    work: W,
+    bound: std::time::Duration,
+    mut alive: A,
+    mut on_busy: impl FnMut(u64),
+) -> Option<T>
+where
+    W: std::future::Future<Output = T>,
+    A: FnMut() -> AF,
+    AF: std::future::Future<Output = bool>,
+{
+    tokio::pin!(work);
+    let mut busy_checkpoints: u64 = 0;
+    loop {
+        tokio::select! {
+            done = &mut work => return Some(done),
+            _ = tokio::time::sleep(bound) => {
+                if !alive().await {
+                    return None;
+                }
+                busy_checkpoints += 1;
+                on_busy(busy_checkpoints);
+            }
+        }
+    }
+}
+
 /// Execute one page action through the shared turn/warm-ahead boundary. The
-/// measured wedge bound limits waiting, but timeout does not acknowledge remote
-/// completion: the admission owner must quarantine before releasing its lease.
+/// measured wedge bound is a liveness checkpoint (see [`wait_while_engine_answers`]):
+/// a busy engine keeps its switch; only a silent one makes the outcome uncertain, and
+/// uncertainty never acknowledges remote completion — the admission owner must
+/// quarantine before releasing its lease.
 pub(crate) async fn kv_page_action(
     client: &reqwest::Client,
     root: &str,
@@ -318,18 +352,45 @@ pub(crate) async fn kv_page_action(
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
     let bound = kv_page_wedge_bound(p90_ms);
     let started = std::time::Instant::now();
-    let resp = client
+    // BUSY IS NOT DEAD. The bound is a checkpoint, never a verdict: llama-server runs
+    // slot save/restore on its task queue BETWEEN decode batches, so under a full set
+    // of lanes a healthy switch waits behind their prefill. Measured 2026-09-25 (M5,
+    // 4 lanes prefilling): a restore ran 50.8 s against a 50.8 s bound (3 × p90), was
+    // abandoned as uncertain, quarantined the endpoint and replaced the whole engine —
+    // 9 minutes with every citizen dark, back at 3 × 18.7k instead of 4 × 26k. So at
+    // each bound the engine is ASKED whether it is alive (`/health`, answered off the
+    // slot queue); an engine that answers keeps its switch, and only one that does not
+    // answer turns the switch uncertain. A real hang still ends here — as a silent
+    // engine — and a dead one ends sooner, when its socket drops.
+    let send = client
         .post(&url)
-        .timeout(bound)
         .json(&json!({ "filename": filename }))
-        .send()
-        .await;
-    let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // JUSTIFIED unwrap_or: status 0 records transport failure, never success.
+        .send();
+    let resp = wait_while_engine_answers(
+        send,
+        bound,
+        || crate::inference::llama_server::external_health_ok(root.trim_end_matches('/'), client),
+        |busy_checkpoints| {
+            crate::probe!(
+                class = "inference.kv_page.busy_not_dead",
+                action = %action,
+                slot = slot as u64,
+                waited_ms = started.elapsed().as_millis() as u64,
+                bound_ms = bound.as_millis() as u64,
+                busy_checkpoints,
+                "a page switch outlived its bound on an engine that still answers \
+                 /health — waiting on it, not replacing the engine",
+            );
+        },
+    )
+    .await
+    .and_then(Result::ok);
+    let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // JUSTIFIED unwrap_or: status 0 records transport failure or a silent engine, never success.
 
     // Headers alone are not a terminal receipt. A disconnected waiter can leave
     // a queued restore behind; malformed/truncated/default responses fail closed.
     let outcome = match resp {
-        Ok(response) => match response.json::<serde_json::Value>().await {
+        Some(response) => match response.json::<serde_json::Value>().await {
             Ok(body)
                 if (200..300).contains(&status)
                     && body["id_slot"].as_u64() == Some(slot as u64)
@@ -354,7 +415,7 @@ pub(crate) async fn kv_page_action(
             }
             _ => PageOutcome::Uncertain,
         },
-        Err(_) => PageOutcome::Uncertain,
+        None => PageOutcome::Uncertain,
     };
     let ok = outcome == PageOutcome::Completed;
     let ms = started.elapsed().as_millis() as u64;
@@ -398,6 +459,26 @@ mod tests {
 
     use super::*;
     use uuid::Uuid;
+
+    // what this catches (M5, 2026-09-25): a page switch slower than its bound on an
+    // engine that still answers was abandoned as uncertain and cost every citizen a
+    // 9-minute engine replacement. Busy must wait; only a silent engine ends the wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_page_switch_waits_on_a_live_engine_and_only_a_silent_one_ends_it() {
+        let bound = std::time::Duration::from_secs(10);
+        let slow = async {
+            tokio::time::sleep(bound * 3 + std::time::Duration::from_secs(1)).await;
+            "receipt"
+        };
+        let mut seen = Vec::new();
+        let got = wait_while_engine_answers(slow, bound, || async { true }, |n| seen.push(n)).await;
+        assert_eq!(got, Some("receipt"), "a busy engine keeps its switch");
+        assert_eq!(seen, vec![1, 2, 3], "each bound is a reported checkpoint, not a verdict");
+
+        let hung = std::future::pending::<&str>();
+        let got = wait_while_engine_answers(hung, bound, || async { false }, |_| {}).await;
+        assert_eq!(got, None, "an engine that stops answering ends the wait as uncertain");
+    }
 
     // what this catches: the restore-into-busy-slot bug at its source — while a turn
     // holds its admission (permit + pin), a second activity contending for the SAME
