@@ -97,6 +97,118 @@ learning.
 - A recipe declaring a large working set gets a larger floor than a chat recipe **on the
   same host**.
 
+## The third axis: speed, and model choice by activity (2026-09-25)
+
+**Joel, 2026-09-25:** *"If we are doing code, and we have a viable 5090 we want a 27b
+selected, but if it is shifting into an academy learning mode then the challenge of
+thinking of these modes. What's ideal? Run through a series of states and idealism, then
+it helps make sure the algorithm works. We don't hand rig unless we're just needing to
+test something specific."* And: *"Genome has to match the model being trained for LoRA
+unless we wrote a way to transfer."*
+
+### The claim
+
+For interactive work, delivered capability has a third input: the decode rate this host
+actually achieves on the model. A model that fits but cannot keep a turn inside the
+latency law (a 1.5x tax is fine; 5-10x disqualifies) delivers less than a smaller model
+that can. Measured on the M5 (M5 Pro, Metal), from `state/decode-knee.json`, per-stream
+tokens/s by lanes in flight:
+
+| Model | 1 lane | 2 lanes | 3 lanes | 4 lanes |
+|---|---|---|---|---|
+| Qwen3.8-27B (Q4_K_M) | 7.5 | 6.2 | 3.0 | 3.3 |
+| Ornith-1.5-35B-A3B | 32 | 44 | — | — |
+
+The 27B never clears `DECODE_FLOOR_TPS` (10) at any lane count on this box. The decode
+knee (`inference/decode_knee.rs`) is working. It clamps LANES from this curve, but the
+planner still picks the MODEL as "the most capable that fits the GPU budget," and fitting
+is not the same as serving well. That day on the M5, each coder act took 7-9 minutes
+(`persona.act.pace` rolling mean 545 s), a turn held one or two reads, and 10 residents
+produced zero writes in an hour.
+
+### What each activity demands
+
+| Activity kind | Capability | Speed | Window | Lane ownership |
+|---|---|---|---|---|
+| Coding (cards, benchmarks) | high | interactive: an act lands in seconds | large (repo context) | citizen turns |
+| Academy: teacher synthesis | highest available | batch: slow is acceptable | moderate | borrowed via `run_teacher_batch` |
+| Academy: LoRA training | n/a (trains the persona's base) | batch | n/a | trainer holds the card; serving steps aside |
+| Dream / idle consolidation | low | background | small | whatever is free; never forces a reload |
+| Conversation | medium | interactive | small | citizen turns |
+
+### The state walk (what the algorithm must produce, never hand-pinned)
+
+1. **Coding, 5090 on the grid.** Coder turns go where capability and speed both hold:
+   the 27B on the 5090 (71,680 window, CUDA). The M5 serves the lighter roles (review,
+   chat, orchestration). This is the "27B selected" case.
+2. **Coding, M5 alone.** The 27B cannot keep an act interactive here. The ideal is the
+   most capable model whose measured decode clears the floor at >= `MIN_KNEE_LANES`,
+   which on this box is Ornith.
+3. **Academy on the 5090 (single lane).** The teacher borrows the lane with the strongest
+   model. Training then takes the card. Residents' coding turns are served on the M5
+   meanwhile, so the grid keeps them working.
+4. **Academy on the M5.** The teacher is the 27B even at 7 t/s. Batch teaching is judged
+   on quality, so the speed floor does not apply.
+5. **Dream.** Runs in idle periods on whatever model is resident, and never triggers a
+   model swap.
+
+### The rule
+
+For each activity kind, pick the most capable candidate subject to that kind's floors:
+
+- **Interactive kinds** (coding, conversation): the model's measured per-stream decode at
+  the knee must clear the speed floor, and its served window must clear the activity's
+  learned working set (this doc's second axis).
+- **Batch kinds** (teacher, training): capability only. Speed is a cost, not a gate.
+- **An unmeasured model** is eligible until measured (decode-knee exploration). A model
+  with no curve cannot be ruled out by a speed it never had the chance to show.
+
+The same measurements already exist. The knee ledger records every model's curve, and
+the working-set registry records demand. The change is that model choice reads them,
+through the slow, hysteretic path this doc prescribes, so it can never flap.
+
+### The genome couples model choice to identity
+
+A LoRA adapter is trained against one base model and applies only to it. So the choice
+of base is also a choice of which of a persona's learned skills she can use. Consequences
+the rule must honour:
+
+- **A persona's candidates carry her genome.** Serving her on a base where she holds
+  trained adapters delivers more than a stronger bare base, by exactly the skill the
+  adapters encode. A swap away from that base forfeits them. Rank must price that loss,
+  not ignore it.
+- **Train on the base she will be served on.** The trainer must target the base her
+  dominant activity will select, or the adapter it produces is dead weight. If the state
+  walk above puts M5 coders on Ornith, M5 coder genomes are trained for Ornith.
+- **The curriculum is the portable genome. Adapters are compiled per base.** This is the
+  foundry-as-JIT shape in [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md): the
+  datasets and graded turns a persona earned transfer to any base, and an adapter is
+  that curriculum compiled for one architecture. Until a direct transfer exists,
+  re-training from the same curriculum on the new base IS the transfer, scheduled as a
+  training period like any other.
+- **Direct adapter transfer is NOT built.** Nothing in `genome/` maps an adapter across
+  bases; the only prior thinking is research-grade (cross-model head transplant in
+  [SENTINEL-AI-NEURAL-PLASTICITY.md](../papers/SENTINEL-AI-NEURAL-PLASTICITY.md)). Joel has
+  ideas for this; they belong here when written down.
+
+### Acceptance tests for the rule
+
+- **State 1 vs state 2:** the same roster and recipe, planned with and without a 5090
+  capacity beacon, selects the 27B for coding on the 5090 and a floor-clearing model on
+  a lone M5. The test states the measured curves it used.
+- **Batch ignores the floor:** a teacher period on the M5 selects the 27B although it
+  fails the interactive floor.
+- **Unmeasured is eligible:** a model with no curve is not excluded by speed.
+- **Genome pricing:** a persona holding adapters for base A is served on A over a bare
+  base B that outranks A statically, until B's advantage exceeds the adapters' measured
+  value. The margin is stated in the test.
+- **No flap:** a decode curve oscillating around the floor moves the model choice at most
+  once across the trace (the same hysteresis contract as the learned window floor).
+
+**Status:** design, not built. Owner of the planner change: the serving lane (Claude, M5).
+Academy and training periods: BigMama (5090), per the standing-periods actuator. Adapter
+transfer: open; Joel's design.
+
 ## The smell to catch yourself on
 
 If you are adding another constant next to `BOOTSTRAP_WORKING_SET`, stop — that is a third
