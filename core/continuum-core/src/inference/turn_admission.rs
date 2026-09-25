@@ -46,7 +46,9 @@ pub struct TurnAdmission {
     saved_evictee: bool,
     paging_in_flight: bool,
     /// Released after the pin so the next permit holder can lease the free slot.
-    _permit: OwnedSemaphorePermit,
+    /// `None` only for [`admit_transient`], which holds its slot's operation permit
+    /// instead of a lane (it serves no activity, so it takes no lane from one).
+    _permit: Option<OwnedSemaphorePermit>,
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, ActivityKey, u32)>,
@@ -185,7 +187,7 @@ async fn admit(
         restored: false,
         saved_evictee: false,
         paging_in_flight: false,
-        _permit,
+        _permit: Some(_permit),
         uncommitted: None,
         scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
         _endpoint: endpoint,
@@ -248,22 +250,84 @@ async fn admit(
         // resident before background/anonymous traffic borrows its physical slot.
         // Remove attribution BEFORE the await so cancellation cannot leave the
         // next activity treating transient KV as its own warm tail.
-        admission._slot_permit = Some(pool.acquire_slot(0).await?);
-        admission._endpoint.check_ready()?;
-        let (previous, pin) = pool.take_resident(0);
-        admission._pin = pin;
-        if let Some(previous) = previous {
-            pool.note_page_lost(&previous);
-            if admission
-                .page_action(client, root, 0, &previous, "save")
-                .await?
-            {
-                pool.note_saved(previous);
-            }
-        }
-        admission.slot = Some(0);
+        admission.borrow_slot_for_transient(pool, 0, client, root).await?;
     }
 
+    Ok(admission)
+}
+
+impl TurnAdmission {
+    /// Borrow physical `slot` for traffic that serves no activity: wait for the slot's
+    /// operation permit (event-driven, behind any live decode), detach its resident and
+    /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
+    /// so no activity later mistakes this traffic's KV for its own.
+    async fn borrow_slot_for_transient(
+        &mut self,
+        pool: &Arc<KvSlotPool>,
+        slot: u32,
+        client: &reqwest::Client,
+        root: &str,
+    ) -> Result<(), String> {
+        self._slot_permit = Some(pool.acquire_slot(slot).await?);
+        self._endpoint.check_ready()?;
+        let (previous, pin) = pool.take_resident(slot);
+        self._pin = pin;
+        if let Some(previous) = previous {
+            pool.note_page_lost(&previous);
+            if self.page_action(client, root, slot, &previous, "save").await? {
+                pool.note_saved(previous);
+                self.saved_evictee = true;
+            }
+        }
+        self.slot = Some(slot);
+        Ok(())
+    }
+}
+
+/// Admit operator traffic — `serving/cache-probe` — onto one physical slot through the
+/// same owner as every turn, never around it. It holds no lane (it serves no activity);
+/// it holds the slot's operation permit, so it waits behind a live decode instead of
+/// queueing inside the server, and it saves and detaches the resident first.
+///
+/// Before this the probe posted straight to the slot: on a live node it queued behind a
+/// persona's decode past its caller's patience (the M5 deploy self-check, 2026-09-25,
+/// no answer in 280 s — read as `unknown` and held the fleet's deploys), overwrote her
+/// warm KV without saving it, and restored its own filler under her attribution, so
+/// her next save wrote filler under her name. An endpoint with no slot pool (external,
+/// cloud) has no resident to protect; `slot()` is then `None`.
+pub(crate) async fn admit_transient(
+    client: &reqwest::Client,
+    root: &str,
+    slot: u32,
+) -> Result<TurnAdmission, String> {
+    let endpoint = crate::inference::slots::directory()
+        .endpoint(root)
+        .admit()
+        .await?;
+    let pool = endpoint.pool.clone();
+    let mut admission = TurnAdmission {
+        slot: None,
+        _pin: None,
+        _slot_permit: None,
+        page_confirmed: false,
+        restored: false,
+        saved_evictee: false,
+        paging_in_flight: false,
+        _permit: None,
+        uncommitted: None,
+        scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
+        _endpoint: endpoint,
+    };
+    let Some(pool) = pool else {
+        return Ok(admission);
+    };
+    if slot >= pool.n_slots() {
+        return Err(format!(
+            "slot {slot} does not exist on this endpoint ({} slots)",
+            pool.n_slots()
+        ));
+    }
+    admission.borrow_slot_for_transient(&pool, slot, client, root).await?;
     Ok(admission)
 }
 

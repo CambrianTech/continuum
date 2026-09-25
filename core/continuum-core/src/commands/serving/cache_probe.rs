@@ -92,6 +92,12 @@ crate::action_command! {
             .build()
             .map_err(|e| CommandError::Internal(format!("http client: {e}")))?;
         let url = format!("{}/chat/completions", snap.base_url.trim_end_matches('/'));
+        // Through the slot owner, never around it: wait for the slot, save and detach
+        // its resident, hold the slot for the whole probe (see `admit_transient`).
+        let base = crate::ai::openai_endpoints::OpenAiBase::new(&snap.base_url);
+        let _admission = crate::inference::turn_admission::admit_transient(&client, base.root(), slot)
+            .await
+            .map_err(|e| CommandError::Internal(format!("cache-probe slot admission: {e}")))?;
         let mut timings: Vec<(u32, u32, f64)> = Vec::with_capacity(2);
         for _ in 0..2 {
             let resp = client
@@ -118,12 +124,18 @@ crate::action_command! {
             };
             let file = format!("cache-probe-{slot}.bin");
             for action in ["save", "restore"] {
-                client
+                let resp = client
                     .post(slot_url(action))
                     .json(&serde_json::json!({ "filename": file }))
                     .send()
                     .await
                     .map_err(|e| CommandError::Internal(format!("cache-probe {action}: {e}")))?;
+                if !resp.status().is_success() {
+                    return Err(CommandError::Internal(format!(
+                        "cache-probe {action}: the server refused ({})",
+                        resp.status()
+                    )));
+                }
             }
             let v: serde_json::Value = client
                 .post(&url)
