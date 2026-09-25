@@ -167,6 +167,36 @@ The same measurements already exist. The knee ledger records every model's curve
 the working-set registry records demand. The change is that model choice reads them,
 through the slow, hysteretic path this doc prescribes, so it can never flap.
 
+### One rule on every machine and every grid size
+
+**Joel, 2026-09-25:** *"It works regardless of whether we have a grid like ours with more
+lanes and GPUs, more power, or on your lone M5. Or on a 3080-5090, similarly depending
+on fit."*
+
+The rule has no per-machine branch. What differs between hosts is only the measured input:
+fit (VRAM or unified memory), the decode curve per model, and the working set per
+activity. This is the SubstrateGovernor principle from
+[GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md): same code on a MacBook Air and an
+RTX 5090, different policy outcome.
+
+- **A lone Apple-silicon node** (the M5): fit admits the 27B, the decode curve rules it out
+  for interactive kinds, and a faster model serves coding.
+- **A single consumer card from a 3080 up to a 5090:** fit decides first. A 10-12 GB card
+  may admit only a small model or a short window. A 32 GB card admits the 27B at a real
+  coding window. The same floors then choose among what fits.
+- **A grid with more lanes and GPUs:** each activity's demand is placed where its floors
+  are cleared (grid_allocation), so adding a node raises what every persona can be
+  served, and removing one degrades to the lone-node outcome rather than failing.
+
+**Training eligibility is a capability, never a host name.** LoRA training needs a working
+accelerator path for the trainer (CUDA today; Metal/MLX where built). A node without one
+is never offered a training period, and its adapters are compiled elsewhere and paged in.
+As of 2026-09-25 the Intel Mac has no working GPU path, so it is excluded from learning by
+that measured fact until its GPU issues are solved. It is not excluded by name, and it
+keeps serving and orchestrating. Acceptance test: a node reporting no trainer-capable
+accelerator is never selected for a training period, and one that gains it becomes
+eligible without a code change.
+
 ### The genome couples model choice to identity
 
 A LoRA adapter is trained against one base model and applies only to it. So the choice
