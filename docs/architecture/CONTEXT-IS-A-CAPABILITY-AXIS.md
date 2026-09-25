@@ -290,6 +290,25 @@ gene in transit, its phase, and its measured score on both bases. Requested (a
 citizen or an operator issues the command) and automatic (the planner requests it) are
 the same path.
 
+**Traded genes: transfer is one operation of many.** Joel, 2026-09-25: *"Knowledge
+layers, especially since they are traded, will be modified in so many ways, distilled
+etc. These are our unbounded experts available in the entire world community via HF."*
+Once genes move through the genome repository (Hugging Face as the seeder), a gene is
+transformed far more often than it is trained: transferred across bases, distilled,
+merged, pruned, quantized. Every such transformation takes the HGT shape (a command, a
+handle, events, pluggable strategies that declare what they can serve) and obeys two
+rules:
+
+- **Lineage is a chain, not a field.** Each operation appends its step (operation,
+  strategy, input gene, target base, measured scores) to the gene's provenance. A gene
+  pulled from the world carries its whole history, so which transformation cost which
+  skill can be measured, not guessed.
+- **Trust is measurement, never origin.** A gene from any source, whether ours, a peer
+  node's, or a stranger's on Hugging Face, is adopted into a live persona only after it
+  scores on the local gym for its trait. The same gate that adopts a freshly trained or
+  transferred gene adopts an imported one. That gate is what lets an open, unbounded
+  pool of experts stay safe to page in.
+
 **Who asks for it.** The planner does, when the state walk would serve a persona on a
 base where she lacks a gene her activity uses. It requests the transfer as a scheduled
 training period (the standing-periods actuator), and it prices the gene's absence in the
