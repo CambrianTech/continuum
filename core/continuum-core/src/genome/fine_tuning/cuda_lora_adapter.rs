@@ -187,7 +187,13 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 .arg("--config")
                 .arg(&config)
                 .arg("--output")
-                .arg(&adapters);
+                .arg(&adapters)
+                // The admitted budget is spent on the weights first, so the peak has to
+                // come out of what is left — and 1.34 GiB of the 5090's card was held
+                // "reserved but unallocated" when Kimi's job b73456e6 died 1.89 GiB
+                // short (2026-09-25 00:23Z). Expandable segments give that
+                // fragmentation back rather than asking the governor for more card.
+                .env("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True");
             let model_id = format!("{PROVIDER_ID}:{}:{id}", spec.request.trait_kind);
             Ok(PreparedJob {
                 command,
