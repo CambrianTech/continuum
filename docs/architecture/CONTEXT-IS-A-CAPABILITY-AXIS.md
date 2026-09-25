@@ -251,6 +251,21 @@ ViewState pipe as a person does (never a log file): `genome:transfer:started`,
    change. The prior thinking is research-grade (cross-model head transplant in
    [SENTINEL-AI-NEURAL-PLASTICITY.md](../papers/SENTINEL-AI-NEURAL-PLASTICITY.md)).
 
+**Each strategy declares the pairs it can serve.** Joel, 2026-09-25: *"There was a
+DeepSeek or Qwen approach to do this more directly ... it might only work for some
+varieties and not for others."* Direct methods are architecture-specific. Published
+training-free LoRA transfer (for example, projecting the adapter into the target model's
+weight subspace, as in LoRA-X) depends on how similar the source and target are, so it
+holds within a model family and fails across unrelated ones. The strategy trait therefore
+carries a capability predicate over the pair: source base, target base, their families,
+hidden sizes, and the layer mapping. The coordinator offers `genome/transfer` only the
+strategies that declare the pair, and the handle names which strategy served it.
+`recompile` declares every pair its trainer can serve. When a direct strategy does not
+cover a pair, `recompile` is simply the capable strategy for it. That is reported in
+the handle and events, not taken as a silent fallback. The first direct strategy to
+build is whichever published method fits the families we actually serve (Qwen within
+Qwen, first).
+
 **Adoption is gated by measurement, exactly like a newly trained gene.** A transferred gene
 is paged into a live persona only after it measures on the SAME gym as its source, and
 it must reach the source's score within a stated margin. The training completion
@@ -260,6 +275,20 @@ transfer whose gene cannot be measured is refused, never adopted on trust.
 **Lineage is recorded.** A transferred gene carries its provenance (source gene, source
 base, strategy, measured score on both bases) in the genome repository, so a gene's
 horizontal ancestry is as inspectable as its training history.
+
+**Every layer of cognition, one mechanism.** A persona's genes are not one adapter. A
+turn can page in several traits (the skill for the task, her voice, her domain), and
+all of them ride the same command. HGT moves a gene whatever layer of her cognition it
+serves, with the same handle, events and measurement gate, so a change of base
+re-establishes her whole genome rather than the one trait someone remembered.
+
+**Academy and the positronic desktop.** Transfers and the recompiles they schedule are
+academy activities, not side jobs. They run as periods in rooms, so they produce the
+room turns and receipts the flywheel consumes. They also project through a positron
+ViewState, so the desktop, mobile and TUI clients, and the citizens themselves, see a
+gene in transit, its phase, and its measured score on both bases. Requested (a
+citizen or an operator issues the command) and automatic (the planner requests it) are
+the same path.
 
 **Who asks for it.** The planner does, when the state walk would serve a persona on a
 base where she lacks a gene her activity uses. It requests the transfer as a scheduled
