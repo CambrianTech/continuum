@@ -295,10 +295,15 @@ impl TurnAdmission {
 /// warm KV without saving it, and restored its own filler under her attribution, so
 /// her next save wrote filler under her name. An endpoint with no slot pool (external,
 /// cloud) has no resident to protect; `slot()` is then `None`.
+///
+/// `slot: None` asks for the pool's SCRATCH slot when the server has one: a slot no
+/// activity holds, so the probe waits behind nobody and evicts nobody (Cormac's review
+/// of #4388: behind a 7-minute turn even an admitted probe on slot 0 outwaits a 280 s
+/// caller). Without a scratch slot it borrows slot 0 and saves its resident first.
 pub(crate) async fn admit_transient(
     client: &reqwest::Client,
     root: &str,
-    slot: u32,
+    slot: Option<u32>,
 ) -> Result<TurnAdmission, String> {
     let endpoint = crate::inference::slots::directory()
         .endpoint(root)
@@ -321,6 +326,7 @@ pub(crate) async fn admit_transient(
     let Some(pool) = pool else {
         return Ok(admission);
     };
+    let slot = slot.or_else(|| pool.scratch_slot()).unwrap_or(0); // JUSTIFIED unwrap_or: no named slot and no scratch slot = slot 0, whose resident is saved and detached first
     if slot >= pool.n_slots() {
         return Err(format!(
             "slot {slot} does not exist on this endpoint ({} slots)",

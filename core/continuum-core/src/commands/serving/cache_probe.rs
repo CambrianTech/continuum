@@ -18,8 +18,8 @@ use crate::sdk_codegen::CommandError;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/serving/ServingCacheProbeParams.ts")]
 pub struct ServingCacheProbeParams {
-    /// The slot to pin both requests to (default 0). Use a slot no citizen
-    /// holds, or accept evicting her warm prefix for one probe.
+    /// The slot to pin both requests to. Default: the server's scratch slot, which no
+    /// citizen holds; without one, slot 0, whose resident is saved and detached first.
     #[ts(optional)]
     pub slot: Option<u32>,
     /// Approximate prompt size in filler words (default 600 → ~800 tokens):
@@ -73,7 +73,18 @@ crate::action_command! {
                 "serving/cache-probe: no model is being served (serving.ready=false)".into(),
             ));
         }
-        let slot = p.slot.unwrap_or(0);  // unwrap_or: slot 0 is the documented default
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .map_err(|e| CommandError::Internal(format!("http client: {e}")))?;
+        // Through the slot owner, never around it: wait for the slot, save and detach
+        // its resident, hold the slot for the whole probe (see `admit_transient`). No
+        // named slot means the scratch slot, so the probe evicts nobody.
+        let base = crate::ai::openai_endpoints::OpenAiBase::new(&snap.base_url);
+        let admission = crate::inference::turn_admission::admit_transient(&client, base.root(), p.slot)
+            .await
+            .map_err(|e| CommandError::Internal(format!("cache-probe slot admission: {e}")))?;
+        let slot = admission.slot().or(p.slot).unwrap_or(0);  // unwrap_or: an endpoint with no slot pool names no slot; 0 is the server's default
         let words = p.words.unwrap_or(600).clamp(50, 5_000) as usize;  // unwrap_or: 600 words is the documented default, clamped
         let filler = "lorem ipsum dolor sit amet ".repeat(words / 5);
         let body = serde_json::json!({
@@ -87,17 +98,7 @@ crate::action_command! {
                 {"role": "user", "content": "Say OK."}
             ]
         });
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .map_err(|e| CommandError::Internal(format!("http client: {e}")))?;
         let url = format!("{}/chat/completions", snap.base_url.trim_end_matches('/'));
-        // Through the slot owner, never around it: wait for the slot, save and detach
-        // its resident, hold the slot for the whole probe (see `admit_transient`).
-        let base = crate::ai::openai_endpoints::OpenAiBase::new(&snap.base_url);
-        let _admission = crate::inference::turn_admission::admit_transient(&client, base.root(), slot)
-            .await
-            .map_err(|e| CommandError::Internal(format!("cache-probe slot admission: {e}")))?;
         let mut timings: Vec<(u32, u32, f64)> = Vec::with_capacity(2);
         for _ in 0..2 {
             let resp = client
