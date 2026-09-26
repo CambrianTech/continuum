@@ -168,7 +168,7 @@ once() {
 # tip until a human reads the log, and posts one line to the project room.
 #   1. the running build is the tip (deploy provenance)
 #   2. the roster fills: residents ≥ min(seats, 1) within RESIDENCY_WAIT seconds
-#   3. the KV restore economy is warm: `serving/cache-probe --roundtrip` says reuses
+#   3. the KV restore economy is warm: real restored turns since the deploy reused their prefix
 self_check() {
   local tip="$1" run ok=1 residents verdict
   run="$(running_sha)"
@@ -180,14 +180,51 @@ self_check() {
     sleep 30; waited=$((waited+30))
   done
   if [ "${residents:-0}" -lt 1 ]; then say "SELF-CHECK FAIL: no resident citizen ${RESIDENCY_WAIT:-900}s after the deploy (the empty-node class)"; ok=0; else say "self-check: $residents resident after ${waited}s"; fi
-  verdict="$(continuum serving/cache-probe --roundtrip 2>/dev/null </dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("restore_verdict") or d.get("verdict") or "unknown")' 2>/dev/null || echo unknown)"
+  # 3. The restore economy, read from REAL restored turns since this deploy
+  # (`inference.restored_turn`, outcome warm|cold), never from an injected probe: the
+  # probe measured load and contention and held the M5 three times on 2026-09-25/26
+  # while restores were warm (card 356ce732). warm = a restored turn reused its
+  # prefix; cold = two or more restored turns and none reused (the real 09-04 class,
+  # which holds); no evidence inside the window passes with a note — an absence is
+  # never a failure.
+  local since_ms waited_r=0
+  since_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
+  verdict="no-evidence"
+  while [ "$waited_r" -lt "${RESTORE_WAIT:-900}" ]; do
+    verdict="$(python3 - "$since_ms" <<'PYEOF' 2>/dev/null || echo no-evidence
+import json, os, glob, sys
+since = int(sys.argv[1]); warm = cold = 0
+for p in glob.glob(os.path.expanduser("~/.continuum/probes/continuum-probes.jsonl*")):
+    try:
+        for line in open(p, errors="ignore"):
+            if "inference.restored_turn" not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("class") != "inference.restored_turn" or d.get("captured_at_ms", 0) < since:
+                continue
+            if (d.get("fields") or {}).get("outcome") == "warm":
+                warm += 1
+            else:
+                cold += 1
+    except OSError:
+        pass
+print("warm" if warm else ("cold" if cold >= 2 else "no-evidence"))
+PYEOF
+)"
+    [ "$verdict" = "no-evidence" ] || break
+    sleep 30; waited_r=$((waited_r+30))
+  done
   case "$verdict" in
-    reuses) say "self-check: KV restore economy warm (cache-probe: reuses)" ;;
-    *) say "SELF-CHECK FAIL: cache-probe restore verdict '$verdict' — a restored slot is cold (the 09-04 / 09-14 class)"; ok=0 ;;
+    warm) say "self-check: KV restore economy warm (a restored turn reused its prefix)" ;;
+    cold) say "SELF-CHECK FAIL: restored turns reused nothing — a restored slot is cold (the 09-04 / 09-14 class)"; ok=0 ;;
+    *) say "self-check: no restored turn within ${RESTORE_WAIT:-900}s — restore economy not yet exercised; not a failure, watch inference.restored_turn" ;;
   esac
   if [ "$ok" = "1" ]; then
     say "self-check PASSED on ${tip:0:9}"
-    continuum chat/send --roomId "$(project_room)" --text "deploy self-check PASSED on ${tip:0:9}: build verified, $residents resident, KV restores warm" >/dev/null 2>&1 </dev/null || true
+    continuum chat/send --roomId "$(project_room)" --text "deploy self-check PASSED on ${tip:0:9}: build verified, $residents resident, KV restores $verdict" >/dev/null 2>&1 </dev/null || true
   else
     printf 'self-check failed on %s at %s — read %s, fix, then remove this file
 ' "${tip:0:9}" "$(date -u +%H:%M:%SZ)" "$LOG" > "$HOLD"

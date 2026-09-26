@@ -66,6 +66,12 @@ impl TurnAdmission {
         self.scratch
     }
 
+    /// Whether this turn's KV was restored from a page before it generated — the
+    /// evidence the restore economy is judged by (`inference.restored_turn`).
+    pub(crate) fn restored(&self) -> bool {
+        self.restored
+    }
+
     async fn page_action(
         &mut self,
         client: &reqwest::Client,
