@@ -43,19 +43,50 @@ pub(crate) const ACT_PURPOSE: &str = "cognition/act";
 /// closes the thinking block at the budget; other gateways ignore the field.
 pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
 
-/// Bound the reasoning channel on an ACT request. Returns whether it applied.
-pub(crate) fn apply_act_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> bool {
-    if purpose != Some(ACT_PURPOSE) {
-        return false;
-    }
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert(
-            "reasoning_budget_tokens".to_string(),
-            json!(ACT_REASONING_BUDGET),
-        );
-        return true;
-    }
-    false
+pub(crate) const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
+
+// context-budget-exempt: the share of a deliberation pass's allowance kept for the ANSWER
+/// What a deliberation pass keeps of its allowance for the answer after the think.
+///
+/// Why passes are budgeted at all (BigMama, Kimi, 2026-09-26, the first hour on #4406):
+/// with the allowance no longer ratcheting, her deliberation allowance settled at the
+/// time floor, 6,048 — and 14 of her 17 completions ended `length` at exactly that:
+/// 22–23k chars of reasoning, 0 chars of text, 0 tool calls, every one a
+/// `cognition/deliberation` pass with no reasoning budget. A thinking model fills any
+/// room it is given; the think that "answers deserve" was producing no answers. The
+/// allowance already cuts the think — this cuts it [`PASS_ANSWER_RESERVE`] tokens
+/// earlier so the answer exists. Sized for a decision plus its sentence, not an essay;
+/// her landed answers in the same window were ≤ 236 tokens.
+pub(crate) const PASS_ANSWER_RESERVE: u32 = 1024;
+/// A pass never thinks less than an act may: below this the budget would be the cut,
+/// not the room.
+pub(crate) const PASS_MIN_THINK: u32 = 1024;
+
+/// PURE: the think a deliberation pass may spend of `max_tokens`, leaving the answer its
+/// reserve — never below [`PASS_MIN_THINK`].
+pub(crate) fn pass_reasoning_budget(max_tokens: u32) -> u32 {
+    max_tokens
+        .saturating_sub(PASS_ANSWER_RESERVE)
+        .max(PASS_MIN_THINK)
+}
+
+/// Bound the reasoning channel by the turn's kind. Returns the budget applied, if any:
+/// an ACT thinks [`ACT_REASONING_BUDGET`] before its call; a DELIBERATION pass thinks
+/// what its allowance leaves after the answer's reserve — and only when the body carries
+/// an allowance to derive it from (a request with no `max_tokens` has no room to
+/// apportion). Any other purpose is left to the model.
+pub(crate) fn apply_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u32> {
+    let budget = match purpose {
+        Some(ACT_PURPOSE) => ACT_REASONING_BUDGET,
+        Some(DELIBERATION_PURPOSE) => {
+            let max = body.get("max_tokens").and_then(Value::as_u64)?;
+            pass_reasoning_budget(u32::try_from(max).ok()?)
+        }
+        _ => return None,
+    };
+    body.as_object_mut()?
+        .insert("reasoning_budget_tokens".to_string(), json!(budget));
+    Some(budget)
 }
 
 pub(crate) fn finish_body(
@@ -84,14 +115,25 @@ pub(crate) fn finish_body(
     if cfg.thinking == ThinkingMode::Suppress {
         apply_enable_thinking_false(body);
     }
-    // An ACT turn thinks a bounded amount before its call, whichever gateway
-    // serves it — the remote path builds this same body on the responder.
-    if apply_act_reasoning_budget(request.purpose.as_deref(), body) {
+    // The reasoning channel is bounded by the turn's kind, whichever gateway serves it
+    // — the remote path builds this same body on the responder. An ACT thinks a fixed
+    // amount before its call; a DELIBERATION pass thinks what its allowance leaves
+    // after the answer's reserve (see `PASS_ANSWER_RESERVE` for the hour that showed
+    // an unbudgeted pass is a think with no answer).
+    if let Some(budget) = apply_reasoning_budget(request.purpose.as_deref(), body) {
+        let purpose = request.purpose.as_deref().unwrap_or(""); // unwrap_or: a budget was applied, so the purpose was a known one
+        // Read before the probe: inside the macro `Value` is tracing's trait, not serde's.
+        let max_tokens = body
+            .get("max_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0); // unwrap_or: absent on an act is 0, said as 0
         crate::probe!(
-            class = "delib.act.reasoning_budgeted",
+            class = "delib.reasoning_budgeted",
             model = %model,
-            budget = ACT_REASONING_BUDGET,
-            "act turn: reasoning channel bounded before the tool call"
+            purpose,
+            budget,
+            max_tokens,
+            "reasoning channel bounded so the turn's answer has room"
         );
     }
 
@@ -487,20 +529,30 @@ pub(crate) fn build_base_body(
 mod tests {
     use super::*;
 
-    // what this catches: an ACT request carries the reasoning budget the
-    // responder's llama-server reads (`reasoning_budget_tokens`), and a
-    // deliberation request does not — losing the field reproduces 4k–10k-token
-    // acts (150–260 s each); applying it to message turns would truncate the
-    // thinking that answers deserve.
+    // what this catches: an ACT request carries the fixed reasoning budget the
+    // responder's llama-server reads (`reasoning_budget_tokens`) — losing it reproduces
+    // 4k–10k-token acts (150–260 s each). A DELIBERATION pass carries its allowance
+    // minus the answer's reserve — losing THAT reproduces 2026-09-26 on BigMama: 14 of
+    // 17 passes cut at the allowance with 0 chars of answer. A pass with no allowance,
+    // and any other purpose, is left to the model.
     #[test]
-    fn only_an_act_request_carries_the_reasoning_budget() {
-        let mut act = json!({ "model": "m" });
-        assert!(apply_act_reasoning_budget(Some(ACT_PURPOSE), &mut act));
+    fn the_reasoning_budget_leaves_the_answer_its_room_on_every_kind() {
+        let mut act = json!({ "model": "m", "max_tokens": 6048 });
+        assert_eq!(apply_reasoning_budget(Some(ACT_PURPOSE), &mut act), Some(ACT_REASONING_BUDGET));
         assert_eq!(act["reasoning_budget_tokens"], json!(ACT_REASONING_BUDGET));
-        let mut delib = json!({ "model": "m" });
-        assert!(!apply_act_reasoning_budget(Some("cognition/deliberation"), &mut delib));
-        assert!(delib.get("reasoning_budget_tokens").is_none());
-        let mut none = json!({ "model": "m" });
-        assert!(!apply_act_reasoning_budget(None, &mut none));
+        let mut pass = json!({ "model": "m", "max_tokens": 6048 });
+        assert_eq!(apply_reasoning_budget(Some(DELIBERATION_PURPOSE), &mut pass), Some(5024));
+        assert_eq!(pass["reasoning_budget_tokens"], json!(5024), "the allowance minus the answer's reserve");
+        let mut short = json!({ "model": "m", "max_tokens": 1500 });
+        assert_eq!(apply_reasoning_budget(Some(DELIBERATION_PURPOSE), &mut short), Some(PASS_MIN_THINK), "never below what an act may think");
+        let mut no_allowance = json!({ "model": "m" });
+        assert_eq!(apply_reasoning_budget(Some(DELIBERATION_PURPOSE), &mut no_allowance), None);
+        assert!(no_allowance.get("reasoning_budget_tokens").is_none(), "no allowance, nothing to apportion");
+        let mut other = json!({ "model": "m", "max_tokens": 6048 });
+        assert_eq!(apply_reasoning_budget(Some("cognition/recall"), &mut other), None);
+        let mut none = json!({ "model": "m", "max_tokens": 6048 });
+        assert_eq!(apply_reasoning_budget(None, &mut none), None);
+        assert_eq!(pass_reasoning_budget(2048), 1024);
+        assert_eq!(pass_reasoning_budget(12_288), 11_264);
     }
 }
