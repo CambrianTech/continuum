@@ -609,6 +609,29 @@ pub(crate) async fn follow_card_room(
     Some(room_name)
 }
 
+/// What she now holds, in the room the claim LANDED in — the followed room when the
+/// claim followed the card. The renewal loop reads this beside its subscription walk,
+/// so a claim on a room this scope does not subscribe to is still renewed (card
+/// 2d9df546: Kimi's followed claim got no heartbeat across 28 acts and lapsed under her
+/// while `persona.claim.renewed` read green for a bench card). Best-effort: a claim
+/// whose room cannot be read is still hers; the walk covers what it can.
+pub(crate) async fn record_held_claim(airc: &Arc<Airc>, card_id: WorkCardId, claim_id: ClaimId) {
+    let Ok(room) = airc.current_room().await else {
+        return;
+    };
+    crate::persona::held_claims::record(
+        airc.peer_id().as_uuid(),
+        airc.home(),
+        crate::persona::held_claims::HeldClaim {
+            room,
+            card_id: card_id.as_uuid(),
+            claim_id: claim_id.as_uuid(),
+            recorded_at_ms: crate::modules::chat::now_ms(),
+            refusals: 0,
+        },
+    );
+}
+
 pub(crate) async fn claim_following_card_room(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
@@ -848,6 +871,7 @@ impl ActionCommand for WorkClaim {
                         claimer = %caller_short,
                         "re-claim of a card the caller already holds — satisfied, no re-dispatch"
                     );
+                    record_held_claim(&airc, card_id, claim_id).await;
                     return Ok(WorkClaimResult {
                         card_id: p.card_id,
                         claim_id: claim_id.as_uuid().to_string(),
@@ -892,6 +916,7 @@ impl ActionCommand for WorkClaim {
         // 2026-09-12: the first agent to take a benchmark card through the verbs alone
         // found it. A persona's airc peer IS her caller peer, so nothing changes for her.
         let claimer_peer = airc.peer_id();
+        record_held_claim(&airc, card_id, claim_id).await;
         {
             match card_in_subscribed_rooms(&airc, card_id).await {
                 Some((room, card)) => {
@@ -1835,6 +1860,7 @@ impl ActionCommand for WorkRelease {
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
         crate::persona::work_pull::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
+        crate::persona::held_claims::forget(airc.peer_id().as_uuid(), airc.home(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }
 }

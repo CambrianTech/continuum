@@ -37,6 +37,7 @@ pub mod base_model_policy;
 pub mod cached_source;
 pub mod card;
 pub mod card_holder;
+pub mod held_claims;
 pub mod card_ledger_fact;
 pub mod channel_items;
 pub mod channel_queue;
