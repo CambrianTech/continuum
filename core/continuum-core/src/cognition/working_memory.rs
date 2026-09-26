@@ -410,6 +410,12 @@ pub struct VolatileSnapshot {
     /// restore then starts the buffer fresh.
     #[serde(default)]
     pub recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)>,
+    /// Her state at the seam — the whole held card, her ledger, what was staged, what tore
+    /// the life (card 49b5e806, Kimi 2026-09-26). Stamped by `save_volatile`, which knows
+    /// whose memory this is and why it is being written; rendered FIRST on wake. `None` on
+    /// snapshots from before this field and for a citizen at home with nothing to hand.
+    #[serde(default)]
+    pub handoff: Option<crate::cognition::handoff::Handoff>,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -839,6 +845,7 @@ impl WorkingMemory {
             // Stamped by `save_volatile`, which knows WHOSE memory this is; the memory
             // itself carries no persona id.
             acting_card: None,
+            handoff: None,
             interrupted_dispatches: self
                 .dispatched
                 .lock()
@@ -912,6 +919,27 @@ impl WorkingMemory {
         self.next_action_seq
             .store(snap.next_action_seq.max(1), Ordering::Relaxed);
         *self.restored_acting_card.lock() = snap.acting_card;
+
+        // THE HANDOFF FIRST (card 49b5e806): pins render in pin order, and the record
+        // that names what she was doing, holding, and owing outranks the notices about
+        // the checkpoint's age and the rebuild. Same two-turn life as [resumed]: the
+        // wake's turn and the one that acts on it. The build compared is the one that
+        // BOOTED, so a deploy that failed to land is said as such (Kimi's #3).
+        if let Some(handoff) = snap.handoff.as_ref() {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            self.pin_fact_for_turns(
+                "handoff",
+                &crate::cognition::handoff::render_on_wake(
+                    handoff,
+                    env!("CONTINUUM_BUILD_GIT_SHA"),
+                    now_ms,
+                ),
+                2,
+            );
+        }
 
         // Render the checkpoint evidence AFTER the entries land, so it is the
         // NEWEST thing in her window when she wakes. A fact, never an instruction.
@@ -2095,6 +2123,7 @@ mod tests {
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
             recent_results: Vec::new(),
+            handoff: None,
         });
         assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
         let q = quiet.pinned_facts();

@@ -1619,6 +1619,41 @@ pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>
 pub(crate) async fn scoped_board_held_by(
     airc: &Airc,
 ) -> Result<Vec<(airc_lib::Room, airc_lib::WorkCard)>, AircError> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
+    Ok(held_of_owned(scoped_board_owned_by(airc).await?, now_ms))
+}
+
+/// The HELD subset of an owned walk: lease live, not claimable, not settled. Split from the
+/// walk so one board read can feed both the renewal (holds) and the handoff record (all of
+/// what she owns, whole) — never two walks for one seam.
+pub(crate) fn held_of_owned(
+    owned: Vec<(airc_lib::Room, airc_lib::WorkCard)>,
+    now_ms: u64,
+) -> Vec<(airc_lib::Room, airc_lib::WorkCard)> {
+    owned
+        .into_iter()
+        .filter(|(_, card)| {
+            // A settled card is nobody's work, whatever its lease says: a closed card
+            // whose claim fields outlive the close read as HELD, focused her ticks on a
+            // finished room and made the pull think she had work (2026-09-13 14:0xZ).
+            !matches!(
+                card.state,
+                airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
+            ) && crate::persona::card_holder::hold_of(card, now_ms)
+                == crate::persona::card_holder::Hold::Held
+                && !crate::persona::card_holder::claimable_now(card, now_ms)
+        })
+        .collect()
+}
+
+/// Every card the boards she stands in show with owner = her, in ANY state, whole, with its
+/// room. The one walk; `scoped_board_held_by` is its held filter.
+pub(crate) async fn scoped_board_owned_by(
+    airc: &Airc,
+) -> Result<Vec<(airc_lib::Room, airc_lib::WorkCard)>, AircError> {
     // EVERY ROOM SHE STANDS IN, never "the board". airc's `work_board_complete` folds
     // the scope's CURRENT room only — right after a boot that is her home room, so a
     // card held in a run room read as not held: 2026-09-13 09:29:01Z, 13 s after the
@@ -1626,10 +1661,6 @@ pub(crate) async fn scoped_board_held_by(
     // pull took her matplotlib as a second card (the same shape the roster read had).
     // The per-room projection is what the pull itself reads; held work folds the same.
     let me = airc.peer_id();
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
     let rooms: Vec<airc_lib::Room> = airc
         .subscription_set()
         .await?
@@ -1661,18 +1692,7 @@ pub(crate) async fn scoped_board_held_by(
             board
                 .cards
                 .into_iter()
-                .filter(|card| {
-                    // A settled card is nobody's work, whatever its lease says: a closed card
-                    // whose claim fields outlive the close read as HELD, focused her ticks on a
-                    // finished room and made the pull think she had work (2026-09-13 14:0xZ).
-                    !matches!(
-                        card.state,
-                        airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
-                    ) && card.owner == Some(me)
-                        && crate::persona::card_holder::hold_of(card, now_ms)
-                            == crate::persona::card_holder::Hold::Held
-                        && !crate::persona::card_holder::claimable_now(card, now_ms)
-                })
+                .filter(|card| card.owner == Some(me))
                 .map(|card| (room.clone(), card)),
         );
     }
