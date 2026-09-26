@@ -120,6 +120,14 @@ impl Drop for TurnAdmission {
 /// the caller still gets the permit and places the request on scratch (or unpinned)
 /// itself. On a single-slot server the pool saves and detaches the resident before
 /// transient traffic borrows that slot; `slot()` then returns its index.
+///
+/// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
+/// loading, a transition in flight) before it is refused — the caller's bound, since
+/// only the caller knows what its request can afford: the persona adapter passes
+/// `EndpointSlots::turn_patience(turn_bound, elapsed)` — an engine replacement, capped by
+/// what the turn has left on its own bound — and a test that asserts the refusal passes
+/// zero. The hold is ONE deadline however many times the endpoint closes inside it. See `EndpointSlots::admit_when_ready`
+/// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,
     key: Option<ActivityKey>,
@@ -127,8 +135,9 @@ pub async fn admit_turn(
     client: &reqwest::Client,
     root: &str,
     approx_tokens: u64,
+    patience: std::time::Duration,
 ) -> Result<TurnAdmission, String> {
-    admit(concurrency, key, pool, client, root, approx_tokens, false).await
+    admit(concurrency, key, pool, client, root, approx_tokens, false, patience).await
 }
 
 /// Best-effort warm-ahead uses the same paging and provisional-attribution owner
@@ -141,7 +150,8 @@ pub(crate) async fn warm_ahead(
     root: &str,
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
-    let mut admission = admit(concurrency, Some(key), Some(pool), client, root, 0, true).await?;
+    // Best-effort: a closed endpoint is an instant no, never a held permit.
+    let mut admission = admit(concurrency, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
     if admission.page_confirmed {
         admission.uncommitted = None;
     }
@@ -169,6 +179,7 @@ async fn admit(
     root: &str,
     approx_tokens: u64,
     warm_only: bool,
+    patience: std::time::Duration,
 ) -> Result<TurnAdmission, String> {
     // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
     //    semaphore is never closed over the adapter's lifetime.
@@ -178,9 +189,13 @@ async fn admit(
         .await
         .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
 
+    // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
+    //    a transition in flight) for the caller's `patience` before it is refused;
+    //    zero is the instant answer. See `EndpointSlots::admit_when_ready` for the
+    //    boot window that cost Kimi 16 turns.
     let endpoint = crate::inference::slots::directory()
         .endpoint(root)
-        .admit()
+        .admit_when_ready(patience)
         .await?;
     // Discovery may have finished before an engine transition. Use the pool
     // owned by the admitted generation, never that stale discovery result.
@@ -658,7 +673,7 @@ mod tests {
         let held = pool.acquire_slot(scratch).await.expect("test: the probe holds scratch");
         let sem = Arc::new(Semaphore::new(4));
         let client = reqwest::Client::new();
-        let waiting = admit_turn(&sem, None, Some(pool.clone()), &client, "test://scratch-owner", 0);
+        let waiting = admit_turn(&sem, None, Some(pool.clone()), &client, "test://scratch-owner", 0, std::time::Duration::ZERO);
         tokio::pin!(waiting);
         assert!(
             futures::poll!(&mut waiting).is_pending(),
@@ -691,6 +706,7 @@ mod tests {
             &client,
             "test://admit",
             100,
+            std::time::Duration::ZERO,
         )
         .await
         .expect("test: endpoint admitted");
@@ -720,7 +736,7 @@ mod tests {
 
         // The endpoint lease is shared across adapter semaphores. A different
         // adapter cannot enter while retirement drains this admitted turn.
-        let adm = admit_turn(&sem, Some(b), Some(pool), &client, "test://admit", 100)
+        let adm = admit_turn(&sem, Some(b), Some(pool), &client, "test://admit", 100, std::time::Duration::ZERO)
             .await
             .expect("test: second turn");
         let endpoint = crate::inference::slots::directory().endpoint("test://admit");
@@ -729,7 +745,7 @@ mod tests {
         assert!(futures::poll!(&mut transition).is_pending());
         let other_adapter = Arc::new(Semaphore::new(1));
         assert!(
-            admit_turn(&other_adapter, None, None, &client, "test://admit", 0)
+            admit_turn(&other_adapter, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
                 .await
                 .is_err(),
             "another adapter cannot bypass endpoint suspension"
@@ -737,7 +753,7 @@ mod tests {
         drop(adm);
         drop(transition.await);
         assert!(
-            admit_turn(&other_adapter, None, None, &client, "test://admit", 0)
+            admit_turn(&other_adapter, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
                 .await
                 .is_err(),
             "failed transition remains closed"
@@ -888,6 +904,7 @@ mod tests {
                 &client,
                 &root,
                 100,
+                std::time::Duration::ZERO,
             ));
             assert!(futures::poll!(&mut queued).is_pending());
             queued
@@ -961,7 +978,7 @@ mod tests {
 
         // Same-key admission uses the same physical-slot permit even across
         // adapters. It cannot see or erase a prior owner's provisional holder.
-        let mut turn = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100)
+        let mut turn = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
             .await
             .expect("turn restore");
         let other_adapter = Arc::new(Semaphore::new(2));
