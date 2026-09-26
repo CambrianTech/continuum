@@ -166,6 +166,20 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             if plan.memory_bytes == 0 {
                 return Err(failure("CUDA planner returned an empty memory requirement"));
             }
+            // THE VRAM RECEIPT BEFORE STEP 0 (readiness item 1): what the plan asks, what the
+            // governor exposes right now, and the headroom between them — a number, not a
+            // hope, on the row the room reads before the run is admitted.
+            crate::probe!(
+                class = "training.job.planned",
+                job = %id,
+                base = spec.canonical_base.as_str(),
+                examples = spec.request.dataset.examples.len() as u64,
+                memory_bytes = plan.memory_bytes,
+                available_bytes = spec.available_bytes,
+                headroom_bytes = spec.available_bytes.saturating_sub(plan.memory_bytes),
+                micro_batch = plan.micro_batch_size as u64,
+                "CUDA training plan: memory asked vs governed VRAM available before admission"
+            );
             let reservation = crate::forge::training_admission::wait_for_training_memory(
                 crate::resources::ResourceDaemon::global()
                     .ok_or_else(|| failure("CUDA training requires the resource governor"))?,
