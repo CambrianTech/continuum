@@ -59,6 +59,13 @@ impl NativeHomeOverride {
     pub(crate) fn install(path: &std::path::Path) -> Self {
         Self(TEST_NATIVE_HOME.with(|root| root.replace(Some(path.to_path_buf()))))
     }
+
+    /// The override installed on THIS thread, for a test-scoped fixture to carry into
+    /// a thread it spawns (the seam writes residents on their own threads, #4414):
+    /// a thread-local that is not carried is a real home written from a test.
+    pub(crate) fn current() -> Option<std::path::PathBuf> {
+        TEST_NATIVE_HOME.with(|root| root.borrow().clone())
+    }
 }
 
 #[cfg(test)]
