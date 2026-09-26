@@ -692,12 +692,14 @@ mod tests {
         let small = Uuid::new_v4();
         let kimi = Uuid::new_v4();
         let helper = Uuid::new_v4();
+        // Ranks as the footprint proxy derives them from real weights (GB + 2 for tools):
+        // Qwen3.8-27B Q4_K_M 16.5 GB → 18; qwen2.5-coder-7b Q4 4.7 GB → 6; 1.5B Q4 1 GB → 3.
         let mut f = facts(me, Some(plan("27b", 18, 70_000, 2)), vec![peer(small, Some(plan("1.5b", 3, 32_768, 2)), 0, 99_000)], vec![kimi, helper]);
         f.citizens = vec![
             CitizenRecipe { role: RoleId::Helper, requirement: None },
             CitizenRecipe {
                 role: RoleId::Coder,
-                requirement: Some(CitizenRequirement { window_tokens: 40_448, min_capability: 20, decode_floor_tps: None }),
+                requirement: Some(CitizenRequirement { window_tokens: 40_448, min_capability: 12, decode_floor_tps: None }),
             },
         ];
         f.mind_roles = vec![(kimi, RoleId::Coder)];
@@ -708,7 +710,8 @@ mod tests {
         assert_eq!(role_of(helper).as_deref(), Some("helper"), "no stamped role = the first role");
         let coder = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
         assert!(!plan("1.5b", 3, 32_768, 2).holds(coder), "a 1.5B never holds a coder");
-        assert!(plan("27b", 18, 70_000, 2).holds(coder));
+        assert!(!plan("7b", 6, 65_536, 2).holds(coder), "nor a 7B");
+        assert!(plan("27b", 18, 70_000, 2).holds(coder), "the 27B's own proxy rank clears the floor");
     }
 
     // what this catches (card 10bba591): an UNCHANGED grid publishes nothing — the key
