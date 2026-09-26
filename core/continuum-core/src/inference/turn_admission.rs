@@ -391,16 +391,25 @@ pub(crate) enum PageOutcome {
     Uncertain,
 }
 
-/// Await `work`, treating each `bound` as a PROGRESS checkpoint rather than a verdict.
-/// At each checkpoint `progress()` reads the engine's work fingerprint; the wait goes on
-/// only while it has moved since the last read, i.e. the engine's queue is advancing and
-/// this switch will be reached. An unchanged fingerprint (the queue is stuck, even if the
-/// server still answers) or no answer at all ends the wait as `None`. The first read is
-/// taken at the start, so a stall is recognised at the first checkpoint.
+/// How many consecutive checkpoints a switch may wait on an engine that is doing nothing
+/// else — no counter moving, no slot processing — before it is called stuck. On such an
+/// engine the queue head is the switch itself (a save/restore moves no slot counter), so
+/// "quiet" is not evidence of a stall; this caps how long quiet may last.
+// derived-or-floor: a CEILING on a wait that has no progress signal to read — the slot counters cannot see a save/restore, so the bound (itself derived from this node's measured switch p90) times this count is the patience for the engine's own queue head; it only ever ENDS a wait, never shortens one that shows progress.
+const QUIET_ENGINE_CHECKPOINTS: u32 = 8;
+
+/// Await `work`, treating each `bound` as a checkpoint rather than a verdict. At each
+/// checkpoint `progress()` reads the engine:
+/// - its work fingerprint moved: the queue is advancing, keep waiting;
+/// - nothing moved and NO slot is processing: the engine is working its queue head,
+///   which is this switch, keep waiting — up to [`QUIET_ENGINE_CHECKPOINTS`] in a row;
+/// - nothing moved while a slot claims to be processing, or no answer: stuck, `None`.
 ///
-/// Why progress and not liveness (Cormac's review of #4387): `/health` is answered off
-/// the slot queue, so it stays healthy through exactly the queue-side stall the bound
-/// exists to catch, and the caller would hold its pin with no way out.
+/// Why both signals (M5, 2026-09-26 10:2xZ): a save ran 12.4 s against a 12.2 s bound on
+/// an engine with idle slots; the fingerprint alone could not see the save and called it a
+/// stall — one quarantine, one engine replacement, 11 turns failed. And why not liveness
+/// alone (Cormac's review of #4387): `/health` answers off the slot queue, so it stays
+/// healthy through a genuinely stuck switch.
 async fn wait_while_engine_progresses<T, W, P, PF>(
     work: W,
     bound: std::time::Duration,
@@ -410,22 +419,26 @@ async fn wait_while_engine_progresses<T, W, P, PF>(
 where
     W: std::future::Future<Output = T>,
     P: FnMut() -> PF,
-    PF: std::future::Future<Output = Option<u64>>,
+    PF: std::future::Future<Output = Option<crate::inference::llama_server::EngineProgress>>,
 {
     tokio::pin!(work);
-    let mut last = progress().await;
+    let mut last = progress().await.map(|p| p.fingerprint);
     let mut busy_checkpoints: u64 = 0;
+    let mut quiet_in_a_row: u32 = 0;
     loop {
         tokio::select! {
             done = &mut work => return Some(done),
             _ = tokio::time::sleep(bound) => {
-                let now = progress().await;
-                match (last, now) {
-                    (_, None) => return None,
-                    (Some(before), Some(after)) if before == after => return None,
-                    _ => {}
+                let now = progress().await?;
+                let moved = last.map_or(true, |before| before != now.fingerprint);
+                if moved {
+                    quiet_in_a_row = 0;
+                } else if !now.any_processing && quiet_in_a_row < QUIET_ENGINE_CHECKPOINTS {
+                    quiet_in_a_row += 1;
+                } else {
+                    return None;
                 }
-                last = now;
+                last = Some(now.fingerprint);
                 busy_checkpoints += 1;
                 on_busy(busy_checkpoints);
             }
@@ -559,13 +572,13 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    // what this catches (M5, 2026-09-25): a page switch slower than its bound on an
-    // engine whose queue was moving was abandoned as uncertain and cost every citizen a
-    // 9-minute engine replacement. Busy must wait. And (Cormac, #4387) a switch stuck on
-    // a queue that stopped moving must NOT wait forever just because the server answers:
-    // the wait ends at the first checkpoint that sees no progress, or no answer.
+    // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
+    // must wait; a save on a QUIET engine (no slot processing, so no counter moves) must
+    // also wait, up to the quiet cap; a switch on an engine whose slots claim to process
+    // but whose counters never move is stuck; and a silent engine ends the wait.
     #[tokio::test(start_paused = true)]
     async fn a_slow_page_switch_waits_while_the_engine_progresses_and_ends_when_it_stalls() {
+        use crate::inference::llama_server::EngineProgress;
         let bound = std::time::Duration::from_secs(10);
         let slow = async {
             tokio::time::sleep(bound * 3 + std::time::Duration::from_secs(1)).await;
@@ -576,29 +589,45 @@ mod tests {
         let got = wait_while_engine_progresses(
             slow,
             bound,
-            || { tick += 1; let t = tick; async move { Some(t) } },
+            || { tick += 1; let t = tick; async move { Some(EngineProgress { fingerprint: t, any_processing: true }) } },
             |n| seen.push(n),
         )
         .await;
         assert_eq!(got, Some("receipt"), "a moving queue keeps the switch");
         assert_eq!(seen, vec![1, 2, 3], "each bound is a reported checkpoint, not a verdict");
 
-        let stalled = wait_while_engine_progresses(
-            std::future::pending::<&str>(),
+        let quiet_save = async {
+            tokio::time::sleep(bound * 2 + std::time::Duration::from_secs(1)).await;
+            "saved"
+        };
+        let got = wait_while_engine_progresses(
+            quiet_save,
             bound,
-            || async { Some(42) },
+            || async { Some(EngineProgress { fingerprint: 7, any_processing: false }) },
             |_| {},
         )
         .await;
-        assert_eq!(stalled, None, "an answering engine whose queue does not move ends the wait");
+        assert_eq!(got, Some("saved"), "a save on a quiet engine is the queue head, not a stall");
 
-        let silent = wait_while_engine_progresses(
+        let endless_quiet = wait_while_engine_progresses(
             std::future::pending::<&str>(),
             bound,
-            || async { None },
+            || async { Some(EngineProgress { fingerprint: 7, any_processing: false }) },
             |_| {},
         )
         .await;
+        assert_eq!(endless_quiet, None, "quiet is bounded: the cap ends a wait that never completes");
+
+        let stuck = wait_while_engine_progresses(
+            std::future::pending::<&str>(),
+            bound,
+            || async { Some(EngineProgress { fingerprint: 42, any_processing: true }) },
+            |_| {},
+        )
+        .await;
+        assert_eq!(stuck, None, "slots processing with nothing moving is stuck");
+
+        let silent = wait_while_engine_progresses(std::future::pending::<&str>(), bound, || async { None }, |_| {}).await;
         assert_eq!(silent, None, "an engine that stops answering ends the wait");
     }
 
@@ -606,7 +635,7 @@ mod tests {
     // a new task, and a body that is not the /slots array reads as no answer.
     #[test]
     fn the_slots_fingerprint_moves_with_any_slot_work() {
-        use crate::inference::llama_server::slots_progress_fingerprint as fp;
+        let fp = |v: &serde_json::Value| crate::inference::llama_server::slots_progress(v).map(|p| p.fingerprint);
         let a = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 5}]},
                        {"id_task": 3, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0}]}]);
         let decoded = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 6}]},

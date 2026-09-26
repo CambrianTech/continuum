@@ -1957,26 +1957,36 @@ async fn external_health_ok(root: &str, client: &reqwest::Client) -> bool {
     )
 }
 
-/// A fingerprint of everything the engine's slots have done: per slot, the task id
-/// plus prompt tokens processed plus tokens decoded, summed. It changes whenever any
-/// slot prefills, decodes, or picks up a new task, so two equal reads with a wait
-/// between them mean the engine's queue did not move. Pure; `None` if the body is not
-/// the `/slots` array.
-pub(crate) fn slots_progress_fingerprint(slots: &serde_json::Value) -> Option<u64> {
+/// What one `/slots` read says about the engine's work: a fingerprint of everything its
+/// slots have done (per slot: task id + prompt tokens processed + tokens decoded,
+/// summed), and whether ANY slot is processing a request right now. The fingerprint
+/// moves when a slot prefills, decodes or picks up a task. A slot save/restore is a
+/// queue task that moves none of those counters, so "nothing moved while no slot is
+/// processing" means the engine is working its queue head — possibly our own switch —
+/// not that it is stuck. Pure; `None` if the body is not the `/slots` array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EngineProgress {
+    pub fingerprint: u64,
+    pub any_processing: bool,
+}
+
+pub(crate) fn slots_progress(slots: &serde_json::Value) -> Option<EngineProgress> {
     let slots = slots.as_array()?;
-    Some(slots.iter().fold(0u64, |acc, slot| {
-        let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0); // JUSTIFIED unwrap_or: an absent counter contributes nothing to the sum; progress is a CHANGE, never a level
+    let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0); // JUSTIFIED unwrap_or: an absent counter contributes nothing to the sum; progress is a CHANGE, never a level
+    let fingerprint = slots.iter().fold(0u64, |acc, slot| {
         acc.wrapping_add(n(&slot["id_task"]))
             .wrapping_add(n(&slot["n_prompt_tokens_processed"]))
             .wrapping_add(n(&slot["next_token"][0]["n_decoded"]))
-    }))
+    });
+    let any_processing = slots.iter().any(|s| s["is_processing"].as_bool() == Some(true));
+    Some(EngineProgress { fingerprint, any_processing })
 }
 
-/// Read the engine's progress fingerprint from `GET /slots` (bounded like every probe
-/// here). `None` when the engine does not answer — which a caller treats as not
-/// progressing. Asked by a slow KV page switch before it may call the engine stuck
+/// Read the engine's progress from `GET /slots` (bounded like every probe here). `None`
+/// when the engine does not answer — which a caller treats as not progressing. Asked by a
+/// slow KV page switch before it may call the engine stuck
 /// ([`crate::inference::turn_admission::kv_page_action`]).
-pub(crate) async fn engine_progress(root: &str, client: &reqwest::Client) -> Option<u64> {
+pub(crate) async fn engine_progress(root: &str, client: &reqwest::Client) -> Option<EngineProgress> {
     let url = format!("{root}/slots");
     let body: serde_json::Value = client
         .get(&url)
@@ -1987,7 +1997,7 @@ pub(crate) async fn engine_progress(root: &str, client: &reqwest::Client) -> Opt
         .json()
         .await
         .ok()?;
-    slots_progress_fingerprint(&body)
+    slots_progress(&body)
 }
 
 async fn external_active_model(v1_url: &str, client: &reqwest::Client) -> Option<String> {
