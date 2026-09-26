@@ -462,10 +462,7 @@ impl PathSecurity {
         }
         // Not under the root. Genuine absolute address (its head names a real
         // top-level directory) → refuse; otherwise it is the slash idiom.
-        let head = p
-            .components()
-            .nth(1)
-            .map(|c| c.as_os_str().to_string_lossy().into_owned());
+        let head = p.components().nth(1).map(|c| c.as_os_str().to_string_lossy().into_owned());
         if let Some(head) = head {
             if Path::new("/").join(&head).is_dir() {
                 return Err(PathSecurityError::TraversalBlocked {
@@ -921,37 +918,22 @@ mod tests {
         let root = dir.path();
         let sec = PathSecurity::new(root).expect("security over tempdir");
         let inside = format!("{}/index.html", root.display());
-        let resolved = sec
-            .resolve_for_write(&inside)
-            .expect("inside-root absolute resolves");
+        let resolved = sec.resolve_for_write(&inside).expect("inside-root absolute resolves");
         assert!(resolved.ends_with("index.html"));
         let canon_root = root.canonicalize().expect("canon");
-        assert!(
-            resolved.starts_with(&canon_root) || resolved.starts_with(root),
-            "must land under the root, never double-joined: {}",
-            resolved.display()
-        );
-        assert_eq!(
-            resolved.to_string_lossy().matches("index.html").count(),
-            1,
-            "double-join would repeat the filename"
-        );
+        assert!(resolved.starts_with(&canon_root) || resolved.starts_with(root),
+            "must land under the root, never double-joined: {}", resolved.display());
+        assert_eq!(resolved.to_string_lossy().matches("index.html").count(), 1, "double-join would repeat the filename");
         // deep subdir form too (the exam's actual shape)
         let deep = format!("{}/assets/app.js", root.display());
-        let r2 = sec
-            .resolve_for_write(&deep)
-            .expect("inside-root deep absolute resolves");
+        let r2 = sec.resolve_for_write(&deep).expect("inside-root deep absolute resolves");
         assert!(r2.ends_with("assets/app.js"));
         // outside-root genuine absolute → loud refusal, never a silent deep write
         let err = sec.resolve_for_write("/var/folders/somewhere/else.html");
-        assert!(
-            matches!(err, Err(PathSecurityError::TraversalBlocked { .. })),
-            "outside-root absolute must refuse, got {err:?}"
-        );
+        assert!(matches!(err, Err(PathSecurityError::TraversalBlocked { .. })),
+            "outside-root absolute must refuse, got {err:?}");
         // the forgiving idiom survives: "/index.html" = workspace-relative
-        let idiom = sec
-            .resolve_for_write("/index.html")
-            .expect("slash idiom resolves");
+        let idiom = sec.resolve_for_write("/index.html").expect("slash idiom resolves");
         assert!(idiom.ends_with("index.html"));
     }
 

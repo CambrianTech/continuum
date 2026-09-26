@@ -90,19 +90,8 @@ impl From<std::io::Error> for FileEngineError {
 /// are never the file she meant, and on SOMEONE ELSE'S COMPUTER walking them is
 /// the difference between a helpful error and a stalled laptop.
 const SUGGEST_SKIP_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "build",
-    "dist",
-    ".tox",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".cargo",
-    "site-packages",
+    ".git", "node_modules", "target", "__pycache__", ".venv", "venv", "build",
+    "dist", ".tox", ".mypy_cache", ".pytest_cache", ".cargo", "site-packages",
 ];
 
 /// Hard ceiling on entries visited while looking for a near-miss. A suggestion
@@ -2232,6 +2221,7 @@ mod tests {
         }
     }
 
+
     use super::*;
     use std::fs;
 
@@ -2514,10 +2504,7 @@ mod tests {
         };
         let err = apply_edit(content, &ambiguous).expect_err("two verbatim sites must refuse");
         let msg = format!("{err}");
-        assert!(
-            msg.contains("2 locations") && msg.contains("lines 2, 6"),
-            "count + lines, got:\n{msg}"
-        );
+        assert!(msg.contains("2 locations") && msg.contains("lines 2, 6"), "count + lines, got:\n{msg}");
         // A unique anchor (one more line of context) applies to the site it names.
         let unique = EditMode::SearchReplace {
             search: "def stack(self):\n    idx = self.idx\n".to_string(),
@@ -2526,23 +2513,10 @@ mod tests {
         };
         let out = apply_edit(content, &unique).expect("a unique anchor applies");
         assert!(out.contains("def stack(self):\n    product_vars = {}"));
-        assert!(
-            out.starts_with("def reset_index(self):\n    idx = self.idx\n"),
-            "reset_index untouched"
-        );
+        assert!(out.starts_with("def reset_index(self):\n    idx = self.idx\n"), "reset_index untouched");
         // all=true is the explicit every-site edit and still applies everywhere.
-        let every = EditMode::SearchReplace {
-            search: "return idx".to_string(),
-            replace: "return idx  # both".to_string(),
-            all: true,
-        };
-        assert_eq!(
-            apply_edit(content, &every)
-                .expect("all=true")
-                .matches("# both")
-                .count(),
-            2
-        );
+        let every = EditMode::SearchReplace { search: "return idx".to_string(), replace: "return idx  # both".to_string(), all: true };
+        assert_eq!(apply_edit(content, &every).expect("all=true").matches("# both").count(), 2);
     }
 
     // what this catches: the fallback must not swallow the genuinely-absent case — the
