@@ -540,7 +540,6 @@ mod tests {
     // deliberation request does not — losing the field reproduces 4k–10k-token
     // acts (150–260 s each); applying it to message turns would truncate the
     // thinking that answers deserve.
-    #[test]
     // what this catches: a deliberation turn's thinking is bounded FROM ITS OWN allowance
     // (three quarters of max_tokens, the answer keeps a quarter); an act keeps its own
     // budget; a turn with no max_tokens gets no budget (nothing to derive from), and a
@@ -560,6 +559,7 @@ mod tests {
         assert!(tiny.get("reasoning_budget_tokens").is_none());
     }
 
+    #[test]
     fn only_an_act_request_carries_the_reasoning_budget() {
         let mut act = json!({ "model": "m" });
         assert!(apply_act_reasoning_budget(Some(ACT_PURPOSE), &mut act));
