@@ -1586,7 +1586,7 @@ impl LlmDeliberationFaculty {
             purpose: Some(
                 match kind {
                     TurnKind::Act => "cognition/act",
-                    TurnKind::Pass => "cognition/deliberation",
+                    TurnKind::Pass => crate::inference::request_body::DELIBERATION_PURPOSE,
                 }
                 .to_string(),
             ),
