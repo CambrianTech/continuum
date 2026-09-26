@@ -839,6 +839,7 @@ async fn run_shell_command(
     // keep running. The floor (not sourcing secrets into the core's ambient
     // environment at all) is card f25f4141; this is the net above it.
     strip_secret_env(&mut cmd);
+    utf8_text_env(&mut cmd);
 
     // Apply session environment variables
     for (k, v) in env {
@@ -1100,6 +1101,18 @@ pub(crate) fn strip_secret_env(cmd: &mut TokioCommand) {
             cmd.env_remove(&name);
         }
     }
+}
+
+/// Text a citizen's child prints is UTF-8 whatever the host's code page. On Windows,
+/// Python picks the console code page (cp1252) for a piped stdout and raises
+/// `UnicodeEncodeError` on the first glyph outside Latin-1 — Kimi's `code/run` exited 1
+/// on a `⚙` in a source line she was printing back (2026-09-26 20:06Z, op #6929), and
+/// the operator hit the same wall twice in her own tooling on that box. `PYTHONUTF8=1`
+/// is Python's own switch (PEP 540); both are no-ops on a host that is already UTF-8.
+/// Applied BEFORE the session environment so a citizen who sets her own wins. One place
+/// for every citizen-facing spawn, beside [`strip_secret_env`].
+pub(crate) fn utf8_text_env(cmd: &mut TokioCommand) {
+    cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
 }
 
 pub(crate) fn is_secret_env_name(name: &str) -> bool {

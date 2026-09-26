@@ -145,11 +145,6 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
 }
 
-/// Every declared alias whose command is AiSafe — the trained-reflex vocabulary a
-/// persona might reach for. Used to WIDEN did-you-mean candidates on a miss, so a
-/// reflex like `grep_files` finds `grep` (→ `code/search`) instead of no match.
-/// The caller maps a suggested alias back to its canonical command with
-/// [`resolve_wire_name`]. Static, built once from the live registry.
 /// A registered, AiSafe verb that is deliberately NOT in a persona's hands, with the
 /// hands she has instead. ONE place (card 1daffbaf's sibling on Kimi's plumbing list):
 /// `hands_surface` filters the offered tools by it, and the executor answers a call to
@@ -180,6 +175,61 @@ pub(crate) fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
     }
 }
 
+/// What sat in the tool NAME field when it was not a verb at all. The executor's
+/// did-you-mean answers a NEAR verb; these two are not near anything, and before this
+/// the receipt was "call `commands/help`" — a turn spent with no lesson (card b579a9c7,
+/// Kimi 2026-09-26: `⚙ C:\Users\...\.airc/worktrees\d33e928a ✗`, then `⚙ msg_budget ✗`,
+/// a probe field she had just read). Both are one model-authoring slip at the envelope:
+/// the thing she was ABOUT (a path, a symbol) landed where the verb goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotAVerb {
+    /// A filesystem path: a drive letter, a backslash, a leading `/` `~` `.`, or a
+    /// `dir/file.ext` shape. No command name has any of these.
+    Path,
+    /// A bare identifier (no `/` in what she wrote) that did-you-mean could not place
+    /// near any verb or alias — a field, a variable, a symbol from what she was reading.
+    Identifier,
+}
+
+/// Classify a wire name that the registry did not know. `near_a_verb` is whether
+/// did-you-mean found ANY candidate for it — a bare identifier near a real verb is a
+/// typo and keeps the did-you-mean lesson; only an identifier near nothing is named as
+/// one. A path is a path whatever did-you-mean says.
+pub(crate) fn not_a_verb(attempted: &str, near_a_verb: bool) -> Option<NotAVerb> {
+    let name = attempted.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let bytes = name.as_bytes();
+    let drive_letter = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    let leading = name.starts_with('/') || name.starts_with('~') || name.starts_with('.');
+    let last_segment_has_extension = name.contains('/')
+        && name
+            .rsplit('/')
+            .next()
+            .and_then(|seg| seg.rsplit_once('.'))
+            .is_some_and(|(stem, ext)| {
+                !stem.is_empty()
+                    && (1..=6).contains(&ext.len())
+                    && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            });
+    if drive_letter || name.contains('\\') || leading || last_segment_has_extension {
+        return Some(NotAVerb::Path);
+    }
+    if !name.contains('/') && !near_a_verb {
+        return Some(NotAVerb::Identifier);
+    }
+    None
+}
+
+/// Every declared alias whose command is AiSafe — the trained-reflex vocabulary a
+/// persona might reach for. Used to WIDEN did-you-mean candidates on a miss, so a
+/// reflex like `grep_files` finds `grep` (→ `code/search`) instead of no match.
+/// The caller maps a suggested alias back to its canonical command with
+/// [`resolve_wire_name`]. Static, built once from the live registry.
 pub fn ai_safe_aliases() -> &'static [&'static str] {
     static IDX: OnceLock<Vec<&'static str>> = OnceLock::new();
     IDX.get_or_init(|| {

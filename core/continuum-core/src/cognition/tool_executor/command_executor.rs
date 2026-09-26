@@ -385,6 +385,36 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
                 .map(crate::cognition::tool_dialect::resolve_wire_name)
                 .filter(|canonical| seen.insert(canonical.clone()))
                 .collect();
+        // Not a wrong verb — not a verb at all. A path or a bare symbol in the name
+        // field is the thing she was about, landed where the verb goes; did-you-mean
+        // has nothing near it, and "call `commands/help`" was the whole receipt
+        // (card b579a9c7). Name the slip and put her own arguments back in front of
+        // her, the way the nameless-args sentinel does.
+        if let Some(slip) = crate::cognition::tool_dialect::not_a_verb(attempted, !suggestions.is_empty()) {
+            crate::probe!(
+                class = "tool.name.not_a_verb",
+                slip = ?slip,
+                attempted = %attempted,
+                "the tool NAME field held something that is not a verb; the receipt names the slip"
+            );
+            return match slip {
+                crate::cognition::tool_dialect::NotAVerb::Path => format!(
+                    "`{attempted}` is a PATH, not a tool — you put the path where the tool \
+                     NAME goes, so nothing ran. A path is an argument; the verb goes first:\n\
+                     `code/read({{\"file_path\": \"{attempted}\"}})` to read it, `code/write` or \
+                     `code/edit` to change it, `code/list` for a directory, `code/shell` with \
+                     `cwd` to run a command there. Retry with the verb in front."
+                ),
+                crate::cognition::tool_dialect::NotAVerb::Identifier => format!(
+                    "`{attempted}` is not a tool, and is not near one — it reads like a symbol \
+                     from what you were working on (a field, a variable, a name) put where the \
+                     tool NAME goes, so nothing ran. The verb goes first: \
+                     `tool/name({{\"arg\": \"value\"}})`. If you were composing an edit, the \
+                     text belongs in the arguments of `code/edit` or `code/write`. Call \
+                     `commands/help` with no arguments for the verbs you can name."
+                ),
+            };
+        }
         if let (Some(best), Some(manual)) = (
             suggestions.first(),
             suggestions.first().and_then(|b| manual_for(b)),
@@ -395,9 +425,24 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = best;
+            // A bare word near a verb only by a shared token (`msg_budget` →
+            // `system/memory-budget`) may be a typo of that verb, or a symbol from what
+            // she was reading put where the verb goes. did-you-mean cannot tell them
+            // apart, so the receipt carries both lessons: the nearest verbs, and the
+            // envelope form for the case where none of them is what she meant.
+            let symbol_note = if attempted.contains('/') {
+                String::new()
+            } else {
+                format!(
+                    "\n\nIf `{attempted}` is not a verb you meant but a symbol from what you \
+                     were working on (a field, a variable, a name), the verb goes first: \
+                     `tool/name({{\"arg\": \"value\"}})` — an edit's text belongs in the \
+                     arguments of `code/edit` or `code/write`."
+                )
+            };
             return format!(
                 "`{normalized}` is not a tool you can call. Closest: {list}.\n\n\
-                 Here is how to call the first one — retry with this shape:\n{manual}"
+                 Here is how to call the first one — retry with this shape:\n{manual}{symbol_note}"
             );
         }
         return format!(
@@ -786,6 +831,41 @@ mod tests {
         assert!(!out.contains("pass card_id") && out.contains("`work/get`"), "{out}");
         assert!(persona_tool_error("work/submission", "x".into()).contains("`work/submit`"));
         assert!(persona_tool_error("code/git/apply", "x".into()).contains("`code/edit`"));
+    }
+
+    // what this catches (card b579a9c7, Kimi 2026-09-26): a PATH or a bare SYMBOL in the
+    // tool NAME field is not a wrong verb, it is the thing she was about landed where the
+    // verb goes. did-you-mean has nothing near either, and the receipt was "call
+    // `commands/help`" — a turn spent with no lesson. Both of her exact strings.
+    #[test]
+    fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
+        let unknown = |name: &str| format!("no Rust module handles command: '{name}'.");
+        // Fixture 1 (19:5xZ): a Windows path with a drive letter and mixed separators.
+        let path = r"C:\Users\kimi\.airc/worktrees\d33e928a";
+        let out = persona_tool_error(path, unknown(path));
+        assert!(out.contains("is a PATH, not a tool"), "{out}");
+        assert!(out.contains(&format!("`code/read({{\"file_path\": \"{path}\"}})`")), "{out}");
+        assert!(!out.contains("commands/help"), "the manual is not the lesson here: {out}");
+        // Fixture 2 (20:0xZ): a probe field name from the code she was reading. It
+        // shares the word `budget` with a real verb, so did-you-mean has a candidate
+        // (`system/memory-budget`) — the receipt keeps that list AND names the slip.
+        let out = persona_tool_error("msg_budget", unknown("msg_budget"));
+        assert!(out.contains("Closest:"), "{out}");
+        assert!(out.contains("If `msg_budget` is not a verb you meant but a symbol"), "{out}");
+        assert!(out.contains("`code/edit`"), "{out}");
+        // A bare word near NOTHING gets the slip alone.
+        let out = persona_tool_error("frobnitz", unknown("frobnitz"));
+        assert!(out.contains("`frobnitz` is not a tool, and is not near one"), "{out}");
+        // A slashed miss never gets the symbol note — it is a verb shape.
+        assert!(!persona_tool_error("cargo/check", unknown("cargo/check")).contains("a symbol from"));
+        // A repo-relative file and a home path are paths too, whatever the separators.
+        assert!(persona_tool_error("src/main.rs", unknown("src/main.rs")).contains("is a PATH"));
+        assert!(persona_tool_error("~/.continuum", unknown("~/.continuum")).contains("is a PATH"));
+        // A NEAR miss is still a typo and keeps its did-you-mean lesson — the slip arm
+        // must not swallow it (`cargo/check` → `code/cargo/check`, same as before).
+        let out = persona_tool_error("cargo/check", unknown("cargo/check"));
+        assert!(out.contains("Closest:") && out.contains("`code/cargo/check`"), "{out}");
+        assert!(!out.contains("is a PATH") && !out.contains("not near one"), "{out}");
     }
 
     #[test]
