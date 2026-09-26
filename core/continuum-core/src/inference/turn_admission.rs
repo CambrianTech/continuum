@@ -28,6 +28,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::inference::llama_server::EngineProbe;
 use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPin};
 
 /// What a turn holds for the whole generation. Dropping it releases the concurrency
@@ -418,7 +419,13 @@ const QUIET_ENGINE_CHECKPOINTS: u32 = 8;
 /// - its work fingerprint moved: the queue is advancing, keep waiting;
 /// - nothing moved and NO slot is processing: the engine is working its queue head,
 ///   which is this switch, keep waiting — up to [`QUIET_ENGINE_CHECKPOINTS`] in a row;
-/// - nothing moved while a slot claims to be processing, or no answer: stuck, `None`.
+/// - nothing moved while a slot claims to be processing: stuck, `None`;
+/// - the engine did not answer inside the probe's own timeout ([`EngineProbe::Busy`]):
+///   it is working, most likely on this very switch — keep waiting, bounded like a quiet
+///   engine (card 8c06f778: a 71,680-token restore's checkpoint probe timed out and was
+///   read as death; 135 s closed, one engine replaced);
+/// - nothing that is a llama-server answers on this root ([`EngineProbe::Unreachable`]):
+///   `None`, the one silence that IS the engine gone.
 ///
 /// Why both signals (M5, 2026-09-26 10:2xZ): a save ran 12.4 s against a 12.2 s bound on
 /// an engine with idle slots; the fingerprint alone could not see the save and called it a
@@ -434,26 +441,41 @@ async fn wait_while_engine_progresses<T, W, P, PF>(
 where
     W: std::future::Future<Output = T>,
     P: FnMut() -> PF,
-    PF: std::future::Future<Output = Option<crate::inference::llama_server::EngineProgress>>,
+    PF: std::future::Future<Output = EngineProbe>,
 {
     tokio::pin!(work);
-    let mut last = progress().await.map(|p| p.fingerprint);
+    let mut last = match progress().await {
+        EngineProbe::Progress(p) => Some(p.fingerprint),
+        EngineProbe::Busy | EngineProbe::Unreachable => None,
+    };
     let mut busy_checkpoints: u64 = 0;
     let mut quiet_in_a_row: u32 = 0;
     loop {
         tokio::select! {
             done = &mut work => return Some(done),
             _ = tokio::time::sleep(bound) => {
-                let now = progress().await?;
-                let moved = last.map_or(true, |before| before != now.fingerprint);
-                if moved {
-                    quiet_in_a_row = 0;
-                } else if !now.any_processing && quiet_in_a_row < QUIET_ENGINE_CHECKPOINTS {
-                    quiet_in_a_row += 1;
-                } else {
-                    return None;
+                match progress().await {
+                    EngineProbe::Unreachable => return None,
+                    // Working, and unable to say so: bounded exactly like a quiet engine.
+                    EngineProbe::Busy => {
+                        if quiet_in_a_row < QUIET_ENGINE_CHECKPOINTS {
+                            quiet_in_a_row += 1;
+                        } else {
+                            return None;
+                        }
+                    }
+                    EngineProbe::Progress(now) => {
+                        let moved = last.map_or(true, |before| before != now.fingerprint);
+                        if moved {
+                            quiet_in_a_row = 0;
+                        } else if !now.any_processing && quiet_in_a_row < QUIET_ENGINE_CHECKPOINTS {
+                            quiet_in_a_row += 1;
+                        } else {
+                            return None;
+                        }
+                        last = Some(now.fingerprint);
+                    }
                 }
-                last = Some(now.fingerprint);
                 busy_checkpoints += 1;
                 on_busy(busy_checkpoints);
             }
@@ -496,7 +518,7 @@ pub(crate) async fn kv_page_action(
     let resp = wait_while_engine_progresses(
         send,
         bound,
-        || crate::inference::llama_server::engine_progress(root.trim_end_matches('/'), client),
+        || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
         |busy_checkpoints| {
             crate::probe!(
                 class = "inference.kv_page.busy_not_dead",
@@ -593,7 +615,7 @@ mod tests {
     // but whose counters never move is stuck; and a silent engine ends the wait.
     #[tokio::test(start_paused = true)]
     async fn a_slow_page_switch_waits_while_the_engine_progresses_and_ends_when_it_stalls() {
-        use crate::inference::llama_server::EngineProgress;
+        use crate::inference::llama_server::{EngineProbe, EngineProgress};
         let bound = std::time::Duration::from_secs(10);
         let slow = async {
             tokio::time::sleep(bound * 3 + std::time::Duration::from_secs(1)).await;
@@ -604,7 +626,7 @@ mod tests {
         let got = wait_while_engine_progresses(
             slow,
             bound,
-            || { tick += 1; let t = tick; async move { Some(EngineProgress { fingerprint: t, any_processing: true }) } },
+            || { tick += 1; let t = tick; async move { EngineProbe::Progress(EngineProgress { fingerprint: t, any_processing: true }) } },
             |n| seen.push(n),
         )
         .await;
@@ -618,7 +640,7 @@ mod tests {
         let got = wait_while_engine_progresses(
             quiet_save,
             bound,
-            || async { Some(EngineProgress { fingerprint: 7, any_processing: false }) },
+            || async { EngineProbe::Progress(EngineProgress { fingerprint: 7, any_processing: false }) },
             |_| {},
         )
         .await;
@@ -627,7 +649,7 @@ mod tests {
         let endless_quiet = wait_while_engine_progresses(
             std::future::pending::<&str>(),
             bound,
-            || async { Some(EngineProgress { fingerprint: 7, any_processing: false }) },
+            || async { EngineProbe::Progress(EngineProgress { fingerprint: 7, any_processing: false }) },
             |_| {},
         )
         .await;
@@ -636,14 +658,24 @@ mod tests {
         let stuck = wait_while_engine_progresses(
             std::future::pending::<&str>(),
             bound,
-            || async { Some(EngineProgress { fingerprint: 42, any_processing: true }) },
+            || async { EngineProbe::Progress(EngineProgress { fingerprint: 42, any_processing: true }) },
             |_| {},
         )
         .await;
         assert_eq!(stuck, None, "slots processing with nothing moving is stuck");
 
-        let silent = wait_while_engine_progresses(std::future::pending::<&str>(), bound, || async { None }, |_| {}).await;
-        assert_eq!(silent, None, "an engine that stops answering ends the wait");
+        let gone = wait_while_engine_progresses(std::future::pending::<&str>(), bound, || async { EngineProbe::Unreachable }, |_| {}).await;
+        assert_eq!(gone, None, "an engine that is not there ends the wait");
+        // card 8c06f778: a probe that times out is the engine WORKING, not gone — the
+        // restore it cannot answer around completes, and the switch keeps it.
+        let busy_restore = async {
+            tokio::time::sleep(bound * 2 + std::time::Duration::from_secs(1)).await;
+            "restored"
+        };
+        let got = wait_while_engine_progresses(busy_restore, bound, || async { EngineProbe::Busy }, |_| {}).await;
+        assert_eq!(got, Some("restored"), "a probe timeout mid-switch is busy, never dead");
+        let endless_busy = wait_while_engine_progresses(std::future::pending::<&str>(), bound, || async { EngineProbe::Busy }, |_| {}).await;
+        assert_eq!(endless_busy, None, "busy is bounded like quiet: the cap ends a wait that never completes");
     }
 
     // what this catches: the fingerprint moves when any slot prefills, decodes or takes
