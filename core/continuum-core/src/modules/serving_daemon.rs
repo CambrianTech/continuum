@@ -187,6 +187,21 @@ fn lane_over_its_knee(live_window: u32, live_lanes: u32, plan_window: u32, plan_
 /// at runtime, and the settled 1-lane geometry then capped the next boot: a one-way
 /// ratchet with no mover the other way). The sustain streak, the flat-plan check and the
 /// cooldown still gate the relaunch; this only makes a slot shortfall COUNT as evidence.
+/// A plan may shrink while the host pages out; it never grows into it. A grow is more
+/// KV space than the lane holds; paging out is swap rising since the last decision.
+/// `swap_prev == u64::MAX` is "no previous reading" and never reads as rising. The swap
+/// LEVEL is not a term (Cormac on #4415): a page in swap already gave up its RAM, so
+/// `available` reflects it, and macOS keeps idle pages swapped for hours after the
+/// pressure is gone — subtracting the level would under-plan by the whole residue.
+fn grow_refused_while_paging(
+    live_space: u64,
+    plan_space: u64,
+    swap_prev: u64,
+    swap_now: u64,
+) -> bool {
+    plan_space > live_space && swap_prev != u64::MAX && swap_now > swap_prev
+}
+
 fn roster_short_of_slots(live_lanes: u32, plan_lanes: u32) -> bool {
     live_lanes > 0 && plan_lanes > live_lanes
 }
@@ -707,6 +722,9 @@ pub struct ServingDaemonModule {
     rehome_streak: Arc<std::sync::atomic::AtomicU32>,
     /// Consecutive ticks a sustained re-home has been deferred by a steady hold.
     rehome_held_ticks: Arc<std::sync::atomic::AtomicU32>,
+    /// The host's swap-in-use at the last grow decision (card 628dc958): a grow-back
+    /// re-home is refused while this is rising. `u64::MAX` = no reading yet.
+    last_swap_used: Arc<std::sync::atomic::AtomicU64>,
 
     /// How many CONSECUTIVE ticks the lane has been below plan while declining to
     /// re-home — a clock for the decline probe's cadence and nothing else.
@@ -949,6 +967,7 @@ impl ServingDaemonModule {
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_held_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            last_swap_used: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = no reading yet: unknown is never "rising"
             decline_log_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_last_plan: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = first observation reads FLAT: unknown is not growth
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -1601,6 +1620,10 @@ impl ServingDaemonModule {
         // anti-pattern the memory-authority arc exists to kill. Pressure sensing stays live
         // via the drive mode below (which still reads system available for the fraction).
         let available = self.system.snapshot().memory.available_bytes;
+        let unified = matches!(
+            self.system.gpu_memory_mode(),
+            Some(crate::gpu::monitor::MemoryMode::Unified)
+        );
         let live = governed_vram_ceiling_or_report(&self.resource_daemon, "host_budget");
         // LUDICROUS override: a declared benchmark/exam intent floors the whole GPU
         // (Performance, fraction 0.96) — the biggest window the model+machine allow, past the
@@ -1656,10 +1679,6 @@ impl ServingDaemonModule {
                 );
             }
         }
-        let unified = matches!(
-            self.system.gpu_memory_mode(),
-            Some(crate::gpu::monitor::MemoryMode::Unified)
-        );
         HostBudget {
             usable_bytes: plan_fill(live, mode.serving_fraction(), unified),
             perf_cores: perf_cores(),
@@ -2832,6 +2851,34 @@ impl ServingDaemonModule {
                 );
                 let short_of_slots = roster_short_of_slots(live.lanes, lanes);
                 let worth_it = worth_it || short_of_slots;
+                // A plan may shrink while the host pages out; it never GROWS into it
+                // (card 628dc958: six relaunches in 75 min at HIGH with swap climbing,
+                // each grow feeding on the memory its own relaunch had just freed). The
+                // gate is a measured DELTA, not a level: swap rising since the last
+                // decision means the box is short of memory right now, whatever
+                // `available` reads mid-relaunch. Flat swap lets the grow through — the
+                // swapped pages are already subtracted from the budget it was planned in.
+                let swap_now = self.system.snapshot().memory.swap_used_bytes;
+                let swap_prev = self.last_swap_used.swap(swap_now, Ordering::Relaxed);
+                if grow_refused_while_paging(live_space, plan_space, swap_prev, swap_now) {
+                    self.rehome_streak.store(0, Ordering::Relaxed);
+                    crate::probe!(
+                        class = "serving.reconcile.window",
+                        decision = "refused_while_paging",
+                        swap_prev_mb = swap_prev >> 20,
+                        swap_now_mb = swap_now >> 20,
+                        live_window = live.served_context_window,
+                        plan_window = served_ctx,
+                        live_lanes = live.lanes,
+                        plan_lanes = lanes,
+                        shortfall = gain,
+                        "the plan wants more memory than the lane holds while the host is \
+                         paging out — a grow here feeds on its own relaunch; shrinks flow, \
+                         and the grow fires the tick swap stops climbing",
+                    );
+                    self.acknowledge_verified_target(&live, planned.intent_revision);
+                    return None;
+                }
                 // A STILL-CLIMBING plan is not settled (2026-09-02, the boot
                 // staircase): personas register footprints serially at boot,
                 // demand climbs in 15%+ stairs, and each stair "sustained" for
@@ -6616,6 +6663,25 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // what this catches (card 628dc958): the plan grew into free memory while the host
+    // was pushing other processes' pages out to make it, then fed on the memory its own
+    // relaunch freed — six relaunches in 75 min on the M5 at HIGH. Pure decision.
+    #[test]
+    fn a_plan_never_grows_while_the_host_pages_out() {
+        use super::grow_refused_while_paging;
+        let gib = |n: u64| n << 30;
+        // paging out + a bigger plan = refused; flat or falling swap, a shrink, or no
+        // previous reading (boot on a node that always has swap) flows.
+        assert!(!grow_refused_while_paging(80_000, 120_000, u64::MAX, gib(2)));
+        assert!(grow_refused_while_paging(80_000, 120_000, gib(1), gib(2)));
+        assert!(!grow_refused_while_paging(80_000, 120_000, gib(2), gib(2)));
+        assert!(!grow_refused_while_paging(80_000, 120_000, gib(2), gib(1)));
+        assert!(
+            !grow_refused_while_paging(120_000, 80_000, gib(1), gib(2)),
+            "a shrink while paging is the remedy, never refused"
+        );
+    }
+
     // what this catches (Cormac on #4298): a receipt that fires on PERSISTENCE rather than
     // CHANGE. `serving.prompt_cache.divergence` sits on the 5-second ready path, and the M5
     // gap lasted three hours — firing per tick is ~2,160 identical lines carrying the same
