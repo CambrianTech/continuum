@@ -594,6 +594,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // what this catches (Kimi's #1, the Aris shape: live work reading as lapsed): the record
+    // carries her claim id and lease edge — on the WHOLE card, never re-picked — and the
+    // wake line names both and says holding is UNVERIFIED until the board answers.
+    #[test]
+    fn the_wake_line_names_the_claim_and_its_lease_edge_and_calls_holding_unverified() {
+        let me = Uuid::from_u128(105);
+        note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 1_000);
+        let h = compose(me, TornBy::Stop, None, None, 2_000).expect("held");
+        let held = h.card.as_ref().expect("the whole card rides in the record");
+        assert_eq!(held.claim_id.map(|c| c.as_uuid()), Some(Uuid::from_u128(9)));
+        assert_eq!(held.claim_expires_at_ms, Some(2_000));
+        let line = render_on_wake(&h, "abc", 2_000);
+        assert!(line.contains("claim 00000000"), "{line}");
+        assert!(line.contains("lease to 2000 Unix ms"), "{line}");
+        assert!(line.contains("holding is UNVERIFIED until the board answers"), "{line}");
+    }
+
     // what this catches (Kimi's #3 and #5): a deploy that did not land is SAID, a landed one
     // is said, the age is rendered, and the render ends by mandating the board diff.
     #[test]
