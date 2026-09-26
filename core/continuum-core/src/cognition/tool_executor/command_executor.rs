@@ -825,13 +825,13 @@ mod tests {
     #[test]
     fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
         let unknown = |name: &str| format!("no Rust module handles command: '{name}'.");
-        // Fixture 1 (21:0xZ): a Windows path with a drive letter and mixed separators.
+        // Fixture 1 (19:5xZ): a Windows path with a drive letter and mixed separators.
         let path = r"C:\Users\kimi\.airc/worktrees\d33e928a";
         let out = persona_tool_error(path, unknown(path));
         assert!(out.contains("is a PATH, not a tool"), "{out}");
         assert!(out.contains(&format!("`code/read({{\"file_path\": \"{path}\"}})`")), "{out}");
         assert!(!out.contains("commands/help"), "the manual is not the lesson here: {out}");
-        // Fixture 2 (21:3xZ): a probe field name from the code she was reading.
+        // Fixture 2 (20:0xZ): a probe field name from the code she was reading.
         let out = persona_tool_error("msg_budget", unknown("msg_budget"));
         assert!(out.contains("`msg_budget` is not a tool, and is not near one"), "{out}");
         assert!(out.contains("`code/edit`"), "{out}");
