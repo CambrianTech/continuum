@@ -777,6 +777,13 @@ mod tests {
         assert!(out.contains("`work/review` did not run"), "{out}");
         assert!(out.contains("`work/get`") && out.contains("`work/submit`"), "{out}");
         assert!(!out.contains("activity room is required"), "the refusal is not the lesson: {out}");
+        // Her second receipt form the same hour (#6906–#6908): an argument-level hint that
+        // points at a path she cannot take ("pass card_id if you are reviewing out of band").
+        let out = persona_tool_error(
+            "work/review",
+            "[invalid] card d33e928a is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band".to_string(),
+        );
+        assert!(!out.contains("pass card_id") && out.contains("`work/get`"), "{out}");
         assert!(persona_tool_error("work/submission", "x".into()).contains("`work/submit`"));
         assert!(persona_tool_error("code/git/apply", "x".into()).contains("`code/edit`"));
     }
