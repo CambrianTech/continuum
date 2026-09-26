@@ -5548,13 +5548,31 @@ async fn desktop_answering() -> bool {
 /// must never have to know a port (Joel, 2026-09-05: "remembering port is
 /// bush league") — the CLI says the address, and `uu desktop` opens it.
 async fn desktop_receipt_line() -> String {
-    if desktop_answering().await {
-        format!("🖥  desktop: {}   (`uu desktop` opens it)", desktop_url())
+    // Configured = the core can find a dist: `CONTINUUM_UI_DIST` in this environment
+    // (a direct launch) or pinned in config.env (the file the core applies to itself on
+    // every boot — the only route to a supervised core). Without it, "lands in the
+    // background" was a promise nothing kept: the M5 printed it on eight consecutive
+    // deploys (2026-09-26) while the core booted `desktop.dm.unconfigured` each time.
+    let configured = std::env::var("CONTINUUM_UI_DIST").ok().filter(|v| !v.trim().is_empty()).is_some()
+        || continuum_core::config_env::read("CONTINUUM_UI_DIST").is_some();
+    desktop_receipt(desktop_answering().await, configured, desktop_port())
+}
+
+/// The receipt, pure over what was observed: answering wins; a configured dist that is
+/// not answering yet is a build in flight; no dist configured is named as such, with the
+/// verb that fixes it. Never a promise the launch path cannot keep.
+fn desktop_receipt(answering: bool, configured: bool, port: u16) -> String {
+    if answering {
+        format!("🖥  desktop: http://127.0.0.1:{port}/   (`uu desktop` opens it)")
+    } else if configured {
+        format!(
+            "🖥  desktop: not serving yet on :{port} — the web build lands in the background; \
+             `uu desktop` opens it once it does"
+        )
     } else {
         format!(
-            "🖥  desktop: not serving yet on :{} — the web build lands in the background; \
-             `uu desktop` opens it once it does",
-            desktop_port()
+            "🖥  desktop: not configured — no CONTINUUM_UI_DIST in ~/.continuum/config.env; \
+             `continuum start` from the source tree pins it and builds the web client (:{port} once it does)"
         )
     }
 }
@@ -5595,6 +5613,21 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (M5, 2026-09-26): the start/reboot receipt promised "the web build
+    // lands in the background" on eight consecutive supervised deploys while no dist was
+    // configured and none was being built. An unconfigured desktop must be NAMED, with the
+    // verb that fixes it; the promise is reserved for a configured dist that is still in flight.
+    #[test]
+    fn the_desktop_receipt_never_promises_a_build_the_launch_path_is_not_making() {
+        let up = super::desktop_receipt(true, false, 8975);
+        assert!(up.contains("http://127.0.0.1:8975/"), "{up}");
+        let in_flight = super::desktop_receipt(false, true, 8975);
+        assert!(in_flight.contains("lands in the background"), "{in_flight}");
+        let unconfigured = super::desktop_receipt(false, false, 8975);
+        assert!(unconfigured.contains("not configured") && unconfigured.contains("CONTINUUM_UI_DIST"), "{unconfigured}");
+        assert!(!unconfigured.contains("lands in the background"), "no promise without a dist: {unconfigured}");
+    }
+
     // what this catches (2026-09-22, Astra's Windows node): a drain that runs even
     // though the teardown after it will be refused. `system/shutdown.rs` deliberately
     // leaves the process alive for the CLI to end, and `OpenProcess(25040, TERMINATE)`
