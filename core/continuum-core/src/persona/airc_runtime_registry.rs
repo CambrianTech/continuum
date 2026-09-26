@@ -302,11 +302,6 @@ impl PersonaAircRuntimeRegistry {
         out
     }
 
-    /// The persona's autonomic-quiesce flag (a shared handle). The service loop
-    /// clones this once at spawn and checks it each self-tick (slice 2); the
-    /// setters below flip it. `None` if the persona isn't online. Returning the
-    /// `Arc` (not a bool) is what lets the loop read the SAME atomic the lease
-    /// writes — no parallel registry, no polling round-trip.
     /// Record the role she was spawned for. The spawner is the one writer (it holds the
     /// desired roster); the grid allocator is the reader (card ccb316a7: a mind is seated
     /// as HER role, never as the first role a seat fits). First write wins — a respawn
@@ -322,6 +317,11 @@ impl PersonaAircRuntimeRegistry {
         self.inner.get(&persona_id).and_then(|e| e.role.get().copied())
     }
 
+    /// The persona's autonomic-quiesce flag (a shared handle). The service loop
+    /// clones this once at spawn and checks it each self-tick (slice 2); the
+    /// setters below flip it. `None` if the persona isn't online. Returning the
+    /// `Arc` (not a bool) is what lets the loop read the SAME atomic the lease
+    /// writes — no parallel registry, no polling round-trip.
     pub fn quiesced_flag(&self, persona_id: Uuid) -> Option<Arc<AtomicBool>> {
         self.inner.get(&persona_id).map(|e| e.quiesced.clone())
     }
