@@ -330,6 +330,7 @@ mod tests {
             persona_name: "test".into(),
             base_model: base_model.into(),
             trait_kind: "test-trait".into(),
+            resume_from: None,
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::OperatorCurated,

@@ -185,6 +185,31 @@ def prepare_examples(examples, tokenizer, sequence_length):
     return prepared
 
 
+# How often the adapter is checkpointed, in optimizer steps. Small on purpose: a
+# step on the 27B is ~a minute, the adapter is tens of MB, and the point of the
+# checkpoint is that a reboot costs minutes (card 244757bc).
+CHECKPOINT_EVERY_STEPS = 4
+
+
+def write_checkpoint(model, output, step, state):
+    """Write the adapter and its loop state under `checkpoints/step-N`, then point
+    `checkpoints/LATEST` at it (atomic replace), and drop the previous checkpoint —
+    one on disk, never a half-written one named as the latest."""
+    root = output / "checkpoints"
+    root.mkdir(parents=True, exist_ok=True)
+    current = root / f"step-{step}"
+    model.save_pretrained(current, safe_serialization=True)
+    write_json(current / "state.json", state)
+    pointer = root / "LATEST"
+    previous = pointer.read_text(encoding="utf-8").strip() if pointer.exists() else None
+    temporary = root / "LATEST.partial"
+    temporary.write_text(current.name + "\n", encoding="utf-8")
+    os.replace(temporary, pointer)
+    if previous and previous != current.name and (root / previous).is_dir():
+        import shutil
+        shutil.rmtree(root / previous, ignore_errors=True)
+
+
 def train(spec, output):
     import torch
     from transformers import AutoConfig, AutoTokenizer, BitsAndBytesConfig
@@ -200,6 +225,13 @@ def train(spec, output):
     torch.manual_seed(0)
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     base, revision = spec["baseModel"], spec.get("revision")
+    # Checkpoint cadence and resume point (card 244757bc, Fable's readiness ask): the
+    # adapter is written every few steps so a job killed by a core reboot and re-created
+    # by the trigger continues from its last checkpoint. The optimizer's moments are
+    # not carried — a LoRA at these step counts re-warms them in a step or two — and
+    # the loop position (epoch, group) is, so no example is trained twice per epoch.
+    checkpoint_every = int(spec.get("checkpointEverySteps", CHECKPOINT_EVERY_STEPS))
+    resume_from = spec.get("resumeFrom")
     config = AutoConfig.from_pretrained(base, revision=revision, trust_remote_code=False)
     tokenizer = AutoTokenizer.from_pretrained(base, revision=revision, trust_remote_code=False)
     if tokenizer.pad_token_id is None:
@@ -227,9 +259,15 @@ def train(spec, output):
                                            gradient_checkpointing_kwargs={"use_reentrant": False})
     model.config.use_cache = False
     model.config.get_text_config().use_cache = False
-    model = get_peft_model(model, LoraConfig(r=lora["rank"], lora_alpha=lora["alpha"],
-        lora_dropout=lora["dropout"], target_modules=lora["targetModules"],
-        bias="none", task_type="CAUSAL_LM"))
+    resumed = None
+    if resume_from:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, resume_from, is_trainable=True)
+        resumed = json.loads((Path(resume_from) / "state.json").read_text(encoding="utf-8"))
+    else:
+        model = get_peft_model(model, LoraConfig(r=lora["rank"], lora_alpha=lora["alpha"],
+            lora_dropout=lora["dropout"], target_modules=lora["targetModules"],
+            bias="none", task_type="CAUSAL_LM"))
     parameters = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(parameters, lr=schedule["learningRate"])
     scaler = torch.amp.GradScaler("cuda", enabled=dtype == torch.float16)
@@ -250,10 +288,15 @@ def train(spec, output):
                                       ("labels", -100), ("attention_mask", 0)]}
 
     trained_tokens, step, final_loss = 0, 0, None
+    first_epoch, first_start = 0, 0
+    if resumed:
+        trained_tokens, step, final_loss = resumed["trainedTokens"], resumed["step"], resumed["finalLoss"]
+        first_epoch, first_start = resumed["epoch"], resumed["nextStart"]
+        write_json(output / "resumed.json", {"from": str(resume_from), "step": step, "epoch": first_epoch})
     with (output / "loss.jsonl").open("a", encoding="utf-8") as losses:
-        for epoch in range(schedule["epochs"]):
+        for epoch in range(first_epoch, schedule["epochs"]):
             model.train()
-            for start in range(0, len(training), schedule["batchSize"]):
+            for start in range(first_start if epoch == first_epoch else 0, len(training), schedule["batchSize"]):
                 group = training[start:start + schedule["batchSize"]]
                 target_count = sum(sum(label != -100 for label in row["labels"][1:]) for row in group)
                 optimizer.zero_grad(set_to_none=True)
@@ -277,6 +320,10 @@ def train(spec, output):
                 final_loss = weighted_loss / target_count
                 losses.write(json.dumps({"step": step, "epoch": epoch, "loss": final_loss}) + "\n")
                 losses.flush()
+                if checkpoint_every > 0 and step % checkpoint_every == 0:
+                    write_checkpoint(model, output, step, {"step": step, "epoch": epoch,
+                        "nextStart": start + schedule["batchSize"], "trainedTokens": trained_tokens,
+                        "finalLoss": final_loss})
     validation_loss = None
     if validation:
         model.eval()

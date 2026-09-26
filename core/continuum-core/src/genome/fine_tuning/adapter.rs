@@ -294,6 +294,7 @@ mod tests {
             persona_name: "test-persona".into(),
             base_model: "gpt-4o-mini".into(),
             trait_kind: "test-trait".into(),
+            resume_from: None,
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::TeacherSynthesized,
