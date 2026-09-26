@@ -312,6 +312,27 @@ fn output_allowance(
     }
 }
 
+/// The working-memory record of a cut act: that it did not land, how long it ran, and
+/// how it began and ended, so the next generation starts from what she was composing
+/// rather than re-deriving it. Head and tail only: the whole payload is what was too
+/// large to land, and repeating it would crowd the retry the same way. Pure.
+fn cut_act_fact(text: &str) -> String {
+    const EDGE: usize = 240;
+    let chars = text.chars().count();
+    let head: String = text.chars().take(EDGE).collect();
+    let tail: String = if chars > 2 * EDGE {
+        let skip = chars - EDGE;
+        text.chars().skip(skip).collect()
+    } else {
+        String::new()
+    };
+    if tail.is_empty() {
+        format!("my last act was CUT at the output limit after {chars} chars before a tool call was committed — it did not land, nothing ran. I was composing: {head}")
+    } else {
+        format!("my last act was CUT at the output limit after {chars} chars before a tool call was committed — it did not land, nothing ran. I was composing: {head} … and it ended: {tail}")
+    }
+}
+
 /// Apportion the server's output count between the reasoning channel and the answer
 /// by the bytes each channel carried — the server counts tokens, the adapter splits
 /// text. No channel text at all (a native tool call) is all answer.
@@ -4781,6 +4802,26 @@ impl LlmDeliberationFaculty {
                 text_chars = resp.text.len(),
                 "generation ended AT the output limit with no tool call — a cut                  thought, faulted for re-sample, never a gradeable utterance"
             );
+            // A MIND THAT CAN ACT gets a wake-up record, not a silent re-sample (Kimi,
+            // 2026-09-25: both her cuts landed mid-envelope on a large ledger note; the
+            // re-sample began with no word of the cut, so she composed the same payload
+            // again, and later turns replayed work that had already landed). Record the
+            // fact of the cut and what she was composing into working memory, then route
+            // the cut sentinel: reported, never executed, and `drive_to_settle` gives
+            // her another generation that starts from that record. A speak-only mind
+            // keeps the fault path below.
+            if !self.tools.is_empty() {
+                if let Some(wm) = &self.working_memory {
+                    wm.record_fact(&cut_act_fact(&resp.text));
+                }
+                let call = crate::ai::types::ToolCall {
+                    id: "tool-attempt-cut-at-limit".to_string(),
+                    name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL
+                        .to_string(),
+                    input: serde_json::json!({}),
+                };
+                return Some(self.act_verdict(vec![call], &resp));
+            }
             let head: String = resp.text.chars().take(200).collect();
             return Some(Contribution::deliberation_fault(format!(
                 "the model hit the output limit mid-thought with no committed action                  (finish_reason Length, {} chars) — a cut thought is not an answer.                  It began: {head}",
@@ -5123,6 +5164,22 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (Kimi, 2026-09-25): a cut act must leave her a record of what
+    // she was composing and that it did not land; a long payload is trimmed to its two
+    // edges so the record cannot crowd the retry the way the payload did.
+    #[test]
+    fn a_cut_act_records_that_it_did_not_land_and_what_it_was() {
+        let short = super::cut_act_fact("work/note({\"card\": \"a9c8f8ae\"");
+        assert!(short.contains("did not land"), "{short}");
+        assert!(short.contains("a9c8f8ae"), "{short}");
+        let long: String = format!("HEAD{}TAIL", "x".repeat(5_000));
+        let fact = super::cut_act_fact(&long);
+        assert!(fact.contains("after 5008 chars"), "{fact}");
+        assert!(fact.starts_with("my last act was CUT"), "{fact}");
+        assert!(fact.contains("HEAD") && fact.contains("TAIL"), "both edges survive");
+        assert!(fact.chars().count() < 800, "the record is bounded, not the payload: {}", fact.chars().count());
+    }
+
     use super::*;
 
     // what this catches: S1's whole point. A room whose recipe declares affordances
