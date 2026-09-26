@@ -325,6 +325,21 @@ pub enum EmissionStop {
     /// The cut itself is the fault paths' business (`persona.act.think_only`,
     /// `delib.truncated_not_an_answer`), not the measurement's.
     CutMidThought,
+    /// The turn LANDED, but its think stopped AT the reasoning budget the request set
+    /// (three quarters of the allowance, `deliberation_reasoning_budget`). The reasoning
+    /// sample is censored: a thinking model fills whatever room it is given, so the
+    /// count says only "at least the budget", not her need. Pushed verbatim it would
+    /// teach the need ring the budget, and with the 5/4 headroom the next allowance is
+    /// 5/4 × (3/4 A + answer) = 15/16 A + 5/4 answer — a geometric contraction toward
+    /// max(time floor, 20 × answer), the forbidden clamp arrived at by feedback (Cormac
+    /// on #4409). Recording it AT the allowance instead compounds the other way: a
+    /// thinking model fills every budget, so "at least what she was given" ×5/4 each
+    /// turn drives every deliberating mind to the full reserve (simulated: 8k → 184k in
+    /// 20 turns), and on a slow lane that is the latency law broken. So a budget-hit is
+    /// NOT a need sample, exactly as a think-only cut is not: the need ring keeps her
+    /// landed shape, the peak takes the turn verbatim, and growth comes only from turns
+    /// she ends on her own or from a cut inside the answer.
+    ThinkBudgetHit { allowance: u32 },
 }
 
 impl EmissionStop {
@@ -336,6 +351,23 @@ impl EmissionStop {
             (false, _) => Self::Landed,
             (true, 0) => Self::CutMidThought,
             (true, _) => Self::CutMidAnswer,
+        }
+    }
+
+    /// [`Self::classify`] with the request's reasoning budget in hand: a landed turn
+    /// whose think reached the budget is a `ThinkBudgetHit`, the rest classify as before.
+    pub fn classify_with_budget(
+        hit_cap: bool,
+        answer_tokens: u32,
+        reasoning_tokens: u32,
+        reasoning_budget: Option<u32>,
+        allowance: u32,
+    ) -> Self {
+        match reasoning_budget {
+            Some(budget) if !hit_cap && budget > 0 && reasoning_tokens >= budget => {
+                Self::ThinkBudgetHit { allowance }
+            }
+            _ => Self::classify(hit_cap, answer_tokens),
         }
     }
 }
@@ -618,11 +650,13 @@ impl WorkingSetRegistry {
         let (reasoning, answer) = match stop {
             EmissionStop::Landed | EmissionStop::CutMidThought => (reasoning, answer),
             EmissionStop::CutMidAnswer => (reasoning, answer.saturating_mul(2)),
+            // A censored think is recorded verbatim on the peak side; the need ring skips it.
+            EmissionStop::ThinkBudgetHit { .. } => (reasoning, answer),
         };
         let observed = reasoning.saturating_add(answer);
         let push_need = |e: &mut PersonaEmission| {
             // A think-only cut is not a sample of her need ([`EmissionStop::CutMidThought`]).
-            if stop == EmissionStop::CutMidThought {
+            if matches!(stop, EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. }) {
                 return;
             }
             let slot = (e.need_turns as usize) % NEED_SAMPLES;
@@ -1246,4 +1280,52 @@ mod tests {
             "and it exceeds the widest seat on the grid while she fits it — the eviction this removes",
         );
     }
+    // what this catches (Cormac on #4409): with the loop CLOSED and a thinking model that
+    // thinks to whatever budget it is given, a think stopped AT the deliberation budget
+    // must not teach the need ring the budget — verbatim, the next allowance would be
+    // 5/4 × (3/4 A + answer) and contract geometrically toward max(time floor, 20 × answer);
+    // recorded at the allowance it would compound toward the reserve instead. Skipped as a
+    // sample, the allowance holds exactly at her landed shape.
+    #[test]
+    fn a_think_stopped_at_the_budget_never_contracts_the_allowance() {
+        let reg = WorkingSetRegistry::default();
+        for t in 0..MIN_NEED_TURNS as u64 {
+            reg.record_emission_in_memory(p(6), 6_448, 6_000, EmissionStop::Landed, t);
+        }
+        let landed = reg.need_of(p(6)).expect("need measured");
+        let mut allowance = landed.total();
+        let first = allowance;
+        for t in 0..(NEED_SAMPLES as u64 + 4) {
+            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(allowance))
+                .expect("an allowance large enough to budget") as u32;
+            let answer = 300u32;
+            let stop = EmissionStop::classify_with_budget(false, answer, budget, Some(budget), allowance);
+            assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
+            reg.record_emission_in_memory(p(6), budget + answer, budget, stop, 100 + t);
+            let next = reg.need_of(p(6)).expect("need measured").total();
+            // A budget-hit is not a sample: the need ring keeps her landed shape exactly,
+            // so the allowance neither contracts toward the floor nor compounds toward
+            // the reserve (recorded at the allowance it went 8k → 184k in 20 turns).
+            assert_eq!(next, first, "the allowance moved on a censored sample at turn {t}");
+            allowance = next;
+        }
+        assert_eq!(allowance, first, "over the whole loop: {first} → {allowance}");
+        // The control: the same sequence recorded verbatim contracts. The ring's p90
+        // lags a whole ring (the second-largest of the last NEED_SAMPLES), so each 15/16
+        // step shows only per ring turnover; ten turnovers make the geometric shrink
+        // toward 20 × answer unmistakable.
+        let reg2 = WorkingSetRegistry::default();
+        for t in 0..MIN_NEED_TURNS as u64 {
+            reg2.record_emission_in_memory(p(5), 6_448, 6_000, EmissionStop::Landed, t);
+        }
+        let mut a2 = reg2.need_of(p(5)).expect("need measured").total();
+        let start2 = a2;
+        for t in 0..(NEED_SAMPLES as u64 * 10) {
+            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
+            reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, 300), 200 + t);
+            a2 = reg2.need_of(p(5)).expect("need measured").total();
+        }
+        assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
+    }
+
 }

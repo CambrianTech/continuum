@@ -1585,8 +1585,8 @@ impl LlmDeliberationFaculty {
             // measured think instead ([`output_allowance`]).
             purpose: Some(
                 match kind {
-                    TurnKind::Act => "cognition/act",
-                    TurnKind::Pass => "cognition/deliberation",
+                    TurnKind::Act => crate::inference::request_body::ACT_PURPOSE,
+                    TurnKind::Pass => crate::inference::request_body::DELIBERATION_PURPOSE,
                 }
                 .to_string(),
             ),
@@ -4385,6 +4385,8 @@ impl LlmDeliberationFaculty {
         let (mut fit_window, mut calibration) = self.prompt_fit(&binding);
         let mut rejected_prompt_tokens = None;
         let mut gen_await_ms = 0u64;
+        // The allowance the request actually carried (set where it is built, read at the seam).
+        let mut sent_allowance: Option<u32> = None;
         // One corrective admission replay at most; no accepted cognition is
         // repeated. Existing queue/header/stream deadlines still apply to each
         // attempt. The immutable workspace and captured model route stay fixed.
@@ -4537,6 +4539,13 @@ impl LlmDeliberationFaculty {
                 ));
             }
             let started = std::time::Instant::now();
+            // THE ALLOWANCE THE REQUEST ACTUALLY CARRIED (Cormac on #4409): the reasoning
+            // budget was derived from this max_tokens, not from the reserve — they differ
+            // whenever her need is measured below the reserve — so the classifier at the
+            // seam must read the same number, or a real budget-hit reads as Landed.
+            // A rebuilt request with no max_tokens keeps the last one sent (the read of the
+            // previous value is also what keeps the initializer honest).
+            sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, receipts)
                 .await?;
@@ -4631,10 +4640,33 @@ impl LlmDeliberationFaculty {
             // think, nothing was said and the need ring does not take it — a thinking
             // model fills any allowance, and doubling that walked her to the deadline
             // (`EmissionStop`). The cut itself is the fault paths' business below.
-            let stop = super::working_set::EmissionStop::classify(
+            // A deliberation's think that stopped AT its budget is censored, not measured
+            // (Cormac on #4409): the classifier records it at the allowance so the need ring
+            // never learns the budget and contracts the next allowance geometrically.
+            let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
+            let reasoning_budget = match self.turn_kind(ws) {
+                TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
+                    u64::from(allowance),
+                )
+                .map(|b| b as u32),
+                TurnKind::Act => None,
+            };
+            let stop = super::working_set::EmissionStop::classify_with_budget(
                 matches!(resp.finish_reason, FinishReason::Length),
                 answer_tokens,
+                reasoning_tokens,
+                reasoning_budget,
+                allowance,
             );
+            if let super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
+                crate::probe!(
+                    class = "delib.emission.think_budget_hit",
+                    persona = %self.persona_name,
+                    reasoning_tokens,
+                    allowance,
+                    "the think stopped at its budget — censored, recorded at the allowance, never taught to the need ring"
+                );
+            }
             if stop == super::working_set::EmissionStop::CutMidThought {
                 crate::probe!(
                     class = "delib.emission.cut_mid_thought",
