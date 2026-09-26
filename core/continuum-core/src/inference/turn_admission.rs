@@ -251,6 +251,17 @@ async fn admit(
         // Remove attribution BEFORE the await so cancellation cannot leave the
         // next activity treating transient KV as its own warm tail.
         admission.borrow_slot_for_transient(pool, 0, client, root).await?;
+    } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
+        // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
+        // like every other slot user. Before this, every non-turn call wrote the
+        // scratch KV with no owner, so a holder of that slot (the deploy self-check's
+        // cache probe, #4392) was overwritten between its own requests and read a warm
+        // restore as cold: the M5 self-check reported `no_reuse` on 2026-09-26 03:01Z
+        // while the same round trip on an owned slot measured 658/662 reused. The
+        // server already runs one request per slot at a time, so this moves the queue
+        // into the owner, where it is visible, rather than adding any.
+        admission._slot_permit = Some(pool.acquire_slot(scratch).await?);
+        admission._endpoint.check_ready()?;
     }
 
     Ok(admission)
@@ -600,6 +611,27 @@ mod tests {
         assert_ne!(fp(&a), fp(&new_task), "a new task is progress");
         assert_eq!(fp(&a), fp(&a.clone()), "no work, no change");
         assert_eq!(fp(&json!({"error": "no slots"})), None, "not the slots array");
+    }
+
+    #[tokio::test]
+    async fn anonymous_traffic_waits_for_the_scratch_slot_its_holder_owns() {
+        // what this catches (M5, 2026-09-26 03:01Z): non-turn traffic wrote the scratch
+        // slot without its permit, so the cache probe holding that slot was overwritten
+        // between requests and the self-check held the fleet on a false `no_reuse`.
+        let pool = Arc::new(KvSlotPool::new("test://scratch-owner", 3)); // index 2 is scratch
+        let scratch = pool.scratch_slot().expect("three slots reserve a scratch slot"); // test: pool contract
+        let held = pool.acquire_slot(scratch).await.expect("test: the probe holds scratch");
+        let sem = Arc::new(Semaphore::new(4));
+        let client = reqwest::Client::new();
+        let waiting = admit_turn(&sem, None, Some(pool.clone()), &client, "test://scratch-owner", 0);
+        tokio::pin!(waiting);
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "anonymous traffic entered the scratch slot while its holder owned it"
+        );
+        drop(held);
+        let admitted = waiting.await.expect("test: admitted once the holder releases");
+        assert_eq!(admitted.scratch_slot(), Some(scratch));
     }
 
     // what this catches: the restore-into-busy-slot bug at its source — while a turn
