@@ -1424,21 +1424,70 @@ impl PersonaWorkspaceRegistry {
                 );
             }
         }
-        residents
-            .into_iter()
-            .map(|(id, memory)| {
+        let save_one = |id: Uuid, memory: Arc<WorkingMemory>| {
+            let started = std::time::Instant::now();
+            let result = save_volatile(id, reason, staged_deadline, &memory);
+            crate::probe!(
+                class = "persona.volatile.checkpoint",
+                persona_id = %id,
+                outcome = if result.is_ok() { "ok" } else { "error" },
+                ms = started.elapsed().as_millis() as u64,
+                "resident volatile checkpoint completed"
+            );
+            (id, result)
+        };
+        match reason {
+            // A periodic checkpoint reads no tree and writes one small file per resident:
+            // sequential on the checkpoint worker, no threads per tick.
+            SaveReason::Periodic => residents
+                .into_iter()
+                .map(|(id, memory)| save_one(id, memory))
+                .collect(),
+            // THE SEAM RUNS EVERY RESIDENT AT ONCE (card 1e4d8b3b). Each resident's record
+            // reads her tree (two bounded git children); sequential under one shared
+            // deadline meant the first cold `git status` spent the budget and every later
+            // resident wrote `Unmeasured` or, past the save phase, only a Periodic record
+            // (M5, first deploy seam 2026-09-26 16:37Z: five Deploy records, two Periodic).
+            // Fork/join like the runtime's own save phase: the seam's wall time is the
+            // slowest resident, never the sum, and one deadline is enough for all.
+            SaveReason::Seam => {
                 let started = std::time::Instant::now();
-                let result = save_volatile(id, reason, staged_deadline, &memory);
+                let count = residents.len();
+                let save_one = &save_one;
+                let results: Vec<(Uuid, std::io::Result<()>)> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = residents
+                        .into_iter()
+                        .map(|(id, memory)| (id, scope.spawn(move || save_one(id, memory))))
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|(id, handle)| {
+                            handle.join().unwrap_or_else(|_| {
+                                // unwrap_or_else: a resident's save thread panicked — her
+                                // record is the one thing lost, named; the seam goes on.
+                                (
+                                    id,
+                                    Err(std::io::Error::other(
+                                        "the resident's seam checkpoint thread panicked",
+                                    )),
+                                )
+                            })
+                        })
+                        .collect()
+                });
                 crate::probe!(
-                    class = "persona.volatile.checkpoint",
-                    persona_id = %id,
-                    outcome = if result.is_ok() { "ok" } else { "error" },
+                    class = "persona.volatile.seam",
+                    residents = count,
+                    failed = results.iter().filter(|(_, r)| r.is_err()).count(),
                     ms = started.elapsed().as_millis() as u64,
-                    "resident volatile checkpoint completed"
+                    staged_budget_ms =
+                        crate::cognition::handoff::STAGED_READ_BOUND.as_millis() as u64,
+                    "every resident's seam record was written concurrently under one \
+                     phase-derived deadline"
                 );
-                (id, result)
-            })
-            .collect()
+                results
+            }
+        }
     }
 
     /// Fork an EPHEMERAL measurement cycle for `cognition/eval`: a faithful copy
@@ -2202,6 +2251,61 @@ mod tests {
             resumed.snapshot().last_action,
             memory.snapshot().last_action
         );
+    }
+
+    // what this catches (card 1e4d8b3b): at a seam, EVERY resident's record measures HER
+    // tree — including a file she just created, which is untracked until staged (the
+    // "resume the edit, do not re-derive it" case the record exists for; a `-uno` status
+    // would drop it, Cormac on #4407). The first cut spent one 400 ms budget sequentially,
+    // so on the M5's first deploy seam only the first resident measured and the rest wrote
+    // Unmeasured or Periodic-only. Three residents at three cold roots, one seam.
+    #[tokio::test]
+    async fn every_resident_at_a_seam_measures_her_own_tree_including_untracked_files() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        let mut residents = Vec::new();
+        for i in 0..3 {
+            let persona = Uuid::new_v4();
+            registry
+                .register_from_cfg(cfg_for(persona))
+                .expect("test: resident registers");
+            let root = home.path().join(format!("work-{i}"));
+            std::fs::create_dir_all(&root).unwrap();
+            let init = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&root)
+                .status()
+                .expect("git is on PATH");
+            assert!(init.success());
+            std::fs::write(root.join(format!("new_{i}.py")), "x = 1\n").unwrap();
+            note_acting_root(persona, Some(root.clone()));
+            residents.push((persona, root, format!("new_{i}.py")));
+        }
+        let outcomes = registry.flush_volatile_all();
+        assert_eq!(outcomes.len(), 3);
+        for (id, r) in &outcomes {
+            assert!(r.is_ok(), "{id}: {r:?}");
+        }
+        for (persona, root, new_file) in &residents {
+            let saved = load_volatile(*persona).unwrap().expect("a seam record");
+            let handoff = saved
+                .wm
+                .handoff
+                .expect("she stands at a root, so she hands off");
+            match handoff.staged.expect("rooted = measured or named") {
+                crate::cognition::handoff::Staged::Measured {
+                    root: r,
+                    dirty_paths,
+                    ..
+                } => {
+                    assert_eq!(r, root.to_string_lossy());
+                    assert_eq!(dirty_paths, vec![new_file.clone()], "untracked file kept");
+                }
+                other => panic!("{persona}: {other:?}"),
+            }
+            note_acting_root(*persona, None);
+        }
     }
 
     // What this catches (#3918): replaced cycles and BOTH real eval fork paths

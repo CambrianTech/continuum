@@ -204,13 +204,22 @@ pub fn torn_by_for(reason: SaveReason, root: Option<&std::path::Path>, now_ms: u
     }
 }
 
-/// ONE budget for every resident's staged read at a seam, not one per git call: the
-/// runtime's save phase is 2 s for every resident together, and 400 ms × 2 calls × N
-/// residents would overrun it on three slow trees (Cormac on #4407). `write_volatile_all`
-/// sets the deadline once; residents past it say `Unmeasured`, never wait.
-// derived-or-floor: a floor; `git status` on a warm checkout is tens of ms, and the save
-// phase (runtime.rs shutdown_within, 2 s per phase) is shared by every resident.
-pub const STAGED_READ_BOUND: std::time::Duration = std::time::Duration::from_millis(400);
+/// ONE deadline for every resident's staged read at a seam, derived from the phase that
+/// contains it: the runtime's save phase ([`crate::runtime::runtime::SHUTDOWN_PHASE`], 2 s)
+/// is shared by every resident, and the seam writes them IN PARALLEL
+/// (`write_volatile_all`), so each resident's two git reads have this much of the phase
+/// and the rest is left for her snapshot, serialization and fsync. A resident whose tree
+/// does not answer in time says `Unmeasured`, named, and never waits.
+///
+/// The first cut (#4407) was a 400 ms budget spent SEQUENTIALLY across residents: the first
+/// cold `git status` on the M5 ate it and every later resident wrote `Unmeasured` (card
+/// 1e4d8b3b, first deploy seam 2026-09-26 16:37Z). A shared budget over a sequential loop
+/// is the worst of both (Cormac): parallel under one phase-derived deadline is the shape.
+// derived-or-floor: derived — three fifths of the save phase, the remaining two fifths
+// are the resident's own write; every resident runs concurrently so N does not divide it.
+pub const STAGED_READ_BOUND: std::time::Duration = std::time::Duration::from_millis(
+    crate::runtime::runtime::SHUTDOWN_PHASE.as_millis() as u64 * 3 / 5,
+);
 
 /// Compose the record at the seam from the seed plus what only the seam knows.
 /// `None` when she holds nothing and stands nowhere: a citizen at home has nothing to hand.
