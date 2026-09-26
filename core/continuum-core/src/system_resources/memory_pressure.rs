@@ -974,7 +974,12 @@ impl MemoryPressureMonitor {
                 }
                 if anomaly_scan_due(level, st.anomaly_scanned_at, since_start) {
                     st.anomaly_scanned_at = Some(since_start);
-                    st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+                    // `remove_dead_processes = true`: sysinfo keeps an exited process in
+                    // its table until told to drop it, so a scan that refreshed with `false`
+                    // named pid 48653 (a rustc stopped at ~17:15Z) at 18:05Z with its last
+                    // RSS — a sensor reading with no age, and two peers chased it. A dead
+                    // process holds nothing; the table must say so before the scan reads it.
+                    st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
                     let floor = total / 4;
                     let mut named = 0u32;
                     for (pid, proc) in st.sys.processes() {
