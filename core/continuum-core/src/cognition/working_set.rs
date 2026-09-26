@@ -1306,14 +1306,17 @@ mod tests {
             allowance = next;
         }
         assert!(allowance >= first, "over the whole loop: {first} → {allowance}");
-        // The control: the same sequence recorded verbatim contracts.
+        // The control: the same sequence recorded verbatim contracts. The ring's p90
+        // lags a whole ring (the second-largest of the last NEED_SAMPLES), so each 15/16
+        // step shows only per ring turnover; ten turnovers make the geometric shrink
+        // toward 20 × answer unmistakable.
         let reg2 = WorkingSetRegistry::default();
         for t in 0..MIN_NEED_TURNS as u64 {
             reg2.record_emission_in_memory(p(5), 6_448, 6_000, EmissionStop::Landed, t);
         }
         let mut a2 = reg2.need_of(p(5)).expect("need measured").total();
         let start2 = a2;
-        for t in 0..(NEED_SAMPLES as u64 + 4) {
+        for t in 0..(NEED_SAMPLES as u64 * 10) {
             let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
             reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, 300), 200 + t);
             a2 = reg2.need_of(p(5)).expect("need measured").total();
