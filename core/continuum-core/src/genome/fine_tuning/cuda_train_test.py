@@ -71,6 +71,35 @@ class CudaTrainingTests(unittest.TestCase):
             self.assertEqual((state["step"], state["nextStart"]), (8, 24))
             self.assertEqual(adapter.saved, ["step-4", "step-8"])
 
+    def test_the_admitted_window_only_ever_sheds(self):
+        """The window is the lever of last resort once micro-batching floors at one.
+
+        Measured on the 5090 (2026-09-25): a 27B QLoRA plan came to 30.80 GiB of a
+        31.84 GiB card with microBatchSize already 1 — the corrected logits term
+        exposed that truth rather than causing it. Shedding the window is what keeps
+        such a job runnable, and it must never shed below what still teaches nor grow
+        past what was asked for.
+        """
+        floor = cuda_train.MINIMUM_TRAIN_TOKENS
+        # Fits: the requested window stands, untouched.
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, 10_000), 3348)
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, 3348), 3348)
+        # Does not fit: shed to what the budget affords.
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, 2000), 2000)
+        # Below what still carries a write-error-fix trajectory there is NO window: the
+        # reviewer's point on #4396 — shedding to a 512 floor the budget cannot hold is
+        # an OOM or a wait that never ends. The plan reports unaffordable instead.
+        self.assertIsNone(cuda_train.admitted_window(3348, 3348, 8))
+        self.assertIsNone(cuda_train.admitted_window(3348, 3348, -1),
+                          "a budget smaller than the weights is a refusal with numbers, not a negative window")
+        self.assertIsNone(cuda_train.admitted_window(3348, 3348, floor - 1))
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, floor), floor)
+        # Never ABOVE the requested window: a 32-token fixture that fits reports 32, not
+        # the 512 floor; one that does not fit is unaffordable like any other.
+        self.assertEqual(cuda_train.admitted_window(32, 32, 32), 32)
+        self.assertEqual(cuda_train.admitted_window(32, 32, 10_000), 32)
+        self.assertIsNone(cuda_train.admitted_window(32, 32, 0))
+
     @unittest.skipUnless(os.environ.get("CONTINUUM_TEST_CUDA") == "1", "real CUDA test opt-in")
     def test_real_qlora_trains_adapter_without_changing_base(self):
         import torch

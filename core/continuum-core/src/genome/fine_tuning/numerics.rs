@@ -181,7 +181,7 @@ mod tests {
     fn the_fleets_real_pair_matches_and_the_cold_quant_beside_it_does_not() {
         let fit = WeightNumerics::from_trainer_label("nf4-double").expect("trainer label");
         let served = WeightNumerics::from_gguf_path(Path::new(
-            r"D:\continuum-cold\huggingface\hub\models--ggml-org--Qwen3.8-27B-GGUF\snapshots\0669b986\Qwen3.8-27B-Q4_K_M.gguf",
+            "models--ggml-org--Qwen3.8-27B-GGUF/snapshots/0669b986/Qwen3.8-27B-Q4_K_M.gguf",
         ))
         .expect("Q4_K_M");
         assert_eq!(served.label, "Q4_K_M");

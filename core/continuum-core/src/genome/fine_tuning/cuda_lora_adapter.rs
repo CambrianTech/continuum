@@ -41,7 +41,27 @@ struct CudaSpec {
 struct CudaPlan {
     memory_bytes: u64,
     micro_batch_size: u32,
+    /// The token window the planner could AFFORD, which may be shorter than the one
+    /// requested: `micro_batch_size` floors at one example, so past that the window is
+    /// the only lever left (see `cuda_train.py`'s `MINIMUM_TRAIN_TOKENS`). Absent from
+    /// an older planner's output, in which case the requested window stands.
+    #[serde(default)]
+    sequence_length: Option<u32>,
+    /// Present when the budget cannot hold even `MINIMUM_TRAIN_TOKENS` of one example:
+    /// the planner does not shed to a floor the card cannot hold (an OOM, or a wait for
+    /// capacity that never comes) — it reports the numbers and the owner refuses with
+    /// them, the same honest refusal as the numerics check.
+    #[serde(default)]
+    unaffordable: Option<UnaffordableWindow>,
     revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnaffordableWindow {
+    affordable_tokens: u64,
+    minimum_tokens: u64,
+    requested_tokens: u64,
 }
 
 fn failure(error: impl std::fmt::Display) -> FineTuningError {
@@ -161,7 +181,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             );
             if let numerics::NumericsMatch::Incompatible { bits_apart } = verdict {
                 return Err(failure(format!(
-                    "refusing to train: this LoRA would be fit against {} and served against {} —                      {bits_apart:.2} bits per weight apart, a whole quantisation tier. The adapter                      would learn to correct base error it never meets, and the adoption gate would                      report that as absent lift rather than as this mismatch. Serve a quant within                      {} bits of the trainer's, or train against the served one.",
+ "refusing to train: this LoRA would be fit against {} and served against {} — {bits_apart:.2} bits per weight apart, a whole quantisation tier. The adapter would learn to correct base error it never meets, and the adoption gate would report that as absent lift rather than as this mismatch. Serve a quant within {} bits of the trainer's, or train against the served one.",
                     fit.as_ref().map_or("unmeasured".into(), |n| format!("{} ({:.2} bpw)", n.label, n.bits_per_weight)),
                     served.as_ref().map_or("unmeasured".into(), |n| format!("{} ({:.2} bpw)", n.label, n.bits_per_weight)),
                     numerics::REFUSAL_BITS,
@@ -213,6 +233,26 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             if plan.memory_bytes == 0 {
                 return Err(failure("CUDA planner returned an empty memory requirement"));
             }
+            if let Some(window) = plan.unaffordable {
+                crate::probe!(
+                    class = "genome.train.unaffordable",
+                    job = %id,
+                    requested_tokens = window.requested_tokens,
+                    affordable_tokens = window.affordable_tokens,
+                    minimum_tokens = window.minimum_tokens,
+                    floor_memory_bytes = plan.memory_bytes,
+                    available_bytes = spec.available_bytes,
+                    "the governed budget holds fewer tokens of one example than the shortest window worth training — refused with the numbers, not queued"
+                );
+                return Err(failure(format!(
+                    "refusing to train: the governed budget ({} B available) holds {} tokens of one                      example, under the {}-token floor a write-error-fix trajectory needs (requested                      {}; the floor itself would ask {} B). Free VRAM — unload a serving lane or wait                      for its period — or shorten the recipe's window; this plan would OOM or wait forever.",
+                    spec.available_bytes,
+                    window.affordable_tokens,
+                    window.minimum_tokens,
+                    window.requested_tokens,
+                    plan.memory_bytes,
+                )));
+            }
             // THE VRAM RECEIPT BEFORE STEP 0 (readiness item 1): what the plan asks, what the
             // governor exposes right now, and the headroom between them — a number, not a
             // hope, on the row the room reads before the run is admitted.
@@ -238,6 +278,24 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             .map_err(FineTuningError::Transient)?;
             spec.memory_bytes = plan.memory_bytes;
             spec.micro_batch_size = plan.micro_batch_size;
+            // The admitted window goes BACK to the trainer, so the chunker produces
+            // exactly what the governor paid for. Without this the planner would fit a
+            // shorter window and the run would then chunk at the requested one — an
+            // admission for one geometry spent on another.
+            if let (Some(admitted), Some(schedule)) =
+                (plan.sequence_length, spec.request.schedule.as_mut())
+            {
+                if admitted < schedule.sequence_length {
+                    crate::probe!(
+                        class = "genome.train.window_shed",
+                        requested = schedule.sequence_length as u64,
+                        admitted = admitted as u64,
+                        memory_bytes = plan.memory_bytes,
+                        "a single example did not fit the governed budget — the token window was shed to what it affords, never the run"
+                    );
+                    schedule.sequence_length = admitted;
+                }
+            }
             spec.revision = plan.revision;
             tokio::fs::write(&config, serde_json::to_vec(&spec).map_err(failure)?) // Disk request.json carries the admitted plan to the Python trainer process.
                 .await
@@ -308,5 +366,40 @@ impl FineTuningAdapter for CudaLoraFineTuner {
 impl Default for CudaLoraFineTuner {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (reviewer on #4396): a plan whose budget holds fewer tokens of
+    // one example than MINIMUM_TRAIN_TOKENS is REFUSED with the numbers, never admitted
+    // at a window the card cannot hold. The contract is the planner's `unaffordable`
+    // object (camelCase) read here; an older planner's output, with neither field, still
+    // deserializes as "the requested window stands".
+    #[test]
+    fn an_unaffordable_plan_carries_its_numbers_and_an_older_plan_still_reads() {
+        let plan: CudaPlan = serde_json::from_str(
+            r#"{"memoryBytes": 30800000000, "microBatchSize": 1, "sequenceLength": null,
+                "unaffordable": {"affordableTokens": 96, "minimumTokens": 512, "requestedTokens": 3348},
+                "revision": null}"#,
+        )
+        .expect("planner output");
+        let window = plan.unaffordable.expect("the marker");
+        assert_eq!(
+            (window.affordable_tokens, window.minimum_tokens, window.requested_tokens),
+            (96, 512, 3348)
+        );
+        assert_eq!(plan.sequence_length, None, "no window is admitted alongside a refusal");
+        let shed: CudaPlan = serde_json::from_str(
+            r#"{"memoryBytes": 1, "microBatchSize": 1, "sequenceLength": 2000, "unaffordable": null, "revision": null}"#,
+        )
+        .expect("shed plan");
+        assert!(shed.unaffordable.is_none());
+        assert_eq!(shed.sequence_length, Some(2000));
+        let older: CudaPlan =
+            serde_json::from_str(r#"{"memoryBytes": 1, "microBatchSize": 2, "revision": "abc"}"#).expect("older planner");
+        assert!(older.unaffordable.is_none() && older.sequence_length.is_none());
     }
 }
