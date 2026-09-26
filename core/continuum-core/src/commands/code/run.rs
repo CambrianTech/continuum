@@ -330,8 +330,11 @@ async fn run_python(
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: python wait failed: {e}")))?;
     let duration_ms = started.elapsed().as_millis() as u64;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // A Windows Python writes CRLF to a pipe; the rows she reads back are lines, not
+    // line endings, so the result carries one shape on every host (BigMama's note on
+    // #4427: her stdout rows carried a trailing `\r`).
+    let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let stderr = String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
     match out.status {
         // Same honest shape as the Rust path: a timeout is a RESULT (she reads it
         // and adjusts), never a hidden kill — and it carries the partial output.
@@ -723,6 +726,7 @@ mod tests {
         .expect("resolved Python");
         assert!(out.ok, "exit {:?}, stderr: {}", out.exit_code, out.stderr);
         assert!(out.stdout.contains("⚙ code/read — ✓"), "stdout: {:?}", out.stdout);
+        assert!(!out.stdout.contains('\r'), "a row is a line on every host: {:?}", out.stdout);
     }
 
     // what this catches: a timed-out run losing everything it printed before the kill
