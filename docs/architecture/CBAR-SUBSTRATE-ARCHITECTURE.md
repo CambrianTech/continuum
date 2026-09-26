@@ -503,6 +503,109 @@ The genuinely missing pieces, each cross-linked to its lane in
 | 7 | Sequential consumer migration: persona chat → embeddings → memory consolidation → media/WebRTC → render/avatar output. Each consumer move is its own PR and must show VDD evidence that the post-move path is at least as fast as the pre-move path and emits the Standard VDD Record.                                                                                                                  | Lane D (sequencing); Lanes B/C/E (per-consumer support)|
 | 8 | Pre-broker concurrency-hack deletion. Each module today that picks a worker count from `~/.continuum/config.env` or from system memory at startup (current concrete example: `core/inference-grpc/src/main.rs::get_num_workers()`) is a violation of the "we do not hard code" rule and must be deleted in favor of `PressureBroker` leases.                                                       | Lane E                                                 |
 
+## The Declared Dataflow Graph (gap #2, the missing half)
+
+**Joel, 2026-09-25:** *"That's why I liked CBAR. Every component basically declared what
+events it depended on (subscribed to) and emitted, then dependencies and flow of
+information was in all directions and parallelized automatically."* And: *"Rust is all
+about encoded predictable behavior."*
+
+### Why it matters now
+
+The recurring defect in this codebase is not bad logic inside a component. It is a
+wire that exists on one side only. The same day this section was written, three of them:
+the decode knee was measured but the allocator's lane path never read it; the resident
+checkpoint primitive was built but only one caller used it; the teacher batch was built
+but the curriculum path still bypassed it. Earlier ones are in the project memory ("the
+measurement already exists and nothing consumes it", "the learning flywheel was dead
+because a doc comment said boot wires it"). A compiler cannot see these. A declared graph
+can.
+
+### What exists
+
+Consumption is half-declared. `ModuleConfig::event_subscriptions` (globs on the message
+bus) and `ServiceModule::artifact_subscriptions` (`ArtifactSelector`s) name what a module
+wants, and the runtime auto-wires delivery. Artifact delivery rides the message bus: a
+published event name IS the artifact key. Production is not declared anywhere. Measured
+on canary 2026-09-25:
+
+| Channel | Sites | Declared? |
+|---|---|---|
+| Message-bus publishes (`publish`, `publish_async_only`) | ~91 | no emitter declaration |
+| Bus event subscriptions (`event_subscriptions`) | 2 of 94 module configs | yes |
+| Artifact subscriptions (`artifact_subscriptions`) | 39 | yes |
+| `watch` channels (snapshots passed between tasks) | 69 | no |
+| `mpsc` / `broadcast` channels | ~60 | no |
+
+### The contract
+
+1. **Every module declares what it produces.** `ServiceModule::emissions()` returns the
+   `ArtifactSelector`s (exact keys or prefixes) it publishes. It is the mirror of
+   `artifact_subscriptions()` and uses the same matcher, so there is one vocabulary for
+   both directions.
+2. **The runtime builds the graph at registration** from every module's emissions and
+   subscriptions (bus globs + artifact selectors), and reports it once at boot as a probe
+   (`runtime.event_graph`): nodes, edges, and every orphan.
+3. **Orphans are named, never tolerated silently:**
+   - a subscription no module declares it produces (a consumer waiting for nothing);
+   - an emission no module subscribes to (a measurement nobody reads), unless it is
+     declared as leaving the process (a positron ViewState, the airc wire, a client).
+     That external sink is itself a declaration, not an exception.
+4. **Declarations are checked against behavior.** The bus records each distinct event
+   name actually published and reports one `runtime.event_graph.undeclared` probe for a
+   name no module declared. Without that check a declaration drifts like a doc comment.
+5. **A test walks the graph.** It is built from the registered module set and fails on
+   an orphan that has no named external sink. That is the build-time form of "the
+   defect lives between components."
+6. **The scaffold generator emits both halves.** The generator template already writes
+   `event_subscriptions`; it writes `emissions()` too, so a new module is born declared.
+
+`watch` and `mpsc` channels are typed Rust values passed at construction, not named
+events. They are wired by the type system, not by name, so they are out of scope for the
+name graph. The later step is to record them as edges when the runtime constructs them.
+
+### Time: every artifact carries two stamps, and time is passed in
+
+**Joel, 2026-09-25:** *"Everything is timestamped and tied back historically into the
+substrate ledgers per concern. Shift the result forward or backward in time from
+synchronization performed by fast optical flow and later SLAM sensor fusion. We have the
+same needs in our minds and systems."* And: *"Rust makes it work deterministically."*
+
+- **Two stamps per artifact.** The first is when the source it describes was captured
+  (the frame, the transcript line, the decode sample). The second is when the result was
+  computed. Independent algorithms finish at different times about the same moment. A
+  consumer fusing them aligns on the source stamp and uses the gap to shift a late result
+  to the present. That is how a slow detector's box is re-anchored onto the current frame
+  by optical flow, and later by SLAM. The same holds for a mind: a recall, a perception
+  fact or a lane measurement is about a moment already past when it is read.
+- **Ledgers per concern.** Stamped results land in their concern's ledger (the
+  substrate's capture and replay path), so history, replay and later refinement come
+  with the stamps rather than by extra plumbing.
+- **Determinism is the ownership model plus one discipline.** Rust makes data races
+  and unhandled states unrepresentable (ownership, `Send`/`Sync`, exhaustive `match`,
+  no unwrap). Replay determinism additionally needs time and inputs passed IN, never read
+  from the wall clock inside the logic. `decode_knee::knee(floor, now_ms)` is the shape.
+  A recorded run then reproduces exactly, and a new algorithm stacked into the graph can
+  be tried against yesterday's recorded inputs before it touches a live mind.
+- **Speed is measured, not hoped for.** Declarations are static and built once at boot.
+  The undeclared-name check is one set insert per NEW name, not per event. Producers with
+  no live consumer can pause, so the net should be less work. Each module moved onto the
+  graph shows before-and-after VDD evidence that it is at least as fast (this doc's
+  consumer-migration rule).
+
+### Slices
+
+1. `emissions()` on the trait (default empty), the pure graph builder and orphan
+   finder, the boot probe, and unit tests on the builder. No behavior change.
+2. The bus records published names and reports undeclared ones. Declare emissions on
+   the modules that publish, starting with the ones behind today's three gaps.
+3. The graph test in CI, with the external-sink declarations. It fails on new orphans
+   and carries an explicit baseline for existing ones that shrinks over time (the
+   ratchet shape the source-hygiene gates already use).
+4. The generator emits `emissions()`. The first module built fully this way is the
+   event-driven deploy tracker (`DeployTrackerModule`), which replaces the 5-minute
+   bash poll.
+
 ## Acceptance Criteria For Substrate-Done
 
 CBAR-like runtime work is not accepted by browser smoke alone. The substrate
