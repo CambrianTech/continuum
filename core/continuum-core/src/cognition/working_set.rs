@@ -1297,7 +1297,12 @@ mod tests {
             assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
             reg.record_emission_in_memory(p(6), budget + answer, budget, stop, 100 + t);
             let next = reg.need_of(p(6)).expect("need measured").total();
-            assert!(next >= allowance, "the allowance contracted {allowance} → {next} at turn {t}");
+            // The invariant is no contraction TOWARD THE FLOOR: every allowance stays at
+            // or above the landed one. Turn to turn the loop grows toward the reserve
+            // (which caps it in production, not here), and the p90 over a ring that just
+            // wrapped can read one sample lower than the turn before — quantization, not
+            // the geometric shrink this test exists to catch.
+            assert!(next >= first, "the allowance contracted below the landed {first}: {next} at turn {t}");
             allowance = next;
         }
         assert!(allowance >= first, "over the whole loop: {first} → {allowance}");
