@@ -71,6 +71,62 @@ class CudaTrainingTests(unittest.TestCase):
             self.assertEqual((state["step"], state["nextStart"]), (8, 24))
             self.assertEqual(adapter.saved, ["step-4", "step-8"])
 
+    def test_the_admitted_window_only_ever_sheds(self):
+        """The window is the lever of last resort once micro-batching floors at one.
+
+        Measured on the 5090 (2026-09-25): a 27B QLoRA plan came to 30.80 GiB of a
+        31.84 GiB card with microBatchSize already 1 — the corrected logits term
+        exposed that truth rather than causing it. Shedding the window is what keeps
+        such a job runnable, and it must never shed below what still teaches nor grow
+        past what was asked for.
+        """
+        floor = cuda_train.MINIMUM_TRAIN_TOKENS
+        # Fits: the requested window stands, untouched.
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, 10_000), 3348)
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, 3348), 3348)
+        # Does not fit: shed to what the budget affords.
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, 2000), 2000)
+        # Below what still carries a write-error-fix trajectory there is NO window: the
+        # reviewer's point on #4396 — shedding to a 512 floor the budget cannot hold is
+        # an OOM or a wait that never ends. The plan reports unaffordable instead.
+        self.assertIsNone(cuda_train.admitted_window(3348, 3348, 8))
+        self.assertIsNone(cuda_train.admitted_window(3348, 3348, -1),
+                          "a budget smaller than the weights is a refusal with numbers, not a negative window")
+        self.assertIsNone(cuda_train.admitted_window(3348, 3348, floor - 1))
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, floor), floor)
+        # Never ABOVE the requested window: a 32-token fixture that fits reports 32, not
+        # the 512 floor; one that does not fit is unaffordable like any other.
+        self.assertEqual(cuda_train.admitted_window(32, 32, 32), 32)
+        self.assertEqual(cuda_train.admitted_window(32, 32, 10_000), 32)
+        self.assertIsNone(cuda_train.admitted_window(32, 32, 0))
+
+    def test_the_window_is_decided_against_grantable_not_free_now(self):
+        """The 5090 tonight (Cormac + Fable on #4396, 2026-09-26): her serving lane up,
+        the governor exposes ~2.15 GB free-now and ~31.7 GB grantable (serving's lane
+        added back). The 27B QLoRA plan is 28.48 GB at the full 3348-token window.
+        Against free-now the window is unaffordable and every dispatch while she
+        serves is refused; against grantable it is the full window and the job PARKS
+        for the period, which is the held queue the run relies on."""
+        gib = 1024 ** 3
+        total, free_now, grantable = int(31.84 * gib), int(2.15 * 1e9), int(31.7 * 1e9)
+        slab = 20 * 1024 * 1024
+        # Qwen3.8-27B-class geometry: 64 layers, hidden 5120, vocab 151936; 24.15 GB of
+        # weights at nf4-double, ~0.5 GB of optimizer state for the LoRA.
+        weights, optimizer = int(24.15e9), int(0.5e9)
+        activation_per_token = 5120 * (64 + 1) * 4
+        logits_chunk = min(3348, cuda_train.LOGITS_CHUNK_TOKENS) * 151936 * cuda_train.LOGITS_BYTES_PER_TOKEN
+        against_free = cuda_train.affordable_tokens(cuda_train.planning_budget(total, free_now),
+                                                    weights, optimizer, logits_chunk, activation_per_token, slab)
+        self.assertLess(against_free, 0, "free-now is smaller than the weights: a refusal, if it were the budget")
+        self.assertIsNone(cuda_train.admitted_window(3348, 3348, against_free))
+        against_grantable = cuda_train.affordable_tokens(cuda_train.planning_budget(total, grantable),
+                                                         weights, optimizer, logits_chunk, activation_per_token, slab)
+        self.assertGreaterEqual(against_grantable, 3348, f"the card empty holds the whole window ({against_grantable})")
+        self.assertEqual(cuda_train.admitted_window(3348, 3348, against_grantable), 3348)
+        # The planning budget never exceeds the card, whatever the governor says.
+        self.assertEqual(cuda_train.planning_budget(total, 10 * total), total)
+        self.assertEqual(cuda_train.planning_budget(total, -5), 0)
+
     @unittest.skipUnless(os.environ.get("CONTINUUM_TEST_CUDA") == "1", "real CUDA test opt-in")
     def test_real_qlora_trains_adapter_without_changing_base(self):
         import torch

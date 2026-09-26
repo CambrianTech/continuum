@@ -99,6 +99,7 @@ pub mod recording_adapter;
 pub mod registry;
 pub mod safetensors_io;
 pub mod training_loop;
+pub mod numerics;
 pub mod types;
 
 pub use adapter::{

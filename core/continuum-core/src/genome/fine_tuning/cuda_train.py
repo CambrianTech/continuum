@@ -89,6 +89,48 @@ def chunked_causal_lm_loss(model, batch, chunk=LOGITS_CHUNK_TOKENS):
             total = total + checkpoint(chunk_loss, h, t, use_reentrant=False)
     return total / count
 
+# The shortest training window worth producing. Below this the chunker is splitting a
+# write-error-fix trajectory into fragments too small to carry the lesson, so a budget
+# that cannot afford this much is NOT shed to — it is reported as unaffordable, and the
+# owner refuses the job with the numbers (the same honest refusal as the numerics
+# check) instead of admitting a window the card cannot hold.
+MINIMUM_TRAIN_TOKENS = 512
+
+
+def planning_budget(total, grantable):
+    """PURE: the bytes the WINDOW is decided against — what the job can be GRANTED, never
+    what is free this instant. Cormac + Fable on #4396: with a serving lane up the
+    governor exposes ~2 GB free-now and ~31.7 GB grantable on the 5090; planning against
+    free-now refuses every dispatch made while she serves (the trigger's contract makes
+    that a refusal per tick), and a job that parks and admits after the unload would
+    still train at a window shed against memory serving had. Free-now is the admission
+    question and stays with the owner's wait; this is the planning question."""
+    return max(0, min(int(total), int(grantable)))
+
+
+def affordable_tokens(budget, weights, optimizer, logits_chunk, activation_per_token, slab):
+    """PURE: how many tokens of ONE example the budget holds once the weights, the
+    optimizer state, the loss's fixed logits chunk and the allocator slab are paid.
+    Negative when the budget is smaller than the weights: the caller refuses."""
+    return (budget - slab - weights - optimizer - logits_chunk) // max(1, activation_per_token)
+
+
+def admitted_window(sequence, tokens, affordable):
+    """PURE: the token window a governed budget admits, or None when it admits none.
+
+    The requested window when a single example fits it; otherwise the affordable one,
+    bounded ABOVE by what was requested. It only ever sheds: handing back a LONGER
+    window than the caller asked for whenever the budget is tiny would be a plan that
+    quietly grows its own geometry. Below MINIMUM_TRAIN_TOKENS it returns None — the
+    reviewer's point on #4396: a floor the budget cannot hold is an OOM or a wait that
+    never ends, not a plan. Pure, so the 5090's numbers are a test and not a story.
+    """
+    if tokens <= affordable:
+        return sequence
+    if affordable < MINIMUM_TRAIN_TOKENS:
+        return None
+    return min(sequence, affordable)
+
 
 def plan(spec, output):
     import torch
@@ -121,8 +163,10 @@ def plan(spec, output):
     # sequence window. The resource governor still atomically admits the plan.
     weights = math.ceil(linear * (0.5 + 4 / 64)) + (parameters - linear) * 4
     optimizer = lora_parameters * 16
-    free, _ = torch.cuda.mem_get_info()
-    available = min(free, spec.get("availableBytes", free))
+    free, total = torch.cuda.mem_get_info()
+    # The plan is what the job will use once ADMITTED, so it is sized against what the
+    # job can be granted (serving's lane added back), not what is free while she serves.
+    available = planning_budget(total, spec.get("grantableBytes", spec.get("availableBytes", free)))
     sequence = schedule["sequenceLength"]
     # The logits peak is one chunk of positions, not the whole window (see
     # `chunked_causal_lm_loss`); the activation term still scales with the window.
@@ -135,12 +179,40 @@ def plan(spec, output):
     # with no free memory, return a one-example plan for the owner to queue.
     micro = min(schedule["batchSize"], max(1, (logical_budget - weights - optimizer) // per_example))
     tokens = micro * sequence
+    # THE WINDOW IS THE LEVER OF LAST RESORT. `micro` floors at one example, so once a
+    # single example does not fit there is nothing left for the micro-batch to give and
+    # the plan would ask for more than the card has — on the 5090 (31.84 GiB) a 27B
+    # QLoRA at this sequence measured 30.80 GiB with microBatchSize already 1. Shedding
+    # the token window is what keeps the job runnable, the same trade the serving
+    # planner makes for lanes: shed the window, never crash, and SAY which window was
+    # chosen (the owner passes it back to this script, so the chunker produces exactly
+    # what was admitted). The chunked loss (#4425) makes the logits term a fixed chunk,
+    # not a per-token cost, so the affordable window is what remains for activations
+    # after the chunk is paid for. Below MINIMUM_TRAIN_TOKENS the plan is UNAFFORDABLE
+    # and says so with the numbers; the owner refuses rather than queueing forever.
+    unaffordable = None
+    if micro == 1 and weights + optimizer + per_example > logical_budget - slab:
+        activation_per_token = int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
+        logits_chunk = min(sequence, LOGITS_CHUNK_TOKENS) * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN
+        affordable = affordable_tokens(logical_budget, weights, optimizer, logits_chunk, activation_per_token, slab)
+        admitted = admitted_window(sequence, sequence, affordable)
+        if admitted is None:
+            unaffordable = {"affordableTokens": max(0, affordable), "minimumTokens": MINIMUM_TRAIN_TOKENS,
+                            "requestedTokens": sequence}
+            sequence = MINIMUM_TRAIN_TOKENS  # the numbers below are the floor's cost, for the refusal
+        else:
+            sequence = admitted
+        tokens = sequence
     activations = tokens * int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
     logits = micro * min(sequence, LOGITS_CHUNK_TOKENS) * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN
     terms = dict(weights=weights, optimizer=optimizer, activations=activations, logits=logits)
     terms["allocator"] = slab + (-sum(terms.values()) % slab)
     write_json(output, {"memoryBytes": sum(terms.values()), "terms": terms,
-                        "microBatchSize": micro, "effectiveBatchSize": schedule["batchSize"],
+                        "microBatchSize": micro,
+                        "sequenceLength": None if unaffordable else sequence,
+                        "unaffordable": unaffordable,
+                        "grantableBytes": available,
+                        "effectiveBatchSize": schedule["batchSize"],
                         "revision": getattr(config, "_commit_hash", None),
                         "parameters": parameters, "loraParameters": lora_parameters})
 

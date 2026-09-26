@@ -247,3 +247,7 @@ benchmarks/swe/.venv/
 # Ad-hoc instruments, not project tooling; regenerated on demand.
 .gymtool/
 models/whisper/
+
+# Python bytecode from running the trainer tests in place
+__pycache__/
+*.pyc
