@@ -118,6 +118,9 @@ use crate::resources::{
 /// value. Injectable so the consumer is testable without a populated registry.
 pub type FootprintFn = Arc<dyn Fn(&str, u32, u32, u32) -> u64 + Send + Sync>;
 
+/// `model_id → physical bytes the serving process holds right now`, when measured.
+pub type MeasuredFn = Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>;
+
 /// The `consumer_id` serving's leases carry. Matches the id the acquire-on-load
 /// half will mint leases under, so the authority's asks route back here.
 pub const SERVING_CONSUMER_ID: &str = "serving";
@@ -158,6 +161,16 @@ pub struct ServingConsumer {
     decayed_at_verified_ms: std::sync::atomic::AtomicU64,
     /// active model id + live shape → resident bytes (weights + per-lane KV).
     footprint_of: FootprintFn,
+    /// The LIVE serving process's physical residency (`anon_footprint_of(pid)`): what it
+    /// holds right now, `None` when no live serving process exists (card 628dc958). When
+    /// this consumer measures physically, the credit is exactly this figure and 0 in the
+    /// gap between engines — never an estimate, never a held prior — so the board's
+    /// physical `available` plus this credit does not move when the same bytes change
+    /// hands. The estimate path is for backends with no process to measure.
+    measured_of: MeasuredFn,
+    /// Whether `measured_of` is authoritative (a process-measuring backend). False only
+    /// for backends with nothing to measure, where the catalog estimate stands in.
+    measures_physically: bool,
     /// The row those bytes live in — `Vram` for a GPU-placed lane, `Ram` for a
     /// CPU-placed one (`serving_daemon::serving_pool_kind`). Handed in, never resolved
     /// here: the consumer reports and yields on the SAME row the plan budgets from, or
@@ -197,11 +210,32 @@ impl ServingConsumer {
             held_high_water: std::sync::atomic::AtomicU64::new(0),
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
+            measured_of: Arc::new(|_model: &str| {
+                crate::inference::lane_registry::live_lane()
+                    .and_then(|lane| crate::inference::lane_footprint::anon_footprint_of(lane.pid))
+            }),
+            measures_physically: true,
             pool_kind,
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             tier_down,
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// A process-measuring backend under test: the credit becomes exactly what `f`
+    /// says the live process holds, 0 when it says there is none.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_measured(mut self, f: MeasuredFn) -> Self {
+        self.measured_of = f;
+        self.measures_physically = true;
+        self
+    }
+
+    /// A backend with no process to measure (tests of the estimate path).
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn without_measurement(mut self) -> Self {
+        self.measures_physically = false;
+        self
     }
 
     /// Override how an inherited lane is found. Production keeps the default (the
@@ -259,10 +293,40 @@ impl ResourceConsumer for ServingConsumer {
 
         // WHAT THE PLAN SAYS is served right now. Zero while a lane is loading or
         // relaunching, because `active_ready` gates on `ready`.
-        let planned = match self.active_ready() {
+        // THE CREDIT IS WHAT THE PROCESS HOLDS, NOT WHAT THE CATALOG PREDICTED (card
+        // 628dc958, Cormac 2026-09-26: "credit only bytes still resident"). The
+        // replace-myself budget is the board's physical `available` plus this figure, so
+        // this figure must be physical too, or the sum is off by the estimate's error in
+        // one direction and by a whole engine across a relaunch. Measured on the M5
+        // 14:12-14:50Z: the catalog charged 47.7 GB for 6 × 35k (peak KV estimate plus the
+        // full cache grant) while the process held ~26 GB; the plan read ~20 GB it did
+        // not have, grew into swap (1.25 GB), and relaunched six times in 75 minutes.
+        // The estimate stands in only before a measurement exists in this life.
+        let active = self.active_ready();
+        if self.measures_physically {
+            // Physical, and only physical: the live process's residency, 0 in the gap.
+            // No estimate (the catalog charged 47.7 GB for a process holding ~26 GB) and
+            // no held prior (a prior credited while `available` has already risen by the
+            // same bytes is A + 2F, Cormac on #4410). The old engine still counts for as
+            // long as it is the live process; the successor counts from its first byte.
+            let model = active
+                .as_ref()
+                .map(|(id, _, _, _)| id.clone())
+                .or_else(|| self.serving.borrow().loading_model.clone())
+                .unwrap_or_default();
+            return match (self.measured_of)(&model) {
+                Some(bytes) if bytes > 0 => vec![ConsumerFootprint {
+                    kind: self.pool_kind,
+                    bytes,
+                    detail: format!("{model} measured resident (live serving process)"),
+                }],
+                _ => Vec::new(),
+            };
+        }
+        let planned = match &active {
             Some((id, window, lanes, grant_mib)) => Some((
-                (self.footprint_of)(&id, window, lanes, grant_mib),
-                format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
+                (self.footprint_of)(id, *window, *lanes, *grant_mib),
+                format!("{id} weights+KV estimated ({lanes} lane(s) × {window} ctx)"),
             )),
             None => None,
         };
@@ -327,8 +391,13 @@ impl ResourceConsumer for ServingConsumer {
         };
 
         // DECAY ON EVIDENCE, NEVER ON A TIMER.
+        // The high-water decays to the new engine's figure only once that engine has
+        // PUBLISHED its shape: the verify stamp lands a tick or two before active_model
+        // and the window do, and decaying on the stamp alone dropped the credit to the
+        // loading figure (weights at the floor window) for those ticks — 47.7 → 20.2 GB at
+        // an unchanged shape on the M5, 14:46:51Z.
         let consumed = self.decayed_at_verified_ms.load(Ordering::Relaxed);
-        if verified > consumed && planned.is_some() {
+        if verified > consumed && planned.is_some() && active.is_some() {
             self.decayed_at_verified_ms.store(verified, Ordering::Relaxed);
             self.held_high_water.store(planned_bytes, Ordering::Relaxed);
         } else if planned_bytes > self.held_high_water.load(Ordering::Relaxed) {
@@ -534,8 +603,66 @@ mod tests {
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
-            .with_inherited_lane(Arc::new(|| None));
+            .with_inherited_lane(Arc::new(|| None))
+            .without_measurement();
         (consumer, serving_tx)
+    }
+
+    fn bytes_of(c: &ServingConsumer) -> u64 {
+        c.footprint().iter().map(|f| f.bytes).sum()
+    }
+
+    // what this catches (card 628dc958): with a process to measure, the credit the
+    // replace-myself budget adds back is the LIVE process's physical residency, never the
+    // catalog's peak estimate — the M5 charged 47.7 GB for a process holding ~26 GB and
+    // planned into swap. Without a process (a backend with nothing to measure) the
+    // estimate still stands in.
+    #[test]
+    fn the_credit_is_the_live_process_residency_not_the_catalog_estimate() {
+        let estimate = 47_700_000_000u64;
+        let measured = 26_000_000_000u64;
+        let (consumer, _tx) = rig("qwen3.8-27b", estimate);
+        assert_eq!(bytes_of(&consumer), estimate, "nothing to measure: the estimate stands in");
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(measured)));
+        assert_eq!(bytes_of(&consumer), measured, "the process, not the prediction");
+        assert!(consumer.footprint()[0].detail.contains("measured resident"));
+    }
+
+    // what this catches (card 628dc958, Cormac): across a relaunch the credit is exactly
+    // what is resident at each moment — the old engine while it is the live process, 0 in
+    // the gap between engines, the successor from its first byte — so the board's physical
+    // `available` plus this credit is the same number before, during and after. A prior
+    // held while `available` has already risen by the same bytes was A + 2F; an estimate
+    // of the loading engine credited bytes not yet resident. Neither survives here.
+    #[test]
+    fn the_credit_follows_the_bytes_through_a_relaunch_and_is_zero_in_the_gap() {
+        let (consumer, tx) = rig("qwen3.8-27b", 20_000_000_000);
+        let live = Arc::new(std::sync::Mutex::new(Some(26_000_000_000u64)));
+        let probe = live.clone();
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| *probe.lock().unwrap())); // JUSTIFIED unwrap: a test mutex
+        tx.send_modify(|s| s.ready_verified_at_ms = Some(1_000));
+        assert_eq!(bytes_of(&consumer), 26_000_000_000, "ready: the live process");
+        // Torn down for a relaunch, the old process still alive for a moment.
+        tx.send_modify(|s| {
+            s.ready = false;
+            s.active_model = None;
+            s.loading_model = Some("qwen3.8-27b".into());
+        });
+        assert_eq!(bytes_of(&consumer), 26_000_000_000, "loading, old process alive: its bytes");
+        // The gap: no live process — nothing resident, nothing credited.
+        *live.lock().unwrap() = None; // JUSTIFIED unwrap: a test mutex
+        assert_eq!(bytes_of(&consumer), 0, "the gap credits nothing: available already rose by those bytes");
+        // The successor from its first resident byte, growing as it loads.
+        *live.lock().unwrap() = Some(9_000_000_000); // JUSTIFIED unwrap: a test mutex
+        assert_eq!(bytes_of(&consumer), 9_000_000_000, "the successor counts from its first byte");
+        tx.send_modify(|s| {
+            s.ready = true;
+            s.loading_model = None;
+            s.active_model = Some("qwen3.8-27b".into());
+            s.ready_verified_at_ms = Some(2_000);
+        });
+        *live.lock().unwrap() = Some(30_000_000_000); // JUSTIFIED unwrap: a test mutex
+        assert_eq!(bytes_of(&consumer), 30_000_000_000, "ready: the successor's own residency");
     }
 
     /// A tier-down policy that always proposes re-homing to a fixed smaller model
@@ -598,9 +725,11 @@ mod tests {
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
-            .with_inherited_lane(Arc::new(|| None));
+            .with_inherited_lane(Arc::new(|| None))
+            .without_measurement();
         (consumer, serving_tx)
     }
+
 
     // what this catches: a high-water that can never be released. If the snapshot carries
     // no `ready_verified_at_ms`, nothing can ever prove the old process died — holding a
@@ -757,7 +886,8 @@ mod tests {
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
-            .with_inherited_lane(Arc::new(|| None));
+            .with_inherited_lane(Arc::new(|| None))
+            .without_measurement();
 
         let fp = consumer.footprint();
         assert_eq!(fp.len(), 1);
@@ -862,7 +992,8 @@ mod tests {
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32, _grant: u32| current);
         let consumer =
             ServingConsumer::new(serving_rx, intent, footprint_of, ResourceKind::Vram, policy)
-                .with_inherited_lane(Arc::new(|| None));
+                .with_inherited_lane(Arc::new(|| None))
+            .without_measurement();
         (consumer, serving_tx, pin_rx)
     }
 
