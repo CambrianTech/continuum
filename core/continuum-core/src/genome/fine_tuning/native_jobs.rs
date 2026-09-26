@@ -380,11 +380,13 @@ mod tests {
             vec![],
             DaemonConfig::default(),
         );
-        let held = wait_for_training_memory(daemon.clone(), "serving", 1024, |_| {})
+        let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
+        let held = wait_for_training_memory(daemon.clone(), &gate, "serving", 1024, |_| {})
             .await
             .unwrap();
         let mut waiting = Box::pin(wait_for_training_memory(
             daemon.clone(),
+            &gate,
             "trainer",
             512,
             |_| {},
@@ -407,6 +409,7 @@ mod tests {
             Uuid::new_v4(),
             &progress,
             None,
+            Some(gate.clone()),
         )
         .await
         .err()
@@ -426,6 +429,7 @@ mod tests {
                 id,
                 &progress,
                 Some(daemon),
+                Some(gate),
             )
             .await?;
             panic!("cancelled preparation must never acquire capacity");
@@ -457,6 +461,65 @@ mod tests {
         .await
         .unwrap();
         drop(granted);
+    }
+
+    // what this catches: card aae8af55 — free memory read inside a serving window
+    // admitted a trainer nobody called (the 9/16 class). On a fully free card: before
+    // serving's first plan (the boot-empty window) admission waits; with the gate held
+    // by a relaunch it waits; the gate's release alone (no governor edge) admits it; and
+    // admission must NOT keep the gate for the run.
+    #[tokio::test]
+    async fn training_admission_waits_out_boot_and_serving_operations_and_never_keeps_the_gate() {
+        use crate::forge::training_admission::wait_for_training_memory;
+        use crate::modules::serving_daemon::LifecycleGate;
+        use crate::resources::{
+            capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind,
+        };
+        use futures::FutureExt;
+        let daemon = ResourceDaemon::start(
+            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1024))],
+            vec![],
+            DaemonConfig::default(),
+        );
+        let gate = LifecycleGate::unowned(false);
+        let mut booting = Box::pin(wait_for_training_memory(
+            daemon.clone(),
+            &gate,
+            "trainer",
+            512,
+            |_| {},
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(
+            booting.as_mut().now_or_never().is_none(),
+            "nothing is admitted before serving's first plan on this core"
+        );
+        drop(booting);
+        gate.settle();
+        let relaunch = gate.hold_for_admission().ok().expect("an idle settled gate is free");
+        let mut admission = Box::pin(wait_for_training_memory(
+            daemon.clone(),
+            &gate,
+            "trainer",
+            512,
+            |_| {},
+        ));
+        assert!(admission.as_mut().now_or_never().is_none());
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(
+            admission.as_mut().now_or_never().is_none(),
+            "a held gate refuses admission whatever the governor shows"
+        );
+        drop(relaunch);
+        let lease = tokio::time::timeout(std::time::Duration::from_secs(5), admission)
+            .await
+            .expect("the gate's release admits without a governor edge")
+            .unwrap();
+        assert!(
+            gate.hold_for_admission().is_ok(),
+            "a granted admission releases the gate; the lease holds the memory"
+        );
+        drop(lease);
     }
 
     #[test]

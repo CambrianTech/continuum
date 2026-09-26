@@ -1,7 +1,9 @@
 //! Training leases share the resource authority used by live serving.
+use crate::modules::serving_daemon::LifecycleGate;
 use crate::resources::{
     LeaseError, LeaseGuard, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
 };
+use std::time::Duration;
 
 fn request(consumer: &str, bytes: u64) -> LeaseRequest {
     LeaseRequest {
@@ -13,10 +15,24 @@ fn request(consumer: &str, bytes: u64) -> LeaseRequest {
     }
 }
 
+/// While the serving lifecycle refuses (unsettled, or an operation holds the gate),
+/// admission retries on this cadence as well as on governor changes: a relaunch that
+/// frees and re-leases can finish with no governor edge, and the gate has no event.
+// derived-or-floor: a floor — far below a relaunch's duration, far above a spin.
+const SERVING_BUSY_RETRY: Duration = Duration::from_secs(1);
+
 /// Keep prepared native work queued until the authority changes. Dropping this
 /// future cancels the wait; no child or lease exists until admission succeeds.
+///
+/// Each attempt reads and leases UNDER the serving lifecycle gate (card aae8af55): a
+/// relaunch or placement move frees the engine's memory while it holds that gate, so a
+/// free-memory read inside its window is refused instead of admitting a trainer nobody
+/// called; and nothing is admitted before serving's first plan on this core, when the
+/// authority may still read a card with no physical reading as wholly free. The gate is released as soon as the attempt decides; the granted lease is
+/// what keeps serving out of the trainer's memory for the run.
 pub(crate) async fn wait_for_training_memory(
     daemon: std::sync::Arc<ResourceDaemon>,
+    serving: &LifecycleGate,
     consumer: &str,
     bytes: u64,
     mut waiting: impl FnMut(u64),
@@ -26,10 +42,42 @@ pub(crate) async fn wait_for_training_memory(
     }
     let mut changes = daemon.subscribe();
     let mut last_available = None;
+    let mut serving_refusal_said = None;
+    let mut retry = tokio::time::interval_at(
+        tokio::time::Instant::now() + SERVING_BUSY_RETRY,
+        SERVING_BUSY_RETRY,
+    );
+    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         // Mark before the attempt so a concurrent release cannot be missed.
         changes.borrow_and_update();
-        match daemon.acquire_guarded(&request(consumer, bytes)) {
+        let hold = match serving.hold_for_admission() {
+            Ok(hold) => hold,
+            Err(refusal) => {
+                if serving_refusal_said != Some(refusal) {
+                    crate::probe!(
+                        class = "training.admission.serving_busy",
+                        consumer = consumer,
+                        footprint_bytes = bytes,
+                        refusal = refusal.name(),
+                        "prepared training waits on the serving lifecycle: free memory now is \
+                         a boot or relaunch window, not capacity"
+                    );
+                    serving_refusal_said = Some(refusal);
+                }
+                tokio::select! {
+                    changed = changes.changed() => {
+                        changed.map_err(|_| "training resource authority closed".to_owned())?
+                    }
+                    _ = retry.tick() => {}
+                }
+                continue;
+            }
+        };
+        serving_refusal_said = None;
+        let attempt = daemon.acquire_guarded(&request(consumer, bytes));
+        drop(hold);
+        match attempt {
             Ok(guard) => return Ok(guard),
             Err(LeaseError::InsufficientCapacity { available, .. }) => {
                 if last_available != Some(available) {

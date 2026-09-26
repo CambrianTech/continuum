@@ -176,6 +176,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                 local_id,
                 &progress,
                 crate::resources::ResourceDaemon::global(),
+                crate::modules::serving_daemon::LifecycleGate::global(),
             )
             .await?;
             let footprint = reservation.bytes();
@@ -307,6 +308,7 @@ pub(super) async fn admit_training(
     local_id: Uuid,
     progress: &super::native_jobs::PreparationProgress,
     daemon: Option<std::sync::Arc<crate::resources::ResourceDaemon>>,
+    serving: Option<crate::modules::serving_daemon::LifecycleGate>,
 ) -> Result<crate::resources::LeaseGuard, FineTuningError> {
     let footprint = tokio::task::spawn_blocking(move || {
         crate::forge::mlx_train::derive_train_footprint_bytes(&model_dir, batch, sequence)
@@ -320,6 +322,11 @@ pub(super) async fn admit_training(
         daemon.ok_or_else(|| {
             FineTuningError::LocalTrainerFailed(
                 "MLX training requires the resource governor".into(),
+            )
+        })?,
+        &serving.ok_or_else(|| {
+            FineTuningError::LocalTrainerFailed(
+                "MLX training requires the serving lifecycle gate".into(),
             )
         })?,
         &format!("genome-train:{local_id}"),
