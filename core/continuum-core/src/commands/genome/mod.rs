@@ -183,6 +183,7 @@ pub(crate) mod test_support {
             persona_name: "test".into(),
             base_model: base.into(),
             trait_kind: "test-trait".into(),
+            resume_from: None,
             dataset: dataset(),
             eval_set: None,
             lora: None,

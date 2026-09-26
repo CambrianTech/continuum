@@ -161,6 +161,8 @@ pub struct TrainingTriggerState {
     /// concern).
     pub(crate) submit_gates: PerKeyGate<BucketKey>,
     pub(crate) executor: LateBound<CommandExecutor>,
+    /// The boot's orphaned jobs are resumed once, on the first tick with a live executor.
+    resumed_orphans: std::sync::atomic::AtomicBool,
     durable: LateBound<durable::DurableStore>,
     acceptance_gates: PerKeyGate<Uuid>,
     active_dispatches: DashMap<BucketKey, Arc<durable::ActiveDispatch>>,
@@ -192,6 +194,7 @@ impl TrainingTriggerState {
             buckets: Arc::new(DashMap::new()),
             submit_gates: PerKeyGate::new(),
             executor: LateBound::new("training-trigger::executor"),
+            resumed_orphans: std::sync::atomic::AtomicBool::new(false),
             durable: LateBound::new("training-trigger::durable-store"),
             acceptance_gates: PerKeyGate::new(),
             active_dispatches: DashMap::new(),
@@ -254,6 +257,76 @@ impl TrainingTriggerState {
     /// return the (job_handle, selected_provider) pair on success.
     /// Shared by submit and flush so both fire through exactly one
     /// dispatch path.
+    /// Resume the jobs a previous core left in flight (card 244757bc). Once per boot,
+    /// on the first tick with a live executor: the board journals each as dead (it is),
+    /// and for each whose job directory still holds its `request.json` — the whole
+    /// dataset and spec, written before the trainer started — a fresh job is created
+    /// from that input on the same provider, under a new dispatch id. Bounded by
+    /// [`crate::genome::fine_tuning::job_board::MAX_RESUMES`] per lineage. Every
+    /// outcome is a probe; a job that cannot be resumed is said, never silently dropped.
+    ///
+    /// Why here and not the board: the board owns the ledger, the trigger owns the
+    /// executor that reaches `genome/job-create`, and the resume needs both.
+    pub(crate) async fn resume_orphans_once(&self) {
+        use std::sync::atomic::Ordering;
+        if self.resumed_orphans.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(executor) = self.executor.require() else {
+            return; // not installed yet: try again next tick, the orphans wait on the board
+        };
+        self.resumed_orphans.store(true, Ordering::Release);
+        let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
+        for orphan in board.take_orphans() {
+            let origin = board.resume_origin(orphan.local_id);
+            let attempt = board.resume_attempts(origin) + 1;
+            if attempt > crate::genome::fine_tuning::job_board::MAX_RESUMES {
+                crate::probe!(
+                    class = "training.job.resume_refused",
+                    origin = %origin,
+                    local_id = %orphan.local_id,
+                    attempts = attempt - 1,
+                    "a job that dies at every boot is broken, not interrupted — no further resume"
+                );
+                continue;
+            }
+            let dir = default_job_dir(&orphan.persona_name, &orphan.trait_kind, orphan.local_id);
+            let dispatch_id = Uuid::new_v4();
+            let Some(params) = resumable_request(&dir, &orphan.provider_id, dispatch_id) else {
+                crate::probe!(
+                    class = "training.job.not_resumable",
+                    local_id = %orphan.local_id,
+                    dir = %dir.display(),
+                    "the job directory holds no request.json — nothing to resume from"
+                );
+                continue;
+            };
+            match executor.execute_json("genome/job-create", params).await.map_err(|e| e.to_string()).and_then(|r| decode_job_create(r).map_err(|e| format!("{e:?}"))) {
+                Ok((handle, provider)) => {
+                    board.journal_resumed(origin, orphan.local_id, handle.local_id, attempt);
+                    crate::probe!(
+                        class = "training.job.resumed",
+                        origin = %origin,
+                        from = %orphan.local_id,
+                        to = %handle.local_id,
+                        provider = %provider,
+                        attempt,
+                        "an in-flight training job survived the reboot: re-created from its own request.json"
+                    );
+                }
+                Err(error) => {
+                    crate::probe!(
+                        class = "training.job.resume_failed",
+                        origin = %origin,
+                        local_id = %orphan.local_id,
+                        error = %error,
+                        "the resume dispatch was refused — the input still sits in the job directory"
+                    );
+                }
+            }
+        }
+    }
+
     pub(crate) async fn dispatch_job_create(
         &self,
         persona_id: Uuid,
@@ -272,6 +345,7 @@ impl TrainingTriggerState {
             persona_name: batch.persona_name.clone(),
             base_model: base_model.to_string(),
             trait_kind: trait_kind.to_string(),
+            resume_from: None,
             dataset: TrainingDataset {
                 examples: batch.examples.clone(),
                 source: batch.source,
@@ -315,6 +389,46 @@ impl TrainingTriggerState {
 
 /// Consume the existing typed command envelope. Only an explicit refusal is
 /// evidence that retry is safe; malformed/transport responses may follow creation.
+/// Where a native job's directory lives when the request named no `local_artifact_dir`
+/// — the same rule as `native_jobs::job_dir_for`, from the ledger's fields.
+pub(crate) fn default_job_dir(persona_name: &str, trait_kind: &str, local_id: Uuid) -> std::path::PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")); // unwrap_or_else: mirrors job_dir_for — no home resolves the same relative root
+    home.join(".continuum/genome")
+        .join(persona_name.replace(['/', ' '], "_"))
+        .join(trait_kind.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>())
+        .join(local_id.to_string())
+}
+
+/// PURE over the job directory: the `genome/job-create` params that re-create a job from
+/// its own `request.json` (the flattened `TrainingJobRequest` the trainer was handed,
+/// with the adapter's admission fields alongside, which the request type ignores).
+/// `None` when there is nothing on disk to resume from.
+pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_id: Uuid) -> Option<Value> {
+    let text = std::fs::read_to_string(dir.join("request.json")).ok()?;
+    let mut request: TrainingJobRequest = serde_json::from_str(&text).ok()?;
+    // The dead job's latest checkpoint, when it got that far: the re-created job
+    // continues from it instead of from zero (Fable's readiness ask: a resume loses
+    // minutes, not the run). `checkpoints/LATEST` names the directory the trainer
+    // finished writing; a missing pointer is a job that never reached its first
+    // checkpoint and starts over.
+    if let Some(latest) = std::fs::read_to_string(dir.join("checkpoints").join("LATEST"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        let checkpoint = dir.join("checkpoints").join(latest);
+        if checkpoint.join("adapter_config.json").is_file() {
+            request.resume_from = Some(checkpoint);
+        }
+    }
+    let mut params = serde_json::to_value(&request).ok()?;
+    params["triggerDispatchId"] = Value::String(dispatch_id.to_string());
+    if !provider.is_empty() {
+        params["preferredProvider"] = Value::String(provider.to_string());
+    }
+    Some(params)
+}
+
 fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFailure> {
     use crate::commands::genome::job_create::JobCreateOutcome;
     if response
@@ -418,6 +532,7 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
+        self.state.resume_orphans_once().await;
         self.state.recover_tick().await
     }
 
@@ -540,5 +655,49 @@ mod tests {
             .handle_command("genome/training-trigger/nope", Value::Null)
             .await;
         assert!(result.is_err());
+    }
+
+    // regression for card 244757bc (BigMama, 2026-09-26): three jobs in the ledger ended
+    // `killed-by-reboot` — the consumer deploys six times a day — and nothing resumed
+    // them, while each job directory still held the full request.json.
+    // what this catches: the resumable input is the job directory's own request.json,
+    // re-created as job-create params under a fresh dispatch id on the same provider;
+    // a directory with nothing in it resumes nothing; the directory rule matches
+    // `job_dir_for` for the ledger's fields.
+    #[test]
+    fn a_dead_jobs_request_json_is_its_resume_and_an_empty_directory_is_none() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let dispatch = Uuid::new_v4();
+        assert_eq!(resumable_request(dir.path(), "cuda-local", dispatch), None, "nothing on disk");
+        // What the CUDA adapter writes: the flattened request plus its admission fields.
+        let spec = serde_json::json!({
+            "personaId": Uuid::from_u128(7).to_string(),
+            "personaName": "Kimi",
+            "baseModel": "ggml-org/Qwen3.8-27B-GGUF",
+            "traitKind": "code",
+            "dataset": {"examples": [{"prompt": "p", "completion": "c"}], "source": "teacher_synthesized", "validationSplit": 0.1},
+            "canonicalBase": "ggml-org/Qwen3.8-27B-GGUF",
+            "memoryBytes": 30_000_000_000u64,
+            "availableBytes": 6_000_000_000u64,
+            "microBatchSize": 1,
+            "revision": null
+        });
+        std::fs::write(dir.path().join("request.json"), spec.to_string()).expect("test: write");
+        let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
+        assert_eq!(params["triggerDispatchId"], serde_json::json!(dispatch.to_string()));
+        assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"));
+        assert_eq!(params["personaName"], serde_json::json!("Kimi"));
+        assert_eq!(params["dataset"]["examples"].as_array().map(|e| e.len()), Some(1));
+        assert!(params.get("memoryBytes").is_none(), "admission fields are the adapter's, not the request's");
+        assert!(params.get("resumeFrom").is_none(), "no checkpoint, no resume point");
+        // A checkpoint the dead job finished writing becomes the resume point.
+        let ck = dir.path().join("checkpoints").join("step-8");
+        std::fs::create_dir_all(&ck).expect("test: checkpoint dir");
+        std::fs::write(ck.join("adapter_config.json"), "{}").expect("test: adapter config");
+        std::fs::write(dir.path().join("checkpoints").join("LATEST"), "step-8\n").expect("test: pointer");
+        let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
+        assert_eq!(params["resumeFrom"], serde_json::json!(ck.to_string_lossy()), "continues from the latest checkpoint");
+        let d = default_job_dir("Kimi", "code/owner", Uuid::from_u128(9));
+        assert!(d.ends_with(std::path::Path::new("Kimi").join("code_owner").join(Uuid::from_u128(9).to_string())), "{d:?}");
     }
 }

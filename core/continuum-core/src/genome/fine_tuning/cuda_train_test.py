@@ -51,6 +51,25 @@ class CudaTrainingTests(unittest.TestCase):
         chunked.backward()
         self.assertTrue(torch.allclose(grad_reference, model.lm_head.weight.grad, atol=1e-5))
         self.assertLess(cuda_train.LOGITS_CHUNK_TOKENS, 4096, "the planner's logits term is one chunk, not a window")
+    def test_a_checkpoint_is_written_whole_pointed_at_last_and_the_previous_one_dropped(self):
+        # what this catches: the resume reads `checkpoints/LATEST` → a directory holding the
+        # adapter and its loop state; the pointer must never name a half-written directory,
+        # and only one checkpoint stays on disk.
+        class Adapter:
+            def __init__(self): self.saved = []
+            def save_pretrained(self, path, safe_serialization=True):
+                Path(path).mkdir(parents=True, exist_ok=True)
+                (Path(path) / "adapter_config.json").write_text("{}", encoding="utf-8")
+                self.saved.append(Path(path).name)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory); adapter = Adapter()
+            cuda_train.write_checkpoint(adapter, out, 4, {"step": 4, "epoch": 0, "nextStart": 12, "trainedTokens": 900, "finalLoss": 1.5})
+            cuda_train.write_checkpoint(adapter, out, 8, {"step": 8, "epoch": 0, "nextStart": 24, "trainedTokens": 1800, "finalLoss": 1.2})
+            self.assertEqual((out / "checkpoints" / "LATEST").read_text(encoding="utf-8").strip(), "step-8")
+            self.assertFalse((out / "checkpoints" / "step-4").exists(), "the previous checkpoint is dropped")
+            state = json.loads((out / "checkpoints" / "step-8" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual((state["step"], state["nextStart"]), (8, 24))
+            self.assertEqual(adapter.saved, ["step-4", "step-8"])
 
     @unittest.skipUnless(os.environ.get("CONTINUUM_TEST_CUDA") == "1", "real CUDA test opt-in")
     def test_real_qlora_trains_adapter_without_changing_base(self):

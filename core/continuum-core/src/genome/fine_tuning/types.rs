@@ -89,6 +89,12 @@ pub struct TrainingJobRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub local_artifact_dir: Option<PathBuf>,
+    /// A checkpoint directory (a PEFT adapter plus its `state.json`) this job continues
+    /// from — set by the resume of a reboot-killed job (card 244757bc) so it loses
+    /// minutes, not the run. Absent on a fresh job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resume_from: Option<PathBuf>,
 }
 
 // ─── Dataset ─────────────────────────────────────────────────────────

@@ -190,6 +190,7 @@ mod tests {
             persona_name: "t".into(),
             base_model: "recording-test".into(),
             trait_kind: "t".into(),
+            resume_from: None,
             dataset: TrainingDataset {
                 examples: vec![ex(prompt, "c")],
                 source: TrainingSource::OperatorCurated,

@@ -535,6 +535,7 @@ mod tests {
             persona_name: "asha".into(),
             base_model: "Qwen/Qwen2.5-Coder-3B-Instruct".into(),
             trait_kind: "coder-test".into(),
+            resume_from: None,
             dataset: TrainingDataset {
                 examples: examples
                     .into_iter()

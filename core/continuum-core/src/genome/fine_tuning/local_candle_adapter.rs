@@ -288,6 +288,7 @@ mod tests {
             persona_name: "test-p".into(),
             base_model: "synthetic".into(),
             trait_kind: "stand-in".into(),
+            resume_from: None,
             dataset: small_dataset(),
             eval_set: None,
             lora: Some(LoRAHyperparams {

@@ -69,6 +69,28 @@ use super::types::{JobHandle, TrainingStatus};
 /// One in-flight training job, plus the context the L3 sentinel needs to run the
 /// eval→page-in chain when it completes WITHOUT re-deriving any of it. Cloned out of
 /// the board on snapshot; the `handle.local_id` is the board key.
+/// A job a previous core registered and never brought to a terminal state — what the
+/// boot replay found in the ledger. Journaled `killed-by-reboot` (that process IS dead)
+/// and handed to the trigger, which resumes it from its job directory when the input
+/// survived (card 244757bc: three of these on BigMama, none ever resumed, while the
+/// consumer deploys six times a day).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanedJob {
+    pub local_id: Uuid,
+    pub trigger_dispatch_id: Option<Uuid>,
+    pub provider_id: String,
+    pub persona_id: Uuid,
+    pub persona_name: String,
+    pub base_model: String,
+    pub trait_kind: String,
+    pub eval_set: Option<String>,
+}
+
+/// How many times one job's lineage may be resumed before the board stops trying:
+/// a job that dies at every boot is not an interrupted job, it is a broken one, and
+/// the third death is the receipt that says so.
+pub const MAX_RESUMES: u32 = 3;
+
 #[derive(Debug, Clone)]
 pub struct WatchedJob {
     /// Exact durable trigger intent which produced this handle, when present.
@@ -115,6 +137,8 @@ pub struct TrainingJobBoard {
     quarantined: DashMap<u64, ()>,
     #[cfg(test)]
     _test_directory: Option<std::sync::Arc<tempfile::TempDir>>,
+    /// Orphans the boot replay found, until the trigger takes them (`take_orphans`).
+    orphans: std::sync::Mutex<Vec<OrphanedJob>>,
 }
 
 /// A bounded evidence read. Neither absence, a partial scan, nor an I/O error
@@ -354,7 +378,7 @@ impl TrainingJobBoard {
     pub fn global() -> &'static TrainingJobBoard {
         GLOBAL.get_or_init(|| {
             let board = TrainingJobBoard::with_ledger(Some(default_ledger_path()));
-            let orphaned = board.reconcile_orphans();
+            let orphaned = board.reconcile_orphans().len();
             if orphaned > 0 {
                 tracing::warn!(
                     orphaned,
@@ -374,6 +398,7 @@ impl TrainingJobBoard {
         TrainingJobBoard {
             jobs: DashMap::new(),
             quarantined: DashMap::new(),
+            orphans: std::sync::Mutex::new(Vec::new()),
             ledger,
             #[cfg(test)]
             _test_directory: None,
@@ -420,10 +445,10 @@ impl TrainingJobBoard {
     /// survive a restart). Journal each as `terminal/killed-by-reboot`, log loud,
     /// and return the count. Idempotent — the terminal lines written here close
     /// the ids for the next replay. A missing ledger is a first boot, not an error.
-    pub fn reconcile_orphans(&self) -> usize {
-        let Some(path) = &self.ledger else { return 0 };
+    pub fn reconcile_orphans(&self) -> Vec<OrphanedJob> {
+        let Some(path) = &self.ledger else { return Vec::new() };
         let Ok(text) = std::fs::read_to_string(path) else {
-            return 0;
+            return Vec::new();
         };
         let mut open: std::collections::HashMap<String, serde_json::Value> =
             std::collections::HashMap::new();
@@ -447,13 +472,15 @@ impl TrainingJobBoard {
                 _ => {}
             }
         }
+        let mut orphans = Vec::new();
         for (id, reg) in &open {
             tracing::warn!(
                 local_id = %id,
                 persona = %reg.get("persona_name").and_then(|p| p.as_str()).unwrap_or("?"),
                 trait_kind = %reg.get("trait_kind").and_then(|t| t.as_str()).unwrap_or("?"),
                 "orphaned training job: registered by a previous core, never reached a \
-                 terminal state — journaling killed-by-reboot"
+                 terminal state — journaling killed-by-reboot; the trigger resumes it \
+                 from its job directory if the input survived"
             );
             self.journal(&serde_json::json!({
                 "event": "terminal",
@@ -461,8 +488,84 @@ impl TrainingJobBoard {
                 "local_id": id,
                 "at_ms": now_ms(),
             }));
+            let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_string);
+            let (Ok(local_id), Some(persona_id)) = (
+                Uuid::parse_str(id),
+                field("persona_id").and_then(|p| Uuid::parse_str(&p).ok()),
+            ) else {
+                continue; // a registration without parseable ids cannot be resumed, only reported
+            };
+            orphans.push(OrphanedJob {
+                local_id,
+                trigger_dispatch_id: field("trigger_dispatch_id").and_then(|d| Uuid::parse_str(&d).ok()),
+                provider_id: field("provider_id").unwrap_or_default(), // unwrap_or_default: an unknown provider lets job-create choose
+                persona_id,
+                persona_name: field("persona_name").unwrap_or_default(), // unwrap_or_default: the job dir lookup then fails loud as not-resumable
+                base_model: field("base_model").unwrap_or_default(), // unwrap_or_default: same — the request.json carries the truth
+                trait_kind: field("trait_kind").unwrap_or_default(), // unwrap_or_default: same
+                eval_set: field("eval_set"),
+            });
         }
-        open.len()
+        if let Ok(mut held) = self.orphans.lock() {
+            held.extend(orphans.iter().cloned());
+        }
+        orphans
+    }
+
+    /// The orphans the boot replay found, once: the trigger takes them on its first
+    /// tick with a live executor and resumes what it can.
+    pub fn take_orphans(&self) -> Vec<OrphanedJob> {
+        self.orphans.lock().map(|mut o| std::mem::take(&mut *o)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to resume, never a panic at boot
+    }
+
+    /// The first job in `local_id`'s resume lineage, from the ledger's `resumed` rows.
+    pub fn resume_origin(&self, local_id: Uuid) -> Uuid {
+        let mut origin = local_id;
+        for row in self.replay_rows() {
+            if row.get("event").and_then(|e| e.as_str()) == Some("resumed")
+                && row.get("new_local_id").and_then(|v| v.as_str()) == Some(&origin.to_string())
+            {
+                if let Some(o) = row.get("origin_local_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) {
+                    origin = o;
+                }
+            }
+        }
+        origin
+    }
+
+    /// How many resumes this lineage has already had.
+    pub fn resume_attempts(&self, origin: Uuid) -> u32 {
+        let origin = origin.to_string();
+        self.replay_rows()
+            .filter(|row| {
+                row.get("event").and_then(|e| e.as_str()) == Some("resumed")
+                    && row.get("origin_local_id").and_then(|v| v.as_str()) == Some(origin.as_str())
+            })
+            .count() as u32
+    }
+
+    /// Journal a resume: `from` died with a core, `to` carries its input on.
+    pub fn journal_resumed(&self, origin: Uuid, from: Uuid, to: Uuid, attempt: u32) {
+        self.journal(&serde_json::json!({
+            "event": "resumed",
+            "origin_local_id": origin.to_string(),
+            "from_local_id": from.to_string(),
+            "new_local_id": to.to_string(),
+            "attempt": attempt,
+            "at_ms": now_ms(),
+        }));
+    }
+
+    fn replay_rows(&self) -> impl Iterator<Item = serde_json::Value> {
+        let text = self
+            .ledger
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default(); // unwrap_or_default: no ledger = no history, an empty lineage
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// Register a freshly-dispatched job to watch. Called by the L2 trigger right
@@ -727,7 +830,7 @@ mod tests {
         // "Next boot": replay finds exactly the unclaimed job.
         let next = TrainingJobBoard::with_ledger(Some(ledger.clone()));
         assert_eq!(
-            next.reconcile_orphans(),
+            next.reconcile_orphans().len(),
             1,
             "exactly the never-terminal job is orphaned"
         );
@@ -761,7 +864,7 @@ mod tests {
         );
         // Idempotent: the terminal line just written closes the id.
         assert_eq!(
-            next.reconcile_orphans(),
+            next.reconcile_orphans().len(),
             0,
             "a second replay sees the orphan as closed"
         );
@@ -864,4 +967,35 @@ mod tests {
         }
     }
 
+    // regression for card 244757bc: the boot replay must HAND BACK what it found, not
+    // only count it — and a lineage's resumes are counted from the ledger so a job that
+    // dies at every boot stops at MAX_RESUMES.
+    #[test]
+    fn the_boot_replay_hands_orphans_back_and_counts_a_lineages_resumes() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let ledger = dir.path().join("jobs-ledger.jsonl");
+        let board = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        let dead = Uuid::from_u128(0xdead);
+        board.journal(&serde_json::json!({
+            "event": "registered", "local_id": dead.to_string(), "provider_id": "cuda-local",
+            "persona_id": Uuid::from_u128(7).to_string(), "persona_name": "Kimi",
+            "base_model": "ggml-org/Qwen3.8-27B-GGUF", "trait_kind": "code", "at_ms": 1
+        }));
+        let replay = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        let orphans = replay.reconcile_orphans();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!((orphans[0].local_id, orphans[0].provider_id.as_str(), orphans[0].trait_kind.as_str()), (dead, "cuda-local", "code"));
+        assert_eq!(replay.take_orphans().len(), 1, "handed to the trigger once");
+        assert!(replay.take_orphans().is_empty(), "…and only once");
+        // The lineage: dead → r1 → r2; attempts count from the origin.
+        let r1 = Uuid::from_u128(0x11);
+        let r2 = Uuid::from_u128(0x22);
+        replay.journal_resumed(dead, dead, r1, 1);
+        replay.journal_resumed(dead, r1, r2, 2);
+        assert_eq!(replay.resume_origin(r2), dead);
+        assert_eq!(replay.resume_attempts(dead), 2);
+        assert_eq!(replay.resume_origin(Uuid::from_u128(0x99)), Uuid::from_u128(0x99), "a job with no lineage is its own origin");
+        // The dead one is journaled dead too: a second replay finds no open registration.
+        assert!(TrainingJobBoard::with_ledger(Some(ledger)).reconcile_orphans().is_empty());
+    }
 }
