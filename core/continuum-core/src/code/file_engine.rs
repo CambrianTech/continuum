@@ -357,7 +357,7 @@ impl FileEngine {
             applied_context: {
                 // The cleaning receipt LEADS: a write that landed somewhere other than the
                 // literal argument must say so before anything about the content.
-                let mut out = cleaned.note().unwrap_or_default();
+                let mut out = cleaned.note();
                 out.push_str(&numbered_paste_notice(content));
                 if let Some(magnitude) = overwrite_magnitude(&old_content, content) {
                     out.push_str(&magnitude);
@@ -581,7 +581,7 @@ impl FileEngine {
             applied_context: {
                 // The cleaning receipt LEADS (card 1daffbaf); the landing-site report follows
                 // only when the edit has an anchor line to report from.
-                let mut out = cleaned.note().unwrap_or_default();
+                let mut out = cleaned.note();
                 if let Some(anchor) = edit_anchor_line(edit_mode, &new_content) {
                     out.push_str(&syntax_error_after_edit(&abs_path).unwrap_or_default());
                     // A displaced docstring parses clean, so nothing else here would mention it.
@@ -661,7 +661,7 @@ impl FileEngine {
             applied_context: Some(format!(
                 "{}DELETED {} — {} line(s), {} byte(s) removed from disk. `code/undo` with \
                  change_id={} restores the file exactly.\n",
-                cleaned.note().unwrap_or_default(),
+                cleaned.note(),
                 relative_path,
                 old_content.lines().count(),
                 old_content.len(),

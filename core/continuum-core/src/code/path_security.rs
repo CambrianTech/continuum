@@ -254,10 +254,11 @@ pub struct CleanedPathArg {
 impl CleanedPathArg {
     /// The receipt line for a tool result: names what was stripped and where the
     /// operation actually landed, so the citizen reads the truth instead of the
-    /// argument she sent. `None` when nothing was stripped.
-    pub fn note(&self) -> Option<String> {
+    /// argument she sent. Empty when nothing was stripped — the common case costs no
+    /// allocation and no receipt.
+    pub fn note(&self) -> String {
         if self.stripped.is_empty() {
-            return None;
+            return String::new();
         }
         let what = self
             .stripped
@@ -265,11 +266,11 @@ impl CleanedPathArg {
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        Some(format!(
+        format!(
             "PATH ARGUMENT CLEANED: stripped {what}; this landed at '{}'. A path is a bare \
              address — no fencing, no quotes, one line.\n",
             self.path
-        ))
+        )
     }
 }
 
@@ -705,8 +706,8 @@ mod tests {
                 "second pass over {raw:?} stripped again"
             );
         }
-        assert!(clean_path_arg("src/main.ts").note().is_none());
-        let note = clean_path_arg("src/main.ts`\nsuccess: ✗").note().unwrap();
+        assert!(clean_path_arg("src/main.ts").note().is_empty());
+        let note = clean_path_arg("src/main.ts`\nsuccess: ✗").note();
         assert!(note.contains("the text after the line break") && note.contains("backticks"));
         assert!(
             note.contains("'src/main.ts'"),
