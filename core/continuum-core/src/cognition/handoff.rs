@@ -440,8 +440,11 @@ mod tests {
     fn owned_cards_partition_into_the_held_card_and_obligations() {
         let me = Uuid::from_u128(102);
         let room = airc_lib::Room {
+            version: 1,
             name: "r".into(),
+            wire: std::path::PathBuf::new(),
             channel: airc_core::RoomId::from_uuid(Uuid::from_u128(55)),
+            joined_at_ms: 0,
         };
         let owned = vec![
             (room.clone(), card(airc_work::model::CardState::InProgress, false)),
