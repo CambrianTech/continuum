@@ -1,5 +1,6 @@
 """Contract tests, plus an explicitly opted-in real CUDA/PEFT kernel test."""
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -23,6 +24,33 @@ class CudaTrainingTests(unittest.TestCase):
         self.assertEqual(list(cuda_train.chunks([1, 2, 3], 3, 2)), [])
         with self.assertRaises(ValueError):
             list(cuda_train.chunks([1, 2], 1, 1))
+
+    @unittest.skipUnless(importlib.util.find_spec("transformers") is not None, "transformers not installed")
+    def test_the_chunked_loss_is_the_models_own_loss_without_the_whole_logits_tensor(self):
+        # what this catches: the objective and its gradient are unchanged by chunking —
+        # a chunk boundary inside the sequence, an ignored-label chunk, and a mean over
+        # exactly the supervised targets — while the planner's logits term is bounded
+        # to one chunk. CPU, a tiny Qwen2, no CUDA needed.
+        import torch
+        from transformers import Qwen2Config
+        torch.manual_seed(11)
+        config = Qwen2Config(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+                             num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)
+        model = cuda_train.model_class(config).from_config(config)
+        ids = torch.randint(0, 64, (2, 11))
+        labels = ids.clone()
+        labels[0, :4] = -100  # a prompt prefix
+        labels[1, 6:] = -100  # a chunk with nothing supervised
+        batch = {"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": labels}
+        reference = model(**batch).loss
+        chunked = cuda_train.chunked_causal_lm_loss(model, batch, chunk=3)
+        self.assertTrue(torch.allclose(reference, chunked, atol=1e-5), (reference, chunked))
+        reference.backward()
+        grad_reference = model.lm_head.weight.grad.clone()
+        model.zero_grad(set_to_none=True)
+        chunked.backward()
+        self.assertTrue(torch.allclose(grad_reference, model.lm_head.weight.grad, atol=1e-5))
+        self.assertLess(cuda_train.LOGITS_CHUNK_TOKENS, 4096, "the planner's logits term is one chunk, not a window")
 
     @unittest.skipUnless(os.environ.get("CONTINUUM_TEST_CUDA") == "1", "real CUDA test opt-in")
     def test_real_qlora_trains_adapter_without_changing_base(self):
