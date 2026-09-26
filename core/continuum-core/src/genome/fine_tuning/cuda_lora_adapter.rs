@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use super::numerics;
+
+/// What `cuda_train.py` records in `training-provenance.json` as `quantization`, and
+/// therefore the numerics every adapter from this adapter is fit against. One name in
+/// two files: if the trainer's quantisation changes, this changes with it.
+const TRAINER_QUANTIZATION: &str = "nf4-double";
+
 pub const PROVIDER_ID: &str = "cuda-local";
 
 pub struct CudaLoraFineTuner {
@@ -120,6 +127,46 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             tokio::fs::write(&script, include_str!("cuda_train.py"))
                 .await
                 .map_err(failure)?;
+            // THE ADAPTER MUST MEET THE NUMERICS IT WAS FIT AGAINST (Joel, 2026-09-25:
+            // "should/does it qlora learn to match the quant level?"). A QLoRA adapter
+            // partly learns to compensate its base's quantisation error, so serving it
+            // over different numerics answers error that is not there and leaves the
+            // error that is. Nothing joined the two before this: the trainer records
+            // `nf4-double`, serving loads a GGUF whose quant lives in a filename.
+            // Checked HERE — before the planner, the admission and the weights — so a
+            // mismatch costs a message instead of an hour of card, and never arrives
+            // disguised as "training did not help" at the adoption gate.
+            //
+            // The served artifact comes from the SAME resolver the lane launches from
+            // (`resolve_gguf_for_model`, llama_server.rs:4421), so this reads serving's
+            // own choice rather than a second copy of it. LIMIT, stated: under a
+            // resident-override pin the loaded file can differ from what the resolver
+            // now returns; the durable fix is the loaded path on `ServingSnapshot`, and
+            // until then that case reports `Unmeasured` rather than a false match.
+            let fit = numerics::WeightNumerics::from_trainer_label(TRAINER_QUANTIZATION);
+            let served = crate::inference::llama_server::current_serving()
+                .active_model
+                .and_then(|id| {
+                    crate::model_registry::try_global().and_then(|r| r.model(&id).cloned())
+                })
+                .and_then(|model| crate::model_registry::artifacts::resolve_gguf_for_model(&model))
+                .and_then(|path| numerics::WeightNumerics::from_gguf_path(&path));
+            let verdict = numerics::compare(fit.as_ref(), served.as_ref());
+            crate::probe!(
+                class = "genome.train.numerics",
+                fit = fit.as_ref().map_or("unmeasured", |n| n.label.as_str()),
+                served = served.as_ref().map_or("unmeasured", |n| n.label.as_str()),
+                verdict = ?verdict,
+                "the numerics this LoRA is fit against versus the numerics it will be served against"
+            );
+            if let numerics::NumericsMatch::Incompatible { bits_apart } = verdict {
+                return Err(failure(format!(
+                    "refusing to train: this LoRA would be fit against {} and served against {} —                      {bits_apart:.2} bits per weight apart, a whole quantisation tier. The adapter                      would learn to correct base error it never meets, and the adoption gate would                      report that as absent lift rather than as this mismatch. Serve a quant within                      {} bits of the trainer's, or train against the served one.",
+                    fit.as_ref().map_or("unmeasured".into(), |n| format!("{} ({:.2} bpw)", n.label, n.bits_per_weight)),
+                    served.as_ref().map_or("unmeasured".into(), |n| format!("{} ({:.2} bpw)", n.label, n.bits_per_weight)),
+                    numerics::REFUSAL_BITS,
+                )));
+            }
             let config = directory.join("request.json");
             let plan_path = directory.join("plan.json");
             let mut spec = CudaSpec {
