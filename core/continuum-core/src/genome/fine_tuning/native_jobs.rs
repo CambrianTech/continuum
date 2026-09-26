@@ -98,11 +98,33 @@ impl NativeJobs {
         let (tx, rx) = watch::channel(TrainingStatus::Queued);
         let (cancel, mut cancelled) = watch::channel(false);
         self.slots.insert(id, JobSlot { status: rx, cancel });
+        // EVERY STEP OF A LOCAL TRAINING JOB IS A RECEIPT (Joel, 2026-09-26, before Kimi's
+        // first run: "make sure all probes in place"). Before this, a job's whole life —
+        // prepared, admitted, spawned, finished, failed, cancelled — was a `TrainingStatus`
+        // in a watch channel that nobody outside the poller could read; the 5090's ledger
+        // ended in three killed-by-reboot jobs with no row saying when or why. One class
+        // per transition, the job id on every row, so the room can follow a run.
+        let provider = self.provider;
+        crate::probe!(
+            class = "training.job.queued",
+            job = %id,
+            provider,
+            "a local training job is queued — preparation (plan + admission) begins"
+        );
         tokio::spawn(async move {
+            let queued_at = Instant::now();
             let prepare = prepare(PreparationProgress(tx.clone()));
             let prepared = tokio::select! {
                 biased;
                 _ = cancelled.changed() => {
+                    crate::probe!(
+                        class = "training.job.cancelled",
+                        job = %id,
+                        provider,
+                        phase = "preparing",
+                        ms = queued_at.elapsed().as_millis() as u64,
+                        "a local training job was cancelled before it spawned"
+                    );
                     tx.send_replace(TrainingStatus::Cancelled);
                     return;
                 }
@@ -116,6 +138,15 @@ impl NativeJobs {
             } = match prepared {
                 Ok(job) => job,
                 Err(error) => {
+                    crate::probe!(
+                        class = "training.job.prepare_failed",
+                        job = %id,
+                        provider,
+                        ms = queued_at.elapsed().as_millis() as u64,
+                        error = %error,
+                        "a local training job failed before it spawned (plan, admission, \
+                         or the trainer's own prerequisites) — nothing ran on the card"
+                    );
                     tx.send_replace(TrainingStatus::Failed {
                         error: error.to_string(),
                     });
@@ -131,6 +162,13 @@ impl NativeJobs {
             let mut child = match command.spawn() {
                 Ok(child) => child,
                 Err(error) => {
+                    crate::probe!(
+                        class = "training.job.spawn_failed",
+                        job = %id,
+                        provider,
+                        error = %error,
+                        "the trainer process could not be spawned"
+                    );
                     tx.send_replace(TrainingStatus::Failed {
                         error: error.to_string(),
                     });
@@ -140,6 +178,15 @@ impl NativeJobs {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             let started = Instant::now();
+            crate::probe!(
+                class = "training.job.started",
+                job = %id,
+                provider,
+                pid = child.id().unwrap_or(0), // unwrap_or: a child already reaped has no pid to name; 0 is said as 0
+                output = %output.display(),
+                prepared_ms = queued_at.elapsed().as_millis() as u64,
+                "the trainer process is running on the card"
+            );
             tx.send_replace(TrainingStatus::Running {
                 progress_pct: 0.0,
                 current_epoch: 0,
@@ -163,6 +210,15 @@ impl NativeJobs {
                     // Kill AND reap before announcing cancellation or releasing resources.
                     let result = child.kill().await;
                     for drain in drains { let _ = drain.await; }
+                    crate::probe!(
+                        class = "training.job.cancelled",
+                        job = %id,
+                        provider,
+                        phase = "running",
+                        ms = started.elapsed().as_millis() as u64,
+                        killed = result.is_ok(),
+                        "a running local training job was cancelled — killed and reaped"
+                    );
                     tx.send_replace(match result {
                         Ok(()) => TrainingStatus::Cancelled,
                         Err(e) => TrainingStatus::Failed { error: format!("cancel trainer: {e}") },
@@ -190,6 +246,27 @@ impl NativeJobs {
                         .unwrap_or_else(|_| "stderr unavailable".into()) // Failed diagnostic reads report absence; they never change job success.
                 )),
             };
+            match &artifact {
+                Ok(artifact) => crate::probe!(
+                    class = "training.job.finished",
+                    job = %id,
+                    provider,
+                    ms = started.elapsed().as_millis() as u64,
+                    model_id = artifact.model_id.as_str(),
+                    trained_tokens = artifact.metrics.trained_tokens,
+                    final_loss = artifact.metrics.final_loss.unwrap_or(f64::NAN), // unwrap_or: `finish` already refused a job with no finite loss; NAN here can only mean that guard moved
+                    "a local training job finished with a measured learning receipt"
+                ),
+                Err(error) => crate::probe!(
+                    class = "training.job.failed",
+                    job = %id,
+                    provider,
+                    ms = started.elapsed().as_millis() as u64,
+                    error = error.as_str(),
+                    "a local training job failed after it spawned — the trainer's exit and \
+                     its stderr tail are the error"
+                ),
+            }
             tx.send_replace(match artifact {
                 Ok(artifact) => TrainingStatus::Completed { artifact },
                 Err(error) => TrainingStatus::Failed { error },
