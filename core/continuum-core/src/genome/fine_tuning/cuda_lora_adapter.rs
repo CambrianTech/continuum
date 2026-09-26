@@ -31,7 +31,16 @@ struct CudaSpec {
     request: TrainingJobRequest,
     canonical_base: String,
     memory_bytes: u64,
+    /// Governed VRAM free NOW — the admission question: the job waits on this.
     available_bytes: u64,
+    /// Governed VRAM the job could be GRANTED — the planning question: the window is
+    /// decided against this. Capacity minus the residents the period will not release,
+    /// i.e. serving's own lane added back (`budget_for_replacing`, the add-back serving
+    /// uses for itself). Cormac + Fable on #4396: a window shed against free-now (2 GB
+    /// with her lane up) refuses every dispatch made while she serves, and a job that
+    /// parks, admits after the unload with 31 GB free, would still train at the shed
+    /// window. Free-now admits; grantable plans.
+    grantable_bytes: u64,
     micro_batch_size: u32,
     revision: Option<String>,
 }
@@ -189,6 +198,8 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             }
             let config = directory.join("request.json");
             let plan_path = directory.join("plan.json");
+            let governor = crate::resources::ResourceDaemon::global()
+                .ok_or_else(|| failure("CUDA training requires the resource governor"))?;
             let mut spec = CudaSpec {
                 request,
                 canonical_base,
@@ -196,12 +207,16 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 // Driver-free is not admission headroom: on Windows CUDA reported
                 // 31.8 GB free while serving occupied 25.9 GiB. The governor
                 // accounted for that residency and exposed only ~6 GB to training.
-                available_bytes: crate::resources::ResourceDaemon::global()
-                    .ok_or_else(|| failure("CUDA training requires the resource governor"))?
-                    .available_for(
-                        &format!("genome-train:{id}"),
-                        crate::resources::ResourceKind::Vram,
-                    ),
+                available_bytes: governor.available_for(
+                    &format!("genome-train:{id}"),
+                    crate::resources::ResourceKind::Vram,
+                ),
+                // What the job can be granted once serving steps aside for the period:
+                // free-now plus serving's own measured residency, capped at capacity.
+                grantable_bytes: governor.budget_for_replacing(
+                    crate::modules::serving_consumer::SERVING_CONSUMER_ID,
+                    crate::resources::ResourceKind::Vram,
+                ),
                 micro_batch_size: 0,
                 revision: None,
             };
@@ -241,11 +256,17 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                     affordable_tokens = window.affordable_tokens,
                     minimum_tokens = window.minimum_tokens,
                     floor_memory_bytes = plan.memory_bytes,
+                    grantable_bytes = spec.grantable_bytes,
                     available_bytes = spec.available_bytes,
                     "the governed budget holds fewer tokens of one example than the shortest window worth training — refused with the numbers, not queued"
                 );
                 return Err(failure(format!(
-                    "refusing to train: the governed budget ({} B available) holds {} tokens of one                      example, under the {}-token floor a write-error-fix trajectory needs (requested                      {}; the floor itself would ask {} B). Free VRAM — unload a serving lane or wait                      for its period — or shorten the recipe's window; this plan would OOM or wait forever.",
+                    "refusing to train: the grantable budget ({} B once serving steps aside; {} B free \
+                     now) holds {} tokens of one example, under the {}-token floor a write-error-fix \
+                     trajectory needs (requested {}; the floor itself would ask {} B). This card is too \
+                     small for the recipe even empty — shorten its window or train it on a bigger node; \
+                     waiting would never admit it.",
+                    spec.grantable_bytes,
                     spec.available_bytes,
                     window.affordable_tokens,
                     window.minimum_tokens,
@@ -263,6 +284,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 examples = spec.request.dataset.examples.len() as u64,
                 memory_bytes = plan.memory_bytes,
                 available_bytes = spec.available_bytes,
+                grantable_bytes = spec.grantable_bytes,
                 headroom_bytes = spec.available_bytes.saturating_sub(plan.memory_bytes),
                 micro_batch = plan.micro_batch_size as u64,
                 "CUDA training plan: memory asked vs governed VRAM available before admission"

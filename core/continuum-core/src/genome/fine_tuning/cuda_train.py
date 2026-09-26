@@ -97,6 +97,24 @@ def chunked_causal_lm_loss(model, batch, chunk=LOGITS_CHUNK_TOKENS):
 MINIMUM_TRAIN_TOKENS = 512
 
 
+def planning_budget(total, grantable):
+    """PURE: the bytes the WINDOW is decided against — what the job can be GRANTED, never
+    what is free this instant. Cormac + Fable on #4396: with a serving lane up the
+    governor exposes ~2 GB free-now and ~31.7 GB grantable on the 5090; planning against
+    free-now refuses every dispatch made while she serves (the trigger's contract makes
+    that a refusal per tick), and a job that parks and admits after the unload would
+    still train at a window shed against memory serving had. Free-now is the admission
+    question and stays with the owner's wait; this is the planning question."""
+    return max(0, min(int(total), int(grantable)))
+
+
+def affordable_tokens(budget, weights, optimizer, logits_chunk, activation_per_token, slab):
+    """PURE: how many tokens of ONE example the budget holds once the weights, the
+    optimizer state, the loss's fixed logits chunk and the allocator slab are paid.
+    Negative when the budget is smaller than the weights: the caller refuses."""
+    return (budget - slab - weights - optimizer - logits_chunk) // max(1, activation_per_token)
+
+
 def admitted_window(sequence, tokens, affordable):
     """PURE: the token window a governed budget admits, or None when it admits none.
 
@@ -145,8 +163,10 @@ def plan(spec, output):
     # sequence window. The resource governor still atomically admits the plan.
     weights = math.ceil(linear * (0.5 + 4 / 64)) + (parameters - linear) * 4
     optimizer = lora_parameters * 16
-    free, _ = torch.cuda.mem_get_info()
-    available = min(free, spec.get("availableBytes", free))
+    free, total = torch.cuda.mem_get_info()
+    # The plan is what the job will use once ADMITTED, so it is sized against what the
+    # job can be granted (serving's lane added back), not what is free while she serves.
+    available = planning_budget(total, spec.get("grantableBytes", spec.get("availableBytes", free)))
     sequence = schedule["sequenceLength"]
     # The logits peak is one chunk of positions, not the whole window (see
     # `chunked_causal_lm_loss`); the activation term still scales with the window.
@@ -174,7 +194,7 @@ def plan(spec, output):
     if micro == 1 and weights + optimizer + per_example > logical_budget - slab:
         activation_per_token = int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
         logits_chunk = min(sequence, LOGITS_CHUNK_TOKENS) * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN
-        affordable = (logical_budget - slab - weights - optimizer - logits_chunk) // activation_per_token
+        affordable = affordable_tokens(logical_budget, weights, optimizer, logits_chunk, activation_per_token, slab)
         admitted = admitted_window(sequence, sequence, affordable)
         if admitted is None:
             unaffordable = {"affordableTokens": max(0, affordable), "minimumTokens": MINIMUM_TRAIN_TOKENS,
@@ -191,6 +211,7 @@ def plan(spec, output):
                         "microBatchSize": micro,
                         "sequenceLength": None if unaffordable else sequence,
                         "unaffordable": unaffordable,
+                        "grantableBytes": available,
                         "effectiveBatchSize": schedule["batchSize"],
                         "revision": getattr(config, "_commit_hash", None),
                         "parameters": parameters, "loraParameters": lora_parameters})
