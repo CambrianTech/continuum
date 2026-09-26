@@ -4547,6 +4547,54 @@ impl ServingDaemonModule {
                             *LAST_REFUSED.lock() = Some(key);
                         }
                         self.retain_plan_for_intent(intent_revision, candidates);
+                        // THE MISSING ARM (card c3c50e0d; Cormac: "no decision cannot compile").
+                        // "The previous plan stands" assumes a previous plan. At boot beside an
+                        // INHERITED engine there is none — plan_tx holds None — so a refused
+                        // demotion published NOTHING, the reconcile had nothing to do, and a
+                        // healthy engine on its port was never adopted (M5 2026-09-26 18:22Z:
+                        // six minutes, sixteen residents dark, cleared only by killing the
+                        // engine). An inherited lane is a past form of ourself: its residency
+                        // is ours to reclaim, so the plan that ADOPTS it is planned against the
+                        // PHYSICAL budget at the geometry it is running. Adopt, or say why not.
+                        if self.plan_tx.borrow().plan.is_none() {
+                            if let Some(inc) = incumbent.as_deref() {
+                                let geometry = crate::modules::served_window_store::load_geometry()
+                                    .filter(|g| g.model_id == inc)
+                                    .and_then(|g| g.steady_geometry());
+                                match incumbent_adoption_plan(
+                                    &self.physical_budget(),
+                                    candidates,
+                                    inc,
+                                    &demand,
+                                    geometry,
+                                ) {
+                                    Some(plan) => {
+                                        crate::probe!(
+                                            class = "serving.plan.incumbent_adopted",
+                                            model = inc,
+                                            lanes = plan.lanes as u64,
+                                            window = plan.served_context_window as u64,
+                                            usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                            physical_usable_gb =
+                                                (self.physical_budget().usable_bytes / 1_000_000_000),
+                                            "a demotion was refused with NO plan to retain: the \
+                                             inherited engine is planned at its own geometry \
+                                             against the physical budget — adopt, never nothing"
+                                        );
+                                        self.publish_plan_snapshot(intent_revision, Some(plan));
+                                    }
+                                    None => crate::probe!(
+                                        class = "serving.plan.incumbent_unplannable",
+                                        model = inc,
+                                        physical_usable_gb =
+                                            (self.physical_budget().usable_bytes / 1_000_000_000),
+                                        "a demotion was refused with no plan to retain and the \
+                                         inherited engine cannot be planned even against the \
+                                         physical budget — refused, named; the reconcile stays idle"
+                                    ),
+                                }
+                            }
+                        }
                         return;
                     }
                     // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
@@ -4859,6 +4907,22 @@ pub const COLD_BOOT_BELOW_FLOOR_GRACE: std::time::Duration = std::time::Duration
 /// onto a big card — and past it SERVE, because refusing into "the previous plan stands"
 /// with no previous plan boots the node dark (card 48f5438a: resident 0, active_model
 /// None while a servable 1.5B sat on disk). A viable base beats no base.
+/// The plan that ADOPTS an inherited engine when a demotion was refused and there is no
+/// previous plan to retain: the incumbent alone, at the geometry it is running (its
+/// last steady record), against the PHYSICAL budget — its residency is ours. `None`
+/// only when the incumbent is not a candidate or cannot fit one lane physically.
+fn incumbent_adoption_plan(
+    physical: &HostBudget,
+    candidates: &[ModelFootprint],
+    incumbent: &str,
+    demand: &ServingDemand,
+    geometry: Option<(u32, u32)>,
+) -> Option<ServingPlan> {
+    let footprint = candidates.iter().find(|c| c.model_id == incumbent)?;
+    let demand = demand.clone().with_boot_geometry(geometry);
+    plan_serving(physical, std::slice::from_ref(footprint), &demand)
+}
+
 fn below_floor_refuses(
     verdict: &FloorVerdict,
     has_incumbent: bool,
@@ -6873,6 +6937,49 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // what this catches (card c3c50e0d): a refused demotion with NO previous plan must
+    // still produce a plan for the inherited engine — the incumbent alone, at its running
+    // geometry, against the physical budget — never nothing. An incumbent that is not a
+    // candidate, or cannot fit one lane physically, is a named None.
+    #[test]
+    fn a_refused_demotion_with_no_plan_adopts_the_inherited_engine_at_its_geometry() {
+        use super::incumbent_adoption_plan;
+        use crate::cognition::serving_plan::{HostBudget, ModelFootprint, ServingDemand};
+        const GB: u64 = 1_000_000_000;
+        let qwen27b = ModelFootprint {
+            model_id: "ggml-org/Qwen3.8-27B-GGUF".into(),
+            weights_bytes: 17 * GB,
+            kv_per_token: 55_000,
+            context_window: 131_072,
+            capability_rank: 18,
+            fixed_per_lane_bytes: 0,
+        };
+        let small = ModelFootprint {
+            model_id: "continuum-ai/qwen2.5-coder-14b-instruct-GGUF".into(),
+            weights_bytes: 9 * GB,
+            kv_per_token: 30_000,
+            context_window: 32_768,
+            capability_rank: 11,
+            fixed_per_lane_bytes: 0,
+        };
+        let physical = HostBudget { usable_bytes: 44 * GB, perf_cores: 12 };
+        let demand = ServingDemand::new(2, Some(30_000));
+        let plan = incumbent_adoption_plan(
+            &physical,
+            &[small.clone(), qwen27b.clone()],
+            &qwen27b.model_id,
+            &demand,
+            Some((41_728, 2)),
+        )
+        .expect("the incumbent fits physically");
+        assert_eq!(plan.base_model.model_id, qwen27b.model_id, "the incumbent, never the smaller candidate");
+        assert!(plan.lanes >= 1 && plan.served_context_window >= 8_192);
+        assert!(
+            incumbent_adoption_plan(&physical, &[small], &qwen27b.model_id, &demand, None).is_none(),
+            "an incumbent that is not a candidate is a named None"
+        );
+    }
+
     // what this catches (card c3c50e0d): a reconcile in flight is NAMED — its step and age
     // — and past the bound it is a wedge, never a silent skip. The gate, the start and the
     // step are one operation: acquire sets them, drop clears them, a second acquire fails.
