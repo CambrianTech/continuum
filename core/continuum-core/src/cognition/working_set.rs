@@ -1316,3 +1316,4 @@ mod tests {
         assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
     }
 
+}
