@@ -4537,6 +4537,11 @@ impl LlmDeliberationFaculty {
                 ));
             }
             let started = std::time::Instant::now();
+            // THE ALLOWANCE THE REQUEST ACTUALLY CARRIED (Cormac on #4409): the reasoning
+            // budget was derived from this max_tokens, not from the reserve — they differ
+            // whenever her need is measured below the reserve — so the classifier at the
+            // seam must read the same number, or a real budget-hit reads as Landed.
+            let sent_allowance = request.max_tokens;
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, receipts)
                 .await?;
@@ -4634,9 +4639,10 @@ impl LlmDeliberationFaculty {
             // A deliberation's think that stopped AT its budget is censored, not measured
             // (Cormac on #4409): the classifier records it at the allowance so the need ring
             // never learns the budget and contracts the next allowance geometrically.
+            let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
             let reasoning_budget = match self.turn_kind(ws) {
                 TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
-                    u64::from(view.completion_reserve),
+                    u64::from(allowance),
                 )
                 .map(|b| b as u32),
                 TurnKind::Act => None,
@@ -4646,7 +4652,7 @@ impl LlmDeliberationFaculty {
                 answer_tokens,
                 reasoning_tokens,
                 reasoning_budget,
-                view.completion_reserve,
+                allowance,
             );
             if let super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
                 crate::probe!(
