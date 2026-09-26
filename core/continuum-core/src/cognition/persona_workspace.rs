@@ -1462,9 +1462,7 @@ impl PersonaWorkspaceRegistry {
                     handles
                         .into_iter()
                         .map(|(id, handle)| {
-                            handle.join().unwrap_or_else(|_| {
-                                // unwrap_or_else: a resident's save thread panicked — her
-                                // record is the one thing lost, named; the seam goes on.
+                            handle.join().unwrap_or_else(|_| { // unwrap_or_else: a resident's save thread panicked — her record is the one thing lost, named; the seam goes on
                                 (
                                     id,
                                     Err(std::io::Error::other(
