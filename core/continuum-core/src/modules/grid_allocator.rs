@@ -188,16 +188,10 @@ pub(crate) fn minds_over_the_grid(
         .collect()
 }
 
-/// The most capable seat any live node offers — the ceiling a role's floor is clamped
-/// to. No node, no plan: 0, so every declared floor relaxes to "any seat".
-pub(crate) fn grid_best_rank(nodes: &[NodeOffer]) -> u8 {
-    nodes.iter().flat_map(|n| n.plans.iter().map(|p| p.capability_rank)).max().unwrap_or(0) // unwrap_or: nothing offered = no floor to hold
-}
-
 pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
-    if let Some(plan) = &f.local_plan {
-        book.hear(NodeOffer { node: f.this_node, owner: ONE_OWNER, terms: OfferTerms::open(), plans: vec![plan.clone()] }, f.now_ms);
-    }
+    // This node is heard every pass, plan or not: between plans (a relaunch) its last
+    // rank still bounds the coder floor; the offer itself is dropped below (no seat).
+    book.hear(NodeOffer { node: f.this_node, owner: ONE_OWNER, terms: OfferTerms::open(), plans: f.local_plan.iter().cloned().collect() }, f.now_ms);
     for p in &f.peers {
         book.hear(
             NodeOffer { node: p.node, owner: ONE_OWNER, terms: OfferTerms::open(), plans: p.plan.iter().cloned().collect() },
@@ -220,7 +214,9 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     // 1.5B holds no coder, she moves up (opportunity, capability first), and a second
     // coder waits on the 27B rather than taking the CPU seat. Unplug it: the bound falls
     // and she falls home. No pin, no absolute floor that leaves a standalone node coderless.
-    let best_rank = grid_best_rank(&nodes);
+    // A node mid-relaunch keeps its last rank here (the book remembers it while the node
+    // is live); only silence lowers the bound — relaunching is not unplugging.
+    let best_rank = book.best_rank_live(f.now_ms, SILENT_AFTER_MS);
     for role in &mut roles {
         role.requirement.min_capability = role.requirement.min_capability.min(best_rank);
     }
@@ -746,6 +742,27 @@ mod tests {
         let coder_joined = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
         assert_eq!(coder_joined.min_capability, 12, "the 27B joined: the floor rises to the declared tier");
         assert!(!plan("1.5b", 3, 32_768, 2).holds(coder_joined), "and the 1.5B holds no coder any more — she moves up");
+
+        // Relaunching is not unplugging: the 27B peer heard with NO plan for a pass keeps the
+        // floor at 12 (the Kimi moment, both 27Bs relaunching); silent past the window, it
+        // is unplugged and the floor is the standalone one again.
+        let mut book = OfferBook::default();
+        let _ = build_inputs(&joined, &mut book);
+        let mut blink = facts(intel, Some(plan("1.5b", 3, 32_768, 2)), vec![peer(me, None, 0, 100_500)], vec![kimi]);
+        blink.now_ms = 101_000;
+        blink.citizens = f.citizens.clone();
+        blink.mind_roles = vec![(kimi, RoleId::Coder)];
+        let inputs = build_inputs(&blink, &mut book);
+        let coder_blink = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
+        assert_eq!(coder_blink.min_capability, 12, "a live 27B between plans still bounds the floor");
+        assert!(!inputs.nodes.iter().any(|n| n.node == me && !n.plans.is_empty()), "but offers no seat while relaunching");
+        let mut gone = facts(intel, Some(plan("1.5b", 3, 32_768, 2)), vec![], vec![kimi]);
+        gone.now_ms = 101_000 + SILENT_AFTER_MS + 1;
+        gone.citizens = f.citizens.clone();
+        gone.mind_roles = vec![(kimi, RoleId::Coder)];
+        let inputs = build_inputs(&gone, &mut book);
+        let coder_gone = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
+        assert_eq!(coder_gone.min_capability, 3, "silent past the window = unplugged: the standalone floor");
     }
 
     // what this catches (card 10bba591): an UNCHANGED grid publishes nothing — the key

@@ -255,11 +255,38 @@ pub struct NodeOffer {
 #[derive(Clone, Debug, Default)]
 pub struct OfferBook {
     heard: std::collections::BTreeMap<Uuid, (u64, NodeOffer)>,
+    /// The most capable plan each node has offered while LIVE — kept through an offer
+    /// with no plan (a relaunch), dropped only by silence (an unplug). Relaunching and
+    /// unplugged are two signals (Cormac on #4416): a node between plans still bounds
+    /// the coder floor, so a 1.5B never holds a coder because a 27B blinked.
+    best_rank: std::collections::BTreeMap<Uuid, (u64, u8)>,
 }
 
 impl OfferBook {
     pub fn hear(&mut self, offer: NodeOffer, now_ms: u64) {
+        match offer.plans.iter().map(|p| p.capability_rank).max() {
+            Some(rank) => {
+                self.best_rank.insert(offer.node, (now_ms, rank));
+            }
+            None => {
+                // Alive, no plan this pass: the rank it last offered stands, freshly heard.
+                if let Some(entry) = self.best_rank.get_mut(&offer.node) {
+                    entry.0 = now_ms;
+                }
+            }
+        }
         self.heard.insert(offer.node, (now_ms, offer));
+    }
+
+    /// The most capable seat any LIVE node has offered — a node mid-relaunch counts by
+    /// its last plan; a node silent past the window does not. 0 when nobody offers.
+    pub fn best_rank_live(&self, now_ms: u64, silent_after_ms: u64) -> u8 {
+        self.best_rank
+            .values()
+            .filter(|(heard_at, _)| now_ms.saturating_sub(*heard_at) <= silent_after_ms)
+            .map(|(_, rank)| *rank)
+            .max()
+            .unwrap_or(0) // unwrap_or: nothing offered = no floor to hold
     }
     /// The offers fresher than `silent_after_ms`, ordered by node id so two nodes
     /// computing the same allocation agree (Cormac's note on #4259).
@@ -280,6 +307,7 @@ impl OfferBook {
             .collect();
         for n in &gone {
             self.heard.remove(n);
+            self.best_rank.remove(n);
         }
         gone
     }
