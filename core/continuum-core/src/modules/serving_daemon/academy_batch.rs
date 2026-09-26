@@ -67,8 +67,13 @@ impl ServingDaemonModule {
         request: TeacherBatchRequest,
     ) -> Result<RemediationCorpus, CommandError> {
         let capture = self.verified_serving_target();
-        let operation = ServingOperation::acquire(self.reconciling.clone())
+        let operation = ServingOperation::acquire(
+            self.reconciling.clone(),
+            self.reconcile_started_ms.clone(),
+            self.reconcile_step.clone(),
+        )
             .ok_or_else(|| failure("serving lifecycle is busy; teacher batch deferred"))?;
+        operation.step(ReconcileStep::AcademyBatch);
         let (response, receiver) = oneshot::channel();
         let (cancellation, cancel_rx) = watch::channel(false);
         let cancel_on_drop = CancelOnDrop(cancellation.clone());
