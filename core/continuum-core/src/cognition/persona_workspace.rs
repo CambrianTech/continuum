@@ -1454,10 +1454,25 @@ impl PersonaWorkspaceRegistry {
                 let started = std::time::Instant::now();
                 let count = residents.len();
                 let save_one = &save_one;
+                // A test's native-home fixture is thread-local; each seam thread carries it
+                // (a fixture not carried is a real home written from a test).
+                #[cfg(test)]
+                let test_home = crate::paths::NativeHomeOverride::current();
+                #[cfg(test)]
+                let test_home = &test_home;
                 let results: Vec<(Uuid, std::io::Result<()>)> = std::thread::scope(|scope| {
                     let handles: Vec<_> = residents
                         .into_iter()
-                        .map(|(id, memory)| (id, scope.spawn(move || save_one(id, memory))))
+                        .map(|(id, memory)| {
+                            let handle = scope.spawn(move || {
+                                #[cfg(test)]
+                                let _home = test_home
+                                    .as_deref()
+                                    .map(crate::paths::NativeHomeOverride::install);
+                                save_one(id, memory)
+                            });
+                            (id, handle)
+                        })
                         .collect();
                     handles
                         .into_iter()
