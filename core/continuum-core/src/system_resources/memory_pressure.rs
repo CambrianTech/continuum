@@ -298,6 +298,26 @@ impl PressureLevel {
         }
     }
 
+    /// The swap axis from what the node is DOING with swap (card f26d6568). A file nine
+    /// tenths full is Critical whatever the rate (nowhere left to page). Below that the
+    /// smoothed swap-in + swap-out rate decides, so inert pages a build left behind an
+    /// hour ago read Normal while real paging reads High. With no rate (no counters on
+    /// this platform, or the first poll) occupancy decides, as [`Self::from_swap`].
+    pub fn from_swap_activity(swap_pct: f64, bytes_per_sec: Option<f64>) -> Self {
+        use crate::system_resources::swap_activity::{
+            SWAP_FULL_FRACTION, SWAP_HIGH_BYTES_PER_SEC, SWAP_WARNING_BYTES_PER_SEC,
+        };
+        if swap_pct >= SWAP_FULL_FRACTION {
+            return Self::Critical;
+        }
+        match bytes_per_sec {
+            None => Self::from_swap(swap_pct),
+            Some(rate) if rate >= SWAP_HIGH_BYTES_PER_SEC => Self::High,
+            Some(rate) if rate >= SWAP_WARNING_BYTES_PER_SEC => Self::Warning,
+            Some(_) => Self::Normal,
+        }
+    }
+
     /// The worse of two readings — the level the node acts on.
     pub fn worse(a: Self, b: Self) -> Self {
         if b.to_u8() > a.to_u8() { b } else { a }
@@ -642,6 +662,8 @@ struct MemoryTickState {
     anomaly_scanned_at: Option<Duration>,
     /// The monitor's own clock origin for `anomaly_scanned_at`.
     started: std::time::Instant,
+    /// The smoothed swap traffic the swap axis reads (card f26d6568).
+    swap_activity: crate::system_resources::swap_activity::SwapActivity,
 }
 
 /// Independent memory pressure monitoring system.
@@ -711,6 +733,7 @@ impl MemoryPressureMonitor {
                 log_counter: 0,
                 anomaly_scanned_at: None,
                 started: std::time::Instant::now(),
+                swap_activity: Default::default(),
             }),
         });
 
@@ -908,9 +931,13 @@ impl MemoryPressureMonitor {
             } else {
                 0.0
             };
+            let swap_rate = st.swap_activity.observe(
+                std::time::Instant::now(),
+                crate::system_resources::swap_activity::read_swap_traffic(),
+            );
             let level = PressureLevel::worse(
                 PressureLevel::from_pressure(pressure),
-                PressureLevel::from_swap(swap_pct),
+                PressureLevel::from_swap_activity(swap_pct, swap_rate),
             );
 
             // Atomics + cross-module level — lock-free reads from anywhere.
@@ -957,9 +984,11 @@ impl MemoryPressureMonitor {
                     avail_mb = available / (1024 * 1024),
                     swap_mb = swap_used / (1024 * 1024),
                     swap_pct = (swap_pct * 100.0) as u64,
+                    // -1 = no rate (no counters, or the first poll): occupancy decided.
+                    swap_rate_kib_s = swap_rate.map_or(-1, |r| (r / 1024.0) as i64),
                     rss_mb = rss / (1024 * 1024),
                     consecutive = consecutive_at_level,
-                    "memory pressure as the node reads it — swap is its own axis, so a full swap file is High even when the page counters read free"
+                    "memory pressure as the node reads it — swap is its own axis: a full swap file, or live paging, is pressure even when the page counters read free"
                 );
                 // NAME THE ANOMALY. fseventsd at 26 GB beside a 22 GB model server is a
                 // fault, not background; a reader who only sees "swap full" has to go
@@ -1494,6 +1523,22 @@ mod tests {
     #[test]
     fn export_bindings_memory_budget_snapshot() {
         MemoryBudgetSnapshot::export_all(&ts_rs::Config::default()).unwrap();
+    }
+
+    // what this catches: card f26d6568 — inert swap held the M5 at High for hours (55% of
+    // a 3 GB swapfile left by a deploy build, 22 GB free+inactive, zero paging). Occupancy
+    // with no traffic is Normal; live paging is High at any occupancy; a nearly full file
+    // is Critical whatever the rate; and with no rate, occupancy still decides (9/08).
+    #[test]
+    fn swap_pressure_is_paging_not_pages_left_behind() {
+        use crate::system_resources::swap_activity::SWAP_HIGH_BYTES_PER_SEC;
+        assert_eq!(PressureLevel::from_swap_activity(0.55, Some(0.0)), PressureLevel::Normal);
+        assert_eq!(
+            PressureLevel::from_swap_activity(0.05, Some(SWAP_HIGH_BYTES_PER_SEC)),
+            PressureLevel::High
+        );
+        assert_eq!(PressureLevel::from_swap_activity(0.97, Some(0.0)), PressureLevel::Critical);
+        assert_eq!(PressureLevel::from_swap_activity(0.55, None), PressureLevel::High);
     }
 
     // what this catches: swap dropping out of the level again (2026-09-08: swap 40/41 GB,

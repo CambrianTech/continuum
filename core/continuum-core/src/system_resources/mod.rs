@@ -26,6 +26,7 @@ pub mod disk_reporters;
 pub mod memory_pressure;
 pub mod monitor;
 pub mod rotation_log_pool;
+pub mod swap_activity;
 
 pub use concurrency::local_inference_capacity;
 
