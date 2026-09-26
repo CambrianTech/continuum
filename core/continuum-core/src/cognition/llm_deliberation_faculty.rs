@@ -4385,6 +4385,8 @@ impl LlmDeliberationFaculty {
         let (mut fit_window, mut calibration) = self.prompt_fit(&binding);
         let mut rejected_prompt_tokens = None;
         let mut gen_await_ms = 0u64;
+        // The allowance the request actually carried (set where it is built, read at the seam).
+        let mut sent_allowance: Option<u32> = None;
         // One corrective admission replay at most; no accepted cognition is
         // repeated. Existing queue/header/stream deadlines still apply to each
         // attempt. The immutable workspace and captured model route stay fixed.
@@ -4541,7 +4543,7 @@ impl LlmDeliberationFaculty {
             // budget was derived from this max_tokens, not from the reserve — they differ
             // whenever her need is measured below the reserve — so the classifier at the
             // seam must read the same number, or a real budget-hit reads as Landed.
-            let sent_allowance = request.max_tokens;
+            sent_allowance = request.max_tokens;
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, receipts)
                 .await?;
