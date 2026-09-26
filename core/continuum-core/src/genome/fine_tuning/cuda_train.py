@@ -343,7 +343,13 @@ def train(spec, output):
                 step += 1
                 trained_tokens += target_count
                 final_loss = weighted_loss / target_count
-                losses.write(json.dumps({"step": step, "epoch": epoch, "loss": final_loss}) + "\n")
+                # allocated vs RESERVED per step: the allocator's slack, calibrated from
+                # runs rather than from one OOM (Cormac on 81a6b95a — step 1 is the floor
+                # of the fragmentation, not its size; it grows as example lengths churn).
+                losses.write(json.dumps({"step": step, "epoch": epoch, "loss": final_loss,
+                                         "allocatedBytes": torch.cuda.memory_allocated(),
+                                         "reservedBytes": torch.cuda.memory_reserved(),
+                                         "peakReservedBytes": torch.cuda.max_memory_reserved()}) + "\n")
                 losses.flush()
                 if checkpoint_every > 0 and step % checkpoint_every == 0:
                     write_checkpoint(model, output, step, {"step": step, "epoch": epoch,
@@ -374,7 +380,8 @@ def train(spec, output):
             packages[package] = None
     write_json(output / "training-provenance.json", {"baseModel": base, "revision": revision,
         "device": torch.cuda.get_device_name(), "cuda": torch.version.cuda,
-        "peakAllocatedBytes": torch.cuda.max_memory_allocated(), "budgetBytes": budget,
+        "peakAllocatedBytes": torch.cuda.max_memory_allocated(),
+        "peakReservedBytes": torch.cuda.max_memory_reserved(), "budgetBytes": budget,
         "quantization": "nf4-double", "steps": step, "microBatchSize": micro,
         "effectiveBatchSize": schedule["batchSize"], "trainingRows": len(training),
         "validationRows": len(validation), "torch": torch.__version__,
@@ -404,6 +411,8 @@ if __name__ == "__main__":
                     "error": str(failure)[:2000],
                     "peakAllocatedBytes": (measured.cuda.max_memory_allocated()
                                            if measured.cuda.is_available() else None),
+                    "peakReservedBytes": (measured.cuda.max_memory_reserved()
+                                          if measured.cuda.is_available() else None),
                     "budgetBytes": spec.get("memoryBytes"),
                     "microBatchSize": spec.get("microBatchSize"),
                     "sequenceLength": (spec.get("schedule") or {}).get("sequenceLength"),
