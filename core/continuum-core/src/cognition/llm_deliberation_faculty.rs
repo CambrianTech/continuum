@@ -1585,7 +1585,7 @@ impl LlmDeliberationFaculty {
             // measured think instead ([`output_allowance`]).
             purpose: Some(
                 match kind {
-                    TurnKind::Act => "cognition/act",
+                    TurnKind::Act => crate::inference::request_body::ACT_PURPOSE,
                     TurnKind::Pass => crate::inference::request_body::DELIBERATION_PURPOSE,
                 }
                 .to_string(),
