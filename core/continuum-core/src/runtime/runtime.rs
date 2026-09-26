@@ -195,6 +195,10 @@ impl Runtime {
         // live path.
         let edges = self.registry.event_edges();
         let graph = super::event_graph::orphans(&edges, &[]);
+        // Hand the bus what every module declares it emits, so each event name's first
+        // publish reports whether anyone declared it (`runtime.event_graph.published`).
+        self.bus
+            .declare_emissions(edges.iter().flat_map(|e| e.emits.iter().cloned()).collect());
         let dead_subscriptions: Vec<&'static str> = modules
             .iter()
             .filter_map(|name| self.registry.get_by_name(name))

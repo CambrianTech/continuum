@@ -94,6 +94,29 @@ pub struct MessageBus {
     /// the coalescing window (50ms default). Prevents event floods from
     /// bulk operations like codebase indexing.
     coalesce_tracker: DashMap<String, Instant>,
+
+    /// Every distinct event name this bus has published, bounded by
+    /// [`SEEN_NAMES_CAP`]. The declared dataflow graph's reality check: the first
+    /// publish of a name reports whether any module declares producing it
+    /// (`runtime.event_graph.published`), so a declaration cannot drift from what
+    /// actually flows (CBAR gap #2, docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md).
+    seen_names: DashMap<String, ()>,
+
+    /// What the registered modules declare they emit, handed over by the runtime at
+    /// boot (`ServiceModule::emissions`). Empty until then.
+    declared_emissions: std::sync::RwLock<Vec<ArtifactSelector>>,
+}
+
+/// The most distinct event names the bus remembers. Names that embed an id grow
+/// without bound, and the reality check is about KINDS of event, so past this the
+/// bus stops recording and says so once.
+const SEEN_NAMES_CAP: usize = 4096;
+
+/// Is `name` covered by any declared emission? The same matcher delivery uses, so a
+/// name is declared exactly when some module's declaration would describe it. Pure.
+pub(crate) fn is_declared(declared: &[ArtifactSelector], name: &str) -> bool {
+    let key = ArtifactKey::from(name);
+    declared.iter().any(|d| d.matches(&key))
 }
 
 impl Default for MessageBus {
@@ -119,6 +142,47 @@ impl MessageBus {
             sender,
             recent_events: Mutex::new(VecDeque::with_capacity(RECENT_EVENT_BUFFER_SIZE)),
             coalesce_tracker: DashMap::new(),
+            seen_names: DashMap::new(),
+            declared_emissions: std::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    /// The runtime hands over every module's declared emissions once, at boot.
+    pub(crate) fn declare_emissions(&self, declared: Vec<ArtifactSelector>) {
+        if let Ok(mut slot) = self.declared_emissions.write() {
+            *slot = declared;
+        }
+    }
+
+    /// Record a published name; on its FIRST publish report whether any module
+    /// declares it. One set lookup on the hot path, one probe per distinct name.
+    fn note_published(&self, event_name: &str) {
+        if self.seen_names.contains_key(event_name) {
+            return;
+        }
+        if self.seen_names.len() >= SEEN_NAMES_CAP {
+            if self.seen_names.insert(String::from("\u{0}cap"), ()).is_none() {
+                crate::probe!(
+                    class = "runtime.event_graph.names_capped",
+                    cap = SEEN_NAMES_CAP as u64,
+                    "the bus stopped recording new event names at its cap — names embedding ids \
+                     are the likely cause, and that is itself worth declaring as a prefix"
+                );
+            }
+            return;
+        }
+        if self.seen_names.insert(event_name.to_string(), ()).is_none() {
+            let declared = self
+                .declared_emissions
+                .read()
+                .map(|d| is_declared(&d, event_name))
+                .unwrap_or(false); // JUSTIFIED unwrap_or: a poisoned declaration list reads as undeclared, which names the event rather than hiding it
+            crate::probe!(
+                class = "runtime.event_graph.published",
+                name = %event_name,
+                declared,
+                "first publish of an event name — whether any module declares producing it"
+            );
         }
     }
 
@@ -318,6 +382,7 @@ impl MessageBus {
             }
         }
 
+        self.note_published(event_name);
         // Deferred tier: broadcast for async consumers
         let event = BusEvent {
             name: event_name.to_string(),
@@ -332,6 +397,7 @@ impl MessageBus {
     /// Only broadcasts to deferred tier — synchronous handlers are skipped.
     /// Applies per-prefix coalescing to prevent event floods from bulk operations.
     pub fn publish_async_only(&self, event_name: &str, payload: serde_json::Value) {
+        self.note_published(event_name);
         // Passthrough: sentinel/academy/chat events need real-time delivery
         let is_realtime = event_name.starts_with("sentinel:")
             || event_name.starts_with("academy:")
@@ -413,6 +479,34 @@ fn glob_matches(pattern: &str, event: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the reality check's matcher agrees with delivery — an exact
+    // declaration covers only its name, a prefix covers every name under it, and a name
+    // no module declares is reported as undeclared.
+    #[test]
+    fn a_published_name_is_declared_exactly_when_a_declaration_would_deliver_it() {
+        use crate::runtime::artifact_handle::ArtifactKey;
+        let declared = vec![
+            ArtifactSelector::Exact(ArtifactKey("serving.snapshot".into())),
+            ArtifactSelector::Prefix("persona:".into()),
+        ];
+        assert!(super::is_declared(&declared, "serving.snapshot"));
+        assert!(super::is_declared(&declared, "persona:act"));
+        assert!(!super::is_declared(&declared, "serving.snapshotx"), "exact means exact");
+        assert!(!super::is_declared(&declared, "chat:message"), "nobody declares it");
+        assert!(!super::is_declared(&[], "anything"), "no declarations, nothing declared");
+    }
+
+    // what this catches: the seen-name set is the per-name gate for the probe, so each
+    // distinct name is recorded once however often it is published.
+    #[test]
+    fn each_published_name_is_recorded_once() {
+        let bus = MessageBus::new();
+        bus.publish_async_only("chat:message", serde_json::json!({}));
+        bus.publish_async_only("chat:message", serde_json::json!({}));
+        bus.publish_async_only("serving.snapshot", serde_json::json!({}));
+        assert_eq!(bus.seen_names.len(), 2);
+    }
+
     use super::*;
 
     #[test]
