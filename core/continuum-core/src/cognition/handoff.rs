@@ -38,6 +38,15 @@ use uuid::Uuid;
 use crate::experience::ledger::CardLedger;
 use crate::runtime::deploy_claim::DeployClaim;
 
+/// WHY a volatile write happens — the one fact the handoff needs that the memory itself
+/// cannot know. A periodic write says "the stop, if one comes, is unknown"; a seam write is
+/// the last thing before the process ends and asks the deploy gate what is tearing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveReason {
+    Periodic,
+    Seam,
+}
+
 /// What ended the life this record was written in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TornBy {
@@ -123,28 +132,40 @@ pub fn note_ledger(persona: Uuid, ledger: &CardLedger) {
 }
 
 /// The seam renewal's board walk: everything the board says she OWNS, whole. Partitioned
-/// here — a live-held work card refreshes `card`, everything else is an obligation.
+/// here through the SAME held predicate the renewal uses (`held_of_owned`: lease live, not
+/// claimable, not settled) — one definition of "held". A walk that finds no held work card
+/// CLEARS the card: the walk is the freshest truth, and a card she released, that merged, or
+/// whose lease lapsed must not ride into the next life as "you were working X" (Cormac on
+/// #4407). Her cards in Review and the review cards she holds are obligations.
 pub fn note_owned(persona: Uuid, owned: &[(airc_lib::Room, airc_lib::WorkCard)], now_ms: u64) {
     use airc_work::model::CardState;
-    let mut held: Option<(Uuid, airc_lib::WorkCard)> = None;
-    let mut obligations = Vec::new();
-    for (room, card) in owned {
-        let live_hold = crate::persona::card_holder::hold_of(card, now_ms)
-            == crate::persona::card_holder::Hold::Held;
-        let is_review_card = card.reviews.is_some();
-        if matches!(card.state, CardState::Review) || (is_review_card && live_hold) {
-            obligations.push(card.clone());
-        } else if live_hold
-            && !matches!(card.state, CardState::Closed | CardState::Merged)
-            && held.is_none()
-        {
-            held = Some((room.channel.as_uuid(), card.clone()));
-        }
-    }
+    let held = crate::persona::airc_runtime::held_of_owned(owned.to_vec(), now_ms);
+    let held_work = held
+        .iter()
+        .find(|(_, card)| card.reviews.is_none())
+        .map(|(room, card)| (room.channel.as_uuid(), card.clone()));
+    let mut obligations: Vec<airc_lib::WorkCard> = owned
+        .iter()
+        .filter(|(_, card)| matches!(card.state, CardState::Review))
+        .map(|(_, card)| card.clone())
+        .collect();
+    obligations.extend(
+        held.iter()
+            .filter(|(_, card)| card.reviews.is_some())
+            .map(|(_, card)| card.clone()),
+    );
+    obligations.dedup_by_key(|card| card.card_id);
     with_seed(persona, |s| {
-        if let Some((room, card)) = held {
-            s.room = Some(room);
-            s.card = Some(card);
+        match held_work {
+            Some((room, card)) => {
+                s.room = Some(room);
+                s.card = Some(card);
+            }
+            None => {
+                s.room = None;
+                s.card = None;
+                s.rooted_at_ms = None;
+            }
         }
         s.obligations = obligations;
     });
@@ -162,18 +183,42 @@ pub fn reload(persona: Uuid, previous: &Handoff) {
     });
 }
 
-/// The bound on each git read at the seam: the runtime's save phase is 2 s for every
-/// resident together, so one slow tree may not spend it.
+/// What tears this life, decided the way every other caller decides "is a deploy in
+/// flight": through `deploy_claim::in_flight`, which reads an abandoned claim (owner dead,
+/// or older than the cap) as Clear. A bare `read` would turn every stop after a crashed
+/// reboot into "a deploy did NOT land" — a false alarm in the one line built to be trusted
+/// (Cormac on #4407). Only a claim whose owner is alive is a `Deploy`; the claim rides whole.
+pub fn torn_by_for(reason: SaveReason, root: Option<&std::path::Path>, now_ms: u64) -> TornBy {
+    use crate::runtime::deploy_claim::{in_flight, read, DeployGate};
+    match reason {
+        SaveReason::Periodic => TornBy::Periodic,
+        SaveReason::Seam => match root {
+            Some(root) if matches!(in_flight(root, now_ms), DeployGate::InProgress { .. }) => {
+                read(root).map(TornBy::Deploy).unwrap_or(TornBy::Stop) // unwrap_or: the claim vanished between the gate's read and this one — a deploy that is gone is a stop
+            }
+            _ => TornBy::Stop,
+        },
+    }
+}
+
+/// ONE budget for every resident's staged read at a seam, not one per git call: the
+/// runtime's save phase is 2 s for every resident together, and 400 ms × 2 calls × N
+/// residents would overrun it on three slow trees (Cormac on #4407). `write_volatile_all`
+/// sets the deadline once; residents past it say `Unmeasured`, never wait.
 // derived-or-floor: a floor; `git status` on a warm checkout is tens of ms, and the save
 // phase (runtime.rs shutdown_within, 2 s per phase) is shared by every resident.
-const STAGED_READ_BOUND: std::time::Duration = std::time::Duration::from_millis(400);
+pub const STAGED_READ_BOUND: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Compose the record at the seam from the seed plus what only the seam knows.
 /// `None` when she holds nothing and stands nowhere: a citizen at home has nothing to hand.
+/// `staged_deadline` is `Some` at a seam only: a periodic checkpoint never spawns git in
+/// her live tree (it would take her `.git/index.lock` under her own `code/git` every
+/// interval), and says so instead.
 pub fn compose(
     persona: Uuid,
     torn_by: TornBy,
     acting_root: Option<&std::path::Path>,
+    staged_deadline: Option<std::time::Instant>,
     now_ms: u64,
 ) -> Option<Handoff> {
     let seed = with_seed(persona, |s| s.clone());
@@ -192,16 +237,23 @@ pub fn compose(
         card: seed.card,
         ledger: seed.ledger,
         acts_after_ledger,
-        staged: acting_root.map(staged_state),
+        staged: acting_root.map(|root| match staged_deadline {
+            Some(deadline) => staged_state(root, deadline),
+            None => Staged::Unmeasured {
+                root: root.to_string_lossy().to_string(),
+                why: "periodic checkpoint: the tree is read at the seam only".to_string(),
+            },
+        }),
         obligations: seed.obligations,
     })
 }
 
-/// `git status --porcelain` + sha256(`git diff`), each bounded. Runs on the blocking
-/// checkpoint worker; a tree that does not answer in time is `Unmeasured`, named.
-fn staged_state(root: &std::path::Path) -> Staged {
+/// `git status --porcelain` + sha256(`git diff`), both under the seam's shared deadline.
+/// Runs on the blocking checkpoint worker; a tree that does not answer in time is
+/// `Unmeasured`, named, and the git child is KILLED, not orphaned with her index lock.
+fn staged_state(root: &std::path::Path, deadline: std::time::Instant) -> Staged {
     let root_s = root.to_string_lossy().to_string();
-    let status = git_bounded(root, &["status", "--porcelain"]);
+    let status = git_bounded(root, &["status", "--porcelain"], deadline);
     let dirty_paths = match status {
         Ok(out) => out
             .lines()
@@ -209,7 +261,7 @@ fn staged_state(root: &std::path::Path) -> Staged {
             .collect::<Vec<_>>(),
         Err(why) => return Staged::Unmeasured { root: root_s, why },
     };
-    match git_bounded(root, &["diff"]) {
+    match git_bounded(root, &["diff"], deadline) {
         Ok(diff) => {
             use sha2::Digest;
             let digest = sha2::Sha256::digest(diff.as_bytes());
@@ -223,33 +275,73 @@ fn staged_state(root: &std::path::Path) -> Staged {
     }
 }
 
-fn git_bounded(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
+/// A background READER of her tree: `--no-optional-locks` so it never takes
+/// `.git/index.lock` from under her own `code/git`, spawned as a child that is killed at
+/// the deadline rather than an `.output()` left running past it.
+fn git_bounded(
+    root: &std::path::Path,
+    args: &[&str],
+    deadline: std::time::Instant,
+) -> Result<String, String> {
     let label = format!("git {}", args.join(" "));
-    let root = root.to_path_buf();
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(&args)
-            .output();
-        let _ = tx.send(out); // the receiver may have timed out and gone; nothing to do with a dead receiver
-    });
-    match rx.recv_timeout(STAGED_READ_BOUND) {
-        Ok(Ok(out)) if out.status.success() => {
-            Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(format!("{label}: the seam's staged budget was spent by earlier residents"));
+    }
+    let mut child = std::process::Command::new("git")
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{label} could not run: {e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    // Drain the pipes off this thread so a chatty child never blocks on a full pipe; the
+    // readers end when the child exits or is killed, so the joins below are bounded too.
+    let out_reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Some(mut s) = stdout {
+            let _ = s.read_to_end(&mut buf); // a closed pipe ends the read; the bytes so far are the answer
         }
-        Ok(Ok(out)) => Err(format!(
-            "{label} exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Some(mut s) = stderr {
+            let _ = s.read_to_end(&mut buf); // same: a closed pipe ends the read
+        }
+        buf
+    });
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill(); // already exited between try_wait and kill = nothing to kill
+                let _ = child.wait(); // reap; a wait on a killed child cannot block
+                break Err(format!(
+                    "{label} did not answer within {} ms and was killed",
+                    STAGED_READ_BOUND.as_millis()
+                ));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Err(e) => break Err(format!("{label}: {e}")),
+        }
+    };
+    let out = out_reader.join().unwrap_or_default(); // a panicked reader = no bytes; the status decides below
+    let err = err_reader.join().unwrap_or_default(); // same
+    match status {
+        Ok(status) if status.success() => Ok(String::from_utf8_lossy(&out).to_string()),
+        Ok(status) => Err(format!(
+            "{label} exited {status}: {}",
+            String::from_utf8_lossy(&err).trim()
         )),
-        Ok(Err(e)) => Err(format!("{label} could not run: {e}")),
-        Err(_) => Err(format!(
-            "{label} did not answer within {} ms",
-            STAGED_READ_BOUND.as_millis()
-        )),
+        Err(why) => Err(why),
     }
 }
 
@@ -422,15 +514,15 @@ mod tests {
     #[test]
     fn the_seam_composes_whole_structs_from_what_the_turn_stamped() {
         let me = Uuid::from_u128(101);
-        assert!(compose(me, TornBy::Stop, None, 5_000).is_none());
+        assert!(compose(me, TornBy::Stop, None, None, 5_000).is_none());
         note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 2_500);
         note_ledger(me, &ledger(3_000));
-        let fresh = compose(me, TornBy::Stop, None, 5_000).expect("held work hands off");
+        let fresh = compose(me, TornBy::Stop, None, None, 5_000).expect("held work hands off");
         assert_eq!(fresh.card.as_ref().map(|c| c.claim_expires_at_ms), Some(Some(2_000)));
         assert_eq!(fresh.ledger.as_ref().map(|l| l.next_test.as_str()), Some("run the failing test"));
         assert!(!fresh.acts_after_ledger, "the note at 3000 was written after the rooting at 2500");
         note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 4_000);
-        let stale = compose(me, TornBy::Stop, None, 5_000).expect("held");
+        let stale = compose(me, TornBy::Stop, None, None, 5_000).expect("held");
         assert!(stale.acts_after_ledger, "a work turn rooted at 4000 postdates the note at 3000");
     }
 
@@ -452,10 +544,54 @@ mod tests {
             (room.clone(), card(airc_work::model::CardState::Claimed, true)),
         ];
         note_owned(me, &owned, 1_500);
-        let h = compose(me, TornBy::Periodic, None, 9_000).expect("held");
+        let h = compose(me, TornBy::Periodic, None, None, 9_000).expect("held");
         assert_eq!(h.room, Some(Uuid::from_u128(55)));
         assert_eq!(h.card.map(|c| c.state), Some(airc_work::model::CardState::InProgress));
         assert_eq!(h.obligations.len(), 2);
+    }
+
+    // what this catches (Cormac on #4407): a card she no longer holds must not ride into the
+    // next life. After a rooting stamped it, a seam walk that shows no hold CLEARS it, and
+    // the wake line says she held no card instead of naming finished work.
+    #[test]
+    fn a_walk_with_no_hold_clears_the_card_she_once_rooted_at() {
+        let me = Uuid::from_u128(104);
+        note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 1_000);
+        assert!(compose(me, TornBy::Stop, None, None, 2_000).expect("held").card.is_some());
+        note_owned(me, &[], 2_000);
+        note_ledger(me, &ledger(1_500));
+        let h = compose(me, TornBy::Stop, None, None, 3_000).expect("a ledger still hands off");
+        assert!(h.card.is_none(), "the walk is the freshest truth");
+        assert!(!h.acts_after_ledger, "no rooting survives the clear");
+        let line = render_on_wake(&h, "abc", 3_000);
+        assert!(line.contains("You held no card at the seam"), "{line}");
+    }
+
+    // what this catches (Cormac on #4407): a deploy claim abandoned by a reboot that died
+    // must read as a plain STOP at the seam, not as "a deploy did NOT land"; a claim whose
+    // owner is alive is a Deploy, whole; a periodic write is Periodic whatever the file says.
+    #[test]
+    fn a_dead_owners_claim_is_a_stop_and_a_live_owners_claim_is_a_deploy() {
+        let root = std::env::temp_dir().join(format!("handoff-claim-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let now_ms = 10_000_000;
+        let dead = DeployClaim {
+            pid: 2_147_483_000, // no such process
+            started_ms: now_ms - 1_000,
+            target_sha: "deadbeef00".into(),
+        };
+        crate::runtime::deploy_claim::write(&root, &dead).expect("claim written");
+        assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Stop);
+        assert_eq!(torn_by_for(SaveReason::Periodic, Some(&root), now_ms), TornBy::Periodic);
+        let live = DeployClaim {
+            pid: std::process::id() as i32,
+            started_ms: now_ms - 1_000,
+            target_sha: "cafef00d00".into(),
+        };
+        crate::runtime::deploy_claim::write(&root, &live).expect("claim written");
+        assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Deploy(live));
+        assert_eq!(torn_by_for(SaveReason::Seam, None, now_ms), TornBy::Stop);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // what this catches (Kimi's #3 and #5): a deploy that did not land is SAID, a landed one
@@ -493,7 +629,7 @@ mod tests {
     fn a_root_that_cannot_be_read_is_unmeasured_not_clean() {
         let dir = std::env::temp_dir().join(format!("handoff-not-git-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let staged = staged_state(&dir);
+        let staged = staged_state(&dir, std::time::Instant::now() + STAGED_READ_BOUND);
         assert!(matches!(staged, Staged::Unmeasured { .. }), "{staged:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
