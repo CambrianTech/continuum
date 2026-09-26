@@ -316,6 +316,7 @@ async fn run_python(
     let interpreter_label = interpreter.display().to_string();
     let mut cmd = tokio::process::Command::new(interpreter);
     crate::code::shell_session::strip_secret_env(&mut cmd);
+    crate::code::shell_session::utf8_text_env(&mut cmd);
     cmd.arg(&src)
         .current_dir(cwd.unwrap_or(dir))
         .stdout(std::process::Stdio::piped())
@@ -700,6 +701,30 @@ mod tests {
         assert!(actual.is_absolute());
         assert_eq!(std::path::PathBuf::from(&r.interpreter), actual);
     }
+    // what this catches (Kimi, 2026-09-26 20:06Z, op #6929): a printed glyph outside
+    // Latin-1 is OUTPUT, never an exit 1. On Windows a piped child Python encodes stdout
+    // with the console code page (cp1252) and dies on the first `⚙`; the runner sets
+    // PYTHONUTF8=1 so the same program prints the same bytes on every host.
+    #[tokio::test]
+    async fn a_printed_glyph_outside_latin_1_is_output_never_an_exit_1() {
+        let dir = std::env::temp_dir().join(format!("code-run-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap(); // JUSTIFIED unwrap: test scaffolding
+        let interpreter = crate::modules::python_adapter::find_python_async()
+            .await
+            .expect("Python 3");
+        let out = run_python(
+            &dir,
+            None,
+            "print('\\u2699 code/read \\u2014 \\u2713')\n",
+            std::time::Duration::from_secs(20),
+            &interpreter,
+        )
+        .await
+        .expect("resolved Python");
+        assert!(out.ok, "exit {:?}, stderr: {}", out.exit_code, out.stderr);
+        assert!(out.stdout.contains("⚙ code/read — ✓"), "stdout: {:?}", out.stdout);
+    }
+
     // what this catches: a timed-out run losing everything it printed before the kill
     // (QA from Joaquin, 2026-09-13, card ba846f38 — bare "timedOut" was the longest dead
     // air of her session). The partial stdout must ride with the timeout verdict.
