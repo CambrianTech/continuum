@@ -620,6 +620,20 @@ impl PersonaAircRuntime {
             let hb_airc = airc_arc.clone();
             let hb_persona = persona_id;
             let hb_name = agent_name.clone();
+            // What she held before this core: the record beside her scope, so a followed
+            // claim is renewed inside its first lease-length after a restart (2d9df546).
+            let recorded = crate::persona::held_claims::load(
+                hb_airc.peer_id().as_uuid(),
+                hb_airc.home(),
+            );
+            if recorded > 0 {
+                crate::probe!(
+                    class = "persona.claim.record_loaded",
+                    agent_name = %hb_name,
+                    recorded,
+                    "held-claim record read at bootstrap — renewed beside the board walk"
+                );
+            }
             // NO birth stamp — renewal is earned ONLY by cognition, never by
             // booting. The grace stamp that used to sit here (one lease-length
             // per spawn, meant to cover the post-boot deaf window #412) made
@@ -922,6 +936,71 @@ impl PersonaAircRuntime {
                                     );
                                 } else {
                                     renewed += 1;
+                                }
+                            }
+                            // THE FOLLOWED CLAIMS: what she holds beyond the walk — a card
+                            // claimed on a room this scope does not subscribe to (card
+                            // 2d9df546: the claim path follows the card to its room, the
+                            // walk cannot). Renewed through the room the claim landed in,
+                            // on the same earned-by-cognition contract; a hold the board
+                            // refuses three times running is gone, and its record with it.
+                            let peer = hb_airc.peer_id().as_uuid();
+                            let walked: Vec<uuid::Uuid> =
+                                mine.iter().map(|(_, c)| c.card_id.as_uuid()).collect();
+                            let followed = crate::persona::held_claims::beyond_the_walk(
+                                &walked,
+                                &crate::persona::held_claims::held(peer),
+                            );
+                            for h in followed {
+                                if !crate::persona::cognition_pulse::renewal_earned(
+                                    crate::persona::cognition_pulse::work_idle_ms(
+                                        hb_persona,
+                                        Some(h.card_id),
+                                        crate::modules::chat::now_ms(),
+                                    ),
+                                    crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                ) {
+                                    continue;
+                                }
+                                match hb_airc
+                                    .heartbeat_work_claim_in(
+                                        &h.room,
+                                        airc_lib::HeartbeatWorkClaim {
+                                            card_id: airc_lib::WorkCardId::from_uuid(h.card_id),
+                                            claim_id: airc_lib::ClaimId::from_uuid(h.claim_id),
+                                            ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        renewed += 1;
+                                        crate::persona::held_claims::note_renewed(peer, h.card_id);
+                                        crate::probe!(
+                                            class = "persona.claim.renewed_followed",
+                                            agent_name = %hb_name,
+                                            card_id = %h.card_id,
+                                            room = %h.room.name,
+                                            "a claim beyond the subscription walk renewed through its recorded room"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        failed += 1;
+                                        let dropped = crate::persona::held_claims::note_refusal(
+                                            peer,
+                                            hb_airc.home(),
+                                            h.card_id,
+                                        );
+                                        crate::probe!(
+                                            class = "persona.claim.followed_renewal_refused",
+                                            agent_name = %hb_name,
+                                            card_id = %h.card_id,
+                                            room = %h.room.name,
+                                            error = %error,
+                                            dropped,
+                                            "the recorded room refused the heartbeat; the record is dropped at the third refusal in a row"
+                                        );
+                                    }
                                 }
                             }
                             if renewed > 0 {
