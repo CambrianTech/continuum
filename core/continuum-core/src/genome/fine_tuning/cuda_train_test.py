@@ -51,6 +51,31 @@ class CudaTrainingTests(unittest.TestCase):
         chunked.backward()
         self.assertTrue(torch.allclose(grad_reference, model.lm_head.weight.grad, atol=1e-5))
         self.assertLess(cuda_train.LOGITS_CHUNK_TOKENS, 4096, "the planner's logits term is one chunk, not a window")
+    def test_the_allocator_term_is_the_caching_allocators_slack_not_a_rounding_slab(self):
+        # what this catches (the 5090, 2026-09-26 21:47Z, job 515cb16e — the first
+        # end-to-end run, dead at step 1): the process cap is the plan, the plan carried a
+        # 24 MB "allocator" slab, and PyTorch held 744 MiB reserved-but-unallocated on top
+        # of 27.49 GB of tensors, then asked for 486 MiB more with 3.67 GiB free on the
+        # card. The plan must carry the allocator's slack, so the cap the grant enforces
+        # is a number the run can live under. Pure: no torch, the receipt's own numbers.
+        gib, mib = 1024 ** 3, 1024 ** 2
+        slab = 20 * mib
+        # The four terms of that plan (weights 24.15 + activations 2.73 + logits 1.53 +
+        # optimizer 0.05 GB), i.e. the old 28.48 GB plan less its 24 MB slab.
+        terms_total = 28_479_324_160 - 24 * mib
+        slack = cuda_train.allocator_slack(terms_total, slab)
+        reserved_unallocated, asked = 744 * mib, 486 * mib
+        peak_allocated = int(27.49e9)
+        self.assertGreaterEqual(terms_total + slack, peak_allocated + reserved_unallocated + asked,
+                                "the receipt's peak (tensors + allocator slack + the failing request) fits the plan")
+        self.assertGreaterEqual(slack, reserved_unallocated + asked)
+        self.assertEqual((terms_total + slack) % slab, 0, "the whole plan stays slab-aligned")
+        self.assertLessEqual(terms_total + slack, int(31.7e9), "and the 5090 grantable still holds it")
+        # A small plan gets the floor, never less; a big one gets the fraction.
+        self.assertGreaterEqual(cuda_train.allocator_slack(10 * gib, slab), cuda_train.ALLOCATOR_SLACK_FLOOR)
+        self.assertGreaterEqual(cuda_train.allocator_slack(60 * gib, slab), int(60 * gib * cuda_train.ALLOCATOR_SLACK_FRACTION))
+        self.assertLess(cuda_train.allocator_slack(60 * gib, slab), int(60 * gib * cuda_train.ALLOCATOR_SLACK_FRACTION) + 2 * slab)
+
     def test_a_checkpoint_is_written_whole_pointed_at_last_and_the_previous_one_dropped(self):
         # what this catches: the resume reads `checkpoints/LATEST` → a directory holding the
         # adapter and its loop state; the pointer must never name a half-written directory,

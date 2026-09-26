@@ -58,6 +58,28 @@ LOGITS_BYTES_PER_TOKEN = 12
 # 29.6 is still over the card); it is headroom for either path.
 LOGITS_CHUNK_TOKENS = 512
 
+# The caching allocator's slack: bytes RESERVED by PyTorch's allocator but not allocated
+# to any tensor (fragmentation, freed blocks kept for reuse). The process cap that
+# `train()` sets from the plan counts reserved bytes, so a plan that carries no slack is
+# enforced against a number the tensors never reached. Measured on the 5090, 2026-09-26
+# 21:47Z, Kimi's job 515cb16e, the first end-to-end run: plan 28.48 GB, cap 26.52 GiB,
+# peak allocated 27.49 GB (the estimate was right to within 3 percent), 744 MiB reserved
+# but unallocated, and the backward asked for 486 MiB more with 3.67 GiB FREE on the
+# card — killed at step 1 by a 24 MB "allocator" term that was a rounding slab, not a
+# model of the allocator. expandable_segments is set in the env and is a no-op on
+# Windows (the 5090), so the slack is real there. A fraction with a floor: 5 percent
+# of the four terms is ~1.4 GB on a 27B plan; 768 MiB is the least any run gets.
+ALLOCATOR_SLACK_FRACTION = 0.05
+ALLOCATOR_SLACK_FLOOR = 768 * 1024 * 1024
+
+
+def allocator_slack(terms_total, slab):
+    """PURE: the caching-allocator slack a plan carries above its tensor terms — the
+    larger of the floor and the fraction, rounded up so the whole plan stays
+    slab-aligned (`terms_total + slack` is a multiple of `slab`)."""
+    slack = max(ALLOCATOR_SLACK_FLOOR, math.ceil(terms_total * ALLOCATOR_SLACK_FRACTION))
+    return slack + (-(terms_total + slack) % slab)
+
 
 def chunked_causal_lm_loss(model, batch, chunk=LOGITS_CHUNK_TOKENS):
     """Mean next-token cross-entropy over the supervised targets — the same objective
@@ -133,12 +155,15 @@ def plan(spec, output):
     logical_budget = max(0, (available // slab - 1) * slab)
     # Planning describes required capacity, not permission to allocate it. Even
     # with no free memory, return a one-example plan for the owner to queue.
-    micro = min(schedule["batchSize"], max(1, (logical_budget - weights - optimizer) // per_example))
+    # The slack floor is paid before the micro-batch is sized, so the batch the plan
+    # admits is the batch the cap can hold.
+    micro = min(schedule["batchSize"],
+                max(1, (logical_budget - weights - optimizer - ALLOCATOR_SLACK_FLOOR) // per_example))
     tokens = micro * sequence
     activations = tokens * int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
     logits = micro * min(sequence, LOGITS_CHUNK_TOKENS) * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN
     terms = dict(weights=weights, optimizer=optimizer, activations=activations, logits=logits)
-    terms["allocator"] = slab + (-sum(terms.values()) % slab)
+    terms["allocator"] = allocator_slack(sum(terms.values()), slab)
     write_json(output, {"memoryBytes": sum(terms.values()), "terms": terms,
                         "microBatchSize": micro, "effectiveBatchSize": schedule["batchSize"],
                         "revision": getattr(config, "_commit_hash", None),
@@ -318,7 +343,13 @@ def train(spec, output):
                 step += 1
                 trained_tokens += target_count
                 final_loss = weighted_loss / target_count
-                losses.write(json.dumps({"step": step, "epoch": epoch, "loss": final_loss}) + "\n")
+                # allocated vs RESERVED per step: the allocator's slack, calibrated from
+                # runs rather than from one OOM (Cormac on 81a6b95a — step 1 is the floor
+                # of the fragmentation, not its size; it grows as example lengths churn).
+                losses.write(json.dumps({"step": step, "epoch": epoch, "loss": final_loss,
+                                         "allocatedBytes": torch.cuda.memory_allocated(),
+                                         "reservedBytes": torch.cuda.memory_reserved(),
+                                         "peakReservedBytes": torch.cuda.max_memory_reserved()}) + "\n")
                 losses.flush()
                 if checkpoint_every > 0 and step % checkpoint_every == 0:
                     write_checkpoint(model, output, step, {"step": step, "epoch": epoch,
@@ -349,7 +380,8 @@ def train(spec, output):
             packages[package] = None
     write_json(output / "training-provenance.json", {"baseModel": base, "revision": revision,
         "device": torch.cuda.get_device_name(), "cuda": torch.version.cuda,
-        "peakAllocatedBytes": torch.cuda.max_memory_allocated(), "budgetBytes": budget,
+        "peakAllocatedBytes": torch.cuda.max_memory_allocated(),
+        "peakReservedBytes": torch.cuda.max_memory_reserved(), "budgetBytes": budget,
         "quantization": "nf4-double", "steps": step, "microBatchSize": micro,
         "effectiveBatchSize": schedule["batchSize"], "trainingRows": len(training),
         "validationRows": len(validation), "torch": torch.__version__,
@@ -379,6 +411,8 @@ if __name__ == "__main__":
                     "error": str(failure)[:2000],
                     "peakAllocatedBytes": (measured.cuda.max_memory_allocated()
                                            if measured.cuda.is_available() else None),
+                    "peakReservedBytes": (measured.cuda.max_memory_reserved()
+                                          if measured.cuda.is_available() else None),
                     "budgetBytes": spec.get("memoryBytes"),
                     "microBatchSize": spec.get("microBatchSize"),
                     "sequenceLength": (spec.get("schedule") or {}).get("sequenceLength"),
