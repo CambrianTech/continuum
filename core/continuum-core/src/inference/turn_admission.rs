@@ -267,12 +267,17 @@ async fn admit(
             }
             admission.slot = Some(pg.slot);
         }
-    } else if let Some(pool) = pool.as_ref().filter(|pool| pool.n_slots() == 1) {
-        // A single-slot server has no separate scratch slot. Preserve the
-        // resident before background/anonymous traffic borrows its physical slot.
-        // Remove attribution BEFORE the await so cancellation cannot leave the
-        // next activity treating transient KV as its own warm tail.
-        admission.borrow_slot_for_transient(pool, 0, client, root).await?;
+    } else if let Some(pool) = pool.as_ref().filter(|pool| pool.scratch_slot().is_none()) {
+        // A server with no scratch slot (≤2 lanes): background/anonymous traffic
+        // borrows a citizen slot THROUGH the pool — the cheapest resident is saved
+        // and detached first — and carries that slot pinned, never left to the
+        // server's own placement. The two-lane case used to fall through here
+        // unpinned (card 4deaed09: the server put it on a resident's slot by
+        // similarity and overwrote her page every turn). Remove attribution
+        // BEFORE the await so cancellation cannot leave the next activity treating
+        // transient KV as its own warm tail.
+        let slot = pool.transient_slot();
+        admission.borrow_slot_for_transient(pool, slot, client, root).await?;
     } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
         // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
         // like every other slot user. Before this, every non-turn call wrote the
@@ -359,7 +364,9 @@ pub(crate) async fn admit_transient(
     let Some(pool) = pool else {
         return Ok(admission);
     };
-    let slot = slot.or_else(|| pool.scratch_slot()).unwrap_or(0); // JUSTIFIED unwrap_or: no named slot and no scratch slot = slot 0, whose resident is saved and detached first
+    let slot = slot
+        .or_else(|| pool.scratch_slot())
+        .unwrap_or_else(|| pool.transient_slot()); // JUSTIFIED unwrap_or_else: no named slot and no scratch slot = the cheapest citizen slot, whose resident is saved and detached first
     if slot >= pool.n_slots() {
         return Err(format!(
             "slot {slot} does not exist on this endpoint ({} slots)",
@@ -714,6 +721,79 @@ mod tests {
         drop(held);
         let admitted = waiting.await.expect("test: admitted once the holder releases");
         assert_eq!(admitted.scratch_slot(), Some(scratch));
+    }
+
+    // regression for card 4deaed09 (BigMama, 2026-09-26 17:47–17:59Z): a 2-lane engine
+    // has no scratch slot, and non-turn traffic went UNPINNED — the server placed it by
+    // similarity onto a resident's slot and overwrote her page; Sahar reused 0 tokens
+    // every turn while Kimi reused 44,950 on the other slot.
+    // what this catches: on a pool with no scratch slot, transient traffic borrows a
+    // citizen slot THROUGH the pool — the cheapest resident is saved and detached first
+    // and the admission carries that slot pinned — the single-slot rule generalised.
+    #[tokio::test]
+    async fn on_a_server_with_no_scratch_slot_transient_traffic_borrows_the_cheapest_citizen_slot_and_saves_its_resident() {
+        use axum::{
+            extract::{Path, Query},
+            http::StatusCode,
+            routing::post,
+            Json, Router,
+        };
+        let saves = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let app = Router::new().route(
+            "/slots/{slot}",
+            post({
+                let saves = saves.clone();
+                move |Path(slot): Path<u32>, Query(query): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>| {
+                    let saves = saves.clone();
+                    async move {
+                        let action = query.get("action").cloned().unwrap_or_default(); // unwrap_or_default: a fixture request with no action is a restore
+                        if action == "save" {
+                            saves.lock().expect("test: fixture mutex").push(slot);
+                        }
+                        let count = if action == "save" { "n_saved" } else { "n_restored" };
+                        (StatusCode::OK, Json(json!({"id_slot": slot, "filename": body["filename"], (count): 10})))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let pool = Arc::new(KvSlotPool::new(&root, 2));
+        assert!(pool.scratch_slot().is_none(), "two lanes reserve no scratch slot");
+        let sem = Arc::new(Semaphore::new(4));
+        let client = reqwest::Client::new();
+        let a = ActivityKey::new(Uuid::from_u128(1), Uuid::from_u128(2)).expect("test: non-nil ids");
+        let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).expect("test: non-nil ids");
+        // Two residents warm their slots: a large working set and a small one. Each
+        // turn COMPLETES (a dropped, uncommitted turn forgets its attribution — the
+        // cancellation rule — and would leave both slots reading as free).
+        let mut adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, &root, 20_000, std::time::Duration::ZERO)
+            .await
+            .expect("test: a admitted");
+        let slot_a = adm_a.slot().expect("test: a leased a slot");
+        adm_a.generation_completed();
+        drop(adm_a);
+        let mut adm_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, &root, 500, std::time::Duration::ZERO)
+            .await
+            .expect("test: b admitted");
+        let slot_b = adm_b.slot().expect("test: b leased a slot");
+        adm_b.generation_completed();
+        drop(adm_b);
+        assert_ne!(slot_a, slot_b);
+        assert_eq!(pool.transient_slot(), slot_b, "the cheapest page to lose is the small one");
+        // Anonymous traffic: borrowed THROUGH the pool — b's page saved, the slot carried.
+        let transient = admit_turn(&sem, None, Some(pool.clone()), &client, &root, 0, std::time::Duration::ZERO)
+            .await
+            .expect("test: transient admitted");
+        assert_eq!(transient.slot(), Some(slot_b), "pinned to the borrowed slot, never left to the server");
+        assert_eq!(
+            saves.lock().expect("test: fixture mutex").as_slice(),
+            &[slot_b],
+            "the resident was saved first, and only that one"
+        );
+        drop(transient);
+        server.abort();
     }
 
     // what this catches: the restore-into-busy-slot bug at its source — while a turn
