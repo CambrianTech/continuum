@@ -1523,6 +1523,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 &self.client,
                 root,
                 approx_tokens,
+                crate::inference::slots::EndpointSlots::TURN_READINESS_PATIENCE,
             )
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
@@ -1717,6 +1718,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     &self.client,
                     root,
                     0,
+                    crate::inference::slots::EndpointSlots::TURN_READINESS_PATIENCE,
                 )
                 .await
                 .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,

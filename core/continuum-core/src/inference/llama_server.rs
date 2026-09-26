@@ -6629,6 +6629,7 @@ mod tests {
                 &process.client,
                 &process.root,
                 10,
+                std::time::Duration::ZERO,
             )
             .await
             .unwrap();

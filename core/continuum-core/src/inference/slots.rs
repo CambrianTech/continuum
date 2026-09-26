@@ -585,7 +585,11 @@ pub(crate) struct KvPageContract {
 }
 
 struct EndpointState {
-    ready: bool,
+    /// Whether admissions are open. A `watch` rather than a bool so a TURN can wait
+    /// for the writer that closed the endpoint to reopen it ([`EndpointSlots::admit_when_ready`])
+    /// instead of being refused on the spot; every write goes through `send_replace`,
+    /// so the field and the signal cannot disagree.
+    ready: tokio::sync::watch::Sender<bool>,
     paging_uncertain: bool,
     generation: Option<EngineGeneration>,
     contract: Option<KvPageContract>,
@@ -600,6 +604,8 @@ struct EndpointState {
 pub(crate) struct EndpointSlots {
     gate: Arc<tokio::sync::RwLock<()>>,
     state: Mutex<EndpointState>,
+    /// The read side of `EndpointState::ready`, for turns that hold through a transition.
+    ready_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 pub(crate) struct EndpointAdmission {
@@ -615,7 +621,7 @@ impl EndpointAdmission {
     }
 
     pub(crate) fn check_ready(&self) -> Result<(), String> {
-        if self.endpoint.state.lock().ready {
+        if *self.endpoint.state.lock().ready.borrow() {
             Ok(())
         } else {
             Err("serving endpoint suspended; paging or engine completion remains unverified".into())
@@ -709,7 +715,7 @@ impl EngineGeneration {
         if let Some(endpoint) = self.endpoint.upgrade() {
             let mut state = endpoint.state.lock();
             if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
-                state.ready = false;
+                state.ready.send_replace(false);
             }
         }
     }
@@ -722,7 +728,7 @@ impl EngineGeneration {
         if let Some(endpoint) = self.endpoint.upgrade() {
             let mut state = endpoint.state.lock();
             if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
-                state.ready = false;
+                state.ready.send_replace(false);
                 crate::probe!(
                     class = "inference.kv_engine.exited",
                     generation = %self.id,
@@ -739,7 +745,7 @@ impl EndpointSlots {
     fn quarantine_paging(&self) {
         let mut state = self.state.lock();
         state.paging_uncertain = true;
-        state.ready = false;
+        state.ready.send_replace(false);
         crate::probe!(
             class = "inference.kv_page.uncertain",
             "paging completion unverified; endpoint requires verified engine replacement"
@@ -750,15 +756,80 @@ impl EndpointSlots {
         self.state.lock().paging_uncertain
     }
     pub(crate) fn is_ready(&self) -> bool {
-        self.state.lock().ready
+        let ready = *self.state.lock().ready.borrow();
+        ready
     }
+    /// How long a TURN holds through a closed endpoint: an engine REPLACEMENT, not one
+    /// launch. Measured on BigMama 2026-09-26 14:24:55–14:27:10Z: a KV restore ran past
+    /// its bound, the endpoint was quarantined, the engine was retired and relaunched
+    /// (two exits, one verified generation) — 135 s of refusals, 36 of them Kimi's. One
+    /// launch budget ([`crate::inference::llama_server::DEFAULT_SERVING_WAIT`], 120 s)
+    /// would have missed that by 15 s and refused the turns that had waited longest. So:
+    /// an exit and a launch, each within the spawner's own budget. Still bounded — past
+    /// it the launch itself would have been judged failed twice over.
+    pub const TURN_READINESS_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
+        2 * crate::inference::llama_server::DEFAULT_SERVING_WAIT.as_secs(),
+    );
+
+    /// Admit a TURN, holding through a closed endpoint for up to `patience` before refusing.
+    ///
+    /// Why a turn holds and why the bound is what it is (BigMama, 2026-09-26): after the
+    /// 12:20Z boot Kimi's turn met [`Self::admit`] while the engine was still loading and
+    /// was refused 8 times in 1.5 s, then 8 more on the cross-grid fallback, which reached
+    /// a peer in the same state — 16 of her 26 requests in 90 minutes failed inside
+    /// 12:28:16–12:29:41Z, and the engine was ready at 12:30Z. A loading engine is BUSY,
+    /// not dead (Joel: busy is not dead). The writer that closed the endpoint reopens it;
+    /// a turn should be standing there when it does. `patience` is the caller's — the
+    /// persona adapter passes [`Self::TURN_READINESS_PATIENCE`]; a caller that wants the
+    /// instant answer (warm-ahead, the operator probe, a test asserting the refusal)
+    /// passes zero. Past it the refusal is the same as before, with the wait in it.
+    pub(crate) async fn admit_when_ready(
+        self: &Arc<Self>,
+        patience: std::time::Duration,
+    ) -> Result<EndpointAdmission, String> {
+        // Zero patience is the instant answer, not a zero-length timer: a
+        // `tokio::time::timeout(ZERO, …)` still goes through the time driver, and
+        // under a current-thread runtime that turn is observable (the warm-ahead
+        // fixture's parked handler never drained behind it) — so the instant path
+        // never touches the timer at all.
+        if patience.is_zero() {
+            return self.admit().await;
+        }
+        let mut ready = self.ready_rx.clone();
+        if !*ready.borrow_and_update() {
+            let held = std::time::Instant::now();
+            match tokio::time::timeout(patience, ready.wait_for(|open| *open)).await {
+                Ok(Ok(_)) => crate::probe!(
+                    class = "inference.admission.held",
+                    held_ms = held.elapsed().as_millis() as u64,
+                    "a turn waited through engine readiness instead of being refused"
+                ),
+                Ok(Err(_)) => {
+                    return Err("serving endpoint closed while a turn waited for readiness".into())
+                }
+                Err(_) => {
+                    crate::probe!(
+                        class = "inference.admission.refused_after_hold",
+                        held_ms = held.elapsed().as_millis() as u64,
+                        "engine readiness did not arrive within the turn's patience"
+                    );
+                    return Err(format!(
+                        "serving endpoint is suspended pending engine readiness (held {} s)",
+                        patience.as_secs()
+                    ));
+                }
+            }
+        }
+        self.admit().await
+    }
+
     pub(crate) async fn admit(self: &Arc<Self>) -> Result<EndpointAdmission, String> {
-        if !self.state.lock().ready {
+        if !*self.state.lock().ready.borrow() {
             return Err("serving endpoint is suspended pending engine readiness".into());
         }
         let guard = self.gate.clone().read_owned().await;
         let state = self.state.lock();
-        if !state.ready {
+        if !*state.ready.borrow() {
             return Err("serving endpoint is suspended pending engine readiness".into());
         }
         Ok(EndpointAdmission {
@@ -795,7 +866,7 @@ impl EndpointSlots {
         if !current() {
             return Err(());
         }
-        self.state.lock().ready = false;
+        self.state.lock().ready.send_replace(false);
         Ok(EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
@@ -812,7 +883,7 @@ impl EndpointSlots {
         if !current() {
             return Err(());
         }
-        self.state.lock().ready = false;
+        self.state.lock().ready.send_replace(false);
         Ok(EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
@@ -820,10 +891,10 @@ impl EndpointSlots {
     }
 
     pub(crate) async fn transition(self: &Arc<Self>) -> EndpointTransition {
-        self.state.lock().ready = false;
+        self.state.lock().ready.send_replace(false);
         let guard = self.gate.clone().write_owned().await;
         // A preceding transition might have reopened while this writer waited.
-        self.state.lock().ready = false;
+        self.state.lock().ready.send_replace(false);
         EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
@@ -884,7 +955,7 @@ impl EndpointTransition {
         {
             return Err("suspended live ledger changed or paging is uncertain".into());
         }
-        state.ready = true;
+        state.ready.send_replace(true);
         Ok(())
     }
 
@@ -925,7 +996,7 @@ impl EndpointTransition {
                 .as_ref()
                 .and_then(Clone::clone)
                 .ok_or("checkpoint requires a known slot pool")?;
-            state.ready = false;
+            state.ready.send_replace(false);
             (generation, pool)
         };
         let mut residents: Vec<_> = pool
@@ -1008,7 +1079,7 @@ impl EndpointTransition {
                     .into(),
             );
         }
-        if state.ready {
+        if *state.ready.borrow() {
             return if state.contract.as_ref() == Some(&contract) {
                 Ok(())
             } else {
@@ -1030,7 +1101,7 @@ impl EndpointTransition {
         state.pool = Some(Some(pool));
         state.pool_generation = Some(generation.id);
         state.contract = Some(contract);
-        state.ready = true;
+        state.ready.send_replace(true);
         crate::probe!(
             class = "inference.kv_engine.ready",
             endpoint = root,
@@ -1046,10 +1117,12 @@ impl SlotDirectory {
         self.endpoints
             .entry(root.trim_end_matches('/').to_string())
             .or_insert_with(|| {
+                let (ready, ready_rx) = tokio::sync::watch::channel(true);
                 Arc::new(EndpointSlots {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
+                    ready_rx,
                     state: Mutex::new(EndpointState {
-                        ready: true,
+                        ready,
                         paging_uncertain: false,
                         generation: None,
                         contract: None,
@@ -1111,6 +1184,61 @@ mod tests {
 
     fn key(p: u128, r: u128) -> ActivityKey {
         ActivityKey::new(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    }
+
+    // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
+    // loading engine was refused instantly — 16 of Kimi's 26 requests in 90 min failed
+    // inside a 90 s launch window, half of them on the cross-grid fallback.
+    // what this catches: a turn HOLDS through an engine transition and is admitted the
+    // moment the writer reopens; only past its patience is it refused; the operator
+    // path (`admit`) keeps its instant refusal.
+    #[tokio::test]
+    async fn a_turn_holds_through_engine_readiness_and_is_admitted_when_the_writer_reopens() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let endpoint = dir.endpoint("test://warming");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec!["fixture.lora".into()],
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        // The launch: the writer closes the endpoint and holds it until the engine is verified.
+        let launch = endpoint.transition().await;
+        assert!(endpoint.admit().await.is_err(), "the operator path refuses instantly");
+        let held = endpoint.admit_when_ready(std::time::Duration::from_secs(5));
+        tokio::pin!(held);
+        assert!(
+            futures::poll!(&mut held).is_pending(),
+            "a turn holds through the launch, it is not refused"
+        );
+        let generation = launch.start_generation().expect("test: engine generation");
+        launch
+            .ready("test://warming", &generation, contract)
+            .expect("test: verified engine");
+        drop(launch);
+        let admitted = held.await.expect("admitted the moment the writer reopened");
+        assert!(admitted.check_ready().is_ok());
+        drop(admitted);
+        // Past its patience the refusal is the old one, with the wait in it.
+        let _closed = endpoint.transition().await;
+        let refused = endpoint
+            .admit_when_ready(std::time::Duration::from_millis(50))
+            .await;
+        assert!(
+            refused.is_err_and(|e| e.contains("suspended pending engine readiness (held 0 s)")),
+            "a turn is refused only past its patience"
+        );
     }
 
     // what this catches: the 2026-08-26 KV-reuse-0% bug, both halves. One persona
