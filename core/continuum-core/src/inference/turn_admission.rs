@@ -124,8 +124,9 @@ impl Drop for TurnAdmission {
 /// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
 /// loading, a transition in flight) before it is refused — the caller's bound, since
 /// only the caller knows what its request can afford: the persona adapter passes
-/// `EndpointSlots::TURN_READINESS_PATIENCE` (an engine replacement), a test that asserts
-/// the refusal passes zero. See `EndpointSlots::admit_when_ready`
+/// `EndpointSlots::turn_patience(turn_bound, elapsed)` — an engine replacement, capped by
+/// what the turn has left on its own bound — and a test that asserts the refusal passes
+/// zero. The hold is ONE deadline however many times the endpoint closes inside it. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,

@@ -713,7 +713,7 @@ impl EngineGeneration {
 
     pub(crate) fn retiring(&self) {
         if let Some(endpoint) = self.endpoint.upgrade() {
-            let mut state = endpoint.state.lock();
+            let state = endpoint.state.lock();
             if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
                 state.ready.send_replace(false);
             }
@@ -726,7 +726,7 @@ impl EngineGeneration {
     pub(crate) fn observed_exit(&self) {
         self.exited.store(true, Ordering::Release);
         if let Some(endpoint) = self.endpoint.upgrade() {
-            let mut state = endpoint.state.lock();
+            let state = endpoint.state.lock();
             if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
                 state.ready.send_replace(false);
                 crate::probe!(
@@ -796,14 +796,17 @@ impl EndpointSlots {
             return self.admit().await;
         }
         let mut ready = self.ready_rx.clone();
-        if !*ready.borrow_and_update() {
-            let held = std::time::Instant::now();
-            match tokio::time::timeout(patience, ready.wait_for(|open| *open)).await {
-                Ok(Ok(_)) => crate::probe!(
-                    class = "inference.admission.held",
-                    held_ms = held.elapsed().as_millis() as u64,
-                    "a turn waited through engine readiness instead of being refused"
-                ),
+        let held = std::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + patience;
+        let mut waited = !*ready.borrow_and_update();
+        let mut reopened: u64 = 0;
+        // ONE deadline for the whole hold, however many times the endpoint closes and
+        // reopens inside it (Cormac's review of #4411, the M5 grow chain: transitions
+        // back to back, and the first cut refused a held turn with patience left the
+        // moment the second one closed the endpoint behind the first one's reopen).
+        loop {
+            match tokio::time::timeout_at(deadline, ready.wait_for(|open| *open)).await {
+                Ok(Ok(_)) => {}
                 Ok(Err(_)) => {
                     return Err("serving endpoint closed while a turn waited for readiness".into())
                 }
@@ -811,16 +814,50 @@ impl EndpointSlots {
                     crate::probe!(
                         class = "inference.admission.refused_after_hold",
                         held_ms = held.elapsed().as_millis() as u64,
+                        reopened,
                         "engine readiness did not arrive within the turn's patience"
                     );
                     return Err(format!(
                         "serving endpoint is suspended pending engine readiness (held {} s)",
-                        patience.as_secs()
+                        held.elapsed().as_secs()
                     ));
                 }
             }
+            match self.admit().await {
+                Ok(admission) => {
+                    if waited {
+                        crate::probe!(
+                            class = "inference.admission.held",
+                            held_ms = held.elapsed().as_millis() as u64,
+                            reopened,
+                            "a turn waited through engine readiness instead of being refused"
+                        );
+                    }
+                    return Ok(admission);
+                }
+                // Closed again between the reopen and the admission: the next writer
+                // is already in. The patience is the turn's, not one transition's.
+                Err(_) => {
+                    waited = true;
+                    reopened += 1;
+                }
+            }
         }
-        self.admit().await
+    }
+
+    /// The patience a TURN brings to a closed endpoint: [`Self::TURN_READINESS_PATIENCE`],
+    /// but never more than the turn has left on its own bound, counted from the request's
+    /// start — so the hold SPENDS the turn bound and never stacks 240 s on top of it
+    /// (Cormac and Fable's review of #4411). A turn with no bound of its own gets the
+    /// full patience; one that is already out of time gets the instant answer. PURE.
+    pub fn turn_patience(
+        turn_bound: Option<std::time::Duration>,
+        elapsed: std::time::Duration,
+    ) -> std::time::Duration {
+        match turn_bound {
+            Some(bound) => Self::TURN_READINESS_PATIENCE.min(bound.saturating_sub(elapsed)),
+            None => Self::TURN_READINESS_PATIENCE,
+        }
     }
 
     pub(crate) async fn admit(self: &Arc<Self>) -> Result<EndpointAdmission, String> {
@@ -1238,6 +1275,87 @@ mod tests {
         assert!(
             refused.is_err_and(|e| e.contains("suspended pending engine readiness (held 0 s)")),
             "a turn is refused only past its patience"
+        );
+    }
+
+    // regression for Cormac's blocker on #4411 (the M5 grow chain): transitions back to
+    // back. The first cut waited for ONE reopen and then called `admit()` once; a second
+    // transition that closed the endpoint behind the first one's reopen made that call
+    // refuse a turn with patience left.
+    // what this catches: a held turn stays held across a re-close and is admitted by the
+    // transition that finally leaves the endpoint open, on the one deadline it started
+    // with. The interleaving is deterministic: the gate is FIFO, so the turn's read
+    // lease is granted by the first writer's drop before the second writer can take it,
+    // and the second writer has already closed the endpoint by then.
+    #[tokio::test]
+    async fn a_held_turn_survives_back_to_back_transitions_with_patience_left() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let endpoint = dir.endpoint("test://grow-chain");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        let first = endpoint.transition().await;
+        let held = endpoint.admit_when_ready(std::time::Duration::from_secs(5));
+        tokio::pin!(held);
+        assert!(futures::poll!(&mut held).is_pending(), "held on the closed endpoint");
+        let old = first.start_generation().expect("test: first generation");
+        first
+            .ready("test://grow-chain", &old, contract.clone())
+            .expect("test: first engine verified");
+        // Reopened, but the first writer is still held: the turn moves from the watch
+        // to the gate's read queue.
+        assert!(futures::poll!(&mut held).is_pending(), "queued on the gate behind the writer");
+        drop(first);
+        // The second transition closes the endpoint synchronously and queues for the
+        // writer BEHIND the turn's read lease.
+        let second = endpoint.transition();
+        tokio::pin!(second);
+        assert!(futures::poll!(&mut second).is_pending(), "second writer queued behind the read lease");
+        assert!(
+            futures::poll!(&mut held).is_pending(),
+            "closed again with patience left: still held (the first cut refused here)"
+        );
+        let second = second.await;
+        old.observed_exit();
+        let new = second.start_generation().expect("test: second generation");
+        second
+            .ready("test://grow-chain", &new, contract)
+            .expect("test: second engine verified");
+        drop(second);
+        let admitted = held.await.expect("admitted by the transition that finally left the endpoint open");
+        assert!(admitted.check_ready().is_ok());
+    }
+
+    // what this catches: the hold spends the TURN's bound, never stacks on it — and a
+    // turn with no time left gets the instant answer, not a 240 s wait.
+    #[test]
+    fn the_turns_patience_is_capped_by_what_the_turn_has_left() {
+        use std::time::Duration;
+        let cap = EndpointSlots::TURN_READINESS_PATIENCE;
+        assert_eq!(EndpointSlots::turn_patience(None, Duration::from_secs(10)), cap);
+        assert_eq!(EndpointSlots::turn_patience(Some(Duration::from_secs(600)), Duration::from_secs(10)), cap);
+        assert_eq!(
+            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(20)),
+            Duration::from_secs(24)
+        );
+        assert_eq!(
+            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(50)),
+            Duration::ZERO,
+            "out of time is the instant answer"
         );
     }
 
