@@ -8,6 +8,20 @@ Joel, 2026-09-25/26: "It is the only way to do it if you think it is possible. I
 
 ---
 
+## 0. The law (Joel, 2026-09-26 22:4xZ), and the night that proved it
+
+> "You can't make the training slow and sloppy, nor should dreams destroy the ability to inference. Do it right."
+
+Three gates every slice below is measured against, on both outliers, before it is called done:
+
+1. **Never dark.** A citizen's seat is never taken down to learn. The DREAM stage runs *inside* the serving loop under a governor budget; a directed turn waits at most one optimizer micro-step (≤ one decode batch's latency budget, [[act-latency-budget-human-expectations-set-the-bar]]: 1.5× is fine, 5–10× is disqualifying); entering or leaving a dream costs at most one decode step; there is no unload verb on this path. The health line must show the other residents turning through a dream period (S4's gate).
+2. **Fast.** Training runs on the same accelerator and kernels as inference, on the resident weights (no second copy of the base — the copy is what made co-residency impossible: 24.15 GB of NF4 beside a 29.6 GB lane). A dream epoch on a curated bucket (16 examples × seq 2048 on a 27B at r8) is minutes of micro-steps interleaved with turns, not 45 minutes of silence.
+3. **Exact.** The adapter is fit against the *served* numerics (Q4_K_M on the GPU), with f32 adapter parameters, a native chunked cross-entropy, a held-out split evaluated every epoch, and it is never served while moving: shadow → smoke turn (a directed question + one tool call) → stable. Memory is *measured* by the engine's own allocator on the training graph (`ggml_gallocr`), reported like `/props`, never estimated from outside and never enforced as a cap against an allocator we do not own.
+
+**The counterexample, measured 2026-09-26 (Kimi's first end-to-end run, job 515cb16e, the Python QLoRA trainer on the 5090):** the seat went dark at 21:41Z for the period; the process cap was the plan estimate to the byte; the plan's allocator term (24 MB) was 30× under the caching allocator's real slack (744 MiB, `expandable_segments` a no-op on Windows); the run died at step 1 with 3.67 GiB free on the card; the failure reached a probe file and not the room for 19 minutes; the restore came back at 1 × 32k where she had 2 × 73k because the footprint of a Python-external engine could not be read. Every item is the cost of predicting a foreign process from outside. The Rust side (dispatch, park, receipts, resume) behaved. **The Python and MLX trainers are retired as the path** (they remain only as the §4.6 fallback until S3/S3b land, and are never patched further); training work is this document, card aad139ee.
+
+---
+
 ## 1. Today: nothing is shared (measured 2026-09-26)
 
 Every path below holds a **second copy of the base** or **relaunches the engine**. File:line are in `core/continuum-core/src` unless noted.
