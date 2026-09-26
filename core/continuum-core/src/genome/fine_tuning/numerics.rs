@@ -121,7 +121,10 @@ pub const REFUSAL_BITS: f32 = 2.0;
     export,
     export_to = "../../../protocol/typescript/genome/NumericsMatch.ts"
 )]
-#[serde(rename_all = "camelCase", tag = "kind")]
+// `rename_all` renames the VARIANTS; the fields inside them need
+// `rename_all_fields`, or this type crosses the boundary as `bitsApart` on one
+// side and `bits_apart` on the other (caught reading the generated binding).
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum NumericsMatch {
     /// Within [`MATCHED_BITS`]: the adapter will meet base error of the order it was
     /// fit against.

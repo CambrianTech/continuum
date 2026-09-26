@@ -3,4 +3,4 @@
 /**
  * What a fit-versus-served comparison concluded.
  */
-export type NumericsMatch = { "kind": "matched", bits_apart: number, } | { "kind": "drifted", bits_apart: number, } | { "kind": "incompatible", bits_apart: number, } | { "kind": "unmeasured", missing: string, };
+export type NumericsMatch = { "kind": "matched", bitsApart: number, } | { "kind": "drifted", bitsApart: number, } | { "kind": "incompatible", bitsApart: number, } | { "kind": "unmeasured", missing: string, };
