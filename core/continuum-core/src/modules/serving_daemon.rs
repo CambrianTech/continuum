@@ -491,6 +491,8 @@ enum ReconcileStep {
     VerifyLanes = 5,
     /// Holding the gate for an academy teacher batch on the lane.
     AcademyBatch = 6,
+    /// Training admission reading governed memory under the gate (aae8af55).
+    TrainingAdmission = 7,
 }
 impl ReconcileStep {
     fn name(self) -> &'static str {
@@ -502,6 +504,7 @@ impl ReconcileStep {
             Self::VerifyWindow => "verify_window",
             Self::VerifyLanes => "verify_lanes",
             Self::AcademyBatch => "academy_batch",
+            Self::TrainingAdmission => "training_admission",
         }
     }
     fn from_u8(v: u8) -> Self {
@@ -512,6 +515,7 @@ impl ReconcileStep {
             4 => Self::VerifyWindow,
             5 => Self::VerifyLanes,
             6 => Self::AcademyBatch,
+            7 => Self::TrainingAdmission,
             _ => Self::None,
         }
     }
@@ -574,12 +578,107 @@ impl ServingOperation {
         self.step.store(step as u8, Ordering::Release);
     }
 }
+impl ServingDaemonModule {
+    /// This daemon's lifecycle gate, for the boot path to publish (`LifecycleGate::set_global`).
+    pub(crate) fn lifecycle_gate(&self) -> LifecycleGate {
+        LifecycleGate {
+            gate: self.reconciling.clone(),
+            started_ms: self.reconcile_started_ms.clone(),
+            step: self.reconcile_step.clone(),
+            settled: self.plan_published.clone(),
+        }
+    }
+}
 impl Drop for ServingOperation {
     fn drop(&mut self) {
         self.step.store(ReconcileStep::None as u8, Ordering::Release);
         self.started_ms.store(0, Ordering::Release);
         self.gate.store(false, Ordering::Release);
     }
+}
+
+/// The serving lifecycle gate as a handle another owner can take (card aae8af55).
+/// Training admission reads governed memory UNDER this gate: a relaunch or a placement
+/// move holds it from the moment it frees the engine's memory until the new engine is
+/// resident, so a free-memory read inside that window is refused rather than admitting
+/// a trainer at a time nobody called (the 9/16 class: a 22 GB sidecar admitted inside a
+/// relaunch). The gate is held only across the admission, not the run: once granted,
+/// the training lease is what keeps serving out of that memory, and holding the gate
+/// for hours would stop every relaunch on a node where training and serving co-reside.
+#[derive(Clone)]
+pub(crate) struct LifecycleGate {
+    gate: Arc<AtomicBool>,
+    started_ms: Arc<AtomicU64>,
+    step: Arc<AtomicU8>,
+    settled: Arc<AtomicBool>,
+}
+
+/// Why an admission may not decide now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateRefusal {
+    /// Serving has not published its first plan on this core: the authority may not
+    /// hold a physical reading yet, so free memory is a boot artefact, not capacity.
+    Unsettled,
+    /// A serving operation (relaunch, placement move, teacher batch) holds the gate:
+    /// free memory now is its window, not capacity.
+    Operation,
+}
+impl GateRefusal {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Unsettled => "serving_unsettled",
+            Self::Operation => "serving_operation",
+        }
+    }
+}
+static LIFECYCLE_GATE: OnceLock<LifecycleGate> = OnceLock::new();
+impl LifecycleGate {
+    /// Publish THE serving daemon's gate (first writer wins — the boot path). One serving
+    /// lifecycle per core, same precedent as `ResourceDaemon::set_global`.
+    pub(crate) fn set_global(gate: LifecycleGate) {
+        let _ = LIFECYCLE_GATE.set(gate);
+    }
+    /// The published gate, if boot installed a serving daemon (None in bare unit tests).
+    pub(crate) fn global() -> Option<LifecycleGate> {
+        LIFECYCLE_GATE.get().cloned()
+    }
+    /// A gate no serving daemon owns, for admission tests.
+    /// A gate no serving daemon owns, for admission tests; `settled` as its planner would be.
+    #[cfg(test)]
+    pub(crate) fn unowned(settled: bool) -> Self {
+        Self {
+            gate: Arc::new(AtomicBool::new(false)),
+            started_ms: Arc::new(AtomicU64::new(0)),
+            step: Arc::new(AtomicU8::new(0)),
+            settled: Arc::new(AtomicBool::new(settled)),
+        }
+    }
+    /// What a test's planner does on its first publish.
+    #[cfg(test)]
+    pub(crate) fn settle(&self) {
+        self.settled.store(true, Ordering::Release);
+    }
+    /// Take the gate for one admission decision, or say why it cannot decide now.
+    pub(crate) fn hold_for_admission(&self) -> Result<AdmissionHold, GateRefusal> {
+        if !self.settled.load(Ordering::Acquire) {
+            return Err(GateRefusal::Unsettled);
+        }
+        let operation = ServingOperation::acquire(
+            self.gate.clone(),
+            self.started_ms.clone(),
+            self.step.clone(),
+        )
+        .ok_or(GateRefusal::Operation)?;
+        operation.step(ReconcileStep::TrainingAdmission);
+        Ok(AdmissionHold {
+            _operation: operation,
+        })
+    }
+}
+
+/// The gate, held while one admission reads and leases; dropping it releases the gate.
+pub(crate) struct AdmissionHold {
+    _operation: ServingOperation,
 }
 
 /// A forced health check stays owed if its task is cancelled or superseded.
@@ -669,6 +768,11 @@ pub struct ServingDaemonModule {
     /// When the gate skip last spoke (ms), so a busy reconcile is said once per
     /// [`RECONCILE_BUSY_SAY_EVERY`], never per tick.
     reconcile_busy_said_ms: Arc<AtomicU64>,
+    /// Set once this core's planner has published its first decision (a plan or an honest
+    /// none). Until then the authority may not yet hold a physical reading — a source
+    /// with no reading reports 0 used, so the whole card reads free — and training
+    /// admission is refused (card aae8af55, the boot-empty window).
+    plan_published: Arc<AtomicBool>,
     academy_batch: parking_lot::Mutex<Option<academy_batch::BatchSlot>>,
     verified_target: watch::Sender<Option<VerifiedServingCapture>>,
     /// Reconcile-tick counter driving the slow liveness HEARTBEAT (fires when
@@ -1055,6 +1159,7 @@ impl ServingDaemonModule {
             reconcile_started_ms: Arc::new(AtomicU64::new(0)),
             reconcile_step: Arc::new(AtomicU8::new(0)),
             reconcile_busy_said_ms: Arc::new(AtomicU64::new(0)),
+            plan_published: Arc::new(AtomicBool::new(false)),
             academy_batch: parking_lot::Mutex::new(None),
             health_ticks: Arc::new(AtomicU64::new(0)),
             plan_none_live_lane_ticks: Arc::new(AtomicU64::new(0)),
@@ -4274,6 +4379,7 @@ impl ServingDaemonModule {
             };
             let _ = self.plan_view_tx.send_replace(plan);
         });
+        self.plan_published.store(true, Ordering::Release);
     }
 
     /// A policy may keep the previous geometry. A new intent may authorize that

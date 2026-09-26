@@ -183,6 +183,9 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             let reservation = crate::forge::training_admission::wait_for_training_memory(
                 crate::resources::ResourceDaemon::global()
                     .ok_or_else(|| failure("CUDA training requires the resource governor"))?,
+                &crate::modules::serving_daemon::LifecycleGate::global().ok_or_else(|| {
+                    failure("CUDA training requires the serving lifecycle gate")
+                })?,
                 &format!("genome-train:{id}"),
                 plan.memory_bytes,
                 |available| progress.waiting_for_capacity(plan.memory_bytes, available),

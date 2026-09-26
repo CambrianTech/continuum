@@ -1470,6 +1470,8 @@ pub fn start_server(
         model_catalog.clone(),
         pin_store,
     ));
+    // Training admission reads governed memory under this gate (aae8af55).
+    crate::modules::serving_daemon::LifecycleGate::set_global(serving_daemon.lifecycle_gate());
     crate::probe!(
         class = "boot.stretch",
         stretch = "serving_span",
