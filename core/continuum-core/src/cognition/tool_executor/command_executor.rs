@@ -826,7 +826,7 @@ mod tests {
     fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
         let unknown = |name: &str| format!("no Rust module handles command: '{name}'.");
         // Fixture 1 (21:0xZ): a Windows path with a drive letter and mixed separators.
-        let path = r"C:\Users\joelt\.airc/worktrees\d33e928a";
+        let path = r"C:\Users\kimi\.airc/worktrees\d33e928a";
         let out = persona_tool_error(path, unknown(path));
         assert!(out.contains("is a PATH, not a tool"), "{out}");
         assert!(out.contains(&format!("`code/read({{\"file_path\": \"{path}\"}})`")), "{out}");
