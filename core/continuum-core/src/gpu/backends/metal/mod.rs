@@ -52,7 +52,7 @@
 //!     from the original mono-file version by making the FFI layer its
 //!     own visible surface.
 
-mod mach_ffi;
+pub(crate) mod mach_ffi;
 
 use crate::gpu::device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
 use async_trait::async_trait;
