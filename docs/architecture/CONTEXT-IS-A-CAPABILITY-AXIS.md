@@ -197,6 +197,34 @@ keeps serving and orchestrating. Acceptance test: a node reporting no trainer-ca
 accelerator is never selected for a training period, and one that gains it becomes
 eligible without a code change.
 
+### Four constraints the rule must also satisfy (Cormac's review of #4390)
+
+1. **One box, several activities, one engine.** A node serves one base at a time, but
+   it may host a coding room and an academy period at once. The rule picks a model per
+   activity kind; the node can serve only one. So the node-level decision arbitrates:
+   the activity whose floors are binding and whose demand is largest sets the base, and
+   an activity that base cannot serve is placed on another node or queued as a period.
+   It is never served below its floor on this one. On a lone node with no other place,
+   the period waits for a window when the interactive demand is idle. It does not force
+   a swap under citizens mid-turn.
+2. **A model swap has a price.** A relaunch drops every warm prefix, fails the turns in
+   flight, and costs the reload time, all measured today on the M5 (11 failed turns, a
+   cold cache, minutes dark). A swap is chosen only when the gain in delivered capability
+   over the planning horizon exceeds that measured cost, with the same hysteresis and
+   dwell as the learned window floor. Two candidates close in value never flap.
+3. **Allocation and placement share one predicate.** Whatever decides that a node can
+   serve an activity (fit, window, measured decode at the knee) must be the same
+   function the placement tick uses to decide she stays. Two different checks produce
+   the seat bouncing of card 60d90c95: seated by one rule, evicted by another. On this
+   new axis that would be seating a coder where the model fits and evicting her because
+   it is slow.
+4. **A lineage hash proves consistency, not truth.** The content-addressed graph shows
+   a gene's recorded history was not altered and that its parts belong together. It
+   does not show that the recorded scores are true. Truth comes from re-measuring on the
+   adopting node's own gym, which is why adoption re-measures instead of trusting the
+   scores in the alloy. Recorded scores guide what to try; local measurement decides what
+   to adopt.
+
 ### The genome couples model choice to identity
 
 A LoRA adapter is trained against one base model and applies only to it. So the choice
