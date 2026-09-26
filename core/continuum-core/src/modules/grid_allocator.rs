@@ -214,11 +214,16 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     // 1.5B holds no coder, she moves up (opportunity, capability first), and a second
     // coder waits on the 27B rather than taking the CPU seat. Unplug it: the bound falls
     // and she falls home. No pin, no absolute floor that leaves a standalone node coderless.
-    // A node mid-relaunch keeps its last rank here (the book remembers it while the node
-    // is live); only silence lowers the bound — relaunching is not unplugging.
-    let best_rank = book.best_rank_live(f.now_ms, SILENT_AFTER_MS);
+    // Both axes of the ask follow the grid — the capability floor AND the window: a
+    // coder's declared 40k turn on an Intel Mac alone (32k seats) is still a coder on the
+    // best seat there is; whether her measured turn fits that seat is fall-home's
+    // question (`seat_starves`), not the allocation's. A node mid-relaunch keeps its last
+    // seat here (the book remembers it while the node is live); only silence lowers the
+    // bound — relaunching is not unplugging.
+    let (best_rank, best_window) = book.best_seat_live(f.now_ms, SILENT_AFTER_MS);
     for role in &mut roles {
         role.requirement.min_capability = role.requirement.min_capability.min(best_rank);
+        role.requirement.window = role.requirement.window.min(best_window);
     }
     let mut minds: Vec<Mind> = Vec::new();
     if !roles.is_empty() {
@@ -734,6 +739,7 @@ mod tests {
         let inputs = build_inputs(&alone, &mut OfferBook::default());
         let coder_alone = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
         assert_eq!(coder_alone.min_capability, 3, "standalone: the floor is the best seat there is");
+        assert_eq!(coder_alone.window, 32_768, "and so is the window ask");
         assert!(plan("1.5b", 3, 32_768, 2).holds(coder_alone), "she starts at CPU");
         let mut joined = facts(intel, Some(plan("1.5b", 3, 32_768, 2)), vec![peer(me, Some(plan("27b", 18, 70_000, 2)), 0, 99_000)], vec![kimi]);
         joined.citizens = f.citizens.clone();
@@ -741,6 +747,7 @@ mod tests {
         let inputs = build_inputs(&joined, &mut OfferBook::default());
         let coder_joined = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
         assert_eq!(coder_joined.min_capability, 12, "the 27B joined: the floor rises to the declared tier");
+        assert_eq!(coder_joined.window, 40_448, "and the window ask is the declared one again");
         assert!(!plan("1.5b", 3, 32_768, 2).holds(coder_joined), "and the 1.5B holds no coder any more — she moves up");
 
         // Relaunching is not unplugging: the 27B peer heard with NO plan for a pass keeps the
@@ -763,6 +770,7 @@ mod tests {
         let inputs = build_inputs(&gone, &mut book);
         let coder_gone = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
         assert_eq!(coder_gone.min_capability, 3, "silent past the window = unplugged: the standalone floor");
+        assert_eq!(coder_gone.window, 32_768);
     }
 
     // what this catches (card 10bba591): an UNCHANGED grid publishes nothing — the key
