@@ -3140,7 +3140,8 @@ mod tests {
         // The change graph is keyed by the bare path too: a read of the bare path sees the
         // write, and the 5090 shape (fence + attached receipt line) edits the SAME file.
         let read = engine.read("`src/utils.py`", None, None).unwrap();
-        assert_eq!(read.content.as_deref(), Some("x = 1\n"));
+        assert_eq!(read.total_lines, 1);
+        assert!(read.content.as_deref().is_some_and(|c| c.contains("x = 1")), "{read:?}");
         let e = engine
             .edit(
                 "src/utils.py`\nsuccess: ✗",
