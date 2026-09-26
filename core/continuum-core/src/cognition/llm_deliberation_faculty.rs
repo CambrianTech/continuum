@@ -1386,6 +1386,22 @@ impl LlmDeliberationFaculty {
             // HER task-positive system is engaged from here: the per-citizen boredom gate
             // (dreams) reads this stamp, never a room wake.
             crate::cognition::activity_gate::persona_engaged(self.persona_id);
+            // COGNITION PULSE per generation, not only per turn start. The claim-renewal
+            // gate reads this stamp, and a single service-loop turn can run many acts: on
+            // the M5 an act takes 7-9 minutes, so a multi-act turn outlives the 30-minute
+            // lease while she is working inside it. Measured 2026-09-26: Aris's turn
+            // started 01:07:52, she was acting through lane waits at 01:18 and 01:28, and
+            // renewal was denied at 02:01:53 — her live claim on django-15098 read as
+            // expired to the fleet (Kimi flagged it as a collision risk). Same class as
+            // the detached-solve tick in `agent/solve` (#425): a lane granted for a
+            // generation is her thinking this instant, the strongest witness there is.
+            crate::persona::cognition_pulse::touch(
+                self.persona_id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0), // JUSTIFIED unwrap_or: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
+            );
             crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
             crate::probe!(
                 class = "delib.gate.lane_acquired",
