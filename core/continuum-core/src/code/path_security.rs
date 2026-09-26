@@ -210,6 +210,126 @@ impl std::fmt::Display for PathSecurityError {
 
 impl std::error::Error for PathSecurityError {}
 
+/// A markdown idiom that was removed from a path ARGUMENT before it was resolved.
+///
+/// A model composing a tool call writes paths the way it writes prose: wrapped in
+/// backticks, in quotes, or with the next line of a rendered receipt still attached
+/// (`utils.py\`\nsuccess: ✗`). None of those characters can belong to a path a citizen
+/// means; a filesystem accepts them, so the substrate must not. Glass-boxed on the 5090
+/// 2026-09-26 (card 1daffbaf): a `code/write` on `…/admindocs/utils.py\`` SUCCEEDED and
+/// created a second file literally named `utils.py\`` beside the one she meant, while
+/// the same path with a newline attached was refused as not found — two different
+/// answers to one intent, and she spent the next four acts typing around backticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrippedIdiom {
+    /// Everything from the first line break onward: a path is one line, and what
+    /// followed it was the next line of whatever she was reading, not the address.
+    TrailingLines,
+    /// Leading and/or trailing backticks (inline-code fencing).
+    Backticks,
+    /// A matched pair of surrounding quotes (`"a/b.rs"` or `'a/b.rs'`).
+    Quotes,
+}
+
+impl std::fmt::Display for StrippedIdiom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TrailingLines => "the text after the line break",
+            Self::Backticks => "backticks",
+            Self::Quotes => "surrounding quotes",
+        })
+    }
+}
+
+/// A path argument after the markdown idioms were stripped, and the list of what went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanedPathArg {
+    /// The bare path the caller meant.
+    pub path: String,
+    /// What was removed, in the order it was found. Empty when the argument was already
+    /// a bare path — the common case, and the one that must cost nothing to report.
+    pub stripped: Vec<StrippedIdiom>,
+}
+
+impl CleanedPathArg {
+    /// The receipt line for a tool result: names what was stripped and where the
+    /// operation actually landed, so the citizen reads the truth instead of the
+    /// argument she sent. Empty when nothing was stripped — the common case costs no
+    /// allocation and no receipt.
+    pub fn note(&self) -> String {
+        if self.stripped.is_empty() {
+            return String::new();
+        }
+        let what = self
+            .stripped
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "PATH ARGUMENT CLEANED: stripped {what}; this landed at '{}'. A path is a bare \
+             address — no fencing, no quotes, one line.\n",
+            self.path
+        )
+    }
+}
+
+/// THE one place a path ARGUMENT is forgiven its markdown before it becomes an address.
+///
+/// Every resolver in this file passes through here (via [`PathSecurity::rebase_absolute`]),
+/// and the file engine calls it first so the cleaned path is also the one it echoes and
+/// records — the change graph must never be keyed by `utils.py\``. Idempotent: a second
+/// pass over a cleaned path strips nothing and reports nothing.
+///
+/// Order matters: cut at the first line break FIRST (the attached receipt line may itself
+/// end in a fence), then trim, then peel fencing and quotes until the ends are bare.
+pub fn clean_path_arg(raw: &str) -> CleanedPathArg {
+    let mut stripped = Vec::new();
+    let mut s: &str = raw;
+    if let Some(cut) = s.find(['\n', '\r']) {
+        if !s[cut..].trim().is_empty() {
+            stripped.push(StrippedIdiom::TrailingLines);
+        }
+        s = &s[..cut];
+    }
+    s = s.trim();
+    loop {
+        let before = s;
+        let peeled = s.trim_matches('`');
+        if peeled.len() != s.len() {
+            if !stripped.contains(&StrippedIdiom::Backticks) {
+                stripped.push(StrippedIdiom::Backticks);
+            }
+            s = peeled.trim();
+        }
+        for q in ['"', '\''] {
+            if s.len() >= 2 && s.starts_with(q) && s.ends_with(q) {
+                if !stripped.contains(&StrippedIdiom::Quotes) {
+                    stripped.push(StrippedIdiom::Quotes);
+                }
+                s = s[1..s.len() - 1].trim();
+            }
+        }
+        if s == before {
+            break;
+        }
+    }
+    if !stripped.is_empty() {
+        crate::probe!(
+            class = "code.path_arg.cleaned",
+            raw = %raw,
+            path = %s,
+            stripped = ?stripped,
+            "a path argument arrived wearing markdown — stripped at the one gate every \
+             code verb passes; the result names the bare path it landed at"
+        );
+    }
+    CleanedPathArg {
+        path: s.to_string(),
+        stripped,
+    }
+}
+
 impl PathSecurity {
     /// Create a new PathSecurity validator for a workspace.
     ///
@@ -309,7 +429,11 @@ impl PathSecurity {
     /// workspace-relative) survives: a leading component that names no real
     /// directory at filesystem root is the idiom, not an address.
     fn rebase_absolute(root: &Path, path: &str) -> Result<String, PathSecurityError> {
-        let trimmed = path.trim();
+        // Markdown fencing goes first (card 1daffbaf): a backtick or an attached receipt
+        // line is never part of an address. Idempotent, so the engine's own earlier pass
+        // (which keeps the cleaned string for its receipts) costs nothing here.
+        let cleaned = clean_path_arg(path);
+        let trimmed = cleaned.path.as_str();
         if !trimmed.starts_with('/') {
             return Ok(trimmed.to_string());
         }
@@ -542,6 +666,62 @@ mod tests {
 
         let security = PathSecurity::new(dir.path()).unwrap();
         (dir, security)
+    }
+
+    // what this catches: a path argument wearing markdown — backticks, quotes, or the next
+    // line of a rendered receipt — resolving to a DIFFERENT address than the bare path
+    // (card 1daffbaf: `utils.py\`` created a second file beside utils.py on the 5090).
+    #[test]
+    fn a_path_argument_wearing_markdown_resolves_to_the_bare_path_and_names_what_went() {
+        use StrippedIdiom::*;
+        let cases: &[(&str, &str, &[StrippedIdiom])] = &[
+            ("src/main.ts", "src/main.ts", &[]),
+            ("  src/main.ts ", "src/main.ts", &[]),
+            ("`src/main.ts`", "src/main.ts", &[Backticks]),
+            ("src/main.ts`", "src/main.ts", &[Backticks]),
+            ("\"src/main.ts\"", "src/main.ts", &[Quotes]),
+            ("'src/main.ts'", "src/main.ts", &[Quotes]),
+            ("`\"src/main.ts\"`", "src/main.ts", &[Backticks, Quotes]),
+            // The 5090 shape verbatim: fence, then the receipt line she was reading.
+            (
+                "src/main.ts`\nsuccess: ✗",
+                "src/main.ts",
+                &[TrailingLines, Backticks],
+            ),
+            ("src/main.ts\r\n", "src/main.ts", &[]),
+            ("`", "", &[Backticks]),
+        ];
+        for (raw, want, stripped) in cases {
+            let got = clean_path_arg(raw);
+            assert_eq!(got.path, *want, "raw {raw:?}");
+            assert_eq!(got.stripped, stripped.to_vec(), "raw {raw:?}");
+            // Idempotent: the engine cleans first and the resolver cleans again.
+            let again = clean_path_arg(&got.path);
+            assert_eq!(again.path, got.path);
+            assert!(
+                again.stripped.is_empty(),
+                "second pass over {raw:?} stripped again"
+            );
+        }
+        assert!(clean_path_arg("src/main.ts").note().is_empty());
+        let note = clean_path_arg("src/main.ts`\nsuccess: ✗").note();
+        assert!(note.contains("the text after the line break") && note.contains("backticks"));
+        assert!(
+            note.contains("'src/main.ts'"),
+            "the note names where it landed: {note}"
+        );
+
+        // And through the gate itself: the fenced spelling and the bare one are ONE address,
+        // for a read of an existing file and for a write of a new one.
+        let (_dir, security) = setup_workspace();
+        assert_eq!(
+            security.validate_read("`src/main.ts`").unwrap(),
+            security.validate_read("src/main.ts").unwrap()
+        );
+        assert_eq!(
+            security.validate_write("src/new.ts`\nsuccess: ✗").unwrap(),
+            security.validate_write("src/new.ts").unwrap()
+        );
     }
 
     #[test]
