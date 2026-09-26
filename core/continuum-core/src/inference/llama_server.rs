@@ -1986,18 +1986,66 @@ pub(crate) fn slots_progress(slots: &serde_json::Value) -> Option<EngineProgress
 /// when the engine does not answer — which a caller treats as not progressing. Asked by a
 /// slow KV page switch before it may call the engine stuck
 /// ([`crate::inference::turn_admission::kv_page_action`]).
-pub(crate) async fn engine_progress(root: &str, client: &reqwest::Client) -> Option<EngineProgress> {
+/// What one read of the engine's `/slots` proved — typed by what it can and cannot say.
+///
+/// Why three outcomes and not `Option` (BigMama, 2026-09-26 14:24:55Z): a restore of a
+/// 71,680-token page ran to its 14.3 s checkpoint, the checkpoint's `/slots` read timed
+/// out 4.0 s later, and `None` was read as "the engine stopped answering" — the switch
+/// was abandoned as uncertain, the endpoint quarantined, the engine retired and
+/// relaunched: 135 s with every admission refused, 36 of them Kimi's. But llama-server
+/// runs slot save/restore on the same loop that answers `/slots`, so an engine
+/// mid-restore of a large page CANNOT answer the probe: the operation being waited on
+/// is what times the probe out. A timeout is the engine busy; only a socket that is
+/// not there is the engine gone. Busy is not dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EngineProbe {
+    /// The engine answered: its work fingerprint and whether any slot is processing.
+    Progress(EngineProgress),
+    /// No answer inside the probe's timeout. The engine is working — most likely on the
+    /// very switch the caller is waiting for.
+    Busy,
+    /// The socket refused, reset or closed, or the body was not the `/slots` array:
+    /// nothing that is a llama-server answers on this root. The outcome that ends a wait.
+    Unreachable,
+}
+
+pub(crate) async fn engine_probe(root: &str, client: &reqwest::Client) -> EngineProbe {
+    engine_probe_within(root, client, PROBE_TIMEOUT).await
+}
+
+/// [`engine_probe`] with the timeout as a parameter, so a test can hold a socket open
+/// for 200 ms instead of 4 s.
+pub(crate) async fn engine_probe_within(
+    root: &str,
+    client: &reqwest::Client,
+    timeout: Duration,
+) -> EngineProbe {
+    // Two phases, because one timeout cannot tell them apart: a socket nothing listens
+    // on can be slow to refuse, and the request's own timeout then fires first and reads
+    // as "busy". So reachability is asked of the SOCKET (a bare connect, bounded), and
+    // only a connected engine that does not answer in time is busy.
+    let addr = root
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/')
+        .to_string();
+    let connect = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&addr)).await;
+    match connect {
+        Ok(Ok(stream)) => drop(stream),
+        Ok(Err(_)) | Err(_) => return EngineProbe::Unreachable,
+    }
     let url = format!("{root}/slots");
-    let body: serde_json::Value = client
-        .get(&url)
-        .timeout(PROBE_TIMEOUT)
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-    slots_progress(&body)
+    let response = match client.get(&url).timeout(timeout).send().await {
+        Ok(response) => response,
+        Err(error) if error.is_timeout() => return EngineProbe::Busy,
+        Err(_) => return EngineProbe::Unreachable,
+    };
+    let body: serde_json::Value = match response.json().await {
+        Ok(body) => body,
+        Err(error) if error.is_timeout() => return EngineProbe::Busy,
+        Err(_) => return EngineProbe::Unreachable,
+    };
+    slots_progress(&body).map_or(EngineProbe::Unreachable, EngineProbe::Progress)
 }
 
 async fn external_active_model(v1_url: &str, client: &reqwest::Client) -> Option<String> {
@@ -5681,6 +5729,47 @@ fn is_debug_build(version_output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    // regression for card 8c06f778 (BigMama, 2026-09-26 14:24:55Z): a /slots read that
+    // timed out mid-restore was read as a dead engine and cost the node an engine
+    // replacement.
+    // what this catches: the three outcomes are told apart by the SOCKET, not by
+    // "did we get a value" — an open socket that never answers is Busy, a socket
+    // nothing listens on is Unreachable, and a real slots array is Progress.
+    #[tokio::test]
+    async fn a_probe_that_times_out_is_busy_and_only_a_missing_socket_is_unreachable() {
+        use super::{engine_probe_within, EngineProbe};
+        let client = reqwest::Client::new();
+        let short = std::time::Duration::from_millis(200);
+        // Busy: a listener that accepts and holds the connection without answering.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", silent.local_addr().expect("test: addr"));
+        let hold = tokio::spawn(async move {
+            let (stream, _) = silent.accept().await.expect("test: accept");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(stream);
+        });
+        assert_eq!(engine_probe_within(&root, &client, short).await, EngineProbe::Busy);
+        hold.abort();
+        // Unreachable: a port that was ours a moment ago and now has no listener.
+        let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", gone.local_addr().expect("test: addr"));
+        drop(gone);
+        assert_eq!(engine_probe_within(&root, &client, short).await, EngineProbe::Unreachable);
+        // Progress: a slots array is a fingerprint.
+        let app = axum::Router::new().route(
+            "/slots",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 5}], "is_processing": true}]))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let probe = engine_probe_within(&root, &client, std::time::Duration::from_secs(2)).await;
+        assert!(matches!(probe, EngineProbe::Progress(p) if p.any_processing && p.fingerprint == 112), "{probe:?}");
+        server.abort();
+    }
     // The service-host's verified engine must win over any older default install.
     // A child process isolates the launch environment from parallel tests.
     #[test]
