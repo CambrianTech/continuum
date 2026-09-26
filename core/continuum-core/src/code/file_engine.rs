@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::change_graph::ChangeGraph;
 use super::diff_engine::compute_bidirectional_diff;
-use super::path_security::{PathSecurity, PathSecurityError};
+use super::path_security::{clean_path_arg, CleanedPathArg, PathSecurity, PathSecurityError};
 use super::types::*;
 
 /// Per-persona file engine with workspace scoping and change tracking.
@@ -90,8 +90,19 @@ impl From<std::io::Error> for FileEngineError {
 /// are never the file she meant, and on SOMEONE ELSE'S COMPUTER walking them is
 /// the difference between a helpful error and a stalled laptop.
 const SUGGEST_SKIP_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", "__pycache__", ".venv", "venv", "build",
-    "dist", ".tox", ".mypy_cache", ".pytest_cache", ".cargo", "site-packages",
+    ".git",
+    "node_modules",
+    "target",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".cargo",
+    "site-packages",
 ];
 
 /// Hard ceiling on entries visited while looking for a near-miss. A suggestion
@@ -222,6 +233,8 @@ impl FileEngine {
         start_line: Option<u32>,
         end_line: Option<u32>,
     ) -> Result<ReadResult, FileEngineError> {
+        let cleaned = self.path_arg(relative_path)?;
+        let relative_path = cleaned.path.as_str();
         let abs_path = self.security.validate_read(relative_path)?;
 
         if !abs_path.exists() {
@@ -282,6 +295,8 @@ impl FileEngine {
         content: &str,
         description: Option<&str>,
     ) -> Result<WriteResult, FileEngineError> {
+        let cleaned = self.path_arg(relative_path)?;
+        let relative_path = cleaned.path.as_str();
         let abs_path = self.security.validate_write(relative_path)?;
         self.security
             .validate_size(relative_path, content.len() as u64)?;
@@ -340,7 +355,10 @@ impl FileEngine {
             // content it has something more consequential to report: what it destroyed,
             // and whether the bytes it wrote were ever meant to be file content at all.
             applied_context: {
-                let mut out = numbered_paste_notice(content);
+                // The cleaning receipt LEADS: a write that landed somewhere other than the
+                // literal argument must say so before anything about the content.
+                let mut out = cleaned.note().unwrap_or_default();
+                out.push_str(&numbered_paste_notice(content));
                 if let Some(magnitude) = overwrite_magnitude(&old_content, content) {
                     out.push_str(&magnitude);
                 }
@@ -356,6 +374,8 @@ impl FileEngine {
         edit_mode: &EditMode,
         description: Option<&str>,
     ) -> Result<WriteResult, FileEngineError> {
+        let cleaned = self.path_arg(relative_path)?;
+        let relative_path = cleaned.path.as_str();
         let abs_path = self.security.validate_write(relative_path)?;
 
         if !abs_path.exists() {
@@ -558,25 +578,31 @@ impl FileEngine {
             // whole point is to report where the edit ACTUALLY landed.
             // The parse verdict LEADS: broken code reads as plausible in a six-line
             // window, and "SyntaxError: line 21" does not.
-            applied_context: edit_anchor_line(edit_mode, &new_content).map(|anchor| {
-                let mut out = syntax_error_after_edit(&abs_path).unwrap_or_default();
-                // A displaced docstring parses clean, so nothing else here would mention it.
-                out.push_str(
-                    &displaced_docstrings(&abs_path, &old_content, &new_content)
-                        .unwrap_or_default(),
-                );
-                // Neither does code written INTO a literal — the quietest failure of all (#317).
-                out.push_str(
-                    &inert_insertions(&abs_path, &old_content, &new_content).unwrap_or_default(),
-                );
-                out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
-                out.push_str(&numbered_neighborhood(
-                    &new_content,
-                    anchor,
-                    APPLIED_CONTEXT_RADIUS,
-                ));
-                out
-            }),
+            applied_context: {
+                // The cleaning receipt LEADS (card 1daffbaf); the landing-site report follows
+                // only when the edit has an anchor line to report from.
+                let mut out = cleaned.note().unwrap_or_default();
+                if let Some(anchor) = edit_anchor_line(edit_mode, &new_content) {
+                    out.push_str(&syntax_error_after_edit(&abs_path).unwrap_or_default());
+                    // A displaced docstring parses clean, so nothing else here would mention it.
+                    out.push_str(
+                        &displaced_docstrings(&abs_path, &old_content, &new_content)
+                            .unwrap_or_default(),
+                    );
+                    // Neither does code written INTO a literal — the quietest failure of all (#317).
+                    out.push_str(
+                        &inert_insertions(&abs_path, &old_content, &new_content)
+                            .unwrap_or_default(),
+                    );
+                    out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
+                    out.push_str(&numbered_neighborhood(
+                        &new_content,
+                        anchor,
+                        APPLIED_CONTEXT_RADIUS,
+                    ));
+                }
+                (!out.is_empty()).then_some(out)
+            },
         })
     }
 
@@ -586,6 +612,8 @@ impl FileEngine {
         relative_path: &str,
         description: Option<&str>,
     ) -> Result<WriteResult, FileEngineError> {
+        let cleaned = self.path_arg(relative_path)?;
+        let relative_path = cleaned.path.as_str();
         let abs_path = self.security.validate_write(relative_path)?;
 
         if !abs_path.exists() {
@@ -631,8 +659,9 @@ impl FileEngine {
             // reported the LEAST: `success: true, bytes_written: 0`, which reads like a
             // no-op. State the size of what went and the handle that brings it back.
             applied_context: Some(format!(
-                "DELETED {} — {} line(s), {} byte(s) removed from disk. `code/undo` with \
+                "{}DELETED {} — {} line(s), {} byte(s) removed from disk. `code/undo` with \
                  change_id={} restores the file exactly.\n",
+                cleaned.note().unwrap_or_default(),
                 relative_path,
                 old_content.lines().count(),
                 old_content.len(),
@@ -812,6 +841,22 @@ impl FileEngine {
     }
 
     /// Get the underlying PathSecurity (for search/tree operations that need it).
+    /// THE gate a persona's path ARGUMENT passes before it is an address (card 1daffbaf):
+    /// markdown fencing and an attached receipt line are stripped once, here, and the
+    /// cleaned string is what every file verb resolves, records in the change graph, and
+    /// echoes back — never the raw argument. An argument that is NOTHING but fencing is
+    /// refused by name rather than resolved to the workspace root.
+    fn path_arg(&self, raw: &str) -> Result<CleanedPathArg, FileEngineError> {
+        let cleaned = clean_path_arg(raw);
+        if cleaned.path.is_empty() {
+            return Err(FileEngineError::NotFound(format!(
+                "the path argument {raw:?} is empty once its fencing is stripped — send a \
+                 bare path: no backticks, no quotes, one line"
+            )));
+        }
+        Ok(cleaned)
+    }
+
     pub fn security(&self) -> &PathSecurity {
         &self.security
     }
@@ -2187,7 +2232,6 @@ mod tests {
         }
     }
 
-
     use super::*;
     use std::fs;
 
@@ -2470,7 +2514,10 @@ mod tests {
         };
         let err = apply_edit(content, &ambiguous).expect_err("two verbatim sites must refuse");
         let msg = format!("{err}");
-        assert!(msg.contains("2 locations") && msg.contains("lines 2, 6"), "count + lines, got:\n{msg}");
+        assert!(
+            msg.contains("2 locations") && msg.contains("lines 2, 6"),
+            "count + lines, got:\n{msg}"
+        );
         // A unique anchor (one more line of context) applies to the site it names.
         let unique = EditMode::SearchReplace {
             search: "def stack(self):\n    idx = self.idx\n".to_string(),
@@ -2479,10 +2526,23 @@ mod tests {
         };
         let out = apply_edit(content, &unique).expect("a unique anchor applies");
         assert!(out.contains("def stack(self):\n    product_vars = {}"));
-        assert!(out.starts_with("def reset_index(self):\n    idx = self.idx\n"), "reset_index untouched");
+        assert!(
+            out.starts_with("def reset_index(self):\n    idx = self.idx\n"),
+            "reset_index untouched"
+        );
         // all=true is the explicit every-site edit and still applies everywhere.
-        let every = EditMode::SearchReplace { search: "return idx".to_string(), replace: "return idx  # both".to_string(), all: true };
-        assert_eq!(apply_edit(content, &every).expect("all=true").matches("# both").count(), 2);
+        let every = EditMode::SearchReplace {
+            search: "return idx".to_string(),
+            replace: "return idx  # both".to_string(),
+            all: true,
+        };
+        assert_eq!(
+            apply_edit(content, &every)
+                .expect("all=true")
+                .matches("# both")
+                .count(),
+            2
+        );
     }
 
     // what this catches: the fallback must not swallow the genuinely-absent case — the
@@ -3078,6 +3138,71 @@ mod tests {
         let security = PathSecurity::new(dir.path()).unwrap();
         let engine = FileEngine::new("test-persona", security);
         (dir, engine)
+    }
+
+    // what this catches: the engine acting on, recording, or ECHOING the raw fenced argument
+    // instead of the bare path (card 1daffbaf: a `code/write` on `utils.py\`` succeeded and
+    // created a second file; the result said success and named the fenced path, so she
+    // read it as landed). The receipt must lead with what was stripped and where it landed,
+    // and an argument that is nothing but fencing is refused, never written at the root.
+    #[test]
+    fn a_fenced_path_argument_lands_at_the_bare_file_and_the_receipt_says_so() {
+        let (dir, engine) = setup_engine();
+        let r = engine.write("src/utils.py`", "x = 1\n", None).unwrap();
+        assert!(r.success);
+        assert_eq!(r.file_path, "src/utils.py", "the echo is the bare path");
+        assert!(dir.path().join("src/utils.py").is_file());
+        assert!(
+            !dir.path().join("src/utils.py`").exists(),
+            "no file wears the fence"
+        );
+        let ctx = r.applied_context.expect("a cleaning receipt");
+        assert!(
+            ctx.starts_with("PATH ARGUMENT CLEANED"),
+            "the receipt leads: {ctx}"
+        );
+        assert!(ctx.contains("backticks") && ctx.contains("'src/utils.py'"));
+
+        // The change graph is keyed by the bare path too: a read of the bare path sees the
+        // write, and the 5090 shape (fence + attached receipt line) edits the SAME file.
+        let read = engine.read("`src/utils.py`", None, None).unwrap();
+        assert_eq!(read.content.as_deref(), Some("x = 1\n"));
+        let e = engine
+            .edit(
+                "src/utils.py`\nsuccess: ✗",
+                &EditMode::Append {
+                    content: "y = 2\n".into(),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(e.file_path, "src/utils.py");
+        assert!(e
+            .applied_context
+            .unwrap()
+            .starts_with("PATH ARGUMENT CLEANED"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/utils.py")).unwrap(),
+            "x = 1\ny = 2\n"
+        );
+        let d = engine.delete("'src/utils.py'", None).unwrap();
+        assert!(d
+            .applied_context
+            .unwrap()
+            .starts_with("PATH ARGUMENT CLEANED"));
+        assert!(!dir.path().join("src/utils.py").exists());
+
+        // A bare path costs nothing: no receipt, no note.
+        let plain = engine.write("src/plain.py", "z = 3\n", None).unwrap();
+        assert!(plain.applied_context.is_none());
+
+        // Nothing but fencing is a refusal by name, not a write at the workspace root.
+        let refused = engine.write("`", "oops", None).unwrap_err().to_string();
+        assert!(
+            refused.contains("empty once its fencing is stripped"),
+            "{refused}"
+        );
+        assert!(!dir.path().join("`").exists());
     }
 
     #[test]
