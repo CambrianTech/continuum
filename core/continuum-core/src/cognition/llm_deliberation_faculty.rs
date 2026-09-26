@@ -4631,10 +4631,32 @@ impl LlmDeliberationFaculty {
             // think, nothing was said and the need ring does not take it — a thinking
             // model fills any allowance, and doubling that walked her to the deadline
             // (`EmissionStop`). The cut itself is the fault paths' business below.
-            let stop = super::working_set::EmissionStop::classify(
+            // A deliberation's think that stopped AT its budget is censored, not measured
+            // (Cormac on #4409): the classifier records it at the allowance so the need ring
+            // never learns the budget and contracts the next allowance geometrically.
+            let reasoning_budget = match self.turn_kind(ws) {
+                TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
+                    u64::from(view.completion_reserve),
+                )
+                .map(|b| b as u32),
+                TurnKind::Act => None,
+            };
+            let stop = super::working_set::EmissionStop::classify_with_budget(
                 matches!(resp.finish_reason, FinishReason::Length),
                 answer_tokens,
+                reasoning_tokens,
+                reasoning_budget,
+                view.completion_reserve,
             );
+            if let super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
+                crate::probe!(
+                    class = "delib.emission.think_budget_hit",
+                    persona = %self.persona_name,
+                    reasoning_tokens,
+                    allowance,
+                    "the think stopped at its budget — censored, recorded at the allowance, never taught to the need ring"
+                );
+            }
             if stop == super::working_set::EmissionStop::CutMidThought {
                 crate::probe!(
                     class = "delib.emission.cut_mid_thought",

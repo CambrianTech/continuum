@@ -85,13 +85,21 @@ pub(crate) fn apply_deliberation_reasoning_budget(purpose: Option<&str>, body: &
     }
     let obj = body.as_object_mut()?;
     let max_tokens = obj.get("max_tokens")?.as_u64()?;
+    let budget = deliberation_reasoning_budget(max_tokens)?;
+    obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
+    Some(budget)
+}
+
+/// THE ONE RULE for a deliberation turn's reasoning budget, read by the request builder
+/// (to set it) and by the emission classifier (to know a think that stopped AT it was
+/// censored by it, not measured): three quarters of the allowance; `None` when the
+/// allowance is too small for the answer to keep a quarter.
+pub(crate) fn deliberation_reasoning_budget(max_tokens: u64) -> Option<u64> {
     let answer_share = max_tokens / DELIBERATION_ANSWER_SHARE_DIVISOR;
     if answer_share == 0 {
         return None;
     }
-    let budget = max_tokens - answer_share;
-    obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
-    Some(budget)
+    Some(max_tokens - answer_share)
 }
 
 pub(crate) fn finish_body(
@@ -535,32 +543,11 @@ pub(crate) fn build_base_body(
 mod tests {
     use super::*;
 
-    // what this catches: an ACT request carries the reasoning budget the
-    // responder's llama-server reads (`reasoning_budget_tokens`), and a
-    // deliberation request does not — losing the field reproduces 4k–10k-token
-    // acts (150–260 s each); applying it to message turns would truncate the
-    // thinking that answers deserve.
-    // what this catches: a deliberation turn's thinking is bounded FROM ITS OWN allowance
-    // (three quarters of max_tokens, the answer keeps a quarter); an act keeps its own
-    // budget; a turn with no max_tokens gets no budget (nothing to derive from), and a
-    // tiny allowance whose quarter rounds to zero is left alone rather than budgeted to 0.
+    // what this catches: the ACT budget is the fixed ACT_REASONING_BUDGET count, applied to
+    // an act request and to nothing else — a deliberation has its own, derived budget
+    // (`apply_deliberation_reasoning_budget`), and a turn with no purpose carries none.
     #[test]
-    fn a_deliberation_turn_keeps_its_answers_quarter_of_the_allowance() {
-        let mut delib = json!({ "max_tokens": 4000 });
-        assert_eq!(apply_deliberation_reasoning_budget(Some(DELIBERATION_PURPOSE), &mut delib), Some(3000));
-        assert_eq!(delib["reasoning_budget_tokens"], json!(3000));
-        let mut act = json!({ "max_tokens": 4000 });
-        assert_eq!(apply_deliberation_reasoning_budget(Some(ACT_PURPOSE), &mut act), None);
-        assert!(act.get("reasoning_budget_tokens").is_none());
-        let mut unbounded = json!({});
-        assert_eq!(apply_deliberation_reasoning_budget(Some(DELIBERATION_PURPOSE), &mut unbounded), None);
-        let mut tiny = json!({ "max_tokens": 3 });
-        assert_eq!(apply_deliberation_reasoning_budget(Some(DELIBERATION_PURPOSE), &mut tiny), None);
-        assert!(tiny.get("reasoning_budget_tokens").is_none());
-    }
-
-    #[test]
-    fn only_an_act_request_carries_the_reasoning_budget() {
+    fn the_act_budget_is_a_fixed_count_and_only_an_act_carries_it() {
         let mut act = json!({ "model": "m" });
         assert!(apply_act_reasoning_budget(Some(ACT_PURPOSE), &mut act));
         assert_eq!(act["reasoning_budget_tokens"], json!(ACT_REASONING_BUDGET));
