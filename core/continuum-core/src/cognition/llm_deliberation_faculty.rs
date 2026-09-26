@@ -4612,36 +4612,36 @@ impl LlmDeliberationFaculty {
 
         // MEASURE THE REPLY — the observation `completion_reserve_within` derives
         // the reserve from. The server's own count (reasoning included), recorded
-        // for every completed generation; a cut that was committing records at double
-        // inside the registry (the growth path), a cut that committed nothing at half.
+        // for every completed generation; a cut inside the answer records that channel
+        // at double inside the registry (the growth path), a cut inside the think is not
+        // a need sample.
         // This is the seam that turns the reserve from a `window/2` prior into a
         // measurement.
         if let Some(reg) = &self.working_set {
             // The channel split the NEXT turn's allowance is sized from: the server's
             // count apportioned by the bytes the adapter separated into `reasoning`
             // and `text` (a think-only turn is all reasoning; a native call all answer).
-            let (reasoning_tokens, _answer_tokens) = reasoning_answer_split(
+            let (reasoning_tokens, answer_tokens) = reasoning_answer_split(
                 resp.usage.output_tokens,
                 resp.reasoning.as_ref().map_or(0, |r| r.len()),
                 resp.text.len(),
             );
-            // A cut is only demand if it was LANDING: a parsed tool call says so. Text
-            // with no call, or a think-only tail, is the spiral the fault paths below
-            // own — its measurement SHRINKS the need (`EmissionStop::CutUncommitted`),
-            // so the next allowance falls toward what this lane can land, instead of
-            // doubling toward the size that dies at the turn deadline.
-            let stop = super::working_set::EmissionStop::of(
+            // WHERE the cap fell decides what the cut measures: inside the answer, the
+            // answer channel grows (a write cut mid-payload gets its room); inside the
+            // think, nothing was said and the need ring does not take it — a thinking
+            // model fills any allowance, and doubling that walked her to the deadline
+            // (`EmissionStop`). The cut itself is the fault paths' business below.
+            let stop = super::working_set::EmissionStop::classify(
                 matches!(resp.finish_reason, FinishReason::Length),
-                resp.tool_calls.as_ref().is_some_and(|c| !c.is_empty()),
+                answer_tokens,
             );
-            if stop == super::working_set::EmissionStop::CutUncommitted {
+            if stop == super::working_set::EmissionStop::CutMidThought {
                 crate::probe!(
-                    class = "delib.emission.cut_uncommitted",
+                    class = "delib.emission.cut_mid_thought",
                     persona = %self.persona_name,
                     output_tokens = resp.usage.output_tokens,
                     reasoning_tokens,
-                    "cut at the allowance with nothing committed — recorded at HALF so the \
-                     next allowance shrinks toward what this lane can land"
+                    "think-only cut at the allowance — the peak holds, the need ring does not take it"
                 );
             }
             reg.record_emission(
@@ -6662,7 +6662,7 @@ mod tests {
             // the SHARE — a citizen who genuinely needs the room earns it back within a
             // turn instead of freezing at the reply-sized prior. Growth saturates at the
             // share (the prior is a starting point, the share is the wall).
-            reg.record_emission_in_memory(persona, 5_000, 0, crate::cognition::working_set::EmissionStop::CutCommitted, 4);
+            reg.record_emission_in_memory(persona, 5_000, 0, crate::cognition::working_set::EmissionStop::CutMidAnswer, 4);
             assert_eq!(faculty.completion_reserve_within(window), share);
         }
 
@@ -6681,7 +6681,7 @@ mod tests {
             )
             .with_working_set(reg.clone());
             for tick in 1..=3 {
-                reg.record_emission_in_memory(persona, 16_384, 0, crate::cognition::working_set::EmissionStop::CutCommitted, tick);
+                reg.record_emission_in_memory(persona, 16_384, 0, crate::cognition::working_set::EmissionStop::CutMidAnswer, tick);
             }
             // A censored sample is doubled by the registry; reserve adds headroom.
             // The former absolute ceiling froze this at the same failed allowance.

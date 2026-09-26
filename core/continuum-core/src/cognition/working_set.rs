@@ -288,52 +288,54 @@ pub(crate) struct PersonaEmission {
 
 /// How a generation ENDED, as the emission record has to know it. The registry sizes
 /// the next allowance from what it records here, so the record must say not only that
-/// a generation was cut at its cap but whether the cut cost anything.
+/// a generation was cut at its cap but WHICH CHANNEL the cap fell in.
 ///
-/// Why three cases and not `hit_cap: bool` (BigMama, Kimi, 2026-09-26): every
-/// `FinishReason::Length` used to record at DOUBLE — "clamped by the reserve, so the true
-/// demand is above the count". Kimi's acts refuted that reading: 41% of her requests
-/// failed, and the failed acts were exactly the large ones (`maxTokens` ≥ 9,848 against a
-/// completed p50 of 6,448). Each act cut at its allowance with nothing committed doubled
-/// the need, the next allowance grew to hold it, the longer generation ran past the turn
-/// deadline and failed outright — and a failure records nothing, so only the cuts were
-/// ever measured. A cut that committed nothing is not evidence she needed more room; it
-/// is evidence the generation was not landing. Reading it as demand is the ratchet.
+/// Why (BigMama, Kimi, 2026-09-26): every `FinishReason::Length` used to record at DOUBLE
+/// — "clamped by the reserve, so the true demand is above the count". Kimi's turns
+/// refuted that reading: 41% of her requests failed, and the failed ones were exactly
+/// the large ones (`maxTokens` ≥ 9,848 against a completed p50 of 6,448). A pass cut
+/// inside its think doubled the need, the next allowance grew to hold it, the longer
+/// generation ran past the turn deadline and failed outright — and a failure records
+/// nothing, so only the cuts were ever measured. A one-way ratchet; her live
+/// `emission.json` held think-only cuts at 14,272 and 18,154 and a peak of 18,154.
+///
+/// The first revision halved such a cut. Cormac's review of #4406 showed that is a
+/// ratchet the other way once the loop closes — a smaller need cuts her earlier, which
+/// halves again, C → C/2 → C/4 down to the floor — and that "committed = a parsed tool
+/// call" mislabels a `code/write` cut mid-payload, the very cut that needed more room.
+/// So the classification is by CHANNEL, and no factor below one exists anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmissionStop {
-    /// The model stopped on its own (stop token or tool call): the count is her real
-    /// size for that turn, recorded verbatim.
+    /// The model stopped on its own (stop token or tool call): both channels record
+    /// verbatim — this is her real size for that turn.
     Landed,
-    /// Cut at the cap with a tool call already committed: the reserve cut a generation
-    /// that WAS landing, so the true demand is a floor above the count — recorded at
-    /// double, the growth path.
-    CutCommitted,
-    /// Cut at the cap with NOTHING committed (text with no call, or a think-only tail):
-    /// recorded at HALF, the inverse of the growth path, so the need falls toward what
-    /// this lane can finish in its budget. The time term is the allowance's floor
-    /// (`output_allowance`), so the shrink never starves a mind below what fits; what
-    /// was worth keeping in the cut rides the fault head, not the measurement.
-    CutUncommitted,
+    /// Cut at the cap WITH answer tokens: she was saying or calling something and the
+    /// cap fell in it. The answer channel records at double (the growth path), the
+    /// think verbatim, and the peak is the SUM of the two — never `output × 2`, which
+    /// is what walked a 7,000-token think with a three-token answer to 14,006.
+    CutMidAnswer,
+    /// Cut at the cap with NO answer tokens: the think consumed the whole allowance and
+    /// nothing was said. Not a sample of her need at all — a thinking model fills
+    /// whatever room it is given, so a censored think says only "at least this much
+    /// think fits in this allowance"; pushed into the need ring it would carry the
+    /// landed turns' headroom on top of a value that already IS the allowance, and the
+    /// loop would drift up ×5/4 a turn to the share. The peak takes it verbatim (so the
+    /// reserve holds), `turns` counts it, the need ring does not: the allowance stays
+    /// sized by the turns in which she said something, which is the branch's name.
+    /// The cut itself is the fault paths' business (`persona.act.think_only`,
+    /// `delib.truncated_not_an_answer`), not the measurement's.
+    CutMidThought,
 }
 
 impl EmissionStop {
-    /// Classify a finished generation: `hit_cap` is a `FinishReason::Length` stop,
-    /// `committed` whether a tool call was parsed from it. Only a cap hit is a cut.
-    pub fn of(hit_cap: bool, committed: bool) -> Self {
-        match (hit_cap, committed) {
+    /// Classify a finished generation by where the cap fell: `hit_cap` is a
+    /// `FinishReason::Length` stop, `answer_tokens` the share of the server's count that
+    /// was not reasoning. Only a cap hit is a cut.
+    pub fn classify(hit_cap: bool, answer_tokens: u32) -> Self {
+        match (hit_cap, answer_tokens) {
             (false, _) => Self::Landed,
-            (true, true) => Self::CutCommitted,
-            (true, false) => Self::CutUncommitted,
-        }
-    }
-
-    /// `tokens` as this stop measures it: verbatim, doubled, or halved. A halved cut
-    /// never reaches zero — a zero sample would read as a mind that needs nothing.
-    fn measure(self, tokens: u32) -> u32 {
-        match self {
-            Self::Landed => tokens,
-            Self::CutCommitted => tokens.saturating_mul(2),
-            Self::CutUncommitted => (tokens / 2).max(1),
+            (true, 0) => Self::CutMidThought,
+            (true, _) => Self::CutMidAnswer,
         }
     }
 }
@@ -539,12 +541,12 @@ impl WorkingSetRegistry {
     /// `output_tokens` is the SERVER's count (`usage.output_tokens`) — reasoning
     /// tokens included, never an estimate; `reasoning_tokens` is the share of it the
     /// reasoning channel took (the faculty apportions the server's count by channel
-    /// bytes), so the answer is the remainder. `stop` says how it ended
-    /// ([`EmissionStop`]): a landed generation records verbatim, a cut that was
-    /// committing at double (a floor on true demand, and the growth path — see
-    /// [`PersonaEmission::peak_tokens`]), a cut that committed nothing at half; the
-    /// channel that was cut (the reasoning when no answer came, else the answer)
-    /// takes the same factor. Zero-token completions
+    /// bytes), so the answer is the remainder. `stop` says where it ended
+    /// ([`EmissionStop`]): a landed generation records verbatim; a cut inside the
+    /// answer records the answer at double (a floor on true demand, and the growth
+    /// path — see [`PersonaEmission::peak_tokens`]) and the peak as the sum of the
+    /// channels; a cut inside the think records the peak verbatim and is not a need
+    /// sample. Zero-token completions
     /// are the empty-completion fault's territory, not a data point to drag the peak with.
     pub(crate) fn record_emission(
         &self,
@@ -586,7 +588,7 @@ impl WorkingSetRegistry {
 
     /// How much of a past peak survives each new observation (7/8).
     ///
-    /// The peak must be able to FALL, or a committed cut's doubling is a one-way ratchet to the
+    /// The peak must be able to FALL, or a mid-answer cut's doubling is a one-way ratchet to the
     /// ceiling (see [`Self::record_emission_in_memory`]). 7/8 per observation is ~16 turns
     /// to forget a measurement that was never real — fast enough that a poisoned record
     /// heals within a work session, slow enough that a citizen who genuinely writes long
@@ -608,17 +610,21 @@ impl WorkingSetRegistry {
         stop: EmissionStop,
         now_ms: u64,
     ) -> PersonaEmission {
-        let observed = stop.measure(output_tokens);
-        // The channel split, with the cut channel taking the stop's factor: a Length
-        // stop with no answer cut the THINK (the M5's think-only turns); with an
-        // answer, it cut the answer. A landed turn's factor is the identity.
         let reasoning = reasoning_tokens.min(output_tokens);
         let answer = output_tokens - reasoning;
-        let (reasoning, answer) = match answer {
-            0 => (stop.measure(reasoning), 0),
-            a => (reasoning, stop.measure(a)),
+        // The cut channel takes the growth, and the peak is the SUM of the channels as
+        // measured — never `output × 2`: a 7,000-token think cut three tokens into its
+        // answer needs 7,006, not 14,006 (see [`EmissionStop`]).
+        let (reasoning, answer) = match stop {
+            EmissionStop::Landed | EmissionStop::CutMidThought => (reasoning, answer),
+            EmissionStop::CutMidAnswer => (reasoning, answer.saturating_mul(2)),
         };
+        let observed = reasoning.saturating_add(answer);
         let push_need = |e: &mut PersonaEmission| {
+            // A think-only cut is not a sample of her need ([`EmissionStop::CutMidThought`]).
+            if stop == EmissionStop::CutMidThought {
+                return;
+            }
             let slot = (e.need_turns as usize) % NEED_SAMPLES;
             e.reasoning_samples[slot] = reasoning;
             e.answer_samples[slot] = answer;
@@ -630,7 +636,7 @@ impl WorkingSetRegistry {
             .and_modify(|e| {
                 push_need(&mut *e);
                 // A RECENT high-water mark, not an eternal one. `.max()` alone is a
-                // one-way ratchet: a committed cut records at DOUBLE, so a single truncated
+                // one-way ratchet: a mid-answer cut records its answer at DOUBLE, so a single truncated
                 // turn pins the peak at twice the cap forever, the reserve derived from
                 // it saturates at the ceiling, and — because this file is persisted so a
                 // mind "must not re-earn its reply size per boot" — the poisoned value
@@ -642,7 +648,7 @@ impl WorkingSetRegistry {
                 //
                 // Decaying by PEAK_DECAY_NUM/PEAK_DECAY_DEN each observation keeps both
                 // properties that mattered: a genuine large reply still takes the peak
-                // instantly (the growth path `CutCommitted` exists for), and a peak that was
+                // instantly (the growth path `CutMidAnswer` exists for), and a peak that was
                 // never real fades on its own — so poisoned records SELF-HEAL over a few
                 // dozen turns with no migration and no operator step.
                 e.peak_tokens = observed.max(
@@ -1007,7 +1013,7 @@ mod tests {
         let reg = WorkingSetRegistry::new();
         reg.record_emission_in_memory(p(1), 2_500, 0, EmissionStop::Landed, 1_000);
         assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(2_500));
-        reg.record_emission_in_memory(p(1), 3_000, 0, EmissionStop::CutCommitted, 2_000);
+        reg.record_emission_in_memory(p(1), 3_000, 0, EmissionStop::CutMidAnswer, 2_000);
         let e = reg.emission_of(p(1)).expect("observed");
         assert_eq!(
             e.peak_tokens, 6_000,
@@ -1038,7 +1044,7 @@ mod tests {
     fn a_peak_that_was_never_real_heals_itself_without_a_migration() {
         let reg = WorkingSetRegistry::new();
         // Exactly the poisoned value read off a real citizen's emission.json.
-        reg.record_emission_in_memory(p(7), 8_192, 0, EmissionStop::CutCommitted, 1_000);
+        reg.record_emission_in_memory(p(7), 8_192, 0, EmissionStop::CutMidAnswer, 1_000);
         assert_eq!(
             reg.emission_of(p(7)).map(|e| e.peak_tokens),
             Some(16_384),
@@ -1069,38 +1075,46 @@ mod tests {
     // restart is a PAUSE, not a death.
     #[test]
     // regression for the Kimi allowance ratchet (BigMama, 2026-09-26): 41% of her
-    // requests failed and the failed acts were the LARGE ones — every uncommitted cut
-    // doubled the need, the allowance grew to hold it, and the longer act died at the
-    // turn deadline instead of landing.
-    // what this catches: a cut that committed nothing must SHRINK the measured need
-    // and never raise the peak; only a cut that was committing may grow either.
-    fn a_cut_that_committed_nothing_shrinks_the_need_instead_of_doubling_it() {
+    // requests failed and the failed ones were the LARGE ones — a think-only cut
+    // doubled the need, the allowance grew to hold it, and the longer pass died at
+    // the turn deadline instead of landing. Revised on Cormac's review of #4406:
+    // halving the cut was a ratchet the other way once the loop closed, and a cut
+    // mid-answer is the write that needed room.
+    // what this catches: with the loop CLOSED (each cap is the previous need), a run
+    // of think-only cuts moves neither the need nor the peak; a mid-answer cut grows
+    // only its channel and the peak is the sum, never output × 2; classification is
+    // by channel.
+    fn a_think_only_cut_moves_nothing_and_a_mid_answer_cut_grows_only_its_channel() {
         let reg = WorkingSetRegistry::default();
-        let cap = 9_848u32;
-        // Her real shape, from landed turns: ~6.4k-token acts, mostly think.
+        // Her landed shape: ~6.4k-token turns, mostly think.
         for t in 0..MIN_NEED_TURNS as u64 {
             reg.record_emission_in_memory(p(9), 6_448, 6_000, EmissionStop::Landed, t);
         }
-        let landed = reg.need_of(p(9)).expect("need measured").total();
-        let peak_before = reg.emission_of(p(9)).expect("recorded").peak_tokens;
-        // Then a run of acts cut at the cap, think-only, with no tool call committed.
-        for t in 0..NEED_SAMPLES as u64 {
-            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::CutUncommitted, 100 + t);
+        let landed = reg.need_of(p(9)).expect("need measured");
+        let peak_landed = reg.emission_of(p(9)).expect("recorded").peak_tokens;
+        // The closed loop: every turn is a think-only cut at the cap the last need set.
+        let mut cap = landed.total();
+        for t in 0..(NEED_SAMPLES as u64 + 4) {
+            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, 0), 100 + t);
+            let need = reg.need_of(p(9)).expect("need measured");
+            assert_eq!(need, landed, "a think-only cut is not a sample: the need does not move (turn {t})");
+            let e = reg.emission_of(p(9)).expect("recorded");
+            assert_eq!(e.last_tokens, cap, "the peak side takes the cut verbatim");
+            assert!(e.peak_tokens <= peak_landed.max(cap), "never output × 2: peak {}", e.peak_tokens);
+            cap = need.total();
         }
-        let after = reg.emission_of(p(9)).expect("recorded");
-        let shrunk = reg.need_of(p(9)).expect("need measured").total();
-        assert!(shrunk < landed, "uncommitted cuts must pull the need DOWN: {landed} -> {shrunk}");
-        assert!(shrunk < cap, "a need at or above the cap IS the ratchet: {shrunk} >= {cap}");
-        assert!(after.peak_tokens <= peak_before, "a spiral never raises the peak: {} -> {}", peak_before, after.peak_tokens);
-        assert_eq!(after.last_tokens, cap / 2, "the cut records at half");
-        // The growth path is intact: a cut that WAS committing still doubles.
-        reg.record_emission_in_memory(p(8), 3_000, 0, EmissionStop::CutCommitted, 1);
-        assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 6_000);
-        // The truth table at the seam the faculty classifies on: only a cap hit is a cut.
-        assert_eq!(EmissionStop::of(false, false), EmissionStop::Landed);
-        assert_eq!(EmissionStop::of(false, true), EmissionStop::Landed);
-        assert_eq!(EmissionStop::of(true, true), EmissionStop::CutCommitted);
-        assert_eq!(EmissionStop::of(true, false), EmissionStop::CutUncommitted);
+        // A cut inside the ANSWER is the growth path, on that channel only: the peak is
+        // the sum of the channels, not the whole output doubled.
+        reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, 3), 1);
+        assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 7_006, "7,006, not 14,006");
+        reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, 6_000), 1);
+        let write = reg.emission_of(p(7)).expect("recorded");
+        assert_eq!((write.peak_tokens, write.answer_samples[0], write.reasoning_samples[0]), (13_000, 12_000, 1_000));
+        // Classification is by channel; only a cap hit is a cut.
+        assert_eq!(EmissionStop::classify(false, 0), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(false, 9), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(true, 0), EmissionStop::CutMidThought);
+        assert_eq!(EmissionStop::classify(true, 1), EmissionStop::CutMidAnswer);
     }
 
     #[test]
@@ -1148,8 +1162,8 @@ mod tests {
     // (20 s × 12 tok/s = 240) cannot hold a thinking pass; Qwen3.8 ended two turns inside
     // the reasoning channel (`think_only reasoning_len=2730`, `2112`). The need is the p90
     // of recent turns per channel with 5/4 headroom; it is UNKNOWN (None) before three
-    // turns and for a legacy emission file; a Length stop with no answer doubles the cut
-    // think; the ring keeps the last 16 so one loud turn ages out.
+    // turns and for a legacy emission file; a Length stop with no answer is not a need
+    // sample; the ring keeps the last 16 so one loud turn ages out.
     #[test]
     fn the_reasoning_need_is_a_p90_with_headroom_and_unknown_before_it_is_measured() {
         let reg = WorkingSetRegistry::new();
@@ -1161,13 +1175,14 @@ mod tests {
         let need = reg.need_of(p(3)).expect("three turns measure a need");
         assert_eq!((need.reasoning, need.answer, need.turns), (1_125, 375, 3), "p90 of 3 is the max (900, 300) × 5/4");
         assert_eq!(need.total(), 1_500);
-        // A Length stop with NO answer cut the think: it records at double.
-        reg.record_emission_in_memory(p(3), 768, 768, EmissionStop::CutCommitted, 4);
+        // A Length stop with NO answer cut the think: the peak takes it, the need ring
+        // does not (Cormac's review of #4406 — doubling it here was the ratchet).
+        reg.record_emission_in_memory(p(3), 768, 768, EmissionStop::CutMidThought, 4);
         let need = reg.need_of(p(3)).expect("measured");
-        assert_eq!(need.reasoning, 1_536 * 5 / 4, "the cut think is a floor, doubled");
-        // A Length stop WITH an answer cut the answer instead.
-        reg.record_emission_in_memory(p(3), 1_000, 600, EmissionStop::CutCommitted, 5);
-        assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[4]), Some(800));
+        assert_eq!((need.reasoning, need.turns), (1_125, 3), "a think-only cut is not a need sample");
+        // A Length stop WITH an answer cut the answer: that channel records at double.
+        reg.record_emission_in_memory(p(3), 1_000, 600, EmissionStop::CutMidAnswer, 5);
+        assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[3]), Some(800));
         // The ring: sixteen quiet turns age the loud one out.
         for t in 6..=22u64 {
             reg.record_emission_in_memory(p(3), 400, 300, EmissionStop::Landed, t);
