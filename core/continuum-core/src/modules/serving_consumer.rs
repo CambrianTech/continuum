@@ -886,7 +886,8 @@ mod tests {
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
-            .with_inherited_lane(Arc::new(|| None));
+            .with_inherited_lane(Arc::new(|| None))
+            .without_measurement();
 
         let fp = consumer.footprint();
         assert_eq!(fp.len(), 1);
@@ -991,7 +992,8 @@ mod tests {
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32, _grant: u32| current);
         let consumer =
             ServingConsumer::new(serving_rx, intent, footprint_of, ResourceKind::Vram, policy)
-                .with_inherited_lane(Arc::new(|| None));
+                .with_inherited_lane(Arc::new(|| None))
+            .without_measurement();
         (consumer, serving_tx, pin_rx)
     }
 
