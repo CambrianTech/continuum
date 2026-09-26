@@ -880,7 +880,15 @@ pub fn plan_serving(
         }
     };
     let lanes = match &allocation {
-        Some(a) => a.lanes,
+        // The measured decode knee bounds the allocator's lanes too. The allocator seats
+        // the most minds at their requirement, which on a roomy box is every resident; the
+        // knee is what this box's decode can actually serve. Measured on the M5
+        // 2026-09-25 22:10Z: knee 2 (demand_lanes=2), the allocator seated 8, the engine
+        // relaunched at 8 lanes, and every stream decoded at ~3 t/s. Shedding lanes keeps
+        // the allocator's per-mind window (the served window below still starts from
+        // `a.window`), so every seated mind still gets her requirement; the shed minds
+        // queue (and page), exactly as the knee intends.
+        Some(a) => a.lanes.min(demand_lanes.max(1)),
         None => (1..=lane_cap)
             .rev()
             .find(|&l| window_for(l as u64) >= per_lane_floor)
@@ -1712,6 +1720,33 @@ mod tests {
             "…but never above what was actually demanded (got {})",
             measured.served_context_window
         );
+    }
+
+    // what this catches (the M5, 2026-09-25 22:10Z): with the roster's requirements on
+    // the demand, lanes came from the allocator and bypassed the decode knee. Knee 2,
+    // eight seated minds, eight lanes at ~3 t/s each. The knee bounds this path too, and
+    // the window never drops below the requirement when lanes are shed.
+    #[test]
+    fn the_knee_bounds_the_allocators_lanes_too() {
+        use crate::cognition::window_allocator::LaneRequirement;
+        const GB: u64 = 1 << 30;
+        let qwen = ModelFootprint {
+            model_id: "qwen-27b".into(),
+            weights_bytes: 19 * GB,
+            kv_per_token: 33_000,
+            context_window: 262_144,
+            capability_rank: 9,
+            fixed_per_lane_bytes: 0,
+        };
+        let host = HostBudget { usable_bytes: 39 * GB, perf_cores: 12 };
+        let eight: Vec<_> = (0..8).map(|_| LaneRequirement::declared(uuid::Uuid::new_v4(), 16_384)).collect();
+        let unkneed = plan_serving(&host, std::slice::from_ref(&qwen),
+            &ServingDemand::new(8, None).with_requirements(eight.clone())).expect("plan");
+        assert!(unkneed.lanes > 2, "without a knee the allocator seats more than two: {}", unkneed.rationale);
+        let kneed = plan_serving(&host, std::slice::from_ref(&qwen),
+            &ServingDemand::new(8, None).with_requirements(eight).with_knee(Some(2))).expect("plan");
+        assert_eq!(kneed.lanes, 2, "the knee bounds the allocator: {}", kneed.rationale);
+        assert!(kneed.served_context_window >= 16_384, "shedding lanes never starves the window");
     }
 
     // what this catches (the M5, 2026-09-19 23:14Z): the decode knee clamped the ROSTER
