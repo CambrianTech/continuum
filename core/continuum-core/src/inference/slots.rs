@@ -177,8 +177,12 @@ pub struct KvSlotPool {
     /// The reserved non-citizen slot (highest index) when the server has ≥3
     /// slots — where ALL non-Turn traffic lands, so it structurally cannot
     /// evict a citizen's warm tail. `None` on small servers (≤2 slots): there,
-    /// non-Turn traffic uses `cache_prompt: false`; one slot saves its resident
-    /// before transient use, while two slots keep the unpinned fallback.
+    /// non-Turn traffic uses `cache_prompt: false` and BORROWS a citizen slot
+    /// through the pool ([`Self::transient_slot`]) with its resident saved first.
+    /// Two slots used to keep an "unpinned fallback" instead — measured 2026-09-26
+    /// on BigMama (card 4deaed09): the server placed that traffic by similarity
+    /// onto a resident's slot and overwrote her page; Sahar reused 0 tokens on
+    /// every turn while Kimi, on the other slot, reused 44,950.
     scratch: Option<u32>,
     /// slot index → the activity whose KV last WARMED that slot. This is the
     /// paging ledger's "who is resident" half: when a lease hands a slot to a
@@ -391,6 +395,27 @@ impl KvSlotPool {
     /// spare one.
     pub fn scratch_slot(&self) -> Option<u32> {
         self.scratch
+    }
+
+    /// The citizen slot transient traffic borrows on a server with NO scratch slot:
+    /// a slot nobody's KV warms if there is one, else the resident whose page is the
+    /// cheapest to lose — the smallest `tail_tokens`, the priced eviction's own cost
+    /// basis. The single-slot rule ("save the resident, then borrow") generalised to
+    /// every scratch-less pool; the caller saves that resident before the borrow.
+    pub(crate) fn transient_slot(&self) -> u32 {
+        let holders = self.holders.lock();
+        let citizens = citizen_slots(self.n_slots);
+        if let Some(free) = (0..citizens).find(|slot| !holders.contains_key(slot)) {
+            return free;
+        }
+        (0..citizens)
+            .min_by_key(|slot| {
+                holders
+                    .get(slot)
+                    .and_then(|key| self.pool.get(key))
+                    .map_or(0, |lease| lease.tail_tokens.load(Ordering::Relaxed))
+            })
+            .unwrap_or(0) // unwrap_or: a pool has at least one slot; an empty range is impossible
     }
 
     /// Record the activity's current prompt size — the cost basis the priced

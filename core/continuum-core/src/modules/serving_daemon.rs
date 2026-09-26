@@ -471,17 +471,98 @@ pub struct VerifiedServingCapture {
 
 /// The existing reconcile gate, armed before spawning so abort-before-first-poll
 /// cannot strand it. Every lifecycle operation, including empty-plan idle, owns it.
-struct ServingOperation(Arc<AtomicBool>);
+/// Where an in-flight reconcile operation is waiting — named, so a tick that skips past
+/// it can say WHICH await holds the daemon (card c3c50e0d: the M5 went dark for six
+/// minutes at boot beside a surviving engine; every tick and the planner skipped on the
+/// gate in silence, and the evidence died with the kill that restored it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum ReconcileStep {
+    None = 0,
+    /// Waiting on the external endpoint's reachability probe.
+    External = 1,
+    /// Retiring the owned engine for an empty plan (`idle_if_current`).
+    Retire = 2,
+    /// `ensure_model_serving_if_current`: adopt the running engine or spawn and wait ready.
+    Ensure = 3,
+    /// Reading the ready engine's own per-slot window (`/props`).
+    VerifyWindow = 4,
+    /// Reading the ready engine's own slot count (`/props`).
+    VerifyLanes = 5,
+    /// Holding the gate for an academy teacher batch on the lane.
+    AcademyBatch = 6,
+}
+impl ReconcileStep {
+    fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::External => "external_probe",
+            Self::Retire => "retire_owned_engine",
+            Self::Ensure => "ensure_serving",
+            Self::VerifyWindow => "verify_window",
+            Self::VerifyLanes => "verify_lanes",
+            Self::AcademyBatch => "academy_batch",
+        }
+    }
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::External,
+            2 => Self::Retire,
+            3 => Self::Ensure,
+            4 => Self::VerifyWindow,
+            5 => Self::VerifyLanes,
+            6 => Self::AcademyBatch,
+            _ => Self::None,
+        }
+    }
+}
+
+/// An in-flight reconcile past this age is WEDGED: named on the gate-skip probe with the
+/// step it is in, so the next sample of the core knows which await to read. Twice the
+/// engine's ready timeout: the longest single wait a healthy reconcile can hold.
+// derived-or-floor: derived — 2 × READY_TIMEOUT (a launch may wait ready once, then verify).
+const RECONCILE_WEDGE_BOUND: Duration = Duration::from_secs(2 * READY_TIMEOUT.as_secs());
+
+/// A gate skip says something once per this interval, never per tick.
+// derived-or-floor: a floor — one line per half minute is readable in a log and loud enough.
+const RECONCILE_BUSY_SAY_EVERY: Duration = Duration::from_secs(30);
+
+/// True when an operation of this age has outlived the bound a healthy reconcile can hold.
+fn reconcile_wedged(age: Duration) -> bool {
+    age > RECONCILE_WEDGE_BOUND
+}
+
+struct ServingOperation {
+    gate: Arc<AtomicBool>,
+    started_ms: Arc<AtomicU64>,
+    step: Arc<AtomicU8>,
+}
 impl ServingOperation {
-    fn acquire(gate: Arc<AtomicBool>) -> Option<Self> {
+    fn acquire(
+        gate: Arc<AtomicBool>,
+        started_ms: Arc<AtomicU64>,
+        step: Arc<AtomicU8>,
+    ) -> Option<Self> {
         gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
-        Some(Self(gate))
+        started_ms.store(crate::modules::chat::now_ms(), Ordering::Release);
+        step.store(ReconcileStep::None as u8, Ordering::Release);
+        Some(Self {
+            gate,
+            started_ms,
+            step,
+        })
+    }
+    /// Name the await this operation is entering.
+    fn step(&self, step: ReconcileStep) {
+        self.step.store(step as u8, Ordering::Release);
     }
 }
 impl Drop for ServingOperation {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.step.store(ReconcileStep::None as u8, Ordering::Release);
+        self.started_ms.store(0, Ordering::Release);
+        self.gate.store(false, Ordering::Release);
     }
 }
 
@@ -565,6 +646,13 @@ pub struct ServingDaemonModule {
     /// in flight. A tick that finds a reconcile already running skips — no
     /// stacked relaunches thrashing the GPU.
     reconciling: Arc<AtomicBool>,
+    /// When the in-flight reconcile began (ms; 0 = none) and which await it is in
+    /// (`ReconcileStep`), written by the operation, read by whoever skips on the gate.
+    reconcile_started_ms: Arc<AtomicU64>,
+    reconcile_step: Arc<AtomicU8>,
+    /// When the gate skip last spoke (ms), so a busy reconcile is said once per
+    /// [`RECONCILE_BUSY_SAY_EVERY`], never per tick.
+    reconcile_busy_said_ms: Arc<AtomicU64>,
     academy_batch: parking_lot::Mutex<Option<academy_batch::BatchSlot>>,
     verified_target: watch::Sender<Option<VerifiedServingCapture>>,
     /// Reconcile-tick counter driving the slow liveness HEARTBEAT (fires when
@@ -941,6 +1029,9 @@ impl ServingDaemonModule {
             server,
             serving_tx,
             reconciling: Arc::new(AtomicBool::new(false)),
+            reconcile_started_ms: Arc::new(AtomicU64::new(0)),
+            reconcile_step: Arc::new(AtomicU8::new(0)),
+            reconcile_busy_said_ms: Arc::new(AtomicU64::new(0)),
             academy_batch: parking_lot::Mutex::new(None),
             health_ticks: Arc::new(AtomicU64::new(0)),
             health_fails: Arc::new(AtomicU8::new(0)),
@@ -1891,6 +1982,7 @@ impl ServingDaemonModule {
         // and the scan transient never reaches `available` at all — is the #56 consumers-LEASE
         // residual; this breaks the feedback loop cleanly in the meantime.)
         if self.reconciling.load(Ordering::Acquire) {
+            self.note_reconcile_busy("recompute");
             return;
         }
         let budget = self.host_budget();
@@ -2589,8 +2681,57 @@ impl ServingDaemonModule {
     /// No plan → publish the empty snapshot (no servable model = nothing live).
     /// Already serving the desired model & ready → no-op. A reconcile already
     /// in flight → skip (the gate). Otherwise spawn the reconcile.
+    /// A tick or a planner that skips because a reconcile is in flight says so — once per
+    /// half minute, with the operation's age and the await it is in — and names a WEDGE
+    /// once the age passes [`RECONCILE_WEDGE_BOUND`]. Silence here is how the M5 sat dark
+    /// for six minutes with a healthy engine on its port (card c3c50e0d).
+    fn note_reconcile_busy(&self, skipped: &'static str) {
+        let started = self.reconcile_started_ms.load(Ordering::Acquire);
+        if started == 0 {
+            return;
+        }
+        let now = crate::modules::chat::now_ms();
+        let age = Duration::from_millis(now.saturating_sub(started));
+        let said = self.reconcile_busy_said_ms.load(Ordering::Acquire);
+        if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
+            return;
+        }
+        self.reconcile_busy_said_ms.store(now, Ordering::Release);
+        let step = ReconcileStep::from_u8(self.reconcile_step.load(Ordering::Acquire)).name();
+        if reconcile_wedged(age) {
+            crate::probe!(
+                class = "serving.reconcile.wedged",
+                skipped,
+                step,
+                age_ms = age.as_millis() as u64,
+                bound_ms = RECONCILE_WEDGE_BOUND.as_millis() as u64,
+                "a reconcile operation has outlived the bound a healthy one can hold — the \
+                 daemon is skipping every tick and plan on its gate; sample the core and read \
+                 this step's await before touching the engine"
+            );
+        } else {
+            crate::probe!(
+                class = "serving.reconcile.busy",
+                skipped,
+                step,
+                age_ms = age.as_millis() as u64,
+                "a reconcile is in flight; this pass skipped on the gate"
+            );
+        }
+    }
+
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
-        let operation = ServingOperation::acquire(self.reconciling.clone())?;
+        let operation = match ServingOperation::acquire(
+            self.reconciling.clone(),
+            self.reconcile_started_ms.clone(),
+            self.reconcile_step.clone(),
+        ) {
+            Some(operation) => operation,
+            None => {
+                self.note_reconcile_busy("reconcile");
+                return None;
+            }
+        };
         let planned = self.plan_tx.borrow().clone();
         let intent = self.intent.snapshot();
         if planned.intent_revision != intent.revision {
@@ -2618,7 +2759,8 @@ impl ServingDaemonModule {
             let serving_tx = self.serving_tx.clone();
             let bus = self.bus.get().cloned();
             return Some(tokio::spawn(async move {
-                let _operation = operation;
+                let operation = operation;
+                operation.step(ReconcileStep::External);
                 if let Some(snap) = crate::inference::llama_server::probe_external_serving(
                     crate::inference::llama_server::DEFAULT_SERVING_WAIT,
                 )
@@ -2673,7 +2815,7 @@ impl ServingDaemonModule {
                 let reason = self.no_candidate_reason();
                 let bus = self.bus.get().cloned();
                 return Some(tokio::spawn(async move {
-                    let _operation = operation;
+                    let operation = operation;
                     let current = || intent_owner.snapshot().revision == revision;
                     if !current() {
                         return;
@@ -2692,6 +2834,7 @@ impl ServingDaemonModule {
                         );
                         true
                     };
+                    operation.step(ReconcileStep::Retire);
                     match server.idle_if_current(&admit).await {
                         Ok(()) => {
                             let _ = verified_target.send_replace(None);
@@ -3299,7 +3442,7 @@ impl ServingDaemonModule {
         // the dying predecessor).
         self.spawn_baseline_vram.store(u64::MAX, Ordering::Relaxed);
         Some(tokio::spawn(async move {
-            let _operation = operation;
+            let operation = operation;
             let current = || intent_owner.snapshot().revision == revision;
             if !current() {
                 return;
@@ -3340,6 +3483,7 @@ impl ServingDaemonModule {
                 );
                 true
             };
+            operation.step(ReconcileStep::Ensure);
             let outcome = ensure_model_serving_if_current(
                 server.as_ref(),
                 &target,
@@ -3382,6 +3526,7 @@ impl ServingDaemonModule {
             // ready snapshot with a guessed window) — it self-heals next tick.
             let served_window = match &outcome {
                 EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                    operation.step(ReconcileStep::VerifyWindow);
                     match server.served_context_window().await {
                         Ok(n) => n,
                         Err(e) => {
@@ -3410,6 +3555,7 @@ impl ServingDaemonModule {
             // only when the engine names none.
             let served_lanes = match &outcome {
                 EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                    operation.step(ReconcileStep::VerifyLanes);
                     match server.served_lanes().await {
                         Ok(n) => published_lanes(Some(n), target.lanes),
                         Err(e) => {
@@ -6768,6 +6914,31 @@ pub(crate) mod tests {
             incumbent_adoption_plan(&physical, &[small], &qwen27b.model_id, &demand, None).is_none(),
             "an incumbent that is not a candidate is a named None"
         );
+    }
+
+    // what this catches (card c3c50e0d): a reconcile in flight is NAMED — its step and age
+    // — and past the bound it is a wedge, never a silent skip. The gate, the start and the
+    // step are one operation: acquire sets them, drop clears them, a second acquire fails.
+    #[test]
+    fn a_reconcile_in_flight_names_its_step_and_a_wedge_is_declared_past_the_bound() {
+        use super::{reconcile_wedged, ReconcileStep, ServingOperation, RECONCILE_WEDGE_BOUND};
+        use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+        use std::sync::Arc;
+        let gate = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicU64::new(0));
+        let step = Arc::new(AtomicU8::new(0));
+        let op = ServingOperation::acquire(gate.clone(), started.clone(), step.clone())
+            .expect("first acquire");
+        assert!(ServingOperation::acquire(gate.clone(), started.clone(), step.clone()).is_none());
+        assert!(started.load(Ordering::Acquire) > 0, "the start is stamped");
+        op.step(ReconcileStep::Ensure);
+        assert_eq!(ReconcileStep::from_u8(step.load(Ordering::Acquire)), ReconcileStep::Ensure);
+        assert_eq!(ReconcileStep::from_u8(step.load(Ordering::Acquire)).name(), "ensure_serving");
+        drop(op);
+        assert!(!gate.load(Ordering::Acquire) && started.load(Ordering::Acquire) == 0);
+        assert_eq!(ReconcileStep::from_u8(step.load(Ordering::Acquire)), ReconcileStep::None);
+        assert!(!reconcile_wedged(RECONCILE_WEDGE_BOUND));
+        assert!(reconcile_wedged(RECONCILE_WEDGE_BOUND + std::time::Duration::from_secs(1)));
     }
 
     // what this catches (card 628dc958): the plan grew into free memory while the host

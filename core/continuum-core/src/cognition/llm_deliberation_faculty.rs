@@ -5202,7 +5202,7 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // with an empty patch inside twenty minutes (2026-09-04) — the
             // offered-tool-is-must-use reflex. It stays one `commands/list`
             // away for a reviewer who actually holds a peer's diff.
-            if n == "code/git/apply" {
+            if crate::cognition::tool_dialect::withheld_from_hands(n).is_some() {
                 return false;
             }
             // The same reflex, measured 2026-09-19 (Joel: "she could do all this
@@ -5215,9 +5215,6 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // 9/16 (#4102), the night the landings stopped. A reviewer who holds a
             // review card, or a citizen reading receipts, reaches them through
             // `commands/list`; the holder's own hands are `work/get` and `work/submit`.
-            if n == "work/submission" || n == "work/review" {
-                return false;
-            }
             n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
