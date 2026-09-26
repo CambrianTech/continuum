@@ -489,6 +489,8 @@ enum ReconcileStep {
     VerifyWindow = 4,
     /// Reading the ready engine's own slot count (`/props`).
     VerifyLanes = 5,
+    /// Holding the gate for an academy teacher batch on the lane.
+    AcademyBatch = 6,
 }
 impl ReconcileStep {
     fn name(self) -> &'static str {
@@ -499,6 +501,7 @@ impl ReconcileStep {
             Self::Ensure => "ensure_serving",
             Self::VerifyWindow => "verify_window",
             Self::VerifyLanes => "verify_lanes",
+            Self::AcademyBatch => "academy_batch",
         }
     }
     fn from_u8(v: u8) -> Self {
@@ -508,6 +511,7 @@ impl ReconcileStep {
             3 => Self::Ensure,
             4 => Self::VerifyWindow,
             5 => Self::VerifyLanes,
+            6 => Self::AcademyBatch,
             _ => Self::None,
         }
     }
