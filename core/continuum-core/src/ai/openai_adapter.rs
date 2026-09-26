@@ -1999,6 +1999,24 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         if generation_completed {
             if let Some(admission) = _admission.as_mut() {
                 admission.generation_completed();
+                // THE RESTORE ECONOMY, JUDGED ON REAL TRAFFIC. A turn whose KV was
+                // restored from a page either reused it (the engine reports cached
+                // tokens) or silently re-prefilled everything (cache_n 0, the 09-04 /
+                // 09-14 class). This is the evidence the deploy self-check reads
+                // instead of injecting a probe into a live engine, which measured load
+                // and contention and held the M5 three times on 2026-09-25/26 while
+                // restores were warm (card 356ce732).
+                if admission.restored() {
+                    if let Some(t) = &timing {
+                        crate::probe!(
+                            class = "inference.restored_turn",
+                            cached = t.cached_tokens,
+                            prompt = t.prefill_tokens,
+                            outcome = if t.cached_tokens > 0 { "warm" } else { "cold" },
+                            "a turn restored from a KV page completed — did the engine reuse the restored prefix"
+                        );
+                    }
+                }
             }
         }
 
