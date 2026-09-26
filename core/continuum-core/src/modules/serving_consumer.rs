@@ -118,6 +118,9 @@ use crate::resources::{
 /// value. Injectable so the consumer is testable without a populated registry.
 pub type FootprintFn = Arc<dyn Fn(&str, u32, u32, u32) -> u64 + Send + Sync>;
 
+/// `model_id → physical bytes the serving process holds right now`, when measured.
+pub type MeasuredFn = Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>;
+
 /// The `consumer_id` serving's leases carry. Matches the id the acquire-on-load
 /// half will mint leases under, so the authority's asks route back here.
 pub const SERVING_CONSUMER_ID: &str = "serving";
@@ -197,11 +200,20 @@ impl ServingConsumer {
             held_high_water: std::sync::atomic::AtomicU64::new(0),
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
+            measured_of: Arc::new(|model: &str| {
+                crate::inference::lane_footprint::measured_record(model).map(|c| c.anon_bytes)
+            }),
             pool_kind,
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             tier_down,
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_measured(mut self, f: MeasuredFn) -> Self {
+        self.measured_of = f;
+        self
     }
 
     /// Override how an inherited lane is found. Production keeps the default (the
@@ -259,11 +271,27 @@ impl ResourceConsumer for ServingConsumer {
 
         // WHAT THE PLAN SAYS is served right now. Zero while a lane is loading or
         // relaunching, because `active_ready` gates on `ready`.
-        let planned = match self.active_ready() {
-            Some((id, window, lanes, grant_mib)) => Some((
-                (self.footprint_of)(&id, window, lanes, grant_mib),
-                format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
-            )),
+        // THE CREDIT IS WHAT THE PROCESS HOLDS, NOT WHAT THE CATALOG PREDICTED (card
+        // 628dc958, Cormac 2026-09-26: "credit only bytes still resident"). The
+        // replace-myself budget is the board's physical `available` plus this figure, so
+        // this figure must be physical too, or the sum is off by the estimate's error in
+        // one direction and by a whole engine across a relaunch. Measured on the M5
+        // 14:12-14:50Z: the catalog charged 47.7 GB for 6 × 35k (peak KV estimate plus the
+        // full cache grant) while the process held ~26 GB; the plan read ~20 GB it did
+        // not have, grew into swap (1.25 GB), and relaunched six times in 75 minutes.
+        // The estimate stands in only before a measurement exists in this life.
+        let active = self.active_ready();
+        let planned = match &active {
+            Some((id, window, lanes, grant_mib)) => Some(match (self.measured_of)(id) {
+                Some(measured) => (
+                    measured,
+                    format!("{id} measured resident ({lanes} lane(s) × {window} ctx)"),
+                ),
+                None => (
+                    (self.footprint_of)(id, *window, *lanes, *grant_mib),
+                    format!("{id} weights+KV estimated ({lanes} lane(s) × {window} ctx)"),
+                ),
+            }),
             None => None,
         };
         // A LOADING LANE STILL HOLDS BYTES. `active_ready()` is None until `/props`
@@ -327,8 +355,13 @@ impl ResourceConsumer for ServingConsumer {
         };
 
         // DECAY ON EVIDENCE, NEVER ON A TIMER.
+        // The high-water decays to the new engine's figure only once that engine has
+        // PUBLISHED its shape: the verify stamp lands a tick or two before active_model
+        // and the window do, and decaying on the stamp alone dropped the credit to the
+        // loading figure (weights at the floor window) for those ticks — 47.7 → 20.2 GB at
+        // an unchanged shape on the M5, 14:46:51Z.
         let consumed = self.decayed_at_verified_ms.load(Ordering::Relaxed);
-        if verified > consumed && planned.is_some() {
+        if verified > consumed && planned.is_some() && active.is_some() {
             self.decayed_at_verified_ms.store(verified, Ordering::Relaxed);
             self.held_high_water.store(planned_bytes, Ordering::Relaxed);
         } else if planned_bytes > self.held_high_water.load(Ordering::Relaxed) {
@@ -534,8 +567,65 @@ mod tests {
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
-            .with_inherited_lane(Arc::new(|| None));
+            .with_inherited_lane(Arc::new(|| None))
+            .with_measured(Arc::new(|_model: &str| None));
         (consumer, serving_tx)
+    }
+
+    fn bytes_of(c: &ServingConsumer) -> u64 {
+        c.footprint().iter().map(|f| f.bytes).sum()
+    }
+
+    // what this catches (card 628dc958): the credit the replace-myself budget adds back
+    // is the engine's PHYSICAL residency once measured, never the catalog's peak estimate
+    // — the M5 charged 47.7 GB for a process holding ~26 GB and planned into swap.
+    #[test]
+    fn the_credit_is_the_measured_residency_not_the_catalog_estimate() {
+        let estimate = 47_700_000_000u64;
+        let measured = 26_000_000_000u64;
+        let (consumer, _tx) = rig("qwen3.8-27b", estimate);
+        assert_eq!(bytes_of(&consumer), estimate, "no measurement yet: the estimate stands in");
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(measured)));
+        assert_eq!(bytes_of(&consumer), measured, "measured: the process, not the prediction");
+        let detail = consumer.footprint()[0].detail.clone();
+        assert!(detail.contains("measured resident"), "{detail}");
+    }
+
+    // what this catches (card 628dc958): across a relaunch the credit holds at the prior
+    // residency and does NOT decay to the loading figure on the verify stamp alone — the
+    // stamp lands before the new engine publishes its shape, and decaying then dropped the
+    // M5's credit 47.7 → 20.2 GB at an unchanged shape (14:46:51Z). It decays only once the
+    // successor is ready with a shape, to the successor's own figure.
+    #[test]
+    fn the_credit_holds_through_a_relaunch_and_decays_only_to_a_published_successor() {
+        let estimate_loading = 20_000_000_000u64; // weights at the floor window
+        let measured_before = 26_000_000_000u64;
+        let (consumer, tx) = rig("qwen3.8-27b", estimate_loading);
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(measured_before)));
+        // Verified and ready: the high-water is the measured residency.
+        tx.send_modify(|s| s.ready_verified_at_ms = Some(1_000));
+        assert_eq!(bytes_of(&consumer), measured_before);
+        // Torn down for a relaunch: loading, not ready — prior residency held.
+        tx.send_modify(|s| {
+            s.ready = false;
+            s.active_model = None;
+            s.loading_model = Some("qwen3.8-27b".into());
+        });
+        assert_eq!(bytes_of(&consumer), measured_before, "prior residency held while loading");
+        // The verify stamp lands BEFORE the shape is published: still held, no decay.
+        tx.send_modify(|s| s.ready_verified_at_ms = Some(2_000));
+        assert_eq!(bytes_of(&consumer), measured_before, "a stamp without a shape must not decay the credit");
+        // The successor publishes its shape with its own measurement: decay to it.
+        let measured_after = 30_000_000_000u64;
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(measured_after)));
+        tx.send_modify(|s| {
+            s.ready = true;
+            s.loading_model = None;
+            s.active_model = Some("qwen3.8-27b".into());
+            s.lanes = 6;
+            s.served_context_window = 35_588;
+        });
+        assert_eq!(bytes_of(&consumer), measured_after, "the successor's own residency");
     }
 
     /// A tier-down policy that always proposes re-homing to a fixed smaller model
@@ -598,8 +688,65 @@ mod tests {
             ResourceKind::Vram,
             Arc::new(DeclineTierDown),
         )
-            .with_inherited_lane(Arc::new(|| None));
+            .with_inherited_lane(Arc::new(|| None))
+            .with_measured(Arc::new(|_model: &str| None));
         (consumer, serving_tx)
+    }
+
+    fn bytes_of(c: &ServingConsumer) -> u64 {
+        c.footprint().iter().map(|f| f.bytes).sum()
+    }
+
+    // what this catches (card 628dc958): the credit the replace-myself budget adds back
+    // is the engine's PHYSICAL residency once measured, never the catalog's peak estimate
+    // — the M5 charged 47.7 GB for a process holding ~26 GB and planned into swap.
+    #[test]
+    fn the_credit_is_the_measured_residency_not_the_catalog_estimate() {
+        let estimate = 47_700_000_000u64;
+        let measured = 26_000_000_000u64;
+        let (consumer, _tx) = rig("qwen3.8-27b", estimate);
+        assert_eq!(bytes_of(&consumer), estimate, "no measurement yet: the estimate stands in");
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(measured)));
+        assert_eq!(bytes_of(&consumer), measured, "measured: the process, not the prediction");
+        let detail = consumer.footprint()[0].detail.clone();
+        assert!(detail.contains("measured resident"), "{detail}");
+    }
+
+    // what this catches (card 628dc958): across a relaunch the credit holds at the prior
+    // residency and does NOT decay to the loading figure on the verify stamp alone — the
+    // stamp lands before the new engine publishes its shape, and decaying then dropped the
+    // M5's credit 47.7 → 20.2 GB at an unchanged shape (14:46:51Z). It decays only once the
+    // successor is ready with a shape, to the successor's own figure.
+    #[test]
+    fn the_credit_holds_through_a_relaunch_and_decays_only_to_a_published_successor() {
+        let estimate_loading = 20_000_000_000u64; // weights at the floor window
+        let measured_before = 26_000_000_000u64;
+        let (consumer, tx) = rig("qwen3.8-27b", estimate_loading);
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(measured_before)));
+        // Verified and ready: the high-water is the measured residency.
+        tx.send_modify(|s| s.ready_verified_at_ms = Some(1_000));
+        assert_eq!(bytes_of(&consumer), measured_before);
+        // Torn down for a relaunch: loading, not ready — prior residency held.
+        tx.send_modify(|s| {
+            s.ready = false;
+            s.active_model = None;
+            s.loading_model = Some("qwen3.8-27b".into());
+        });
+        assert_eq!(bytes_of(&consumer), measured_before, "prior residency held while loading");
+        // The verify stamp lands BEFORE the shape is published: still held, no decay.
+        tx.send_modify(|s| s.ready_verified_at_ms = Some(2_000));
+        assert_eq!(bytes_of(&consumer), measured_before, "a stamp without a shape must not decay the credit");
+        // The successor publishes its shape with its own measurement: decay to it.
+        let measured_after = 30_000_000_000u64;
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(measured_after)));
+        tx.send_modify(|s| {
+            s.ready = true;
+            s.loading_model = None;
+            s.active_model = Some("qwen3.8-27b".into());
+            s.lanes = 6;
+            s.served_context_window = 35_588;
+        });
+        assert_eq!(bytes_of(&consumer), measured_after, "the successor's own residency");
     }
 
     // what this catches: a high-water that can never be released. If the snapshot carries

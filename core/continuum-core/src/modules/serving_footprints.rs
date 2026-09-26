@@ -170,9 +170,6 @@ pub struct CatalogFootprintSource {
     /// indistinguishable from a broken one — #399: `serving.plan` at 2.6 rows/s was 51%
     /// of the entire probe stream and drowned everything worth reading).
     last_emitted: AtomicU64,
-    /// The last footprint this lane really held, kept across a relaunch so the
-    /// replace-myself budget cannot feed on the planner's own teardown (card 628dc958).
-    last_holds: crate::resources::LastKnown,
 }
 
 impl CatalogFootprintSource {
@@ -184,7 +181,6 @@ impl CatalogFootprintSource {
             catalog,
             serving,
             last_emitted: AtomicU64::new(u64::MAX),
-            last_holds: crate::resources::LastKnown::new(),
         }
     }
 
@@ -196,7 +192,6 @@ impl CatalogFootprintSource {
             catalog,
             serving,
             last_emitted: AtomicU64::new(u64::MAX),
-            last_holds: crate::resources::LastKnown::new(),
         }
     }
 
@@ -216,54 +211,6 @@ impl CatalogFootprintSource {
     }
 }
 
-/// How long a lane's last real footprint is carried after it stops answering.
-// derived-or-floor: a floor over the longest relaunch measured on the fleet (the M5's
-// 15-minute grow wait behind in-flight turns, 2026-09-26 13:23-13:38Z) plus the engine's
-// readiness budget; past it the lane is honestly gone and reads as holding nothing.
-pub(crate) const RELAUNCH_MEMORY_MS: u64 = 20 * 60 * 1000;
-
-/// THE QUANTITY THE PLAN FEEDS ON (card 628dc958, Cormac 2026-09-26): the replace-myself
-/// budget is `available + serving's own measured footprint`, and this source IS that
-/// footprint. When the engine is torn down for a relaunch the lane reads "no lane is
-/// serving", the footprint drops to zero, the budget loses a whole engine, the planner's
-/// arm flips (`at_rest` ↔ `stable`), and the next plan chases the teardown it caused —
-/// measured on the M5: usable 25 → 38 GB and six relaunches in 75 minutes (plan 2 → 4 → 3
-/// → 5 → 6) with the node in swap. One value, two meanings, depending on the planner's own
-/// last action.
-///
-/// So the last footprint this lane REALLY held is carried, aged and named
-/// (`Provenance::LastKnown`), while the lane is between engines, and drops out only when
-/// the memory expires or a successor reports its own shape. The invariant: the plan is
-/// identical before, during and after a relaunch. A lane that genuinely holds nothing
-/// past the memory reads as such, never as its ghost.
-pub(crate) fn remember_across_relaunch(
-    claim: &LaneClaim,
-    reading: FootprintReading,
-    last: &crate::resources::LastKnown,
-    now_ms: u64,
-) -> FootprintReading {
-    match claim {
-        LaneClaim::Holds(_) => {
-            if let Some(bytes) = reading.usable_bytes() {
-                last.record(bytes, now_ms);
-            }
-            reading
-        }
-        LaneClaim::HoldsNothing(_) | LaneClaim::Live(_) => {
-            let carried = last.reading(reading.kind, now_ms);
-            match carried.provenance {
-                crate::resources::Provenance::LastKnown { age_ms } if age_ms <= RELAUNCH_MEMORY_MS => {
-                    carried.because(
-                        "lane between engines: the last real footprint is carried so the \
-                         replace-myself budget cannot feed on its own teardown",
-                    )
-                }
-                _ => reading,
-            }
-        }
-    }
-}
-
 impl FootprintSource for CatalogFootprintSource {
     fn holder_id(&self) -> &str {
         self.holder_id
@@ -278,12 +225,6 @@ impl FootprintSource for CatalogFootprintSource {
             }
             LaneClaim::Live(reason) => FootprintReading::unknown(ResourceKind::Vram).because(reason),
         };
-        let reading = remember_across_relaunch(
-            &claim,
-            reading,
-            &self.last_holds,
-            crate::modules::chat::now_ms(),
-        );
 
         // THE GLASS BOX for this decision (Joel: "we can probe the logic and estimates
         // to see why/what screwed up"). Emits on TRANSITION — a changed byte count, a
@@ -526,39 +467,4 @@ mod tests {
             "the good zero names why it is free: {free_why}"
         );
     }
-    // what this catches (card 628dc958): the footprint the replace-myself budget feeds on
-    // must be IDENTICAL before, during and after a relaunch. Before this, a lane between
-    // engines read as holding nothing, the budget lost a whole engine, and the M5 planned
-    // 2 → 4 → 3 → 5 → 6 lanes across six relaunches in 75 minutes. Past the memory, a lane
-    // that genuinely holds nothing reads as such; a lane that never held anything has
-    // nothing to carry.
-    #[test]
-    fn the_footprint_survives_the_relaunch_and_expires_honestly() {
-        let last = crate::resources::LastKnown::new();
-        let holds = LaneClaim::Holds(LaneShape {
-            model_id: "qwen3.8-27b".into(),
-            window: 45_470,
-            lanes: 4,
-        });
-        let gone = LaneClaim::HoldsNothing("no lane is serving");
-        let live_bytes = 31_000_000_000u64;
-        let live = FootprintReading::estimated(ResourceKind::Vram, live_bytes);
-        let zero = FootprintReading::measured(ResourceKind::Vram, 0).because("no lane is serving");
-
-        // Never held anything: nothing to carry, the zero stands.
-        assert_eq!(remember_across_relaunch(&gone, zero, &last, 1_000).usable_bytes(), Some(0));
-        // Holding: recorded and passed through.
-        assert_eq!(remember_across_relaunch(&holds, live, &last, 1_000).usable_bytes(), Some(live_bytes));
-        // Torn down for a relaunch: the same bytes, aged and named.
-        let during = remember_across_relaunch(&gone, zero, &last, 1_000 + 60_000);
-        assert_eq!(during.usable_bytes(), Some(live_bytes), "the budget must not lose an engine mid-relaunch");
-        assert!(matches!(during.provenance, crate::resources::Provenance::LastKnown { age_ms: 60_000 }), "{during:?}");
-        // Past the memory: honestly gone.
-        let expired = remember_across_relaunch(&gone, zero, &last, 1_000 + RELAUNCH_MEMORY_MS + 1);
-        assert_eq!(expired.usable_bytes(), Some(0));
-        // A successor with its own shape refreshes the memory.
-        let bigger = FootprintReading::estimated(ResourceKind::Vram, 34_000_000_000);
-        assert_eq!(remember_across_relaunch(&holds, bigger, &last, 5_000_000).usable_bytes(), Some(34_000_000_000));
-    }
 }
-
