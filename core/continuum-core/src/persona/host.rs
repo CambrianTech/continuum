@@ -712,6 +712,8 @@ impl PersonaSpawnSupervisor {
         let persona_id = ctx.identity.peer_id.as_uuid();
         let agent_name = ctx.identity.agent_name.clone();
         let role = ctx.role;
+        // Her role is a live fact of the roster (card ccb316a7): the grid seats her as it.
+        self.registry.set_role(persona_id, role);
         // Hand the loop the SAME quiesce atomic the registry slot holds so an
         // eval-preemption lease can suspend her autonomic self-tick. Register precedes
         // spawn, so the flag is present; if it somehow isn't, that's a registration

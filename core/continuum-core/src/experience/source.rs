@@ -294,6 +294,22 @@ impl RecipeExperienceSource {
 
     /// [`Self::resident_citizens`] over the EMBEDDED set alone — the same infallible
     /// floor [`Self::resident_roles_embedded`] serves.
+    /// Every activity's citizens, for the GRID (card ccb316a7): the roles a mind can be
+    /// seated as, with the strictest declared requirement per role (`roles_from` merges
+    /// same-named roles). The spawner keeps `resident_citizens` (the default experience's
+    /// roster); the allocator reads the activities the minds actually serve — the project
+    /// declares what a coder peer needs, and that is what a coder seat must hold.
+    pub fn grid_citizens(
+        dir: &std::path::Path,
+    ) -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
+        let overlay = Self::load_dir(dir)?;
+        Ok(Self::embedded().chain(overlay).flat_map(|r| r.citizens).collect())
+    }
+
+    pub fn grid_citizens_embedded() -> Vec<crate::experience::recipe::CitizenRecipe> {
+        Self::embedded().flat_map(|r| r.citizens).collect()
+    }
+
     pub fn resident_citizens_embedded() -> Vec<crate::experience::recipe::CitizenRecipe> {
         Self::resident_citizens_from(Self::embedded())
     }

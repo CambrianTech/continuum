@@ -228,7 +228,11 @@ pub struct CitizenRecipe {
 pub struct CitizenRequirement {
     /// Tokens one turn of this role needs (a real coding turn, a chat turn).
     pub window_tokens: u32,
-    /// The least capable model this role is competent on (`capability_rank`); 0 = any.
+    /// The least capable model this role is competent on, on the footprint rank scale
+    /// (`ModelFootprint::capability_rank`: a measured score — the AA index, 27B ≈ 42 —
+    /// else the weights-GB proxy, +2 for tool use, capped at 40); 0 = any. A coder
+    /// activity declares its tier here: 20 = a 27B-class base or a measured score above
+    /// it, never a 1.5B/7B/14B CPU seat (card ccb316a7).
     #[serde(default)]
     pub min_capability: u8,
     /// Per-stream decode below this is not a seat; absent = not judged.

@@ -137,6 +137,10 @@ pub(crate) struct GridFacts {
     pub peers: Vec<PeerFacts>,
     /// The live minds on this node (their home is this node).
     pub minds: Vec<Uuid>,
+    /// Each local mind's OWN role, as the spawner stamped it on the live roster (card
+    /// ccb316a7). A mind absent here is seated as the first role — the pre-card
+    /// behaviour, kept only for a mind the spawner never stamped.
+    pub mind_roles: Vec<(Uuid, crate::persona::role_template::RoleId)>,
     /// The recipe's resident citizens — role + what each DECLARES of a lane
     /// (`CitizenRequirement`). The allocator's roles and floors are `roles_from` over
     /// exactly these (#4271), never a second fold.
@@ -206,7 +210,20 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     if !roles.is_empty() {
         // Every resident hosts the recipe's first role today (the spawner seats one
         // role until role-in-seed lands); the allocator's role 0 is that role.
-        minds.extend(f.minds.iter().map(|&id| Mind { id, role: 0, home: Some(f.this_node), owner: ONE_OWNER }));
+        // HER role, from her seed: a coder is seated as a coder and holds the coder
+        // requirement (card ccb316a7 — with every local mind at role 0, Kimi was a
+        // "helper" any model could hold, and a 1.5B CPU seat took her). A role the
+        // recipes do not declare, or a mind the spawner never stamped, falls to the
+        // first role, as before.
+        minds.extend(f.minds.iter().map(|&id| {
+            let role = f
+                .mind_roles
+                .iter()
+                .find(|(mind, _)| *mind == id)
+                .and_then(|(_, r)| roles.iter().position(|role| role.name == r.as_str()))
+                .unwrap_or(0); // unwrap_or: no stamped role, or a role no recipe declares = the first role, the pre-card seat
+            Mind { id, role, home: Some(f.this_node), owner: ONE_OWNER }
+        }));
         for p in &f.peers {
             let Some(plan) = &p.plan else { continue };
             let Some(role) = roles.iter().position(|r| plan.holds(&r.requirement)) else { continue };
@@ -307,8 +324,16 @@ impl Inner {
     fn gather(&self) -> GridFacts {
         let now = now_ms();
         let serving = crate::inference::llama_server::current_serving();
+        // THE ONE RANK: the serving plan's own footprint rank — measured (the AA index)
+        // when the row carries it, else the weights-GB proxy. Reading `measured_capability`
+        // alone and falling to the CAP for everything unmeasured ranked a 1.5B CPU coder
+        // and the 27B EQUAL (both 40) — capability was invisible to the grid, and a
+        // transient at home made the 1.5B "strictly better" (card ccb316a7, Kimi 16:4xZ).
         let rank_of = |id: &str| -> Option<u8> {
-            crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
+            crate::model_registry::global()
+                .model(id)
+                .and_then(crate::modules::serving_daemon::footprint_for)
+                .map(|f| f.capability_rank)
         };
         // This node's plan, read as an offer: the published plan's shape with the decode
         // this box measured for its model — `tps_for`, the rate at the LIGHTEST trusted
@@ -367,6 +392,10 @@ impl Inner {
             .collect();
         let registry = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global();
         let minds: Vec<Uuid> = registry.as_ref().map(|r| r.live_personas()).unwrap_or_default(); // unwrap_or_default: no registry = no residents yet
+        let mind_roles: Vec<(Uuid, crate::persona::role_template::RoleId)> = registry
+            .as_ref()
+            .map(|r| minds.iter().filter_map(|&id| r.role_of(id).map(|role| (id, role))).collect())
+            .unwrap_or_default(); // unwrap_or_default: no registry = no residents, no roles
         // ONE requirement notion in the crate (card 10bba591, Cormac on #4281): what a
         // mind needs of a lane is `window_allocator::LaneRequirement` — the untrimmed
         // demand with headroom, Unknown until she has turned — and an undeclared ROLE
@@ -387,6 +416,7 @@ impl Inner {
             local_free_slots: crate::persona::placement_reservation::free_slots_live_now(serving.lanes, now),
             peers,
             minds,
+            mind_roles,
             citizens: self.citizens.clone(),
             undeclared_window,
             hold,
@@ -640,6 +670,7 @@ mod tests {
             local_free_slots: 1,
             peers,
             minds,
+            mind_roles: vec![],
             citizens: vec![CitizenRecipe { role: crate::persona::role_template::RoleId::Coder, requirement: None }],
             undeclared_window: Some(70_000),
             hold: None,
@@ -648,6 +679,36 @@ mod tests {
     fn peer(node: Uuid, plan: Option<LanePlan>, residents: u32, heard_at_ms: u64) -> PeerFacts {
         let lanes = plan.as_ref().map(|p| p.lanes).unwrap_or(0);
         PeerFacts { node, plan, residents, heard_at_ms, free_slots_live: 1, lanes }
+    }
+
+    // what this catches (card ccb316a7): a mind is seated as HER role (the spawner's
+    // stamp), so the coder's declared capability floor applies to her — a 1.5B seat
+    // (proxy rank 3) holds a helper and never a coder; at role 0 the floor applied to nobody.
+    #[test]
+    fn a_mind_is_seated_as_her_own_role_and_a_small_seat_never_holds_a_coder() {
+        use crate::experience::recipe::CitizenRequirement;
+        use crate::persona::role_template::RoleId;
+        let me = Uuid::new_v4();
+        let small = Uuid::new_v4();
+        let kimi = Uuid::new_v4();
+        let helper = Uuid::new_v4();
+        let mut f = facts(me, Some(plan("27b", 18, 70_000, 2)), vec![peer(small, Some(plan("1.5b", 3, 32_768, 2)), 0, 99_000)], vec![kimi, helper]);
+        f.citizens = vec![
+            CitizenRecipe { role: RoleId::Helper, requirement: None },
+            CitizenRecipe {
+                role: RoleId::Coder,
+                requirement: Some(CitizenRequirement { window_tokens: 40_448, min_capability: 20, decode_floor_tps: None }),
+            },
+        ];
+        f.mind_roles = vec![(kimi, RoleId::Coder)];
+        let mut book = OfferBook::default();
+        let inputs = build_inputs(&f, &mut book);
+        let role_of = |id: Uuid| inputs.minds.iter().find(|m| m.id == id).map(|m| inputs.roles[m.role].name.clone());
+        assert_eq!(role_of(kimi).as_deref(), Some("coder"), "her seed's role");
+        assert_eq!(role_of(helper).as_deref(), Some("helper"), "no stamped role = the first role");
+        let coder = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
+        assert!(!plan("1.5b", 3, 32_768, 2).holds(coder), "a 1.5B never holds a coder");
+        assert!(plan("27b", 18, 70_000, 2).holds(coder));
     }
 
     // what this catches (card 10bba591): an UNCHANGED grid publishes nothing — the key

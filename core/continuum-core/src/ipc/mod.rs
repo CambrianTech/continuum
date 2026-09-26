@@ -2863,9 +2863,20 @@ pub fn start_server(
         // switch moves minds to strictly better seats between turns, the reconciler
         // draws this node's open seats, the health line reports the moves. Same
         // recipe roles the spawner hosts; the plan watch the reconciler parks on.
+        // The allocator seats by EVERY activity's citizens (card ccb316a7): the project
+        // declares what a coder peer needs; the default roster alone made every mind a
+        // helper any model could hold.
+        let grid_citizens = {
+            use crate::experience::source::RecipeExperienceSource;
+            let overlay_dir = RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            );
+            RecipeExperienceSource::grid_citizens(&overlay_dir)
+                .unwrap_or_else(|_| RecipeExperienceSource::grid_citizens_embedded()) // unwrap_or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
+        };
         runtime.register(Arc::new(crate::modules::grid_allocator::GridAllocatorModule::new(
             serving_daemon.subscribe(),
-            resident_citizens.clone(),
+            grid_citizens,
         )));
         let resident_roles: Vec<crate::persona::role_template::RoleId> =
             resident_citizens.into_iter().map(|c| c.role).collect();
