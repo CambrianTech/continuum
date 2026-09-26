@@ -4543,7 +4543,9 @@ impl LlmDeliberationFaculty {
             // budget was derived from this max_tokens, not from the reserve — they differ
             // whenever her need is measured below the reserve — so the classifier at the
             // seam must read the same number, or a real budget-hit reads as Landed.
-            sent_allowance = request.max_tokens;
+            // A rebuilt request with no max_tokens keeps the last one sent (the read of the
+            // previous value is also what keeps the initializer honest).
+            sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, receipts)
                 .await?;
