@@ -47,6 +47,48 @@ def model_class(config):
 # smaller micro-batch; erring low costs the whole run.
 LOGITS_BYTES_PER_TOKEN = 12
 
+# The loss holds logits for at most this many positions at once (per example in the
+# microbatch). Cormac on the Stage 2 plan (2026-09-26): Kimi's 27B plan asked 33.07 GB
+# on a 32.6 GB card, and 6.10 GB of it was the `logits` term — the whole [seq x vocab]
+# tensor materialised for the loss. Applying the output head and the loss per chunk
+# of positions, under activation checkpointing so a chunk's logits are freed after
+# its loss and recomputed on backward, bounds that term to one chunk whatever the
+# window: at 512 positions and a 152k vocab, ~0.9 GB instead of 6.1. It does not make
+# co-residency with a serving lane fit (weights 24.15 + activations 2.73 + the lane's
+# 29.6 is still over the card); it is headroom for either path.
+LOGITS_CHUNK_TOKENS = 512
+
+
+def chunked_causal_lm_loss(model, batch, chunk=LOGITS_CHUNK_TOKENS):
+    """Mean next-token cross-entropy over the supervised targets — the same objective
+    as the model's own loss — computed without ever holding the [seq x vocab] logits.
+    The base runs once for the hidden states; the output head and the loss run per
+    chunk of positions under checkpointing. Works through a PEFT wrapper: the LoRA
+    layers live inside the base's modules, so running the base runs them."""
+    import torch
+    import torch.nn.functional as F
+    from torch.utils.checkpoint import checkpoint
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    body, head = base.model, base.get_output_embeddings()
+    inputs = {name: value for name, value in batch.items() if name != "labels"}
+    hidden = body(**inputs).last_hidden_state[:, :-1]
+    targets = batch["labels"][:, 1:]
+    count = int((targets != -100).sum())
+    if count == 0:
+        raise ValueError("no supervised targets in batch")
+
+    def chunk_loss(h, t):
+        logits = head(h).float()
+        return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), t.reshape(-1),
+                               ignore_index=-100, reduction="sum")
+
+    total = hidden.new_zeros((), dtype=torch.float32)
+    for start in range(0, hidden.shape[1], chunk):
+        h, t = hidden[:, start:start + chunk], targets[:, start:start + chunk]
+        if bool((t != -100).any()):
+            total = total + checkpoint(chunk_loss, h, t, use_reentrant=False)
+    return total / count
+
 
 def plan(spec, output):
     import torch
@@ -82,8 +124,10 @@ def plan(spec, output):
     free, _ = torch.cuda.mem_get_info()
     available = min(free, spec.get("availableBytes", free))
     sequence = schedule["sequenceLength"]
-    per_example = sequence * (int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
-                              + int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN)
+    # The logits peak is one chunk of positions, not the whole window (see
+    # `chunked_causal_lm_loss`); the activation term still scales with the window.
+    per_example = (sequence * int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
+                   + min(sequence, LOGITS_CHUNK_TOKENS) * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN)
     # CUDACachingAllocator large slabs: rounding plus one working slab.
     slab = 20 * 1024 * 1024
     logical_budget = max(0, (available // slab - 1) * slab)
@@ -92,7 +136,7 @@ def plan(spec, output):
     micro = min(schedule["batchSize"], max(1, (logical_budget - weights - optimizer) // per_example))
     tokens = micro * sequence
     activations = tokens * int(text.hidden_size) * (int(text.num_hidden_layers) + 1) * 4
-    logits = tokens * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN
+    logits = micro * min(sequence, LOGITS_CHUNK_TOKENS) * int(text.vocab_size) * LOGITS_BYTES_PER_TOKEN
     terms = dict(weights=weights, optimizer=optimizer, activations=activations, logits=logits)
     terms["allocator"] = slab + (-sum(terms.values()) % slab)
     write_json(output, {"memoryBytes": sum(terms.values()), "terms": terms,
@@ -217,7 +261,7 @@ def train(spec, output):
                 for batch in batches(group):
                     count = int((batch["labels"][:, 1:] != -100).sum())
                     with torch.autocast("cuda", dtype=dtype):
-                        loss = model(**batch).loss
+                        loss = chunked_causal_lm_loss(model, batch)
                     if not torch.isfinite(loss):
                         raise RuntimeError("non-finite training loss")
                     # Exact token weighting preserves the effective-batch objective,
