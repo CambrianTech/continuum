@@ -538,10 +538,17 @@ mod tests {
             channel: airc_core::RoomId::from_uuid(Uuid::from_u128(55)),
             joined_at_ms: 0,
         };
+        // Three DISTINCT cards: the record dedups obligations by card id.
+        let mut in_progress = card(airc_work::model::CardState::InProgress, false);
+        in_progress.card_id = airc_lib::WorkCardId::from_uuid(Uuid::from_u128(71));
+        let mut in_review = card(airc_work::model::CardState::Review, false);
+        in_review.card_id = airc_lib::WorkCardId::from_uuid(Uuid::from_u128(72));
+        let mut review_held = card(airc_work::model::CardState::Claimed, true);
+        review_held.card_id = airc_lib::WorkCardId::from_uuid(Uuid::from_u128(73));
         let owned = vec![
-            (room.clone(), card(airc_work::model::CardState::InProgress, false)),
-            (room.clone(), card(airc_work::model::CardState::Review, false)),
-            (room.clone(), card(airc_work::model::CardState::Claimed, true)),
+            (room.clone(), in_progress),
+            (room.clone(), in_review),
+            (room.clone(), review_held),
         ];
         note_owned(me, &owned, 1_500);
         let h = compose(me, TornBy::Periodic, None, None, 9_000).expect("held");
