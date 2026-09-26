@@ -154,3 +154,46 @@ Rule for every slice: it lands on canary green with a peer word, it is measured 
 ## 7. Coherence between the two worlds
 
 Joel: "It should maintain a coherence between both worlds, which we know is necessary for humans, otherwise there are hallucinations and schizophrenia." The machine form is acting on a belief that drifted from live reality. This design keeps coherence by construction: the doctor and the patient share numerics; the stable self never moves under her; every edge has a record and a receipt; the world (tests) grades, not the model; and a wake — when one must happen at all — opens with the handoff, not with re-derivation.
+
+---
+
+## 8. Keeping up with the stream (Joel, 2026-09-27)
+
+> "We can go to sleep or focus on dreaming or learning. What's gonna help us improve the most we can? Is it possible to sort of keep up with the data as it's generated to be dreamed upon? The coursework from work? It accumulates slowly."
+>
+> "The goal is seamless and efficient like a rockstar video game system or cbar. Get away with what you can when you can and continual learning is powerful. Anything like in my mixed reality engine can happen at low cadence sometimes when you don't need it. It's all about budgeting and yes GPU training is the goal. We use overlap between inference and backprop modes if we can. Be creative to do it all and without noticeable interruption. Be a smart ecosystem."
+
+**The measured fact that shapes this section (5090, 2026-09-26):** the busiest citizen lifted **15 examples in a day**; 21 acts after a deploy lifted none, because the lifter takes only a directed turn that closed with a grade. A dream epoch on that whole bucket is ~32k tokens — under 60 s on the 5090 by the §0 gate. **Compute is ahead of data by two orders of magnitude. The bottleneck is learning signal per day, not dreaming compute.** Everything below follows from that.
+
+### 8.1 Learn on arrival, promote at boundaries
+
+Yes, we keep up with the stream — as a **step per arrival, not a period**. One example at seq 2048 is a few seconds of micro-step inside the frame budget (§2.3, S4).
+
+| Piece | Rule |
+|---|---|
+| **Arrival step** | When an example lands in her bucket, the DREAM stage takes one micro-step on her **shadow** adapter within the governor's budget. Never on stable (§2.1). |
+| **Accumulate while it trickles** | Gradients accumulate across arrivals; an optimizer step fires every N examples **or** every T minutes, whichever first (the trigger's bucket floor becomes the accumulation window, not a dispatch threshold). |
+| **Recency-weighted replay** | Each step mixes the arrivals with a draw from her replay buffer (the ledger, the coursework transcript, shared lessons — §4.5), weighted toward recent, so slow accumulation never means overfitting to the last example. |
+| **Promotion gate at a boundary** | Shadow → stable only at a `DreamTrigger` boundary (idle, card boundary): held-out loss fell across the window, the smoke turn passes (§0.3). She serves moving weights **never**, and learns continuously anyway. |
+| **Frame budget, not a schedule** | Steps are opportunistic: idle SM time, low cadence when nothing has arrived, backward overlapped with inference where the streams allow (a second stream at lower priority yielding at ubatch boundaries). The gate is the citizen's latency line staying flat while her loss falls. |
+
+### 8.2 Sleep is the audit, dreaming is the step
+
+Dreaming (§8.1) is per arrival. **Sleep** is the low-cadence consolidation when the node is quiet: dedupe and forget the noise across days, re-evaluate the held-out split, decide promotions that the boundary gate deferred, compact the replay buffer. Cheap, and it belongs at low cadence — "anything can happen at low cadence sometimes when you don't need it."
+
+### 8.3 Multiply the signal at the source
+
+Because data is the bottleneck, the work that improves us most is the work that produces more graded examples per day:
+
+1. **Coursework** (S2, S5): a doctor demonstrating and the patient attempting, graded by tests, yields a clean example **per lesson** instead of one per lucky work turn. The richest signal we are not yet producing.
+2. **Widen the lifter**: acts inside a claimed card count as examples once the card grades (today only the closing directed turn does).
+3. **Shared lessons** (`try_consolidate_received`): another citizen's graded example is signal for her too, at a lower weight.
+
+### 8.4 Order of work
+
+1. The 27B step timed on the 5090 (342e6cd6 + S3a): the §0 speed gate, measured.
+2. Arrival-driven micro-steps into the shadow under the governor (S4), the promotion gate at boundaries (S5).
+3. The lifter widened to graded card acts.
+4. Coursework (S2, S5).
+
+Compute is ahead of the data at every step of this list; the list is ordered by how much learning signal each step adds per day.
