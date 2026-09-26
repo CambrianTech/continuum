@@ -29,7 +29,7 @@
 
 use crate::cognition::grid_allocation::{
     allocate, inputs_key, roles_from, GridAllocation, GridInputs, GridRoster, Hold, LanePlan,
-    Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats, Role,
+    ask_within, Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats, Role,
 };
 use crate::cognition::serving_plan::ServingPlan;
 use crate::cognition::window_allocator::{largest_known, requirements_for};
@@ -220,10 +220,9 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     // question (`seat_starves`), not the allocation's. A node mid-relaunch keeps its last
     // seat here (the book remembers it while the node is live); only silence lowers the
     // bound — relaunching is not unplugging.
-    let (best_rank, best_window) = book.best_seat_live(f.now_ms, SILENT_AFTER_MS);
+    let seats = book.seats_live(f.now_ms, SILENT_AFTER_MS);
     for role in &mut roles {
-        role.requirement.min_capability = role.requirement.min_capability.min(best_rank);
-        role.requirement.window = role.requirement.window.min(best_window);
+        role.requirement = ask_within(&role.requirement, &seats);
     }
     let mut minds: Vec<Mind> = Vec::new();
     if !roles.is_empty() {
@@ -771,6 +770,15 @@ mod tests {
         let coder_gone = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
         assert_eq!(coder_gone.min_capability, 3, "silent past the window = unplugged: the standalone floor");
         assert_eq!(coder_gone.window, 32_768);
+
+        // Pairs, not a max per axis: a 27B at 35k beside a 7B at 65k must leave ONE seat
+        // holding the coder — the 27B, at its own 35k — never an ask of (27B, 65k).
+        let mixed = ask_within(
+            &crate::cognition::grid_allocation::Requirement { window: 40_448, target_window: None, min_capability: 12, decode_floor_tps: None },
+            &[(18, 35_000), (6, 65_536)],
+        );
+        assert_eq!((mixed.min_capability, mixed.window), (12, 35_000));
+        assert!(plan("27b", 18, 35_000, 1).holds(&mixed) && !plan("7b", 6, 65_536, 2).holds(&mixed));
     }
 
     // what this catches (card 10bba591): an UNCHANGED grid publishes nothing — the key

@@ -260,35 +260,33 @@ pub struct OfferBook {
     /// silence (an unplug). Relaunching and unplugged are two signals (Cormac on #4416):
     /// a node between plans still bounds the coder floor, so a 1.5B never holds a coder
     /// because a 27B blinked.
-    best_seen: std::collections::BTreeMap<Uuid, (u64, u8, u32)>,
+    best_seen: std::collections::BTreeMap<Uuid, (u64, Vec<(u8, u32)>)>,
 }
 
 impl OfferBook {
     pub fn hear(&mut self, offer: NodeOffer, now_ms: u64) {
-        let rank = offer.plans.iter().map(|p| p.capability_rank).max();
-        let window = offer.plans.iter().map(|p| p.window).max();
-        match (rank, window) {
-            (Some(rank), Some(window)) => {
-                self.best_seen.insert(offer.node, (now_ms, rank, window));
+        if offer.plans.is_empty() {
+            // Alive, no plan this pass: the seats it last offered stand, freshly heard.
+            if let Some(entry) = self.best_seen.get_mut(&offer.node) {
+                entry.0 = now_ms;
             }
-            _ => {
-                // Alive, no plan this pass: the seat it last offered stands, freshly heard.
-                if let Some(entry) = self.best_seen.get_mut(&offer.node) {
-                    entry.0 = now_ms;
-                }
-            }
+        } else {
+            let seats = offer.plans.iter().map(|p| (p.capability_rank, p.window)).collect();
+            self.best_seen.insert(offer.node, (now_ms, seats));
         }
         self.heard.insert(offer.node, (now_ms, offer));
     }
 
-    /// The best seat any LIVE node has offered, as (most capable rank, widest window) —
-    /// a node mid-relaunch counts by its last plan; a node silent past the window does
-    /// not. (0, 0) when nobody offers: every declared ask relaxes to "any seat".
-    pub fn best_seat_live(&self, now_ms: u64, silent_after_ms: u64) -> (u8, u32) {
+    /// Every seat a LIVE node has offered, as (rank, window) PAIRS — a node mid-relaunch
+    /// counts by its last plans; a node silent past the window does not. Pairs, never a
+    /// max per axis: a 27B at 35k beside a 7B at 65k is two seats, not one 27B at 65k
+    /// (Cormac on #4416). Empty when nobody offers.
+    pub fn seats_live(&self, now_ms: u64, silent_after_ms: u64) -> Vec<(u8, u32)> {
         self.best_seen
             .values()
-            .filter(|(heard_at, _, _)| now_ms.saturating_sub(*heard_at) <= silent_after_ms)
-            .fold((0, 0), |(rank, window), (_, r, w)| (rank.max(*r), window.max(*w)))
+            .filter(|(heard_at, _)| now_ms.saturating_sub(*heard_at) <= silent_after_ms)
+            .flat_map(|(_, seats)| seats.iter().copied())
+            .collect()
     }
     /// The offers fresher than `silent_after_ms`, ordered by node id so two nodes
     /// computing the same allocation agree (Cormac's note on #4259).
@@ -584,6 +582,29 @@ pub fn roles_from(
 /// The best plan on a node for a requirement: the most capable holding plan, then the
 /// closest measured window target within that capability, then most lanes and width.
 /// Only declared minima gate admission. `None` when no plan holds those minima.
+/// The ask a role can actually be held to, given the seats the grid offers RIGHT NOW:
+/// the declared requirement is what the activity asks for; the grid bounds it so that
+/// ONE REAL SEAT always holds it. Capability first (the declared floor, or the most
+/// capable seat there is), then the window to the widest seat AT OR ABOVE that
+/// capability. Never a max per axis across different seats — a 27B at 35k and a 7B at
+/// 65k would give an ask of (27B, 65k) that neither holds. Joel: start at CPU on an
+/// Intel Mac alone; scale up when the 5090 joins; down when it leaves.
+pub fn ask_within(declared: &Requirement, seats: &[(u8, u32)]) -> Requirement {
+    let best_rank = seats.iter().map(|(r, _)| *r).max().unwrap_or(0); // unwrap_or: no seat = no floor to hold
+    let min_capability = declared.min_capability.min(best_rank);
+    let widest_at_rank = seats
+        .iter()
+        .filter(|(r, _)| *r >= min_capability)
+        .map(|(_, w)| *w)
+        .max()
+        .unwrap_or(0); // unwrap_or: no seat = no window to hold
+    Requirement {
+        window: declared.window.min(widest_at_rank),
+        min_capability,
+        ..declared.clone()
+    }
+}
+
 pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a LanePlan> {
     plans.iter().filter(|p| p.holds(req)).max_by_key(|p| p.seat_key(req))
 }
