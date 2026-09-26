@@ -43,21 +43,6 @@ pub(crate) const ACT_PURPOSE: &str = "cognition/act";
 /// closes the thinking block at the budget; other gateways ignore the field.
 pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
 
-/// Bound the reasoning channel on an ACT request. Returns whether it applied.
-pub(crate) fn apply_act_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> bool {
-    if purpose != Some(ACT_PURPOSE) {
-        return false;
-    }
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert(
-            "reasoning_budget_tokens".to_string(),
-            json!(ACT_REASONING_BUDGET),
-        );
-        return true;
-    }
-    false
-}
-
 /// The purpose a deliberation (speak / pass) turn announces on its request.
 pub(crate) const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
 
@@ -79,13 +64,21 @@ pub(crate) const DELIBERATION_ANSWER_SHARE_DIVISOR: u64 = 4;
 /// (budget 64 → 73 completion tokens with an answer; no budget → 287 tokens, empty). The
 /// budget is derived from her own `max_tokens`, so it is not a clamp on capable models:
 /// it only guarantees the answer its share of what the turn was already allowed.
-pub(crate) fn apply_deliberation_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u64> {
-    if purpose != Some(DELIBERATION_PURPOSE) {
-        return None;
-    }
+///
+/// ONE seam for both kinds (Fable's review of #4413): an ACT thinks the fixed
+/// [`ACT_REASONING_BUDGET`] before its call; a DELIBERATION turn thinks
+/// [`deliberation_reasoning_budget`] of its own allowance, the answer keeping its share —
+/// and only when the body carries an allowance to derive it from. Any other purpose is
+/// left to the model. Returns the budget it applied.
+pub(crate) fn apply_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u64> {
     let obj = body.as_object_mut()?;
-    let max_tokens = obj.get("max_tokens")?.as_u64()?;
-    let budget = deliberation_reasoning_budget(max_tokens)?;
+    let budget = match purpose {
+        Some(ACT_PURPOSE) => u64::from(ACT_REASONING_BUDGET),
+        Some(DELIBERATION_PURPOSE) => {
+            deliberation_reasoning_budget(obj.get("max_tokens")?.as_u64()?)?
+        }
+        _ => return None,
+    };
     obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
     Some(budget)
 }
@@ -128,26 +121,19 @@ pub(crate) fn finish_body(
     if cfg.thinking == ThinkingMode::Suppress {
         apply_enable_thinking_false(body);
     }
-    // An ACT turn thinks a bounded amount before its call, whichever gateway
-    // serves it — the remote path builds this same body on the responder.
-    if apply_act_reasoning_budget(request.purpose.as_deref(), body) {
+    // The reasoning channel is bounded by the turn's kind, whichever gateway serves it
+    // — the remote path builds this same body on the responder. An ACT thinks a fixed
+    // amount before its call; a DELIBERATION turn keeps its answer's share of its own
+    // allowance, so a turn can no longer end inside the reasoning channel with nothing
+    // said.
+    if let Some(budget) = apply_reasoning_budget(request.purpose.as_deref(), body) {
+        let is_act = request.purpose.as_deref() == Some(ACT_PURPOSE);
         crate::probe!(
-            class = "delib.act.reasoning_budgeted",
-            model = %model,
-            budget = ACT_REASONING_BUDGET,
-            "act turn: reasoning channel bounded before the tool call"
-        );
-    }
-    // A DELIBERATION turn keeps its answer's share of its own allowance: thinking may
-    // take three quarters, the answer the rest, so a turn can no longer end inside the
-    // reasoning channel with nothing said.
-    if let Some(budget) = apply_deliberation_reasoning_budget(request.purpose.as_deref(), body) {
-        crate::probe!(
-            class = "delib.pass.reasoning_budgeted",
+            class = if is_act { "delib.act.reasoning_budgeted" } else { "delib.pass.reasoning_budgeted" },
             model = %model,
             budget,
-            max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: the budget above proves max_tokens was on the body; 0 cannot occur
-            "deliberation turn: reasoning channel bounded to three quarters of the allowance — the answer keeps a quarter"
+            max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: an act's fixed budget needs no allowance; absent is said as 0
+            "reasoning channel bounded by the turn's kind — the answer keeps its room"
         );
     }
 
@@ -543,18 +529,19 @@ pub(crate) fn build_base_body(
 mod tests {
     use super::*;
 
-    // what this catches: the ACT budget is the fixed ACT_REASONING_BUDGET count, applied to
-    // an act request and to nothing else — a deliberation has its own, derived budget
-    // (`apply_deliberation_reasoning_budget`), and a turn with no purpose carries none.
+    // what this catches: through the ONE seam, the ACT budget is the fixed
+    // ACT_REASONING_BUDGET count, applied to an act request and to nothing else — a
+    // deliberation derives its own from its allowance (and carries none without one),
+    // and a turn with no purpose carries none.
     #[test]
     fn the_act_budget_is_a_fixed_count_and_only_an_act_carries_it() {
         let mut act = json!({ "model": "m" });
-        assert!(apply_act_reasoning_budget(Some(ACT_PURPOSE), &mut act));
+        assert_eq!(apply_reasoning_budget(Some(ACT_PURPOSE), &mut act), Some(u64::from(ACT_REASONING_BUDGET)));
         assert_eq!(act["reasoning_budget_tokens"], json!(ACT_REASONING_BUDGET));
         let mut delib = json!({ "model": "m" });
-        assert!(!apply_act_reasoning_budget(Some("cognition/deliberation"), &mut delib));
+        assert_eq!(apply_reasoning_budget(Some("cognition/deliberation"), &mut delib), None);
         assert!(delib.get("reasoning_budget_tokens").is_none());
         let mut none = json!({ "model": "m" });
-        assert!(!apply_act_reasoning_budget(None, &mut none));
+        assert_eq!(apply_reasoning_budget(None, &mut none), None);
     }
 }
