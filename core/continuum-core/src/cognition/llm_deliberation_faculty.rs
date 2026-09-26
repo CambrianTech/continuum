@@ -4612,9 +4612,10 @@ impl LlmDeliberationFaculty {
 
         // MEASURE THE REPLY — the observation `completion_reserve_within` derives
         // the reserve from. The server's own count (reasoning included), recorded
-        // for every completed generation; a Length stop records at double inside
-        // the registry (the growth path). This is the seam that turns the reserve
-        // from a `window/2` prior into a measurement.
+        // for every completed generation; a cut that was committing records at double
+        // inside the registry (the growth path), a cut that committed nothing at half.
+        // This is the seam that turns the reserve from a `window/2` prior into a
+        // measurement.
         if let Some(reg) = &self.working_set {
             // The channel split the NEXT turn's allowance is sized from: the server's
             // count apportioned by the bytes the adapter separated into `reasoning`
@@ -4624,11 +4625,30 @@ impl LlmDeliberationFaculty {
                 resp.reasoning.as_ref().map_or(0, |r| r.len()),
                 resp.text.len(),
             );
+            // A cut is only demand if it was LANDING: a parsed tool call says so. Text
+            // with no call, or a think-only tail, is the spiral the fault paths below
+            // own — its measurement SHRINKS the need (`EmissionStop::CutUncommitted`),
+            // so the next allowance falls toward what this lane can land, instead of
+            // doubling toward the size that dies at the turn deadline.
+            let stop = super::working_set::EmissionStop::of(
+                matches!(resp.finish_reason, FinishReason::Length),
+                resp.tool_calls.as_ref().is_some_and(|c| !c.is_empty()),
+            );
+            if stop == super::working_set::EmissionStop::CutUncommitted {
+                crate::probe!(
+                    class = "delib.emission.cut_uncommitted",
+                    persona = %self.persona_name,
+                    output_tokens = resp.usage.output_tokens,
+                    reasoning_tokens,
+                    "cut at the allowance with nothing committed — recorded at HALF so the \
+                     next allowance shrinks toward what this lane can land"
+                );
+            }
             reg.record_emission(
                 self.persona_id,
                 resp.usage.output_tokens,
                 reasoning_tokens,
-                matches!(resp.finish_reason, FinishReason::Length),
+                stop,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
         }
@@ -6605,14 +6625,14 @@ mod tests {
 
             let cold = faculty.completion_reserve_within(window);
             // (a) below the observation bar the prior stands
-            reg.record_emission_in_memory(persona, 2_500, 0, false, 1);
-            reg.record_emission_in_memory(persona, 1_200, 0, false, 2);
+            reg.record_emission_in_memory(persona, 2_500, 0, crate::cognition::working_set::EmissionStop::Landed, 1);
+            reg.record_emission_in_memory(persona, 1_200, 0, crate::cognition::working_set::EmissionStop::Landed, 2);
             assert_eq!(faculty.completion_reserve_within(window), cold);
             // (b) measured: peak 2,500 × 2 = 5,000 — still far under the 14,720 share,
             // but ABOVE the reply-sized cold prior. The direction inverted deliberately:
             // the prior is what a reply costs, and measurement earns room UP toward the
             // share rather than shaving a half-window default down.
-            reg.record_emission_in_memory(persona, 2_500, 0, false, 3);
+            reg.record_emission_in_memory(persona, 2_500, 0, crate::cognition::working_set::EmissionStop::Landed, 3);
             let share = window / LlmDeliberationFaculty::COMPLETION_SHARE_DENOM;
             let measured = faculty.completion_reserve_within(window);
             assert_eq!(measured, 5_000);
@@ -6624,7 +6644,7 @@ mod tests {
             // tiny-talker floor: a 40-token ack cannot strangle the next thought
             let quiet = Uuid::new_v4();
             for t in 1..=3 {
-                reg.record_emission_in_memory(quiet, 40, 0, false, t);
+                reg.record_emission_in_memory(quiet, 40, 0, crate::cognition::working_set::EmissionStop::Landed, t);
             }
             let quiet_faculty = LlmDeliberationFaculty::new(
                 quiet,
@@ -6642,7 +6662,7 @@ mod tests {
             // the SHARE — a citizen who genuinely needs the room earns it back within a
             // turn instead of freezing at the reply-sized prior. Growth saturates at the
             // share (the prior is a starting point, the share is the wall).
-            reg.record_emission_in_memory(persona, 5_000, 0, true, 4);
+            reg.record_emission_in_memory(persona, 5_000, 0, crate::cognition::working_set::EmissionStop::CutCommitted, 4);
             assert_eq!(faculty.completion_reserve_within(window), share);
         }
 
@@ -6661,7 +6681,7 @@ mod tests {
             )
             .with_working_set(reg.clone());
             for tick in 1..=3 {
-                reg.record_emission_in_memory(persona, 16_384, 0, true, tick);
+                reg.record_emission_in_memory(persona, 16_384, 0, crate::cognition::working_set::EmissionStop::CutCommitted, tick);
             }
             // A censored sample is doubled by the registry; reserve adds headroom.
             // The former absolute ceiling froze this at the same failed allowance.
@@ -9169,7 +9189,7 @@ mod tests {
                 );
                 let registry = crate::cognition::working_set::WorkingSetRegistry::new();
                 for tick in 0..3 {
-                    registry.record_emission_in_memory(persona, 834, 0, false, tick);
+                    registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
                 }
                 let faculty =
                     LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -9428,7 +9448,7 @@ mod tests {
                 ]);
             let registry = WorkingSetRegistry::new();
             for tick in 0..3 {
-                registry.record_emission_in_memory(persona, 834, 0, false, tick);
+                registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
             }
             let faculty =
                 LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -9778,7 +9798,7 @@ mod tests {
                 // cold half-window prior must yield to optional conversation.
                 let registry = WorkingSetRegistry::new();
                 for now in 1..=3 {
-                    registry.record_emission_in_memory(persona, 1_000, 0, false, now);
+                    registry.record_emission_in_memory(persona, 1_000, 0, crate::cognition::working_set::EmissionStop::Landed, now);
                 }
                 let faculty =
                     LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
