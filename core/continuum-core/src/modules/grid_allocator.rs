@@ -188,6 +188,12 @@ pub(crate) fn minds_over_the_grid(
         .collect()
 }
 
+/// The most capable seat any live node offers — the ceiling a role's floor is clamped
+/// to. No node, no plan: 0, so every declared floor relaxes to "any seat".
+pub(crate) fn grid_best_rank(nodes: &[NodeOffer]) -> u8 {
+    nodes.iter().flat_map(|n| n.plans.iter().map(|p| p.capability_rank)).max().unwrap_or(0) // unwrap_or: nothing offered = no floor to hold
+}
+
 pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     if let Some(plan) = &f.local_plan {
         book.hear(NodeOffer { node: f.this_node, owner: ONE_OWNER, terms: OfferTerms::open(), plans: vec![plan.clone()] }, f.now_ms);
@@ -205,11 +211,21 @@ pub(crate) fn build_inputs(f: &GridFacts, book: &mut OfferBook) -> GridInputs {
     if f.local_plan.is_none() {
         nodes.retain(|n| n.node != f.this_node);
     }
-    let (roles, floors) = roles_from(&f.citizens, f.undeclared_window);
+    let (mut roles, floors) = roles_from(&f.citizens, f.undeclared_window);
+    // THE FLOOR FOLLOWS THE GRID (Joel, 2026-09-26: "I'd expect to start at CPU on a Mac
+    // Intel, and if I added the 5090 it to also scale up. Similarly down if disconnected").
+    // An activity's declared tier is what a coder ASKS for; the best seat the grid offers
+    // right now bounds it from below. An Intel Mac alone: the 1.5B is the best there is,
+    // the coder seats on it. Plug in a 27B: the bound rises to the declared tier, the
+    // 1.5B holds no coder, she moves up (opportunity, capability first), and a second
+    // coder waits on the 27B rather than taking the CPU seat. Unplug it: the bound falls
+    // and she falls home. No pin, no absolute floor that leaves a standalone node coderless.
+    let best_rank = grid_best_rank(&nodes);
+    for role in &mut roles {
+        role.requirement.min_capability = role.requirement.min_capability.min(best_rank);
+    }
     let mut minds: Vec<Mind> = Vec::new();
     if !roles.is_empty() {
-        // Every resident hosts the recipe's first role today (the spawner seats one
-        // role until role-in-seed lands); the allocator's role 0 is that role.
         // HER role, from her seed: a coder is seated as a coder and holds the coder
         // requirement (card ccb316a7 — with every local mind at role 0, Kimi was a
         // "helper" any model could hold, and a 1.5B CPU seat took her). A role the
@@ -709,9 +725,27 @@ mod tests {
         assert_eq!(role_of(kimi).as_deref(), Some("coder"), "her seed's role");
         assert_eq!(role_of(helper).as_deref(), Some("helper"), "no stamped role = the first role");
         let coder = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
-        assert!(!plan("1.5b", 3, 32_768, 2).holds(coder), "a 1.5B never holds a coder");
+        assert!(!plan("1.5b", 3, 32_768, 2).holds(coder), "a 1.5B never holds a coder while a 27B is offered");
         assert!(!plan("7b", 6, 65_536, 2).holds(coder), "nor a 7B");
         assert!(plan("27b", 18, 70_000, 2).holds(coder), "the 27B's own proxy rank clears the floor");
+
+        // The floor follows the grid: the Intel Mac ALONE (its 1.5B is the best seat there
+        // is) seats the coder on it; the 27B joining raises the floor; leaving lowers it.
+        let intel = Uuid::new_v4();
+        let mut alone = facts(intel, Some(plan("1.5b", 3, 32_768, 2)), vec![], vec![kimi]);
+        alone.citizens = f.citizens.clone();
+        alone.mind_roles = vec![(kimi, RoleId::Coder)];
+        let inputs = build_inputs(&alone, &mut OfferBook::default());
+        let coder_alone = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
+        assert_eq!(coder_alone.min_capability, 3, "standalone: the floor is the best seat there is");
+        assert!(plan("1.5b", 3, 32_768, 2).holds(coder_alone), "she starts at CPU");
+        let mut joined = facts(intel, Some(plan("1.5b", 3, 32_768, 2)), vec![peer(me, Some(plan("27b", 18, 70_000, 2)), 0, 99_000)], vec![kimi]);
+        joined.citizens = f.citizens.clone();
+        joined.mind_roles = vec![(kimi, RoleId::Coder)];
+        let inputs = build_inputs(&joined, &mut OfferBook::default());
+        let coder_joined = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
+        assert_eq!(coder_joined.min_capability, 12, "the 27B joined: the floor rises to the declared tier");
+        assert!(!plan("1.5b", 3, 32_768, 2).holds(coder_joined), "and the 1.5B holds no coder any more — she moves up");
     }
 
     // what this catches (card 10bba591): an UNCHANGED grid publishes nothing — the key
