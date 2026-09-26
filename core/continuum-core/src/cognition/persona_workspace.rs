@@ -318,6 +318,11 @@ fn assemble_workspace_cycle(
     // recall runs inline or deferred. Constructing a fork grants no disk access.
     if let Some(persisted) = restored {
         let n = persisted.wm.entries.len();
+        // The previous life's handoff re-seeds this one: her ledger and card are known at
+        // the NEXT seam too, without a wall read (card 49b5e806).
+        if let Some(handoff) = persisted.wm.handoff.as_ref() {
+            crate::cognition::handoff::reload(cfg.persona_id, handoff);
+        }
         working_memory.restore(persisted.wm);
         let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
         match &persisted.own_speech {
@@ -967,6 +972,9 @@ pub(crate) async fn root_at_held_card(
     let Some(focus) = crate::persona::work_focus::focus_card(held.iter()) else {
         return HeldCardTurn::unheld();
     };
+    // Stamped for the seam as the turn roots: the handoff record carries this card WHOLE
+    // (claim id, lease edge, submissions) without a board walk at stop time (card 49b5e806).
+    crate::cognition::handoff::note_held(peer_id, None, focus, crate::modules::chat::now_ms());
     // ── FROM HERE THE CARD IS KNOWN ───────────────────────────────────────────────
     // Everything that can still fail below is a fact about the WORKSPACE — no checkout
     // on this node, no acting body, a rooting error. NONE of them is a fact about which
@@ -1370,13 +1378,13 @@ impl PersonaWorkspaceRegistry {
         if *stopped {
             return Vec::new();
         }
-        self.write_volatile_all()
+        self.write_volatile_all(SaveReason::Periodic)
     }
 
     /// Explicit save is repeatable and leaves periodic persistence running.
     pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
         let _checkpoint = self.checkpoint_stopped.lock();
-        self.write_volatile_all()
+        self.write_volatile_all(SaveReason::Seam)
     }
 
     /// Shutdown boundary: drain the admitted checkpoint, close periodic writes,
@@ -1386,12 +1394,12 @@ impl PersonaWorkspaceRegistry {
     pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<()>)> {
         let mut stopped = self.checkpoint_stopped.lock();
         *stopped = true;
-        self.write_volatile_all()
+        self.write_volatile_all(SaveReason::Seam)
     }
 
     // Only called under checkpoint_stopped. The cycle lookup lock is released
     // before snapshot/serialization/IO, keeping room turns and roster reads free.
-    fn write_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    fn write_volatile_all(&self, reason: SaveReason) -> Vec<(Uuid, std::io::Result<()>)> {
         let residents: Vec<_> = self
             .cycles
             .lock()
@@ -1416,7 +1424,7 @@ impl PersonaWorkspaceRegistry {
             .into_iter()
             .map(|(id, memory)| {
                 let started = std::time::Instant::now();
-                let result = save_volatile(id, &memory);
+                let result = save_volatile(id, reason, &memory);
                 crate::probe!(
                     class = "persona.volatile.checkpoint",
                     persona_id = %id,
@@ -1710,16 +1718,46 @@ fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
         .join("volatile.json"))
 }
 
+/// WHY a volatile write happens — the one fact the handoff record needs that the memory
+/// itself cannot know. A periodic write says "the stop, if one comes, is unknown"; a seam
+/// write is the last thing before the process ends and reads the deploy claim to say what.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveReason {
+    Periodic,
+    Seam,
+}
+
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
 /// leaves a torn file. Called under the registry checkpoint gate, on a blocking
 /// worker. Failures propagate to both periodic and shutdown lifecycle receipts.
 fn save_volatile(
     persona_id: Uuid,
+    reason: SaveReason,
     wm: &super::working_memory::WorkingMemory,
 ) -> std::io::Result<()> {
     let path = volatile_path(persona_id)?;
     let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
     let mut snapshot = wm.snapshot();
+    // THE HANDOFF (card 49b5e806): composed from what her turns already stamped (rooting,
+    // work/note, the seam walk) plus the two things only the seam knows — what tears this
+    // life, read from the deploy claim the reboot holds, and what stands on disk at her root.
+    let torn_by = match reason {
+        SaveReason::Periodic => crate::cognition::handoff::TornBy::Periodic,
+        SaveReason::Seam => match crate::commands::benchmark::continuum_home()
+            .ok()
+            .and_then(|root| crate::runtime::deploy_claim::read(&root))
+        {
+            Some(claim) => crate::cognition::handoff::TornBy::Deploy(claim),
+            None => crate::cognition::handoff::TornBy::Stop,
+        },
+    };
+    let acting_root = acting_root_of(persona_id);
+    snapshot.handoff = crate::cognition::handoff::compose(
+        persona_id,
+        torn_by,
+        acting_root.as_deref(),
+        crate::modules::chat::now_ms(),
+    );
     // What she believes she holds, stamped by the one writer that knows whose memory this
     // is: her next wake compares it to the board (card c8303c32). A belief the board has
     // NOT yet answered (restored, then `Unknown` on every read so far) outranks where her
@@ -1858,7 +1896,7 @@ mod tests {
         // the ambient root is None. The periodic checkpoint runs.
         woke.note_claim_gone(believed, crate::cognition::working_memory::ClaimGone::Unknown);
         assert_eq!(acting_card_of(persona), None, "fixture premise: hands unheld");
-        save_volatile(persona, &woke).unwrap();
+        save_volatile(persona, SaveReason::Seam, &woke).unwrap();
         let persisted = load_volatile(persona).unwrap().expect("checkpoint written");
         assert_eq!(persisted.wm.acting_card, Some(believed), "the unanswered belief is carried, not settled by forgetting");
         // Second restart: the comparison is still pending.
@@ -1867,7 +1905,7 @@ mod tests {
         assert_eq!(again.peek_restored_acting_card(), Some(believed));
         // The board answers: consumed. The next checkpoint stamps the ambient root (None here).
         again.take_restored_acting_card();
-        save_volatile(persona, &again).unwrap();
+        save_volatile(persona, SaveReason::Seam, &again).unwrap();
         let settled = load_volatile(persona).unwrap().expect("checkpoint written");
         assert_eq!(settled.wm.acting_card, None, "answered beliefs are not resurrected");
     }
@@ -1904,7 +1942,7 @@ mod tests {
         let memory = WorkingMemory::new(8);
         memory.record_receipt("different previous lifetime");
         memory.record_receipt("higher sequence is not a selection policy");
-        save_volatile(persona, &memory).unwrap();
+        save_volatile(persona, SaveReason::Seam, &memory).unwrap();
         let destination = volatile_path(persona).unwrap();
         let original = std::fs::read(&destination).unwrap();
         let (source, selected) =
@@ -2150,7 +2188,7 @@ mod tests {
         let memory = super::super::working_memory::WorkingMemory::new(8);
         let receipt = "review complete: the caller keeps its room membership";
         memory.record_receipt(receipt);
-        save_volatile(persona, &memory).unwrap();
+        save_volatile(persona, SaveReason::Seam, &memory).unwrap();
         assert_eq!(
             volatile_path(persona).unwrap(),
             home.path()
@@ -2262,7 +2300,7 @@ mod tests {
         let persona = Uuid::new_v4();
         let memory = WorkingMemory::new(8);
         memory.record_receipt("resident-only scratchpad");
-        save_volatile(persona, &memory).unwrap();
+        save_volatile(persona, SaveReason::Seam, &memory).unwrap();
         let before = std::fs::read(volatile_path(persona).unwrap()).unwrap();
         let mut cfg = cfg_for(persona);
         cfg.defer_recall = true;

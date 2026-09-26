@@ -2388,6 +2388,9 @@ impl ActionCommand for WorkNote {
             .write(&room, &ledger)
             .await
             .map_err(|e| CommandError::Internal(format!("ledger could not be recorded: {e}")))?;
+        // Stamped for the seam as written: the handoff record carries her ledger whole
+        // without a wall read at stop time (card 49b5e806).
+        crate::cognition::handoff::note_ledger(airc.peer_id().as_uuid(), &ledger);
         crate::probe!(
             class = "work.ledger.noted",
             card = %short8(card_id.as_uuid()),
