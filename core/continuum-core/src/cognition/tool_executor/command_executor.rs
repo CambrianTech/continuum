@@ -271,6 +271,14 @@ pub(crate) const NAMELESS_ARGS_SENTINEL: &str = "tools/<no name given>";
 /// generation `drive_to_settle` grants starts from her own conclusions.
 pub(crate) const THINK_ONLY_SENTINEL: &str = "tools/<think-only turn>";
 
+/// Reserved pseudo-name for "the generation ended AT the output limit with text but no
+/// committed tool call" — a cut act. Same uncallable namespace and contract as its
+/// siblings: REPORTED, never executed. The deliberation faculty records what she was
+/// composing into her working memory before routing this, so the teacher below names
+/// the event and the retry starts from that record instead of re-deriving the world
+/// (Kimi, 2026-09-25: "every Length cut is a micro-deploy with no wake-up record").
+pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>";
+
 fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
@@ -293,6 +301,23 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
                 (`tool/name({\"arg\": \"value\"})`), or state your conclusion as plain \
                 text, or PASS. You have already done the thinking — put the conclusion \
                 in the answer."
+            .to_string();
+    }
+
+    // The CUT case: she was composing an act and the generation reached the output
+    // limit before the call was committed. Nothing ran, and nothing about the world
+    // changed — the failure mode after this is replaying work that already landed, or
+    // re-composing the same oversized payload (Kimi, 2026-09-25: five near-identical
+    // notes on a closed card, cut mid-envelope twice). Name the fact, point at the
+    // record, and name the two ways out: commit the call first, and keep the payload
+    // small enough to land.
+    if attempted == CUT_AT_LIMIT_SENTINEL {
+        return "Your last generation reached the output limit before a tool call was \
+                committed, so NOTHING ran and nothing changed — the act did not land. \
+                What you were composing is noted in your working memory. Do not \
+                re-check or redo earlier work that already landed. Commit the call \
+                first, with a smaller payload: state only what changed, not the full \
+                history, or split a large note across calls."
             .to_string();
     }
 
@@ -753,6 +778,20 @@ mod tests {
             out.contains("`frobnicate`"),
             "must name what she tried: {out}"
         );
+    }
+
+    #[test]
+    fn cut_act_sentinel_says_nothing_ran_and_how_to_land_the_act() {
+        // what this catches (Kimi, 2026-09-25): a cut act re-sampled with no word of the
+        // cut replays the same oversized payload and re-derives work that landed. The
+        // teacher must say the act did not land, point at the record, and name the way
+        // out — never the unknown-tool wording (she called nothing).
+        let raw = "no Rust module handles command: 'tools/<cut at the output limit>'".to_string();
+        let out = persona_tool_error(CUT_AT_LIMIT_SENTINEL, raw);
+        assert!(out.contains("NOTHING ran"), "{out}");
+        assert!(out.contains("working memory"), "{out}");
+        assert!(out.contains("smaller payload"), "{out}");
+        assert!(!out.contains("not a tool you can call"), "{out}");
     }
 
     // what this catches: the think-only sentinel gets its OWN teacher sentence — it
