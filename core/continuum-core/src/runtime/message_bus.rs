@@ -110,6 +110,7 @@ pub struct MessageBus {
 /// The most distinct event names the bus remembers. Names that embed an id grow
 /// without bound, and the reality check is about KINDS of event, so past this the
 /// bus stops recording and says so once.
+// derived-or-floor: a FLOOR — a memory bound on a bookkeeping set, not a stand-in for a measurement; no runtime figure describes how many event KINDS exist, and past the cap the bus only stops recording new names (and says so), it never changes delivery.
 const SEEN_NAMES_CAP: usize = 4096;
 
 /// Is `name` covered by any declared emission? The same matcher delivery uses, so a
