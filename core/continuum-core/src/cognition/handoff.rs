@@ -109,7 +109,7 @@ struct Seed {
 static SEEDS: Mutex<Option<HashMap<Uuid, Seed>>> = Mutex::new(None);
 
 fn with_seed<R>(persona: Uuid, f: impl FnOnce(&mut Seed) -> R) -> R {
-    let mut guard = SEEDS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    let mut guard = SEEDS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: poisoned lock = read the last state, same policy as every lock in this crate
     let map = guard.get_or_insert_with(HashMap::new);
     f(map.entry(persona).or_default())
 }
@@ -333,8 +333,8 @@ fn git_bounded(
             Err(e) => break Err(format!("{label}: {e}")),
         }
     };
-    let out = out_reader.join().unwrap_or_default(); // a panicked reader = no bytes; the status decides below
-    let err = err_reader.join().unwrap_or_default(); // same
+    let out = out_reader.join().unwrap_or_default(); // unwrap_or_default: a panicked reader = no bytes; the exit status decides below
+    let err = err_reader.join().unwrap_or_default(); // unwrap_or_default: same — no bytes, the status decides
     match status {
         Ok(status) if status.success() => Ok(String::from_utf8_lossy(&out).to_string()),
         Ok(status) => Err(format!(
