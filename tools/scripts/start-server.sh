@@ -974,6 +974,61 @@ if [ -n "${CONTINUUM_TRACK_BRANCH:-}" ] && [ "${CONTINUUM_BUILD_ONLY:-}" != "1" 
     || echo "⚠ track-canary install failed — this node will not follow $CONTINUUM_TRACK_BRANCH by itself" >&2
 fi
 
+# ── The desktop display manager's dist (Joel: 'should work like a Display
+# Manager'). Build the web client so the core can serve it — ALWAYS current
+# by construction: this runs on every start/reboot, so the greeter and the
+# core deploy as one generation. Non-fatal: a failed UI build boots a
+# headless core (desktop.dm.dist_missing probes the fix) rather than no core.
+#
+# BEFORE the build-only exit, and PINNED, not just exported (2026-09-26). Under
+# the launchd supervisor `continuum reboot` runs this script build-only and then
+# kickstarts the slot binary bare, so the block below used to be skipped entirely
+# (the dist froze at its last direct launch) and an `export` here could never
+# reach the supervised core: it booted `desktop.dm.unconfigured` on every deploy
+# while the CLI promised "the web build lands in the background". The core
+# applies ~/.continuum/config.env to itself on every boot, so that file is the
+# one durable home for the dist path; the export still serves a direct launch.
+if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; then
+  # Fresh clone (#291): the workspaces' node_modules must exist before the web
+  # build or the eye-node rail can run — without this, a first boot warned
+  # "desktop build failed" + spawned an eye-node that could not resolve tsx,
+  # and the new machine got a headless, eyeless core with no manual step named.
+  if [ ! -d "$REPO_ROOT/node_modules" ]; then
+    echo "→ first boot: installing workspace deps (npm ci)…"
+    (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
+      || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
+  fi
+  export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
+  # The durable pin: replace-or-append, single-quoted (the file is `source`d by
+  # bash, and an unquoted path with a backslash is destroyed by it — see
+  # config_env.rs). Same shape as `bin/continuum`'s config_set.
+  ui_pin_file="$HOME/.continuum/config.env"
+  mkdir -p "$HOME/.continuum" && touch "$ui_pin_file"
+  ui_pin_tmp="$(mktemp "${TMPDIR:-/tmp}/continuum-config.XXXXXX")"
+  grep -v '^CONTINUUM_UI_DIST=' "$ui_pin_file" > "$ui_pin_tmp" 2>/dev/null || true
+  printf "CONTINUUM_UI_DIST='%s'\n" "$CONTINUUM_UI_DIST" >> "$ui_pin_tmp"
+  mv "$ui_pin_tmp" "$ui_pin_file"
+  # NEVER IN FRONT (2026-09-02, Joel: "Desktop is optional… depends on core
+  # being up of course so must initiate if necessary"). The desktop is ONE
+  # optional client of a headless core — a web build has no business gating
+  # boot, fresh clone included: the core comes up NOW, and the dist lands in
+  # the background a minute later (desktop.dm.dist_missing probes the window;
+  # `continuum desktop` before it lands says the build is in flight rather
+  # than showing a broken page). This replaced a 1–2 minute SERIAL build in
+  # front of exec on EVERY boot. The build's output goes to a log, so a
+  # failure has a reason somewhere.
+  ui_build_log="$HOME/.continuum/logs/desktop-build.log"
+  mkdir -p "$HOME/.continuum/logs"
+  if [ -d "$REPO_ROOT/apps/web/dist" ]; then
+    echo "→ desktop: serving the existing dist now; rebuilding in the background (log: $ui_build_log)…"
+  else
+    echo "→ desktop: no dist yet — core boots headless now; building in the background (log: $ui_build_log)…"
+  fi
+  (cd "$REPO_ROOT" && npm run build -w @continuum/web >"$ui_build_log" 2>&1 \
+    && echo "  desktop build landed (reload / continuum desktop to open it)" \
+    || echo "  ⚠ background desktop build failed — read $ui_build_log" >&2) &
+fi
+
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
   # The caller must launch THIS artifact, not guess our profile/target directory
   # or rerun the source launcher after stopping the old core. Publish only after
@@ -1157,39 +1212,6 @@ fi
 # which re-runs cargo's build logic at launch and could second-guess (or re-stale)
 # what we already verified. We built it, we checked it reflects source, we run it.
 # Unambiguous: the process image is the verified $CORE_BIN. [[verify-the-build-actually-deployed]]
-# ── The desktop display manager's dist (Joel: 'should work like a Display
-# Manager'). Build the web client so the core can serve it — ALWAYS current
-# by construction: this runs on every start/reboot, so the greeter and the
-# core deploy as one generation. Non-fatal: a failed UI build boots a
-# headless core (desktop.dm.dist_missing probes the fix) rather than no core.
-if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; then
-  # Fresh clone (#291): the workspaces' node_modules must exist before the web
-  # build or the eye-node rail can run — without this, a first boot warned
-  # "desktop build failed" + spawned an eye-node that could not resolve tsx,
-  # and the new machine got a headless, eyeless core with no manual step named.
-  if [ ! -d "$REPO_ROOT/node_modules" ]; then
-    echo "→ first boot: installing workspace deps (npm ci)…"
-    (cd "$REPO_ROOT" && npm ci >/dev/null 2>&1 || npm install >/dev/null 2>&1) \
-      || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
-  fi
-  # NEVER IN FRONT (2026-09-02, Joel: "Desktop is optional… depends on core
-  # being up of course so must initiate if necessary"). The desktop is ONE
-  # optional client of a headless core — a web build has no business gating
-  # boot, fresh clone included: the core comes up NOW, and the dist lands in
-  # the background a minute later (desktop.dm.dist_missing probes the window;
-  # `continuum desktop` before it lands says the build is in flight rather
-  # than showing a broken page). This replaced a 1–2 minute SERIAL build in
-  # front of exec on EVERY boot.
-  export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
-  if [ -d "$REPO_ROOT/apps/web/dist" ]; then
-    echo "→ desktop: serving the existing dist now; rebuilding in the background…"
-  else
-    echo "→ desktop: no dist yet — core boots headless now; building in the background…"
-  fi
-  (cd "$REPO_ROOT" && npm run build -w @continuum/web >/dev/null 2>&1 \
-    && echo "  desktop build landed (reload / continuum desktop to open it)" \
-    || echo "  ⚠ background desktop build failed — run npm run build -w @continuum/web to diagnose" >&2) &
-fi
 
 # A HOSTING NODE DOES NOT SLEEP (card 94a95a98). On 2026-09-07 the M5 idle-slept on
 # battery and then cycled Maintenance Sleep on AC for three hours while hosting five
