@@ -161,6 +161,16 @@ pub struct ServingConsumer {
     decayed_at_verified_ms: std::sync::atomic::AtomicU64,
     /// active model id + live shape → resident bytes (weights + per-lane KV).
     footprint_of: FootprintFn,
+    /// The LIVE serving process's physical residency (`anon_footprint_of(pid)`): what it
+    /// holds right now, `None` when no live serving process exists (card 628dc958). When
+    /// this consumer measures physically, the credit is exactly this figure and 0 in the
+    /// gap between engines — never an estimate, never a held prior — so the board's
+    /// physical `available` plus this credit does not move when the same bytes change
+    /// hands. The estimate path is for backends with no process to measure.
+    measured_of: MeasuredFn,
+    /// Whether `measured_of` is authoritative (a process-measuring backend). False only
+    /// for backends with nothing to measure, where the catalog estimate stands in.
+    measures_physically: bool,
     /// The row those bytes live in — `Vram` for a GPU-placed lane, `Ram` for a
     /// CPU-placed one (`serving_daemon::serving_pool_kind`). Handed in, never resolved
     /// here: the consumer reports and yields on the SAME row the plan budgets from, or
