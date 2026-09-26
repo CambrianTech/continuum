@@ -154,7 +154,10 @@ pub fn note_owned(persona: Uuid, owned: &[(airc_lib::Room, airc_lib::WorkCard)],
             .filter(|(_, card)| card.reviews.is_some())
             .map(|(_, card)| card.clone()),
     );
-    obligations.dedup_by_key(|card| card.card_id);
+    // Dedup by card id across the whole list (a card can be both in Review and held as
+    // a review), not adjacent-only.
+    let mut seen = std::collections::HashSet::new();
+    obligations.retain(|card| seen.insert(card.card_id));
     with_seed(persona, |s| {
         match held_work {
             Some((room, card)) => {
@@ -325,7 +328,7 @@ fn git_bounded(
                 let _ = child.kill(); // already exited between try_wait and kill = nothing to kill
                 let _ = child.wait(); // reap; a wait on a killed child cannot block
                 break Err(format!(
-                    "{label} did not answer within {} ms and was killed",
+                    "{label} did not answer before the seam's shared staged budget ({} ms for every resident) ran out, and was killed",
                     STAGED_READ_BOUND.as_millis()
                 ));
             }
