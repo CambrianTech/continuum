@@ -523,6 +523,11 @@ impl ReconcileStep {
 // derived-or-floor: derived — 2 × READY_TIMEOUT (a launch may wait ready once, then verify).
 const RECONCILE_WEDGE_BOUND: Duration = Duration::from_secs(2 * READY_TIMEOUT.as_secs());
 
+/// Ticks a LIVE lane may sit with no published plan before it is said: the boot plan
+/// lands within the first tick or two; three is past any honest transient.
+// derived-or-floor: a floor — three ticks at TICK is well past the boot's own first plan.
+const PLAN_NONE_LIVE_LANE_TICKS: u64 = 3;
+
 /// A gate skip says something once per this interval, never per tick.
 // derived-or-floor: a floor — one line per half minute is readable in a log and loud enough.
 const RECONCILE_BUSY_SAY_EVERY: Duration = Duration::from_secs(30);
@@ -530,6 +535,17 @@ const RECONCILE_BUSY_SAY_EVERY: Duration = Duration::from_secs(30);
 /// True when an operation of this age has outlived the bound a healthy reconcile can hold.
 fn reconcile_wedged(age: Duration) -> bool {
     age > RECONCILE_WEDGE_BOUND
+}
+
+/// The bound is PER STEP (Cormac on #4421): an academy teacher batch holds the gate for
+/// as long as its corpus takes — minutes, legitimately — so the single serving bound
+/// would read every long batch as a wedge. A batch is `busy`, never `wedged`; the batch
+/// has its own deadline and receipt. Every other step is bounded as a reconcile.
+fn reconcile_wedged_at(step: ReconcileStep, age: Duration) -> bool {
+    match step {
+        ReconcileStep::AcademyBatch => false,
+        _ => reconcile_wedged(age),
+    }
 }
 
 struct ServingOperation {
@@ -658,6 +674,13 @@ pub struct ServingDaemonModule {
     /// Reconcile-tick counter driving the slow liveness HEARTBEAT (fires when
     /// `% HEALTH_PROBE_EVERY_TICKS == 0`). See [`Self::spawn_health_heartbeat_if_due`].
     health_ticks: Arc<AtomicU64>,
+    /// Consecutive ticks with NO published plan while a lane is LIVE (owned or inherited)
+    /// — the 2026-09-26 18:22Z shape: a refused demotion left plan None beside a healthy
+    /// engine, and no receipt could see it (the reconcile receipt needs an operation in
+    /// flight; there was none). Said once per [`RECONCILE_BUSY_SAY_EVERY`] after
+    /// [`PLAN_NONE_LIVE_LANE_TICKS`]; reset the tick a plan exists.
+    plan_none_live_lane_ticks: Arc<AtomicU64>,
+    plan_none_said_ms: Arc<AtomicU64>,
     /// Consecutive failed decode heartbeats — the hysteresis counter that keeps a
     /// merely-BUSY lane from being reaped. Reset to 0 on any passing probe or when the
     /// lane isn't believed-ready. Relaunch only once it reaches [`HEALTH_FAILS_TO_RELAUNCH`].
@@ -1034,6 +1057,8 @@ impl ServingDaemonModule {
             reconcile_busy_said_ms: Arc::new(AtomicU64::new(0)),
             academy_batch: parking_lot::Mutex::new(None),
             health_ticks: Arc::new(AtomicU64::new(0)),
+            plan_none_live_lane_ticks: Arc::new(AtomicU64::new(0)),
+            plan_none_said_ms: Arc::new(AtomicU64::new(0)),
             health_fails: Arc::new(AtomicU8::new(0)),
             health_probing: Arc::new(AtomicBool::new(false)),
             force_relaunch: Arc::new(AtomicBool::new(false)),
@@ -2685,6 +2710,43 @@ impl ServingDaemonModule {
     /// half minute, with the operation's age and the await it is in — and names a WEDGE
     /// once the age passes [`RECONCILE_WEDGE_BOUND`]. Silence here is how the M5 sat dark
     /// for six minutes with a healthy engine on its port (card c3c50e0d).
+    /// A LIVE lane with NO published plan for [`PLAN_NONE_LIVE_LANE_TICKS`] ticks is a
+    /// named silence: `serving.plan.none_with_live_lane {ticks, lane_pid, model}`, once per
+    /// half minute. The engine is on its port; nobody decided anything about it.
+    fn note_plan_none_with_live_lane(&self) {
+        if self.plan_tx.borrow().plan.is_some() {
+            self.plan_none_live_lane_ticks.store(0, Ordering::Release);
+            return;
+        }
+        // The lane registry's live record covers both an inherited engine and our own
+        // (the daemon writes the pidfile + record for the lane it spawns).
+        let Some((lane_pid, model)) = (self.inherited_lane)().map(|r| (r.pid, r.model)) else {
+            self.plan_none_live_lane_ticks.store(0, Ordering::Release);
+            return;
+        };
+        let ticks = self
+            .plan_none_live_lane_ticks
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if ticks < PLAN_NONE_LIVE_LANE_TICKS {
+            return;
+        }
+        let now = crate::modules::chat::now_ms();
+        let said = self.plan_none_said_ms.load(Ordering::Acquire);
+        if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
+            return;
+        }
+        self.plan_none_said_ms.store(now, Ordering::Release);
+        crate::probe!(
+            class = "serving.plan.none_with_live_lane",
+            ticks,
+            lane_pid = lane_pid as u64,
+            model = model.as_str(),
+            "a lane is live on its port and no plan has been published for this many ticks \
+             — nothing decided anything about it; read the last serving.plan.* refusal"
+        );
+    }
+
     fn note_reconcile_busy(&self, skipped: &'static str) {
         let started = self.reconcile_started_ms.load(Ordering::Acquire);
         if started == 0 {
@@ -2697,8 +2759,9 @@ impl ServingDaemonModule {
             return;
         }
         self.reconcile_busy_said_ms.store(now, Ordering::Release);
-        let step = ReconcileStep::from_u8(self.reconcile_step.load(Ordering::Acquire)).name();
-        if reconcile_wedged(age) {
+        let step_kind = ReconcileStep::from_u8(self.reconcile_step.load(Ordering::Acquire));
+        let step = step_kind.name();
+        if reconcile_wedged_at(step_kind, age) {
             crate::probe!(
                 class = "serving.reconcile.wedged",
                 skipped,
@@ -6731,6 +6794,7 @@ impl ServiceModule for ServingDaemonModule {
     async fn tick(&self) -> Result<(), String> {
         crate::inference::llama_server::collect_retired_engines();
         self.poll_teacher_batch();
+        self.note_plan_none_with_live_lane();
         // The plan is DECIDED on the memory authority's tick now (MEMORY-AUTHORITY-DAEMON:
         // `register_planner_on_authority_tick` runs `recompute()` as an `on_tick` observer,
         // publishing to `plan_tx`) — serving no longer samples memory on its own tick. This
@@ -6832,6 +6896,10 @@ pub(crate) mod tests {
         assert_eq!(ReconcileStep::from_u8(step.load(Ordering::Acquire)), ReconcileStep::None);
         assert!(!reconcile_wedged(RECONCILE_WEDGE_BOUND));
         assert!(reconcile_wedged(RECONCILE_WEDGE_BOUND + std::time::Duration::from_secs(1)));
+        // Per step (Cormac on #4421): a teacher batch is busy for its own reasons, never wedged.
+        let long = RECONCILE_WEDGE_BOUND * 10;
+        assert!(super::reconcile_wedged_at(ReconcileStep::Ensure, long));
+        assert!(!super::reconcile_wedged_at(ReconcileStep::AcademyBatch, long));
     }
 
     // what this catches (card 628dc958): the plan grew into free memory while the host
