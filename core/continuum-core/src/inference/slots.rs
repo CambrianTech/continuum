@@ -975,7 +975,7 @@ impl EndpointTransition {
         if !Arc::ptr_eq(&self.endpoint, &original.endpoint) || !current() {
             return Err("suspended endpoint or intent changed".into());
         }
-        let mut state = self.endpoint.state.lock();
+        let state = self.endpoint.state.lock();
         if original.generation.has_exited()
             || state.paging_uncertain
             || state.pool_generation != Some(original.generation.id)
@@ -1009,7 +1009,7 @@ impl EndpointTransition {
             return Err("checkpoint URL does not identify the held endpoint".into());
         }
         let (generation, pool) = {
-            let mut state = self.endpoint.state.lock();
+            let state = self.endpoint.state.lock();
             if state.paging_uncertain {
                 return Err("checkpoint refused: paging completion remains uncertain".into());
             }
