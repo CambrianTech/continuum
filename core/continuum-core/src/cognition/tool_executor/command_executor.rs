@@ -336,6 +336,17 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The dispatched (slash) form is what the registry knows; she may have
     // emitted the underscore form, so normalize before matching/suggesting.
     let normalized = attempted.replace('_', "/");
+    // A verb the registry knows but her hands do not hold: the command's own refusal
+    // is the wrong lesson (it names a missing room or an absent review card, and she
+    // reaches again). Say what the verb is for and which of her verbs do what she
+    // meant — the same predicate that keeps it off her tool surface.
+    if let Some(withheld) = crate::cognition::tool_dialect::withheld_from_hands(&normalized) {
+        return format!(
+            "`{normalized}` did not run. {}\n{}\nNothing you type will make `{normalized}` \
+             resolve for you; the verbs above are the ones that do.",
+            withheld.why, withheld.instead
+        );
+    }
 
     // The exact how-to-call manual for a command SHE can run, rendered inline so the
     // fix rides back in THIS observation — she retries next turn with no discovery
@@ -753,6 +764,23 @@ mod tests {
     // what this catches: the developer-internal unknown-command paragraph (TS-bridge
     // fallthrough, "register a ServiceModule") must NEVER reach the persona — she gets
     // a paradigm-native message pointing at commands/list + commands/help instead.
+    // what this catches (Kimi, 2026-09-26 19:0xZ, five `work/review ✗` in an hour): a
+    // registered verb withheld from her hands answers with what it is for and her own
+    // verbs — never the command's refusal ("an explicit activity room is required"),
+    // which reads as "try again with a room" and costs another act.
+    #[test]
+    fn a_verb_withheld_from_her_hands_teaches_her_verbs_instead_of_relaying_the_refusal() {
+        let out = persona_tool_error(
+            "work_review",
+            "an explicit activity room is required".to_string(),
+        );
+        assert!(out.contains("`work/review` did not run"), "{out}");
+        assert!(out.contains("`work/get`") && out.contains("`work/submit`"), "{out}");
+        assert!(!out.contains("activity room is required"), "the refusal is not the lesson: {out}");
+        assert!(persona_tool_error("work/submission", "x".into()).contains("`work/submit`"));
+        assert!(persona_tool_error("code/git/apply", "x".into()).contains("`code/edit`"));
+    }
+
     #[test]
     fn unknown_command_feedback_is_persona_actionable_not_dev_noise() {
         let raw = "no Rust module handles command: 'frobnicate'. \

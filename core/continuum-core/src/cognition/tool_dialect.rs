@@ -150,6 +150,36 @@ fn command_names() -> &'static HashSet<&'static str> {
 /// reflex like `grep_files` finds `grep` (→ `code/search`) instead of no match.
 /// The caller maps a suggested alias back to its canonical command with
 /// [`resolve_wire_name`]. Static, built once from the live registry.
+/// A registered, AiSafe verb that is deliberately NOT in a persona's hands, with the
+/// hands she has instead. ONE place (card 1daffbaf's sibling on Kimi's plumbing list):
+/// `hands_surface` filters the offered tools by it, and the executor answers a call to
+/// one of these with the same sentence — never with the command's own refusal
+/// ("an explicit activity room is required"), which teaches nothing and reads as
+/// "try again". Measured 2026-09-26 19:0xZ: Kimi called `work/review` five times in one
+/// hour, each an act spent on a refusal, each followed by the same reach.
+pub(crate) struct WithheldVerb {
+    pub why: &'static str,
+    pub instead: &'static str,
+}
+
+pub(crate) fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
+    match name.replace('_', "/").as_str() {
+        "work/review" => Some(WithheldVerb {
+            why: "`work/review` is a reviewer's verdict under a REVIEW claim — a sibling card the board spawned to review someone else's work. It is not in your hands.",
+            instead: "For your own card: `work/get` to read it, `work/note` to record progress, `work/submit` to hand it in. To give a review word on a peer's PR, say it in the room: \"APPROVED at <sha>\" or \"CHANGES REQUESTED at <sha>: <why>\".",
+        }),
+        "work/submission" => Some(WithheldVerb {
+            why: "`work/submission` inspects a SUBMISSION a reviewer holds — it is not \"look at my card\", and it is not in your hands.",
+            instead: "For your own card: `work/get` to read it, `work/submit` to hand it in (that IS the submission).",
+        }),
+        "code/git/apply" => Some(WithheldVerb {
+            why: "`code/git/apply` applies a PEER's unified diff — it is not \"apply my fix\", and it is not in your hands.",
+            instead: "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
+        }),
+        _ => None,
+    }
+}
+
 pub fn ai_safe_aliases() -> &'static [&'static str] {
     static IDX: OnceLock<Vec<&'static str>> = OnceLock::new();
     IDX.get_or_init(|| {
