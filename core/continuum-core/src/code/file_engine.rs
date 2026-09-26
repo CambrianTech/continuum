@@ -829,7 +829,6 @@ impl FileEngine {
         }
     }
 
-    /// Get the underlying PathSecurity (for search/tree operations that need it).
     /// THE gate a persona's path ARGUMENT passes before it is an address (card 1daffbaf):
     /// markdown fencing and an attached receipt line are stripped once, here, and the
     /// cleaned string is what every file verb resolves, records in the change graph, and
@@ -846,6 +845,7 @@ impl FileEngine {
         Ok(cleaned)
     }
 
+    /// Get the underlying PathSecurity (for search/tree operations that need it).
     pub fn security(&self) -> &PathSecurity {
         &self.security
     }
