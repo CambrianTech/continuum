@@ -2959,8 +2959,13 @@ pub(crate) mod tests {
             replay_of: None,
         };
         let mut lease = CaptureLease::start(Arc::new(sink), &call, &request);
-        let cursor = lease.cursor().expect("durable submission").to_owned();
-        lease.finish(Some(&response), None);
+        let submitted = lease.cursor().expect("durable submission").to_owned();
+        // the receipt carries the COMPLETED entry's cursor: the submission holds no response
+        let cursor = lease.finish(Some(&response), None).expect("completed entry");
+        assert_ne!(cursor, submitted);
+        let (_, only_request) =
+            read_lived_calls(Some(dir.path()), persona, vec![Some(submitted)], Vec::new());
+        assert!(only_request.is_some_and(|r| r.contains("no terminal response")));
 
         let (calls, missing) =
             read_lived_calls(Some(dir.path()), persona, vec![Some(cursor.clone())], Vec::new());

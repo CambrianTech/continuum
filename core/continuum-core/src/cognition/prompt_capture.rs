@@ -64,6 +64,8 @@ pub trait PromptCaptureSink: Send + Sync {
     ) -> Option<CaptureToken> {
         None
     }
+    /// Record the call's end. Returns the cursor of the completed entry, which holds
+    /// both the request and the response, when the sink recorded one.
     fn terminal(
         &self,
         _token: &CaptureToken,
@@ -71,7 +73,8 @@ pub trait PromptCaptureSink: Send + Sync {
         _response: Option<&TextGenerationResponse>,
         _error: Option<&str>,
         _elapsed_ms: u64,
-    ) {
+    ) -> Option<String> {
+        None
     }
     fn record(
         &self,
@@ -112,20 +115,21 @@ impl CaptureLease {
             .as_ref()
             .map(|token| token.header.cursor.as_str())
     }
-    pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) {
-        if let Some(token) = self.token.take() {
-            self.sink.terminal(
-                &token,
-                if response.is_some_and(|response| response.generation_error().is_none()) {
-                    CallStatus::Completed
-                } else {
-                    CallStatus::Failed
-                },
-                response,
-                error,
-                self.started.elapsed().as_millis() as u64,
-            );
-        }
+    /// End the call. Returns the completed entry's cursor: the one entry that reads back
+    /// as the request AND the response (the submission's own cursor holds only the request).
+    pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) -> Option<String> {
+        let token = self.token.take()?;
+        self.sink.terminal(
+            &token,
+            if response.is_some_and(|response| response.generation_error().is_none()) {
+                CallStatus::Completed
+            } else {
+                CallStatus::Failed
+            },
+            response,
+            error,
+            self.started.elapsed().as_millis() as u64,
+        )
     }
     /// ABANDONED BEFORE DISPATCH, SAID BY NAME (card ebce2ba0). A call the substrate
     /// gave up on at an admission gate — it never reached the model — is still a
@@ -319,7 +323,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         response: Option<&TextGenerationResponse>,
         error: Option<&str>,
         elapsed_ms: u64,
-    ) {
+    ) -> Option<String> {
         let mut header = token.header.clone();
         header.status = status;
         header.captured_at_ms = now_ms();
@@ -334,7 +338,9 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             response,
             error,
         };
-        self.append(&record, header.clone(), true);
+        self.append(&record, header.clone(), true)
+            .map(|recorded| recorded.cursor)
+            .filter(|cursor| !cursor.is_empty())
     }
     fn record(
         &self,
