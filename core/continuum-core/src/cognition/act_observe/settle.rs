@@ -39,6 +39,65 @@ use super::types::{SettleOutcome, SettleStep};
 /// required-read and belongs in its own card.
 pub(crate) const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
 
+/// How many times an act's deadline may be extended while its generation advances: the
+/// ceiling is `1 + ACT_EXTENSIONS` bounds, so even a moving act cannot hold the lane past
+/// it (a slow clip still reaches every mind, card ef25bf6c).
+// derived-or-floor: a ceiling — 3x the act bound total (Fable on 6f3218ed); it only ENDS a wait, never shortens one.
+const ACT_EXTENSIONS: u32 = 2;
+
+/// Await one settle step under the act bound, where the bound is a CHECKPOINT while the
+/// act's own generation advances (card 6f3218ed). IntelMac, 2026-09-27: five of seven
+/// cancellations in an hour were generations dropped at 24.6 to 25.0 min, alive and queued
+/// or prefilling, because the bound was pure elapsed time and the measured turn that
+/// would raise it is what this tier rarely completes. At the deadline the persona's
+/// pinned slot is read (`llama_server::in_flight_slot`): processing at the first
+/// checkpoint, or the same task with its work moved at a later one, extends by one bound,
+/// up to [`ACT_EXTENSIONS`]. No pinned slot, an idle or silent slot, or a new task on it
+/// ends the act exactly as before (`Err(Elapsed)`), so a request lost inside a busy engine
+/// still ends.
+async fn until_act_stalls<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    bound: std::time::Duration,
+    persona: Option<uuid::Uuid>,
+    step: F,
+) -> Result<F::Output, ()> {
+    tokio::pin!(step);
+    let mut deadline = deadline;
+    let mut extensions = 0u32;
+    let mut previous = None;
+    loop {
+        tokio::select! {
+            out = &mut step => return Ok(out),
+            _ = tokio::time::sleep_until(deadline) => {
+                let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
+                let now = match &pinned {
+                    Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
+                    None => None,
+                };
+                if extensions >= ACT_EXTENSIONS || !crate::inference::llama_server::slot_advanced(previous, now) {
+                    return Err(());
+                }
+                extensions += 1;
+                previous = now;
+                deadline += bound;
+                crate::probe!(
+                    class = "settle.tick.extended",
+                    slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
+                    extensions = extensions as u64,
+                    bound_s = bound.as_secs(),
+                    "the act reached its deadline with its generation still advancing on its pinned slot — busy, not dead; one more bound"
+                );
+            }
+        }
+    }
+}
+
+/// One client for the act deadline's slot reads, built once per process.
+fn act_probe_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 // The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
 // its own truncation). Still used here for the settlement answer-head.
 
@@ -591,8 +650,11 @@ async fn settle_to_outcome(
         // (Flash-Next deep tick ≈ 10-15 min incl. tools), fatally below forever.
         // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
         // retries; nothing stays silently becalmed again.
-        let (step, step_metrics, step_receipts) = match tokio::time::timeout_at(
+        let acting_persona = cycle.acting().map(|body| body.persona_id);
+        let (step, step_metrics, step_receipts) = match until_act_stalls(
             tick_deadline,
+            act_bound,
+            acting_persona,
             settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
         )
         .await
@@ -1341,6 +1403,21 @@ pub(super) fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 6f3218ed): the act bound's extension leaking to an act with no
+    // pinned generation. Without a slot to read, the deadline ends the act at the bound,
+    // exactly as the plain timeout did; a step that finishes first returns its output.
+    #[tokio::test(start_paused = true)]
+    async fn an_act_with_no_pinned_slot_ends_at_its_bound_as_before() {
+        let bound = std::time::Duration::from_secs(1500);
+        let start = tokio::time::Instant::now();
+        let never = super::until_act_stalls(start + bound, bound, None, std::future::pending::<()>()).await;
+        assert!(never.is_err());
+        assert_eq!(start.elapsed(), bound, "no extension without a pinned slot");
+        let unpinned = uuid::Uuid::new_v4();
+        let quick = super::until_act_stalls(start + bound * 2, bound, Some(unpinned), async { 42 }).await;
+        assert_eq!(quick, Ok(42));
+    }
 
     // what this catches: a turn iteration that never reached the model being counted as
     // an act. M5, 2026-09-20 ~21:55Z, build 0047d521b, 4 residents on 2 lanes at 67,072:
