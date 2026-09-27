@@ -456,6 +456,29 @@ pub(crate) async fn ask_the_act_question(
                     let selected_credit = held.first().map(|card| {
                         crate::persona::training_producer::CapturedCredit::from_selected_card(card)
                     });
+                    // HER GENES RIDE HER CARD, like her hands do (integrated, not parallel:
+                    // a gene is judged in her own work). The card this turn is credited to
+                    // decides the genome: her promoted genes, plus an open trial's gene when
+                    // this card drew its arm. Pinned before the turn and put back after it,
+                    // so the genome never changes beneath a request and every receipt of
+                    // this card names the same genes (`GenerationReceipt::genes`).
+                    let persona_uuid = ctx.identity.peer_id.as_uuid();
+                    let card_uuid = held.first().map(|card| card.card_id.as_uuid());
+                    // Whatever ends this turn (settled, cancelled, a panic unwinding), her
+                    // genome goes back to what she had before it: a trial gene never leaks onto
+                    // her conversation turns (Cormac on #4474).
+                    let mut genome_back =
+                        crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
+                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, card_uuid) {
+                        crate::probe!(
+                            class = "persona.genome.card_genes",
+                            persona = %ctx.identity.agent_name,
+                            card = %card_uuid.map(|c| c.to_string()).unwrap_or_default(), // probe field: "" = no card
+                            genes = genes.len() as u64,
+                            "the genome this work turn runs with: promoted genes plus any trial gene this card drew"
+                        );
+                        cycle.page_in(genes);
+                    }
                     let mut credit_capture =
                         crate::persona::training_producer::TurnCreditCapture::for_turn(
                             ctx.identity.peer_id.as_uuid(),
@@ -472,6 +495,12 @@ pub(crate) async fn ask_the_act_question(
                         credit_capture.as_mut(),
                     )
                     .await;
+                    // Her genome between cards is her promoted genome alone: a trial gene
+                    // rides only the cards that drew it. Unreadable: the pre-turn snapshot.
+                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, None) {
+                        genome_back.restore_to(genes);
+                    }
+                    drop(genome_back);
                     // Give her back her own hands BEFORE anything else can
                     // observe them — every exit path from here (Spoke, Passed,
                     // Acted) must leave her rooted at home (#312).

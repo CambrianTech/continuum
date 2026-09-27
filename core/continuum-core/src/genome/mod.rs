@@ -71,6 +71,7 @@ pub mod commons_ranking;
 pub mod recall_select;
 pub mod fitness_ledger;
 pub mod gate_magnitude;
+pub mod gene_trial;
 pub mod local_manager;
 pub mod signature;
 pub mod manager;
