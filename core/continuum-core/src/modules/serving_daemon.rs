@@ -2443,7 +2443,14 @@ impl ServingDaemonModule {
                 // target derivation rewrote every tick the plan changed; on 2026-09-20
                 // 07:52Z that cell went 14,396 → 256 MiB under a running 2-lane engine
                 // and the reading here went 33k → 262k B/token, saved to disk.
-                let host_cache_bytes = (live.host_prompt_cache_mib as u64) * 1024 * 1024;
+                // `--cache-ram` lives in HOST RAM: only a process reading contains it. The device
+                // readings (device_delta, engine_props) never saw it, so subtracting it there
+                // would undercount the per-token cost or retire the record (Cormac on #4459).
+                let host_cache_bytes = if source == "process_anon" {
+                    (live.host_prompt_cache_mib as u64) * 1024 * 1024
+                } else {
+                    0
+                };
                 let measured = crate::inference::lane_footprint::observe(
                     &active,
                     live.lanes,
@@ -5490,9 +5497,6 @@ fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
         .unwrap_or(0)
 }
 
-/// The discrete footprint arm: what the lane added to the device beyond its weights.
-/// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
-/// reading — never a delta against zero, which would charge the desktop to the model.
 /// The lane's bytes beyond its weights on the device, as the engine reports its own allocation.
 /// Bounded: a localhost read of cached meta, taken only on the sampler's interval; `None` when the
 /// lane does not answer in time or its engine predates `memory_breakdown`.
@@ -5510,6 +5514,9 @@ async fn engine_beyond_weights() -> Option<u64> {
     crate::inference::weight_residency::EngineMemory::from_props(&body).map(|m| m.accelerator_beyond_weights())
 }
 
+/// The discrete footprint arm: what the lane added to the device beyond its weights.
+/// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
+/// reading — never a delta against zero, which would charge the desktop to the model.
 fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> Option<u64> {
     (baseline > 0 && baseline != u64::MAX && now > 0)
         .then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
