@@ -224,6 +224,73 @@ async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -
     airc_lib::work_worktree::creation_base(checkout).map_err(CommandError::Invalid)
 }
 
+/// A repo worktree's creation base, advanced past any upstream history she merged in.
+///
+/// Kimi, 2026-09-26: her worktree was created at b06ae8430, she fast-forwarded it to the
+/// canary tip to work on current code, and `work/submit` diffed from the creation base, so
+/// the artifact was 177 KB of other people's merged commits (and she had written nothing
+/// yet). What is hers is what no remote carries: the base is the newest merge-base of her
+/// HEAD with any remote-tracking ref that still descends from the creation base. A worktree
+/// that merged nothing upstream keeps its creation base; a git failure keeps it too (the
+/// artifact is then the wider diff, never a narrower one that hides her work).
+fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(checkout)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    // Full ref names: `%(refname:short)` abbreviates refs/remotes/origin/HEAD to "origin",
+    // so a HEAD alias could not be recognised by its suffix (Cormac on #4442).
+    let Some(refs) = git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]) else {
+        return created.to_string();
+    };
+    // Her OWN branch on a remote is not upstream (Cormac on #4442): the runtime pushes her
+    // branch after each act, so refs/remotes/<remote>/<her branch> is her own tip, the ref
+    // furthest past the creation base, and choosing it would make every submission empty.
+    // Skip the current branch's remote copies and its configured upstream.
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default(); // unwrap_or_default: a detached HEAD has no branch to exclude
+    let tracked = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default(); // unwrap_or_default: no upstream configured
+    let mut best: Option<(u64, String)> = None;
+    for line in refs.lines().filter(|l| !l.is_empty()) {
+        let Some((name, r)) = line.split_once(' ') else { continue };
+        // refs/remotes/<remote>/<branch...>
+        let short = name.strip_prefix("refs/remotes/").unwrap_or(name); // unwrap_or: for-each-ref under refs/remotes always carries the prefix
+        let ours = (!branch.is_empty() && short.split_once('/').is_some_and(|(_, b)| b == branch))
+            || (!tracked.is_empty() && short == tracked);
+        if ours || name.ends_with("/HEAD") {
+            continue;
+        }
+        let Some(mb) = git(&["merge-base", "HEAD", r]) else { continue };
+        if git(&["merge-base", "--is-ancestor", created, &mb]).is_none() {
+            continue; // this remote does not descend from where her work began
+        }
+        let ahead = git(&["rev-list", "--count", &format!("{created}..{mb}")])
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0); // unwrap_or: an unreadable count ranks lowest, never wins
+        if best.as_ref().map_or(true, |(b, _)| ahead > *b) {
+            best = Some((ahead, mb));
+        }
+    }
+    match best {
+        Some((ahead, mb)) if ahead > 0 => {
+            crate::probe!(
+                class = "work.submit.base_past_upstream",
+                created = %&created[..created.len().min(9)],
+                base = %&mb[..mb.len().min(9)],
+                upstream_commits = ahead,
+                "the worktree merged upstream history since it was created — the submission \
+                 diffs from the newest upstream commit she holds, so only her change is published"
+            );
+            mb
+        }
+        _ => created.to_string(),
+    }
+}
+
 /// Read the submission off her checkout: instance, base, and the patch's hash + size.
 /// Parts she supplied herself are kept; the artifact is always recomputed here, so a
 /// placeholder can never reach the board.
@@ -239,7 +306,14 @@ async fn derive_submission(
         .unwrap_or_else(|| card_id.to_string()); // unwrap_or: instance_of_checkout always yields the card id as its floor
     let base_sha = match given_base {
         Some(b) => b,
-        None => base_sha_of(checkout, &instance, is_swe).await?,
+        None => {
+            let created = base_sha_of(checkout, &instance, is_swe).await?;
+            if is_swe {
+                created
+            } else {
+                past_upstream(checkout, &created)
+            }
+        }
     };
     let ws = checkout.to_string_lossy().into_owned();
     let patch = crate::commands::benchmark::workspace_candidate_diff_from(&ws, Some(&base_sha))?;
@@ -1044,6 +1118,40 @@ mod tests {
             instance_of_checkout(Path::new("/x/.airc/worktrees/1f58fc16"), card),
             Some(card.to_string())
         );
+    }
+
+    // what this catches (Kimi, 2026-09-26, submission 74920fe9): a repo worktree that
+    // fast-forwarded to the upstream tip submitted 177 KB of other people's commits,
+    // because the diff ran from the worktree's creation base. Only what no remote carries
+    // is hers; a worktree that merged nothing keeps its creation base.
+    #[test]
+    fn a_submission_diffs_past_the_upstream_history_she_merged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(dir.path()).output().expect("git")
+        };
+        let commit = |msg: &str| {
+            assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", msg]).status.success());
+            String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string()
+        };
+        assert!(run(&["init", "-q"]).status.success());
+        let created = commit("created here");
+        // nothing merged from upstream yet: the creation base stands
+        assert_eq!(super::past_upstream(dir.path(), &created), created);
+        let upstream = commit("someone else's merged work");
+        assert!(run(&["update-ref", "refs/remotes/origin/canary", &upstream]).status.success());
+        std::fs::write(dir.path().join("hers.rs"), "fn hers() {}\n").expect("write");
+        assert!(run(&["add", "hers.rs"]).status.success());
+        let _mine = commit("her change");
+        assert_eq!(super::past_upstream(dir.path(), &created), upstream, "the base moves past what upstream carries");
+        // her own branch pushed to the remote is NOT upstream (Cormac on #4442): the runtime
+        // pushes after each act, and that ref sits at her own tip
+        let branch = String::from_utf8(run(&["symbolic-ref", "--short", "HEAD"]).stdout).expect("branch").trim().to_string();
+        assert!(run(&["update-ref", &format!("refs/remotes/origin/{branch}"), "HEAD"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created), upstream, "her own pushed tip never becomes the base");
+        // a remote that does not descend from the creation base is ignored
+        assert!(run(&["update-ref", "refs/remotes/origin/stale", &created]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created), upstream);
     }
 
     #[tokio::test]

@@ -252,11 +252,15 @@ pub(crate) fn held_work_burst_gated(
         let _ = write!(
             s,
             "\n[write or release] You have made {acts_without_write} acts on this card \
-             without changing a file. The investigation is finished. This turn does ONE \
-             of two things: make the edit now (code/edit or git_apply — the fix you have \
-             already named in your last thoughts), or conclude 'PASS: blocked — <one \
-             line why>' and release the card so a peer can take it. No more reading, \
-             running, or status checks before one of those."
+             without recording progress. This turn does ONE of three things: make the \
+             edit now (code/edit or git_apply — the fix you have already named in your \
+             last thoughts); or, if the finding is not yet an edit, record it with \
+             work/note naming the file:line and what you found there (a note is progress \
+             and resets this count); or conclude 'PASS: blocked — <one line why>' and \
+             release the card so a peer can take it. No more reading, running, or status \
+             checks before one of those — at {governor} acts the substrate releases the \
+             card for you.",
+            governor = GOVERNOR_RELEASE_AFTER_ACTS
         );
     }
     s

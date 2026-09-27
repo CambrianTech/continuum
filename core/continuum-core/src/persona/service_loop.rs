@@ -3083,6 +3083,10 @@ mod tests {
         );
         assert!(text.contains("[write or release]"), "{text}");
         assert!(text.contains("PASS: blocked"), "{text}");
+        // regression (Kimi, d33e928a, 2026-09-26): the gate named only "edit or release",
+        // so a citizen mid-diagnosis read past the one act that keeps a card — a note —
+        // and the governor released it twice. A note counts as progress; the gate says so.
+        assert!(text.contains("work/note") && text.contains("file:line"), "{text}");
 
         let mut edited = looping.clone();
         edited.push(row(
