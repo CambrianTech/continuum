@@ -129,9 +129,15 @@ function Select-CoreEngineSlot {
     # Engines have an independent lifetime: a warm lane can outlive its core.
     # Keep room for that mapped engine, the registered release, and a candidate.
     $engines = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'llama-server.exe' })
-    if (@($engines | Where-Object { -not $_.ExecutablePath }).Count) { throw 'Cannot inspect running inference engine paths.' }
-    $enginePaths = @($engines | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
+    # A lane the supervisor started runs in the service session, and its path is unreadable from
+    # the operator's session: WMI's ExecutablePath is empty and OpenProcess(QUERY_LIMITED) is
+    # denied (5090, 2026-09-27). Refusing on that made the engine arm unrunnable whenever a lane
+    # was up. An unreadable engine counts as the REGISTERED engine (the only one the supervisor
+    # launches), which the descriptor adds below; should one ever live in another slot, Windows
+    # locks a running image, so installing over it fails loudly rather than replacing it.
+    $enginePaths = @($engines | Where-Object { $_.ExecutablePath } | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
     if ($Descriptor.engine) { $enginePaths += ConvertTo-CoreImagePath $Descriptor.engine }
+    elseif (@($engines | Where-Object { -not $_.ExecutablePath }).Count) { throw 'A running inference engine is unreadable and no engine is registered; refusing to pick a slot.' }
     $engineSlot = $null
     foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
         $candidate = Join-Path $root $name
