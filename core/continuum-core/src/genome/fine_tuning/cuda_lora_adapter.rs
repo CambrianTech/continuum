@@ -1,6 +1,8 @@
 //! CUDA QLoRA through the same native-job owner as MLX. Python owns tensor
 //! kernels; the substrate owns identity, admission, cancellation and receipts.
-use super::native_jobs::{default_lora, default_schedule, job_dir_for, NativeJobs, PreparedJob};
+use super::native_jobs::{
+    default_lora, default_schedule, job_dir_for, Execution, NativeJobs, PreparedJob, ProcessSpec,
+};
 use super::{
     ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle,
     JobMetrics, TrainerHardware, TrainingArtifact, TrainingJobRequest, TrainingStatus,
@@ -213,9 +215,11 @@ impl FineTuningAdapter for CudaLoraFineTuner {
                 .env("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True");
             let model_id = format!("{PROVIDER_ID}:{}:{id}", spec.request.trait_kind);
             Ok(PreparedJob {
-                command,
-                output: adapters.clone(),
-                parser: None,
+                execution: Execution::Process(ProcessSpec {
+                    command,
+                    output: adapters.clone(),
+                    parser: None,
+                }),
                 finish: Box::new(move |wall_clock_ms| {
                     // Closure ownership retains accounting through kill/reap on every outcome.
                     let _reservation = reservation;

@@ -1,5 +1,6 @@
-//! Shared process ownership for native trainers. Backends prepare inputs and
-//! interpret their artifacts; handles, cancellation and terminal state live here.
+//! Shared job ownership for native trainers. Backends prepare inputs and interpret their
+//! artifacts; handles, cancellation, probes and terminal state live here, whether the run is a
+//! trainer PROCESS or a run driven IN PLACE on something already running (the engine's /train).
 use super::{FineTuningError, JobHandle, TrainingArtifact, TrainingStatus};
 use dashmap::DashMap;
 use std::{path::PathBuf, sync::Arc, time::Instant};
@@ -16,11 +17,57 @@ pub(super) struct NativeJobs {
     slots: DashMap<Uuid, JobSlot>,
 }
 
-pub(super) struct PreparedJob {
+/// How a prepared job runs. A trainer PROCESS (PyTorch, MLX) is spawned, drained and reaped
+/// here. A run IN PLACE is driven on something already running: the engine's `/train` on the
+/// lane that serves the base, where the weights are the served ones (no second copy) and there
+/// is no process of ours to kill, so cancelling is the run's own business (see [`InPlaceRun`]).
+pub(super) enum Execution {
+    Process(ProcessSpec),
+    InPlace(Box<dyn InPlaceRun>),
+}
+
+/// A trainer process: the command, the directory its log and loss rows land in, and the
+/// parser that reads loss lines off its output.
+pub(super) struct ProcessSpec {
     pub command: tokio::process::Command,
     pub output: PathBuf,
     pub parser: Option<LossParser>,
+}
+
+pub(super) struct PreparedJob {
+    pub execution: Execution,
     pub finish: Box<dyn FnOnce(u64) -> Result<TrainingArtifact, String> + Send>,
+}
+
+
+/// A run driven in place. `run` resolves only when the run has ENDED where it happens. On a
+/// cancel it stops the run there and returns [`InPlaceEnd::Cancelled`] once it HAS stopped:
+/// the job reports Cancelled (and the backend's admission is released) only then, or the next
+/// admission would collide with a run still holding the memory.
+#[async_trait::async_trait]
+pub(super) trait InPlaceRun: Send {
+    /// Where the run happens, for the job's `started` receipt (the lane's address).
+    fn place(&self) -> String;
+    async fn run(self: Box<Self>, cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd;
+}
+
+pub(super) enum InPlaceEnd {
+    Finished,
+    Cancelled,
+    Failed(String),
+}
+
+/// What an in-place run may publish while it runs: progress, never a terminal state (those
+/// are the job owner's, like [`PreparationProgress`]).
+pub(super) struct RunProgress(watch::Sender<TrainingStatus>);
+
+impl RunProgress {
+    pub fn running(&self, progress_pct: f32, current_epoch: u32) {
+        self.0.send_replace(TrainingStatus::Running {
+            progress_pct,
+            current_epoch,
+        });
+    }
 }
 
 /// Backends may describe preparation, but only the job owner can publish
@@ -69,6 +116,8 @@ impl NativeJobs {
         Ok(())
     }
 
+    /// A prepared-nothing process job (the test fixtures' path; backends use [`Self::prepare`]).
+    #[cfg(test)]
     pub fn launch(
         &self,
         id: Uuid,
@@ -79,9 +128,11 @@ impl NativeJobs {
     ) -> Result<JobHandle, FineTuningError> {
         Ok(self.prepare(id, move |_| async move {
             Ok(PreparedJob {
-                command,
-                output,
-                parser,
+                execution: Execution::Process(ProcessSpec {
+                    command,
+                    output,
+                    parser,
+                }),
                 finish: Box::new(finish),
             })
         }))
@@ -130,12 +181,7 @@ impl NativeJobs {
                 }
                 result = prepare => result,
             };
-            let PreparedJob {
-                mut command,
-                output,
-                parser,
-                finish,
-            } = match prepared {
+            let PreparedJob { execution, finish } = match prepared {
                 Ok(job) => job,
                 Err(error) => {
                     crate::probe!(
@@ -153,99 +199,45 @@ impl NativeJobs {
                     return;
                 }
             };
-            command
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .kill_on_drop(true);
-            #[cfg(windows)]
-            command.creation_flags(0x08000000);
-            let mut child = match command.spawn() {
-                Ok(child) => child,
-                Err(error) => {
-                    crate::probe!(
-                        class = "training.job.spawn_failed",
-                        job = %id,
-                        provider,
-                        error = %error,
-                        "the trainer process could not be spawned"
-                    );
-                    tx.send_replace(TrainingStatus::Failed {
-                        error: error.to_string(),
-                    });
-                    return;
-                }
-            };
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
-            let started = Instant::now();
-            crate::probe!(
-                class = "training.job.started",
-                job = %id,
-                provider,
-                pid = child.id().unwrap_or(0), // unwrap_or: a child already reaped has no pid to name; 0 is said as 0
-                output = %output.display(),
-                prepared_ms = queued_at.elapsed().as_millis() as u64,
-                "the trainer process is running on the card"
-            );
-            tx.send_replace(TrainingStatus::Running {
-                progress_pct: 0.0,
-                current_epoch: 0,
-            });
-            let tail = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-            let mut drains = Vec::new();
-            if let Some(pipe) = stdout {
-                drains.push(tokio::spawn(drain(pipe, output.clone(), parser, None)));
-            }
-            if let Some(pipe) = stderr {
-                drains.push(tokio::spawn(drain(
-                    pipe,
-                    output,
-                    parser,
-                    Some(tail.clone()),
-                )));
-            }
-            let exit = tokio::select! {
-                biased;
-                _ = cancelled.changed() => {
-                    // Kill AND reap before announcing cancellation or releasing resources.
-                    let result = child.kill().await;
-                    for drain in drains { let _ = drain.await; }
-                    crate::probe!(
-                        class = "training.job.cancelled",
-                        job = %id,
-                        provider,
-                        phase = "running",
-                        ms = started.elapsed().as_millis() as u64,
-                        killed = result.is_ok(),
-                        "a running local training job was cancelled — killed and reaped"
-                    );
-                    tx.send_replace(match result {
-                        Ok(()) => TrainingStatus::Cancelled,
-                        Err(e) => TrainingStatus::Failed { error: format!("cancel trainer: {e}") },
-                    });
-                    return;
-                }
-                result = child.wait() => result,
-            };
-            let mut drain_error = None;
-            for drain in drains {
-                match drain.await {
-                    Ok(Ok(())) => {}
-                    other => drain_error = Some(format!("trainer diagnostics failed: {other:?}")),
-                }
-            }
-            let artifact = match exit {
-                Ok(exit) if exit.success() => match drain_error {
-                    Some(error) => Err(error),
-                    None => finish(started.elapsed().as_millis() as u64),
+            let (started, ended) = match execution {
+                Execution::Process(spec) => match run_process(id, provider, queued_at, spec, &mut cancelled, &tx).await {
+                    Some(ended) => ended,
+                    None => return, // cancelled or never spawned: its terminal state is published
                 },
-                other => Err(format!(
-                    "trainer exit {other:?}: {}",
-                    tail.lock()
-                        .map(|t| t.iter().cloned().collect::<Vec<_>>().join("\n"))
-                        .unwrap_or_else(|_| "stderr unavailable".into()) // Failed diagnostic reads report absence; they never change job success.
-                )),
+                Execution::InPlace(run) => {
+                    let started = Instant::now();
+                    crate::probe!(
+                        class = "training.job.started",
+                        job = %id,
+                        provider,
+                        place = run.place().as_str(),
+                        prepared_ms = queued_at.elapsed().as_millis() as u64,
+                        "the training run is running in place (on the lane that serves the base)"
+                    );
+                    tx.send_replace(TrainingStatus::Running {
+                        progress_pct: 0.0,
+                        current_epoch: 0,
+                    });
+                    match run.run(cancelled.clone(), RunProgress(tx.clone())).await {
+                        InPlaceEnd::Finished => (started, Ok(())),
+                        InPlaceEnd::Failed(error) => (started, Err(error)),
+                        InPlaceEnd::Cancelled => {
+                            crate::probe!(
+                                class = "training.job.cancelled",
+                                job = %id,
+                                provider,
+                                phase = "running",
+                                ms = started.elapsed().as_millis() as u64,
+                                "a running in-place training job was cancelled — the run \
+                                 stopped where it runs before this receipt"
+                            );
+                            tx.send_replace(TrainingStatus::Cancelled);
+                            return;
+                        }
+                    }
+                }
             };
+            let artifact = ended.and_then(|()| finish(started.elapsed().as_millis() as u64));
             match &artifact {
                 Ok(artifact) => crate::probe!(
                     class = "training.job.finished",
@@ -263,8 +255,8 @@ impl NativeJobs {
                     provider,
                     ms = started.elapsed().as_millis() as u64,
                     error = error.as_str(),
-                    "a local training job failed after it spawned — the trainer's exit and \
-                     its stderr tail are the error"
+                    "a local training job failed after it started — the trainer's own \
+                     account (its exit and stderr tail, or the run's error) is the error"
                 ),
             }
             tx.send_replace(match artifact {
@@ -278,6 +270,118 @@ impl NativeJobs {
             local_id: id,
         }
     }
+}
+
+/// The trainer PROCESS path: spawn, drain, wait (or kill and reap on a cancel). Returns when it
+/// ended with its exit as the result, or `None` once it has published a terminal state itself
+/// (cancelled before or while running, or the process could not be spawned).
+async fn run_process(
+    id: Uuid,
+    provider: &'static str,
+    queued_at: Instant,
+    spec: ProcessSpec,
+    cancelled: &mut watch::Receiver<bool>,
+    tx: &watch::Sender<TrainingStatus>,
+) -> Option<(Instant, Result<(), String>)> {
+    let ProcessSpec {
+        mut command,
+        output,
+        parser,
+    } = spec;
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            crate::probe!(
+                class = "training.job.spawn_failed",
+                job = %id,
+                provider,
+                error = %error,
+                "the trainer process could not be spawned"
+            );
+            tx.send_replace(TrainingStatus::Failed {
+                error: error.to_string(),
+            });
+            return None;
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let started = Instant::now();
+    crate::probe!(
+        class = "training.job.started",
+        job = %id,
+        provider,
+        pid = child.id().unwrap_or(0), // unwrap_or: a child already reaped has no pid to name; 0 is said as 0
+        output = %output.display(),
+        prepared_ms = queued_at.elapsed().as_millis() as u64,
+        "the trainer process is running on the card"
+    );
+    tx.send_replace(TrainingStatus::Running {
+        progress_pct: 0.0,
+        current_epoch: 0,
+    });
+    let tail = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let mut drains = Vec::new();
+    if let Some(pipe) = stdout {
+        drains.push(tokio::spawn(drain(pipe, output.clone(), parser, None)));
+    }
+    if let Some(pipe) = stderr {
+        drains.push(tokio::spawn(drain(
+            pipe,
+            output,
+            parser,
+            Some(tail.clone()),
+        )));
+    }
+    let exit = tokio::select! {
+        biased;
+        _ = cancelled.changed() => {
+            // Kill AND reap before announcing cancellation or releasing resources.
+            let result = child.kill().await;
+            for drain in drains { let _ = drain.await; }
+            crate::probe!(
+                class = "training.job.cancelled",
+                job = %id,
+                provider,
+                phase = "running",
+                ms = started.elapsed().as_millis() as u64,
+                killed = result.is_ok(),
+                "a running local training job was cancelled — killed and reaped"
+            );
+            tx.send_replace(match result {
+                Ok(()) => TrainingStatus::Cancelled,
+                Err(e) => TrainingStatus::Failed { error: format!("cancel trainer: {e}") },
+            });
+            return None;
+        }
+        result = child.wait() => result,
+    };
+    let mut drain_error = None;
+    for drain in drains {
+        match drain.await {
+            Ok(Ok(())) => {}
+            other => drain_error = Some(format!("trainer diagnostics failed: {other:?}")),
+        }
+    }
+    let ended = match exit {
+        Ok(exit) if exit.success() => match drain_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        },
+        other => Err(format!(
+            "trainer exit {other:?}: {}",
+            tail.lock()
+                .map(|t| t.iter().cloned().collect::<Vec<_>>().join("\n"))
+                .unwrap_or_else(|_| "stderr unavailable".into()) // Failed diagnostic reads report absence; they never change job success.
+        )),
+    };
+    Some((started, ended))
 }
 
 async fn drain(
