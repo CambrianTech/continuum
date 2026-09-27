@@ -2143,9 +2143,29 @@ pub(crate) enum EngineProbe {
     /// The socket refused, reset or closed, or the body was not the `/slots` array:
     /// nothing that is a llama-server answers on this root. The outcome that ends a wait.
     Unreachable,
+    /// The serving daemon is replacing this engine ([`engine_condemned`]). Busy is not
+    /// dead, but a condemned engine is not worth waiting on: its relaunch cuts the work
+    /// anyway, and the relaunch's drain waits for every admitted turn to let go.
+    Condemned,
+}
+
+/// The engine this node serves is being replaced: the serving daemon admitted a lifecycle
+/// transition (a relaunch after failed generations, a quarantine) and flipped its snapshot
+/// not-ready. Everything in flight on it will be cut by that relaunch, and the relaunch's
+/// drain (`transition_if`, a write on the endpoint gate) waits for every admitted turn to
+/// drop its guard, with new admissions barred behind it. So a wait that keeps renewing on a
+/// condemned engine because it is still busy keeps the whole node dark: the IntelMac on
+/// 2026-09-27 went 25 min (15:44-16:09Z) and then 46 min (16:33-17:19Z) with no lane while
+/// header waits rode a prefilling, condemned engine (card 682a5abf's sibling, Cormac).
+/// `false` until the daemon installs its state: nothing is condemned that was never served.
+pub(crate) fn engine_condemned() -> bool {
+    SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
 }
 
 pub(crate) async fn engine_probe(root: &str, client: &reqwest::Client) -> EngineProbe {
+    if engine_condemned() {
+        return EngineProbe::Condemned;
+    }
     engine_probe_within(root, client, PROBE_TIMEOUT).await
 }
 
@@ -2219,7 +2239,7 @@ where
     tokio::pin!(work);
     let mut last = match progress().await {
         EngineProbe::Progress(p) => Some(p.fingerprint),
-        EngineProbe::Busy | EngineProbe::Unreachable => None,
+        EngineProbe::Busy | EngineProbe::Unreachable | EngineProbe::Condemned => None,
     };
     let mut busy_checkpoints: u64 = 0;
     let mut quiet_in_a_row: u32 = 0;
@@ -2229,6 +2249,14 @@ where
             _ = tokio::time::sleep(bound) => {
                 match progress().await {
                     EngineProbe::Unreachable => return None,
+                    EngineProbe::Condemned => {
+                        crate::probe!(
+                            class = "inference.wait.engine_condemned",
+                            busy_checkpoints,
+                            "a wait reached its checkpoint on an engine the daemon is replacing — ending it so the relaunch's drain can finish"
+                        );
+                        return None;
+                    }
                     // Working, and unable to say so: bounded exactly like a quiet engine.
                     EngineProbe::Busy => {
                         if quiet_in_a_row < quiet_checkpoints {
@@ -6377,6 +6405,25 @@ mod tests {
         let started = tokio::time::Instant::now();
         assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, stuck, |_| {}).await, None);
         assert!(started.elapsed() <= bound, "processing with nothing moving is stuck at the first checkpoint");
+
+        // A CONDEMNED engine ends the wait at its checkpoint even while it keeps moving: the
+        // daemon is replacing it, and its relaunch's drain waits on this very turn (IntelMac
+        // 2026-09-27: 25 and then 46 min dark while header waits rode a prefilling engine).
+        let mut calls = 0u64;
+        let condemned_later = || {
+            calls += 1;
+            let c = calls;
+            async move {
+                if c == 1 {
+                    EngineProbe::Progress(EngineProgress { fingerprint: c, any_processing: true })
+                } else {
+                    EngineProbe::Condemned
+                }
+            }
+        };
+        let started = tokio::time::Instant::now();
+        assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, condemned_later, |_| {}).await, None);
+        assert!(started.elapsed() <= bound, "condemned at the first checkpoint ends it there: {:?}", started.elapsed());
     }
 
     // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine
