@@ -47,6 +47,53 @@ pub const PROVIDER_ID: &str = "engine-local";
 // derived-or-floor: a floor — far below an epoch, far above a spin.
 const POLL: Duration = Duration::from_secs(2);
 
+/// Holds on in-engine training, by reason. While any hold stands, every in-engine run on
+/// this node is paused at its next training or evaluation window and keeps its context,
+/// optimizer, adapter and dataset position on the same resident base (fork #28); when the
+/// last hold drops, it resumes where it stopped. This is how a continual mind trains and
+/// thinks on one set of weights: learning yields to her turns without being thrown away.
+/// Keyed by (scope, reason): the scope is a lane's root, or [`EVERY_LANE`].
+static TRAINING_HOLDS: std::sync::LazyLock<watch::Sender<std::collections::BTreeSet<(String, String)>>> =
+    std::sync::LazyLock::new(|| watch::Sender::new(std::collections::BTreeSet::new()));
+
+/// The scope of a hold on every in-engine run of this node.
+const EVERY_LANE: &str = "*";
+
+/// A standing hold on in-engine training; dropping it releases the hold.
+pub struct TrainingHold((String, String));
+
+impl Drop for TrainingHold {
+    fn drop(&mut self) {
+        TRAINING_HOLDS.send_modify(|holds| {
+            holds.remove(&self.0);
+        });
+    }
+}
+
+/// Pause every in-engine training run on this node until the returned hold is dropped. The
+/// reason names the hold in probes; taking the same reason twice is one hold.
+pub fn hold_training(reason: &str) -> TrainingHold {
+    hold_training_on(EVERY_LANE, reason)
+}
+
+/// Pause the in-engine run on one lane (its root url) until the hold is dropped.
+pub fn hold_training_on(lane: &str, reason: &str) -> TrainingHold {
+    let key = (lane.to_string(), reason.to_string());
+    TRAINING_HOLDS.send_modify(|holds| {
+        holds.insert(key.clone());
+    });
+    TrainingHold(key)
+}
+
+/// The reasons holding the run on `lane`: every node-wide hold and every hold on that lane.
+fn holds_on(holds: &std::collections::BTreeSet<(String, String)>, lane: &str) -> Vec<String> {
+    holds
+        .iter()
+        .filter(|(scope, _)| scope == EVERY_LANE || scope == lane)
+        .map(|(_, reason)| reason.clone())
+        .collect()
+}
+
 /// How long the lane may stay unreachable before the run is taken to have ended with it. The
 /// run lives INSIDE the engine process: a lane that answers nothing for this long has gone
 /// (crashed, relaunched), and its training with it. Shorter silences are retried, never read as
@@ -258,6 +305,14 @@ struct TrainStatus {
     /// the training graph the engine measured before allocating it: this shape's footprint
     #[serde(default)]
     graph_mib: Option<f64>,
+    /// fork #28: a pause asked for, and one the worker has reached (a pause is real only when
+    /// both are true); waiting on serving slots is a separate, automatic yield
+    #[serde(default)]
+    pause_requested: bool,
+    #[serde(default)]
+    paused: bool,
+    #[serde(default)]
+    waiting_for_serving: bool,
     /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
     /// that predates `top_layers`, which adapts every block
     #[serde(default)]
@@ -406,6 +461,24 @@ impl EngineRun {
     fn ours(&self, s: &TrainStatus) -> bool {
         s.out.as_deref() == Some(self.body.out.as_str())
     }
+
+    /// Steer the engine's pause toward `want` (fork #28's contract): ask when the status says
+    /// otherwise, and let the next status tell whether it took. A refused or lost request is
+    /// asked again next tick; uncertainty is never turned into a cancel. An engine without the
+    /// routes (404) cannot pause: the run keeps its automatic serving yield.
+    async fn steer_pause(&self, s: &TrainStatus, want: bool) {
+        if s.pause_requested == want {
+            return;
+        }
+        let verb = if want { "pause" } else { "resume" };
+        let _ = self
+            .http
+            .post(format!("{}/train/{verb}", self.lane))
+            .json(&json!({ "out": self.body.out }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await; // the status decides whether it took; a failure is retried on the next tick
+    }
 }
 
 /// Percent done and the current epoch from an engine status: completed epochs plus the current
@@ -446,6 +519,8 @@ impl InPlaceRun for EngineRun {
         let mut tick = tokio::time::interval(POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut cancelling = false;
+        let mut holds = TRAINING_HOLDS.subscribe();
+        let mut was_paused = false;
         loop {
             tokio::select! {
                 changed = cancel.changed(), if !cancelling => {
@@ -453,6 +528,7 @@ impl InPlaceRun for EngineRun {
                         cancelling = true;
                     }
                 }
+                _ = holds.changed() => {}
                 _ = tick.tick() => {}
             }
             if cancelling {
@@ -477,6 +553,21 @@ impl InPlaceRun for EngineRun {
                 TrainState::Starting | TrainState::Running => {
                     let (pct, epoch) = progress_of(&s, self.epochs);
                     progress.running(pct, epoch);
+                    // held: pause at the next window, keeping everything; released: resume. The
+                    // lease stays held throughout, since the paused run keeps its allocation.
+                    let reasons = holds_on(&holds.borrow(), &self.lane);
+                    self.steer_pause(&s, !reasons.is_empty()).await;
+                    let now_paused = s.pause_requested && s.paused;
+                    if now_paused != was_paused {
+                        crate::probe!(
+                            class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
+                            out = self.body.out.as_str(),
+                            holds = reasons.join(",").as_str(),
+                            pct = pct as f64,
+                            "an in-engine run reached a pause at a window boundary, or left one, with its optimizer and adapter kept"
+                        );
+                        was_paused = now_paused;
+                    }
                 }
                 TrainState::Done => return InPlaceEnd::Finished,
                 TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
@@ -815,10 +906,13 @@ mod tests {
             polls: u32,
             cancelled: bool,
             body: Option<Value>,
+            pause_requested: bool,
+            pauses_seen: u32,
         }
         let lane = Arc::new(Mutex::new(Lane::default()));
         let seen = Arc::new(Mutex::new(None));
         let (l1, l2, l3, seen1) = (lane.clone(), lane.clone(), lane.clone(), seen.clone());
+        let (l4, l5, l6) = (lane.clone(), lane.clone(), lane.clone());
         let app = axum::Router::new()
             .route("/train", post(move |axum::Json(b): axum::Json<Value>| {
                 let lane = l1.clone();
@@ -847,6 +941,12 @@ mod tests {
                     if mode == "unknown" {
                         return axum::Json(json!({"state": "paused", "out": out}));
                     }
+                    // fork #28: a paused run reports it and does not advance
+                    if l.pause_requested {
+                        l.polls -= 1;
+                        return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": [],
+                            "pause_requested": true, "paused": true}));
+                    }
                     if mode == "cancel_only" || l.polls < 3 {
                         return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
                     }
@@ -867,6 +967,33 @@ mod tests {
                 async move {
                     lane.lock().unwrap().cancelled = true;
                     axum::Json(json!({"ok": true}))
+                }
+            }))
+            .route("/train/pause", post(move |axum::Json(b): axum::Json<Value>| {
+                let lane = l4.clone();
+                async move {
+                    let mut l = lane.lock().unwrap();
+                    assert_eq!(b["out"].as_str(), l.out.as_deref(), "pause names this job");
+                    l.pause_requested = true;
+                    l.pauses_seen += 1;
+                    axum::Json(json!({"ok": true, "pause_requested": true, "paused": false}))
+                }
+            }))
+            .route("/test/pause", get(move || {
+                // the test's view of the pause, without advancing the run as GET /train does
+                let lane = l6.clone();
+                async move {
+                    let l = lane.lock().unwrap();
+                    axum::Json(json!({"pause_requested": l.pause_requested, "pauses_seen": l.pauses_seen}))
+                }
+            }))
+            .route("/train/resume", post(move |axum::Json(b): axum::Json<Value>| {
+                let lane = l5.clone();
+                async move {
+                    let mut l = lane.lock().unwrap();
+                    assert_eq!(b["out"].as_str(), l.out.as_deref(), "resume names this job");
+                    l.pause_requested = false;
+                    axum::Json(json!({"ok": true, "pause_requested": false, "paused": true}))
                 }
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
@@ -1039,6 +1166,41 @@ mod tests {
             assert_eq!(artifact.metrics.layers_adapted, gene, "{mode}: the gene's depth is the engine's report");
             server.abort();
         }
+    }
+
+    // what this catches (fork #28, Joel: necessary for continual minds): a training hold that
+    // does not pause the engine's run, a paused run the job gives up on (the lease must stay
+    // held and the run must survive), or a resume that never reaches the engine. Held: the
+    // engine is asked to pause and reports it, and the job stays running; released: it
+    // resumes and finishes with its adapter.
+    #[tokio::test]
+    async fn a_held_run_pauses_in_the_engine_and_finishes_after_the_hold_drops() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let hold = hold_training_on(&url, "test: a directed turn is waiting");
+        let h = t.create_job(r).await.expect("test: create");
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let engine: Value = reqwest::get(format!("{url}/test/pause")).await.unwrap().json().await.unwrap();
+                if engine["pause_requested"] == true {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("test: the engine never paused under the hold");
+        assert!(matches!(t.poll(&h).await.unwrap(), TrainingStatus::Running { .. }), "a paused run is still running");
+        drop(hold);
+        let TrainingStatus::Completed { artifact } = wait_terminal(&t, &h).await else {
+            panic!("test: the run did not finish after the hold dropped");
+        };
+        assert!(artifact.local_path.expect("test: path").is_file(), "resumed and finished with its adapter");
+        server.abort();
     }
 
     // what this catches: a cancel that reports Cancelled while the engine is still training
