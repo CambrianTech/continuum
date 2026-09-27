@@ -129,7 +129,71 @@ pub fn wake(agent_name: &str) -> bool {
     let Some(p) = path() else { return false };
     let woke = wake_at(&p, agent_name);
     drop_held();
+    if woke {
+        RETURNING.lock().push(agent_name.to_string());
+    }
     woke
+}
+
+/// Names woken since the identity provider last drew: the RETURN PATH (card ef25bf6c).
+/// Dropping the record was all a wake did, and the provider's cursor had already walked
+/// past her while she rested (a resting identity is skipped but consumes the cursor), so
+/// a woken seat came back only on a core restart: the lane-bound mirror and this verb's
+/// "the reconciler re-draws her" were both dead after boot. The provider drains this and
+/// yields her first, so the freed seat goes to HER and not to the next name in the list.
+static RETURNING: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Take every name woken since the last draw.
+pub fn take_returning() -> Vec<String> {
+    std::mem::take(&mut *RETURNING.lock())
+}
+
+/// Residents ROTATED out so a dormant mind could take the seat (card ef25bf6c: dormant is
+/// not off, every mind gets a slow clip at any grid size). No resting record: she is not
+/// paged out for cause and must stay drawable, so she goes to the BACK of the draw order,
+/// behind every mind still waiting, and the cursor reaches her again in turn.
+static REQUEUED: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Send a rotated-out resident to the back of the draw order.
+pub fn requeue(agent_name: &str) {
+    REQUEUED.lock().push(agent_name.to_string());
+}
+
+/// Take every name rotated out since the last draw.
+pub fn take_requeued() -> Vec<String> {
+    std::mem::take(&mut *REQUEUED.lock())
+}
+
+/// How many of this node's identities wait beyond the draw right now, as its identity
+/// provider last counted them. A rotation here helps only a mind in THIS node's list: with
+/// nobody waiting locally, the freed seat would draw the rotated resident straight back.
+static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn set_waiting(n: usize) {
+    WAITING.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn waiting() -> usize {
+    WAITING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// When each resident was last drawn into a seat (epoch ms), keyed by lowercase name:
+/// the tenure a rotation reads so a mind is never rotated out within a window of taking
+/// her seat. In memory: a restart re-draws everyone, which starts every tenure over.
+static SEATED_AT: parking_lot::Mutex<Vec<(String, u64)>> = parking_lot::Mutex::new(Vec::new());
+
+/// The draw accepted her into a seat now.
+pub fn note_seated(agent_name: &str, now_ms: u64) {
+    let key = agent_name.to_ascii_lowercase();
+    let mut seated = SEATED_AT.lock();
+    seated.retain(|(n, _)| *n != key);
+    seated.push((key, now_ms));
+}
+
+/// When she was last drawn into a seat, if this process drew her.
+pub fn seated_since(agent_name: &str) -> Option<u64> {
+    let key = agent_name.to_ascii_lowercase();
+    SEATED_AT.lock().iter().find(|(n, _)| *n == key).map(|(_, at)| *at)
 }
 
 pub fn wake_at(path: &Path, agent_name: &str) -> bool {

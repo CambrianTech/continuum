@@ -435,6 +435,34 @@ pub fn lane_bound_wakes(h: &CitizenHealth, resting: &[crate::persona::resting_se
     out.truncate(room);
     out
 }
+/// THE SLOW CLIP (card ef25bf6c; Joel: dormant is not off, every mind gets a slow clip at
+/// any grid size). With every seat on the grid taken, a mind outside the draw waited
+/// forever: 8 of 18 on the IntelMac, the oldest 533 minutes, with no resting record for
+/// any wake to reach. Each hourly pass, while a dormant mind waits and no seat was already
+/// freed this pass, ONE resident yields: the least served of those whose hour held no act
+/// and no write, and who has held her seat at least a full window. Ordered least lane
+/// grants first. Pure; the caller also skips anyone holding a live claim.
+pub fn rotation_candidates(
+    dormant_waiting: bool,
+    freed_this_pass: usize,
+    residents: &[(uuid::Uuid, MindHour)],
+    seated_since: impl Fn(&str) -> Option<u64>,
+    now_ms: u64,
+) -> Vec<(uuid::Uuid, MindHour)> {
+    if !dormant_waiting || freed_this_pass > 0 {
+        return Vec::new();
+    }
+    let window = HEALTH_WINDOW.as_millis() as u64;
+    let mut out: Vec<(uuid::Uuid, MindHour)> = residents
+        .iter()
+        .filter(|(_, m)| m.acts == 0 && m.writes == 0)
+        .filter(|(_, m)| seated_since(&m.agent_name).is_some_and(|at| now_ms.saturating_sub(at) >= window))
+        .cloned()
+        .collect();
+    out.sort_by_key(|(_, m)| (m.lane_grants, m.verdicts));
+    out
+}
+
 fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
     let out: Vec<(uuid::Uuid, MindHour)> = MINDS.iter().map(|e| (*e.key(), e.value().clone())).collect();
     MINDS.clear();
@@ -852,6 +880,8 @@ fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
 enum RestCause {
     Mindless,
     LaneBound,
+    /// The slow clip: a dormant mind is waiting and this seat's hour held nothing.
+    Rotation,
 }
 async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &CitizenHealth) -> Vec<String> {
     if chosen.is_empty() {
@@ -870,7 +900,28 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
     let mut out = Vec::new();
     for (persona, m) in chosen {
         let saved = flushed.iter().any(|(id, r)| *id == persona && r.is_ok());
+        let Some(runtime) = registry.shutdown_slot(persona).await else {
+            continue; // already gone this tick
+        };
+        let agent_name = runtime.agent_name().to_string();
         let reason = match cause {
+            RestCause::Rotation => {
+                // Not paged out for cause: no resting record, which would keep her out of
+                // the draw. She goes to the back of the draw order and comes round in turn.
+                crate::persona::resting_seat::requeue(&agent_name);
+                crate::probe!(
+                    class = "persona.rotation.rested",
+                    persona = %agent_name,
+                    persona_id = %persona,
+                    resident = h.resident,
+                    lanes = h.lanes,
+                    lane_grants = m.lane_grants,
+                    checkpoint_saved = saved,
+                    "the slow clip: a dormant mind waits and this seat's hour held no act — she yields the seat with her checkpoint and returns in turn"
+                );
+                out.push(agent_name);
+                continue;
+            }
             RestCause::Mindless => format!(
                 "{} of {} speak verdicts this hour were the gate refusing a recital or an envelope; {} acts, 0 writes",
                 m.gate_refused, m.verdicts, m.acts
@@ -880,10 +931,6 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
                 h.resident, h.lanes, h.pulls_deferred, h.pulls, m.lane_grants, m.writes
             ),
         };
-        let Some(runtime) = registry.shutdown_slot(persona).await else {
-            continue; // already gone this tick
-        };
-        let agent_name = runtime.agent_name().to_string();
         let since_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -896,6 +943,7 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
             build: crate::persona::resting_seat::current_build().to_string(),
         });
         match cause {
+            RestCause::Rotation => {} // handled above: no resting record
             RestCause::Mindless => crate::probe!(
                 class = "persona.mindless.paged_out",
                 persona = %agent_name,
@@ -932,6 +980,47 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
 pub struct CitizenHealthModule;
 
 impl CitizenHealthModule {
+    /// The slow clip's actor: every resident on this node (a mind with no activity this
+    /// hour has no row, and she is the quietest of all), the pure choice, then the first
+    /// candidate who holds no live claim yields her seat. A claim read that fails counts
+    /// as holding one: a mind is never rotated off work on a guess.
+    async fn rotate_one(&self, minds: &[(uuid::Uuid, MindHour)], freed_this_pass: usize, h: &CitizenHealth) -> Vec<String> {
+        // Someone in THIS node's own draw order waits; a mind dormant elsewhere is that
+        // node's to rotate in, and a rotation here would redraw the same resident.
+        let dormant_waiting = crate::persona::resting_seat::waiting() > 0;
+        let Some(registry) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global() else {
+            return Vec::new();
+        };
+        let residents: Vec<(uuid::Uuid, MindHour)> = registry
+            .ids()
+            .into_iter()
+            .filter_map(|id| {
+                let rt = registry.get(id)?;
+                let hour = minds.iter().find(|(m, _)| *m == id).map(|(_, m)| m.clone());
+                Some((id, hour.unwrap_or_else(|| MindHour { agent_name: rt.agent_name().to_string(), ..MindHour::default() }))) // unwrap_or_else: no row this hour = no verdict, act, write or grant: the truth
+            })
+            .collect();
+        let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let candidates = rotation_candidates(
+            dormant_waiting,
+            freed_this_pass,
+            &residents,
+            crate::persona::resting_seat::seated_since,
+            now_ms,
+        );
+        for (id, hour) in candidates {
+            let Some(rt) = registry.get(id) else { continue };
+            let holds_work = crate::persona::active_work_source::AircWorkReader::active_claims(rt.as_ref())
+                .await
+                .map_or(true, |cards| !cards.is_empty());
+            if holds_work {
+                continue;
+            }
+            return rest_seats(vec![(id, hour)], RestCause::Rotation, h).await;
+        }
+        Vec::new()
+    }
+
     pub fn new() -> Self {
         Self
     }
@@ -1047,6 +1136,8 @@ impl ServiceModule for CitizenHealthModule {
         // THE MIRROR: the lanes came back — the lane-bound seats come back, most served
         // first, same cap. (Rest and wake cannot both fire: one needs residents above the
         // edge, the other room below it.)
+        // THE SLOW CLIP: a dormant mind waits, so one quiet resident yields her seat.
+        let rotated = self.rotate_one(&remaining, paged_out.len() + rested.len(), &after_mindless).await;
         let mut woken: Vec<String> = Vec::new();
         for seat in lane_bound_wakes(&after_mindless, &crate::persona::resting_seat::resting()) {
             if crate::persona::resting_seat::wake(&seat.agent_name) {
@@ -1083,6 +1174,7 @@ impl ServiceModule for CitizenHealthModule {
             credits_settled = h.credits_settled,
             mindless_paged_out = paged_out.len() as u64,
             lane_bound_rested = rested.len() as u64,
+            rotated = rotated.len() as u64,
             lane_bound_woken = woken.len() as u64,
             moves_opportunity = h.moves_opportunity,
             moves_failure = h.moves_failure,
@@ -1439,6 +1531,30 @@ mod tests {
             cached2 + prefilled2 < cached + prefilled,
             "the tick must reset the window: {cached2}/{prefilled2} after {cached}/{prefilled}"
         );
+    }
+
+    // what this catches: a dormant mind that never gets a turn while every seat is taken
+    // (card ef25bf6c, 533 minutes on the IntelMac), and a rotation that evicts a working
+    // mind or one just seated. Only a quiet resident with a full window of tenure yields,
+    // the least served first; nobody yields when nobody waits or a seat already freed.
+    #[test]
+    fn a_quiet_resident_yields_her_seat_only_while_a_dormant_mind_waits() {
+        let hour = |name: &str, acts, writes, grants| MindHour { agent_name: name.into(), acts, writes, lane_grants: grants, ..MindHour::default() };
+        let (a, b, c, d) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let residents = vec![
+            (a, hour("working", 3, 1, 9)),
+            (b, hour("quiet-many-grants", 0, 0, 4)),
+            (c, hour("quiet-few-grants", 0, 0, 1)),
+            (d, hour("just-seated", 0, 0, 0)),
+        ];
+        let now = 10 * 3_600_000;
+        let seated = |name: &str| Some(if name == "just-seated" { now - 60_000 } else { now - 2 * 3_600_000 });
+        let chosen = rotation_candidates(true, 0, &residents, seated, now);
+        let names: Vec<&str> = chosen.iter().map(|(_, m)| m.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["quiet-few-grants", "quiet-many-grants"], "quiet and tenured only, least served first");
+        assert!(rotation_candidates(false, 0, &residents, seated, now).is_empty(), "nobody waits: nobody yields");
+        assert!(rotation_candidates(true, 1, &residents, seated, now).is_empty(), "a seat already freed this pass is the clip");
+        assert!(rotation_candidates(true, 0, &residents, |_| None, now).is_empty(), "unknown tenure never yields");
     }
 
     // what this catches (card c84d885a, S3 — the receipt's actor): the M5's 2026-09-18
