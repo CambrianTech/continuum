@@ -58,7 +58,7 @@ const POLL: Duration = Duration::from_secs(2);
 /// ([`TrainingHolds::node`]); a tuner is handed the set it obeys, so a test owns its own
 /// (Cormac on #4485: a process-global set made the tests order-dependent).
 #[derive(Clone)]
-pub struct TrainingHolds(Arc<watch::Sender<BTreeMap<u64, (String, String)>>>);
+struct TrainingHolds(Arc<watch::Sender<BTreeMap<u64, (String, String)>>>);
 
 static NODE_HOLDS: std::sync::LazyLock<TrainingHolds> = std::sync::LazyLock::new(TrainingHolds::new);
 static NEXT_HOLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -78,17 +78,17 @@ impl TrainingHolds {
     }
 
     /// This node's holds: the set every production tuner obeys.
-    pub fn node() -> &'static TrainingHolds {
+    fn node() -> &'static TrainingHolds {
         &NODE_HOLDS
     }
 
     /// Pause every in-engine run under this set until the hold drops; every call is its own hold.
-    pub fn hold(&self, reason: &str) -> TrainingHold {
+    fn hold(&self, reason: &str) -> TrainingHold {
         self.insert(EVERY_LANE.to_string(), reason)
     }
 
     /// Pause the in-engine run on one lane (its root url) until the hold drops.
-    pub fn hold_on(&self, lane: &str, reason: &str) -> TrainingHold {
+    fn hold_on(&self, lane: &str, reason: &str) -> TrainingHold {
         self.insert(lane_scope(lane), reason)
     }
 
@@ -616,6 +616,8 @@ impl InPlaceRun for EngineRun {
                             class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
                             out = self.body.out.as_str(),
                             holds = reasons.join(",").as_str(),
+                            // a pause with no hold is the engine yielding its slots to serving
+                            yielding_to_serving = s.waiting_for_serving,
                             pct = pct as f64,
                             "an in-engine run reached a pause at a window boundary, or left one, with its optimizer and adapter kept"
                         );
