@@ -2927,19 +2927,36 @@ fn index_lock_verdict(age: Option<std::time::Duration>, git_in_tree: bool) -> In
     }
 }
 
-/// Whether any running `git` has its working directory inside `repo`.
+/// Whether any running `git` might be working on `repo`, judged conservatively: a git whose
+/// cwd is inside the tree, whose command line names the tree (`git -C <repo>`, `--git-dir`,
+/// `--work-tree` from elsewhere), or whose cwd cannot be read at all. Only a git positively
+/// seen working elsewhere is ruled out (Codex on #4477: `git -C` keeps its cwd outside the
+/// tree while it owns the tree's index, and an unreadable cwd is not evidence of absence).
 fn git_running_in(repo: &Path) -> bool {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+        ProcessRefreshKind::nothing()
+            .with_cwd(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
     );
-    let repo = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf()); // unwrap_or_else: an uncanonicalizable root still compares as given
+    let canonical = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf()); // unwrap_or_else: an uncanonicalizable root still compares as given
+    let spellings = [repo.to_string_lossy().into_owned(), canonical.to_string_lossy().into_owned()];
     sys.processes().values().any(|p| {
         let name = p.name().to_string_lossy();
-        (name == "git" || name == "git.exe") && p.cwd().is_some_and(|cwd| cwd.starts_with(&repo))
+        if name != "git" && name != "git.exe" {
+            return false;
+        }
+        let names_repo = p
+            .cmd()
+            .iter()
+            .any(|a| spellings.iter().any(|r| a.to_string_lossy().contains(r.as_str())));
+        match p.cwd() {
+            Some(cwd) => names_repo || cwd.starts_with(&canonical) || cwd.starts_with(repo),
+            None => true, // unreadable: it may be working here
+        }
     })
 }
 
