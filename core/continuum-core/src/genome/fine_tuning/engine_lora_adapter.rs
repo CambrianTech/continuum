@@ -45,6 +45,14 @@ pub const PROVIDER_ID: &str = "engine-local";
 // derived-or-floor: a floor — far below an epoch, far above a spin.
 const POLL: Duration = Duration::from_secs(2);
 
+/// How long the lane may stay unreachable before the run is taken to have ended with it. The
+/// run lives INSIDE the engine process: a lane that answers nothing for this long has gone
+/// (crashed, relaunched), and its training with it. Shorter silences are retried, never read as
+/// an end: releasing the job's lease while the engine still trains would let the governor hand
+/// that memory to someone else under a live run (Cormac on #4443).
+// derived-or-floor: a floor — well past a relaunch's socket gap, well under an epoch.
+const LANE_SILENCE: Duration = Duration::from_secs(90);
+
 fn failure(error: impl std::fmt::Display) -> FineTuningError {
     FineTuningError::LocalTrainerFailed(error.to_string())
 }
@@ -115,8 +123,13 @@ impl Footprints {
     fn get(&self, shape: &Shape) -> Option<u64> {
         self.read_all().get(&shape.key()).map(|r| r.bytes)
     }
+    /// Keeps the LARGEST footprint observed for a shape: the peak is sampled on the governor's
+    /// scan cadence, which can miss the true peak but never invents one (Cormac on #4443).
     fn record(&self, shape: &Shape, bytes: u64, job: Uuid) -> std::io::Result<()> {
         let mut all = self.read_all();
+        if all.get(&shape.key()).is_some_and(|r| r.bytes >= bytes) {
+            return Ok(());
+        }
         all.insert(
             shape.key(),
             FootprintRow {
@@ -206,10 +219,13 @@ struct EngineRun {
     /// Physical VRAM use sampled through the run (the footprint measurement).
     peak: Arc<AtomicU64>,
     daemon: Option<Arc<crate::resources::ResourceDaemon>>,
+    /// The governed lease, held for exactly as long as the engine may be running this job's
+    /// training: `run` returns only once it has ended there, and the lease drops with `self`.
+    _lease: Option<crate::resources::LeaseGuard>,
 }
 
 impl EngineRun {
-    async fn status(&self) -> Result<Value, String> {
+    async fn status_once(&self) -> Result<Value, String> {
         let r = self
             .http
             .get(format!("{}/train", self.lane))
@@ -217,7 +233,60 @@ impl EngineRun {
             .send()
             .await
             .map_err(|e| format!("GET /train on {}: {e}", self.lane))?;
-        r.json::<Value>().await.map_err(|e| format!("GET /train on {}: {e}", self.lane))
+        let s = r.json::<Value>().await.map_err(|e| format!("GET /train on {}: {e}", self.lane))?;
+        // a body without a state is an unreadable status, retried like a lost one, never read
+        // as "not ours" (which would end the job while the engine trains)
+        if s.get("state").and_then(Value::as_str).is_none() {
+            return Err(format!("GET /train on {}: no training state in {s}", self.lane));
+        }
+        Ok(s)
+    }
+
+    /// The engine's training status, retried through a silence shorter than [`LANE_SILENCE`].
+    /// `Err` means the lane has answered nothing for that long: it is gone, and the run with it.
+    async fn status(&self) -> Result<Value, String> {
+        let since = tokio::time::Instant::now();
+        loop {
+            match self.status_once().await {
+                Ok(s) => return Ok(s),
+                Err(e) if since.elapsed() >= LANE_SILENCE => {
+                    return Err(format!("{e} (no answer for {}s: the lane and its run are gone)", LANE_SILENCE.as_secs()))
+                }
+                Err(_) => tokio::time::sleep(POLL).await,
+            }
+        }
+    }
+
+    /// True while the engine MAY be running this job's training (it runs one at a time): the
+    /// status is ours and not a known end. An unknown state counts as running: releasing the
+    /// lease on a state nobody here understands is exactly the unsafe case.
+    fn running_ours(&self, s: &Value) -> bool {
+        self.ours(s) && !matches!(s.get("state").and_then(Value::as_str), Some("done" | "cancelled" | "error"))
+    }
+
+    /// The one way out of a run that did not finish: make sure the engine is not still training
+    /// this job before the lease is let go. Cancels (retrying the POST) and waits until the
+    /// engine's status is no longer this job's live run, or the lane is gone.
+    async fn stop_ours(&self) {
+        loop {
+            match self.status().await {
+                Ok(s) if self.running_ours(&s) => {
+                    let _ = self
+                        .http
+                        .post(format!("{}/train/cancel", self.lane))
+                        .timeout(Duration::from_secs(10))
+                        .send()
+                        .await; // a refused or lost cancel is retried by the next pass; the status decides
+                    tokio::time::sleep(POLL).await;
+                }
+                _ => return, // not ours, not running, or the lane is gone: nothing of ours trains
+            }
+        }
+    }
+
+    async fn failed(&self, why: String) -> InPlaceEnd {
+        self.stop_ours().await;
+        InPlaceEnd::Failed(why)
     }
 
     fn sample(&self) {
@@ -251,7 +320,7 @@ impl InPlaceRun for EngineRun {
 
     async fn run(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
         self.sample();
-        let started = match self
+        match self
             .http
             .post(format!("{}/train", self.lane))
             .json(&self.body)
@@ -259,12 +328,14 @@ impl InPlaceRun for EngineRun {
             .send()
             .await
         {
-            Ok(r) => r,
-            Err(e) => return InPlaceEnd::Failed(format!("POST /train on {}: {e}", self.lane)),
-        };
-        if !started.status().is_success() {
-            let why = started.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job, with the status code
-            return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                // refused before any thread started: nothing of ours runs
+                let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
+                return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
+            }
+            // lost on the way back: the run may have started, so it is stopped before failing
+            Err(e) => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
         }
         let mut tick = tokio::time::interval(POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -274,21 +345,22 @@ impl InPlaceRun for EngineRun {
                 changed = cancel.changed(), if !cancelling => {
                     if changed.is_err() || *cancel.borrow() {
                         cancelling = true;
-                        // stops at the next training window; the run then ends "cancelled"
-                        if let Err(e) = self.http.post(format!("{}/train/cancel", self.lane))
-                            .timeout(Duration::from_secs(10)).send().await {
-                            return InPlaceEnd::Failed(format!("POST /train/cancel on {}: {e}", self.lane));
-                        }
                     }
                 }
                 _ = tick.tick() => {}
             }
+            if cancelling {
+                // stops at the next training window; Cancelled only once the engine says so
+                self.stop_ours().await;
+                return InPlaceEnd::Cancelled;
+            }
             self.sample();
             let s = match self.status().await {
                 Ok(s) => s,
-                Err(e) => return InPlaceEnd::Failed(e),
+                Err(e) => return InPlaceEnd::Failed(e), // the lane is gone, and its run with it
             };
             if !self.ours(&s) {
+                // one run at a time: another run in the engine means ours has ended
                 return InPlaceEnd::Failed(format!("the engine's training run is no longer this job's (out {:?})", s.get("out")));
             }
             let state = s.get("state").and_then(Value::as_str).unwrap_or("").to_owned(); // unwrap_or: a status with no state is an unknown state, handled below
@@ -297,19 +369,16 @@ impl InPlaceRun for EngineRun {
             }
             match state.as_str() {
                 "starting" | "running" => {
-                    if !cancelling {
-                        let (pct, epoch) = progress_of(&s, self.epochs);
-                        progress.running(pct, epoch);
-                    }
+                    let (pct, epoch) = progress_of(&s, self.epochs);
+                    progress.running(pct, epoch);
                 }
                 "done" => return InPlaceEnd::Finished,
-                "cancelled" if cancelling => return InPlaceEnd::Cancelled,
                 "cancelled" => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
                 "error" => {
                     let why = s.get("error").and_then(Value::as_str).unwrap_or("no error text"); // unwrap_or: the state alone is the failure
                     return InPlaceEnd::Failed(format!("the engine's training run failed: {why}"));
                 }
-                other => return InPlaceEnd::Failed(format!("the engine reports an unknown training state {other:?}")),
+                other => return self.failed(format!("the engine reports an unknown training state {other:?}")).await,
             }
         }
     }
@@ -462,12 +531,11 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 last: last.clone(),
                 peak: peak.clone(),
                 daemon,
+                _lease: reservation,
             };
             Ok(PreparedJob {
                 execution: Execution::InPlace(Box::new(run)),
                 finish: Box::new(move |wall_clock_ms| {
-                    // the lease is held until the job's end, on every outcome
-                    let _reservation = reservation;
                     let adapter = move_adapter(&train_dir, &out, &job_dir)?;
                     let status = last
                         .lock()
@@ -551,7 +619,7 @@ mod tests {
 
     /// A lane that answers /train like the engine: a run goes starting -> running (batches) ->
     /// done (writing `<out>` into `dir`), or -> cancelled after POST /train/cancel.
-    async fn fake_lane(dir: PathBuf, cancel_only: bool) -> (String, tokio::task::JoinHandle<()>, Arc<Mutex<Option<Value>>>) {
+    async fn fake_lane(dir: PathBuf, mode: &'static str) -> (String, tokio::task::JoinHandle<()>, Arc<Mutex<Option<Value>>>) {
         use axum::routing::{get, post};
         #[derive(Default)]
         struct Lane {
@@ -585,7 +653,13 @@ mod tests {
                     if l.cancelled {
                         return axum::Json(json!({"state": "cancelled", "out": out}));
                     }
-                    if cancel_only || l.polls < 3 {
+                    if mode == "flaky" && l.polls <= 2 {
+                        return axum::Json(json!("not a status object"));
+                    }
+                    if mode == "unknown" {
+                        return axum::Json(json!({"state": "paused", "out": out}));
+                    }
+                    if mode == "cancel_only" || l.polls < 3 {
                         return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
                     }
                     std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
@@ -631,7 +705,7 @@ mod tests {
     async fn a_finished_run_moves_its_adapter_out_of_the_train_dir_and_reports_the_engines_losses() {
         let train = tempfile::tempdir().expect("test: dir");
         let jobs = tempfile::tempdir().expect("test: dir");
-        let (url, server, seen) = fake_lane(train.path().to_path_buf(), false).await;
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
         let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
@@ -660,7 +734,7 @@ mod tests {
     async fn a_cancel_stops_the_run_on_the_engine_before_the_job_reports_cancelled() {
         let train = tempfile::tempdir().expect("test: dir");
         let jobs = tempfile::tempdir().expect("test: dir");
-        let (url, server, _) = fake_lane(train.path().to_path_buf(), true).await;
+        let (url, server, _) = fake_lane(train.path().to_path_buf(), "cancel_only").await;
         let t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
@@ -677,6 +751,47 @@ mod tests {
         let engine: Value = reqwest::get(format!("{url}/train")).await.unwrap().json().await.unwrap();
         assert_eq!(engine["state"], "cancelled", "the engine's run was stopped, not abandoned");
         server.abort();
+    }
+
+    // what this catches: a failure path that lets go of the lease while the engine still trains
+    // (Cormac on #4443). A status the job cannot read is retried, not taken as the end; a state
+    // it does not know makes it STOP the engine's run first, and only then fail.
+    #[tokio::test]
+    async fn no_failure_path_ends_the_job_while_the_engine_still_trains_it() {
+        let jobs = tempfile::tempdir().expect("test: dir");
+        // flaky: the first two GET /train answers are unreadable, then the run finishes
+        let train = tempfile::tempdir().expect("test: dir");
+        let (url, server, _) = fake_lane(train.path().to_path_buf(), "flaky").await;
+        let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("f.json"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        assert!(matches!(wait_terminal(&t, &h).await, TrainingStatus::Completed { .. }), "a transient read is retried");
+        server.abort();
+        // unknown: the engine reports a state the job does not know; it must cancel and wait
+        let train = tempfile::tempdir().expect("test: dir");
+        let (url, server, _) = fake_lane(train.path().to_path_buf(), "unknown").await;
+        let t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("f.json"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        assert!(matches!(wait_terminal(&t, &h).await, TrainingStatus::Failed { .. }));
+        let engine: Value = reqwest::get(format!("{url}/train")).await.unwrap().json().await.unwrap();
+        assert_eq!(engine["state"], "cancelled", "failed only after the engine's run was stopped");
+        server.abort();
+    }
+
+    // what this catches: a footprint that shrinks because one run's sampling missed its peak.
+    #[test]
+    fn a_footprint_keeps_the_largest_observation() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let f = Footprints { path: dir.path().join("f.json") };
+        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into() };
+        f.record(&s, 900, Uuid::nil()).unwrap();
+        f.record(&s, 700, Uuid::nil()).unwrap();
+        assert_eq!(f.get(&s), Some(900));
+        f.record(&s, 1200, Uuid::nil()).unwrap();
+        assert_eq!(f.get(&s), Some(1200));
     }
 
     // what this catches: a request the engine cannot run is refused before any job exists:
