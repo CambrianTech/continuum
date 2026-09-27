@@ -697,6 +697,7 @@ async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::proces
             let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
             text.push('\n');
             text.push_str(&String::from_utf8_lossy(&out.stderr));
+            let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
             match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
                 Some(v) => ("answered", Some(v), String::new()),
                 None => ("did_not_enumerate", None, String::new()),
@@ -714,6 +715,7 @@ async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::proces
         outcome = outcome,
         answered = support.is_some(),
         quantized_kv = support.unwrap_or(false), // probe field: read it WITH `answered`
+        train_dir = engine_accepts_train_dir(),
         error = %error,
         "what the serving binary says its build accepts for --cache-type-k; unanswered \
          falls through to the backend table, never to a guess"
@@ -962,6 +964,23 @@ pub const PAGE_GEOMETRY_STEP: u32 = 16_384;
 
 pub fn page_geometry_key(per_slot_ctx: u32) -> u32 {
     (per_slot_ctx / PAGE_GEOMETRY_STEP).max(1) * PAGE_GEOMETRY_STEP
+}
+
+/// Whether the serving engine accepts `--train-dir`, read off its own `--help` by the same
+/// once-per-process probe that reads its KV cache types. An engine older than the flag REJECTS
+/// it and the lane does not start (2026-09-27: #4438 on canary would have put `--train-dir` on
+/// the 5090's lane while its engine was still b10765-965d38a90, because the deploy consumer
+/// converges the core but not the engine). Unknown — no probe, no answer — is NO: in-engine
+/// training is never worth a lane.
+static ENGINE_TRAIN_DIR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn engine_accepts_train_dir() -> bool {
+    ENGINE_TRAIN_DIR.get().copied().unwrap_or(false) // unwrap_or: unprobed is "does not accept", the only answer that cannot keep a lane from starting
+}
+
+/// The engine lists the flag as an option (not merely mentions the word somewhere).
+fn engine_help_lists_train_dir(help: &str) -> bool {
+    help.lines().any(|l| l.trim_start().starts_with("--train-dir"))
 }
 
 /// Where every lane's `POST /train` writes its adapters (`--train-dir`). One directory
@@ -4797,7 +4816,8 @@ impl LlamaServerProcess {
             cpu_only: target.placement == LanePlacement::Cpu,
             chat_template: chat_template.as_deref(),
             loras: &lora_paths,
-            train_dir: train_dir.as_deref(),
+            // only to an engine that lists the flag: an older one refuses to start with it
+            train_dir: train_dir.as_deref().filter(|_| engine_accepts_train_dir()),
             expert_ot: expert_ot.as_deref(),
             host_pinned_tensors: target.model.serving.host_pinned_tensors,
             fit_off: target.model.serving.fit_off,
@@ -5759,6 +5779,21 @@ fn is_debug_build(version_output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches: an engine older than --train-dir being handed the flag (it refuses to
+    // start: the lane goes dark). Only an engine whose help LISTS the option accepts it; a help
+    // text that merely mentions the words, or none at all, does not.
+    #[test]
+    fn train_dir_is_accepted_only_when_the_engines_help_lists_it() {
+        use super::engine_help_lists_train_dir;
+        let new = "  -lv, --verbosity N\n--train-dir DIR                         enable POST /train\n";
+        let old = "  -lv, --verbosity N\n  --lora FNAME   path to LoRA adapter\n";
+        let mention = "  --lora FNAME   adapters are not --train-dir aware\n";
+        assert!(engine_help_lists_train_dir(new));
+        assert!(!engine_help_lists_train_dir(old));
+        assert!(!engine_help_lists_train_dir(mention));
+        assert!(!engine_help_lists_train_dir(""));
+    }
 
     // regression for card 8c06f778 (BigMama, 2026-09-26 14:24:55Z): a /slots read that
     // timed out mid-restore was read as a dead engine and cost the node an engine
