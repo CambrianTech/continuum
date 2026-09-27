@@ -3453,10 +3453,15 @@ pub fn start_server(
     // selection logic lives in the coordinator.
     {
         use crate::genome::fine_tuning::{
-            CudaLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter,
+            CudaLoraFineTuner, EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner,
+            OpenAIFineTuningAdapter,
         };
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
         ft_registry.register(std::sync::Arc::new(CudaLoraFineTuner::new()));
+        // In-engine training on the resident weights (the dream's trainer): selected by
+        // preference ("engine-local") until its measured 27B run makes it the default
+        // over the process trainers (charter S6); needs a live lane serving the base.
+        ft_registry.register(std::sync::Arc::new(EngineLoraFineTuner::new()));
 
         // OpenAI when credentials present. Other cloud LoRA-trainer
         // adapters (Mistral, Anthropic, Fireworks, DeepSeek,

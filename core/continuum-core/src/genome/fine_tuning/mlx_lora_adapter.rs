@@ -265,9 +265,11 @@ impl FineTuningAdapter for MlxLoraFineTuner {
 
             let model_id = format!("{PROVIDER_ID}:{}:{}", request.trait_kind, local_id);
             Ok(super::native_jobs::PreparedJob {
-                command: cmd,
-                output: adapter_dir.clone(),
-                parser: Some(parse_loss_line),
+                execution: super::native_jobs::Execution::Process(super::native_jobs::ProcessSpec {
+                    command: cmd,
+                    output: adapter_dir.clone(),
+                    parser: Some(parse_loss_line),
+                }),
                 finish: Box::new(move |wall_clock_ms| {
                     // Retain the lease until NativeJobs exits or kills and reaps the trainer.
                     let _reservation = reservation;

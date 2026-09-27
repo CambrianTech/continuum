@@ -1,0 +1,707 @@
+//! In-engine LoRA training on the RESIDENT weights: the dream's trainer (charter
+//! ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md, S3/S4). The lane that serves the base already
+//! holds its weights at their served quantization; its `POST /train` (fork 1d028f43b) trains a
+//! fresh LoRA in a second context beside the serving slots, yielding between batches while any
+//! slot is busy. No second copy of the model, no trainer process, no PyTorch: the adapter is fit
+//! against exactly the numerics it will be served over (QLoRA by construction), and it comes out
+//! as a GGUF-lora the genome pages in directly.
+//!
+//! This backend drives that run IN PLACE through the shared job owner ([`NativeJobs`] with
+//! [`Execution::InPlace`]): the same handles, probes, status and cancellation as the process
+//! trainers. What is its own:
+//! - the lane: the live lane whose recorded model IS the request's base; none = refused.
+//! - the examples: sent as `{prompt, completion}`; the engine renders them through the served
+//!   chat template, one window each, with loss only on the assistant turns.
+//! - admission: a MEASURED footprint per (model, window, rank, targets). A shape never run
+//!   before is admitted by leasing ALL the governed VRAM free right now (nothing else can grow
+//!   into the run) and its peak is measured and recorded, so the next run of that shape leases
+//!   its number. Never a guess: [`crate::forge::training_admission`] refuses unmeasured bytes.
+//! - the artifact leaves the lanes' `--train-dir` (`engine-train`, swept of every file whose job
+//!   is not live) for the job's own directory BEFORE the job goes terminal (Fable's invariant on
+//!   #4438), and is a [`ArtifactFormat::GgufLora`].
+use super::native_jobs::{
+    default_lora, default_schedule, job_dir_for, Execution, InPlaceEnd, InPlaceRun, NativeJobs, PreparedJob,
+    RunProgress,
+};
+use super::{
+    ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics,
+    TrainerHardware, TrainingArtifact, TrainingJobRequest, TrainingStatus,
+};
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::watch;
+use uuid::Uuid;
+
+pub const PROVIDER_ID: &str = "engine-local";
+
+/// How often the run is polled. The engine answers GET /train from memory; this is the
+/// cadence of progress and of the VRAM peak sample, not a timeout.
+// derived-or-floor: a floor — far below an epoch, far above a spin.
+const POLL: Duration = Duration::from_secs(2);
+
+fn failure(error: impl std::fmt::Display) -> FineTuningError {
+    FineTuningError::LocalTrainerFailed(error.to_string())
+}
+
+/// HF module names (what [`super::LoRAHyperparams::target_modules`] carries, and what the
+/// PyTorch/MLX trainers take) to the GGUF tensor names the engine's adapter writer targets.
+/// An unknown name is refused: silently dropping a target trains a different adapter.
+fn gguf_targets(modules: &[String]) -> Result<String, String> {
+    let mut out: Vec<&str> = Vec::new();
+    for m in modules {
+        let t = match m.as_str() {
+            "q_proj" | "attn_q" => "attn_q",
+            "k_proj" | "attn_k" => "attn_k",
+            "v_proj" | "attn_v" => "attn_v",
+            "o_proj" | "attn_output" => "attn_output",
+            "gate_proj" | "ffn_gate" => "ffn_gate",
+            "up_proj" | "ffn_up" => "ffn_up",
+            "down_proj" | "ffn_down" => "ffn_down",
+            other => return Err(format!("LoRA target module {other:?} has no engine (GGUF) equivalent")),
+        };
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    if out.is_empty() {
+        return Err("no LoRA target modules".into());
+    }
+    Ok(out.join(","))
+}
+
+/// The shape a footprint is measured for: the training context's memory is a function of the
+/// model, the window, and the adapter's geometry, and of nothing the request can vary besides.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct Shape {
+    model: String,
+    window: u32,
+    rank: u32,
+    targets: String,
+}
+
+impl Shape {
+    fn key(&self) -> String {
+        format!("{}|w{}|r{}|{}", self.model, self.window, self.rank, self.targets)
+    }
+}
+
+/// Measured engine-training footprints, one row per shape, in one small JSON file (bounded by
+/// the number of distinct shapes ever run, not by runs).
+struct Footprints {
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FootprintRow {
+    bytes: u64,
+    measured_at_ms: i64,
+    job: String,
+}
+
+impl Footprints {
+    fn read_all(&self) -> BTreeMap<String, FootprintRow> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(body) => serde_json::from_str(&body).unwrap_or_default(), // unwrap_or_default: a corrupt file re-measures every shape (a calibration run), never blocks training
+            Err(_) => BTreeMap::new(),
+        }
+    }
+    fn get(&self, shape: &Shape) -> Option<u64> {
+        self.read_all().get(&shape.key()).map(|r| r.bytes)
+    }
+    fn record(&self, shape: &Shape, bytes: u64, job: Uuid) -> std::io::Result<()> {
+        let mut all = self.read_all();
+        all.insert(
+            shape.key(),
+            FootprintRow {
+                bytes,
+                measured_at_ms: chrono::Utc::now().timestamp_millis(),
+                job: job.to_string(),
+            },
+        );
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
+        std::fs::rename(tmp, &self.path)
+    }
+}
+
+/// Where the lane serving `base` answers, if one does on this node.
+type LaneResolver = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+fn live_lane_for(base: &str) -> Option<String> {
+    let rec = crate::inference::lane_registry::live_lane()?;
+    (rec.model == base).then(|| format!("http://127.0.0.1:{}", rec.port))
+}
+
+/// Admission: the governed lease a run holds for its life. `Governed` in production;
+/// tests drive the run without a governor.
+enum Admission {
+    Governed,
+    #[cfg(test)]
+    Ungoverned,
+}
+
+pub struct EngineLoraFineTuner {
+    jobs: NativeJobs,
+    http: reqwest::Client,
+    lane: LaneResolver,
+    /// The lanes' `--train-dir` (the engine writes `<job>.gguf` here).
+    train_dir: Option<PathBuf>,
+    footprints: Footprints,
+    admission: Admission,
+}
+
+impl Default for EngineLoraFineTuner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EngineLoraFineTuner {
+    pub fn new() -> Self {
+        let footprints = dirs::home_dir()
+            .unwrap_or_default() // Without a home the relative path re-measures (a calibration run) — never a guessed footprint.
+            .join(".continuum/genome/engine-footprints.json");
+        Self {
+            jobs: NativeJobs::new(PROVIDER_ID),
+            http: reqwest::Client::new(),
+            lane: Box::new(live_lane_for),
+            train_dir: crate::inference::llama_server::engine_train_dir(),
+            footprints: Footprints { path: footprints },
+            admission: Admission::Governed,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(lane_url: String, train_dir: PathBuf, footprints: PathBuf) -> Self {
+        Self {
+            jobs: NativeJobs::new(PROVIDER_ID),
+            http: reqwest::Client::new(),
+            lane: Box::new(move |_| Some(lane_url.clone())),
+            train_dir: Some(train_dir),
+            footprints: Footprints { path: footprints },
+            admission: Admission::Ungoverned,
+        }
+    }
+}
+
+/// The in-place run: POST /train on the lane, poll to its end, stop it on a cancel.
+struct EngineRun {
+    http: reqwest::Client,
+    lane: String,
+    body: Value,
+    out: String,
+    epochs: u32,
+    /// The run's last status as the engine reported it (finish reads its losses).
+    last: Arc<Mutex<Option<Value>>>,
+    /// Physical VRAM use sampled through the run (the footprint measurement).
+    peak: Arc<AtomicU64>,
+    daemon: Option<Arc<crate::resources::ResourceDaemon>>,
+}
+
+impl EngineRun {
+    async fn status(&self) -> Result<Value, String> {
+        let r = self
+            .http
+            .get(format!("{}/train", self.lane))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| format!("GET /train on {}: {e}", self.lane))?;
+        r.json::<Value>().await.map_err(|e| format!("GET /train on {}: {e}", self.lane))
+    }
+
+    fn sample(&self) {
+        if let Some(d) = &self.daemon {
+            self.peak.fetch_max(d.physical_used(crate::resources::ResourceKind::Vram), Ordering::Relaxed);
+        }
+    }
+
+    /// The engine runs one training at a time; a status for a different `out` is not ours.
+    fn ours(&self, s: &Value) -> bool {
+        s.get("out").and_then(Value::as_str) == Some(self.out.as_str())
+    }
+}
+
+/// Percent done and the current epoch from an engine status: completed epochs plus the current
+/// epoch's batch fraction.
+fn progress_of(s: &Value, epochs: u32) -> (f32, u32) {
+    let done = s.get("epochs").and_then(Value::as_array).map_or(0, |a| a.len()) as f32;
+    let batch = s.get("batch").and_then(Value::as_f64).unwrap_or(0.0) as f32; // unwrap_or: absent before the first batch — zero of this epoch is the truth
+    let max = s.get("batch_max").and_then(Value::as_f64).unwrap_or(0.0) as f32; // unwrap_or: absent before the first batch
+    let frac = if max > 0.0 { (batch / max).min(1.0) } else { 0.0 };
+    let pct = if epochs == 0 { 0.0 } else { ((done + frac) / epochs as f32 * 100.0).min(100.0) };
+    (pct, done as u32)
+}
+
+#[async_trait]
+impl InPlaceRun for EngineRun {
+    fn place(&self) -> String {
+        self.lane.clone()
+    }
+
+    async fn run(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
+        self.sample();
+        let started = match self
+            .http
+            .post(format!("{}/train", self.lane))
+            .json(&self.body)
+            .timeout(Duration::from_secs(120))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return InPlaceEnd::Failed(format!("POST /train on {}: {e}", self.lane)),
+        };
+        if !started.status().is_success() {
+            let why = started.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job, with the status code
+            return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
+        }
+        let mut tick = tokio::time::interval(POLL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut cancelling = false;
+        loop {
+            tokio::select! {
+                changed = cancel.changed(), if !cancelling => {
+                    if changed.is_err() || *cancel.borrow() {
+                        cancelling = true;
+                        // stops at the next training window; the run then ends "cancelled"
+                        if let Err(e) = self.http.post(format!("{}/train/cancel", self.lane))
+                            .timeout(Duration::from_secs(10)).send().await {
+                            return InPlaceEnd::Failed(format!("POST /train/cancel on {}: {e}", self.lane));
+                        }
+                    }
+                }
+                _ = tick.tick() => {}
+            }
+            self.sample();
+            let s = match self.status().await {
+                Ok(s) => s,
+                Err(e) => return InPlaceEnd::Failed(e),
+            };
+            if !self.ours(&s) {
+                return InPlaceEnd::Failed(format!("the engine's training run is no longer this job's (out {:?})", s.get("out")));
+            }
+            let state = s.get("state").and_then(Value::as_str).unwrap_or("").to_owned(); // unwrap_or: a status with no state is an unknown state, handled below
+            if let Ok(mut last) = self.last.lock() {
+                *last = Some(s.clone());
+            }
+            match state.as_str() {
+                "starting" | "running" => {
+                    if !cancelling {
+                        let (pct, epoch) = progress_of(&s, self.epochs);
+                        progress.running(pct, epoch);
+                    }
+                }
+                "done" => return InPlaceEnd::Finished,
+                "cancelled" if cancelling => return InPlaceEnd::Cancelled,
+                "cancelled" => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
+                "error" => {
+                    let why = s.get("error").and_then(Value::as_str).unwrap_or("no error text"); // unwrap_or: the state alone is the failure
+                    return InPlaceEnd::Failed(format!("the engine's training run failed: {why}"));
+                }
+                other => return InPlaceEnd::Failed(format!("the engine reports an unknown training state {other:?}")),
+            }
+        }
+    }
+}
+
+/// The adapter leaves the lanes' train dir for the job's own directory. Runs in `finish`, i.e.
+/// BEFORE the job goes terminal: the engine-train sweep deletes every file whose job is not live,
+/// so a finished gene left there would be deleted.
+fn move_adapter(train_dir: &Path, out: &str, job_dir: &Path) -> Result<PathBuf, String> {
+    let from = train_dir.join(out);
+    let size = std::fs::metadata(&from).map_err(|e| format!("the engine wrote no adapter at {}: {e}", from.display()))?.len();
+    if size == 0 {
+        return Err(format!("the engine's adapter at {} is empty", from.display()));
+    }
+    let adapters = job_dir.join("adapters");
+    std::fs::create_dir_all(&adapters).map_err(|e| format!("{}: {e}", adapters.display()))?;
+    let to = adapters.join("adapter.gguf");
+    std::fs::rename(&from, &to).map_err(|e| format!("moving {} -> {}: {e}", from.display(), to.display()))?;
+    Ok(to)
+}
+
+#[async_trait]
+impl FineTuningAdapter for EngineLoraFineTuner {
+    fn capabilities(&self) -> FineTuningCapabilities {
+        FineTuningCapabilities {
+            provider_id: PROVIDER_ID.into(),
+            supports_lora: true,
+            supports_validation: true,
+            produces_local_artifact: true,
+            // any base a live lane on this node serves; create_job checks the lane
+            supported_base_model_prefixes: vec![],
+            requires: TrainerHardware::Any,
+        }
+    }
+
+    async fn create_job(&self, mut request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
+        let schedule = request.schedule.get_or_insert_with(default_schedule).clone();
+        let lora = request.lora.get_or_insert_with(default_lora).clone();
+        if request.dataset.examples.is_empty()
+            || schedule.epochs == 0
+            || schedule.epochs > 100
+            || !(16..=8192).contains(&schedule.sequence_length)
+            || !schedule.learning_rate.is_finite()
+            || schedule.learning_rate <= 0.0
+            || schedule.learning_rate > 1.0
+            || !(1..=256).contains(&lora.rank)
+            || lora.alpha == 0
+        {
+            return Err(FineTuningError::InvalidRequest(
+                "invalid engine training data/schedule/LoRA geometry (epochs 1-100, sequence_length 16-8192, lr (0,1], rank 1-256)".into(),
+            ));
+        }
+        let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
+        let lane = (self.lane)(&request.base_model).ok_or_else(|| {
+            FineTuningError::InvalidRequest(format!(
+                "no live lane serves {} on this node: in-engine training runs on the resident weights",
+                request.base_model
+            ))
+        })?;
+        let train_dir = self
+            .train_dir
+            .clone()
+            .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
+        let id = Uuid::new_v4();
+        let out = format!("{id}.gguf");
+        let shape = Shape {
+            model: request.base_model.clone(),
+            window: schedule.sequence_length,
+            rank: lora.rank,
+            targets: targets.clone(),
+        };
+        let val = request.dataset.validation_split.clamp(0.0, 0.5);
+        let examples: Vec<Value> = request
+            .dataset
+            .examples
+            .iter()
+            .map(|e| json!({"prompt": e.prompt, "completion": e.completion}))
+            .collect();
+        let body = json!({
+            "examples": examples,
+            "out": out,
+            "rank": lora.rank,
+            "alpha": lora.alpha,
+            "targets": targets,
+            "window": schedule.sequence_length,
+            "epochs": schedule.epochs,
+            "lr": schedule.learning_rate,
+            "val_split": val,
+            "seed": 42,
+        });
+        let measured = self.footprints.get(&shape);
+        let footprints_path = self.footprints.path.clone();
+        let http = self.http.clone();
+        let governed = matches!(self.admission, Admission::Governed);
+        let job_dir = job_dir_for(&request, id);
+        let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
+        let epochs = schedule.epochs;
+        Ok(self.jobs.prepare(id, move |progress| async move {
+            let consumer = format!("genome-train:{id}");
+            let (daemon, reservation) = if governed {
+                let daemon = crate::resources::ResourceDaemon::global()
+                    .ok_or_else(|| failure("engine training requires the resource governor"))?;
+                // A measured shape leases its number; an unmeasured one is a calibration run
+                // that leases everything governed and free, so nothing grows into it.
+                let bytes = match measured {
+                    Some(bytes) => bytes,
+                    None => daemon.available_for(&consumer, crate::resources::ResourceKind::Vram),
+                };
+                if bytes == 0 {
+                    return Err(FineTuningError::Transient(
+                        "no governed VRAM is free to calibrate this engine training shape on".into(),
+                    ));
+                }
+                crate::probe!(
+                    class = "training.job.planned",
+                    job = %id,
+                    base = shape.model.as_str(),
+                    window = shape.window as u64,
+                    measured = measured.is_some(),
+                    memory_bytes = bytes,
+                    "engine training: the measured footprint for this shape, or (unmeasured) all governed \
+                     free VRAM for a calibration run"
+                );
+                let gate = crate::modules::serving_daemon::LifecycleGate::global()
+                    .ok_or_else(|| failure("engine training requires the serving lifecycle gate"))?;
+                let reservation = crate::forge::training_admission::wait_for_training_memory(
+                    daemon.clone(),
+                    &gate,
+                    &consumer,
+                    bytes,
+                    |available| progress.waiting_for_capacity(bytes, available),
+                )
+                .await
+                .map_err(FineTuningError::Transient)?;
+                (Some(daemon), Some(reservation))
+            } else {
+                (None, None)
+            };
+            let last = Arc::new(Mutex::new(None));
+            let peak = Arc::new(AtomicU64::new(0));
+            let baseline = daemon
+                .as_ref()
+                .map_or(0, |d| d.physical_used(crate::resources::ResourceKind::Vram));
+            let run = EngineRun {
+                http,
+                lane,
+                body,
+                out: out.clone(),
+                epochs,
+                last: last.clone(),
+                peak: peak.clone(),
+                daemon,
+            };
+            Ok(PreparedJob {
+                execution: Execution::InPlace(Box::new(run)),
+                finish: Box::new(move |wall_clock_ms| {
+                    // the lease is held until the job's end, on every outcome
+                    let _reservation = reservation;
+                    let adapter = move_adapter(&train_dir, &out, &job_dir)?;
+                    let status = last
+                        .lock()
+                        .ok()
+                        .and_then(|l| l.clone())
+                        .ok_or("the engine's final status was never read")?;
+                    let epochs_done = status.get("epochs").and_then(Value::as_array).cloned().unwrap_or_default(); // unwrap_or_default: no epochs means no loss, refused just below
+                    let final_loss = epochs_done.last().and_then(|e| e.get("train_loss")).and_then(Value::as_f64);
+                    let final_validation_loss = epochs_done.last().and_then(|e| e.get("eval_loss")).and_then(Value::as_f64);
+                    let trainable = status
+                        .get("trainable_tokens")
+                        .and_then(Value::as_u64)
+                        .ok_or("the engine reported no trainable-token count")?;
+                    if trainable == 0 || final_loss.is_none_or(|l| !l.is_finite()) {
+                        return Err("the engine produced no finite measured learning receipt".into());
+                    }
+                    // the footprint this shape needs, measured (peak physical VRAM over the run
+                    // minus what was resident before it)
+                    let grown = peak.load(Ordering::Relaxed).saturating_sub(baseline);
+                    if grown > 0 {
+                        let store = Footprints { path: footprints_path };
+                        if let Err(e) = store.record(&shape, grown, id) {
+                            crate::probe!(
+                                class = "training.job.footprint_unrecorded",
+                                job = %id,
+                                error = %e,
+                                "the measured engine-training footprint could not be recorded; the next run of \
+                                 this shape calibrates again"
+                            );
+                        }
+                    }
+                    Ok(TrainingArtifact {
+                        model_id,
+                        local_path: Some(adapter),
+                        format: ArtifactFormat::GgufLora,
+                        metrics: JobMetrics {
+                            trained_tokens: trainable * epochs_done.len() as u64,
+                            final_loss,
+                            final_validation_loss,
+                            wall_clock_ms,
+                            ..Default::default()
+                        },
+                    })
+                }),
+            })
+        }))
+    }
+
+    async fn poll(&self, handle: &JobHandle) -> Result<TrainingStatus, FineTuningError> {
+        self.jobs.poll(handle)
+    }
+
+    async fn cancel(&self, handle: &JobHandle) -> Result<(), FineTuningError> {
+        self.jobs.cancel(handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingExample, TrainingSource};
+
+    fn request(base: &str) -> TrainingJobRequest {
+        TrainingJobRequest {
+            persona_id: Uuid::nil(),
+            persona_name: "Kimi".into(),
+            base_model: base.into(),
+            trait_kind: "code".into(),
+            dataset: TrainingDataset {
+                examples: vec![TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None }],
+                source: TrainingSource::OperatorCurated,
+                validation_split: 0.0,
+            },
+            eval_set: None,
+            lora: Some(LoRAHyperparams { rank: 8, alpha: 16, dropout: 0.0, target_modules: vec!["q_proj".into(), "v_proj".into()] }),
+            schedule: Some(ScheduleParams { epochs: 2, batch_size: 1, sequence_length: 256, learning_rate: 1e-5 }),
+            local_artifact_dir: None,
+            resume_from: None,
+        }
+    }
+
+    /// A lane that answers /train like the engine: a run goes starting -> running (batches) ->
+    /// done (writing `<out>` into `dir`), or -> cancelled after POST /train/cancel.
+    async fn fake_lane(dir: PathBuf, cancel_only: bool) -> (String, tokio::task::JoinHandle<()>, Arc<Mutex<Option<Value>>>) {
+        use axum::routing::{get, post};
+        #[derive(Default)]
+        struct Lane {
+            out: Option<String>,
+            polls: u32,
+            cancelled: bool,
+            body: Option<Value>,
+        }
+        let lane = Arc::new(Mutex::new(Lane::default()));
+        let seen = Arc::new(Mutex::new(None));
+        let (l1, l2, l3, seen1) = (lane.clone(), lane.clone(), lane.clone(), seen.clone());
+        let app = axum::Router::new()
+            .route("/train", post(move |axum::Json(b): axum::Json<Value>| {
+                let lane = l1.clone();
+                let seen = seen1.clone();
+                async move {
+                    let mut l = lane.lock().unwrap();
+                    l.out = b.get("out").and_then(Value::as_str).map(str::to_owned);
+                    *seen.lock().unwrap() = Some(b.clone());
+                    l.body = Some(b);
+                    axum::Json(json!({"ok": true}))
+                }
+            }))
+            .route("/train", get(move || {
+                let lane = l2.clone();
+                let dir = dir.clone();
+                async move {
+                    let mut l = lane.lock().unwrap();
+                    l.polls += 1;
+                    let out = l.out.clone().unwrap_or_default();
+                    if l.cancelled {
+                        return axum::Json(json!({"state": "cancelled", "out": out}));
+                    }
+                    if cancel_only || l.polls < 3 {
+                        return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
+                    }
+                    std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
+                    axum::Json(json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out,
+                        "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]}))
+                }
+            }))
+            .route("/train/cancel", post(move || {
+                let lane = l3.clone();
+                async move {
+                    lane.lock().unwrap().cancelled = true;
+                    axum::Json(json!({"ok": true}))
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let url = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("test: serve");
+        });
+        (url, server, seen)
+    }
+
+    async fn wait_terminal(t: &EngineLoraFineTuner, h: &JobHandle) -> TrainingStatus {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let s = t.poll(h).await.expect("test: poll");
+                if matches!(s, TrainingStatus::Completed { .. } | TrainingStatus::Failed { .. } | TrainingStatus::Cancelled) {
+                    return s;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("test: the job never ended")
+    }
+
+    // what this catches: the dispatch end to end against an engine-shaped lane — the request
+    // reaches /train as examples with GGUF targets and the request's window/epochs/rank; the
+    // finished adapter LEAVES the lanes' train dir for the job dir before the job is terminal
+    // (Fable's invariant: the engine-train sweep deletes files of jobs that are not live); the
+    // artifact is a GgufLora with the engine's losses and trainable-token count.
+    #[tokio::test]
+    async fn a_finished_run_moves_its_adapter_out_of_the_train_dir_and_reports_the_engines_losses() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), false).await;
+        let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        let TrainingStatus::Completed { artifact } = wait_terminal(&t, &h).await else {
+            panic!("test: not completed");
+        };
+        let body = seen.lock().unwrap().clone().expect("test: /train was posted");
+        assert_eq!(body["targets"], "attn_q,attn_v");
+        assert_eq!((body["window"].as_u64(), body["epochs"].as_u64(), body["rank"].as_u64()), (Some(256), Some(2), Some(8)));
+        assert_eq!(body["examples"][0]["completion"], "c");
+        assert!(body.get("text").is_none(), "examples, never a text corpus (the engine masks the prompts)");
+        let path = artifact.local_path.expect("test: path");
+        assert_eq!(artifact.format, ArtifactFormat::GgufLora);
+        assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
+        assert_eq!(std::fs::read_dir(train.path()).unwrap().count(), 0, "nothing left in engine-train");
+        assert_eq!(artifact.metrics.final_loss, Some(2.1));
+        assert_eq!(artifact.metrics.trained_tokens, 80);
+        server.abort();
+    }
+
+    // what this catches: a cancel that reports Cancelled while the engine is still training
+    // (the lease would be released under a live run). The job must call /train/cancel and
+    // report Cancelled only after the engine says the run is cancelled; no adapter survives.
+    #[tokio::test]
+    async fn a_cancel_stops_the_run_on_the_engine_before_the_job_reports_cancelled() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _) = fake_lane(train.path().to_path_buf(), true).await;
+        let t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !matches!(t.poll(&h).await.unwrap(), TrainingStatus::Running { .. }) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("test: never running");
+        t.cancel(&h).await.expect("test: cancel");
+        assert!(matches!(wait_terminal(&t, &h).await, TrainingStatus::Cancelled));
+        let engine: Value = reqwest::get(format!("{url}/train")).await.unwrap().json().await.unwrap();
+        assert_eq!(engine["state"], "cancelled", "the engine's run was stopped, not abandoned");
+        server.abort();
+    }
+
+    // what this catches: a request the engine cannot run is refused before any job exists:
+    // a target with no GGUF equivalent (silently dropping it trains a different adapter), and a
+    // base no live lane serves (in-engine training has nothing to train on).
+    #[tokio::test]
+    async fn unknown_targets_and_unserved_bases_are_refused_up_front() {
+        assert_eq!(gguf_targets(&["q_proj".into(), "attn_v".into(), "q_proj".into()]).unwrap(), "attn_q,attn_v");
+        assert!(gguf_targets(&["lm_head".into()]).is_err());
+        let dir = tempfile::tempdir().expect("test: dir");
+        let mut t = EngineLoraFineTuner::for_test(String::new(), dir.path().into(), dir.path().join("f.json"));
+        t.lane = Box::new(|_| None);
+        assert!(matches!(t.create_job(request("some/other-base")).await, Err(FineTuningError::InvalidRequest(_))));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.lora.as_mut().unwrap().target_modules = vec!["lm_head".into()];
+        assert!(matches!(t.create_job(r).await, Err(FineTuningError::InvalidRequest(_))));
+    }
+
+    // what this catches: progress that jumps or overflows — completed epochs plus the current
+    // epoch's batch fraction, capped at 100.
+    #[test]
+    fn progress_is_completed_epochs_plus_the_current_batch_fraction() {
+        let s = json!({"epochs": [{}], "batch": 2, "batch_max": 4});
+        assert_eq!(progress_of(&s, 2), (75.0, 1));
+        assert_eq!(progress_of(&json!({}), 2), (0.0, 0));
+        assert_eq!(progress_of(&json!({"epochs": [{}, {}, {}]}), 2).0, 100.0);
+    }
+}
