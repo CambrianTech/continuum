@@ -68,6 +68,61 @@ pub struct GeneTrial {
     pub decided_at_ms: Option<u64>,
     #[serde(default)]
     pub verdict: Option<TrialVerdict>,
+    /// The room's outcomes so far, one per settled card, by the genome that worked it.
+    #[serde(default)]
+    pub candidate: ArmTally,
+    #[serde(default)]
+    pub stable: ArmTally,
+    /// The cards already credited: a card's verdict can arrive more than once (a round
+    /// re-grades an instance), and a card counts once.
+    #[serde(default)]
+    pub credited_cards: Vec<Uuid>,
+}
+
+/// Settled cards each arm needs before the gate decides. Enough that one lucky or unlucky
+/// card cannot decide it alone; few enough that a gene is judged within a day of her work.
+pub const MIN_SETTLED_PER_ARM: u32 = 6;
+
+/// PURE: the gate. `None` until both arms have [`MIN_SETTLED_PER_ARM`] settled cards; then
+/// the gene is PROMOTED when its cards passed at least as often as her genome's did, and
+/// RETIRED otherwise. Integer cross-multiplication, so a tie is exactly a tie.
+pub fn gate(candidate: ArmTally, stable: ArmTally) -> Option<(TrialState, String)> {
+    if candidate.settled < MIN_SETTLED_PER_ARM || stable.settled < MIN_SETTLED_PER_ARM {
+        return None;
+    }
+    let lhs = u64::from(candidate.passed) * u64::from(stable.settled);
+    let rhs = u64::from(stable.passed) * u64::from(candidate.settled);
+    let rates = format!(
+        "{}/{} cards passed with the gene, {}/{} without",
+        candidate.passed, candidate.settled, stable.passed, stable.settled
+    );
+    Some(if lhs >= rhs {
+        (TrialState::Promoted, format!("no worse in her work: {rates}"))
+    } else {
+        (TrialState::Retired, format!("worse in her work: {rates}"))
+    })
+}
+
+/// PURE: the gene paths that actually RAN on a card, from its receipts: generations that
+/// were served (a fault ran nothing) by an engine that applies adapters. A cloud provider
+/// ignores `active_adapters`, so a receipt it served proves nothing about a gene (Cormac on
+/// #4473). `None` when no receipt of the card was served by such an engine: the card
+/// credits no arm.
+pub fn genes_that_ran<'a>(
+    receipts: impl IntoIterator<Item = &'a crate::cognition::provenance::GenerationReceipt>,
+) -> Option<std::collections::BTreeSet<String>> {
+    use crate::cognition::provenance::GenerationOutcome;
+    let mut seen = false;
+    let mut genes = std::collections::BTreeSet::new();
+    for r in receipts {
+        if let GenerationOutcome::Served { provider, .. } = &r.outcome {
+            if provider == crate::inference::llama_server::PROVIDER_ID {
+                seen = true;
+                genes.extend(r.genes.iter().cloned());
+            }
+        }
+    }
+    seen.then_some(genes)
 }
 
 impl GeneTrial {
@@ -162,6 +217,96 @@ impl Drop for GenomeRestore {
     }
 }
 
+/// The room judged a card: credit it to her open trials, and carry out any decision it
+/// completes. Called where a card's verdict settles her staged credit
+/// (`training_producer::settle_card_credit`), with that card's receipts.
+pub fn credit_settled_card<'a>(
+    persona: Uuid,
+    card: Uuid,
+    passed: bool,
+    receipts: impl IntoIterator<Item = &'a crate::cognition::provenance::GenerationReceipt>,
+) {
+    let Some(ran) = genes_that_ran(receipts) else {
+        return; // no generation of this card ran on an engine that applies genes
+    };
+    let Some(store) = GeneTrials::default_store() else {
+        return;
+    };
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let decided = match store.credit_card(persona, card, passed, &ran, now_ms) {
+        Ok(d) => d,
+        Err(error) => {
+            crate::probe!(
+                class = "genome.trial.unreadable",
+                persona = %persona,
+                error = error.as_str(),
+                "the gene trial file did not take this card's outcome"
+            );
+            return;
+        }
+    };
+    for t in decided {
+        apply_decision(&t, now_ms);
+    }
+}
+
+/// The effects of a decision. Promoted: its verdict joins the fitness ledger gene recall
+/// ranks by (`progress/<persona>.jsonl`, the rows `cognition/eval` wrote before). Retired:
+/// out of the adapter manifest, so the serving engine retires it in place, and the same
+/// ledger row records the loss. Either way the trial row, already written, is the receipt.
+fn apply_decision(t: &GeneTrial, now_ms: u64) {
+    let rate = |a: ArmTally| if a.settled == 0 { 0.0 } else { f64::from(a.passed) / f64::from(a.settled) };
+    if t.state == TrialState::Retired {
+        if let Err(error) = crate::forge::adapter_manifest::unregister(&t.path) {
+            crate::probe!(
+                class = "genome.trial.unregister_failed",
+                gene = t.alias.as_str(),
+                error = error.as_str(),
+                "a retired gene stayed in the adapter manifest: the engine keeps it loaded (dormant) until it is removed"
+            );
+        }
+    }
+    if let Some(dir) = crate::genome::fitness_ledger::GeneFitnessIndex::default_dir() {
+        let row = serde_json::json!({
+            "geneId": t.alias,
+            "lift": rate(t.candidate) - rate(t.stable),
+            "passRate": rate(t.candidate),
+            "basePassRate": rate(t.stable),
+            "capturedAtMs": now_ms,
+            "source": "her-work",
+            "trial": t.id,
+        });
+        let line = format!("{row}\n");
+        let path = dir.join(format!("{}.jsonl", t.persona_id));
+        let written = std::fs::create_dir_all(&dir).and_then(|_| {
+            use std::io::Write;
+            std::fs::OpenOptions::new().create(true).append(true).open(&path)?.write_all(line.as_bytes())
+        });
+        if let Err(error) = written {
+            crate::probe!(
+                class = "genome.trial.ledger_unwritten",
+                gene = t.alias.as_str(),
+                error = %error,
+                "the verdict did not reach the fitness ledger: recall ranks this gene without it"
+            );
+        }
+    }
+    let verdict = t.verdict.as_ref();
+    crate::probe!(
+        class = "genome.trial.decided",
+        persona = %t.persona_id,
+        gene = t.alias.as_str(),
+        trial = %t.id,
+        promoted = t.state == TrialState::Promoted,
+        candidate_passed = t.candidate.passed as u64,
+        candidate_settled = t.candidate.settled as u64,
+        stable_passed = t.stable.passed as u64,
+        stable_settled = t.stable.settled as u64,
+        reason = verdict.map_or("", |v| v.reason.as_str()),
+        "her work decided a gene: promoted into her genome, or retired out of it"
+    );
+}
+
 /// The trial file.
 pub struct GeneTrials {
     path: PathBuf,
@@ -227,10 +372,49 @@ impl GeneTrials {
             state: TrialState::Trial,
             decided_at_ms: None,
             verdict: None,
+            candidate: ArmTally::default(),
+            stable: ArmTally::default(),
+            credited_cards: Vec::new(),
         };
         all.push(trial.clone());
         self.save(&all)?;
         Ok(trial)
+    }
+
+    /// Credit one settled card to every open trial of `persona`: the candidate arm when the
+    /// trial's gene ran on it, the stable arm otherwise, once per card. Returns the trials
+    /// the gate decided on this credit (already written as decided).
+    pub fn credit_card(
+        &self,
+        persona: Uuid,
+        card: Uuid,
+        passed: bool,
+        ran: &std::collections::BTreeSet<String>,
+        now_ms: u64,
+    ) -> Result<Vec<GeneTrial>, String> {
+        let mut all = self.load()?;
+        let mut decided = Vec::new();
+        let mut changed = false;
+        for t in all.iter_mut().filter(|t| t.persona_id == persona && t.state == TrialState::Trial) {
+            if t.credited_cards.contains(&card) {
+                continue;
+            }
+            let arm = if ran.contains(&*t.path.to_string_lossy()) { &mut t.candidate } else { &mut t.stable };
+            arm.settled += 1;
+            arm.passed += u32::from(passed);
+            t.credited_cards.push(card);
+            changed = true;
+            if let Some((state, reason)) = gate(t.candidate, t.stable) {
+                t.state = state;
+                t.decided_at_ms = Some(now_ms);
+                t.verdict = Some(TrialVerdict { candidate: t.candidate, stable: t.stable, reason });
+                decided.push(t.clone());
+            }
+        }
+        if changed {
+            self.save(&all)?;
+        }
+        Ok(decided)
     }
 
     /// Record the gate's decision on an open trial. A trial already decided is left as it
@@ -292,5 +476,66 @@ mod tests {
         let trials = store.load().unwrap();
         assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", None).len(), 1, "promoted runs every turn");
         assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_off))[0].path, "/genes/k1.gguf");
+    }
+
+    // what this catches: a gate that decides on too little of her work, that calls a tie a
+    // loss, or that lets a gene worse in her work stay.
+    #[test]
+    fn the_gate_waits_for_both_arms_and_promotes_only_what_is_no_worse() {
+        let a = |passed, settled| ArmTally { settled, passed };
+        assert_eq!(gate(a(6, 6), a(1, 5)), None, "the stable arm has 5 settled cards, not 6");
+        assert_eq!(gate(a(3, 6), a(3, 6)).map(|g| g.0), Some(TrialState::Promoted), "a tie is no worse");
+        assert_eq!(gate(a(4, 8), a(3, 6)).map(|g| g.0), Some(TrialState::Promoted), "4/8 = 3/6");
+        assert_eq!(gate(a(2, 6), a(3, 6)).map(|g| g.0), Some(TrialState::Retired));
+        assert!(gate(a(2, 6), a(3, 6)).unwrap().1.contains("2/6 cards passed with the gene, 3/6 without"));
+    }
+
+    // what this catches (Cormac on #4473): a card credited to a gene that did not reach the
+    // graph. Only SERVED generations from an engine that applies adapters count; a cloud
+    // call ignores the gene, and a fault ran nothing. A card no such engine served credits
+    // no arm at all.
+    #[test]
+    fn only_a_gene_applying_engine_s_served_calls_say_what_ran() {
+        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+        let served = |provider: &str, genes: &[&str]| GenerationReceipt {
+            submitted_request_id: "r".into(),
+            outcome: GenerationOutcome::Served { model: "m".into(), provider: provider.into(), provider_request_id: None },
+            capture: None,
+            genes: genes.iter().map(|g| g.to_string()).collect(),
+        };
+        let local = crate::inference::llama_server::PROVIDER_ID;
+        let fault = GenerationReceipt::faulted("r", "x").with_genes(vec!["/genes/k1.gguf".into()]);
+        let cloud = served("anthropic", &["/genes/k1.gguf"]);
+        assert_eq!(genes_that_ran([&cloud, &fault]), None, "nothing a gene could have run on");
+        let ran = genes_that_ran([&cloud, &served(local, &[]), &served(local, &["/genes/k1.gguf"])]).unwrap();
+        assert!(ran.contains("/genes/k1.gguf"));
+        assert!(genes_that_ran([&served(local, &[])]).unwrap().is_empty(), "served on her genome alone");
+    }
+
+    // what this catches: a card counted twice when its verdict arrives again, a card credited
+    // to the wrong arm, and a trial that never decides once both arms are full.
+    #[test]
+    fn each_settled_card_counts_once_in_its_arm_and_the_gate_decides_when_both_are_full() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let store = GeneTrials::at(dir.path().join("trials.json"));
+        let kimi = Uuid::from_u128(0x6b1);
+        let t = store.open(kimi, "kimi-dream-1", Path::new("/genes/k1.gguf"), "qwen-27b", 10).unwrap();
+        let with: std::collections::BTreeSet<String> = ["/genes/k1.gguf".to_string()].into();
+        let without = std::collections::BTreeSet::new();
+        let card = Uuid::from_u128(1);
+        assert!(store.credit_card(kimi, card, true, &with, 20).unwrap().is_empty());
+        assert!(store.credit_card(kimi, card, true, &with, 21).unwrap().is_empty(), "the same card again");
+        let now = store.load().unwrap().into_iter().find(|x| x.id == t.id).unwrap();
+        assert_eq!((now.candidate, now.stable), (ArmTally { settled: 1, passed: 1 }, ArmTally::default()));
+        for i in 2..=6u128 {
+            assert!(store.credit_card(kimi, Uuid::from_u128(i), i % 2 == 0, &with, 30).unwrap().is_empty());
+        }
+        let mut decided = Vec::new();
+        for i in 100..106u128 {
+            decided = store.credit_card(kimi, Uuid::from_u128(i), i < 102, &without, 40).unwrap();
+        }
+        let d = decided.first().expect("the sixth stable card completes the gate");
+        assert_eq!(d.state, TrialState::Promoted, "4/6 with the gene against 2/6 without");
+        assert!(store.credit_card(kimi, Uuid::from_u128(200), false, &without, 50).unwrap().is_empty(), "a decided trial takes no more cards");
     }
 }
