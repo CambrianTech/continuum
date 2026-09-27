@@ -1649,12 +1649,11 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
         }
         // The room judged this card, so her open gene trials hear it: the card is credited
         // to the genome that worked it, named by its receipts (genome/gene_trial.rs).
-        crate::genome::gene_trial::credit_settled_card(
-            persona_id,
-            card_id,
-            passed,
-            rows.iter().flat_map(|r| r.receipts.iter()),
-        );
+        let turns: Vec<crate::genome::gene_trial::CardTurn> = rows
+            .iter()
+            .map(|r| crate::genome::gene_trial::CardTurn::from_receipts(r.staged_at_ms, &r.receipts))
+            .collect();
+        crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
         let mut submitted = 0usize;
         let mut rows = rows;
         rows.sort_by_key(|r| r.staged_at_ms);

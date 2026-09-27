@@ -103,26 +103,62 @@ pub fn gate(candidate: ArmTally, stable: ArmTally) -> Option<(TrialState, String
     })
 }
 
-/// PURE: the gene paths that actually RAN on a card, from its receipts: generations that
-/// were served (a fault ran nothing) by an engine that applies adapters. A cloud provider
-/// ignores `active_adapters`, so a receipt it served proves nothing about a gene (Cormac on
-/// #4473). `None` when no receipt of the card was served by such an engine: the card
-/// credits no arm.
-pub fn genes_that_ran<'a>(
-    receipts: impl IntoIterator<Item = &'a crate::cognition::provenance::GenerationReceipt>,
-) -> Option<std::collections::BTreeSet<String>> {
-    use crate::cognition::provenance::GenerationOutcome;
-    let mut seen = false;
-    let mut genes = std::collections::BTreeSet::new();
-    for r in receipts {
-        if let GenerationOutcome::Served { provider, .. } = &r.outcome {
-            if provider == crate::inference::llama_server::PROVIDER_ID {
-                seen = true;
-                genes.extend(r.genes.iter().cloned());
-            }
-        }
+/// One turn of a settled card, as the gate reads it: when it was staged, and, for each
+/// generation SERVED by an engine that applies adapters, the model that served it and the
+/// genes that ran. A cloud call ignores `active_adapters` and a fault ran nothing, so
+/// neither says anything about a gene (Cormac on #4473).
+#[derive(Debug, Clone, Default)]
+pub struct CardTurn {
+    pub staged_at_ms: u64,
+    pub served: Vec<(String, std::collections::BTreeSet<String>)>,
+}
+
+impl CardTurn {
+    /// PURE: the gate's reading of one staged turn's receipts.
+    pub fn from_receipts<'a>(
+        staged_at_ms: u64,
+        receipts: impl IntoIterator<Item = &'a crate::cognition::provenance::GenerationReceipt>,
+    ) -> Self {
+        use crate::cognition::provenance::GenerationOutcome;
+        let served = receipts
+            .into_iter()
+            .filter_map(|r| match &r.outcome {
+                GenerationOutcome::Served { model, provider, .. }
+                    if provider == crate::inference::llama_server::PROVIDER_ID =>
+                {
+                    Some((model.clone(), r.genes.iter().cloned().collect()))
+                }
+                _ => None,
+            })
+            .collect();
+        Self { staged_at_ms, served }
     }
-    seen.then_some(genes)
+}
+
+/// PURE: which arm of trial `t` a settled card belongs to, or `None` when it is no evidence
+/// about `t` at all (Codex on #4476: a card must never be credited to a trial it was not
+/// part of). A card counts for `t` only when EVERY one of its turns was staged after `t`
+/// opened (the arm is drawn from the card's start), and only its generations served on
+/// `t`'s base are read; with none, it says nothing. Then: the gene ran on every one of them
+/// → candidate; on none → stable; on some → neither (a card that switched genome mid-way
+/// cannot be credited to either).
+pub fn arm_of(t: &GeneTrial, turns: &[CardTurn]) -> Option<bool> {
+    if turns.is_empty() || turns.iter().any(|turn| turn.staged_at_ms < t.opened_at_ms) {
+        return None;
+    }
+    let gene = t.path.to_string_lossy();
+    let on_base: Vec<bool> = turns
+        .iter()
+        .flat_map(|turn| turn.served.iter())
+        .filter(|(model, _)| *model == t.base_model_id)
+        .map(|(_, genes)| genes.contains(gene.as_ref()))
+        .collect();
+    match (on_base.iter().all(|&ran| ran), on_base.iter().any(|&ran| ran)) {
+        _ if on_base.is_empty() => None,
+        (true, _) => Some(true),
+        (false, false) => Some(false),
+        (false, true) => None,
+    }
 }
 
 impl GeneTrial {
@@ -220,20 +256,12 @@ impl Drop for GenomeRestore {
 /// The room judged a card: credit it to her open trials, and carry out any decision it
 /// completes. Called where a card's verdict settles her staged credit
 /// (`training_producer::settle_card_credit`), with that card's receipts.
-pub fn credit_settled_card<'a>(
-    persona: Uuid,
-    card: Uuid,
-    passed: bool,
-    receipts: impl IntoIterator<Item = &'a crate::cognition::provenance::GenerationReceipt>,
-) {
-    let Some(ran) = genes_that_ran(receipts) else {
-        return; // no generation of this card ran on an engine that applies genes
-    };
+pub fn credit_settled_card(persona: Uuid, card: Uuid, passed: bool, turns: &[CardTurn]) {
     let Some(store) = GeneTrials::default_store() else {
         return;
     };
     let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
-    let decided = match store.credit_card(persona, card, passed, &ran, now_ms) {
+    let decided = match store.credit_card(persona, card, passed, turns, now_ms) {
         Ok(d) => d,
         Err(error) => {
             crate::probe!(
@@ -381,15 +409,15 @@ impl GeneTrials {
         Ok(trial)
     }
 
-    /// Credit one settled card to every open trial of `persona`: the candidate arm when the
-    /// trial's gene ran on it, the stable arm otherwise, once per card. Returns the trials
-    /// the gate decided on this credit (already written as decided).
+    /// Credit one settled card to each open trial of `persona` it is evidence about
+    /// ([`arm_of`]), once per card. Returns the trials the gate decided on this credit
+    /// (already written as decided).
     pub fn credit_card(
         &self,
         persona: Uuid,
         card: Uuid,
         passed: bool,
-        ran: &std::collections::BTreeSet<String>,
+        turns: &[CardTurn],
         now_ms: u64,
     ) -> Result<Vec<GeneTrial>, String> {
         let mut all = self.load()?;
@@ -399,7 +427,10 @@ impl GeneTrials {
             if t.credited_cards.contains(&card) {
                 continue;
             }
-            let arm = if ran.contains(&*t.path.to_string_lossy()) { &mut t.candidate } else { &mut t.stable };
+            let Some(candidate) = arm_of(t, turns) else {
+                continue;
+            };
+            let arm = if candidate { &mut t.candidate } else { &mut t.stable };
             arm.settled += 1;
             arm.passed += u32::from(passed);
             t.credited_cards.push(card);
@@ -490,26 +521,36 @@ mod tests {
         assert!(gate(a(2, 6), a(3, 6)).unwrap().1.contains("2/6 cards passed with the gene, 3/6 without"));
     }
 
-    // what this catches (Cormac on #4473): a card credited to a gene that did not reach the
-    // graph. Only SERVED generations from an engine that applies adapters count; a cloud
-    // call ignores the gene, and a fault ran nothing. A card no such engine served credits
-    // no arm at all.
+    // what this catches (Cormac on #4473, Codex on #4476): a card credited to a trial it was
+    // never part of. Only SERVED generations from an engine that applies adapters count, and
+    // only those served on the trial's base; a card begun before the trial opened, or one
+    // that ran the gene on some turns and not others, is no evidence either way.
     #[test]
-    fn only_a_gene_applying_engine_s_served_calls_say_what_ran() {
+    fn a_card_is_evidence_only_about_a_trial_it_was_worked_under() {
         use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
-        let served = |provider: &str, genes: &[&str]| GenerationReceipt {
+        let local = crate::inference::llama_server::PROVIDER_ID;
+        let served = |provider: &str, model: &str, genes: &[&str]| GenerationReceipt {
             submitted_request_id: "r".into(),
-            outcome: GenerationOutcome::Served { model: "m".into(), provider: provider.into(), provider_request_id: None },
+            outcome: GenerationOutcome::Served { model: model.into(), provider: provider.into(), provider_request_id: None },
             capture: None,
             genes: genes.iter().map(|g| g.to_string()).collect(),
         };
-        let local = crate::inference::llama_server::PROVIDER_ID;
+        let dir = tempfile::tempdir().expect("test: dir");
+        let t = GeneTrials::at(dir.path().join("t.json"))
+            .open(Uuid::from_u128(1), "g", Path::new("/genes/k1.gguf"), "qwen-27b", 100)
+            .unwrap();
+        let turn = |at: u64, rs: &[GenerationReceipt]| CardTurn::from_receipts(at, rs.iter());
+        let with = served(local, "qwen-27b", &["/genes/k1.gguf"]);
+        let without = served(local, "qwen-27b", &[]);
+        assert_eq!(arm_of(&t, &[turn(200, &[with.clone()]), turn(300, &[with.clone()])]), Some(true));
+        assert_eq!(arm_of(&t, &[turn(200, &[without.clone()])]), Some(false));
+        assert_eq!(arm_of(&t, &[turn(50, &[without.clone()]), turn(200, &[with.clone()])]), None, "begun before the trial opened");
+        assert_eq!(arm_of(&t, &[turn(200, &[served(local, "other-base", &[])])]), None, "another base says nothing");
+        assert_eq!(arm_of(&t, &[turn(200, &[served("anthropic", "qwen-27b", &[])])]), None, "a cloud call ignores genes");
         let fault = GenerationReceipt::faulted("r", "x").with_genes(vec!["/genes/k1.gguf".into()]);
-        let cloud = served("anthropic", &["/genes/k1.gguf"]);
-        assert_eq!(genes_that_ran([&cloud, &fault]), None, "nothing a gene could have run on");
-        let ran = genes_that_ran([&cloud, &served(local, &[]), &served(local, &["/genes/k1.gguf"])]).unwrap();
-        assert!(ran.contains("/genes/k1.gguf"));
-        assert!(genes_that_ran([&served(local, &[])]).unwrap().is_empty(), "served on her genome alone");
+        assert_eq!(arm_of(&t, &[turn(200, &[fault])]), None, "a fault ran nothing");
+        assert_eq!(arm_of(&t, &[turn(200, &[with.clone()]), turn(300, &[without.clone()])]), None, "switched mid-card");
+        assert_eq!(arm_of(&t, &[turn(200, &[with, served(local, "other-base", &[])])]), Some(true), "only its base is read");
     }
 
     // what this catches: a card counted twice when its verdict arrives again, a card credited
@@ -520,8 +561,15 @@ mod tests {
         let store = GeneTrials::at(dir.path().join("trials.json"));
         let kimi = Uuid::from_u128(0x6b1);
         let t = store.open(kimi, "kimi-dream-1", Path::new("/genes/k1.gguf"), "qwen-27b", 10).unwrap();
-        let with: std::collections::BTreeSet<String> = ["/genes/k1.gguf".to_string()].into();
-        let without = std::collections::BTreeSet::new();
+        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
+        let served = |genes: &[&str]| GenerationReceipt {
+            submitted_request_id: "r".into(),
+            outcome: GenerationOutcome::Served { model: "qwen-27b".into(), provider: crate::inference::llama_server::PROVIDER_ID.into(), provider_request_id: None },
+            capture: None,
+            genes: genes.iter().map(|g| g.to_string()).collect(),
+        };
+        let with = vec![CardTurn::from_receipts(20, [&served(&["/genes/k1.gguf"])])];
+        let without = vec![CardTurn::from_receipts(20, [&served(&[])])];
         let card = Uuid::from_u128(1);
         assert!(store.credit_card(kimi, card, true, &with, 20).unwrap().is_empty());
         assert!(store.credit_card(kimi, card, true, &with, 21).unwrap().is_empty(), "the same card again");
