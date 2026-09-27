@@ -169,6 +169,7 @@ pub(crate) mod test_support {
                 prompt: "ctx".into(),
                 completion: "act".into(),
                 metadata: None,
+                lived: None,
             }],
             source: TrainingSource::OperatorCurated,
             validation_split: 0.0,

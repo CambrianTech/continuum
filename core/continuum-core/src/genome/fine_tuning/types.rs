@@ -204,6 +204,7 @@ impl TrainingDataset {
                 prompt,
                 completion,
                 metadata: metadata.map(serde_json::Value::Object),
+                lived: None,
             });
         }
         if examples.is_empty() {
@@ -236,6 +237,30 @@ pub struct TrainingExample {
     #[ts(optional)]
     #[ts(type = "Record<string, unknown> | undefined")]
     pub metadata: Option<serde_json::Value>,
+    /// The call she actually lived, when this example came from one (card ad107e18):
+    /// the exact request the engine was served and her exact response, reasoning and
+    /// tool calls included. A trainer that renders it trains on what she saw and did;
+    /// `prompt`/`completion` stay as its flat projection for trainers that take text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[schemars(with = "Option<serde_json::Value>")]
+    pub lived: Option<LivedCall>,
+}
+
+/// One served call exactly as it happened, read back from the prompt capture.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/LivedCall.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct LivedCall {
+    /// The capture cursor it was read from: the link back to the trace.
+    pub capture: String,
+    /// The request as submitted to the engine: room, grounding, tools, stimulus.
+    pub request: crate::ai::types::TextGenerationRequest,
+    /// Her response: text, reasoning and tool calls.
+    pub response: crate::ai::types::TextGenerationResponse,
 }
 
 /// Where this dataset came from. The substrate's reputation signal

@@ -395,6 +395,7 @@ mod tests {
             prompt: p.into(),
             completion: c.into(),
             metadata: None,
+            lived: None,
         }
     }
 

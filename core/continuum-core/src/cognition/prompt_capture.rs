@@ -383,6 +383,46 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
     }
 }
 
+/// One recorded call read back from its capture: the exact request she was served
+/// and, when the call finished, the exact response she gave. The single decode of a
+/// schema-4 capture; replay and the training lifter both read through it.
+pub(crate) struct CapturedCall {
+    pub context_window: Option<u32>,
+    pub request: TextGenerationRequest,
+    pub response: Option<TextGenerationResponse>,
+}
+
+/// Decode a capture's detail into its typed call. Refuses a capture with integrity
+/// issues or an older schema rather than guessing at its shape.
+pub(crate) fn decode(mut detail: PlaybackDetail) -> Result<CapturedCall, String> {
+    if !detail.issues.is_empty() {
+        return Err(format!("capture integrity: {}", detail.issues.join("; ")));
+    }
+    let mut submitted = detail
+        .submitted
+        .take()
+        .ok_or("capture has no submitted request")?;
+    if submitted.get("schema_version").and_then(|v| v.as_u64()) != Some(4) {
+        return Err("unsupported captured-request schema; schema 4 is required".into());
+    }
+    let context_window: Option<u32> = serde_json::from_value(submitted["context_window"].take()) // BOUNDARY: decode the persisted capture header, preserving unknown window as None.
+        .map_err(|e| format!("captured context window: {e}"))?;
+    let request: TextGenerationRequest = serde_json::from_value(submitted["request"].take()) // BOUNDARY: the on-disk request payload into the adapter's typed input.
+        .map_err(|e| format!("captured request: {e}"))?;
+    let response = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
+        Some(value) if !value.is_null() => Some(
+            serde_json::from_value::<TextGenerationResponse>(value.take()) // BOUNDARY: the persisted terminal response.
+                .map_err(|e| format!("captured response: {e}"))?,
+        ),
+        _ => None,
+    };
+    Ok(CapturedCall {
+        context_window,
+        request,
+        response,
+    })
+}
+
 /// Old combined rows already cross the JSON compatibility boundary. Inspect
 /// only their typed status fields, without cloning/deserializing the transcript.
 fn recorded_response_failed(response: &serde_json::Value) -> bool {

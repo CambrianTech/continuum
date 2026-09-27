@@ -128,5 +128,5 @@ pub use training_loop::{
 };
 pub use types::{
     ArtifactFormat, JobHandle, JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact,
-    TrainingDataset, TrainingExample, TrainingJobRequest, TrainingSource, TrainingStatus,
+    LivedCall, TrainingDataset, TrainingExample, TrainingJobRequest, TrainingSource, TrainingStatus,
 };

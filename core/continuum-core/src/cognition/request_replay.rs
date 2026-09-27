@@ -88,7 +88,7 @@ struct Prepared {
 }
 
 fn prepare(
-    mut detail: prompt_capture::PlaybackDetail,
+    detail: prompt_capture::PlaybackDetail,
     p: &ReplayRequestParams,
     persona: Uuid,
 ) -> Result<Prepared, CommandError> {
@@ -103,29 +103,12 @@ fn prepare(
             "provider must be explicit and max_tokens must be positive".into(),
         ));
     }
-    let mut submitted = detail
-        .submitted
-        .take()
-        .ok_or_else(|| CommandError::Invalid("capture has no submitted request".into()))?;
-    if submitted.get("schema_version").and_then(|v| v.as_u64()) != Some(4) {
-        return Err(CommandError::Invalid(
-            "unsupported captured-request schema; replay requires schema 4".into(),
-        ));
-    }
-    let context_window: Option<u32> =
-        serde_json::from_value(submitted["context_window"].take()) // BOUNDARY: decode the persisted capture header, preserving unknown window as None.
-            .map_err(|e| CommandError::Invalid(format!("captured context window: {e}")))?;
-    let mut request: TextGenerationRequest =
-        serde_json::from_value(submitted["request"].take()) // BOUNDARY: consume the existing on-disk request payload into the adapter's typed input.
-            .map_err(|e| CommandError::Invalid(format!("captured request: {e}")))?;
-    let original = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
-        Some(value) if !value.is_null() => {
-            let response: TextGenerationResponse = serde_json::from_value(value.take()) // BOUNDARY: decode the persisted terminal response for the original outcome comparison.
-                .map_err(|e| CommandError::Invalid(format!("captured response: {e}")))?;
-            Some(ReplayOutcome::from(&response))
-        }
-        _ => None,
-    };
+    let prompt_capture::CapturedCall {
+        context_window,
+        mut request,
+        response,
+    } = prompt_capture::decode(detail).map_err(CommandError::Invalid)?;
+    let original = response.as_ref().map(ReplayOutcome::from);
     // An implicit provider default is only reproducible when the terminal receipt
     // identifies what actually served it. Never substitute today's default.
     let model_from_response = request.model.as_deref().is_none_or(|m| m.trim().is_empty());
