@@ -1144,10 +1144,10 @@ impl PrebuiltCore {
     }
 }
 
-/// Free memory a warm build needs beside a serving core: rustc's codegen wants ~7 GiB
-/// (BigMama, 2026-09-05: test builds killed at 2.59 GiB free beside a 39 GiB server) —
-/// twelve leaves the server, the citizens and the build their room.
-const WARM_BUILD_MIN_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+/// The floor below which a warm build refuses: one rustc job plus the reserve kept for the
+/// citizens and the core. Between it and plenty the build takes fewer jobs
+/// ([`continuum_core::inference::llama_server::warm_build_jobs_for_memory`]).
+const WARM_BUILD_MIN_FREE_BYTES: u64 = continuum_core::inference::llama_server::WARM_BUILD_MIN_FREE_BYTES;
 
 /// The scheduler owns this foreground host and its core as one process tree.
 /// Runtime DLL/config resolution is the same as every other native CLI launch.
@@ -1698,7 +1698,7 @@ fn warm_build_allowed(free_bytes: u64, script: Option<PathBuf>) -> Result<PathBu
 /// so "every reader" shares one answer. This function was not one of those readers.
 ///
 /// The cost was the whole warm-build path on every Mac. `warm_build_allowed` compares
-/// this against `WARM_BUILD_MIN_FREE_BYTES` (12 GiB), so a permanent 0 meant the gate
+/// this against `WARM_BUILD_MIN_FREE_BYTES` (then 12 GiB), so a permanent 0 meant the gate
 /// could never open: every deploy stopped the core first and built afterwards, and every
 /// stop cut whatever was mid-turn. Measured on the M5 2026-09-21, two consecutive
 /// deploys 35 minutes apart printed `no warm build: 0.0 GiB free` and reported
@@ -1769,8 +1769,16 @@ impl Drop for WarmBuildReceipt {
 /// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
 /// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
 fn yield_to_serving(cmd: &mut std::process::Command) {
+    // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
+    // the memory the serving node has left (a lane that fills memory must not stop deploys).
     let backend = continuum_core::inference::llama_server::installed_engine_backend();
-    if let Some(jobs) = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref()) {
+    let cores = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref());
+    let memory = continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes());
+    let jobs = match (cores, memory) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    if let Some(jobs) = jobs {
         cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
     }
     #[cfg(unix)]
