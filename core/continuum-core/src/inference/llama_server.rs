@@ -1050,8 +1050,9 @@ pub enum GenomeInPlace {
     /// This engine cannot load at runtime (no --train-dir, or it predates
     /// `/lora-adapters/load`), or a gene has no stageable name: relaunch, as before.
     Unsupported,
-    /// A retiring adapter is active in a turn in flight: nothing changed, ask next tick
-    /// (a relaunch here would kill that turn).
+    /// A retiring adapter is active in a turn in flight: the change stopped there, with every
+    /// step before it applied and recorded, and the rest waits a tick (a relaunch here would
+    /// kill that turn).
     Busy,
 }
 
