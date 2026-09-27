@@ -242,15 +242,7 @@ pub fn read(root: &Path) -> Option<DeployClaim> {
 /// every platform (the old Windows arm matched the pid as a substring of `tasklist`'s
 /// output, so pid 42 read alive whenever any pid containing "42" existed).
 pub fn owner_alive(pid: i32) -> bool {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let target = Pid::from_u32(pid as u32);
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[target]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    sys.process(target).is_some()
+    u32::try_from(pid).is_ok_and(crate::inference::lane_process::is_alive)
 }
 
 /// The deploy in flight on this host, as the core sees it: `InProgress` while a live

@@ -1047,6 +1047,7 @@ pub(crate) async fn run_env(
     let child = cmd
         .spawn()
         .map_err(|e| format!("could not run `{program}`: {e}"))?;
+    #[cfg(unix)]
     let child_pid = child.id();
     match tokio::time::timeout(SUBPROCESS_CEILING, child.wait_with_output()).await {
         Ok(out) => out.map_err(|e| format!("could not run `{program}`: {e}")),

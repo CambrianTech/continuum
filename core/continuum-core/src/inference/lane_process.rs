@@ -15,31 +15,20 @@
 //! No new dependency: `libc` is already in the tree; identity via `ps -p <pid> -o
 //! comm=` works identically on macOS and Linux.
 
-/// True if `pid` names a live process. `kill(pid, 0)` sends no signal: `0` = alive
-/// and ours; `EPERM` = alive but owned by another user (still alive); `ESRCH` =
-/// gone.
-#[cfg(unix)]
+/// True if `pid` names a live process — the ONE liveness check (`deploy_claim::owner_alive`
+/// and the grid's job table ask it too). The process table itself via `sysinfo`, on every
+/// platform. The Windows arm used to scrape `tasklist` output for the pid as a SUBSTRING, so pid
+/// 42 read alive whenever any pid containing "42" existed (the bug deploy_claim had already
+/// fixed with exactly this lookup).
 pub fn is_alive(pid: u32) -> bool {
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if rc == 0 {
-        return true;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    if pid == 0 {
+        return false;
     }
-    matches!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(e) if e == libc::EPERM
-    )
-}
-
-/// Windows: no `kill(pid, 0)`. Query the task table — a matching row means the
-/// pid is live. `tasklist` failing (unavailable / no permission) is treated as
-/// "not alive", matching the Unix path's conservative-on-error stance.
-#[cfg(windows)]
-pub fn is_alive(pid: u32) -> bool {
-    std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
+    let target = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[target]), true, ProcessRefreshKind::nothing());
+    sys.process(target).is_some()
 }
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
@@ -484,6 +473,21 @@ pub fn launch_kv_in(argv: &[String]) -> LaunchKv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the one liveness check lying either way — this process is alive, pid 0
+    // is never alive (it is not a process; signalling it hits the caller's group), and a pid no
+    // process holds is dead even when live pids CONTAIN its digits (the tasklist substring
+    // scrape read pid 42 alive whenever a pid like 4213 existed).
+    #[test]
+    fn liveness_is_the_process_table_not_a_text_match() {
+        let me = std::process::id();
+        assert!(is_alive(me));
+        assert!(!is_alive(0));
+        let dead = (1..u32::MAX / 4).map(|k| me.wrapping_mul(10).wrapping_add(k % 10) + k * 1000)
+            .find(|p| !sysinfo::System::new_all().process(sysinfo::Pid::from_u32(*p)).is_some())
+            .expect("an unused pid");
+        assert!(!is_alive(dead));
+    }
 
     // what this catches: the Windows port-owner lookup returning None for a port
     // that IS held. Regression for the 2026-09-05 wedge on BigMama — `lsof` does
