@@ -277,7 +277,8 @@ impl PerceptionFact for StepsLedger {
         // oldest shown step up to a multiple of LEDGER_HEAD_STEP, so the head moves once
         // per LEDGER_HEAD_STEP acts. The fold line below counts what the rounding hid.
         let in_scope_total = archive.len().saturating_sub(elsewhere);
-        let fit = align_head(fit, fit.len() < in_scope_total);
+        let truncated = fit.len() < in_scope_total;
+        let fit = align_head(fit, truncated);
         // The act counter keeps counting past what the archive holds (and
         // survives reboots that predate the archive). Three states, each
         // honest (glass-boxed 2026-07-13: the old zero-case would have DENIED
