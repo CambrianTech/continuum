@@ -2748,6 +2748,7 @@ pub(crate) mod tests {
                 provider_request_id: Some("provider-request-a".into()),
             },
             capture: None,
+            genes: Vec::new(),
         });
         receipts.push(receipt("failed-after-serving"));
         let homogeneous = served_provenance(&receipts).unwrap();
@@ -2761,6 +2762,7 @@ pub(crate) mod tests {
                 provider_request_id: None,
             },
             capture: None,
+            genes: Vec::new(),
         });
         assert!(served_provenance(&receipts).is_none());
         let last = receipts.last_mut().unwrap();
@@ -3203,6 +3205,7 @@ pub(crate) mod tests {
                 provider_request_id: None,
             },
             capture: None,
+            genes: Vec::new(),
         }
     }
 
