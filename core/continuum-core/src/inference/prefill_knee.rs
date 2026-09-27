@@ -48,12 +48,16 @@ pub struct SlotCount {
     pub task: i64,
     pub prompt: u64,
     pub processed: u64,
+    pub processing: bool,
 }
 
 impl SlotCount {
-    /// This slot still has prompt left to read: the server is prefilling for it.
+    /// This slot is serving a request that still has prompt left to read. `is_processing`
+    /// is required: a slot cancelled mid-prefill keeps its stale counters while idle, and
+    /// counting it made every later interval busy with no tokens, so the rate drifted to 0,
+    /// toward fewer lanes (Cormac on #4454; the IntelMac's slot 3 read 2048 / 0 at 07:08Z).
     fn prefilling(&self) -> bool {
-        self.processed < self.prompt
+        self.processing && self.processed < self.prompt
     }
 }
 
@@ -69,6 +73,7 @@ pub fn slot_counts_of(slots: &serde_json::Value) -> Option<Vec<SlotCount>> {
                 task: s["id_task"].as_i64().unwrap_or(-1), // JUSTIFIED unwrap_or: no task id is its own task (-1), never equal to a real one
                 prompt: n(&s["n_prompt_tokens"]),
                 processed: n(&s["n_prompt_tokens_processed"]),
+                processing: s["is_processing"].as_bool() == Some(true),
             })
             .collect(),
     )
@@ -202,7 +207,7 @@ mod tests {
     use super::*;
 
     fn slot(id: u64, task: i64, prompt: u64, processed: u64) -> SlotCount {
-        SlotCount { id, task, prompt, processed }
+        SlotCount { id, task, prompt, processed, processing: processed < prompt }
     }
 
     // what this catches: a rate that swings with the ubatch step, or reads an idle server
@@ -254,6 +259,24 @@ mod tests {
         // a task counter that went backwards inside one tick is a relaunch too
         let _ = w.observe(vec![slot(0, 1, 20_000, 1_024)], 630_000);
         assert_eq!((w.tokens, w.busy_ms), (2_048, 15_000), "a restarted engine adds nothing");
+    }
+
+    // what this catches: an abandoned slot read as busy forever (Cormac on #4454). A request
+    // cut off mid-prefill leaves its slot idle with stale partial counters (the IntelMac's
+    // slot 3, 2048 / 0, at 07:08Z); it must add no busy time, or the rate drifts to zero.
+    #[test]
+    fn an_idle_slot_with_stale_partial_counters_is_not_prefilling() {
+        let stale = SlotCount { id: 3, task: 40, prompt: 2_048, processed: 0, processing: false };
+        let mut w = PrefillWindow::default();
+        for i in 0..40u64 {
+            assert_eq!(w.observe(vec![stale], i * 15_000), None);
+        }
+        assert_eq!(w.busy_ms, 0, "an idle slot is idle whatever its counters say");
+        let parsed = slot_counts_of(&serde_json::json!([
+            {"id": 3, "id_task": 40, "n_prompt_tokens": 2048, "n_prompt_tokens_processed": 0, "is_processing": false}
+        ]))
+        .expect("test: slots");
+        assert_eq!(parsed, vec![stale]);
     }
 
     // what this catches: the bound's arithmetic and its edges. 45 tok/s over a 180 s budget
