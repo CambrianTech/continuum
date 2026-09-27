@@ -3051,10 +3051,12 @@ impl LlmDeliberationFaculty {
             room_id: Some(ws.room_id),
             persona_id: Some(self.persona_id),
         };
-        let facts = super::perception_facts::render_facts(
+        let (ledger, facts): (Vec<String>, Vec<String>) = super::perception_facts::render_facts(
             &fact_cx,
             &super::perception_facts::FactPolicy::default(),
-        );
+        )
+        .into_iter()
+        .partition(|fact| super::perception_facts::is_steps_ledger(fact));
         // MESSAGE ORDER IS MONOTONE IN STABILITY (2026-08-23, the byte-diff
         // verdict). Consecutive-act prompt captures showed the flickering
         // content — perception facts whose presence/wording changes per act,
@@ -3222,6 +3224,7 @@ impl LlmDeliberationFaculty {
             stimulus,
             latest_result,
             room_updates,
+            ledger: ledger.into_iter().next().map(|text| ChatMessage::text("user", text)),
         }
     }
 
@@ -3622,9 +3625,23 @@ impl LlmDeliberationFaculty {
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);
         let grounding_at = prompt.grounding_at.saturating_sub(start);
-        prompt.history.extend(prompt.stimulus);
-        prompt.history.extend(prompt.room_updates);
-        prompt.history.extend(prompt.latest_result);
+        // The steps ledger changes on every act (a new action at its tail, an old one aged
+        // out at its head). In a multi-act turn it rides after everything append-only
+        // across the acts and just before the pinned result, which stays last (card
+        // 5b09111e: on the M5 it sat ahead of the framing, the ask and 18 room updates that
+        // were byte-identical between acts, and forfeited all of them). With no pinned
+        // result it keeps its place ahead of the ask: bracketed meta after the ask gets
+        // answered and parroted in its place (the 2026-07-20 humaneval fix).
+        if prompt.latest_result.is_some() {
+            prompt.history.extend(prompt.stimulus);
+            prompt.history.extend(prompt.room_updates);
+            prompt.history.extend(prompt.ledger);
+            prompt.history.extend(prompt.latest_result);
+        } else {
+            prompt.history.extend(prompt.ledger);
+            prompt.history.extend(prompt.stimulus);
+            prompt.history.extend(prompt.room_updates);
+        }
         Ok(FittedMessages {
             messages: prompt.history,
             grounding_at,
@@ -3750,6 +3767,9 @@ struct PromptMessages {
     stimulus: Option<ChatMessage>,
     latest_result: Option<ChatMessage>,
     room_updates: Vec<ChatMessage>,
+    /// The steps ledger, which changes on every act: it rides after the room updates and
+    /// before the pinned result, so nothing stable sits behind it (card 5b09111e).
+    ledger: Option<ChatMessage>,
 }
 
 /// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
@@ -3948,6 +3968,7 @@ impl PromptMessages {
         self.stimulus
             .iter()
             .chain(self.room_updates.iter())
+            .chain(self.ledger.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
             .sum::<usize>()
@@ -8224,7 +8245,7 @@ mod tests {
                 history,
                 stimulus: Some(stimulus.clone()),
                 latest_result: None,
-                room_updates: Vec::new(),
+                room_updates: Vec::new(), ledger: None,
             };
             let required = prompt(Vec::new()).required_tokens();
             let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
@@ -8285,7 +8306,7 @@ mod tests {
                             history: msgs[..n].to_vec(),
                             stimulus: None,
                             latest_result: None,
-                            room_updates: Vec::new(),
+                            room_updates: Vec::new(), ledger: None,
                         },
                         budget,
                     )
@@ -8335,7 +8356,7 @@ mod tests {
                         history: clustered,
                         stimulus: None,
                         latest_result: None,
-                        room_updates: Vec::new(),
+                        room_updates: Vec::new(), ledger: None,
                     },
                     budget,
                 )
@@ -8364,7 +8385,7 @@ mod tests {
                 ],
                 stimulus: None,
                 latest_result: None,
-                room_updates: Vec::new(),
+                room_updates: Vec::new(), ledger: None,
             };
             let ambient_cost =
                 LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -8375,6 +8396,36 @@ mod tests {
             assert_eq!(fitted.len(), 1);
             assert_eq!(fitted[0].content_text(), "current situation ".repeat(20));
             assert!(faculty.fit_messages(ambient(), ambient_cost - 1).is_err());
+        }
+
+        // what this catches: the steps ledger placed where its per-act change forfeits the
+        // stable prefix (card 5b09111e), or placed after the ask where it gets parroted (the
+        // 2026-07-20 humaneval fix). With a pinned result it rides after the room updates and
+        // the result stays last; with none it keeps its place ahead of the ask.
+        #[test]
+        fn the_steps_ledger_rides_before_the_pinned_result_and_never_after_the_ask() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let prompt = |result: bool| PromptMessages {
+                input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
+                history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
+                stimulus: Some(ChatMessage::text("user", "the ask")),
+                latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")),
+                room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
+                ledger: Some(ChatMessage::text("user", "[steps taken this session]\n[action #1832] code/read")),
+            };
+            let order = |result: bool| -> Vec<String> {
+                faculty.fit_messages(prompt(result), 100_000).expect("test: fits").messages.iter()
+                    .map(|m| m.content_text().lines().next().unwrap_or("").to_string()).collect()
+            };
+            assert_eq!(order(true), vec![
+                "[work turn] fix the bug", "the ask", "[Room message received during this turn] hi",
+                "[steps taken this session]", "Full result of your most recent action",
+            ]);
+            assert_eq!(order(false), vec![
+                "[work turn] fix the bug", "[steps taken this session]", "the ask",
+                "[Room message received during this turn] hi",
+            ]);
         }
 
         // Regression for #4290: a follow-up must not erase protection for the act it asks about.
@@ -8389,7 +8440,7 @@ mod tests {
             let expected = LlmDeliberationFaculty::messages_cost(&history);
             let prompt = PromptMessages {
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-                history, stimulus: None, latest_result: None, room_updates: Vec::new(),
+                history, stimulus: None, latest_result: None, room_updates: Vec::new(), ledger: None,
             };
             assert!(prompt.recent_move_evidence().tokens >= expected,
                 "a new follow-up cannot make the preceding action and result disposable");
@@ -8407,7 +8458,7 @@ mod tests {
                     ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
                     ChatMessage::text("user", "Full result of code/write: file written successfully."),
                 ],
-                stimulus: None, latest_result: None, room_updates: Vec::new(),
+                stimulus: None, latest_result: None, room_updates: Vec::new(), ledger: None,
             };
             let insufficient = prompt.recent_move_evidence().tokens - 1;
             assert!(faculty.fit_messages(prompt, insufficient).is_err(),
@@ -8442,7 +8493,7 @@ mod tests {
                 history: history.clone(),
                 stimulus: None,
                 latest_result: None,
-                room_updates: Vec::new(),
+                room_updates: Vec::new(), ledger: None,
             };
 
             // The run that must survive: her act, its result, and the ask that opened them.
@@ -8525,7 +8576,7 @@ mod tests {
                 history,
                 stimulus: None,
                 latest_result: None,
-                room_updates: Vec::new(),
+                room_updates: Vec::new(), ledger: None,
             };
 
             // A MULTI-TOOL CHAIN LONGER THAN THE SCAN BOUND. Protected as a suffix, and
