@@ -8987,7 +8987,8 @@ mod tests {
 
                 // The order, most stable first: the conversation (dated history) leads;
                 // then the standing grounding in churn order (STANDING map, then the
-                // BOARD's held card, kanban and wall, by name); then the per-turn facts;
+                // BOARD's held card and wall, by name, then the kanban's CLAIMS, which
+                // change fastest of the three); then the per-turn facts;
                 // then the clock + presence framing; then the ask, last.
                 assert!(
                     a.messages[0].content_text().starts_with("[occurred "),
@@ -9005,13 +9006,13 @@ mod tests {
                 assert!(
                     history_last < map
                         && map < held
-                        && held < board
-                        && board < wall
-                        && wall < facts
+                        && held < wall
+                        && wall < board
+                        && board < facts
                         && facts < clock
                         && clock < ask,
-                    "order must be history < map < active-work < kanban < wall < facts < clock \
-                     < ask, got {history_last} {map} {held} {board} {wall} {facts} {clock} \
+                    "order must be history < map < active-work < wall < kanban < facts < clock \
+                     < ask, got {history_last} {map} {held} {wall} {board} {facts} {clock} \
                      {ask}:\n{:#?}",
                     bodies(&a)
                 );

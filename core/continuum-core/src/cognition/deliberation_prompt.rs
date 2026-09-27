@@ -909,10 +909,11 @@ mod tests {
             ],
             "standing < board < claims < turn < unknown, by name within"
         );
-        // The live roster id is board churn: it follows the held card and leads the wall.
+        // The live roster id is board churn (by name among the board), and the kanban
+        // follows every board block.
         let mut live = vec!["room-kanban", "room-wall", "roster", "active-work"];
         live.sort_by(|a, b| stable_prefix_order(a, b));
-        assert_eq!(live, ["active-work", "roster", "room-wall", "room-kanban"]);
+        assert_eq!(live, ["active-work", "room-wall", "roster", "room-kanban"]);
         assert_eq!(churn_of("working-memory"), PromptChurn::Turn);
         assert_eq!(churn_of("engrams"), PromptChurn::Turn);
         assert_eq!(churn_of("media-perception"), PromptChurn::Standing);
