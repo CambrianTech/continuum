@@ -3697,6 +3697,78 @@ impl LlamaServerProcess {
     /// metadata channel: served window, slot count, modalities, and (fork
     /// 3ca60da3c) measured weight residency. A connection error means nothing is
     /// up (normal pre-spawn) → Unreachable.
+    /// The in-place genome change against an engine whose --train-dir is `dir`: retire what
+    /// the target dropped, then stage and load what it added, recording each accepted step.
+    async fn converge_genome(
+        &self,
+        dir: &std::path::Path,
+        target: &ServingTarget,
+    ) -> Result<GenomeInPlace, LlamaServerError> {
+        let active = self.served_adapters.lock().unwrap().clone(); // JUSTIFIED: poison means a prior panic while recording the served set.
+        let desired = target.adapter_paths();
+        let added: Vec<&String> = desired.iter().filter(|p| !active.contains(p)).collect();
+        let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
+        let mut staged = Vec::with_capacity(added.len());
+        for gene in &added {
+            let Some(name) = gene_stage_name(std::path::Path::new(gene.as_str())) else {
+                return Ok(GenomeInPlace::Unsupported);
+            };
+            staged.push((PathBuf::from(gene.as_str()), name));
+        }
+        // Every step the engine accepts is recorded at once, so an early return (a busy
+        // retire, an error) leaves the served set naming exactly what the engine holds;
+        // the next tick converges the rest (Codex on #4467: two retires, the second busy,
+        // left the first advertised although the engine had freed it).
+        let record = |gene: &str, held: bool| {
+            let mut served = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
+            served.retain(|p| p != gene);
+            if held {
+                served.push(gene.to_string());
+                served.sort();
+            }
+        };
+        // Retire first, so a refused retire (a turn holds the gene) stops the change before
+        // any new gene joins.
+        if !removed.is_empty() {
+            let catalog = self.lora_catalog().await?;
+            for gene in &removed {
+                let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
+                let id = catalog.iter().find_map(|(id, path)| {
+                    let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
+                    (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
+                });
+                let Some(id) = id else {
+                    record(gene, false); // not loaded: nothing to retire, and not served
+                    continue;
+                };
+                match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
+                    LoraPost::Done => {
+                        record(gene, false);
+                        if let Some(name) = &stage {
+                            let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
+                        }
+                    }
+                    LoraPost::Busy => return Ok(GenomeInPlace::Busy),
+                    LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
+                }
+            }
+        }
+        for (gene, name) in staged {
+            let into = dir.join(&name);
+            let gene_key = gene.to_string_lossy().into_owned();
+            tokio::task::spawn_blocking(move || stage_gene(&gene, &into))
+                .await
+                .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
+                .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
+            match self.lora_post("load", serde_json::json!({ "name": name })).await? {
+                LoraPost::Done => record(&gene_key, true),
+                LoraPost::Busy => return Ok(GenomeInPlace::Busy),
+                LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
+            }
+        }
+        Ok(GenomeInPlace::Adopted)
+    }
+
     /// `GET /lora-adapters` as `(id, path)`: the engine's adapter catalog. Retired ids
     /// are not listed (fork #26).
     async fn lora_catalog(&self) -> Result<Vec<(i64, String)>, LlamaServerError> {
@@ -4556,69 +4628,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let Some(dir) = engine_train_dir().filter(|_| engine_accepts_train_dir()) else {
             return Ok(GenomeInPlace::Unsupported);
         };
-        let active = self.served_adapters.lock().unwrap().clone(); // JUSTIFIED: poison means a prior panic while recording the served set.
-        let desired = target.adapter_paths();
-        let added: Vec<&String> = desired.iter().filter(|p| !active.contains(p)).collect();
-        let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
-        let mut staged = Vec::with_capacity(added.len());
-        for gene in &added {
-            let Some(name) = gene_stage_name(std::path::Path::new(gene.as_str())) else {
-                return Ok(GenomeInPlace::Unsupported);
-            };
-            staged.push((PathBuf::from(gene.as_str()), name));
-        }
-        // Every step the engine accepts is recorded at once, so an early return (a busy
-        // retire, an error) leaves the served set naming exactly what the engine holds;
-        // the next tick converges the rest (Codex on #4467: two retires, the second busy,
-        // left the first advertised although the engine had freed it).
-        let record = |gene: &str, held: bool| {
-            let mut served = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
-            served.retain(|p| p != gene);
-            if held {
-                served.push(gene.to_string());
-                served.sort();
-            }
-        };
-        // Retire first, so a refused retire (a turn holds the gene) stops the change before
-        // any new gene joins.
-        if !removed.is_empty() {
-            let catalog = self.lora_catalog().await?;
-            for gene in &removed {
-                let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
-                let id = catalog.iter().find_map(|(id, path)| {
-                    let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
-                    (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
-                });
-                let Some(id) = id else {
-                    record(gene, false); // not loaded: nothing to retire, and not served
-                    continue;
-                };
-                match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
-                    LoraPost::Done => {
-                        record(gene, false);
-                        if let Some(name) = &stage {
-                            let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
-                        }
-                    }
-                    LoraPost::Busy => return Ok(GenomeInPlace::Busy),
-                    LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
-                }
-            }
-        }
-        for (gene, name) in staged {
-            let into = dir.join(&name);
-            let gene_key = gene.to_string_lossy().into_owned();
-            tokio::task::spawn_blocking(move || stage_gene(&gene, &into))
-                .await
-                .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
-                .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
-            match self.lora_post("load", serde_json::json!({ "name": name })).await? {
-                LoraPost::Done => record(&gene_key, true),
-                LoraPost::Busy => return Ok(GenomeInPlace::Busy),
-                LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
-            }
-        }
-        Ok(GenomeInPlace::Adopted)
+        self.converge_genome(&dir, target).await
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
@@ -6438,6 +6448,62 @@ mod tests {
         assert!(matches!(probe, EngineProbe::Progress(p) if p.any_processing && p.fingerprint == 112), "{probe:?}");
         server.abort();
     }
+    // what this catches (Codex on #4467): two retires where the engine frees the first and
+    // refuses the second (a turn holds it) left the core advertising BOTH, though the engine
+    // had freed one. The served set must name exactly what the engine holds after a busy
+    // stop, and the new gene must not have been loaded ahead of the refused retire.
+    #[tokio::test]
+    async fn a_busy_second_retire_leaves_the_served_set_naming_what_the_engine_holds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let loads = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&loads);
+        let app = axum::Router::new()
+            .route(
+                "/lora-adapters",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!([
+                        {"id": 0, "path": "/genes/a.gguf"},
+                        {"id": 1, "path": "/genes/b.gguf"}
+                    ]))
+                }),
+            )
+            .route(
+                "/lora-adapters/unload",
+                axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    if body["id"] == 0 {
+                        axum::http::StatusCode::OK
+                    } else {
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }),
+            )
+            .route(
+                "/lora-adapters/load",
+                axum::routing::post(move || {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    async { axum::http::StatusCode::OK }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let process = LlamaServerProcess::with_root(root);
+        *process.served_adapters.lock().unwrap() = vec!["/genes/a.gguf".into(), "/genes/b.gguf".into()]; // JUSTIFIED: test-owned lock, never poisoned
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let got = process
+            .converge_genome(dir.path(), &target_with_adapters("coder-14b", &["/genes/c.gguf"]))
+            .await
+            .expect("test: the engine answered");
+        assert_eq!(got, GenomeInPlace::Busy);
+        assert_eq!(
+            *process.served_adapters.lock().unwrap(), // JUSTIFIED: test-owned lock, never poisoned
+            vec!["/genes/b.gguf".to_string()],
+            "A was freed and B still held: the record says exactly that"
+        );
+        assert_eq!(loads.load(Ordering::SeqCst), 0, "no new gene joins ahead of a refused retire");
+        server.abort();
+    }
+
     // The service-host's verified engine must win over any older default install.
     // A child process isolates the launch environment from parallel tests.
     #[test]
