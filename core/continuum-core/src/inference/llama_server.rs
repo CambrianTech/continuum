@@ -1460,6 +1460,36 @@ pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
     (backend == Some("cpu")).then_some(1)
 }
 
+/// Free memory at which a warm build beside a serving core runs at cargo's own job count:
+/// rustc's codegen at the default jobs wants ~7 GiB (BigMama, 2026-09-05: test builds
+/// killed at 2.59 GiB free beside a 39 GiB server), and twelve leaves the server, the
+/// citizens and the build their room.
+pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+/// Below that, the build takes fewer jobs instead of refusing: each rustc job (and the
+/// codegen threads the jobserver lends it) is budgeted this much, after a reserve kept for
+/// the citizens and the core. Refusing outright at 12 GiB meant a node whose lane fills its
+/// memory NEVER deploys: the M5 serving the 27B at 4 lanes (llama-server 29.5 GB, core
+/// 4.4 GB) sat at 10.4 GiB free, and every tracker pass from 19:33Z on 2026-09-27 was
+/// refused, leaving it on c9ee8b1cc under a day of merges. Provisional: the first 2-job
+/// build on the M5 measures rustc's peak (#4478), since continuum_core's front end is one
+/// process whatever the job count.
+pub const WARM_BUILD_JOB_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+pub const WARM_BUILD_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// The floor: one job plus the reserve. Below it the warm build refuses.
+pub const WARM_BUILD_MIN_FREE_BYTES: u64 = WARM_BUILD_RESERVE_BYTES + WARM_BUILD_JOB_BYTES;
+
+/// PURE: the job count a warm build takes with `free_bytes` free beside the serving core.
+/// `None` = cargo's own count (plenty free); otherwise one job per [`WARM_BUILD_JOB_BYTES`]
+/// above the reserve, at least one. The refusal below [`WARM_BUILD_MIN_FREE_BYTES`] is the
+/// CLI's gate.
+pub fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
+    if free_bytes >= WARM_BUILD_UNCAPPED_FREE_BYTES {
+        return None;
+    }
+    let jobs = free_bytes.saturating_sub(WARM_BUILD_RESERVE_BYTES) / WARM_BUILD_JOB_BYTES;
+    Some(u32::try_from(jobs).unwrap_or(u32::MAX).max(1)) // unwrap_or: a count past u32 is plenty; the cap then does nothing
+}
+
 /// PURE: whether a running lane's `/props` `build_info` (`b10765-965d38a90`) names the
 /// installed engine commit, compared with the ONE SHA rule `deploy_provenance::sha_matches`
 /// (prefix either way, credible hex). A lane is stale only when both commits are credible
@@ -6449,6 +6479,19 @@ mod tests {
         let started = tokio::time::Instant::now();
         assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, condemned_later, |_| {}).await, None);
         assert!(started.elapsed() <= bound, "condemned at the first checkpoint ends it there: {:?}", started.elapsed());
+    }
+
+    // what this catches (2026-09-27, the M5 at 10.4 GiB free beside the 27B): a node whose
+    // lane fills its memory refused every deploy. Between the floor and plenty the build takes
+    // fewer jobs; with plenty, cargo's own count; the floor itself is one job plus the reserve.
+    // In the lib so CI runs it (the CLI's own tests run only by name).
+    #[test]
+    fn a_warm_build_takes_the_jobs_its_free_memory_holds() {
+        let gib = 1024 * 1024 * 1024;
+        assert_eq!(warm_build_jobs_for_memory(10 * gib + gib / 2), Some(2), "the M5 at 10.4 GiB");
+        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
+        assert_eq!(warm_build_jobs_for_memory(12 * gib), None);
+        assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 7 * gib);
     }
 
     // what this catches (card 682a5abf): a warm build beside a CPU-served lane at cargo's

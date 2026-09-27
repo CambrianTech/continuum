@@ -1144,32 +1144,10 @@ impl PrebuiltCore {
     }
 }
 
-/// Free memory at which a warm build beside a serving core runs at cargo's own job count:
-/// rustc's codegen at the default jobs wants ~7 GiB (BigMama, 2026-09-05: test builds
-/// killed at 2.59 GiB free beside a 39 GiB server), and twelve leaves the server, the
-/// citizens and the build their room.
-const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
-/// Below that, the build takes fewer jobs instead of refusing: each rustc job (and the
-/// codegen threads the jobserver lends it) is budgeted this much, after a reserve kept for
-/// the citizens and the core. Refusing outright at 12 GiB meant a node whose lane fills its
-/// memory NEVER deploys: the M5 serving the 27B at 4 lanes (llama-server 29.5 GB, core
-/// 4.4 GB) sat at 10.4 GiB free, and every tracker pass from 19:33Z on 2026-09-27 was
-/// refused, leaving it on c9ee8b1cc under a day of merges.
-const WARM_BUILD_JOB_BYTES: u64 = 3 * 1024 * 1024 * 1024;
-const WARM_BUILD_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-/// The floor: one job plus the reserve. Below it the build refuses, as it always did.
-const WARM_BUILD_MIN_FREE_BYTES: u64 = WARM_BUILD_RESERVE_BYTES + WARM_BUILD_JOB_BYTES;
-
-/// PURE: the job count a warm build takes with `free_bytes` free beside the serving core.
-/// `None` = cargo's own count (plenty free); otherwise one job per [`WARM_BUILD_JOB_BYTES`]
-/// above the reserve, at least one. The floor itself is [`warm_build_allowed`]'s.
-fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
-    if free_bytes >= WARM_BUILD_UNCAPPED_FREE_BYTES {
-        return None;
-    }
-    let jobs = free_bytes.saturating_sub(WARM_BUILD_RESERVE_BYTES) / WARM_BUILD_JOB_BYTES;
-    Some(u32::try_from(jobs).unwrap_or(u32::MAX).max(1)) // unwrap_or: a count past u32 is plenty; the cap then does nothing
-}
+/// The floor below which a warm build refuses: one rustc job plus the reserve kept for the
+/// citizens and the core. Between it and plenty the build takes fewer jobs
+/// ([`continuum_core::inference::llama_server::warm_build_jobs_for_memory`]).
+const WARM_BUILD_MIN_FREE_BYTES: u64 = continuum_core::inference::llama_server::WARM_BUILD_MIN_FREE_BYTES;
 
 /// The scheduler owns this foreground host and its core as one process tree.
 /// Runtime DLL/config resolution is the same as every other native CLI launch.
@@ -1795,7 +1773,7 @@ fn yield_to_serving(cmd: &mut std::process::Command) {
     // the memory the serving node has left (a lane that fills memory must not stop deploys).
     let backend = continuum_core::inference::llama_server::installed_engine_backend();
     let cores = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref());
-    let memory = warm_build_jobs_for_memory(available_memory_bytes());
+    let memory = continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes());
     let jobs = match (cores, memory) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -6659,14 +6637,6 @@ mod tests {
             warm_build_allowed(u64::MAX, None).is_err(),
             "no script = no build definition"
         );
-        // what this catches (2026-09-27, the M5 at 10.4 GiB free beside the 27B): a node
-        // whose lane fills its memory refused every deploy. Between the floor and plenty,
-        // the build takes fewer jobs; with plenty, cargo's own count.
-        let gib = 1024 * 1024 * 1024;
-        assert!(warm_build_allowed(10 * gib + gib / 2, Some(PathBuf::from("/x/s.sh"))).is_ok(), "10.4 GiB now builds");
-        assert_eq!(warm_build_jobs_for_memory(10 * gib + gib / 2), Some(2));
-        assert_eq!(warm_build_jobs_for_memory(7 * gib), Some(1));
-        assert_eq!(warm_build_jobs_for_memory(12 * gib), None);
     }
 
     // what this catches (2026-09-19, the 5090's consumer): a log handle opened with
