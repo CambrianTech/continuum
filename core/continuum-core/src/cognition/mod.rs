@@ -95,6 +95,7 @@ pub(crate) mod bounded_room_ledger;
 pub mod provenance;
 pub mod prefill_throttle;
 pub mod prompt_capture;
+pub(crate) mod prompt_prefix;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
