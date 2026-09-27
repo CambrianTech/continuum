@@ -243,7 +243,9 @@ fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    let Some(refs) = git(&["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/remotes"]) else {
+    // Full ref names: `%(refname:short)` abbreviates refs/remotes/origin/HEAD to "origin",
+    // so a HEAD alias could not be recognised by its suffix (Cormac on #4442).
+    let Some(refs) = git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]) else {
         return created.to_string();
     };
     // Her OWN branch on a remote is not upstream (Cormac on #4442): the runtime pushes her
@@ -255,8 +257,10 @@ fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
     let mut best: Option<(u64, String)> = None;
     for line in refs.lines().filter(|l| !l.is_empty()) {
         let Some((name, r)) = line.split_once(' ') else { continue };
-        let ours = (!branch.is_empty() && name.split_once('/').is_some_and(|(_, b)| b == branch))
-            || (!tracked.is_empty() && name == tracked);
+        // refs/remotes/<remote>/<branch...>
+        let short = name.strip_prefix("refs/remotes/").unwrap_or(name); // unwrap_or: for-each-ref under refs/remotes always carries the prefix
+        let ours = (!branch.is_empty() && short.split_once('/').is_some_and(|(_, b)| b == branch))
+            || (!tracked.is_empty() && short == tracked);
         if ours || name.ends_with("/HEAD") {
             continue;
         }
