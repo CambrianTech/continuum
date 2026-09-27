@@ -1843,15 +1843,19 @@ fn not_a_loop(calls: &[crate::genome::fine_tuning::LivedCall]) -> Vec<&crate::ge
 
 /// A card's staged turns, in staging order, each with the reason it is NOT an example
 /// (Kimi's loop rule across turns, card ad107e18). Her real loops were 58 and 84
-/// SEPARATE work turns on one card, each repeating the last with zero acts. A turn whose
-/// lived calls hold no tool call took no action and is not a lesson; a turn whose action
-/// sequence repeats an earlier turn's on the same card is the loop, and only the first
-/// stays. A turn with no lived record cannot be judged and settles as before.
+/// CONSECUTIVE work turns on one card, each repeating the last with zero acts. A turn
+/// whose actions repeat the turn right before it is the loop, and only the first of the
+/// run stays. Every turn that called no tool counts as the SAME action, so a run of
+/// no-action turns collapses whatever their wording, while a single spoken turn (a
+/// deliverable written as speech) stays, and so does a re-read after an edit (the
+/// verify step): only CONSECUTIVE repeats are the loop (Cormac on #4452). A turn with no
+/// lived record cannot be judged; it settles as before and breaks the run.
 fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<&'static str>)> {
-    let mut seen: std::collections::HashSet<Vec<(String, String)>> = std::collections::HashSet::new();
+    let mut previous: Option<Vec<(String, String)>> = None;
     rows.iter()
         .map(|row| {
             let Some(calls) = row.lived.as_deref() else {
+                previous = None;
                 return (row, None);
             };
             let actions: Vec<(String, String)> = not_a_loop(calls)
@@ -1859,13 +1863,9 @@ fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<&'static st
                 .flat_map(|c| c.response.tool_calls.iter().flatten())
                 .map(|t| (t.name.clone(), t.input.to_string()))
                 .collect();
-            if actions.is_empty() {
-                return (row, Some("took_no_action"));
-            }
-            if !seen.insert(actions) {
-                return (row, Some("repeats_an_earlier_turn"));
-            }
-            (row, None)
+            let repeat = previous.as_ref() == Some(&actions);
+            previous = Some(actions);
+            (row, repeat.then_some("repeats_the_previous_turn"))
         })
         .collect()
 }
@@ -2990,10 +2990,10 @@ pub(crate) mod tests {
             .collect()
     }
 
-    // what this catches: Kimi's real loops (58 and 84 SEPARATE work turns on one card,
-    // each repeating the last, zero acts) settling as 58 lessons. Across a card's turns a
-    // turn with no action, or one repeating an earlier turn's actions, is not an example;
-    // the first of a repeat stays, a new action stays, and an unjudgeable row settles.
+    // what this catches: Kimi's real loops (58 and 84 consecutive work turns on one card,
+    // each repeating the last, zero acts) settling as 58 lessons; and the rule reaching
+    // past the loop (Cormac on #4452): a single spoken turn and a verify re-read after an
+    // edit are kept, because only a CONSECUTIVE repeat is the loop.
     #[test]
     fn a_loop_across_turns_on_one_card_settles_once() {
         use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
@@ -3031,19 +3031,20 @@ pub(crate) mod tests {
             staged_at_ms: at,
         };
         let read = || call(Some(("code/read", json!({"path": "xarray/core/merge.py"}))));
+        let edit = || call(Some(("code/edit", json!({"path": "xarray/core/merge.py"}))));
         let rows = vec![
             row(1, Some(vec![read()])),
-            row(2, Some(vec![read()])),
-            row(3, Some(vec![call(None)])),
-            row(4, None),
-            row(5, Some(vec![read(), call(Some(("code/edit", json!({"path": "xarray/core/merge.py"}))))])),
-            row(6, Some(vec![read()])),
+            row(2, Some(vec![read()])),                // the loop: repeats the turn before
+            row(3, Some(vec![call(None)])),            // a spoken turn: kept
+            row(4, Some(vec![call(None)])),            // a no-action run collapses
+            row(5, Some(vec![call(None)])),
+            row(6, None),                              // unjudgeable: settles, breaks the run
+            row(7, Some(vec![read(), edit()])),
+            row(8, Some(vec![read()])),                // the verify re-read after the edit: kept
         ];
         let verdicts: Vec<Option<&str>> = across_turns(&rows).into_iter().map(|(_, d)| d).collect();
-        assert_eq!(
-            verdicts,
-            vec![None, Some("repeats_an_earlier_turn"), Some("took_no_action"), None, None, Some("repeats_an_earlier_turn")]
-        );
+        let r = Some("repeats_the_previous_turn");
+        assert_eq!(verdicts, vec![None, r, None, r, r, None, None, None]);
     }
 
     // what this catches: a loop trained as lessons (Kimi's rule on card ad107e18: "61 act
