@@ -357,6 +357,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // KV is hundreds of MB, so the class is small in COUNT but real in
         // bytes — exactly what must never be an untracked writer.
         TrackedDir::new("kv-pages", home.join(".continuum/cache/kv-pages")),
+        // Every lane's `--train-dir`: adapters the engine's /train writes, in flight or
+        // left by a crashed run (a finished one moves into its job dir). Registered with
+        // the flag itself (2026-09-26) so it is never an unweighed writer.
+        TrackedDir::new("engine-train", home.join(".continuum/cache/engine-train")),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class

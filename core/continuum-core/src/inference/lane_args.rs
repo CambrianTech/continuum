@@ -434,6 +434,13 @@ pub struct LaneOptions<'a> {
     /// Trained genome layers to load into the `/lora-adapters` catalog, in index order;
     /// the per-request `"lora":[{id,scale}]` field pages them in.
     pub loras: &'a [std::path::PathBuf],
+    /// The ONE directory the engine's `POST /train` may write adapters into
+    /// (`--train-dir`, fork c09af02f4): LoRA-only training on the weights this lane
+    /// already serves, in a second context beside the slots, yielding between batches
+    /// while any slot is busy. The route is refused unless the flag is present, and
+    /// every file it writes is a bare `.gguf` name inside this directory. `None` =
+    /// training off on this lane; serving is the same either way.
+    pub train_dir: Option<&'a Path>,
     /// K3 expert paging (#278): `-ot` tensor placement for COLD layers, from the
     /// residency planner. `None` / all-hot → no flag (llama-server rejects an empty one).
     pub expert_ot: Option<&'a str>,
@@ -584,6 +591,15 @@ impl LaneInvocation {
                 .collect::<Vec<_>>()
                 .join(",");
             pair(&mut self.args, "--lora", joined);
+        }
+        // IN-ENGINE TRAINING (ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md S3/S4): the
+        // dream trains a LoRA on the resident weights instead of loading a second copy
+        // in a separate trainer process. The fork's /train is OFF without this flag, so
+        // dropping it would leave every dream on the retired PyTorch path with nothing
+        // red; and it is the only place the route may write, so it is always the
+        // governed directory, never a caller's path.
+        if let Some(dir) = opts.train_dir {
+            pair(&mut self.args, "--train-dir", dir);
         }
         // K3 slice-1 physical expert paging: offload COLD layers' stacked expert tensors
         // to CPU while hot layers stay GPU-resident. Experts are stacked (one
@@ -861,6 +877,23 @@ mod tests {
             assert!(!i.has(f), "{f} must be absent with default options\n{:?}", i.args);
         }
         assert!(i.envs.is_empty(), "no options must mean no environment");
+    }
+
+    // what this catches: in-engine training silently off, or pointed somewhere other
+    // than the governed directory. The fork refuses /train without --train-dir, so a
+    // dropped flag sends every dream back to the retired trainer with nothing red; a
+    // second or wrong value would let the route write outside the tracked dir.
+    #[test]
+    fn train_dir_flag_is_present_only_when_given_and_carries_that_path() {
+        let off = inv(1, 4096).with_options(&LaneOptions::default());
+        assert!(!off.has("--train-dir"), "no train dir must mean no flag\n{:?}", off.args);
+        let dir = PathBuf::from("/home/u/.continuum/cache/engine-train");
+        let on = inv(1, 4096).with_options(&LaneOptions {
+            train_dir: Some(&dir),
+            ..LaneOptions::default()
+        });
+        assert_eq!(on.value_of("--train-dir"), Some(dir.to_string_lossy().as_ref()));
+        assert_eq!(on.args.iter().filter(|a| *a == "--train-dir").count(), 1);
     }
 
     // what this catches: GPU offload left to the backend's default. Metal defaults to
