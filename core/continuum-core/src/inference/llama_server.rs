@@ -1461,12 +1461,6 @@ pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
     (backend == Some("cpu")).then_some(1)
 }
 
-/// Free memory at which a warm build beside a serving core runs at cargo's own job count:
-/// the measured uncapped peak (8.7 GB, every rustc together, the M5 on 2026-09-27) plus the
-/// reserve, rounded up (Cormac on #4479: at 12 the uncapped build would eat into the
-/// reserve). It coincides with where a second budgeted job would start, so between the
-/// floor and here the build takes one job.
-pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 13 * 1024 * 1024 * 1024;
 /// Below that, the build takes fewer jobs instead of refusing: each rustc job (and the
 /// codegen threads the jobserver lends it) is budgeted this much, after a reserve kept for
 /// the citizens and the core. Refusing outright at 12 GiB meant a node whose lane fills its
@@ -1485,14 +1479,14 @@ pub const WARM_BUILD_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// The floor: the first job plus the reserve. Below it the warm build refuses.
 pub const WARM_BUILD_MIN_FREE_BYTES: u64 = WARM_BUILD_RESERVE_BYTES + WARM_BUILD_FIRST_JOB_BYTES;
 
-/// PURE: the job count a warm build takes with `free_bytes` free beside the serving core.
-/// `None` = cargo's own count (plenty free); otherwise the first job (continuum_core's
-/// front end) plus one per [`WARM_BUILD_JOB_BYTES`] of what is left above the reserve, at
-/// least one. The refusal below [`WARM_BUILD_MIN_FREE_BYTES`] is the CLI's gate.
+/// PURE: the job count a warm build takes with `free_bytes` free beside the serving core:
+/// the first job (continuum_core's compile) plus one per [`WARM_BUILD_JOB_BYTES`] of what is
+/// left above the reserve, at least one. Always a count, never "cargo's own": memory, not
+/// the core count, bounds a build beside a serving core, and a machine with more cores than
+/// memory for them would otherwise start a job per core (Codex on #4479). Cargo still never
+/// runs more jobs than it has cores. The refusal below [`WARM_BUILD_MIN_FREE_BYTES`] is the
+/// CLI's gate.
 pub fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
-    if free_bytes >= WARM_BUILD_UNCAPPED_FREE_BYTES {
-        return None;
-    }
     let beyond_first = free_bytes
         .saturating_sub(WARM_BUILD_RESERVE_BYTES)
         .saturating_sub(WARM_BUILD_FIRST_JOB_BYTES);
@@ -6503,10 +6497,8 @@ mod tests {
         assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 4 * gib + 6656 * 1024 * 1024);
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024 - 1), Some(1));
-        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), None, "where a second job would start, the build is already uncapped");
-        assert_eq!(warm_build_jobs_for_memory(12 * gib), Some(1), "under the measured uncapped need");
-        assert_eq!(warm_build_jobs_for_memory(13 * gib), None);
-        assert!(WARM_BUILD_UNCAPPED_FREE_BYTES >= WARM_BUILD_RESERVE_BYTES + 8_700_000_000, "uncapped covers its measured peak plus the reserve");
+        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), Some(2));
+        assert_eq!(warm_build_jobs_for_memory(64 * gib), Some(1 + ((64 * gib - WARM_BUILD_MIN_FREE_BYTES) / (2560 * 1024 * 1024)) as u32), "never uncapped: memory bounds the jobs");
     }
 
     // what this catches (card 682a5abf): a warm build beside a CPU-served lane at cargo's
