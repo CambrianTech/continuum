@@ -1378,10 +1378,13 @@ impl ToolCallFormat for XmlParameterFormat {
             };
             let name = after[..name_end].trim().trim_matches(['"', '\'']);
             let body = &after[name_end + 1..];
-            let (body, next) = match body.find(CLOSE) {
-                Some(close) => (&body[..close], &body[close + CLOSE.len()..]),
-                None => (body, ""), // an unterminated call: take the remainder
+            // No `</function>`, no call: a call cut at max tokens holds only the parameters it
+            // finished (a shell cmd without its timeout), and running it would act on half an
+            // intention (Cormac on #4447).
+            let Some(close) = body.find(CLOSE) else {
+                break;
             };
+            let (body, next) = (&body[..close], &body[close + CLOSE.len()..]);
             let name_ok = !name.is_empty()
                 && name.len() <= 64
                 && name.chars().all(|c| c.is_ascii_alphanumeric() || "/_-.".contains(c));
@@ -2422,6 +2425,10 @@ mod tests {
 
         let broken = "<function=code/shell>\n<parameter>\nls\n</parameter>\n</function>";
         assert!(parse_tool_calls(broken).is_empty(), "a keyless parameter refuses the call");
+
+        // regression for #4447 (Cormac): a call cut before </function> never runs
+        let cut = "<tool_call>\n<function=code/shell>\n<parameter=cmd>\nrm -rf build\n</parameter>\n<parameter=timeout_ms>\n90";
+        assert!(parse_tool_calls(cut).is_empty(), "a call cut at max tokens holds half its arguments");
     }
 
     // what this catches: Llama/Mistral-style BARE call with `parameters` (not
