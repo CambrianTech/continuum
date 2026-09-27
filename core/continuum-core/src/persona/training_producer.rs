@@ -439,6 +439,16 @@ pub struct StagedCredit {
     /// Her reply, likewise verbatim.
     pub completion: String,
 
+    /// Every served call of the turn exactly as it happened (card ad107e18), read from
+    /// the prompt capture when the turn staged, because the capture rotates within
+    /// hours and a card can settle days later. `None` when no call could be read back
+    /// (no capture installed, or the read failed, which is probed at stage time), and
+    /// cleared once the destination durably accepts the transfer, so a settled row
+    /// does not keep a second copy of what the trainer already holds.
+    #[entity(json)]
+    #[serde(default)]
+    pub lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>,
+
     /// When this turn was staged (epoch ms). Not a settlement clock — a staged row
     /// whose card never settles is never submitted, and that is correct, not a leak.
     pub staged_at_ms: u64,
@@ -573,11 +583,15 @@ pub fn is_stage_point(acts: usize) -> bool {
 /// An in-flight transaction may finish, but it can only replace this turn's rows.
 pub(crate) struct TurnCreditCapture {
     conn: Connection<InProcessTransport>,
+    persona_id: Uuid,
     persona_name: String,
     prompt: String,
     credit: CapturedCredit,
     snapshot: Option<(Uuid, [u8; 32])>,
     superseded: Vec<Uuid>,
+    /// Calls of this turn already read back from the capture, so each restage
+    /// reads only the calls made since the last one.
+    lived: Vec<crate::genome::fine_tuning::LivedCall>,
 }
 
 impl TurnCreditCapture {
@@ -620,11 +634,13 @@ impl TurnCreditCapture {
                     crate::identity::PeerId::from_uuid(persona_id),
                 )),
             )),
+            persona_id,
             persona_name,
             prompt,
             credit,
             snapshot: None,
             superseded: Vec::new(),
+            lived: Vec::new(),
         }
     }
 
@@ -665,6 +681,14 @@ impl TurnCreditCapture {
                 id
             }
         };
+        let (lived, complete) = read_lived(
+            self.persona_id,
+            &self.persona_name,
+            receipts,
+            std::mem::take(&mut self.lived),
+        )
+        .await;
+        self.lived = lived;
         let result = stage_credit(
             &self.conn,
             &self.persona_name,
@@ -672,6 +696,7 @@ impl TurnCreditCapture {
             receipts.to_vec(),
             self.prompt.clone(),
             completion,
+            complete.then(|| self.lived.clone()),
             submission_id,
             &self.superseded,
         )
@@ -848,6 +873,9 @@ pub fn produce_with_id(
                 crate::identity::PeerId::from_uuid(persona_id),
             )),
         ));
+        let (lived, complete) =
+            read_lived(persona_id, &persona_name, &generation_receipts, Vec::new()).await;
+        let lived = complete.then_some(lived);
         match stage_credit(
             &conn,
             &persona_name,
@@ -855,6 +883,7 @@ pub fn produce_with_id(
             generation_receipts,
             prompt,
             completion,
+            lived,
             submission_id,
             replaces.as_slice(),
         )
@@ -1069,6 +1098,22 @@ pub fn produce_received(
 /// it has NONE the field is OMITTED and the sentinel REFUSES to adopt as unmeasurable
 /// ([[fallbacks-are-illegal-fail-loud]]) — never paged into a live persona on a gym that
 /// doesn't measure its trait. `provenance` is metadata only (live-turn vs received-lesson).
+/// The audit metadata every example of a plan carries: source, quality, the bare
+/// domain, and the card stamp when there is one.
+fn example_metadata(plan: &SubmitPlan, provenance: &str) -> serde_json::Value {
+    let mut metadata = json!({
+        "source": provenance,
+        "quality": plan.quality,
+        "domain": plan.trait_kind,
+    });
+    if let (Some(stamp), serde_json::Value::Object(map)) = (plan.stamp, &mut metadata) {
+        map.insert("cardId".into(), json!(stamp.card_id));
+        map.insert("role".into(), json!(stamp.role.as_str()));
+        map.insert("outcome".into(), json!(stamp.outcome));
+    }
+    metadata
+}
+
 pub fn build_submit_params(
     persona_id: Uuid,
     persona_name: &str,
@@ -1080,20 +1125,11 @@ pub fn build_submit_params(
     // the domain is what the example is ABOUT, the key is where it is filed. Losing
     // the bare domain here would make a stamped example unqueryable alongside its
     // unstamped siblings.
-    let mut metadata = json!({
-        "source": provenance,
-        "quality": plan.quality,
-        "domain": plan.trait_kind,
-    });
-    if let (Some(stamp), serde_json::Value::Object(map)) = (plan.stamp, &mut metadata) {
-        map.insert("cardId".into(), json!(stamp.card_id));
-        map.insert("role".into(), json!(stamp.role.as_str()));
-        map.insert("outcome".into(), json!(stamp.outcome));
-    }
     let example = TrainingExample {
         prompt: plan.prompt.clone(),
         completion: plan.completion.clone(),
-        metadata: Some(metadata),
+        metadata: Some(example_metadata(plan, provenance)),
+        lived: None,
     };
     let bucket = plan.bucket_key();
     let mut params = json!({
@@ -1242,6 +1278,7 @@ async fn stage_credit<T: Transport>(
     generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     prompt: String,
     completion: String,
+    lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>,
     submission_id: Uuid,
     replaces: &[Uuid],
 ) -> Result<Uuid, ClientError> {
@@ -1283,6 +1320,7 @@ async fn stage_credit<T: Transport>(
         served,
         prompt,
         completion,
+        lived,
         // Same clock the rest of this file already uses. `now_unix_ms` exists as a
         // PRIVATE helper in three other modules and none is importable — copying it
         // a fourth time would be the duplication the compression principle forbids.
@@ -1336,6 +1374,107 @@ async fn stage_credit<T: Transport>(
         .await?;
     storage_ok(&result, "data/batch", StagedCredit::COLLECTION)?;
     Ok(submission_id)
+}
+
+/// Read every served call of a turn back from her prompt capture (card ad107e18).
+///
+/// Each receipt that carries a capture cursor and was SERVED is decoded; a faulted
+/// call is not something she did. `known` holds calls this turn already read, so a
+/// restage every four acts reads only the new ones. Returns every call read (the
+/// caller keeps them as its cache) and whether the set is COMPLETE. An incomplete
+/// set is never staged: a turn with a hole in it would train as if the hole were
+/// not there. Named either way, never silent.
+async fn read_lived(
+    persona_id: Uuid,
+    persona_name: &str,
+    receipts: &[crate::cognition::provenance::GenerationReceipt],
+    known: Vec<crate::genome::fine_tuning::LivedCall>,
+) -> (Vec<crate::genome::fine_tuning::LivedCall>, bool) {
+    use crate::cognition::provenance::GenerationOutcome;
+    let served: Vec<Option<String>> = receipts
+        .iter()
+        .filter(|r| matches!(r.outcome, GenerationOutcome::Served { .. }))
+        .map(|r| r.capture.clone())
+        .collect();
+    let read = tokio::task::spawn_blocking(move || {
+        let dir = crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR);
+        read_lived_calls(dir.as_deref(), persona_id, served, known)
+    })
+    .await;
+    let (calls, missing) = match read {
+        Ok(read) => read,
+        Err(e) => (Vec::new(), Some(format!("capture read task: {e}"))),
+    };
+    match (&missing, calls.is_empty()) {
+        (None, false) => {
+            crate::probe!(
+                class = "training.credit.lived_read",
+                persona = %persona_name,
+                calls = calls.len() as u64,
+                "the staged turn holds every served call as she lived it"
+            );
+            (calls, true)
+        }
+        _ => {
+            let reason = missing.unwrap_or_else(|| "the turn has no served call".into());
+            crate::probe!(
+                class = "training.credit.lived_unavailable",
+                persona = %persona_name,
+                reason = %reason,
+                read = calls.len() as u64,
+                "the staged turn holds no lived record; only its flat prompt and completion"
+            );
+            (calls, false)
+        }
+    }
+}
+
+/// The blocking read behind [`read_lived`]: every served call's cursor in dispatch
+/// order (`None` for a served call no capture recorded), decoded from `dir`. Returns
+/// the calls read and the first reason the set is incomplete, if any.
+fn read_lived_calls(
+    dir: Option<&std::path::Path>,
+    persona_id: Uuid,
+    served: Vec<Option<String>>,
+    known: Vec<crate::genome::fine_tuning::LivedCall>,
+) -> (Vec<crate::genome::fine_tuning::LivedCall>, Option<String>) {
+    let mut known: std::collections::HashMap<String, crate::genome::fine_tuning::LivedCall> =
+        known.into_iter().map(|c| (c.capture.clone(), c)).collect();
+    let mut calls = Vec::with_capacity(served.len());
+    let mut missing: Option<String> = None;
+    for cursor in served {
+        let Some(cursor) = cursor else {
+            missing.get_or_insert_with(|| "a served call carries no capture cursor".into());
+            continue;
+        };
+        if let Some(call) = known.remove(&cursor) {
+            calls.push(call);
+            continue;
+        }
+        let Some(dir) = dir else {
+            missing.get_or_insert_with(|| "capture directory unavailable".into());
+            continue;
+        };
+        let decoded = crate::cognition::prompt_capture::detail(dir, persona_id, &cursor)
+            .map_err(|e| e.to_string())
+            .and_then(crate::cognition::prompt_capture::decode)
+            .and_then(|call| {
+                call.response
+                    .map(|response| (call.request, response))
+                    .ok_or_else(|| "no terminal response".to_string())
+            });
+        match decoded {
+            Ok((request, response)) => calls.push(crate::genome::fine_tuning::LivedCall {
+                capture: cursor,
+                request,
+                response,
+            }),
+            Err(e) => {
+                missing.get_or_insert_with(|| format!("capture {cursor}: {e}"));
+            }
+        }
+    }
+    (calls, missing)
 }
 
 /// Summarize a homogeneous served lane using a real representative request. Mixed
@@ -1616,8 +1755,38 @@ fn staged_submission_params(
         &plan,
         "card-credit",
     );
+    if let Some(calls) = row.lived.as_deref().filter(|calls| !calls.is_empty()) {
+        let examples = lived_examples(&plan, calls);
+        params["examples"] = serde_json::to_value(&examples).map_err(|_| "lived examples could not be serialized")?; // training-trigger submit boundary: the params ARE the command's wire payload
+    }
     params["submissionId"] = json!(row.id);
     Ok(params)
+}
+
+/// One example per call she lived (card ad107e18). Each carries its call whole, so a
+/// trainer that renders it trains on the exact request she was served and the exact
+/// response she gave, reasoning and tool calls included. The flat `prompt` is the
+/// call's last message and `completion` her text, for trainers that take text only.
+/// Every example keeps the plan's metadata (card, role, outcome, domain).
+fn lived_examples(
+    plan: &SubmitPlan,
+    calls: &[crate::genome::fine_tuning::LivedCall],
+) -> Vec<TrainingExample> {
+    let metadata = example_metadata(plan, "card-credit");
+    calls
+        .iter()
+        .map(|call| TrainingExample {
+            prompt: call
+                .request
+                .messages
+                .last()
+                .map(|m| m.content_text())
+                .unwrap_or_default(),
+            completion: call.response.text.clone(),
+            metadata: Some(metadata.clone()),
+            lived: Some(call.clone()),
+        })
+        .collect()
 }
 
 async fn settle_staged_row<T: Transport>(
@@ -1660,6 +1829,7 @@ async fn settle_staged_row<T: Transport>(
         }
     }
     if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
+        clear_lived(conn, persona_name, row).await;
         return Ok(false);
     }
     let receipt = submit_training(conn, params).await?;
@@ -1684,6 +1854,7 @@ async fn settle_staged_row<T: Transport>(
         .is_some_and(|accepted| accepted.replayed);
     let dispatch_success = receipt.success;
     reviewed::accept_transfer(conn, persona_name, row.id, receipt).await?;
+    clear_lived(conn, persona_name, row).await;
     crate::probe!(
         class = "training.credit.transferred",
         persona = %persona_name,
@@ -1694,6 +1865,38 @@ async fn settle_staged_row<T: Transport>(
         "destination durably accepted this staged revision; training is a separate outcome"
     );
     Ok(true)
+}
+
+/// Once the destination holds a row's lived calls as examples, the row keeps its
+/// receipts (the provenance) and drops the second copy, so settled rows stay small.
+/// A failed clear is named; the next settle pass meets the accepted transfer and
+/// clears again.
+async fn clear_lived<T: Transport>(conn: &Connection<T>, persona_name: &str, row: &StagedCredit) {
+    if row.lived.is_none() {
+        return;
+    }
+    let cleared = conn
+        .commands()
+        .execute_value(
+            "data/update",
+            json!({
+                "collection": StagedCredit::COLLECTION,
+                "id": row.id,
+                "data": { "lived": serde_json::Value::Null },
+                "dbPath": format!("@persona:{persona_name}"),
+            }),
+        )
+        .await
+        .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
+    if let Err(error) = cleared {
+        crate::probe!(
+            class = "training.credit.lived_retained",
+            persona = %persona_name,
+            submission = %row.id,
+            error = %error,
+            "transferred row still holds its lived calls; the next settle pass clears them"
+        );
+    }
 }
 
 /// Every card an INSTANCE names (a round's cards for it) settles when its verdict
@@ -1741,6 +1944,7 @@ pub(crate) mod tests {
                 served: None,
                 prompt: "p".into(),
                 completion: "c".into(),
+                lived: None,
                 staged_at_ms: 1,
             }
         }
@@ -2462,6 +2666,7 @@ pub(crate) mod tests {
                 provider: "provider-a".into(),
                 provider_request_id: Some("provider-request-a".into()),
             },
+            capture: None,
         });
         receipts.push(receipt("failed-after-serving"));
         let homogeneous = served_provenance(&receipts).unwrap();
@@ -2474,6 +2679,7 @@ pub(crate) mod tests {
                 provider: "provider-a".into(),
                 provider_request_id: None,
             },
+            capture: None,
         });
         assert!(served_provenance(&receipts).is_none());
         let last = receipts.last_mut().unwrap();
@@ -2526,6 +2732,7 @@ pub(crate) mod tests {
             vec![receipt("req-a"), receipt("req-b")],
             "prompt".to_string(),
             "completion".to_string(),
+            None,
             Uuid::new_v4(),
             &[],
         )
@@ -2542,6 +2749,7 @@ pub(crate) mod tests {
             vec![receipt("req-dup"), receipt("req-dup")],
             "prompt".to_string(),
             "completion".to_string(),
+            None,
             Uuid::new_v4(),
             &[],
         )
@@ -2701,6 +2909,110 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// what this catches: a staged example that is not the call she lived. The read
+    /// must return the exact request she was served and the response she gave, with
+    /// her reasoning and tool calls; a turn with any call that cannot be read back must
+    /// say so rather than stage as complete; and each settled example must carry its
+    /// call and the card stamp (card ad107e18).
+    #[test]
+    fn a_staged_turn_is_read_back_as_the_calls_she_lived_and_a_hole_is_named() {
+        use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
+        use crate::cognition::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall};
+        let dir = tempfile::tempdir().expect("capture dir");
+        let persona = Uuid::new_v4();
+        let request = TextGenerationRequest {
+            system_prompt: Some("her identity".into()),
+            messages: vec![
+                ChatMessage::text("user", "room: the build is red on lib"),
+                ChatMessage::text("user", "card: fix the failing test"),
+            ],
+            ..Default::default()
+        };
+        let response = TextGenerationResponse {
+            text: "reading the failing test first".into(),
+            finish_reason: crate::ai::FinishReason::ToolUse,
+            model: "served-model".into(),
+            provider: "fixture-provider".into(),
+            usage: crate::ai::UsageMetrics::default(),
+            response_time_ms: 0,
+            request_id: "req-lived".into(),
+            content: None,
+            tool_calls: Some(vec![crate::ai::ToolCall {
+                id: "t1".into(),
+                name: "code/read".into(),
+                input: json!({"path": "src/lib.rs"}),
+            }]),
+            reasoning: Some("the assertion names a path; read it before guessing".into()),
+            routing: None,
+            error: None,
+            timing: None,
+        };
+        let sink = JsonlPromptCaptureSink::open(dir.path(), persona).expect("sink");
+        let call = PromptCall {
+            request_id: "req-lived".into(),
+            persona_id: persona,
+            room_id: Uuid::new_v4(),
+            cycle_id: Some(1),
+            context_window: Some(32_768),
+            cause: "synthetic",
+            cause_root: None,
+            replay_of: None,
+        };
+        let mut lease = CaptureLease::start(Arc::new(sink), &call, &request);
+        let submitted = lease.cursor().expect("durable submission").to_owned();
+        // the receipt carries the COMPLETED entry's cursor: the submission holds no response
+        let cursor = lease.finish(Some(&response), None).expect("completed entry");
+        assert_ne!(cursor, submitted);
+        let (_, only_request) =
+            read_lived_calls(Some(dir.path()), persona, vec![Some(submitted)], Vec::new());
+        assert!(only_request.is_some_and(|r| r.contains("no terminal response")));
+
+        let (calls, missing) =
+            read_lived_calls(Some(dir.path()), persona, vec![Some(cursor.clone())], Vec::new());
+        assert_eq!(missing, None);
+        assert_eq!(calls.len(), 1);
+        let lived = &calls[0];
+        assert_eq!(lived.capture, cursor, "the example links back to its trace");
+        assert_eq!(
+            serde_json::to_value(&lived.request.messages).unwrap(),
+            serde_json::to_value(&request.messages).unwrap(),
+            "the example is the request she was served, not a re-derivation"
+        );
+        assert_eq!(lived.response.reasoning, response.reasoning, "her thinking stays");
+        assert_eq!(lived.response.tool_calls.as_ref().map(Vec::len), Some(1));
+
+        // A second pass reuses what the turn already read and reads nothing again.
+        let (again, missing) =
+            read_lived_calls(None, persona, vec![Some(cursor.clone())], calls.clone());
+        assert_eq!((again.len(), missing), (1, None));
+
+        // A hole anywhere in the turn is named, never staged as complete.
+        let (_, hole) = read_lived_calls(Some(dir.path()), persona, vec![Some(cursor), None], Vec::new());
+        assert!(hole.is_some_and(|reason| reason.contains("no capture cursor")));
+
+        let stamp = OutcomeStamp {
+            card_id: Uuid::new_v4(),
+            role: CreditRole::Owner,
+            outcome: true,
+        };
+        let plan = SubmitPlan {
+            trait_kind: "code".into(),
+            prompt: "stimulus".into(),
+            completion: "acted chain".into(),
+            quality: 1.0,
+            stamp: Some(stamp),
+        };
+        let examples = lived_examples(&plan, &calls);
+        assert_eq!(examples.len(), 1);
+        assert_eq!(examples[0].completion, "reading the failing test first");
+        assert_eq!(examples[0].prompt, "card: fix the failing test");
+        assert!(examples[0].lived.is_some());
+        assert_eq!(
+            examples[0].metadata.as_ref().unwrap()["cardId"],
+            json!(stamp.card_id)
+        );
+    }
+
     fn served_receipt(id: &str, model: &str) -> crate::cognition::provenance::GenerationReceipt {
         crate::cognition::provenance::GenerationReceipt {
             submitted_request_id: id.into(),
@@ -2709,6 +3021,7 @@ pub(crate) mod tests {
                 provider: "fixture-provider".into(),
                 provider_request_id: None,
             },
+            capture: None,
         }
     }
 
@@ -2980,6 +3293,7 @@ pub(crate) mod tests {
             vec![served_receipt("another-claim-request", "served-model")],
             "private later prompt".into(),
             "private later completion".into(),
+            None,
             later_revision,
             &[],
         )

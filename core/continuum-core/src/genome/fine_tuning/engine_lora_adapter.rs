@@ -10,8 +10,10 @@
 //! [`Execution::InPlace`]): the same handles, probes, status and cancellation as the process
 //! trainers. What is its own:
 //! - the lane: the live lane whose recorded model IS the request's base; none = refused.
-//! - the examples: sent as `{prompt, completion}`; the engine renders them through the served
-//!   chat template, one window each, with loss only on the assistant turns.
+//! - the examples: a lived call (card ad107e18) is sent as the conversation it was served,
+//!   with its tools and her reply's reasoning and tool calls, and loss on that reply only;
+//!   any other example is `{prompt, completion}`. The engine renders both through the served
+//!   chat template, one window each, with loss only on the trained assistant turns.
 //! - admission: a MEASURED footprint per (model, window, rank, targets). A shape never run
 //!   before is admitted by leasing ALL the governed VRAM free right now (nothing else can grow
 //!   into the run) and its peak is measured and recorded, so the next run of that shape leases
@@ -25,7 +27,7 @@ use super::native_jobs::{
 };
 use super::{
     ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics,
-    TrainerHardware, TrainingArtifact, TrainingJobRequest, TrainingStatus,
+    TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -455,7 +457,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .dataset
             .examples
             .iter()
-            .map(|e| json!({"prompt": e.prompt, "completion": e.completion}))
+            .map(engine_example)
             .collect();
         let body = json!({
             "examples": examples,
@@ -593,10 +595,57 @@ impl FineTuningAdapter for EngineLoraFineTuner {
     }
 }
 
+/// One example as `/train` reads it. A lived call goes as its served conversation: the
+/// system prompt and every served message framed exactly as serving framed them
+/// ([`crate::inference::request_body::wire_messages`]: her earlier tool calls kept, tool
+/// results as `role: tool`), then her reply with its reasoning and tool calls. Earlier
+/// assistant turns in that history are context (`"train": false`), not this lesson. The tools she was offered ride along so the rendered prompt has the tool
+/// block she saw. Anything else goes as `{prompt, completion}`.
+fn engine_example(e: &TrainingExample) -> Value {
+    let Some(call) = e.lived.as_ref() else {
+        return json!({"prompt": e.prompt, "completion": e.completion});
+    };
+    use crate::inference::request_body::{close_trailing_assistant, wire_messages, wire_tool_call};
+    // The history exactly as serving framed it; images drop (the trainer is text-only,
+    // and a text model was served the description bridge anyway).
+    let mut messages = wire_messages(
+        &call.request.messages,
+        call.request.system_prompt.as_deref(),
+        false,
+        PROVIDER_ID,
+    );
+    // serving closes a history that ends in her own turn before she replies (a self-tick's
+    // continuation); without it the trained render has two assistant turns in a row
+    close_trailing_assistant(&mut messages);
+    for m in messages.iter_mut().filter(|m| m["role"] == "assistant") {
+        m["train"] = json!(false);
+    }
+    let r = &call.response;
+    let calls: Vec<Value> = r
+        .tool_calls
+        .iter()
+        .flatten()
+        .map(|c| wire_tool_call(&c.id, &c.name, &c.input))
+        .collect();
+    let mut reply = json!({"role": "assistant", "content": r.text});
+    if let Some(reasoning) = r.reasoning.as_deref().filter(|s| !s.is_empty()) {
+        reply["reasoning_content"] = json!(reasoning);
+    }
+    if !calls.is_empty() {
+        reply["tool_calls"] = json!(calls);
+    }
+    messages.push(reply);
+    let mut example = json!({"messages": messages});
+    if let Some(tools) = call.request.tools.as_deref().filter(|t| !t.is_empty()) {
+        example["tools"] = json!(crate::inference::request_body::openai_tools(tools));
+    }
+    example
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingExample, TrainingSource};
+    use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingSource};
 
     fn request(base: &str) -> TrainingJobRequest {
         TrainingJobRequest {
@@ -605,7 +654,7 @@ mod tests {
             base_model: base.into(),
             trait_kind: "code".into(),
             dataset: TrainingDataset {
-                examples: vec![TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None }],
+                examples: vec![TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None }],
                 source: TrainingSource::OperatorCurated,
                 validation_split: 0.0,
             },
@@ -694,6 +743,95 @@ mod tests {
         })
         .await
         .expect("test: the job never ended")
+    }
+
+    // what this catches: a lived call reaching /train as anything but the conversation she
+    // was served (card ad107e18): her reasoning and tool calls must stay on the trained reply,
+    // her earlier replies in the history must be context and not trained again, and the tools
+    // she was offered must ride along so the prompt renders with its tool block.
+    #[test]
+    fn a_lived_call_is_sent_as_its_served_conversation_with_only_her_reply_trained() {
+        use crate::ai::types::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
+        let request = TextGenerationRequest {
+            system_prompt: Some("you are Kimi".into()),
+            messages: vec![
+                ChatMessage::text("user", "the build is red"),
+                ChatMessage {
+                    role: "assistant".into(),
+                    content: MessageContent::Parts(vec![ContentPart::ToolUse {
+                        id: "t0".into(),
+                        name: "code/run".into(),
+                        input: json!({"cmd": "cargo test"}),
+                    }]),
+                    name: None,
+                },
+                ChatMessage {
+                    role: "user".into(),
+                    content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                        tool_use_id: "t0".into(),
+                        content: "1 failed".into(),
+                        is_error: None,
+                    }]),
+                    name: None,
+                },
+                ChatMessage::text("user", "card: fix it"),
+            ],
+            tools: Some(vec![serde_json::from_value::<NativeToolSpec>(json!({
+                "name": "code/read", "description": "read a file",
+                "input_schema": {"type": "object", "properties": {}}
+            }))
+            .expect("test: tool spec")]),
+            ..Default::default()
+        };
+        let response = TextGenerationResponse {
+            text: "reading it".into(),
+            finish_reason: crate::ai::FinishReason::ToolUse,
+            model: "m".into(),
+            provider: "p".into(),
+            usage: crate::ai::UsageMetrics::default(),
+            response_time_ms: 0,
+            request_id: "r".into(),
+            content: None,
+            tool_calls: Some(vec![crate::ai::ToolCall { id: "t1".into(), name: "code/read".into(), input: json!({"path": "a.rs"}) }]),
+            reasoning: Some("read before guessing".into()),
+            routing: None,
+            error: None,
+            timing: None,
+        };
+        let lived = TrainingExample {
+            prompt: "card: fix it".into(),
+            completion: "reading it".into(),
+            metadata: None,
+            lived: Some(super::super::LivedCall { capture: "c".into(), request, response }),
+        };
+        let e = engine_example(&lived);
+        let m = e["messages"].as_array().expect("test: messages");
+        assert_eq!(m.len(), 6);
+        assert_eq!((m[0]["role"].as_str(), m[0]["content"].as_str()), (Some("system"), Some("you are Kimi")));
+        // the history is the one serving sent: her earlier act keeps its tool call, and its
+        // result is a tool message bound to that call (Cormac on #4445)
+        assert_eq!(m[2]["tool_calls"][0]["function"]["name"], "code/run");
+        assert_eq!(m[2]["train"], json!(false), "her earlier act is context, not this lesson");
+        assert_eq!((m[3]["role"].as_str(), m[3]["tool_call_id"].as_str()), (Some("tool"), Some("t0")));
+        let reply = &m[5];
+        assert!(reply.get("train").is_none(), "the reply is trained");
+        assert_eq!(reply["reasoning_content"], "read before guessing");
+        assert_eq!(reply["tool_calls"][0]["function"]["name"], "code/read");
+        assert_eq!(reply["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a.rs\"}");
+        assert_eq!(e["tools"][0]["function"]["name"], "code/read");
+        // a self-tick: the history ends in her own turn, and serving closed it before her reply
+        let mut tick = lived.clone();
+        let call = tick.lived.as_mut().expect("test: lived");
+        call.request.messages = vec![ChatMessage::text("user", "go"), ChatMessage::text("assistant", "thinking it over")];
+        let e = engine_example(&tick);
+        let m = e["messages"].as_array().expect("test: messages");
+        let roles: Vec<&str> = m.iter().filter_map(|x| x["role"].as_str()).collect();
+        assert!(
+            !roles.windows(2).any(|w| w == ["assistant", "assistant"]),
+            "never two assistant turns in a row, as serving never sends them: {roles:?}"
+        );
+        let plain = TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
+        assert_eq!(engine_example(&plain), json!({"prompt": "p", "completion": "c"}));
     }
 
     // what this catches: the dispatch end to end against an engine-shaped lane — the request

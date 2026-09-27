@@ -171,20 +171,7 @@ pub(crate) fn finish_body(
             && cfg.tool_protocol
                 == crate::model_registry::ToolProtocol::NativeFunctionCalling
         {
-            let openai_tools: Vec<Value> = tools
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema
-                        }
-                    })
-                })
-                .collect();
-            body["tools"] = json!(openai_tools);
+            body["tools"] = json!(openai_tools(tools));
 
             // Add tool_choice if specified
             if let Some(choice) = &request.tool_choice {
@@ -229,6 +216,37 @@ pub(crate) fn finish_body(
 /// reduces to clean text + no reasoning). Operates on string content (chat turns);
 /// multimodal/array content is left untouched (a follow-up can append a text part).
 /// No user message → no-op.
+/// The OpenAI `tools` param for a set of tool specs. One mapping: serving sends it,
+/// and the engine trainer sends the same list so a lived turn renders with the tool
+/// block it was served with.
+pub(crate) fn openai_tools(tools: &[crate::ai::types::NativeToolSpec]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema
+                }
+            })
+        })
+        .collect()
+}
+
+/// One tool call as the OpenAI wire carries it: arguments as a JSON string.
+pub(crate) fn wire_tool_call(id: &str, name: &str, input: &Value) -> Value {
+    json!({
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": serde_json::to_string(input).unwrap_or_default() // OpenAI wire boundary: tool-call arguments travel as a JSON string
+        }
+    })
+}
+
 pub(crate) fn apply_no_think_switch(messages: &mut [Value]) {
     for m in messages.iter_mut().rev() {
         if m.get("role").and_then(|r| r.as_str()) != Some("user") {
@@ -291,6 +309,28 @@ pub(crate) fn format_messages(
     system_prompt: Option<&str>,
     vision_native: bool,
 ) -> Vec<Value> {
+    let mut result = wire_messages(messages, system_prompt, vision_native, &cfg.provider_id);
+    // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
+    // `/no_think` soft-switch to the last user turn so the model skips its
+    // chain-of-thought and answers directly. Model-specific token, owned here at
+    // the adapter boundary; higher layers never speak `/no_think`.
+    if cfg.thinking == ThinkingMode::Suppress {
+        apply_no_think_switch(&mut result);
+    }
+    result
+}
+
+/// The wire messages for a request: the system prompt, then each message with its
+/// tool calls kept on assistant turns and its tool results split into `role: tool`
+/// messages. The one mapping serving sends and the engine trainer renders a lived
+/// call from, so a trained history is the history she was served. `provider` names
+/// the caller in the dropped-image warning.
+pub(crate) fn wire_messages(
+    messages: &[ChatMessage],
+    system_prompt: Option<&str>,
+    vision_native: bool,
+    provider: &str,
+) -> Vec<Value> {
     // Pre-size: one wire message per input message + the optional system
     // prompt. The common text path lands exactly; tool-result turns push a
     // few extra and realloc once. Runs on every inference call — no
@@ -336,14 +376,7 @@ pub(crate) fn format_messages(
                     let tool_calls: Vec<Value> = parts
                         .iter()
                         .filter_map(|p| match p {
-                            ContentPart::ToolUse { id, name, input } => Some(json!({
-                                "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": serde_json::to_string(input).unwrap_or_default()
-                                }
-                            })),
+                            ContentPart::ToolUse { id, name, input } => Some(wire_tool_call(id, name, input)),
                             _ => None,
                         })
                         .collect();
@@ -386,7 +419,7 @@ pub(crate) fn format_messages(
                                     // image_url at a text-only endpoint.
                                     tracing::warn!(
                                         target: "openai_adapter",
-                                        provider = %cfg.provider_id,
+                                        provider = %provider,
                                         "dropping image content part for a non-vision \
                                          model — the description bridge is its sight; \
                                          if this model CAN see, its catalog row must \
@@ -419,14 +452,6 @@ pub(crate) fn format_messages(
                 }
             }
         }
-    }
-
-    // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
-    // `/no_think` soft-switch to the last user turn so the model skips its
-    // chain-of-thought and answers directly. Model-specific token, owned here at
-    // the adapter boundary; higher layers never speak `/no_think`.
-    if cfg.thinking == ThinkingMode::Suppress {
-        apply_no_think_switch(&mut result);
     }
 
     result

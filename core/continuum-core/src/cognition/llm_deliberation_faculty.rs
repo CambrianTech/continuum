@@ -1457,20 +1457,23 @@ impl LlmDeliberationFaculty {
         // The actual submitted identity survives a provider-owned response ID.
         // Record every completed attempt, including a corrective capacity refusal,
         // independently of whether optional disk capture is installed.
-        receipts.push(match &gen_result {
-            Ok(response) => {
-                super::provenance::GenerationReceipt::from_response(request_id, response)
-            }
-            Err(error) => {
-                super::provenance::GenerationReceipt::faulted(request_id, error.to_string())
-            }
+        // The completed entry's cursor, not the submission's: only the completed entry
+        // reads back as the request AND her response (card ad107e18).
+        let completed = capture.as_mut().and_then(|lease| match &gen_result {
+            Ok(response) => lease.finish(Some(response), None),
+            Err(error) => lease.finish(None, Some(&error.to_string())),
         });
-        if let Some(lease) = &mut capture {
+        receipts.push(
             match &gen_result {
-                Ok(response) => lease.finish(Some(response), None),
-                Err(error) => lease.finish(None, Some(&error.to_string())),
+                Ok(response) => {
+                    super::provenance::GenerationReceipt::from_response(request_id, response)
+                }
+                Err(error) => {
+                    super::provenance::GenerationReceipt::faulted(request_id, error.to_string())
+                }
             }
-        }
+            .with_capture(completed.as_deref()),
+        );
         Some(gen_result)
     }
 

@@ -243,6 +243,7 @@ mod tests {
                 provider: "fixture-provider".into(),
                 provider_request_id: Some("served-request".into()),
             },
+            capture: None,
         };
         serde_json::from_value(json!({
             "submissionId": id,

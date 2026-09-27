@@ -42,6 +42,12 @@ pub struct GenerationReceipt {
     pub submitted_request_id: String,
     /// Which way this call went.
     pub outcome: GenerationOutcome,
+    /// The prompt capture's cursor for this call, when a capture sink recorded it:
+    /// the link from a training example back to the exact request she was served and
+    /// the exact response she gave (card ad107e18, Kimi's provenance rule). `None`
+    /// when no capture was installed; rows written before this field read as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<String>,
 }
 
 /// Served or faulted — both are outcomes, neither is an absence.
@@ -105,7 +111,14 @@ impl GenerationReceipt {
         Self {
             submitted_request_id,
             outcome,
+            capture: None,
         }
+    }
+
+    /// Attach the capture cursor the call was recorded under.
+    pub fn with_capture(mut self, cursor: Option<&str>) -> Self {
+        self.capture = cursor.filter(|c| !c.is_empty()).map(str::to_owned);
+        self
     }
 
     /// Build a receipt for a call that failed before any response existed — a
@@ -118,6 +131,7 @@ impl GenerationReceipt {
                 model: None,
                 provider: None,
             },
+            capture: None,
         }
     }
 
