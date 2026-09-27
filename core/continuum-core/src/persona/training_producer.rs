@@ -1773,8 +1773,18 @@ fn lived_examples(
     calls: &[crate::genome::fine_tuning::LivedCall],
 ) -> Vec<TrainingExample> {
     let metadata = example_metadata(plan, "card-credit");
-    calls
-        .iter()
+    let kept = not_a_loop(calls);
+    if kept.len() < calls.len() {
+        crate::probe!(
+            class = "training.example.loop_dropped",
+            card = %plan.stamp.map(|s| s.card_id).unwrap_or_default(), // unwrap_or_default: an unstamped plan has no card to name
+            calls = calls.len() as u64,
+            kept = kept.len() as u64,
+            "calls that repeated the previous action unchanged are not training examples"
+        );
+    }
+    kept
+        .into_iter()
         .map(|call| TrainingExample {
             prompt: call
                 .request
@@ -1787,6 +1797,35 @@ fn lived_examples(
             lived: Some(call.clone()),
         })
         .collect()
+}
+
+/// The calls of a turn that are not a LOOP (Kimi's rule, card ad107e18: "61 act batches
+/// under one thought, no progress" is a thing she must not learn). A call whose action
+/// repeats the previous call's unchanged (the same tool calls with the same arguments,
+/// or the same text when it made no call) changed nothing; the first of a run is the
+/// action and stays, the repeats go. Order is kept.
+fn not_a_loop(calls: &[crate::genome::fine_tuning::LivedCall]) -> Vec<&crate::genome::fine_tuning::LivedCall> {
+    fn action(call: &crate::genome::fine_tuning::LivedCall) -> (Vec<(&str, String)>, &str) {
+        let tools: Vec<(&str, String)> = call
+            .response
+            .tool_calls
+            .iter()
+            .flatten()
+            .map(|t| (t.name.as_str(), t.input.to_string()))
+            .collect();
+        let text = if tools.is_empty() { call.response.text.trim() } else { "" };
+        (tools, text)
+    }
+    let mut kept = Vec::with_capacity(calls.len());
+    let mut previous = None;
+    for call in calls {
+        let this = action(call);
+        if previous.as_ref() != Some(&this) {
+            kept.push(call);
+        }
+        previous = Some(this);
+    }
+    kept
 }
 
 async fn settle_staged_row<T: Transport>(
@@ -2907,6 +2946,49 @@ pub(crate) mod tests {
                 )
             })
             .collect()
+    }
+
+    // what this catches: a loop trained as lessons (Kimi's rule on card ad107e18: "61 act
+    // batches under one thought, no progress"). A call that repeats the previous action
+    // unchanged is dropped; the first of the run is kept, and a changed action is kept.
+    #[test]
+    fn a_repeated_action_is_not_a_training_example() {
+        use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
+        let call = |text: &str, tool: Option<(&str, serde_json::Value)>| crate::genome::fine_tuning::LivedCall {
+            capture: uuid::Uuid::new_v4().to_string(),
+            request: TextGenerationRequest::default(),
+            response: TextGenerationResponse {
+                text: text.into(),
+                finish_reason: crate::ai::FinishReason::Stop,
+                model: "m".into(),
+                provider: "p".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: "r".into(),
+                content: None,
+                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.into(), input }]),
+                reasoning: Some("let me organize the situation".into()),
+                routing: None,
+                error: None,
+                timing: None,
+            },
+        };
+        let read = || call("", Some(("code/read", json!({"path": "src/lib.rs"}))));
+        let calls = vec![
+            read(),
+            read(),
+            read(),
+            call("", Some(("code/edit", json!({"path": "src/lib.rs"})))),
+            call("done, tests pass", None),
+            call("done, tests pass", None),
+            read(),
+        ];
+        let kept = not_a_loop(&calls);
+        let actions: Vec<&str> = kept
+            .iter()
+            .map(|c| c.response.tool_calls.as_ref().map(|t| t[0].name.as_str()).unwrap_or(c.response.text.as_str()))
+            .collect();
+        assert_eq!(actions, vec!["code/read", "code/edit", "done, tests pass", "code/read"]);
     }
 
     /// what this catches: a staged example that is not the call she lived. The read
