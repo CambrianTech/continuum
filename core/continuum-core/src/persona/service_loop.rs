@@ -1646,7 +1646,8 @@ async fn serve_persona_loop_inner(
                 msg.text.clone(),
                 response_text.clone(),
                 // Captured in the cycle arm above, at selection. `None` is an ordinary
-                // conversation and submits immediately, exactly as before.
+                // conversation: it leaves a `training.example.unverified` probe and is NOT
+                // a training example (card 8e3dd206) — only a graded turn is.
                 turn_credit,
                 turn_generation_receipts,
             );
