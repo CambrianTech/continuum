@@ -605,7 +605,7 @@ fn engine_example(e: &TrainingExample) -> Value {
     let Some(call) = e.lived.as_ref() else {
         return json!({"prompt": e.prompt, "completion": e.completion});
     };
-    use crate::inference::request_body::{wire_messages, wire_tool_call};
+    use crate::inference::request_body::{close_trailing_assistant, wire_messages, wire_tool_call};
     // The history exactly as serving framed it; images drop (the trainer is text-only,
     // and a text model was served the description bridge anyway).
     let mut messages = wire_messages(
@@ -614,6 +614,9 @@ fn engine_example(e: &TrainingExample) -> Value {
         false,
         PROVIDER_ID,
     );
+    // serving closes a history that ends in her own turn before she replies (a self-tick's
+    // continuation); without it the trained render has two assistant turns in a row
+    close_trailing_assistant(&mut messages);
     for m in messages.iter_mut().filter(|m| m["role"] == "assistant") {
         m["train"] = json!(false);
     }
@@ -816,6 +819,17 @@ mod tests {
         assert_eq!(reply["tool_calls"][0]["function"]["name"], "code/read");
         assert_eq!(reply["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a.rs\"}");
         assert_eq!(e["tools"][0]["function"]["name"], "code/read");
+        // a self-tick: the history ends in her own turn, and serving closed it before her reply
+        let mut tick = lived.clone();
+        let call = tick.lived.as_mut().expect("test: lived");
+        call.request.messages = vec![ChatMessage::text("user", "go"), ChatMessage::text("assistant", "thinking it over")];
+        let e = engine_example(&tick);
+        let m = e["messages"].as_array().expect("test: messages");
+        let roles: Vec<&str> = m.iter().filter_map(|x| x["role"].as_str()).collect();
+        assert!(
+            !roles.windows(2).any(|w| w == ["assistant", "assistant"]),
+            "never two assistant turns in a row, as serving never sends them: {roles:?}"
+        );
         let plain = TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
         assert_eq!(engine_example(&plain), json!({"prompt": "p", "completion": "c"}));
     }
