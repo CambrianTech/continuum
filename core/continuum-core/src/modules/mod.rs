@@ -73,6 +73,7 @@ pub mod memory;
 pub mod models;
 pub mod nav;
 pub mod perception_consumer;
+pub mod deploy_build_consumer;
 pub mod persona_allocator;
 pub mod persona_instance_manager;
 pub mod persona_rag_inspect;

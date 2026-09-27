@@ -2202,6 +2202,10 @@ pub fn start_server(
             crate::cognition::bench_staging::staging_area(),
         ),
     ));
+    // The warm build joins with a standing floor (it compiles the next core beside this
+    // one): the serving plan must leave it room, or a lane sized in a memory surplus stops
+    // every deploy (the M5, 2026-09-27). Only on a node with a deploy tree.
+    crate::modules::deploy_build_consumer::DeployBuildConsumer::register(&resource_daemon);
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
