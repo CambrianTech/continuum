@@ -2928,10 +2928,10 @@ fn index_lock_verdict(age: Option<std::time::Duration>, git_in_tree: bool) -> In
 }
 
 /// Whether any running `git` might be working on `repo`, judged conservatively: a git whose
-/// cwd is inside the tree, whose command line names the tree (`git -C <repo>`, `--git-dir`,
-/// `--work-tree` from elsewhere), or whose cwd cannot be read at all. Only a git positively
-/// seen working elsewhere is ruled out (Codex on #4477: `git -C` keeps its cwd outside the
-/// tree while it owns the tree's index, and an unreadable cwd is not evidence of absence).
+/// cwd is inside the tree, whose command line names the tree (`--git-dir` / `--work-tree`
+/// given from elsewhere), or whose cwd cannot be read at all. Only a git positively seen
+/// working elsewhere is ruled out: an unreadable cwd (permissions, a platform without cwd
+/// inspection) is not evidence of absence (Codex on #4477).
 fn git_running_in(repo: &Path) -> bool {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
