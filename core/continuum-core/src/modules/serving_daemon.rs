@@ -2330,7 +2330,7 @@ impl ServingDaemonModule {
         self.spawn_baseline_vram.fetch_min(now, Ordering::Relaxed);
     }
 
-    fn sample_lane_footprint(&self) {
+    async fn sample_lane_footprint(&self) {
         let now = crate::persona::trace::now_ms();
         if !crate::inference::lane_footprint::sample_due(now) {
             return;
@@ -2370,10 +2370,12 @@ impl ServingDaemonModule {
             ) => {
                 let baseline = self.spawn_baseline_vram.load(Ordering::Relaxed);
                 let now = vram_physical_used(&self.resource_daemon);
-                (
-                    "device_delta",
-                    device_delta_beyond_weights(baseline, now, fp.weights_bytes),
-                )
+                match device_delta_beyond_weights(baseline, now, fp.weights_bytes) {
+                    Some(delta) => ("device_delta", Some(delta)),
+                    // No spawn baseline (an adopted lane) — ask the engine what it allocated
+                    // (`/props` memory_breakdown, card 27fe9f8b): KV + compute on the device.
+                    None => ("engine_props", engine_beyond_weights().await),
+                }
             }
             _ => (
                 "process_anon",
@@ -5491,6 +5493,23 @@ fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
 /// The discrete footprint arm: what the lane added to the device beyond its weights.
 /// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
 /// reading — never a delta against zero, which would charge the desktop to the model.
+/// The lane's bytes beyond its weights on the device, as the engine reports its own allocation.
+/// Bounded: a localhost read of cached meta, taken only on the sampler's interval; `None` when the
+/// lane does not answer in time or its engine predates `memory_breakdown`.
+async fn engine_beyond_weights() -> Option<u64> {
+    let url = format!("{}/props", crate::inference::llama_server::serving_root());
+    let body = reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_millis(500))
+        .send()
+        .await
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    crate::inference::weight_residency::EngineMemory::from_props(&body).map(|m| m.accelerator_beyond_weights())
+}
+
 fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> Option<u64> {
     (baseline > 0 && baseline != u64::MAX && now > 0)
         .then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
@@ -7005,7 +7024,7 @@ impl ServiceModule for ServingDaemonModule {
         // band to the per-port plan file — the actuator her ResidencyCache polls.
         self.publish_moe_host_cache_lease();
         self.lower_spawn_baseline_to_the_trough();
-        self.sample_lane_footprint();
+        self.sample_lane_footprint().await;
         Ok(())
     }
 
