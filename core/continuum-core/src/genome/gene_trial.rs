@@ -77,30 +77,75 @@ pub struct GeneTrial {
     /// re-grades an instance), and a card counts once.
     #[serde(default)]
     pub credited_cards: Vec<Uuid>,
+    /// How many of the gate's [`CHECKPOINTS`] have been looked at: each is looked at once.
+    #[serde(default)]
+    pub looked: u32,
 }
 
-/// Settled cards each arm needs before the gate decides. Enough that one lucky or unlucky
-/// card cannot decide it alone; few enough that a gene is judged within a day of her work.
-pub const MIN_SETTLED_PER_ARM: u32 = 6;
+/// The only points at which the gate looks: when BOTH arms have reached this many settled
+/// cards. Looking after every card lets chance cross the bar somewhere along the way (a
+/// no-effect gene promoted 6-11% of the time at a 0.975 bar, simulated); four looks keep a
+/// no-effect gene's promotion at 3-8%, a harmful one's at 1%, and still promote a gene
+/// that lifts her pass rate by 0.2 about half the time within 40 cards (Cormac on #4476:
+/// promoted genes become the next baseline, so a noise gene is drift).
+pub const CHECKPOINTS: [u32; 4] = [10, 20, 30, 40];
+/// How sure the gate must be, at a checkpoint, that her cards pass MORE often with the
+/// gene before it joins her genome; below [`RETIRE_BELOW`] it is likely worse and retires.
+/// At the last checkpoint, anything not promoted retires: no gain shown.
+pub const PROMOTE_AT: f64 = 0.975;
+pub const RETIRE_BELOW: f64 = 0.10;
 
-/// PURE: the gate. `None` until both arms have [`MIN_SETTLED_PER_ARM`] settled cards; then
-/// the gene is PROMOTED when its cards passed at least as often as her genome's did, and
-/// RETIRED otherwise. Integer cross-multiplication, so a tie is exactly a tie.
-pub fn gate(candidate: ArmTally, stable: ArmTally) -> Option<(TrialState, String)> {
-    if candidate.settled < MIN_SETTLED_PER_ARM || stable.settled < MIN_SETTLED_PER_ARM {
-        return None;
+/// ln Γ(n) for a whole n ≥ 1: ln((n-1)!), exact as a sum (every argument the gate forms is
+/// a whole number of cards plus one).
+fn ln_gamma_whole(n: u32) -> f64 {
+    (2..n).map(|k| f64::from(k).ln()).sum()
+}
+
+fn ln_beta(a: u32, b: u32) -> f64 {
+    ln_gamma_whole(a) + ln_gamma_whole(b) - ln_gamma_whole(a + b)
+}
+
+/// PURE: the probability that the gene's pass rate is above her genome's, given the cards
+/// each arm settled, each rate uniform before any card (Beta(1,1)), so Beta(passed+1,
+/// failed+1) after. Exact, by the closed form for two Beta variables (Evan Miller):
+/// P(B > A) = Σ_{i<αB} B(αA+i, βA+βB) / ((βB+i)·B(1+i, βB)·B(αA, βA)).
+pub fn p_gene_better(candidate: ArmTally, stable: ArmTally) -> f64 {
+    let (ab, bb) = (candidate.passed + 1, candidate.settled - candidate.passed + 1);
+    let (aa, ba) = (stable.passed + 1, stable.settled - stable.passed + 1);
+    (0..ab)
+        .map(|i| {
+            (ln_beta(aa + i, ba + bb) - f64::from(bb + i).ln() - ln_beta(1 + i, bb) - ln_beta(aa, ba)).exp()
+        })
+        .sum::<f64>()
+        .clamp(0.0, 1.0)
+}
+
+/// PURE: the gate, given the checkpoints already looked at. Returns how many checkpoints
+/// have now been looked at, and the decision if one was reached. Between checkpoints it
+/// neither looks nor decides.
+pub fn gate(candidate: ArmTally, stable: ArmTally, looked: u32) -> (u32, Option<(TrialState, String)>) {
+    let Some(&at) = CHECKPOINTS.get(looked as usize) else {
+        return (looked, None);
+    };
+    if candidate.settled.min(stable.settled) < at {
+        return (looked, None);
     }
-    let lhs = u64::from(candidate.passed) * u64::from(stable.settled);
-    let rhs = u64::from(stable.passed) * u64::from(candidate.settled);
+    let looked = looked + 1;
+    let p = p_gene_better(candidate, stable);
     let rates = format!(
-        "{}/{} cards passed with the gene, {}/{} without",
-        candidate.passed, candidate.settled, stable.passed, stable.settled
+        "{}/{} cards passed with the gene, {}/{} without; P(better) {:.3}",
+        candidate.passed, candidate.settled, stable.passed, stable.settled, p
     );
-    Some(if lhs >= rhs {
-        (TrialState::Promoted, format!("no worse in her work: {rates}"))
+    let decision = if p >= PROMOTE_AT {
+        Some((TrialState::Promoted, format!("better in her work: {rates}")))
+    } else if p < RETIRE_BELOW {
+        Some((TrialState::Retired, format!("worse in her work: {rates}")))
+    } else if looked as usize == CHECKPOINTS.len() {
+        Some((TrialState::Retired, format!("no gain shown in her work: {rates}")))
     } else {
-        (TrialState::Retired, format!("worse in her work: {rates}"))
-    })
+        None
+    };
+    (looked, decision)
 }
 
 /// One turn of a settled card, as the gate reads it: when it was staged, and, for each
@@ -403,6 +448,7 @@ impl GeneTrials {
             candidate: ArmTally::default(),
             stable: ArmTally::default(),
             credited_cards: Vec::new(),
+            looked: 0,
         };
         all.push(trial.clone());
         self.save(&all)?;
@@ -430,12 +476,20 @@ impl GeneTrials {
             let Some(candidate) = arm_of(t, turns) else {
                 continue;
             };
+            // Checked against the card's OWN draw (Cormac on #4476): a card that drew the gene
+            // but ran without it (an unreadable trial file that turn) is neither arm's
+            // evidence, and neither is one that ran a gene it did not draw.
+            if candidate != t.candidate_arm(card) {
+                continue;
+            }
             let arm = if candidate { &mut t.candidate } else { &mut t.stable };
             arm.settled += 1;
             arm.passed += u32::from(passed);
             t.credited_cards.push(card);
             changed = true;
-            if let Some((state, reason)) = gate(t.candidate, t.stable) {
+            let (looked, decision) = gate(t.candidate, t.stable, t.looked);
+            t.looked = looked;
+            if let Some((state, reason)) = decision {
                 t.state = state;
                 t.decided_at_ms = Some(now_ms);
                 t.verdict = Some(TrialVerdict { candidate: t.candidate, stable: t.stable, reason });
@@ -509,16 +563,28 @@ mod tests {
         assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_off))[0].path, "/genes/k1.gguf");
     }
 
-    // what this catches: a gate that decides on too little of her work, that calls a tie a
-    // loss, or that lets a gene worse in her work stay.
+    // what this catches (Cormac on #4476): a gate that promotes noise. A tie or a small lead
+    // must not promote (promoted genes become the next baseline, so noise is drift); the gate
+    // looks only at its checkpoints and each once; a likely gain promotes, a likely loss
+    // retires, and at the last checkpoint anything not promoted retires. The probability must
+    // be one: equal evidence is a coin, and the two directions sum to one.
     #[test]
-    fn the_gate_waits_for_both_arms_and_promotes_only_what_is_no_worse() {
+    fn the_gate_looks_at_checkpoints_and_promotes_only_a_likely_gain() {
         let a = |passed, settled| ArmTally { settled, passed };
-        assert_eq!(gate(a(6, 6), a(1, 5)), None, "the stable arm has 5 settled cards, not 6");
-        assert_eq!(gate(a(3, 6), a(3, 6)).map(|g| g.0), Some(TrialState::Promoted), "a tie is no worse");
-        assert_eq!(gate(a(4, 8), a(3, 6)).map(|g| g.0), Some(TrialState::Promoted), "4/8 = 3/6");
-        assert_eq!(gate(a(2, 6), a(3, 6)).map(|g| g.0), Some(TrialState::Retired));
-        assert!(gate(a(2, 6), a(3, 6)).unwrap().1.contains("2/6 cards passed with the gene, 3/6 without"));
+        for (c, s) in [(a(3, 6), a(3, 6)), (a(0, 10), a(0, 10)), (a(12, 20), a(12, 20))] {
+            assert!((p_gene_better(c, s) - 0.5).abs() < 1e-9, "equal evidence is a coin: {c:?}");
+        }
+        assert!((p_gene_better(a(5, 6), a(1, 6)) + p_gene_better(a(1, 6), a(5, 6)) - 1.0).abs() < 1e-9);
+        assert!(p_gene_better(a(5, 6), a(1, 6)) > p_gene_better(a(4, 6), a(1, 6)));
+        assert_eq!(gate(a(9, 9), a(0, 30), 0), (0, None), "the gene arm has not reached the first checkpoint");
+        assert_eq!(gate(a(6, 10), a(4, 10), 0), (1, None), "a small lead at 10 is looked at and not enough");
+        assert_eq!(gate(a(7, 11), a(4, 11), 1), (1, None), "between checkpoints: no look");
+        assert_eq!(gate(a(9, 10), a(2, 10), 0).1.map(|d| d.0), Some(TrialState::Promoted));
+        assert_eq!(gate(a(1, 10), a(8, 10), 0).1.map(|d| d.0), Some(TrialState::Retired));
+        let last = gate(a(20, 40), a(20, 40), 3);
+        assert_eq!(last.1.as_ref().map(|d| d.0), Some(TrialState::Retired), "40 cards, no gain: noise, retired");
+        assert!(last.1.unwrap().1.contains("no gain shown"));
+        assert_eq!(gate(a(20, 40), a(20, 40), 4), (4, None), "past the last checkpoint: decided already");
     }
 
     // what this catches (Cormac on #4473, Codex on #4476): a card credited to a trial it was
@@ -553,15 +619,16 @@ mod tests {
         assert_eq!(arm_of(&t, &[turn(200, &[with, served(local, "other-base", &[])])]), Some(true), "only its base is read");
     }
 
-    // what this catches: a card counted twice when its verdict arrives again, a card credited
-    // to the wrong arm, and a trial that never decides once both arms are full.
+    // what this catches: a card counted twice when its verdict arrives again, a card counted
+    // in an arm it did not draw (Cormac on #4476), and a trial that never decides once both
+    // arms reach a checkpoint.
     #[test]
-    fn each_settled_card_counts_once_in_its_arm_and_the_gate_decides_when_both_are_full() {
+    fn each_settled_card_counts_once_in_the_arm_it_drew_and_the_gate_decides_at_a_checkpoint() {
+        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
         let dir = tempfile::tempdir().expect("test: dir");
         let store = GeneTrials::at(dir.path().join("trials.json"));
         let kimi = Uuid::from_u128(0x6b1);
         let t = store.open(kimi, "kimi-dream-1", Path::new("/genes/k1.gguf"), "qwen-27b", 10).unwrap();
-        use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
         let served = |genes: &[&str]| GenerationReceipt {
             submitted_request_id: "r".into(),
             outcome: GenerationOutcome::Served { model: "qwen-27b".into(), provider: crate::inference::llama_server::PROVIDER_ID.into(), provider_request_id: None },
@@ -570,20 +637,29 @@ mod tests {
         };
         let with = vec![CardTurn::from_receipts(20, [&served(&["/genes/k1.gguf"])])];
         let without = vec![CardTurn::from_receipts(20, [&served(&[])])];
-        let card = Uuid::from_u128(1);
-        assert!(store.credit_card(kimi, card, true, &with, 20).unwrap().is_empty());
-        assert!(store.credit_card(kimi, card, true, &with, 21).unwrap().is_empty(), "the same card again");
+        let drew: Vec<Uuid> = (0..400u128).map(Uuid::from_u128).filter(|c| t.candidate_arm(*c)).take(10).collect();
+        let stayed: Vec<Uuid> = (0..400u128).map(Uuid::from_u128).filter(|c| !t.candidate_arm(*c)).take(10).collect();
+
+        assert!(store.credit_card(kimi, stayed[0], true, &with, 20).unwrap().is_empty());
+        assert!(store.credit_card(kimi, drew[0], true, &without, 20).unwrap().is_empty());
         let now = store.load().unwrap().into_iter().find(|x| x.id == t.id).unwrap();
-        assert_eq!((now.candidate, now.stable), (ArmTally { settled: 1, passed: 1 }, ArmTally::default()));
-        for i in 2..=6u128 {
-            assert!(store.credit_card(kimi, Uuid::from_u128(i), i % 2 == 0, &with, 30).unwrap().is_empty());
+        assert_eq!((now.candidate, now.stable), (ArmTally::default(), ArmTally::default()), "genome against its own draw: no evidence");
+
+        assert!(store.credit_card(kimi, drew[0], true, &with, 21).unwrap().is_empty());
+        assert!(store.credit_card(kimi, drew[0], true, &with, 22).unwrap().is_empty(), "the same card again");
+        let now = store.load().unwrap().into_iter().find(|x| x.id == t.id).unwrap();
+        assert_eq!(now.candidate, ArmTally { settled: 1, passed: 1 });
+
+        for c in &drew[1..] {
+            assert!(store.credit_card(kimi, *c, true, &with, 30).unwrap().is_empty());
         }
         let mut decided = Vec::new();
-        for i in 100..106u128 {
-            decided = store.credit_card(kimi, Uuid::from_u128(i), i < 102, &without, 40).unwrap();
+        for (k, c) in stayed.iter().enumerate() {
+            decided = store.credit_card(kimi, *c, k < 2, &without, 40).unwrap();
         }
-        let d = decided.first().expect("the sixth stable card completes the gate");
-        assert_eq!(d.state, TrialState::Promoted, "4/6 with the gene against 2/6 without");
-        assert!(store.credit_card(kimi, Uuid::from_u128(200), false, &without, 50).unwrap().is_empty(), "a decided trial takes no more cards");
+        let d = decided.first().expect("the tenth stable card reaches the first checkpoint");
+        assert_eq!(d.state, TrialState::Promoted, "10/10 with the gene against 2/10 without");
+        assert_eq!(d.looked, 1);
+        assert!(store.credit_card(kimi, Uuid::from_u128(9999), false, &without, 50).unwrap().is_empty(), "a decided trial takes no more cards");
     }
 }
