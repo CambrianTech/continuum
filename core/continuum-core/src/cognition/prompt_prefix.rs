@@ -76,84 +76,111 @@ pub(crate) fn compare(previous: &[String], now: &[String]) -> PrefixMatch {
 
 static LAST: LazyLock<dashmap::DashMap<uuid::Uuid, Vec<String>>> = LazyLock::new(dashmap::DashMap::new);
 
-/// Whether the persona's IN-FLIGHT request extends her previous one whole (every message of
-/// the previous request is still there, unchanged, as a prefix), recorded by [`observe`] and
-/// read back by [`attribute_reuse`] once the engine answers (card 9e4d61e8).
-static EXTENDS: LazyLock<dashmap::DashMap<uuid::Uuid, bool>> = LazyLock::new(dashmap::DashMap::new);
+/// The whole request as the reuse split fingerprints it: the model it is routed to, the
+/// system prompt, the tool surface, and every message serialized in full (tool-call metadata
+/// included), so a routing, surface or metadata change reads as a change. The engine's
+/// template and any truncation still sit between this and the tokens it prefills, which is
+/// why the split is a CANDIDATE gap, never a causal one (Codex on #4487).
+fn fingerprint(req: &TextGenerationRequest) -> Vec<String> {
+    let mut out = Vec::with_capacity(req.messages.len() + 3);
+    out.push(format!("<model>{}", req.model.as_deref().unwrap_or("")));
+    out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or("")));
+    out.push(format!(
+        "<tools>{}",
+        req.tools.as_ref().map(|t| serde_json::to_string(t).unwrap_or_default()).unwrap_or_default() // unwrap_or_default: an unserializable surface compares as empty on both sides
+    ));
+    out.extend(req.messages.iter().map(|m| serde_json::to_string(m).unwrap_or_default())); // unwrap_or_default: as above
+    out
+}
 
-/// The engine's own token count for the persona's previous prompt (`cache_n + prompt_n`):
-/// the prefix the engine could reuse when the next prompt extends that one whole.
-static PREV_PROMPT_TOKENS: LazyLock<dashmap::DashMap<uuid::Uuid, u32>> = LazyLock::new(dashmap::DashMap::new);
+/// The request in flight per persona, staged before it is sent: its id and fingerprint.
+static PENDING: LazyLock<dashmap::DashMap<uuid::Uuid, (String, Vec<String>)>> = LazyLock::new(dashmap::DashMap::new);
 
-/// Where one request's prompt reuse went (card 9e4d61e8), in the ENGINE'S tokens only: no
-/// characters are compared with tokens (Codex on #4487: a share of characters minus a share
-/// of tokens invents a gap wherever prose and code tokenize differently).
+/// The persona's last request that the engine ANSWERED WITH TIMINGS: its fingerprint and the
+/// engine's own token count for it (`cache_n + prompt_n`). Committed only on such an answer,
+/// in one record, so a failed or untimed attempt can never pair one request's content with
+/// another's token count (Codex on #4487).
+static COMMITTED: LazyLock<dashmap::DashMap<uuid::Uuid, (Vec<String>, u32)>> = LazyLock::new(dashmap::DashMap::new);
+
+/// Where one request's prompt reuse went (card 9e4d61e8), in the engine's tokens only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReuseSplit {
-    /// The prompt extended the previous one whole, so the engine could have reused all
-    /// `reusable` tokens of it; `slot_lost` of them it did not (the slot was evicted, its
-    /// page not restored, or the request landed on another slot).
-    Exact { reusable: u32, cached: u32, slot_lost: u32 },
-    /// The prompt changed inside the previous one (a block moved, the tool surface changed),
-    /// so what was reusable cannot be told in tokens without re-tokenizing; the prompt's own
-    /// change is `delib.prompt.common_prefix` (which names the block), and no slot figure is
-    /// guessed.
+    /// The request extends the last answered one whole, so up to `reusable` tokens (the
+    /// engine's count for that request) were reusable; `gap` of them it did not serve. A
+    /// CANDIDATE slot loss: the template or truncation can still differ from the fingerprint.
+    Candidate { reusable: u32, cached: u32, gap: u32 },
+    /// The request changed inside the last answered one; no gap is guessed
+    /// (`delib.prompt.common_prefix` names the block that moved).
     PromptChanged { cached: u32 },
 }
 
-/// PURE: the split, from whether this prompt extends the previous one whole and the engine's
-/// token counts for the previous prompt and this one.
+/// PURE: whether `now` holds every element of `previous`, unchanged, as its prefix.
+pub(crate) fn extends_whole(previous: &[String], now: &[String]) -> bool {
+    now.len() >= previous.len() && previous.iter().zip(now).all(|(a, b)| a == b)
+}
+
+/// PURE: the split, from whether the request extends the last answered one and that one's
+/// engine token count.
 pub(crate) fn split_reuse(extends_previous: bool, previous_prompt_tokens: Option<u32>, cached: u32) -> Option<ReuseSplit> {
     match (extends_previous, previous_prompt_tokens) {
-        (true, Some(reusable)) => Some(ReuseSplit::Exact { reusable, cached, slot_lost: reusable.saturating_sub(cached) }),
+        (true, Some(reusable)) => Some(ReuseSplit::Candidate { reusable, cached, gap: reusable.saturating_sub(cached) }),
         (false, Some(_)) => Some(ReuseSplit::PromptChanged { cached }),
-        (_, None) => None, // the mind's first request: nothing to compare with
+        (_, None) => None,
     }
 }
 
-/// Once the engine answered: probe where this persona's prompt reuse went, and remember this
-/// prompt's token count for her next request.
-pub(crate) fn attribute_reuse(persona: uuid::Uuid, cached_tokens: u32, prefill_tokens: u32) {
-    let extends = EXTENDS.remove(&persona).map(|(_, e)| e);
-    let previous = PREV_PROMPT_TOKENS.get(&persona).map(|t| *t);
-    PREV_PROMPT_TOKENS.insert(persona, cached_tokens.saturating_add(prefill_tokens));
-    let Some(extends) = extends else { return };
-    match split_reuse(extends, previous, cached_tokens) {
-        Some(ReuseSplit::Exact { reusable, cached, slot_lost }) => crate::probe!(
+/// Stage the request about to be sent. An earlier request of this persona that never settled
+/// (it failed, or returned without timings) leaves the engine's slot state unknown, so the
+/// committed record is dropped and this request's split says nothing.
+pub(crate) fn stage_reuse(persona: uuid::Uuid, request_id: &str, req: &TextGenerationRequest) {
+    if PENDING.insert(persona, (request_id.to_string(), fingerprint(req))).is_some() {
+        COMMITTED.remove(&persona);
+    }
+}
+
+/// Settle the request once it completed: `timing` is the engine's `(cache_n, prompt_n)`, or
+/// `None` for a failure or a provider without timings. Probes the split, then commits this
+/// request as the one the next is compared with, only when the engine answered with timings.
+pub(crate) fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option<(u32, u32)>) {
+    let Some((_, (staged_id, now))) = PENDING.remove(&persona) else { return };
+    let Some((cached, prefill)) = timing.filter(|_| staged_id == request_id) else {
+        COMMITTED.remove(&persona);
+        return;
+    };
+    let previous = COMMITTED.get(&persona).map(|c| (extends_whole(&c.0, &now), c.1));
+    match previous.and_then(|(extends, tokens)| split_reuse(extends, Some(tokens), cached)) {
+        Some(ReuseSplit::Candidate { reusable, cached, gap }) => crate::probe!(
             class = "delib.prompt.reuse_split",
             persona = %persona,
-            kind = "exact",
+            request = request_id,
+            kind = "candidate",
             reusable = u64::from(reusable),
             cached = u64::from(cached),
-            slot_lost = u64::from(slot_lost),
-            prefill = u64::from(prefill_tokens),
-            "the prompt extended the previous one whole: every reusable token the engine did not serve is the slot's loss"
+            gap = u64::from(gap),
+            prefill = u64::from(prefill),
+            "the request extended the last answered one whole: the reusable tokens the engine did not serve are a candidate slot loss (template and truncation not verified)"
         ),
         Some(ReuseSplit::PromptChanged { cached }) => crate::probe!(
             class = "delib.prompt.reuse_split",
             persona = %persona,
+            request = request_id,
             kind = "prompt_changed",
             cached = u64::from(cached),
-            prefill = u64::from(prefill_tokens),
-            "the prompt changed inside the previous one: its own change is delib.prompt.common_prefix; no slot figure is guessed"
+            prefill = u64::from(prefill),
+            "the request changed inside the last answered one: its own change is delib.prompt.common_prefix; no gap is guessed"
         ),
         None => {}
     }
+    COMMITTED.insert(persona, (now, cached.saturating_add(prefill)));
 }
 
 /// Compare this request with the persona's previous one and probe the result; the first
 /// request a persona sends has nothing to compare against and says nothing.
 pub(crate) fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
     let now = rendered(req);
-    let previous_len = LAST.get(&persona).map_or(0, |previous| previous.len());
     let found = LAST.get(&persona).map(|previous| compare(&previous, &now));
     LAST.insert(persona, now);
-    let Some(found) = found else {
-        EXTENDS.remove(&persona);
-        return;
-    };
-    // Whole-extension: the first divergence is past every message the previous request had.
-    EXTENDS.insert(persona, found.first_divergent.as_ref().map_or(true, |(i, _)| *i >= previous_len));
+    let Some(found) = found else { return };
     let (index, banner) = found.first_divergent.clone().unwrap_or((usize::MAX, String::new()));
     crate::probe!(
         class = "delib.prompt.common_prefix",
@@ -196,17 +223,36 @@ mod tests {
         assert_eq!((same.first_divergent, same.common_chars), (None, same.total_chars));
     }
 
-    // what this catches (card 9e4d61e8): reading low KV reuse as one number, and inventing a
-    // slot loss by comparing characters with tokens (Codex on #4487). A prompt that extends the
-    // previous one whole could reuse every token the engine counted for it, so what the engine
-    // did not serve is exactly the slot's loss, in its own tokens; a prompt that changed inside
-    // gets no slot figure at all; a mind's first request says nothing.
+    // what this catches (card 9e4d61e8, Codex and Fable on #4487): reading low KV reuse as one
+    // number, comparing characters with tokens, and pairing one request's content with another's
+    // token count. The split is in engine tokens; a request extending the last ANSWERED one whole
+    // gets a candidate gap; a changed one gets none; and a failed or untimed attempt drops the
+    // committed record, so the next request says nothing instead of pairing wrong.
     #[test]
-    fn a_requests_lost_reuse_is_the_slots_only_when_the_prompt_extended_the_last_one() {
-        assert_eq!(split_reuse(true, Some(10_000), 4_000), Some(ReuseSplit::Exact { reusable: 10_000, cached: 4_000, slot_lost: 6_000 }));
-        assert_eq!(split_reuse(true, Some(10_000), 12_000), Some(ReuseSplit::Exact { reusable: 10_000, cached: 12_000, slot_lost: 0 }), "serving more than the last prompt is no loss");
+    fn a_requests_lost_reuse_is_a_candidate_gap_only_against_the_last_answered_request() {
+        assert_eq!(split_reuse(true, Some(10_000), 4_000), Some(ReuseSplit::Candidate { reusable: 10_000, cached: 4_000, gap: 6_000 }));
+        assert_eq!(split_reuse(true, Some(10_000), 12_000), Some(ReuseSplit::Candidate { reusable: 10_000, cached: 12_000, gap: 0 }));
         assert_eq!(split_reuse(false, Some(10_000), 4_000), Some(ReuseSplit::PromptChanged { cached: 4_000 }));
-        assert_eq!(split_reuse(true, None, 4_000), None, "the first request has nothing to compare");
+        assert_eq!(split_reuse(true, None, 4_000), None);
+        let (a, b, c) = (vec!["m".to_string(), "s".into()], vec!["m".to_string(), "s".into(), "x".into()], vec!["m".to_string(), "t".into()]);
+        assert!(extends_whole(&a, &b) && extends_whole(&a, &a) && !extends_whole(&a, &c) && !extends_whole(&b, &a));
+
+        // a timed A, an untimed B, then C: C must not be compared with A's token count
+        let persona = uuid::Uuid::new_v4();
+        let req = |text: &str| {
+            let mut r = TextGenerationRequest::default();
+            r.messages = vec![crate::ai::types::ChatMessage::text("user", text)];
+            r
+        };
+        stage_reuse(persona, "a", &req("one"));
+        settle_reuse(persona, "a", Some((0, 100)));
+        assert!(COMMITTED.contains_key(&persona), "an answered request is committed");
+        stage_reuse(persona, "b", &req("two"));
+        settle_reuse(persona, "b", None);
+        assert!(!COMMITTED.contains_key(&persona), "an untimed attempt drops the record");
+        stage_reuse(persona, "c", &req("three"));
+        stage_reuse(persona, "d", &req("four"));
+        assert!(!COMMITTED.contains_key(&persona), "a request that never settled leaves nothing to compare");
     }
 
     // what this catches (Fable on #4487): a tool-surface change read as a kept prompt. The
