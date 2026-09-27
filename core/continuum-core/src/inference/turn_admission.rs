@@ -421,73 +421,21 @@ pub(crate) enum PageOutcome {
 // derived-or-floor: a CEILING on a wait that has no progress signal to read — the slot counters cannot see a save/restore, so the bound (itself derived from this node's measured switch p90) times this count is the patience for the engine's own queue head; it only ever ENDS a wait, never shortens one that shows progress.
 const QUIET_ENGINE_CHECKPOINTS: u32 = 8;
 
-/// Await `work`, treating each `bound` as a checkpoint rather than a verdict. At each
-/// checkpoint `progress()` reads the engine:
-/// - its work fingerprint moved: the queue is advancing, keep waiting;
-/// - nothing moved and NO slot is processing: the engine is working its queue head,
-///   which is this switch, keep waiting — up to [`QUIET_ENGINE_CHECKPOINTS`] in a row;
-/// - nothing moved while a slot claims to be processing: stuck, `None`;
-/// - the engine did not answer inside the probe's own timeout ([`EngineProbe::Busy`]):
-///   it is working, most likely on this very switch — keep waiting, bounded like a quiet
-///   engine (card 8c06f778: a 71,680-token restore's checkpoint probe timed out and was
-///   read as death; 135 s closed, one engine replaced);
-/// - nothing that is a llama-server answers on this root ([`EngineProbe::Unreachable`]):
-///   `None`, the one silence that IS the engine gone.
-///
-/// Why both signals (M5, 2026-09-26 10:2xZ): a save ran 12.4 s against a 12.2 s bound on
-/// an engine with idle slots; the fingerprint alone could not see the save and called it a
-/// stall — one quarantine, one engine replacement, 11 turns failed. And why not liveness
-/// alone (Cormac's review of #4387): `/health` answers off the slot queue, so it stays
-/// healthy through a genuinely stuck switch.
+/// A page switch's wait: [`crate::inference::llama_server::wait_while_engine_progresses`]
+/// with this module's quiet allowance, because a save/restore moves no slot counter and a
+/// quiet engine here is working the switch itself.
 async fn wait_while_engine_progresses<T, W, P, PF>(
     work: W,
     bound: std::time::Duration,
-    mut progress: P,
-    mut on_busy: impl FnMut(u64),
+    progress: P,
+    on_busy: impl FnMut(u64),
 ) -> Option<T>
 where
     W: std::future::Future<Output = T>,
     P: FnMut() -> PF,
     PF: std::future::Future<Output = EngineProbe>,
 {
-    tokio::pin!(work);
-    let mut last = match progress().await {
-        EngineProbe::Progress(p) => Some(p.fingerprint),
-        EngineProbe::Busy | EngineProbe::Unreachable => None,
-    };
-    let mut busy_checkpoints: u64 = 0;
-    let mut quiet_in_a_row: u32 = 0;
-    loop {
-        tokio::select! {
-            done = &mut work => return Some(done),
-            _ = tokio::time::sleep(bound) => {
-                match progress().await {
-                    EngineProbe::Unreachable => return None,
-                    // Working, and unable to say so: bounded exactly like a quiet engine.
-                    EngineProbe::Busy => {
-                        if quiet_in_a_row < QUIET_ENGINE_CHECKPOINTS {
-                            quiet_in_a_row += 1;
-                        } else {
-                            return None;
-                        }
-                    }
-                    EngineProbe::Progress(now) => {
-                        let moved = last.map_or(true, |before| before != now.fingerprint);
-                        if moved {
-                            quiet_in_a_row = 0;
-                        } else if !now.any_processing && quiet_in_a_row < QUIET_ENGINE_CHECKPOINTS {
-                            quiet_in_a_row += 1;
-                        } else {
-                            return None;
-                        }
-                        last = Some(now.fingerprint);
-                    }
-                }
-                busy_checkpoints += 1;
-                on_busy(busy_checkpoints);
-            }
-        }
-    }
+    crate::inference::llama_server::wait_while_engine_progresses(work, bound, QUIET_ENGINE_CHECKPOINTS, progress, on_busy).await
 }
 
 /// Execute one page action through the shared turn/warm-ahead boundary. The

@@ -2077,6 +2077,78 @@ pub(crate) async fn engine_probe_within(
     slots_progress(&body).map_or(EngineProbe::Unreachable, EngineProbe::Progress)
 }
 
+/// Await `work`, treating each `bound` as a checkpoint rather than a verdict. At each
+/// checkpoint `progress()` reads the engine:
+/// - its work fingerprint moved: the queue is advancing, keep waiting;
+/// - nothing moved and NO slot is processing: the engine is working its queue head,
+///   keep waiting — up to `quiet_checkpoints` in a row (a page switch passes 8: a
+///   save/restore is that queue head and moves no counter; a generation's header wait
+///   passes 1: a quiet engine is not working on a request it has not picked up);
+/// - nothing moved while a slot claims to be processing: stuck, `None`;
+/// - the engine did not answer inside the probe's own timeout ([`EngineProbe::Busy`]):
+///   it is working, most likely on this very switch — keep waiting, bounded like a quiet
+///   engine (card 8c06f778: a 71,680-token restore's checkpoint probe timed out and was
+///   read as death; 135 s closed, one engine replaced);
+/// - nothing that is a llama-server answers on this root ([`EngineProbe::Unreachable`]):
+///   `None`, the one silence that IS the engine gone.
+///
+/// Why both signals (M5, 2026-09-26 10:2xZ): a save ran 12.4 s against a 12.2 s bound on
+/// an engine with idle slots; the fingerprint alone could not see the save and called it a
+/// stall — one quarantine, one engine replacement, 11 turns failed. And why not liveness
+/// alone (Cormac's review of #4387): `/health` answers off the slot queue, so it stays
+/// healthy through a genuinely stuck switch.
+pub(crate) async fn wait_while_engine_progresses<T, W, P, PF>(
+    work: W,
+    bound: std::time::Duration,
+    quiet_checkpoints: u32,
+    mut progress: P,
+    mut on_busy: impl FnMut(u64),
+) -> Option<T>
+where
+    W: std::future::Future<Output = T>,
+    P: FnMut() -> PF,
+    PF: std::future::Future<Output = EngineProbe>,
+{
+    tokio::pin!(work);
+    let mut last = match progress().await {
+        EngineProbe::Progress(p) => Some(p.fingerprint),
+        EngineProbe::Busy | EngineProbe::Unreachable => None,
+    };
+    let mut busy_checkpoints: u64 = 0;
+    let mut quiet_in_a_row: u32 = 0;
+    loop {
+        tokio::select! {
+            done = &mut work => return Some(done),
+            _ = tokio::time::sleep(bound) => {
+                match progress().await {
+                    EngineProbe::Unreachable => return None,
+                    // Working, and unable to say so: bounded exactly like a quiet engine.
+                    EngineProbe::Busy => {
+                        if quiet_in_a_row < quiet_checkpoints {
+                            quiet_in_a_row += 1;
+                        } else {
+                            return None;
+                        }
+                    }
+                    EngineProbe::Progress(now) => {
+                        let moved = last.map_or(true, |before| before != now.fingerprint);
+                        if moved {
+                            quiet_in_a_row = 0;
+                        } else if !now.any_processing && quiet_in_a_row < quiet_checkpoints {
+                            quiet_in_a_row += 1;
+                        } else {
+                            return None;
+                        }
+                        last = Some(now.fingerprint);
+                    }
+                }
+                busy_checkpoints += 1;
+                on_busy(busy_checkpoints);
+            }
+        }
+    }
+}
+
 async fn external_active_model(v1_url: &str, client: &reqwest::Client) -> Option<String> {
     let url = format!("{v1_url}/models");
     let body: serde_json::Value = client
@@ -5779,6 +5851,41 @@ fn is_debug_build(version_output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (card 6f3218ed, IntelMac 2026-09-27): a generation's header wait
+    // killing a request that is queued or prefilling. With quiet_checkpoints = 1 (the header
+    // wait's setting), an engine whose work fingerprint keeps moving holds the wait across
+    // many checkpoints and the response is returned; an engine that goes quiet (nothing
+    // moved, nothing processing) ends it after ONE grace checkpoint, not the page switch's 8;
+    // and an engine processing with nothing moving is stuck at the first checkpoint.
+    #[tokio::test(start_paused = true)]
+    async fn a_header_wait_rides_a_moving_engine_and_ends_on_a_quiet_one() {
+        let bound = std::time::Duration::from_secs(300);
+        let moving = std::sync::atomic::AtomicU64::new(0);
+        let advancing = || {
+            let n = moving.fetch_add(2048, std::sync::atomic::Ordering::Relaxed);
+            async move { EngineProbe::Progress(EngineProgress { fingerprint: n, any_processing: true }) }
+        };
+        let late = async {
+            tokio::time::sleep(bound * 5).await;
+            "headers"
+        };
+        let mut checkpoints = 0;
+        let got = wait_while_engine_progresses(late, bound, 1, advancing, |n| checkpoints = n).await;
+        assert_eq!(got, Some("headers"), "a moving engine is busy, not dead, for five bounds");
+        assert!(checkpoints >= 4, "each checkpoint was a busy one: {checkpoints}");
+
+        let started = tokio::time::Instant::now();
+        let quiet = || async { EngineProbe::Progress(EngineProgress { fingerprint: 7, any_processing: false }) };
+        let never = wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, quiet, |_| {}).await;
+        assert_eq!(never, None);
+        assert!(started.elapsed() <= bound * 2, "one grace checkpoint, then dead: {:?}", started.elapsed());
+
+        let stuck = || async { EngineProbe::Progress(EngineProgress { fingerprint: 7, any_processing: true }) };
+        let started = tokio::time::Instant::now();
+        assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, stuck, |_| {}).await, None);
+        assert!(started.elapsed() <= bound, "processing with nothing moving is stuck at the first checkpoint");
+    }
 
     // what this catches: an engine older than --train-dir being handed the flag (it refuses to
     // start: the lane goes dark). Only an engine whose help LISTS the option accepts it; a help

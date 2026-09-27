@@ -19,6 +19,10 @@ use crate::ai::openai_adapter::OpenAICompatibleConfig;
 /// (`inference::turn_bound`) — waits `max(this, turn_bound)`. Measured 2026-09-20 on
 /// the M5: 331–389 s to the first byte for a 27–30k cold prompt; the IntelMac at
 /// ~25 tok/s needs ~1200 s. A constant here can only ever be wrong for one box.
+///
+/// On a local lane this is a CHECKPOINT interval, not a deadline (card 6f3218ed): the
+/// wait continues while the engine's `/slots` work moves, so the bound decides how often
+/// the engine is asked, and only an engine that stops moving is released.
 pub(crate) const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 
 /// A local single-resident lane can be RELAUNCHED out from under an in-flight POST —
@@ -36,6 +40,30 @@ pub(crate) const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 /// task `Connection refused (os error 61)` to :58057 mid-eval.
 const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
 const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How many quiet checkpoints (no slot counter moved AND no slot processing) a header
+/// wait allows before it calls the lane dead. One, not the page switch's eight: a
+/// save/restore is invisible to the counters, but a generation is not, and an engine with
+/// nothing processing while our POST waits has not picked the request up.
+// derived-or-floor: a floor of one checkpoint of grace for the probe landing between a request's accept and its first ubatch; it only ever ENDS a wait that shows no progress.
+const HEADER_WAIT_QUIET_CHECKPOINTS: u32 = 1;
+
+/// The engine root (`http://127.0.0.1:<port>`) whose `/slots` a header wait may read:
+/// only a local single-resident lane, the one kind that serves `/slots` and that the
+/// probe's reading describes.
+fn engine_root(cfg: &OpenAICompatibleConfig) -> Option<String> {
+    if !cfg.single_resident_model {
+        return None;
+    }
+    let trimmed = cfg.base_url.trim_end_matches('/');
+    Some(trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string())
+}
+
+/// One client for the header wait's engine probes, built once per process.
+fn probe_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 /// What one send carried, for the receipt a tripped wait leaves behind: the model the
 /// lane was asked for and the prompt it was asked to prefill (chars/4 —
@@ -95,8 +123,39 @@ pub(crate) async fn send_with_lane_retry(
         // but FINITE — RTOS rule: every hold is bounded — and sized from the
         // turn's MEASURED expectation when it carries one, never a constant
         // shorter than this box's prefill (card ba82d0a0).
-        let sent = tokio::time::timeout(header_bound, attempt_builder.send())
+        //
+        // BUSY IS NOT DEAD (card 6f3218ed). On a local lane the bound is a CHECKPOINT,
+        // not a verdict: at each one the engine's `/slots` work fingerprint is read, and
+        // while it moves (this request prefilling, or queued behind a slot that is) the
+        // wait goes on. Measured on the IntelMac, 2026-09-27, with no build running: six
+        // slots, prefill one 2,048-token ubatch per ~45 s, and 42 of 45 generations
+        // killed here at 300 s while every one of them was queued or advancing. Only an
+        // engine that stops moving, stays quiet past one checkpoint, or stops answering
+        // ends the wait. A remote endpoint has no `/slots` to read: elapsed, as before.
+        let send_started = Instant::now();
+        let sent = match engine_root(cfg) {
+            Some(root) => crate::inference::llama_server::wait_while_engine_progresses(
+                attempt_builder.send(),
+                header_bound,
+                HEADER_WAIT_QUIET_CHECKPOINTS,
+                || crate::inference::llama_server::engine_probe(&root, probe_client()),
+                |checkpoints| {
+                    crate::probe!(
+                        class = "inference.header_wait.busy_not_dead",
+                        provider = %cfg.name,
+                        checkpoints,
+                        waited_ms = send_started.elapsed().as_millis() as u64,
+                        bound_ms = header_bound.as_millis() as u64,
+                        prompt_tokens = fill.prompt_tokens as u64,
+                        "no response headers yet, but the engine's work moved since the last checkpoint — busy, not dead; waiting on"
+                    );
+                },
+            )
             .await
+            .ok_or(()),
+            None => tokio::time::timeout(header_bound, attempt_builder.send()).await.map_err(|_| ()),
+        };
+        let sent = sent
             .map_err(|_| {
                 crate::inference::turn_bound::probe_tripped(
                     "pre_stream_headers",
@@ -110,12 +169,14 @@ pub(crate) async fn send_with_lane_retry(
                 // next fill cap is derived from this failure, not from the last success
                 // (card c30a4757: 25 of 29 turns tripped on a stale rate that no trip
                 // could move).
-                crate::inference::prefill_rate::observe_bound(fill.model, fill.prompt_tokens, header_bound);
+                let waited = send_started.elapsed();
+                crate::inference::prefill_rate::observe_bound(fill.model, fill.prompt_tokens, waited);
                 format!(
-                    "{}: no response headers for {}s after POST ({} bound) — lane accepted the \
-                     request and went silent (hung prefill / poisoned backend); \
+                    "{}: no response headers after {}s, and the engine's work did not move \
+                     through a {}s checkpoint ({} bound) — hung prefill / poisoned backend; \
                      releasing the lane instead of holding it forever",
                     cfg.name,
+                    waited.as_secs(),
                     header_bound.as_secs(),
                     header_source.as_str()
                 )
