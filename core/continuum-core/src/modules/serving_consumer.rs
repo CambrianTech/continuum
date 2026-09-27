@@ -211,8 +211,7 @@ impl ServingConsumer {
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
             measured_of: Arc::new(|_model: &str| {
-                crate::inference::lane_registry::live_lane()
-                    .and_then(|lane| crate::inference::lane_footprint::anon_footprint_of(lane.pid))
+                crate::inference::lane_registry::live_lane().and_then(|lane| live_lane_resident(lane.pid))
             }),
             measures_physically: true,
             pool_kind,
@@ -279,6 +278,34 @@ impl ServingConsumer {
     /// Unlike suppress this does NOT go dark: the daemon serves the smaller model.
     fn pin_model(&self, id: &str) {
         self.intent.set_pin(Some(id.to_string()), false);
+    }
+}
+
+/// What the live lane holds, both halves (card fa21f81f): its anonymous footprint (KV,
+/// compute, allocator; `phys_footprint` / `RssAnon + VmSwap`, which exclude mapped files by
+/// design) PLUS the model file it maps (the weights). Crediting only the anonymous half
+/// left the replace-myself budget short by the engine's own weights, since those resident
+/// file pages are not in the board's `available` either: a replan could not re-fit the
+/// shape already running, so the plan only ever shrank (the M5 on 2026-09-26: 2 × 41k
+/// incumbent, the plan 1 × 8k, lanes never grew back). Weights that cannot be read (argv
+/// unreadable, file gone) leave the anonymous half alone, said once.
+fn live_lane_resident(pid: u32) -> Option<u64> {
+    use crate::inference::lane_footprint::{anon_footprint_of, model_file_bytes_of};
+    static WEIGHTS_UNREADABLE_SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let anon = anon_footprint_of(pid)?;
+    match model_file_bytes_of(pid) {
+        Some(weights) => Some(anon.saturating_add(weights)),
+        None => {
+            if !WEIGHTS_UNREADABLE_SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::probe!(
+                    class = "serving.credit.weights_unreadable",
+                    pid = pid as u64,
+                    anon_bytes = anon,
+                    "the lane's model file could not be read off its argv: the serving credit is its anonymous footprint only, short by the mapped weights"
+                );
+            }
+            Some(anon)
+        }
     }
 }
 
