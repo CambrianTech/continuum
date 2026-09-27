@@ -2453,7 +2453,7 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
                  proceeding with `{verb}`",
                 age_ms / 1000
             );
-            let _ = deploy_claim::clear(&root);
+            let _ = deploy_claim::clear(&root, pid);
             Ok(())
         }
         DeployGate::InProgress {
@@ -2497,6 +2497,8 @@ fn take_install_lease(root: &Path) -> Result<std::fs::File, String> {
 /// until its owner died, so the release cannot be a line at the end of the happy path.
 struct DeployClaimGuard {
     root: PathBuf,
+    /// This process's pid, the claim's owner: the drop releases only a claim that is still ours.
+    pid: i32,
     /// Dropping this stops the renewer at once (its wait is a channel receive, not a sleep).
     stop_renewing: Option<std::sync::mpsc::Sender<()>>,
     renewer: Option<std::thread::JoinHandle<()>>,
@@ -2541,7 +2543,7 @@ impl DeployClaimGuard {
                         }
                     })
                     .ok();
-                Some(Self { root, stop_renewing: Some(stop_renewing), renewer })
+                Some(Self { root, pid, stop_renewing: Some(stop_renewing), renewer })
             }
             Err(e) => {
                 eprintln!(
@@ -2561,7 +2563,7 @@ impl Drop for DeployClaimGuard {
         if let Some(renewer) = self.renewer.take() {
             let _ = renewer.join();
         }
-        let _ = continuum_core::runtime::deploy_claim::clear(&self.root);
+        let _ = continuum_core::runtime::deploy_claim::clear(&self.root, self.pid);
     }
 }
 

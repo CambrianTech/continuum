@@ -238,7 +238,6 @@ pub fn read(root: &Path) -> Option<DeployClaim> {
     serde_json::from_str(&body).ok()
 }
 
-/// Drop the claim. Idempotent; a missing file is success.
 /// Is the claim's owner (a `continuum reboot` process) still alive? One enumerator for
 /// every platform (the old Windows arm matched the pid as a substring of `tasklist`'s
 /// output, so pid 42 read alive whenever any pid containing "42" existed).
@@ -264,11 +263,22 @@ pub fn in_flight(root: &Path, now_ms: u64) -> DeployGate {
     decide(claim.as_ref(), alive, now_ms)
 }
 
-pub fn clear(root: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(claim_path(root)) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+/// Drop the claim, but only if it is still `pid`'s. Idempotent: a missing file, or a claim
+/// another deploy now holds, is success with nothing removed.
+///
+/// Owner-scoped because an unconditional clear let one deploy delete ANOTHER's claim
+/// (IntelMac, 2026-09-27): the 2989557f consumer failed its verify and its guard's drop
+/// removed the claim the live dc9f3a111 build had written, so the tracker read nothing in
+/// flight, started a third consumer, and that one checked out 8c24fde05 under the live
+/// build, dooming it to the same DEPLOY MISMATCH. A release can only lose its own claim.
+pub fn clear(root: &Path, pid: i32) -> std::io::Result<()> {
+    match read(root) {
+        Some(claim) if claim.pid == pid => match std::fs::remove_file(claim_path(root)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        },
+        _ => Ok(()),
     }
 }
 
@@ -402,7 +412,7 @@ mod tests {
         assert_eq!(read(&root).map(|c| c.renewed_ms), Some(5_000));
         assert!(!renew(&root, 9999, 6_000), "a foreign pid never restamps");
         assert_eq!(read(&root).map(|c| (c.pid, c.renewed_ms)), Some((4242, 5_000)));
-        clear(&root).expect("clear");
+        clear(&root, 4242).expect("clear");
         assert!(!renew(&root, 4242, 7_000), "no claim: nothing to renew, and the renewer stops");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -413,9 +423,11 @@ mod tests {
         assert!(g.blocks(), "future-stamped claim must still block: {g:?}");
     }
 
-    // what this catches: round-trip through the real files, including that clear() is
-    // idempotent (the RAII release runs on paths where the claim may already be gone) and
-    // that a corrupt file cannot block launches forever.
+    // what this catches: round-trip through the real files; that clear() removes only its
+    // own pid's claim (regression for the 2026-09-27 IntelMac loop: a failed deploy's drop
+    // deleted the live build's claim and a third consumer checked out under it); that
+    // clear() is idempotent (the RAII release runs on paths where the claim may already be
+    // gone); and that a corrupt file cannot block launches forever.
     #[test]
     fn claims_round_trip_and_degrade_safely_on_disk() {
         let dir = std::env::temp_dir().join(format!("continuum-claim-test-{}", std::process::id()));
@@ -426,12 +438,14 @@ mod tests {
         write(&dir, &c).expect("write a claim");
         assert_eq!(read(&dir).as_ref(), Some(&c), "claims round-trip verbatim");
 
+        clear(&dir, 9999).expect("a foreign clear is not an error");
+        assert_eq!(read(&dir).as_ref(), Some(&c), "another deploy's release never removes this claim");
+        clear(&dir, 1234).expect("clear");
+        assert_eq!(read(&dir), None, "the owner's release removes it");
+        clear(&dir, 1234).expect("clear is idempotent — the release path may run twice");
+
         std::fs::write(claim_path(&dir), "{not json").expect("corrupt the claim");
         assert_eq!(read(&dir), None, "a corrupt claim reads as absent, never as a block");
-
-        clear(&dir).expect("clear");
-        clear(&dir).expect("clear is idempotent — the release path may run twice");
-        assert_eq!(read(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
