@@ -554,12 +554,22 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let id = Uuid::new_v4();
         let out = format!("{id}.gguf");
         let window = train_window(schedule.sequence_length);
+        if window != schedule.sequence_length {
+            crate::probe!(
+                class = "training.job.window_rounded",
+                asked = schedule.sequence_length as u64,
+                sent = window as u64,
+                "the training window rounded down to a multiple of 256 (the engine's context granularity)"
+            );
+        }
+        // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
+        let depth = lora.top_layers.filter(|&k| k > 0);
         let shape = Shape {
             model: request.base_model.clone(),
             window,
             rank: lora.rank,
             targets: targets.clone(),
-            depth: lora.top_layers,
+            depth,
         };
         let val = request.dataset.validation_split.clamp(0.0, 0.5);
         let mut body = TrainRequest {
@@ -573,7 +583,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             lr: schedule.learning_rate,
             val_split: val,
             seed: 42,
-            top_layers: lora.top_layers,
+            top_layers: depth,
             memory_budget_mib: None,
         };
         let measured = self.footprints.get(&shape);
@@ -671,8 +681,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                         );
                     }
                     let measured_shape = Shape { depth: adapted, ..shape.clone() };
+                    // A depth at or past the model's block count IS full depth: filed under the
+                    // asked key too, or that request would calibrate on every run (Cormac on #4472).
+                    let asked_full = matches!((shape.depth, status.n_layer), (Some(k), Some(n)) if k >= n);
                     if grown > 0 {
                         let store = Footprints { path: footprints_path };
+                        if asked_full {
+                            let _ = store.record(&shape, grown, id); // best effort: the full-depth row below is the one that matters
+                        }
                         if let Err(e) = store.record(&measured_shape, grown, id) {
                             crate::probe!(
                                 class = "training.job.footprint_unrecorded",
