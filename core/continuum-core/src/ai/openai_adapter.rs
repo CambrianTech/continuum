@@ -1387,6 +1387,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // for a non-llamacpp provider, by the permit-only fallback after it). This is
         // the scope that made the old inline permit/pin fragile — now it's one value.
         let mut _admission: Option<crate::inference::turn_admission::TurnAdmission> = None;
+        // The pinned slot, named for the act deadline's per-request progress check (card
+        // 6f3218ed); cleared when this generation ends.
+        let mut _in_flight: Option<crate::inference::llama_server::InFlightSlotGuard> = None;
         if self.config.llamacpp_sampling_extensions {
             if let Some(obj) = body.as_object_mut() {
                 apply_llamacpp_sampling_knobs(obj, &request);
@@ -1558,6 +1561,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             if let Some(slot) = placement {
                 if let Some(obj) = body.as_object_mut() {
                     obj.insert("id_slot".to_string(), json!(slot));
+                }
+                if let (crate::inference::slots::SlotClass::Turn, Some(persona)) = (
+                    class,
+                    request.persona_id.as_deref().and_then(|p| uuid::Uuid::parse_str(p).ok()),
+                ) {
+                    _in_flight = Some(crate::inference::llama_server::InFlightSlotGuard::register(persona, root, slot));
                 }
             }
             if let Some(persona) = request.persona_id.as_deref() {
