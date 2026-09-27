@@ -1642,7 +1642,6 @@ async fn serve_persona_loop_inner(
             crate::persona::training_producer::produce(
                 ctx.identity.peer_id.as_uuid(),
                 ctx.identity.agent_name.clone(),
-                ctx.profile.model_id.clone(),
                 msg.text.clone(),
                 response_text.clone(),
                 // Captured in the cycle arm above, at selection. `None` is an ordinary
