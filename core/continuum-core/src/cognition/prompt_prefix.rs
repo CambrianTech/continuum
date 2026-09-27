@@ -17,8 +17,16 @@ use std::sync::LazyLock;
 /// A request as the prefix comparison reads it: the system prompt, then each message
 /// with its role. The role is part of the rendered prompt, so a role change is a change.
 fn rendered(req: &TextGenerationRequest) -> Vec<String> {
-    let mut out = Vec::with_capacity(req.messages.len() + 1);
+    let mut out = Vec::with_capacity(req.messages.len() + 2);
     out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or("")));
+    // The tool surface: Qwen/ChatML templates append it to the END of the system turn,
+    // ahead of every message, and it varies per turn (delib.tool_surface.withheld). Left out,
+    // a tool-set change broke the engine's prefix at the system turn while this comparison
+    // still read the prompt as kept (Fable on #4487).
+    out.push(format!(
+        "<tools>{}",
+        req.tools.as_ref().map(|t| serde_json::to_string(t).unwrap_or_default()).unwrap_or_default() // unwrap_or_default: an unserializable surface compares as empty, the same on both sides
+    ));
     out.extend(req.messages.iter().map(|m| format!("<{}>{}", m.role, m.content_text())));
     out
 }
@@ -68,78 +76,84 @@ pub(crate) fn compare(previous: &[String], now: &[String]) -> PrefixMatch {
 
 static LAST: LazyLock<dashmap::DashMap<uuid::Uuid, Vec<String>>> = LazyLock::new(dashmap::DashMap::new);
 
-/// The share of the persona's IN-FLIGHT request that her previous request already held,
-/// recorded by [`observe`] and read back by [`attribute_reuse`] once the engine says how
-/// much it actually reused (card 9e4d61e8).
-static KEPT: LazyLock<dashmap::DashMap<uuid::Uuid, f64>> = LazyLock::new(dashmap::DashMap::new);
+/// Whether the persona's IN-FLIGHT request extends her previous one whole (every message of
+/// the previous request is still there, unchanged, as a prefix), recorded by [`observe`] and
+/// read back by [`attribute_reuse`] once the engine answers (card 9e4d61e8).
+static EXTENDS: LazyLock<dashmap::DashMap<uuid::Uuid, bool>> = LazyLock::new(dashmap::DashMap::new);
 
-/// Where one request's prompt reuse went, as shares of the prompt (card 9e4d61e8). The
-/// engine reuses only what the prompt kept AND the slot still held, so the gap between
-/// the two is the slot's loss (evicted, its page not restored, or a different slot), and
-/// the rest of the prompt changed before the engine ever saw it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ReuseSplit {
-    /// What the previous request of this mind already held, from the start.
-    pub prompt_kept: f64,
-    /// What the engine actually served from KV (`cache_n / (cache_n + prompt_n)`).
-    pub engine_reused: f64,
-    /// Kept by the prompt, not served by the engine: the slot lost it.
-    pub slot_lost: f64,
-    /// Not kept by the prompt: the prompt itself changed.
-    pub prompt_changed: f64,
+/// The engine's own token count for the persona's previous prompt (`cache_n + prompt_n`):
+/// the prefix the engine could reuse when the next prompt extends that one whole.
+static PREV_PROMPT_TOKENS: LazyLock<dashmap::DashMap<uuid::Uuid, u32>> = LazyLock::new(dashmap::DashMap::new);
+
+/// Where one request's prompt reuse went (card 9e4d61e8), in the ENGINE'S tokens only: no
+/// characters are compared with tokens (Codex on #4487: a share of characters minus a share
+/// of tokens invents a gap wherever prose and code tokenize differently).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReuseSplit {
+    /// The prompt extended the previous one whole, so the engine could have reused all
+    /// `reusable` tokens of it; `slot_lost` of them it did not (the slot was evicted, its
+    /// page not restored, or the request landed on another slot).
+    Exact { reusable: u32, cached: u32, slot_lost: u32 },
+    /// The prompt changed inside the previous one (a block moved, the tool surface changed),
+    /// so what was reusable cannot be told in tokens without re-tokenizing; the prompt's own
+    /// change is `delib.prompt.common_prefix` (which names the block), and no slot figure is
+    /// guessed.
+    PromptChanged { cached: u32 },
 }
 
-/// PURE: split a request's reuse. `prompt_kept` is a share of characters and
-/// `engine_reused` a share of tokens; within one persona's prompt the two scales agree to
-/// within the tokenizer's chars-per-token drift, so the shares compare. An engine that
-/// reused MORE than the prompt kept (a prefix shared with another mind on the same slot)
-/// is no slot loss.
-pub(crate) fn split_reuse(prompt_kept: f64, cached_tokens: u32, prefill_tokens: u32) -> Option<ReuseSplit> {
-    let total = u64::from(cached_tokens) + u64::from(prefill_tokens);
-    if total == 0 || !prompt_kept.is_finite() {
-        return None;
+/// PURE: the split, from whether this prompt extends the previous one whole and the engine's
+/// token counts for the previous prompt and this one.
+pub(crate) fn split_reuse(extends_previous: bool, previous_prompt_tokens: Option<u32>, cached: u32) -> Option<ReuseSplit> {
+    match (extends_previous, previous_prompt_tokens) {
+        (true, Some(reusable)) => Some(ReuseSplit::Exact { reusable, cached, slot_lost: reusable.saturating_sub(cached) }),
+        (false, Some(_)) => Some(ReuseSplit::PromptChanged { cached }),
+        (_, None) => None, // the mind's first request: nothing to compare with
     }
-    let prompt_kept = prompt_kept.clamp(0.0, 1.0);
-    let engine_reused = cached_tokens as f64 / total as f64;
-    Some(ReuseSplit {
-        prompt_kept,
-        engine_reused,
-        slot_lost: (prompt_kept - engine_reused).max(0.0),
-        prompt_changed: 1.0 - prompt_kept,
-    })
 }
 
-/// Once the engine answered: probe where this persona's prompt reuse went. Says nothing
-/// for her first request (nothing to compare) or a provider that reports no timings.
+/// Once the engine answered: probe where this persona's prompt reuse went, and remember this
+/// prompt's token count for her next request.
 pub(crate) fn attribute_reuse(persona: uuid::Uuid, cached_tokens: u32, prefill_tokens: u32) {
-    let Some((_, kept)) = KEPT.remove(&persona) else { return };
-    let Some(split) = split_reuse(kept, cached_tokens, prefill_tokens) else { return };
-    crate::probe!(
-        class = "delib.prompt.reuse_split",
-        persona = %persona,
-        prompt_kept = split.prompt_kept,
-        engine_reused = split.engine_reused,
-        slot_lost = split.slot_lost,
-        prompt_changed = split.prompt_changed,
-        cached_tokens = u64::from(cached_tokens),
-        prefill_tokens = u64::from(prefill_tokens),
-        "where this request's prompt reuse went: what the prompt kept, what the engine served, and the gap the slot lost"
-    );
+    let extends = EXTENDS.remove(&persona).map(|(_, e)| e);
+    let previous = PREV_PROMPT_TOKENS.get(&persona).map(|t| *t);
+    PREV_PROMPT_TOKENS.insert(persona, cached_tokens.saturating_add(prefill_tokens));
+    let Some(extends) = extends else { return };
+    match split_reuse(extends, previous, cached_tokens) {
+        Some(ReuseSplit::Exact { reusable, cached, slot_lost }) => crate::probe!(
+            class = "delib.prompt.reuse_split",
+            persona = %persona,
+            kind = "exact",
+            reusable = u64::from(reusable),
+            cached = u64::from(cached),
+            slot_lost = u64::from(slot_lost),
+            prefill = u64::from(prefill_tokens),
+            "the prompt extended the previous one whole: every reusable token the engine did not serve is the slot's loss"
+        ),
+        Some(ReuseSplit::PromptChanged { cached }) => crate::probe!(
+            class = "delib.prompt.reuse_split",
+            persona = %persona,
+            kind = "prompt_changed",
+            cached = u64::from(cached),
+            prefill = u64::from(prefill_tokens),
+            "the prompt changed inside the previous one: its own change is delib.prompt.common_prefix; no slot figure is guessed"
+        ),
+        None => {}
+    }
 }
 
 /// Compare this request with the persona's previous one and probe the result; the first
 /// request a persona sends has nothing to compare against and says nothing.
 pub(crate) fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
     let now = rendered(req);
+    let previous_len = LAST.get(&persona).map_or(0, |previous| previous.len());
     let found = LAST.get(&persona).map(|previous| compare(&previous, &now));
     LAST.insert(persona, now);
     let Some(found) = found else {
-        KEPT.remove(&persona);
+        EXTENDS.remove(&persona);
         return;
     };
-    if found.total_chars > 0 {
-        KEPT.insert(persona, found.common_chars as f64 / found.total_chars as f64);
-    }
+    // Whole-extension: the first divergence is past every message the previous request had.
+    EXTENDS.insert(persona, found.first_divergent.as_ref().map_or(true, |(i, _)| *i >= previous_len));
     let (index, banner) = found.first_divergent.clone().unwrap_or((usize::MAX, String::new()));
     crate::probe!(
         class = "delib.prompt.common_prefix",
@@ -182,19 +196,42 @@ mod tests {
         assert_eq!((same.first_divergent, same.common_chars), (None, same.total_chars));
     }
 
-    // what this catches (card 9e4d61e8): reading low KV reuse as one number. The prompt kept
-    // 90% but the engine served 40%: 50% was the slot's loss (evicted, page not restored),
-    // 10% the prompt's own change, and the two fixes differ entirely. An engine serving more
-    // than the prompt kept (a prefix shared across minds on one slot) is no slot loss, and a
-    // request with no timings says nothing.
+    // what this catches (card 9e4d61e8): reading low KV reuse as one number, and inventing a
+    // slot loss by comparing characters with tokens (Codex on #4487). A prompt that extends the
+    // previous one whole could reuse every token the engine counted for it, so what the engine
+    // did not serve is exactly the slot's loss, in its own tokens; a prompt that changed inside
+    // gets no slot figure at all; a mind's first request says nothing.
     #[test]
-    fn a_requests_lost_reuse_splits_into_the_slots_part_and_the_prompts_part() {
-        let s = split_reuse(0.9, 400, 600).expect("timings present");
-        assert!((s.engine_reused - 0.4).abs() < 1e-9);
-        assert!((s.slot_lost - 0.5).abs() < 1e-9, "{s:?}");
-        assert!((s.prompt_changed - 0.1).abs() < 1e-9, "{s:?}");
-        let shared = split_reuse(0.3, 800, 200).expect("timings present");
-        assert_eq!(shared.slot_lost, 0.0, "the engine reusing more than the prompt kept is no slot loss");
-        assert_eq!(split_reuse(0.9, 0, 0), None, "no tokens reported, no split");
+    fn a_requests_lost_reuse_is_the_slots_only_when_the_prompt_extended_the_last_one() {
+        assert_eq!(split_reuse(true, Some(10_000), 4_000), Some(ReuseSplit::Exact { reusable: 10_000, cached: 4_000, slot_lost: 6_000 }));
+        assert_eq!(split_reuse(true, Some(10_000), 12_000), Some(ReuseSplit::Exact { reusable: 10_000, cached: 12_000, slot_lost: 0 }), "serving more than the last prompt is no loss");
+        assert_eq!(split_reuse(false, Some(10_000), 4_000), Some(ReuseSplit::PromptChanged { cached: 4_000 }));
+        assert_eq!(split_reuse(true, None, 4_000), None, "the first request has nothing to compare");
+    }
+
+    // what this catches (Fable on #4487): a tool-surface change read as a kept prompt. The
+    // template renders the tools at the end of the system turn, so a changed surface is a
+    // change at index 1, ahead of every message.
+    #[test]
+    fn a_changed_tool_surface_is_a_prompt_change_at_the_system_turn() {
+        use crate::ai::types::{ChatMessage, NativeToolSpec};
+        let mut a = TextGenerationRequest::default();
+        a.system_prompt = Some("you are Kimi".into());
+        a.messages = vec![ChatMessage::text("user", "fix the bug")];
+        let mut b = a.clone();
+        let tool = |name: &str| NativeToolSpec {
+            name: name.into(),
+            description: String::new(),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        };
+        a.tools = Some(vec![tool("code/read")]);
+        b.tools = Some(vec![tool("code/write")]);
+        let found = compare(&rendered(&a), &rendered(&b));
+        assert_eq!(found.first_divergent.map(|(i, _)| i), Some(1), "the tool surface sits right after the system prompt");
     }
 }
