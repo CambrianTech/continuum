@@ -721,7 +721,18 @@ impl OpenAICompatibleAdapter {
                 return Some(*id);
             }
         }
-        // 2. substring on path or name
+        // 2. a gene staged into the engine's --train-dir for a runtime load (charter S1):
+        //    the catalog carries the staged file, named from the genome path
+        if !path.is_empty() {
+            if let Some(stage) = crate::inference::llama_server::gene_stage_name(std::path::Path::new(path)) {
+                if let Some((id, _)) = catalog.iter().find(|(_, p)| {
+                    std::path::Path::new(p).file_name().and_then(|n| n.to_str()) == Some(stage.as_str())
+                }) {
+                    return Some(*id);
+                }
+            }
+        }
+        // 3. substring on path or name
         catalog
             .iter()
             .find(|(_, p)| {
@@ -3384,6 +3395,19 @@ mod tests {
         fn unregistered_adapter_is_a_miss() {
             let id = OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
             assert_eq!(id, None);
+        }
+
+        // what this catches (charter S1): a gene loaded at runtime is listed under its
+        // staged --train-dir name, not its genome path; without this arm the request
+        // for it misses and fails loud although the engine holds it.
+        #[test]
+        fn a_runtime_loaded_gene_resolves_by_its_staged_name() {
+            let gene = "/genome/kimi-coursework/adapter.gguf";
+            let stage = crate::inference::llama_server::gene_stage_name(std::path::Path::new(gene))
+                .expect("stageable");
+            let mut loaded = catalog();
+            loaded.push((2, format!("/home/x/.continuum/cache/engine-train/{stage}")));
+            assert_eq!(OpenAICompatibleAdapter::match_lora_index(&loaded, "kimi", gene), Some(2));
         }
 
         // what this catches: an empty catalog (server loaded no adapters at
