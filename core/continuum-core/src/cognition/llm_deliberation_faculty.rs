@@ -4782,6 +4782,8 @@ impl LlmDeliberationFaculty {
         // delib.generate.cache: a fabricated attribution is a lying receipt).
         if let Some(t) = resp.timing.as_ref() {
             let cached = t.cached_tokens as u32;
+            // Where this request's reuse went: the prompt's own change vs the slot's loss.
+            crate::cognition::prompt_prefix::attribute_reuse(self.persona_id, t.cached_tokens, t.prefill_tokens);
             // Her last turn's shape — what the next work call's occupancy bound is read from.
             LAST_TURN_SHAPE.insert(
                 self.persona_id,

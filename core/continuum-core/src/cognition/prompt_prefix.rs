@@ -68,13 +68,78 @@ pub(crate) fn compare(previous: &[String], now: &[String]) -> PrefixMatch {
 
 static LAST: LazyLock<dashmap::DashMap<uuid::Uuid, Vec<String>>> = LazyLock::new(dashmap::DashMap::new);
 
+/// The share of the persona's IN-FLIGHT request that her previous request already held,
+/// recorded by [`observe`] and read back by [`attribute_reuse`] once the engine says how
+/// much it actually reused (card 9e4d61e8).
+static KEPT: LazyLock<dashmap::DashMap<uuid::Uuid, f64>> = LazyLock::new(dashmap::DashMap::new);
+
+/// Where one request's prompt reuse went, as shares of the prompt (card 9e4d61e8). The
+/// engine reuses only what the prompt kept AND the slot still held, so the gap between
+/// the two is the slot's loss (evicted, its page not restored, or a different slot), and
+/// the rest of the prompt changed before the engine ever saw it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ReuseSplit {
+    /// What the previous request of this mind already held, from the start.
+    pub prompt_kept: f64,
+    /// What the engine actually served from KV (`cache_n / (cache_n + prompt_n)`).
+    pub engine_reused: f64,
+    /// Kept by the prompt, not served by the engine: the slot lost it.
+    pub slot_lost: f64,
+    /// Not kept by the prompt: the prompt itself changed.
+    pub prompt_changed: f64,
+}
+
+/// PURE: split a request's reuse. `prompt_kept` is a share of characters and
+/// `engine_reused` a share of tokens; within one persona's prompt the two scales agree to
+/// within the tokenizer's chars-per-token drift, so the shares compare. An engine that
+/// reused MORE than the prompt kept (a prefix shared with another mind on the same slot)
+/// is no slot loss.
+pub(crate) fn split_reuse(prompt_kept: f64, cached_tokens: u32, prefill_tokens: u32) -> Option<ReuseSplit> {
+    let total = u64::from(cached_tokens) + u64::from(prefill_tokens);
+    if total == 0 || !prompt_kept.is_finite() {
+        return None;
+    }
+    let prompt_kept = prompt_kept.clamp(0.0, 1.0);
+    let engine_reused = cached_tokens as f64 / total as f64;
+    Some(ReuseSplit {
+        prompt_kept,
+        engine_reused,
+        slot_lost: (prompt_kept - engine_reused).max(0.0),
+        prompt_changed: 1.0 - prompt_kept,
+    })
+}
+
+/// Once the engine answered: probe where this persona's prompt reuse went. Says nothing
+/// for her first request (nothing to compare) or a provider that reports no timings.
+pub(crate) fn attribute_reuse(persona: uuid::Uuid, cached_tokens: u32, prefill_tokens: u32) {
+    let Some((_, kept)) = KEPT.remove(&persona) else { return };
+    let Some(split) = split_reuse(kept, cached_tokens, prefill_tokens) else { return };
+    crate::probe!(
+        class = "delib.prompt.reuse_split",
+        persona = %persona,
+        prompt_kept = split.prompt_kept,
+        engine_reused = split.engine_reused,
+        slot_lost = split.slot_lost,
+        prompt_changed = split.prompt_changed,
+        cached_tokens = u64::from(cached_tokens),
+        prefill_tokens = u64::from(prefill_tokens),
+        "where this request's prompt reuse went: what the prompt kept, what the engine served, and the gap the slot lost"
+    );
+}
+
 /// Compare this request with the persona's previous one and probe the result; the first
 /// request a persona sends has nothing to compare against and says nothing.
 pub(crate) fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
     let now = rendered(req);
     let found = LAST.get(&persona).map(|previous| compare(&previous, &now));
     LAST.insert(persona, now);
-    let Some(found) = found else { return };
+    let Some(found) = found else {
+        KEPT.remove(&persona);
+        return;
+    };
+    if found.total_chars > 0 {
+        KEPT.insert(persona, found.common_chars as f64 / found.total_chars as f64);
+    }
     let (index, banner) = found.first_divergent.clone().unwrap_or((usize::MAX, String::new()));
     crate::probe!(
         class = "delib.prompt.common_prefix",
@@ -115,5 +180,21 @@ mod tests {
         assert!(found.common_chars < found.total_chars);
         let same = compare(&before, &before);
         assert_eq!((same.first_divergent, same.common_chars), (None, same.total_chars));
+    }
+
+    // what this catches (card 9e4d61e8): reading low KV reuse as one number. The prompt kept
+    // 90% but the engine served 40%: 50% was the slot's loss (evicted, page not restored),
+    // 10% the prompt's own change, and the two fixes differ entirely. An engine serving more
+    // than the prompt kept (a prefix shared across minds on one slot) is no slot loss, and a
+    // request with no timings says nothing.
+    #[test]
+    fn a_requests_lost_reuse_splits_into_the_slots_part_and_the_prompts_part() {
+        let s = split_reuse(0.9, 400, 600).expect("timings present");
+        assert!((s.engine_reused - 0.4).abs() < 1e-9);
+        assert!((s.slot_lost - 0.5).abs() < 1e-9, "{s:?}");
+        assert!((s.prompt_changed - 0.1).abs() < 1e-9, "{s:?}");
+        let shared = split_reuse(0.3, 800, 200).expect("timings present");
+        assert_eq!(shared.slot_lost, 0.0, "the engine reusing more than the prompt kept is no slot loss");
+        assert_eq!(split_reuse(0.9, 0, 0), None, "no tokens reported, no split");
     }
 }
