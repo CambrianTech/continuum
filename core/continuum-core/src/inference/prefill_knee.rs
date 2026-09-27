@@ -29,6 +29,13 @@ use std::sync::LazyLock;
 // derived-or-floor: a floor — five minutes spans ~7 ubatches at the slowest measured rate, so the per-ubatch step averages out.
 pub const WINDOW_BUSY_MS: u64 = 5 * 60 * 1000;
 
+/// The longest gap between two reads that still counts as one interval. A longer gap means
+/// reads failed in between (the engine was down or relaunching), and the downtime is not
+/// prefill time: counting it would publish a falsely slow rate right after a relaunch, one
+/// this knee's own clamp would cause (Kimi on #4454).
+// derived-or-floor: a ceiling — several health ticks; only ever DISCARDS an interval, never shortens one.
+pub const MAX_READ_GAP_MS: u64 = 2 * 60 * 1000;
+
 /// Turns kept for the prefilled median: the recent regime, not the day.
 // derived-or-floor: a floor — enough turns that one cold outlier moves the median by nothing.
 pub const TURNS_KEPT: usize = 64;
@@ -94,7 +101,11 @@ impl PrefillWindow {
     /// start; idle intervals add neither time nor tokens.
     pub fn observe(&mut self, now: Vec<SlotCount>, now_ms: u64) -> Option<f64> {
         if let Some((before, at)) = self.last.take() {
-            if before.iter().any(SlotCount::prefilling) {
+            // A relaunch between the reads: the gap held no reads, or a slot's task counter
+            // went backwards (a fresh engine numbers its tasks from zero). Neither interval
+            // is prefill time; the window resumes from this read.
+            let restarted = now.iter().any(|s| before.iter().any(|b| b.id == s.id && s.task < b.task));
+            if now_ms.saturating_sub(at) <= MAX_READ_GAP_MS && !restarted && before.iter().any(SlotCount::prefilling) {
                 self.tokens += prefilled_between(&before, &now);
                 self.busy_ms += now_ms.saturating_sub(at);
             }
@@ -224,6 +235,25 @@ mod tests {
         let rate = out.expect("five busy minutes publish a rate");
         assert!((40.0..=50.0).contains(&rate), "~45 tok/s, not a per-read swing: {rate}");
         assert_eq!(prefilled_between(&[slot(0, 1, 50, 50)], &[slot(0, 2, 900, 300)]), 300, "a new task counts its own progress");
+    }
+
+    // what this catches: a relaunch published as a slow rate (Kimi on #4454). The knee's
+    // own clamp relaunches the lane; the gap with no reads, and a fresh engine whose task
+    // counter starts over, must add neither time nor tokens, or the first window after the
+    // clamp reads the downtime as slow prefill and pushes the lanes down again.
+    #[test]
+    fn a_relaunch_between_reads_is_not_prefill_time() {
+        let mut w = PrefillWindow::default();
+        assert_eq!(w.observe(vec![slot(0, 500, 20_000, 4_096)], 0), None);
+        // ten minutes with no reads (the engine relaunching), then a fresh engine at task 3
+        assert_eq!(w.observe(vec![slot(0, 3, 20_000, 2_048)], 600_000), None);
+        assert_eq!(w.busy_ms, 0, "the gap is not busy time");
+        // a read one tick later on the same task counts normally again
+        let _ = w.observe(vec![slot(0, 3, 20_000, 4_096)], 615_000);
+        assert_eq!((w.tokens, w.busy_ms), (2_048, 15_000));
+        // a task counter that went backwards inside one tick is a relaunch too
+        let _ = w.observe(vec![slot(0, 1, 20_000, 1_024)], 630_000);
+        assert_eq!((w.tokens, w.busy_ms), (2_048, 15_000), "a restarted engine adds nothing");
     }
 
     // what this catches: the bound's arithmetic and its edges. 45 tok/s over a 180 s budget
