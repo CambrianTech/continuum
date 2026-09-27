@@ -8,7 +8,7 @@
 //! get a job dispatched. But nothing observed completion, so the loop stopped at
 //! "trained" — the freshly-forged layer was never measured against the persona and
 //! never paged in. This sentinel is the keystone that makes the single-machine loop
-//! AUTOMATIC: `train-done → convert → cognition/eval → lift>0 → page-in`. Page-in
+//! AUTOMATIC: `train-done → convert → register → trial → her work decides`. Page-in
 //! is local (no publish step), so L1+L2+L3 alone is a closed self-improvement loop
 //! on one machine (`docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md`).
 //!
@@ -45,26 +45,26 @@
 //! [`FineTuningAdapter::poll`](crate::genome::fine_tuning::FineTuningAdapter) the
 //! `genome/job-status` command uses, and acts on terminal status.
 //!
-//! ## The measure→decide gate (the humane discipline, honored)
+//! ## The decision is her work's (integrated, not parallel)
 //!
-//! On `Completed { artifact }` the sentinel runs `cognition/eval` in A/B mode (base
-//! vs the freshly-forged gene) — which forks an EPHEMERAL measurement copy and
-//! leaves the live persona untouched ([[humane-snapshot-eval]] / task #59). It reads
-//! the reported `lift` and pages the gene into the LIVE cycle ONLY when `lift > 0`.
-//! A zero/negative lift (an overfit or regressing layer) is logged and KEPT OUT —
-//! fail loud, never a silent adoption. This is exactly the "adopting the gene is a
-//! separate, deliberate decision, never a side effect of measuring it" contract:
-//! the eval measures, THIS sentinel decides.
+//! This sentinel used to run `cognition/eval` in A/B mode on a forked copy of her mind
+//! and page the gene in on `lift > 0`. Joel, 2026-09-27: "The point is integrated not
+//! parallel." A score from a copy beside her life never reaches her turns, her rooms or
+//! her learning. Now `Completed { artifact }` does three things and decides nothing:
+//! a cheap pre-filter (training's own held-out loss must be a finite number), register
+//! the gene so the serving engine loads it in place and dormant, and open a
+//! [`GeneTrial`](crate::genome::gene_trial::GeneTrial). From then on each card she works
+//! draws an arm; the room's outcome for the card, credited through the receipts' `genes`,
+//! is what promotes or retires it.
 //!
 //! ## Off-tick chain
 //!
-//! `cognition/eval` runs a full gym A/B — minutes. Running it inline would stall the
+//! the convert (an MLX export) can take minutes. Running it inline would stall the
 //! tick task. So the sentinel CLAIMS the job (atomic remove from the board) the
 //! instant it sees `Completed`, then spawns the eval→page-in chain off the tick. The
 //! claim guarantees no later tick re-handles the same completion; the spawn keeps the
 //! poll cadence crisp (mirrors the producer's best-effort spawn).
 
-use crate::cognition::learning_policy::LearningPolicy;
 use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,8 +72,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::ai::types::ActiveAdapterRequest;
-use crate::cognition::eval::{CognitionEvalParams, EvalGene};
 use crate::genome::fine_tuning::{
     ArtifactFormat, FineTuningRegistry, TrainingArtifact, TrainingJobBoard, TrainingStatus,
     WatchedJob,
@@ -93,7 +91,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(15);
 
 /// L3 completion sentinel. Holds the [`FineTuningRegistry`] (to poll handles, the
 /// same registry the `genome/job-*` commands use) and a late-bound
-/// [`CommandExecutor`] (to dispatch `cognition/eval` AS the persona, installed at
+/// [`CommandExecutor`] (to dispatch `forge/export` AS the persona, installed at
 /// boot by `install_executor_on_all`).
 pub struct TrainingCompletionSentinel {
     registry: Arc<FineTuningRegistry>,
@@ -110,30 +108,11 @@ impl TrainingCompletionSentinel {
         }
     }
 
-    /// Spawn the eval→page-in chain for one completed job, OFF the tick (the eval is
-    /// a minutes-long gym A/B). The job has already been claimed off the board, so
-    /// nothing else will re-handle it. Best-effort: any failure is logged and leaves
-    /// the live persona on its current genome — a failed measurement NEVER degrades
-    /// her ([[humane-snapshot-eval]]).
+    /// Spawn the convert → register → open-trial chain for one completed job, OFF the
+    /// tick (a convert can take minutes). The job has already been claimed off the board,
+    /// so nothing else will re-handle it. Best-effort: any failure is on the probe stream
+    /// and leaves her genome as it is.
     fn spawn_completion_chain(&self, job: WatchedJob, artifact: TrainingArtifact) {
-        // FAIL LOUD at the earliest seam: a gene the substrate cannot fairly MEASURE
-        // must never be paged into a live persona. The recipe declares its gym (the
-        // `cognition/eval` `eval_set`) at submission and it rides the board to here;
-        // when it's absent there is no honest A/B to gate on, so we REFUSE to adopt
-        // rather than measuring against an arbitrary default gym
-        // ([[fallbacks-are-illegal-fail-loud]]). Checked BEFORE the convert/eval spend
-        // because an unmeasurable gene is wasted compute. The job is already claimed
-        // off the board, so dropping it here simply leaves the living persona on her
-        // current genome — never degraded by a measurement we couldn't run.
-        let Some(eval_set) = job.eval_set.clone() else {
-            tracing::warn!(
-                persona = %job.persona_id,
-                trait_kind = %job.trait_kind,
-                "training-completion-sentinel: recipe declared no gym (eval_set) — gene is unmeasurable, NOT adopted (persona unchanged)"
-            );
-            return;
-        };
-
         let Some(executor) = self.executor.cloned() else {
             // Before boot installs the executor (early boot / tests) we cannot run
             // the eval. Named, not silent: the job is already claimed, so this layer
@@ -142,14 +121,14 @@ impl TrainingCompletionSentinel {
             tracing::warn!(
                 persona = %job.persona_id,
                 trait_kind = %job.trait_kind,
-                "training-completion-sentinel: executor not installed — cannot eval completed job; layer left unmeasured"
+                "training-completion-sentinel: executor not installed — cannot convert the completed job; no trial opened"
             );
             return;
         };
 
         tokio::spawn(async move {
-            // Dispatch `cognition/eval` AS the persona (LocalPersona → Trusted, which
-            // may run the Privileged eval) over the wired executor — the same
+            // Dispatch AS the persona (LocalPersona → Trusted, which may run the
+            // Privileged convert) over the wired executor — the same
             // persona-is-a-client path the L2 producer uses ([[persona-is-a-client]]).
             let conn = Connection::new(InProcessTransport::new(
                 executor,
@@ -168,116 +147,72 @@ impl TrainingCompletionSentinel {
                 return;
             };
 
-            let params = CognitionEvalParams {
-            temperature: None, // sentinel measures her as she LIVES — lived sampling
-                run_id: None,
-                persona_id: crate::identity::PersonaRef::new(job.persona_id.to_string()),
-                gene: Some(EvalGene {
-                    name: job.trait_kind.clone(),
-                    path: path_str.clone(),
-                    scale: None,
-                }),
-                room_id: None,
-                tasks: None,
-                // The gym the recipe DECLARED for this trait — measured on its own
-                // gym, never a default ([[fallbacks-are-illegal-fail-loud]]). Guarded
-                // Some at the top of this fn.
-                eval_set: Some(eval_set),
-                base_model_id: None, // a gene names its own forged base
-                reviewers: None,     // solo eval for training lift
-                detach: None,
-                max_acts: None,
-                max_retries: None,
-                workspace_root: None,
-                capture_dir: None,
-                // The L3 auto-eval MEASURES lift; it is not her life. Stated, not defaulted.
-                learn: LearningPolicy::DoNotLearn,
-                // #207: L3 auto-eval measures LIFT (base vs gene in one fork), which is
-                // reproducible regardless of recall; keep memories intact (default).
-                suppress_recall: None,
-            help: None, // solo arm — help is a declared per-round condition, never a default
-                note: Some(format!(
-                    "L3 auto-eval (gene={}, base={}, provider={})",
-                    job.trait_kind, job.base_model, job.handle.provider_id
-                )),
-            };
-            let params = match serde_json::to_value(&params) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!(
-                        persona = %job.persona_id,
-                        error = %e,
-                        "training-completion-sentinel: failed to serialize eval params — NOT adopted"
-                    );
-                    return;
-                }
-            };
-
-            let result = match conn
-                .commands()
-                .execute_value("cognition/eval", params)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        persona = %job.persona_id,
-                        trait_kind = %job.trait_kind,
-                        error = %e,
-                        "training-completion-sentinel: cognition/eval failed — layer NOT adopted (persona unchanged)"
-                    );
-                    return;
-                }
-            };
-
-            // The result IS the serialized CognitionEvalResult (no envelope). `lift`
-            // = candidate pass-rate − base pass-rate; present in A/B mode (a gene was
-            // given). Absent lift means the A/B didn't run — keep out, fail loud.
-            let Some(lift) = result.get("lift").and_then(Value::as_f64) else {
-                tracing::warn!(
+            // THE PRE-FILTER: training's own held-out loss. A run whose validation loss is not
+            // a finite number diverged or never measured itself; it never reaches her work.
+            // This is only the cheap gate: the verdict is her work's (below), never a harness.
+            let validation = artifact.metrics.final_validation_loss.or(artifact.metrics.final_loss);
+            if !validation.is_some_and(f64::is_finite) {
+                crate::probe!(
+                    class = "genome.trial.refused",
                     persona = %job.persona_id,
-                    trait_kind = %job.trait_kind,
-                    "training-completion-sentinel: eval returned no lift (A/B did not run) — layer NOT adopted"
-                );
-                return;
-            };
-            let pass_rate = result.get("pass_rate").and_then(Value::as_f64);
-            let base_pass_rate = result.get("base_pass_rate").and_then(Value::as_f64);
-
-            // THE GATE. Adopt only on a real improvement.
-            if lift <= 0.0 {
-                tracing::info!(
-                    persona = %job.persona_id,
-                    trait_kind = %job.trait_kind,
-                    lift,
-                    base_pass_rate = ?base_pass_rate,
-                    gene_pass_rate = ?pass_rate,
-                    "training-completion-sentinel: lift ≤ 0 — gene rejected, persona kept on current genome"
+                    gene = job.trait_kind.as_str(),
+                    "the trained gene reported no finite held-out loss: no trial opened, her genome unchanged"
                 );
                 return;
             }
 
-            // lift > 0: page the gene into the LIVE cycle. A wait-free atomic genome
-            // swap — the persona's next generation runs base + this layer.
-            let Some(cycle) = crate::cognition::persona_workspace::global().get(&job.persona_id)
-            else {
-                // De-spawned between train start and completion — don't adopt into a
-                // ghost. Fail loud; the next time she's live + retrained the loop runs.
-                tracing::warn!(
+            // INTEGRATED, NOT PARALLEL (Joel, 2026-09-27). The gene is registered, so the serving
+            // engine loads it in place, dormant (#4467), and a TRIAL opens: from now on each
+            // card she works draws an arm, and the room's outcome for the card is what promotes
+            // or retires it (genome/gene_trial.rs). No eval copy of her mind scores it beside
+            // her life.
+            if let Err(e) = crate::forge::adapter_manifest::register(crate::forge::adapter_manifest::TrainedAdapter {
+                alias: job.trait_kind.clone(),
+                path: std::path::PathBuf::from(&path_str),
+                base_model_id: job.base_model.clone(),
+            }) {
+                crate::probe!(
+                    class = "genome.trial.refused",
                     persona = %job.persona_id,
-                    trait_kind = %job.trait_kind,
-                    lift,
-                    "training-completion-sentinel: gene cleared the gate but persona has no live cycle — NOT adopted"
+                    gene = job.trait_kind.as_str(),
+                    error = e.as_str(),
+                    "the trained gene could not be registered for serving: no trial opened"
                 );
                 return;
+            }
+            let Some(store) = crate::genome::gene_trial::GeneTrials::default_store() else {
+                tracing::error!(persona = %job.persona_id, "no home directory: the gene trial file has no place, no trial opened");
+                return;
             };
-
-            cycle.page_in(vec![ActiveAdapterRequest {
-                name: job.trait_kind.clone(),
-                path: path_str.clone(),
-                domain: job.trait_kind.clone(),
-                scale: 1.0,
-            }]);
+            let trial = match store.open(
+                job.persona_id,
+                &job.trait_kind,
+                std::path::Path::new(&path_str),
+                &job.base_model,
+                chrono::Utc::now().timestamp_millis().max(0) as u64,
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    crate::probe!(
+                        class = "genome.trial.refused",
+                        persona = %job.persona_id,
+                        gene = job.trait_kind.as_str(),
+                        error = e.as_str(),
+                        "the gene trial file did not take the trial: no trial opened"
+                    );
+                    return;
+                }
+            };
+            crate::probe!(
+                class = "genome.trial.opened",
+                persona = %job.persona_id,
+                gene = job.trait_kind.as_str(),
+                trial = %trial.id,
+                base = job.base_model.as_str(),
+                share_milli = trial.share_milli as u64,
+                validation_loss = validation.unwrap_or_default(), // probe field: guarded finite above
+                "a trained gene opened a trial: it now works a share of her cards, and her work's outcomes decide it"
+            );
 
             // STAMP the signature into the sidecar at the same moment the gene
             // becomes live — adoption is the one event where the gene's path,
@@ -300,21 +235,12 @@ impl TrainingCompletionSentinel {
                 }
             }
 
-            tracing::info!(
-                persona = %job.persona_id,
-                persona_name = %job.persona_name,
-                trait_kind = %job.trait_kind,
-                lift,
-                base_pass_rate = ?base_pass_rate,
-                gene_pass_rate = ?pass_rate,
-                "training-completion-sentinel: lift > 0 — gene ADOPTED, paged into live persona (loop closed)"
-            );
         });
     }
 }
 
 /// Normalize a completed training artifact into a PAGEABLE gguf-lora gene path —
-/// the one shape `cognition/eval`'s A/B lane and `cycle.page_in` can load. The
+/// the one shape the serving engine and `cycle.page_in` can load. The
 /// decision is FORMAT-driven, never provider-string-matched (smell #70): each
 /// trainer declared what it produced, so the sentinel asks the artifact's
 /// [`ArtifactFormat`], not its provider id.
