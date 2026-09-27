@@ -1029,14 +1029,16 @@ enum LoraPost {
 const LORA_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Put `gene` into the engine's --train-dir as `into`: a hard link (no copy, no second
-/// footprint) when both sit on one filesystem, else a copy. An existing file of the same
-/// size is taken as this gene already staged.
+/// footprint) when both sit on one filesystem, else a copy. Always re-staged: a retrained
+/// gene of the same rank has the same size, so an existing file proves nothing about which
+/// weights it holds (Cormac on #4467).
 fn stage_gene(gene: &std::path::Path, into: &std::path::Path) -> std::io::Result<()> {
-    let len = std::fs::metadata(gene)?.len();
-    if std::fs::metadata(into).is_ok_and(|m| m.len() == len) {
-        return Ok(());
+    std::fs::metadata(gene)?; // the gene must exist: fail loud, never stage a stale leftover
+    match std::fs::remove_file(into) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
-    let _ = std::fs::remove_file(into); // best effort: a stale file of another size is replaced below
     std::fs::hard_link(gene, into).or_else(|_| std::fs::copy(gene, into).map(|_| ()))
 }
 
@@ -3238,12 +3240,14 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                         true
                     }
                     Ok(GenomeInPlace::Busy) => {
+                        // The set stands this tick, and the window, lane and engine checks
+                        // below still run: a busy retire must not hide a starved lane.
                         crate::probe!(
                             class = "serving.genome.in_place_busy",
                             model = target.model_id(),
                             "a retiring gene is active in a turn in flight: the change waits a tick"
                         );
-                        return EnsureOutcome::AlreadyServing;
+                        true
                     }
                     Ok(GenomeInPlace::Unsupported) => false,
                     Err(e) => {
@@ -4552,7 +4556,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let Some(dir) = engine_train_dir().filter(|_| engine_accepts_train_dir()) else {
             return Ok(GenomeInPlace::Unsupported);
         };
-        let active = self.served_adapters.lock().unwrap().clone();
+        let active = self.served_adapters.lock().unwrap().clone(); // JUSTIFIED: poison means a prior panic while recording the served set.
         let desired = target.adapter_paths();
         let added: Vec<&String> = desired.iter().filter(|p| !active.contains(p)).collect();
         let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
@@ -4597,7 +4601,7 @@ impl LlamaServerControl for LlamaServerProcess {
                 LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
             }
         }
-        *self.served_adapters.lock().unwrap() = desired;
+        *self.served_adapters.lock().unwrap() = desired; // JUSTIFIED: poison means a prior panic while recording the served set.
         Ok(GenomeInPlace::Adopted)
     }
 
@@ -8501,7 +8505,8 @@ mod tests {
 
     // what this catches (charter S1, card 49b5e806): a new gene on an engine that loads at
     // runtime relaunching anyway, killing every turn in flight; and a retire refused
-    // because a turn holds the gene turning into that same relaunch instead of a wait.
+    // because a turn holds the gene turning into that same relaunch instead of a wait
+    // (the set stands this tick; the checks after it still run).
     #[tokio::test]
     async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
         for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
