@@ -4567,8 +4567,20 @@ impl LlamaServerControl for LlamaServerProcess {
             };
             staged.push((PathBuf::from(gene.as_str()), name));
         }
-        // Retire first: a retire refused because a turn has it active changes nothing, so
-        // the whole change waits a tick rather than half-applying.
+        // Every step the engine accepts is recorded at once, so an early return (a busy
+        // retire, an error) leaves the served set naming exactly what the engine holds;
+        // the next tick converges the rest (Codex on #4467: two retires, the second busy,
+        // left the first advertised although the engine had freed it).
+        let record = |gene: &str, held: bool| {
+            let mut served = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
+            served.retain(|p| p != gene);
+            if held {
+                served.push(gene.to_string());
+                served.sort();
+            }
+        };
+        // Retire first, so a refused retire (a turn holds the gene) stops the change before
+        // any new gene joins.
         if !removed.is_empty() {
             let catalog = self.lora_catalog().await?;
             for gene in &removed {
@@ -4577,9 +4589,13 @@ impl LlamaServerControl for LlamaServerProcess {
                     let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
                     (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
                 });
-                let Some(id) = id else { continue }; // not loaded: nothing to retire
+                let Some(id) = id else {
+                    record(gene, false); // not loaded: nothing to retire, and not served
+                    continue;
+                };
                 match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
                     LoraPost::Done => {
+                        record(gene, false);
                         if let Some(name) = &stage {
                             let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
                         }
@@ -4591,17 +4607,17 @@ impl LlamaServerControl for LlamaServerProcess {
         }
         for (gene, name) in staged {
             let into = dir.join(&name);
+            let gene_key = gene.to_string_lossy().into_owned();
             tokio::task::spawn_blocking(move || stage_gene(&gene, &into))
                 .await
                 .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
                 .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
             match self.lora_post("load", serde_json::json!({ "name": name })).await? {
-                LoraPost::Done => {}
+                LoraPost::Done => record(&gene_key, true),
                 LoraPost::Busy => return Ok(GenomeInPlace::Busy),
                 LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
             }
         }
-        *self.served_adapters.lock().unwrap() = desired; // JUSTIFIED: poison means a prior panic while recording the served set.
         Ok(GenomeInPlace::Adopted)
     }
 
