@@ -1115,6 +1115,8 @@ impl LlmDeliberationFaculty {
             .request_id
             .get_or_insert_with(|| Uuid::new_v4().to_string())
             .clone();
+        // How much of this prompt her previous request already held (card 5b09111e).
+        crate::cognition::prompt_prefix::observe(self.persona_id, &request);
         let mut capture = self.prompt_capture.as_ref().map(|sink| {
             super::prompt_capture::CaptureLease::start(
                 Arc::clone(sink),
