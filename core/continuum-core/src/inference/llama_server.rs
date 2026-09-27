@@ -964,8 +964,6 @@ pub fn page_geometry_key(per_slot_ctx: u32) -> u32 {
     (per_slot_ctx / PAGE_GEOMETRY_STEP).max(1) * PAGE_GEOMETRY_STEP
 }
 
-/// The root every geometry dir lives under — the ONE path the disk reporter
-/// tracks and the spawn sweep walks.
 /// Where every lane's `POST /train` writes its adapters (`--train-dir`). One directory
 /// for all lanes: a job names its output `<job-uuid>.gguf`, and the engine trainer moves
 /// the finished adapter into the job's own directory, so this holds only runs in flight
@@ -976,6 +974,8 @@ pub fn engine_train_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("cache").join("engine-train"))
 }
 
+/// The root every geometry dir lives under — the ONE path the disk reporter
+/// tracks and the spawn sweep walks.
 pub fn kv_pages_root() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir) // JUSTIFIED unwrap_or_else: no home dir = containerized oddity; pages in tmp still work, and the lane must not fail to spawn over cache placement
