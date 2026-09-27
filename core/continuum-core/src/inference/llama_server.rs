@@ -1491,7 +1491,10 @@ pub fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
         .saturating_sub(WARM_BUILD_RESERVE_BYTES)
         .saturating_sub(WARM_BUILD_FIRST_JOB_BYTES);
     let jobs = 1 + beyond_first / WARM_BUILD_JOB_BYTES;
-    Some(u32::try_from(jobs).unwrap_or(u32::MAX)) // unwrap_or: a count past u32 is plenty; the cap then does nothing
+    // never more jobs than the machine can run at once (Cormac on #4483): a memory budget
+    // past the core count is not more parallelism
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get) as u64; // map_or: an unknown core count runs one job
+    Some(u32::try_from(jobs.min(cores).max(1)).unwrap_or(u32::MAX)) // unwrap_or: a count past u32 is plenty
 }
 
 /// PURE: whether a running lane's `/props` `build_info` (`b10765-965d38a90`) names the
@@ -6492,13 +6495,15 @@ mod tests {
     #[test]
     fn a_warm_build_takes_the_jobs_its_free_memory_holds() {
         let gib = 1024 * 1024 * 1024;
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get) as u64;
         // measured: continuum_core's front end alone peaked at 6.4 GB, so one job needs it
         // plus the reserve; a second job only past another 2.5 GiB
         assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 4 * gib + 6656 * 1024 * 1024);
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024 - 1), Some(1));
-        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), Some(2));
-        assert_eq!(warm_build_jobs_for_memory(64 * gib), Some(1 + ((64 * gib - WARM_BUILD_MIN_FREE_BYTES) / (2560 * 1024 * 1024)) as u32), "never uncapped: memory bounds the jobs");
+        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), Some(2u32.min(cores as u32)));
+        let by_memory = 1 + (64 * gib - WARM_BUILD_MIN_FREE_BYTES) / (2560 * 1024 * 1024);
+        assert_eq!(warm_build_jobs_for_memory(64 * gib), Some(by_memory.min(cores) as u32), "never uncapped: memory and cores bound the jobs");
     }
 
     // what this catches (card 682a5abf): a warm build beside a CPU-served lane at cargo's
