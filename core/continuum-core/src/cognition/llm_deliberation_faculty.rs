@@ -2699,6 +2699,30 @@ impl LlmDeliberationFaculty {
             Ok(fitted) => (fitted, None),
             Err(error) => (FittedMessages::default(), Some(error)),
         };
+        // THE FIT'S RECEIPT (card d33e928a, Kimi's finding): whenever the fit dropped
+        // history, say what it dropped and from what budget, and say it loudly when
+        // nothing optional survived — that turn composes with no room at all, operator
+        // direction included, and before this there was no line to read it from.
+        if capacity_error.is_none() && fitted.receipt.dropped_messages > 0 {
+            let r = fitted.receipt;
+            crate::probe!(
+                class = if r.emptied() { "delib.fill.history_emptied" } else { "delib.fill.history_dropped" },
+                persona = %self.persona_name,
+                context_window,
+                completion_reserve,
+                msg_budget,
+                required_tokens = r.required_tokens,
+                history_budget = r.history_budget,
+                history_messages = r.history_messages,
+                history_tokens = r.history_tokens,
+                kept_messages = r.kept_messages,
+                dropped_messages = r.dropped_messages,
+                dropped_tokens = r.dropped_tokens,
+                quantum = r.quantum,
+                "the fit dropped optional history from the front; history_emptied means nothing \
+                 optional survived and the turn composes with no room messages at all"
+            );
+        }
         // WHAT THIS TURN ACTUALLY SENDS — the post-fit size the served window must
         // hold. Recorded beside the untrimmed demand above: that one is the growth
         // signal (and the upper bound), this one is what a slot must FIT. The planner
@@ -3465,9 +3489,9 @@ impl LlmDeliberationFaculty {
         let costs: Vec<usize> = messages.iter().map(Self::message_cost).collect();
         let total: usize = costs.iter().sum();
         let mut start = 0usize;
+        let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
         if total > history_budget {
             let min_drop = total - history_budget;
-            let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
             let drop_q = min_drop.div_ceil(quantum).saturating_mul(quantum);
             let mut dropped = 0usize;
             // Only optional history yields. Stimulus and action payload are typed
@@ -3580,6 +3604,16 @@ impl LlmDeliberationFaculty {
                 opener_advance += 1;
             }
         }
+        let receipt = FitReceipt {
+            history_messages: costs.len(),
+            history_tokens: total,
+            kept_messages: costs.len() - start,
+            dropped_messages: start,
+            dropped_tokens: costs[..start].iter().sum(),
+            required_tokens,
+            history_budget,
+            quantum,
+        };
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);
         let grounding_at = prompt.grounding_at.saturating_sub(start);
@@ -3589,6 +3623,7 @@ impl LlmDeliberationFaculty {
         Ok(FittedMessages {
             messages: prompt.history,
             grounding_at,
+            receipt,
         })
     }
 
@@ -3923,6 +3958,30 @@ impl PromptMessages {
 struct FittedMessages {
     messages: Vec<ChatMessage>,
     grounding_at: usize,
+    /// What the fit did to her optional history (card d33e928a, Kimi's finding): the
+    /// front-drop was silent, so a turn whose reduction emptied her history — every room
+    /// message, operator direction included, gone before compose — left no receipt.
+    receipt: FitReceipt,
+}
+
+/// The fit's own account of the optional history it was handed and what survived.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct FitReceipt {
+    history_messages: usize,
+    history_tokens: usize,
+    kept_messages: usize,
+    dropped_messages: usize,
+    dropped_tokens: usize,
+    required_tokens: usize,
+    history_budget: usize,
+    quantum: usize,
+}
+
+impl FitReceipt {
+    /// Optional history existed and none of it survived the fit.
+    fn emptied(&self) -> bool {
+        self.history_messages > 0 && self.kept_messages == 0
+    }
 }
 
 #[derive(Default)]
@@ -8139,6 +8198,52 @@ mod tests {
                     .starts_with("[occurred 1970-01-01T00:00:00.003Z] Operator: "),
                 "the ask (last peer turn) stays LAST, after the grounding facts"
             );
+        }
+
+        #[test]
+        // what this catches (card d33e928a, Kimi 2026-09-26): the front-drop emptied a
+        // turn's whole optional history with no receipt — room messages, operator
+        // direction included, gone before compose and nothing said. The fit now accounts
+        // for what it kept and dropped, and says when it emptied the history.
+        fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let history: Vec<ChatMessage> = (0..12)
+                .map(|i| ChatMessage::text("user", format!("room {i} {}", "word ".repeat(95))))
+                .collect();
+            let stimulus = ChatMessage::text("user", "operator: do the thing ".repeat(40));
+            let prompt = |history: Vec<ChatMessage>| PromptMessages {
+                input_identity: [0; 32],
+                grounding_tokens: 0,
+                grounding_at: 0,
+                history,
+                stimulus: Some(stimulus.clone()),
+                latest_result: None,
+                room_updates: Vec::new(),
+            };
+            let required = prompt(Vec::new()).required_tokens();
+            let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
+
+            // Room for everything: nothing dropped, the receipt says so.
+            let roomy = faculty.fit_messages(prompt(history.clone()), required + total).expect("fits");
+            assert_eq!(roomy.receipt.dropped_messages, 0);
+            assert_eq!(roomy.receipt.kept_messages, 12);
+            assert!(!roomy.receipt.emptied());
+
+            // A budget that holds the stimulus and a little history: some dropped, some kept.
+            let tight = faculty.fit_messages(prompt(history.clone()), required + total / 2).expect("fits");
+            assert!(tight.receipt.dropped_messages > 0 && tight.receipt.kept_messages > 0, "{:?}", tight.receipt);
+            assert_eq!(tight.receipt.dropped_messages + tight.receipt.kept_messages, 12);
+            assert!(tight.receipt.dropped_tokens >= (total / 2).saturating_sub(tight.receipt.quantum), "{:?}", tight.receipt);
+
+            // A budget that holds only the stimulus: the whole history goes, and the
+            // receipt says emptied (the turn Kimi could not see).
+            let starved = faculty.fit_messages(prompt(history.clone()), required).expect("the stimulus fits");
+            assert!(starved.receipt.emptied(), "{:?}", starved.receipt);
+            assert_eq!(starved.receipt.dropped_tokens, total);
+            assert_eq!(starved.receipt.history_budget, 0);
+            assert!(starved.messages.iter().any(|m| m.content_text() == stimulus.content_text()),
+                "the stimulus itself is never optional");
         }
 
         // what this catches: the fit's cut point IS the byte-stability of the
