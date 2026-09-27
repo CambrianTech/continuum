@@ -952,6 +952,36 @@ impl PersonaAircRuntime {
                                 &crate::persona::held_claims::held(peer),
                             );
                             for h in followed {
+                                // A SETTLED CARD IS NOBODY'S WORK, here as in the walk
+                                // (`held_of_owned`). The walk drops a merged card, which
+                                // then read as "beyond the walk", and this path renewed it
+                                // with no state check: the heartbeat is accepted on a merged
+                                // card, so the hold never ended. Kimi held d33e928a (its PR
+                                // merged) for hours on 2026-09-27, pulled nothing, and read
+                                // 21 acts and 0 writes an hour. Read the card in the room
+                                // the claim landed in; settled forgets the record. An
+                                // unreadable board renews as before.
+                                if let Ok(board) = hb_airc.work_board_in(&h.room).await {
+                                    let settled = board
+                                        .card(airc_lib::WorkCardId::from_uuid(h.card_id))
+                                        .is_some_and(|card| settled_card(&card.state));
+                                    if settled {
+                                        let dropped = crate::persona::held_claims::forget(
+                                            peer,
+                                            hb_airc.home(),
+                                            h.card_id,
+                                        );
+                                        crate::probe!(
+                                            class = "persona.claim.followed_settled",
+                                            agent_name = %hb_name,
+                                            card_id = %h.card_id,
+                                            room = %h.room.name,
+                                            dropped,
+                                            "a followed claim's card is merged or closed: its record is forgotten, never renewed"
+                                        );
+                                        continue;
+                                    }
+                                }
                                 if !crate::persona::cognition_pulse::renewal_earned(
                                     crate::persona::cognition_pulse::work_idle_ms(
                                         hb_persona,
@@ -1705,6 +1735,12 @@ pub(crate) async fn scoped_board_held_by(
     Ok(held_of_owned(scoped_board_owned_by(airc).await?, now_ms))
 }
 
+/// A card whose work is over (merged or closed): never held, never renewed, whatever its
+/// claim fields still say. The one rule for the walk and the followed claims alike.
+fn settled_card(state: &airc_work::model::CardState) -> bool {
+    matches!(state, airc_work::model::CardState::Closed | airc_work::model::CardState::Merged)
+}
+
 /// The HELD subset of an owned walk: lease live, not claimable, not settled. Split from the
 /// walk so one board read can feed both the renewal (holds) and the handoff record (all of
 /// what she owns, whole) — never two walks for one seam.
@@ -1718,10 +1754,7 @@ pub(crate) fn held_of_owned(
             // A settled card is nobody's work, whatever its lease says: a closed card
             // whose claim fields outlive the close read as HELD, focused her ticks on a
             // finished room and made the pull think she had work (2026-09-13 14:0xZ).
-            !matches!(
-                card.state,
-                airc_work::model::CardState::Closed | airc_work::model::CardState::Merged
-            ) && crate::persona::card_holder::hold_of(card, now_ms)
+            !settled_card(&card.state) && crate::persona::card_holder::hold_of(card, now_ms)
                 == crate::persona::card_holder::Hold::Held
                 && !crate::persona::card_holder::claimable_now(card, now_ms)
         })
