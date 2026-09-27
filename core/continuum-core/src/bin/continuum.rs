@@ -2896,37 +2896,6 @@ fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// How old a git `index.lock` must be before the deploy consumer treats it as abandoned
-/// (card 677437fa). Git holds `index.lock` only while it writes the index, so seconds, and a
-/// full checkout of this tree on the slowest node takes well under a minute. Ten minutes is
-/// past anything a live git operation holds; a lock older than that was left by a process
-/// that died mid-write (the M5 on 2026-09-27: 41 refusals over ~3.4 h, then again 17:27-19:3xZ,
-/// each time cleared by hand).
-// derived-or-floor: a floor, ten times the slowest checkout seen here, far under the hours a stale lock sat.
-const STALE_INDEX_LOCK: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
-/// What the deploy consumer does about the deploy tree's `index.lock`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IndexLock {
-    /// No lock: deploy.
-    Absent,
-    /// A lock a live git operation may still hold (young, or a git process stands in the
-    /// tree): leave it, name it, try next tick without spending an attempt.
-    Held,
-    /// A lock no git operation holds: remove it with a receipt, then deploy.
-    Stale,
-}
-
-/// PURE: the verdict on the tree's lock from its age and whether any git process has its
-/// cwd inside the tree. Never removes a lock a running git might own.
-fn index_lock_verdict(age: Option<std::time::Duration>, git_in_tree: bool) -> IndexLock {
-    match age {
-        None => IndexLock::Absent,
-        Some(age) if age >= STALE_INDEX_LOCK && !git_in_tree => IndexLock::Stale,
-        Some(_) => IndexLock::Held,
-    }
-}
-
 /// Whether any running `git` might be working on `repo`, judged conservatively: a git whose
 /// cwd is inside the tree, whose command line names the tree (`--git-dir` / `--work-tree`
 /// given from elsewhere), or whose cwd cannot be read at all. Only a git positively seen
@@ -2964,6 +2933,7 @@ fn git_running_in(repo: &Path) -> bool {
 /// may be deployed; `Ok(false)` = a lock that may be live stands, named in the deploy log,
 /// retried next tick without spending one of the tip's attempts.
 fn settle_index_lock(repo: &Path) -> Result<bool, String> {
+    use continuum_core::runtime::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
     let rel = git_in(repo, &["rev-parse", "--git-path", "index.lock"])?;
     let lock = repo.join(rel);
     let age = std::fs::metadata(&lock)
@@ -6014,22 +5984,6 @@ mod tests {
         assert!(super::consumer_uses_service("windows"));
         assert!(!super::consumer_uses_service("macos"));
         assert!(!super::consumer_uses_service("linux"));
-    }
-
-    // what this catches (card 677437fa): a git that died mid-write left the deploy tree's
-    // index.lock behind, and every consumer tick failed its checkout for hours (the M5, twice
-    // on 2026-09-27), spending the tip's attempts. An old lock with no git in the tree is
-    // cleared; a young one, or one a git process in the tree may own, is only named.
-    #[test]
-    fn a_stale_index_lock_is_cleared_and_a_live_one_is_left() {
-        use std::time::Duration;
-        let old = Some(STALE_INDEX_LOCK + Duration::from_secs(1));
-        let young = Some(Duration::from_secs(5));
-        assert_eq!(index_lock_verdict(None, false), IndexLock::Absent);
-        assert_eq!(index_lock_verdict(old, false), IndexLock::Stale, "abandoned: remove it");
-        assert_eq!(index_lock_verdict(old, true), IndexLock::Held, "a git in the tree may own it");
-        assert_eq!(index_lock_verdict(young, false), IndexLock::Held, "young: a live write");
-        assert_eq!(index_lock_verdict(Some(STALE_INDEX_LOCK), false), IndexLock::Stale, "the bound itself is stale");
     }
 
     // Regression for #3929: a first upgrade must leave the legacy core available
