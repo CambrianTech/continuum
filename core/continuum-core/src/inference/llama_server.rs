@@ -1373,14 +1373,27 @@ pub(crate) fn installed_engine_commit() -> Option<String> {
 }
 
 /// PURE: whether a running lane's `/props` `build_info` (`b10765-965d38a90`) names the
-/// installed engine commit. Commits compare by prefix either way (short and full SHAs), so
-/// a lane is stale only when both are known and they disagree.
+/// installed engine commit, compared with the ONE SHA rule `deploy_provenance::sha_matches`
+/// (prefix either way, credible hex). A lane is stale only when both commits are credible
+/// SHAs and they disagree; anything unreadable is not evidence (BigMama on 7c5f139d).
 pub(crate) fn lane_runs_installed_engine(build_info: &str, installed: &str) -> bool {
+    use crate::runtime::deploy_provenance::sha_matches;
     let lane = build_info.rsplit('-').next().unwrap_or(build_info).trim(); // unwrap_or: rsplit always yields one piece
-    if lane.is_empty() || installed.is_empty() {
+    let credible = |sha: &str| sha_matches(sha, sha); // a SHA matches itself iff it is credible
+    if !credible(lane) || !credible(installed) {
         return true;
     }
-    lane.starts_with(installed) || installed.starts_with(lane)
+    sha_matches(lane, installed)
+}
+
+/// The stale-engine fact the reconcile last saw (`from -> to`), for the hour's health line
+/// (BigMama on 7c5f139d): "this node cannot dream" is read there, never inferred.
+static ENGINE_STALE: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// `from->to` while the serving lane runs an older engine than the installed one; `None`
+/// once it has converged, or when that cannot be known.
+pub fn engine_stale() -> Option<String> {
+    ENGINE_STALE.lock().clone()
 }
 
 /// Published serving state. One model, is it ready, on what `/v1` url. The
@@ -3347,6 +3360,13 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 (Some(lane), Some(installed)) => lane_runs_installed_engine(lane, installed),
                 _ => true,
             };
+            *ENGINE_STALE.lock() = (!engine_ok).then(|| {
+                format!(
+                    "{}->{}",
+                    served_engine.as_deref().unwrap_or(""), // unwrap_or: engine_ok=false implies both are known
+                    installed_engine.as_deref().unwrap_or("") // unwrap_or: as above
+                )
+            });
             if !engine_ok {
                 crate::probe!(
                     class = "serving.engine.converged",
@@ -6100,6 +6120,7 @@ mod tests {
         assert!(lane_runs_installed_engine("b10765-965d38a90", "965d38a900bc82e28900683f9e30f7333cbf3936"), "short vs full SHA");
         assert!(lane_runs_installed_engine("", "9733aca6c"), "a lane naming no build is not stale");
         assert!(lane_runs_installed_engine("b10765-965d38a90", ""), "no stamp: nothing to compare");
+        assert!(lane_runs_installed_engine("b10765-unknown", "9733aca6c"), "a non-SHA build is not evidence");
     }
 
     // what this catches: an engine older than --train-dir being handed the flag (it refuses to

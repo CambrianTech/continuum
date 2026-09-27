@@ -1159,6 +1159,9 @@ impl ServiceModule for CitizenHealthModule {
         crate::probe!(
             class = "citizen.health.hour",
             resident = h.resident,
+            // `from->to` while the serving lane runs an older engine than the installed
+            // one (card 7c5f139d); "" once converged. A node that cannot dream says so here.
+            engine_stale = crate::inference::llama_server::engine_stale().unwrap_or_default(), // unwrap_or_default: "" = current, or not knowable
             lanes = h.lanes,
             served_window = h.served_window,
             acts = h.acts,
