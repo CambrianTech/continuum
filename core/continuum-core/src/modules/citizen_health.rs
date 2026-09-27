@@ -281,6 +281,8 @@ pub fn note_generation(cached: u32, prefilled: u32) {
     }
     LEDGER.prompt_cached.fetch_add(u64::from(cached), Ordering::Relaxed);
     LEDGER.prompt_prefilled.fetch_add(u64::from(prefilled), Ordering::Relaxed);
+    // The same split, per turn, for the prefill knee's median (card e370a673).
+    crate::inference::prefill_knee::note_turn(cached, prefilled);
 }
 
 /// An act was observed (the `persona.act.observed` seam). `wrote` = it changed a file.

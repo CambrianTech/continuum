@@ -2803,6 +2803,13 @@ pub trait LlamaServerControl: Send + Sync {
         None
     }
 
+    /// The `/slots` body itself, for a reader that needs more than one derived number (the
+    /// prefill knee's server-total rate, card e370a673). Default `None` = no endpoint to
+    /// read, so a fake or remote control publishes nothing.
+    async fn slots_body(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// The flag this control's stderr watcher raises when the running lane proves itself
     /// WEDGED — a slot reporting arithmetically impossible progress (see
     /// [`crate::inference::wedge`]). The serving daemon polls it on its tick and owns the
@@ -4356,6 +4363,20 @@ impl LlamaServerControl for LlamaServerProcess {
             .await
             .ok()?;
         slots_activity_fingerprint_of(&body)
+    }
+
+    async fn slots_body(&self) -> Option<serde_json::Value> {
+        // Same bounded control-plane read as the fingerprint; any failure → None.
+        let url = format!("{}/slots", self.root);
+        self.client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()
     }
 
     async fn slots_max_inflight_prompt_tokens(&self) -> Option<u64> {
