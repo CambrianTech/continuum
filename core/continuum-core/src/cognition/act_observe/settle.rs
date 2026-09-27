@@ -655,7 +655,10 @@ async fn settle_to_outcome(
             tick_deadline,
             act_bound,
             acting_persona,
-            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
+            // Boxed: the step is the largest future in the drive, and holding it by value
+            // inside this wrapper's own state overflowed the layout query depth (CI,
+            // "queries overflow the depth limit"). The box keeps the wrapper one pointer wide.
+            Box::pin(settle_step(cycle, burst.clone(), may_act, framing, situation, &chain)),
         )
         .await
         {
