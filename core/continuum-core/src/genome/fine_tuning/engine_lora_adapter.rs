@@ -681,8 +681,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                         );
                     }
                     let measured_shape = Shape { depth: adapted, ..shape.clone() };
-                    // A depth at or past the model's block count IS full depth: filed under the
-                    // asked key too, or that request would calibrate on every run (Cormac on #4472).
+                    // A depth equal to the model's block count IS full depth (fork #27 refuses one
+                    // past it): filed under the asked key too, or that request would calibrate on
+                    // every run (Cormac on #4472).
                     let asked_full = matches!((shape.depth, status.n_layer), (Some(k), Some(n)) if k >= n);
                     if grown > 0 {
                         let store = Footprints { path: footprints_path };
@@ -850,8 +851,15 @@ mod tests {
                         return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
                     }
                     std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
-                    axum::Json(json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out,
-                        "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]}))
+                    let mut done = json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out, "graph_mib": 5.0,
+                        "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]});
+                    // an engine with fork #27 reports the depth it adapted; one without says nothing
+                    if mode == "depth" {
+                        let asked = l.body.as_ref().and_then(|b| b.get("top_layers")).and_then(Value::as_u64).unwrap_or(64);
+                        done["n_layer"] = json!(64);
+                        done["layers_adapted"] = json!(asked.min(64));
+                    }
+                    axum::Json(done)
                 }
             }))
             .route("/train/cancel", post(move || {
@@ -1001,6 +1009,36 @@ mod tests {
         assert_eq!(artifact.metrics.final_loss, Some(2.1));
         assert_eq!(artifact.metrics.trained_tokens, 80);
         server.abort();
+    }
+
+    // what this catches (Codex on #4472): the finish path filing a measured graph under the
+    // depth that was ASKED rather than the depth the engine ADAPTED. An engine without
+    // top_layers ignores it and measures a full-depth graph; filed under |d8, that number
+    // would later be leased for a K=8 run as if it were one. And the gene must carry the
+    // depth the engine reported, never the request's.
+    #[tokio::test]
+    async fn a_finished_run_files_its_graph_and_its_gene_under_the_depth_the_engine_adapted() {
+        for (mode, filed, gene) in [("normal", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v", None), ("depth", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|d8", Some(8))] {
+            let train = tempfile::tempdir().expect("test: dir");
+            let jobs = tempfile::tempdir().expect("test: dir");
+            let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
+            let footprints = jobs.path().join("footprints.json");
+            let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), footprints.clone());
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            r.lora.as_mut().unwrap().top_layers = Some(8);
+            let h = t.create_job(r).await.expect("test: create");
+            let TrainingStatus::Completed { artifact } = wait_terminal(&t, &h).await else {
+                panic!("test: {mode}: not completed");
+            };
+            let body = seen.lock().unwrap().clone().expect("test: /train was posted");
+            assert_eq!(body["top_layers"], 8, "{mode}: the asked depth reaches /train");
+            let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: footprint filed")).unwrap();
+            let keys: Vec<&String> = rows.as_object().unwrap().keys().collect();
+            assert_eq!(keys, vec![filed], "{mode}: filed under the depth the engine adapted");
+            assert_eq!(artifact.metrics.layers_adapted, gene, "{mode}: the gene's depth is the engine's report");
+            server.abort();
+        }
     }
 
     // what this catches: a cancel that reports Cancelled while the engine is still training
