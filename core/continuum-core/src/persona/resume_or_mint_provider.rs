@@ -202,6 +202,18 @@ impl ResumeOrMintProvider {
         }
     }
 
+    /// Publish how many minds this draw has not reached and could still seat: queued
+    /// returns plus the names past the cursor that are NOT resting (the draw skips a
+    /// resting one, so counting her would rotate a resident out only to redraw her —
+    /// Cormac on #4450).
+    fn publish_waiting(&self) {
+        let beyond = self.resumed[self.resumed_cursor.min(self.resumed.len())..]
+            .iter()
+            .filter(|i| !crate::persona::resting_seat::is_resting(&i.agent_name))
+            .count();
+        crate::persona::resting_seat::set_waiting(self.returning.len() + beyond);
+    }
+
     pub fn rewind(&mut self) {
         self.resumed_cursor = 0;
         self.minted_count = 0;
@@ -222,11 +234,8 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         // restart: the cursor walked past her while she rested (card ef25bf6c).
         self.admit_returning(crate::persona::resting_seat::take_returning());
         self.requeue(crate::persona::resting_seat::take_requeued());
-        // Everyone this draw has not reached, counted as if this call takes one.
-        crate::persona::resting_seat::set_waiting(
-            (self.returning.len() + self.resumed.len().saturating_sub(self.resumed_cursor)).saturating_sub(1),
-        );
         if let Some(intent) = self.returning.pop_front() {
+            self.publish_waiting();
             crate::probe!(
                 class = "persona.host.returned",
                 agent = %intent.agent_name,
@@ -239,6 +248,7 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         if self.resumed_cursor < self.resumed.len() {
             let intent = self.resumed[self.resumed_cursor].clone();
             self.resumed_cursor += 1;
+            self.publish_waiting();
             return Ok(Some(intent));
         }
 
@@ -250,6 +260,7 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         if total_yielded < floor {
             let intent = mint_fresh_intent();
             self.minted_count += 1;
+            self.publish_waiting();
             return Ok(Some(intent));
         }
         if let Some(team) = team_elsewhere {
@@ -268,6 +279,7 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         }
 
         // Phase 3: exhausted.
+        self.publish_waiting();
         Ok(None)
     }
 }
