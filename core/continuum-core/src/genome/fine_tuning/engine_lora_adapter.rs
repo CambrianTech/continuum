@@ -605,7 +605,7 @@ mod tests {
             base_model: base.into(),
             trait_kind: "code".into(),
             dataset: TrainingDataset {
-                examples: vec![TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None }],
+                examples: vec![TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None }],
                 source: TrainingSource::OperatorCurated,
                 validation_split: 0.0,
             },
