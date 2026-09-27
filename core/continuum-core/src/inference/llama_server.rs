@@ -1390,6 +1390,10 @@ pub(crate) fn lane_runs_installed_engine(build_info: &str, installed: &str) -> b
 /// (BigMama on 7c5f139d): "this node cannot dream" is read there, never inferred.
 static ENGINE_STALE: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
 
+/// The `from->to` engine pair this core already relaunched a lane for: a second sighting is
+/// reported, never relaunched again (Fable on #4464).
+static ENGINE_CONVERGE_TRIED: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
 /// `from->to` while the serving lane runs an older engine than the installed one; `None`
 /// once it has converged, or when that cannot be known.
 pub fn engine_stale() -> Option<String> {
@@ -3356,17 +3360,38 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 Ok(build) => build,
                 Err(_) => None, // a probe error is "engine OK", as for the window and lanes
             };
-            let engine_ok = match (&served_engine, &installed_engine) {
+            let engine_current = match (&served_engine, &installed_engine) {
                 (Some(lane), Some(installed)) => lane_runs_installed_engine(lane, installed),
                 _ => true,
             };
-            *ENGINE_STALE.lock() = (!engine_ok).then(|| {
-                format!(
-                    "{}->{}",
-                    served_engine.as_deref().unwrap_or(""), // unwrap_or: engine_ok=false implies both are known
-                    installed_engine.as_deref().unwrap_or("") // unwrap_or: as above
-                )
-            });
+            // ONCE PER from->to (Fable on #4464). If the relaunched lane still reports the
+            // old build (its build_info not regenerated, a local merge, a gitdir-file
+            // submodule), relaunching again would put the lane dark on a loop onto the
+            // same binary. The first disagreement relaunches; the same pair seen again only
+            // says so, and the health line keeps `engine_stale` for a human to read.
+            let pair = format!(
+                "{}->{}",
+                served_engine.as_deref().unwrap_or(""), // unwrap_or: only read when !engine_current, where both are known
+                installed_engine.as_deref().unwrap_or("") // unwrap_or: as above
+            );
+            let engine_ok = engine_current || {
+                let mut tried = ENGINE_CONVERGE_TRIED.lock();
+                if tried.as_deref() == Some(pair.as_str()) {
+                    crate::probe!(
+                        class = "serving.engine.converge_failed",
+                        model = target.model_id(),
+                        pair = pair.as_str(),
+                        "the lane still reports an older engine after one relaunch onto the \
+                         installed binary: not relaunching again (a loop would keep it dark); \
+                         engine_stale stays on the health line"
+                    );
+                    true
+                } else {
+                    *tried = Some(pair.clone());
+                    false
+                }
+            };
+            *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
             if !engine_ok {
                 crate::probe!(
                     class = "serving.engine.converged",
