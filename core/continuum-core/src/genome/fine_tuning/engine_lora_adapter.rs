@@ -52,15 +52,18 @@ const POLL: Duration = Duration::from_secs(2);
 /// optimizer, adapter and dataset position on the same resident base (fork #28); when the
 /// last hold drops, it resumes where it stopped. This is how a continual mind trains and
 /// thinks on one set of weights: learning yields to her turns without being thrown away.
-/// Keyed by (scope, reason): the scope is a lane's root, or [`EVERY_LANE`].
-static TRAINING_HOLDS: std::sync::LazyLock<watch::Sender<std::collections::BTreeSet<(String, String)>>> =
-    std::sync::LazyLock::new(|| watch::Sender::new(std::collections::BTreeSet::new()));
+/// One entry per live hold, keyed by a token unique to that hold (Codex on #4485: two holds
+/// with the same reason are two holds; dropping one must not release the other). The value
+/// is (scope, reason): the scope is a lane's root, or [`EVERY_LANE`].
+static TRAINING_HOLDS: std::sync::LazyLock<watch::Sender<BTreeMap<u64, (String, String)>>> =
+    std::sync::LazyLock::new(|| watch::Sender::new(BTreeMap::new()));
+static NEXT_HOLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The scope of a hold on every in-engine run of this node.
 const EVERY_LANE: &str = "*";
 
-/// A standing hold on in-engine training; dropping it releases the hold.
-pub struct TrainingHold((String, String));
+/// A standing hold on in-engine training; dropping it releases this hold and no other.
+pub struct TrainingHold(u64);
 
 impl Drop for TrainingHold {
     fn drop(&mut self) {
@@ -71,24 +74,24 @@ impl Drop for TrainingHold {
 }
 
 /// Pause every in-engine training run on this node until the returned hold is dropped. The
-/// reason names the hold in probes; taking the same reason twice is one hold.
+/// reason names the hold in probes; every call is its own hold.
 pub fn hold_training(reason: &str) -> TrainingHold {
     hold_training_on(EVERY_LANE, reason)
 }
 
 /// Pause the in-engine run on one lane (its root url) until the hold is dropped.
 pub fn hold_training_on(lane: &str, reason: &str) -> TrainingHold {
-    let key = (lane.to_string(), reason.to_string());
+    let token = NEXT_HOLD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     TRAINING_HOLDS.send_modify(|holds| {
-        holds.insert(key.clone());
+        holds.insert(token, (lane.to_string(), reason.to_string()));
     });
-    TrainingHold(key)
+    TrainingHold(token)
 }
 
 /// The reasons holding the run on `lane`: every node-wide hold and every hold on that lane.
-fn holds_on(holds: &std::collections::BTreeSet<(String, String)>, lane: &str) -> Vec<String> {
+fn holds_on(holds: &BTreeMap<u64, (String, String)>, lane: &str) -> Vec<String> {
     holds
-        .iter()
+        .values()
         .filter(|(scope, _)| scope == EVERY_LANE || scope == lane)
         .map(|(_, reason)| reason.clone())
         .collect()
@@ -557,7 +560,9 @@ impl InPlaceRun for EngineRun {
                     // lease stays held throughout, since the paused run keeps its allocation.
                     let reasons = holds_on(&holds.borrow(), &self.lane);
                     self.steer_pause(&s, !reasons.is_empty()).await;
-                    let now_paused = s.pause_requested && s.paused;
+                    // the worker's own state: paused while it waits at a boundary, whatever was
+                    // asked (a resume request clears pause_requested before the worker wakes)
+                    let now_paused = s.paused;
                     if now_paused != was_paused {
                         crate::probe!(
                             class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
@@ -1166,6 +1171,26 @@ mod tests {
             assert_eq!(artifact.metrics.layers_adapted, gene, "{mode}: the gene's depth is the engine's report");
             server.abort();
         }
+    }
+
+    // what this catches (Codex on #4485): two holds sharing a reason collapsing into one, so
+    // dropping either resumed training while the other still stood; and a hold on one lane
+    // reaching another. Each hold is its own; the run stays held until the last one drops.
+    #[test]
+    fn each_hold_is_its_own_and_the_run_stays_held_until_the_last_drops() {
+        let lane = format!("test://holds-{}", Uuid::new_v4());
+        let other = format!("test://holds-{}", Uuid::new_v4());
+        let on = |l: &str| holds_on(&TRAINING_HOLDS.borrow(), l).len();
+        let a = hold_training_on(&lane, "a directed turn is waiting");
+        let b = hold_training_on(&lane, "a directed turn is waiting");
+        let c = hold_training_on(&lane, "a lifecycle drain");
+        assert_eq!((on(&lane), on(&other)), (3, 0), "same reason twice is two holds; another lane is not held");
+        drop(a);
+        assert_eq!(on(&lane), 2, "the same-reason hold still stands");
+        drop(c);
+        assert_eq!(on(&lane), 1);
+        drop(b);
+        assert_eq!(on(&lane), 0, "released only when the last hold drops");
     }
 
     // what this catches (fork #28, Joel: necessary for continual minds): a training hold that
