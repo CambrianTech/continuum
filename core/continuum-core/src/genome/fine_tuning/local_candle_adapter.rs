@@ -300,6 +300,7 @@ mod tests {
                 alpha: 4,
                 dropout: 0.0,
                 target_modules: vec![],
+                top_layers: None,
             }),
             schedule: Some(ScheduleParams {
                 epochs: 2,

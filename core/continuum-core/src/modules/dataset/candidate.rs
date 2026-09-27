@@ -377,6 +377,7 @@ mod tests {
                             alpha: 16,
                             dropout: value as f32,
                             target_modules: vec![],
+                            top_layers: None,
                         })
                     }
                     "schedule.learning_rate" => {

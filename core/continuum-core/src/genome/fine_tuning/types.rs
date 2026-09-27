@@ -321,6 +321,15 @@ pub struct LoRAHyperparams {
     /// Empty `Vec` lets the adapter pick provider defaults
     /// (usually `q_proj` + `v_proj`).
     pub target_modules: Vec<String>,
+    /// Adapt only the last `top_layers` transformer blocks; `None` adapts every block. The
+    /// backward pass stops at the lowest adapted block, so the training graph's memory falls
+    /// roughly linearly with this (fork #27: Qwen2.5-1.5B at window 512, 2576 MiB for all 28
+    /// blocks, 1316 MiB for the last 7). A full-depth 27B run did not fit beside its serving
+    /// context (41.5 GB at window 1536), so a resident dream chooses a depth. Only the
+    /// in-engine trainer reads it; other adapters ignore it and train every block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub top_layers: Option<u32>,
 }
 
 /// Training schedule knobs.
@@ -501,6 +510,12 @@ pub struct JobMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cost_usd: Option<f64>,
+    /// The transformer blocks this adapter actually trained, as the engine reported it after
+    /// the run (not what was asked: an engine without `top_layers` adapts every block). `None`
+    /// = the provider does not say. The promotion gate compares a reduced-depth gene knowing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub layers_adapted: Option<u32>,
 }
 
 #[cfg(test)]
@@ -644,6 +659,7 @@ mod tests {
             alpha: 16,
             dropout: 0.05,
             target_modules: vec!["q_proj".into(), "v_proj".into()],
+            top_layers: None,
         };
         let v = serde_json::to_value(&h).unwrap();
         assert_eq!(v["rank"], 8);

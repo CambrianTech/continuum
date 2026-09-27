@@ -351,6 +351,7 @@ fn map_status(r: JobStatusResponse) -> TrainingStatus {
                         final_validation_loss: None,
                         wall_clock_ms: 0,
                         cost_usd: None,
+                        layers_adapted: None,
                     },
                 },
             }

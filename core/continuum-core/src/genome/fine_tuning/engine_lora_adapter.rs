@@ -93,11 +93,40 @@ struct Shape {
     window: u32,
     rank: u32,
     targets: String,
+    /// The blocks adapted when fewer than all (`top_layers`, fork #27); `None` = every block.
+    /// Depth drives the graph (~linear), so a reduced-depth run is its own shape.
+    #[serde(default)]
+    depth: Option<u32>,
 }
 
 impl Shape {
+    /// Full depth keeps the key every row before depth existed was written under (those
+    /// rows were all full-depth runs); a reduced depth adds `|dK`, so a reduced-depth lookup
+    /// can never land on a full-depth row, nor a full-depth lookup on a reduced one.
     fn key(&self) -> String {
-        format!("{}|w{}|r{}|{}", self.model, self.window, self.rank, self.targets)
+        let base = format!("{}|w{}|r{}|{}", self.model, self.window, self.rank, self.targets);
+        match self.depth {
+            Some(k) => format!("{base}|d{k}"),
+            None => base,
+        }
+    }
+}
+
+/// The window a run trains at: the engine's training context is n_ctx, which rounds up to a
+/// multiple of 256, and a window that is not one reached opt_init's assert and took the
+/// serving process down (fork #27 now refuses it). Rounded DOWN, so the lease never grows past
+/// what was asked; at least one 256-token context.
+fn train_window(sequence_length: u32) -> u32 {
+    ((sequence_length / 256).max(1) * 256).min(8192)
+}
+
+/// The depth a finished run actually adapted, as the shape it is recorded under: the engine's
+/// own `layers_adapted` against its `n_layer`. An engine that reports neither predates
+/// `top_layers` and adapted every block, whatever was asked.
+fn effective_depth(layers_adapted: Option<u32>, n_layer: Option<u32>) -> Option<u32> {
+    match (layers_adapted, n_layer) {
+        (Some(k), Some(n)) if k < n => Some(k),
+        _ => None,
     }
 }
 
@@ -165,6 +194,9 @@ struct TrainRequest {
     lr: f64,
     val_split: f32,
     seed: u32,
+    /// adapt only the last K blocks (fork #27); omitted = every block
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_layers: Option<u32>,
     /// what training may add on the GPU: the job's governed lease, which the engine enforces
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -226,6 +258,12 @@ struct TrainStatus {
     /// the training graph the engine measured before allocating it: this shape's footprint
     #[serde(default)]
     graph_mib: Option<f64>,
+    /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
+    /// that predates `top_layers`, which adapts every block
+    #[serde(default)]
+    n_layer: Option<u32>,
+    #[serde(default)]
+    layers_adapted: Option<u32>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -515,11 +553,23 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
         let id = Uuid::new_v4();
         let out = format!("{id}.gguf");
+        let window = train_window(schedule.sequence_length);
+        if window != schedule.sequence_length {
+            crate::probe!(
+                class = "training.job.window_rounded",
+                asked = schedule.sequence_length as u64,
+                sent = window as u64,
+                "the training window rounded down to a multiple of 256 (the engine's context granularity)"
+            );
+        }
+        // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
+        let depth = lora.top_layers.filter(|&k| k > 0);
         let shape = Shape {
             model: request.base_model.clone(),
-            window: schedule.sequence_length,
+            window,
             rank: lora.rank,
             targets: targets.clone(),
+            depth,
         };
         let val = request.dataset.validation_split.clamp(0.0, 0.5);
         let mut body = TrainRequest {
@@ -528,11 +578,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             rank: lora.rank,
             alpha: lora.alpha,
             targets: targets.clone(),
-            window: schedule.sequence_length,
+            window,
             epochs: schedule.epochs,
             lr: schedule.learning_rate,
             val_split: val,
             seed: 42,
+            top_layers: depth,
             memory_budget_mib: None,
         };
         let measured = self.footprints.get(&shape);
@@ -563,6 +614,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     job = %id,
                     base = shape.model.as_str(),
                     window = shape.window as u64,
+                    depth = shape.depth.map_or(0, u64::from), // probe field: 0 = every block
                     measured = measured.is_some(),
                     memory_bytes = bytes,
                     "engine training: the measured footprint for this shape, or (unmeasured) all governed \
@@ -615,9 +667,30 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     // the footprint this shape needs: the training graph the engine measured before
                     // allocating it (exact, where a VRAM sample could miss the peak)
                     let grown = status.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
+                    // recorded under the depth the engine ACTUALLY adapted: an engine that
+                    // ignored top_layers measured a full-depth graph, and that number must never
+                    // be leased for a reduced-depth run (Codex on #27)
+                    let adapted = effective_depth(status.layers_adapted, status.n_layer);
+                    if adapted != shape.depth {
+                        crate::probe!(
+                            class = "training.job.depth_differs",
+                            job = %id,
+                            asked = shape.depth.map_or(0, u64::from), // probe field: 0 = every block
+                            adapted = adapted.map_or(0, u64::from), // probe field: 0 = every block
+                            "the engine adapted a different depth than was asked (an engine without top_layers adapts every block)"
+                        );
+                    }
+                    let measured_shape = Shape { depth: adapted, ..shape.clone() };
+                    // A depth equal to the model's block count IS full depth (fork #27 refuses one
+                    // past it): filed under the asked key too, or that request would calibrate on
+                    // every run (Cormac on #4472).
+                    let asked_full = matches!((shape.depth, status.n_layer), (Some(k), Some(n)) if k >= n);
                     if grown > 0 {
                         let store = Footprints { path: footprints_path };
-                        if let Err(e) = store.record(&shape, grown, id) {
+                        if asked_full {
+                            let _ = store.record(&shape, grown, id); // best effort: the full-depth row below is the one that matters
+                        }
+                        if let Err(e) = store.record(&measured_shape, grown, id) {
                             crate::probe!(
                                 class = "training.job.footprint_unrecorded",
                                 job = %id,
@@ -636,6 +709,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                             final_loss,
                             final_validation_loss,
                             wall_clock_ms,
+                            layers_adapted: status.layers_adapted.or(status.n_layer),
                             ..Default::default()
                         },
                     })
@@ -724,7 +798,7 @@ mod tests {
                 validation_split: 0.0,
             },
             eval_set: None,
-            lora: Some(LoRAHyperparams { rank: 8, alpha: 16, dropout: 0.0, target_modules: vec!["q_proj".into(), "v_proj".into()] }),
+            lora: Some(LoRAHyperparams { rank: 8, alpha: 16, dropout: 0.0, target_modules: vec!["q_proj".into(), "v_proj".into()], top_layers: None }),
             schedule: Some(ScheduleParams { epochs: 2, batch_size: 1, sequence_length: 256, learning_rate: 1e-5 }),
             local_artifact_dir: None,
             resume_from: None,
@@ -777,8 +851,15 @@ mod tests {
                         return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
                     }
                     std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
-                    axum::Json(json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out,
-                        "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]}))
+                    let mut done = json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out, "graph_mib": 5.0,
+                        "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]});
+                    // an engine with fork #27 reports the depth it adapted; one without says nothing
+                    if mode == "depth" {
+                        let asked = l.body.as_ref().and_then(|b| b.get("top_layers")).and_then(Value::as_u64).unwrap_or(64);
+                        done["n_layer"] = json!(64);
+                        done["layers_adapted"] = json!(asked.min(64));
+                    }
+                    axum::Json(done)
                 }
             }))
             .route("/train/cancel", post(move || {
@@ -930,6 +1011,36 @@ mod tests {
         server.abort();
     }
 
+    // what this catches (Codex on #4472): the finish path filing a measured graph under the
+    // depth that was ASKED rather than the depth the engine ADAPTED. An engine without
+    // top_layers ignores it and measures a full-depth graph; filed under |d8, that number
+    // would later be leased for a K=8 run as if it were one. And the gene must carry the
+    // depth the engine reported, never the request's.
+    #[tokio::test]
+    async fn a_finished_run_files_its_graph_and_its_gene_under_the_depth_the_engine_adapted() {
+        for (mode, filed, gene) in [("normal", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v", None), ("depth", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|d8", Some(8))] {
+            let train = tempfile::tempdir().expect("test: dir");
+            let jobs = tempfile::tempdir().expect("test: dir");
+            let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
+            let footprints = jobs.path().join("footprints.json");
+            let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), footprints.clone());
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            r.lora.as_mut().unwrap().top_layers = Some(8);
+            let h = t.create_job(r).await.expect("test: create");
+            let TrainingStatus::Completed { artifact } = wait_terminal(&t, &h).await else {
+                panic!("test: {mode}: not completed");
+            };
+            let body = seen.lock().unwrap().clone().expect("test: /train was posted");
+            assert_eq!(body["top_layers"], 8, "{mode}: the asked depth reaches /train");
+            let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: footprint filed")).unwrap();
+            let keys: Vec<&String> = rows.as_object().unwrap().keys().collect();
+            assert_eq!(keys, vec![filed], "{mode}: filed under the depth the engine adapted");
+            assert_eq!(artifact.metrics.layers_adapted, gene, "{mode}: the gene's depth is the engine's report");
+            server.abort();
+        }
+    }
+
     // what this catches: a cancel that reports Cancelled while the engine is still training
     // (the lease would be released under a live run). The job must call /train/cancel and
     // report Cancelled only after the engine says the run is cancelled; no adapter survives.
@@ -989,12 +1100,45 @@ mod tests {
     fn a_footprint_keeps_the_largest_observation() {
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints { path: dir.path().join("f.json") };
-        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into() };
+        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None };
         f.record(&s, 900, Uuid::nil()).unwrap();
         f.record(&s, 700, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
         f.record(&s, 1200, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(1200));
+    }
+
+    // what this catches (fork #27, Codex's cases): a footprint leased at the wrong depth. The
+    // graph is ~linear in the blocks adapted, so a K=8 number leased for a full-depth run
+    // under-reserves (the engine then refuses or the node overcommits), and a full-depth number
+    // leased for K=8 locks out a run that fits. A persisted reduced-depth row and a legacy
+    // depthless (full-depth) row must each answer only their own depth, across a reload.
+    #[test]
+    fn a_footprint_answers_only_the_depth_it_was_measured_at() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let path = dir.path().join("f.json");
+        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None };
+        let top8 = Shape { depth: Some(8), ..full.clone() };
+        // a row written before depth existed: the key full depth still reads
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({ "m|w1536|r8|attn_q": { "bytes": 41_500, "measuredAtMs": 0, "job": "legacy" } })).unwrap(),
+        )
+        .unwrap();
+        let f = Footprints { path: path.clone() };
+        assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
+        assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
+        f.record(&top8, 5_200, Uuid::nil()).unwrap();
+        let reloaded = Footprints { path };
+        assert_eq!(reloaded.get(&top8), Some(5_200));
+        assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");
+        // what the engine reported decides the recorded depth: an engine that says nothing
+        // (it predates top_layers) adapted every block, and K = n_layer is every block too
+        assert_eq!(effective_depth(Some(8), Some(64)), Some(8));
+        assert_eq!(effective_depth(Some(64), Some(64)), None);
+        assert_eq!(effective_depth(None, None), None);
+        // the window is a multiple of 256, rounded down, never under one context
+        assert_eq!((train_window(1536), train_window(1600), train_window(100), train_window(9000)), (1536, 1536, 256, 8192));
     }
 
     // what this catches: a request the engine cannot run is refused before any job exists:

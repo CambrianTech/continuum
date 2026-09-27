@@ -68,6 +68,7 @@ pub(super) fn default_lora() -> LoRAHyperparams {
         alpha: 16,
         dropout: 0.0,
         target_modules: vec![],
+        top_layers: None,
     }
 }
 
@@ -379,6 +380,7 @@ fn run_actor(
             final_validation_loss: None,
             wall_clock_ms,
             cost_usd: None,
+            layers_adapted: None,
         },
     };
     let _ = status_tx.send(TrainingStatus::Completed { artifact });
@@ -425,6 +427,7 @@ mod tests {
                 alpha: 4,
                 dropout: 0.0,
                 target_modules: vec![],
+                top_layers: None,
             }),
             output_path,
         }

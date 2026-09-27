@@ -463,6 +463,7 @@ pub(super) fn default_lora() -> LoRAHyperparams {
         alpha: 16,
         dropout: 0.0,
         target_modules: vec!["q_proj".into(), "v_proj".into()],
+        top_layers: None,
     }
 }
 
