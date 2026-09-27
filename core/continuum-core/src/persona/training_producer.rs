@@ -1756,8 +1756,8 @@ fn staged_submission_params(
         "card-credit",
     );
     if let Some(calls) = row.lived.as_deref().filter(|calls| !calls.is_empty()) {
-        params["examples"] = serde_json::to_value(lived_examples(&plan, calls))
-            .map_err(|_| "lived examples could not be serialized")?;
+        let examples = lived_examples(&plan, calls);
+        params["examples"] = serde_json::to_value(&examples).map_err(|_| "lived examples could not be serialized")?; // training-trigger submit boundary: the params ARE the command's wire payload
     }
     params["submissionId"] = json!(row.id);
     Ok(params)
