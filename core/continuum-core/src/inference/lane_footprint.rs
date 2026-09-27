@@ -253,6 +253,101 @@ fn anon_footprint_impl(_pid: u32) -> Option<u64> {
     None
 }
 
+/// The bytes of the model file a lane process was launched with (`-m` / `--model`),
+/// read off the process's own argv and stat'd: the weights it maps. `anon_footprint_of`
+/// excludes mapped files by design, so this is the other half of what the lane holds.
+/// Measured on the IntelMac lane (2026-09-26, card fa21f81f): phys_footprint 6337 MB of
+/// KV + compute, while the weights sat as a clean "mapped file" of 935 MB outside it.
+/// A split GGUF (`…-00001-of-000NN.gguf`) is summed over its parts. `None` = could not
+/// read the argv or stat the file (a dead pid, another platform): never zero.
+pub fn model_file_bytes_of(pid: u32) -> Option<u64> {
+    let args = process_args(pid)?;
+    model_file_bytes(Path::new(model_path_in(&args)?))
+}
+
+/// PURE: the value of `-m` / `--model` (or `--model=…`) in an argv.
+fn model_path_in(args: &[String]) -> Option<&str> {
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "-m" || arg == "--model" {
+            return it.next().map(String::as_str);
+        }
+        if let Some(value) = arg.strip_prefix("--model=") {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// The bytes of a GGUF on disk, summing every part of a split model.
+fn model_file_bytes(path: &Path) -> Option<u64> {
+    let name = path.file_name()?.to_str()?;
+    let Some(split) = name.find("-00001-of-") else {
+        return std::fs::metadata(path).ok().map(|m| m.len());
+    };
+    let (stem, rest) = (&name[..split], &name[split + "-00001-of-".len()..]);
+    let parts: u32 = rest.strip_suffix(".gguf")?.parse().ok()?;
+    let dir = path.parent()?;
+    (1..=parts)
+        .map(|i| {
+            let part = dir.join(format!("{stem}-{i:05}-of-{rest}"));
+            std::fs::metadata(part).ok().map(|m| m.len())
+        })
+        .sum()
+}
+
+#[cfg(target_os = "macos")]
+fn process_args(pid: u32) -> Option<Vec<String>> {
+    // KERN_PROCARGS2: an i32 argc, the exec path, NUL padding, then argc NUL-terminated args.
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    // SAFETY: a size query (null buffer) on a valid mib.
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    // SAFETY: the buffer is `size` writable bytes, as the query returned.
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    parse_procargs2(&buf)
+}
+
+/// PURE: the argv inside a KERN_PROCARGS2 buffer.
+#[cfg(any(target_os = "macos", test))]
+fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?) as usize;
+    let mut rest = &buf[4..];
+    // Skip the exec path and the NUL padding after it.
+    let path_end = rest.iter().position(|b| *b == 0)?;
+    rest = &rest[path_end..];
+    let first = rest.iter().position(|b| *b != 0)?;
+    rest = &rest[first..];
+    let args: Vec<String> = rest
+        .split(|b| *b == 0)
+        .take(argc)
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    (args.len() == argc).then_some(args)
+}
+
+#[cfg(target_os = "linux")]
+fn process_args(pid: u32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(
+        raw.split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_args(_pid: u32) -> Option<Vec<String>> {
+    None
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -385,6 +480,51 @@ mod tests {
 
     // what this catches: reading our own process attributes a positive anonymous
     // footprint on the platforms that can look; a dead pid is "could not look", not zero.
+    // what this catches: card fa21f81f — the serving credit read only the anonymous half
+    // of a lane (phys_footprint excludes mapped files), so the replace-myself budget was
+    // short by the engine's own weights and the plan could only shrink. The weights half is
+    // read off the lane's argv (`-m`), both spellings and a split GGUF, and read LIVE from a
+    // real child process launched with `-m <file>`, so the argv path is proven on this OS.
+    #[test]
+    fn the_lane_weights_are_the_model_file_its_argv_names_split_parts_summed() {
+        let args = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(model_path_in(&args(&["llama-server", "-m", "/w/a.gguf", "--port", "1"])), Some("/w/a.gguf"));
+        assert_eq!(model_path_in(&args(&["llama-server", "--model=/w/b.gguf"])), Some("/w/b.gguf"));
+        assert_eq!(model_path_in(&args(&["llama-server", "--port", "1"])), None);
+
+        // KERN_PROCARGS2 layout: argc, exec path, NUL padding, then the args.
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/bin/llama-server\0\0\0-m\0/w/a.gguf\0ENV=1\0");
+        assert_eq!(parse_procargs2(&buf), Some(args(&["-m", "/w/a.gguf"])));
+
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let whole = dir.path().join("m.gguf");
+        std::fs::write(&whole, vec![0u8; 1000]).unwrap();
+        assert_eq!(model_file_bytes(&whole), Some(1000));
+        for (i, len) in [(1, 300usize), (2, 200), (3, 100)] {
+            std::fs::write(dir.path().join(format!("big-{i:05}-of-00003.gguf")), vec![0u8; len]).unwrap();
+        }
+        assert_eq!(model_file_bytes(&dir.path().join("big-00001-of-00003.gguf")), Some(600));
+        std::fs::remove_file(dir.path().join("big-00003-of-00003.gguf")).unwrap();
+        assert_eq!(model_file_bytes(&dir.path().join("big-00001-of-00003.gguf")), None, "a missing part is no reading");
+
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            // `sh -c '…; true'` keeps sh itself alive (no exec of the last command), so its
+            // argv stays ["sh", "-c", …, "sh", "-m", <file>] for the read.
+            let child = std::process::Command::new("sh")
+                .args(["-c", "sleep 30; true", "sh", "-m"])
+                .arg(&whole)
+                .spawn();
+            let mut child = child.expect("test: spawn a child with -m in its argv");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let read = model_file_bytes_of(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            assert_eq!(read, Some(1000), "the live argv names the file and its size is read");
+        }
+    }
+
     #[test]
     fn our_own_anonymous_footprint_is_positive_and_a_dead_pid_is_none() {
         if cfg!(any(target_os = "macos", target_os = "linux")) {
