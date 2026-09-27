@@ -598,6 +598,7 @@ mod tests {
             pid: 2_147_483_000, // no such process
             started_ms: now_ms - 1_000,
             target_sha: "deadbeef00".into(),
+            renewed_ms: 0,
         };
         crate::runtime::deploy_claim::write(&root, &dead).expect("claim written");
         assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Stop);
@@ -606,6 +607,7 @@ mod tests {
             pid: std::process::id() as i32,
             started_ms: now_ms - 1_000,
             target_sha: "cafef00d00".into(),
+            renewed_ms: 0,
         };
         crate::runtime::deploy_claim::write(&root, &live).expect("claim written");
         assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Deploy(live));
@@ -638,6 +640,7 @@ mod tests {
             pid: 1,
             started_ms: 0,
             target_sha: "abcdef123456789".into(),
+            renewed_ms: 0,
         };
         let h = Handoff {
             written_ms: 60_000,
