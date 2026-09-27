@@ -900,7 +900,28 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
     let mut out = Vec::new();
     for (persona, m) in chosen {
         let saved = flushed.iter().any(|(id, r)| *id == persona && r.is_ok());
+        let Some(runtime) = registry.shutdown_slot(persona).await else {
+            continue; // already gone this tick
+        };
+        let agent_name = runtime.agent_name().to_string();
         let reason = match cause {
+            RestCause::Rotation => {
+                // Not paged out for cause: no resting record, which would keep her out of
+                // the draw. She goes to the back of the draw order and comes round in turn.
+                crate::persona::resting_seat::requeue(&agent_name);
+                crate::probe!(
+                    class = "persona.rotation.rested",
+                    persona = %agent_name,
+                    persona_id = %persona,
+                    resident = h.resident,
+                    lanes = h.lanes,
+                    lane_grants = m.lane_grants,
+                    checkpoint_saved = saved,
+                    "the slow clip: a dormant mind waits and this seat's hour held no act — she yields the seat with her checkpoint and returns in turn"
+                );
+                out.push(agent_name);
+                continue;
+            }
             RestCause::Mindless => format!(
                 "{} of {} speak verdicts this hour were the gate refusing a recital or an envelope; {} acts, 0 writes",
                 m.gate_refused, m.verdicts, m.acts
@@ -910,27 +931,6 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
                 h.resident, h.lanes, h.pulls_deferred, h.pulls, m.lane_grants, m.writes
             ),
         };
-        let Some(runtime) = registry.shutdown_slot(persona).await else {
-            continue; // already gone this tick
-        };
-        let agent_name = runtime.agent_name().to_string();
-        if let RestCause::Rotation = cause {
-            // Not paged out for cause: no resting record, which would keep her out of
-            // the draw. She goes to the back of the draw order and comes round in turn.
-            crate::persona::resting_seat::requeue(&agent_name);
-            crate::probe!(
-                class = "persona.rotation.rested",
-                persona = %agent_name,
-                persona_id = %persona,
-                resident = h.resident,
-                lanes = h.lanes,
-                lane_grants = m.lane_grants,
-                checkpoint_saved = saved,
-                "the slow clip: a dormant mind waits and this seat's hour held no act — she yields the seat with her checkpoint and returns in turn"
-            );
-            out.push(agent_name);
-            continue;
-        }
         let since_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
