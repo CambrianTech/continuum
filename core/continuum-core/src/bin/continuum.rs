@@ -2497,22 +2497,52 @@ fn take_install_lease(root: &Path) -> Result<std::fs::File, String> {
 /// until its owner died, so the release cannot be a line at the end of the happy path.
 struct DeployClaimGuard {
     root: PathBuf,
+    /// Dropping this stops the renewer at once (its wait is a channel receive, not a sleep).
+    stop_renewing: Option<std::sync::mpsc::Sender<()>>,
+    renewer: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DeployClaimGuard {
     /// Best-effort by design: if the claim cannot be written the deploy still proceeds —
     /// losing the guard degrades to the old behaviour (which `deploy-verify` still catches),
     /// whereas refusing to deploy over an unwritable advisory file turns a hint into an outage.
+    ///
+    /// The claim RENEWS while this guard lives (card 2b226917): a thread restamps it every
+    /// `CLAIM_RENEW_EVERY_MS`, so a live deploy's claim never expires on age, however long
+    /// the build takes on a slow node (275 min on the IntelMac, 2026-09-26). A thread, not a
+    /// task: the warm build waits on a blocking `Command::status()` inside this async fn,
+    /// and the renewal must not depend on which runtime worker that blocks.
     fn take(target_sha: &str) -> Option<Self> {
-        use continuum_core::runtime::deploy_claim::{self, DeployClaim};
+        use continuum_core::runtime::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
         let root = continuum_root().ok()?;
+        let pid = std::process::id() as i32;
+        let started = now_ms();
         let claim = DeployClaim {
-            pid: std::process::id() as i32,
-            started_ms: now_ms(),
+            pid,
+            started_ms: started,
             target_sha: target_sha.to_string(),
+            renewed_ms: started,
         };
         match deploy_claim::write(&root, &claim) {
-            Ok(()) => Some(Self { root }),
+            Ok(()) => {
+                let (stop_renewing, stopped) = std::sync::mpsc::channel::<()>();
+                let renew_root = root.clone();
+                let renewer = std::thread::Builder::new()
+                    .name("deploy-claim-renewer".into())
+                    .spawn(move || loop {
+                        match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                if !deploy_claim::renew(&renew_root, pid, now_ms()) {
+                                    return; // no longer ours (or unwritable): stop renewing
+                                }
+                            }
+                            // the guard dropped (Disconnected) or said stop
+                            _ => return,
+                        }
+                    })
+                    .ok();
+                Some(Self { root, stop_renewing: Some(stop_renewing), renewer })
+            }
             Err(e) => {
                 eprintln!(
                     "⚠ could not publish a deploy claim ({e}) — a concurrent command could \
@@ -2526,6 +2556,11 @@ impl DeployClaimGuard {
 
 impl Drop for DeployClaimGuard {
     fn drop(&mut self) {
+        // Stop the renewer FIRST, so it cannot restamp a claim this drop is clearing.
+        drop(self.stop_renewing.take());
+        if let Some(renewer) = self.renewer.take() {
+            let _ = renewer.join();
+        }
         let _ = continuum_core::runtime::deploy_claim::clear(&self.root);
     }
 }

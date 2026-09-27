@@ -85,6 +85,27 @@ pub const CLAIM_MAX_AGE_MS: u64 = 4 * 60 * 60 * 1000;
 /// that the next slow tier quietly falsifies.
 pub const SLOWEST_OBSERVED_BUILD_MS: u64 = 4_197 * 1000;
 
+/// THE CEILING RETURNED, AND AGE WAS NEVER THE RIGHT INSTRUMENT (card 2b226917). Measured on
+/// the IntelMac 2026-09-26: the warm build for 2989557f took **275 min 40 s** ("Finished
+/// release in 275m 40s"). At the 4 h mark the claim read `Expired`, the tracker saw nothing in
+/// flight, and it started a SECOND consumer for the next tip over the live one; the finished
+/// 2989557f build was never handed off, and the node had not deployed for nine hours. Raising
+/// the ceiling again only waits for the next slower build. So a live owner RENEWS its claim
+/// while it works, and a renewing claim expires on SILENCE, not on age: an owner that has
+/// not renewed within [`CLAIM_STALE_MS`] is dead or its pid was recycled (the risk the age
+/// cap existed for, now bounded tighter), however long a live build takes.
+pub const CLAIM_RENEW_EVERY_MS: u64 = 5 * 60 * 1000;
+
+/// A renewing claim with no renewal for this long is abandoned: six missed renewals, so a
+/// stalled scheduler or a sleeping laptop lid does not expire a live deploy, while a
+/// `kill -9`'d owner whose pid is reused frees the gate within half an hour, not four.
+pub const CLAIM_STALE_MS: u64 = 6 * CLAIM_RENEW_EVERY_MS;
+
+/// A renewing claim older than this is abandoned even while it renews: a hung build (the
+/// owner alive, its renewer ticking, nothing progressing) must not block launches forever.
+/// 12 h is 2.6x the slowest build on record (275 min, above).
+pub const CLAIM_HARD_CAP_MS: u64 = 12 * 60 * 60 * 1000;
+
 /// What one deploying process published about itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployClaim {
@@ -94,6 +115,13 @@ pub struct DeployClaim {
     pub started_ms: u64,
     /// The build the deploy intends to ship, for a legible refusal message.
     pub target_sha: String,
+    /// Epoch-ms of the owner's last renewal, set at take and every
+    /// [`CLAIM_RENEW_EVERY_MS`] after. `0` is a claim from a writer that never renews (a CLI
+    /// that predates renewal, still installed while the fleet rolls): it keeps the old age
+    /// rule, [`CLAIM_MAX_AGE_MS`], or a new core would expire an old CLI's live build at
+    /// [`CLAIM_STALE_MS`], which is worse than today.
+    #[serde(default)]
+    pub renewed_ms: u64,
 }
 
 /// The gate an implicit launcher must pass.
@@ -147,7 +175,14 @@ pub fn decide(claim: Option<&DeployClaim>, owner_alive: bool, now_ms: u64) -> De
             why: AbandonReason::OwnerDead,
         };
     }
-    if age_ms >= CLAIM_MAX_AGE_MS {
+    let expired = if claim.renewed_ms == 0 {
+        // A non-renewing writer: the old age rule.
+        age_ms >= CLAIM_MAX_AGE_MS
+    } else {
+        // A renewing writer: silence, or a hung build past the hard cap.
+        now_ms.saturating_sub(claim.renewed_ms) >= CLAIM_STALE_MS || age_ms >= CLAIM_HARD_CAP_MS
+    };
+    if expired {
         return DeployGate::Abandoned {
             pid: claim.pid,
             age_ms,
@@ -181,6 +216,19 @@ pub fn write(root: &Path, claim: &DeployClaim) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("claim.tmp.{}", claim.pid));
     std::fs::write(&tmp, body)?;
     std::fs::rename(&tmp, &path)
+}
+
+/// The owner's renewal: stamp `renewed_ms` on the claim, but only if the claim on disk is
+/// still THIS pid's (another deploy that took the gate after an abandonment is never
+/// overwritten). Returns whether the claim is still ours; the renewer stops when it is not.
+pub fn renew(root: &Path, pid: i32, now_ms: u64) -> bool {
+    match read(root) {
+        Some(mut claim) if claim.pid == pid => {
+            claim.renewed_ms = now_ms;
+            write(root, &claim).is_ok()
+        }
+        _ => false,
+    }
 }
 
 /// Read the current claim, if any. A malformed file reads as None: an unparseable advisory
@@ -233,6 +281,7 @@ mod tests {
             pid,
             started_ms,
             target_sha: "deadbeef".into(),
+            renewed_ms: 0,
         }
     }
 
@@ -306,6 +355,58 @@ mod tests {
     // what this catches: clock skew making a claim instantly "expired". A claim stamped in
     // the future must read as brand new (block), not as maximally old (launch anyway) —
     // an underflow here would silently disable the guard on any box with a skewed clock.
+    // what this catches: card 2b226917 — a LIVE deploy expiring on age. The IntelMac's warm
+    // build for 2989557f took 275 min; at 4 h the claim read Expired, the tracker started a
+    // second consumer over the live one, and the finished build was never handed off. A
+    // renewing claim must block for as long as its owner renews, go stale on silence (a dead
+    // or recycled pid) within CLAIM_STALE_MS, and still yield past the hard cap (a hung build);
+    // a claim from a writer that never renews keeps the old age rule during the roll.
+    #[test]
+    fn a_renewing_claim_blocks_a_slow_build_and_expires_on_silence_not_age() {
+        let min = 60 * 1000;
+        let renewing = |started_ms: u64, renewed_ms: u64| DeployClaim {
+            pid: 4242,
+            started_ms,
+            target_sha: "2989557f".into(),
+            renewed_ms,
+        };
+        // 275 min into the build, renewed a minute ago: still in progress.
+        let now = 275 * min;
+        assert!(decide(Some(&renewing(0, now - min)), true, now).blocks(), "a slow live build must keep the gate");
+        // The same claim silent for CLAIM_STALE_MS: abandoned, and said as Expired.
+        let g = decide(Some(&renewing(0, now - CLAIM_STALE_MS)), true, now);
+        assert!(matches!(g, DeployGate::Abandoned { why: AbandonReason::Expired, .. }), "{g:?}");
+        // Renewing, but past the hard cap: a hung build yields.
+        let hung = CLAIM_HARD_CAP_MS + min;
+        assert!(!decide(Some(&renewing(0, hung - min)), true, hung).blocks(), "a hung build must not block forever");
+        // A non-renewing writer (renewed_ms = 0): the old rule, 3 h blocks, 4 h does not.
+        assert!(decide(Some(&renewing(0, 0)), true, 180 * min).blocks());
+        assert!(!decide(Some(&renewing(0, 0)), true, CLAIM_MAX_AGE_MS).blocks());
+        // The dead owner still wins over any renewal stamp.
+        assert!(matches!(
+            decide(Some(&renewing(0, now)), false, now),
+            DeployGate::Abandoned { why: AbandonReason::OwnerDead, .. }
+        ));
+    }
+
+    // what this catches: the renewer overwriting a claim another deploy took after this
+    // one was abandoned. It restamps only its own pid's claim and reports when it lost it.
+    #[test]
+    fn renew_stamps_only_its_own_claim() {
+        let root = std::env::temp_dir().join(format!("deploy-claim-renew-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut mine = claim(4242, 1_000);
+        mine.renewed_ms = 1_000;
+        write(&root, &mine).expect("write");
+        assert!(renew(&root, 4242, 5_000), "its own claim renews");
+        assert_eq!(read(&root).map(|c| c.renewed_ms), Some(5_000));
+        assert!(!renew(&root, 9999, 6_000), "a foreign pid never restamps");
+        assert_eq!(read(&root).map(|c| (c.pid, c.renewed_ms)), Some((4242, 5_000)));
+        clear(&root).expect("clear");
+        assert!(!renew(&root, 4242, 7_000), "no claim: nothing to renew, and the renewer stops");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_future_stamped_claim_reads_as_new_not_as_ancient() {
         let g = decide(Some(&claim(7, 10_000)), true, 1_000);
