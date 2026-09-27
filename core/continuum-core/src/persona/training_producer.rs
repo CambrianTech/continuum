@@ -1648,7 +1648,20 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             continue;
         }
         let mut submitted = 0usize;
-        for row in &rows {
+        let mut rows = rows;
+        rows.sort_by_key(|r| r.staged_at_ms);
+        for (row, dropped) in across_turns(&rows) {
+            if let Some(reason) = dropped {
+                crate::probe!(
+                    class = "training.credit.loop_dropped",
+                    persona = %persona_name,
+                    card = %card_id,
+                    submission = %row.id,
+                    reason,
+                    "a staged turn that repeats an earlier turn's actions on this card, or took none, is not a training example"
+                );
+                continue;
+            }
             match settle_staged_row(&conn, persona_id, &persona_name, row, passed).await {
                 Ok(true) => submitted += 1,
                 Ok(false) => {}
@@ -1826,6 +1839,35 @@ fn not_a_loop(calls: &[crate::genome::fine_tuning::LivedCall]) -> Vec<&crate::ge
         previous = Some(this);
     }
     kept
+}
+
+/// A card's staged turns, in staging order, each with the reason it is NOT an example
+/// (Kimi's loop rule across turns, card ad107e18). Her real loops were 58 and 84
+/// CONSECUTIVE work turns on one card, each repeating the last with zero acts. A turn
+/// whose actions repeat the turn right before it is the loop, and only the first of the
+/// run stays. Every turn that called no tool counts as the SAME action, so a run of
+/// no-action turns collapses whatever their wording, while a single spoken turn (a
+/// deliverable written as speech) stays, and so does a re-read after an edit (the
+/// verify step): only CONSECUTIVE repeats are the loop (Cormac on #4452). A turn with no
+/// lived record cannot be judged; it settles as before and breaks the run.
+fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<&'static str>)> {
+    let mut previous: Option<Vec<(String, String)>> = None;
+    rows.iter()
+        .map(|row| {
+            let Some(calls) = row.lived.as_deref() else {
+                previous = None;
+                return (row, None);
+            };
+            let actions: Vec<(String, String)> = not_a_loop(calls)
+                .into_iter()
+                .flat_map(|c| c.response.tool_calls.iter().flatten())
+                .map(|t| (t.name.clone(), t.input.to_string()))
+                .collect();
+            let repeat = previous.as_ref() == Some(&actions);
+            previous = Some(actions);
+            (row, repeat.then_some("repeats_the_previous_turn"))
+        })
+        .collect()
 }
 
 async fn settle_staged_row<T: Transport>(
@@ -2946,6 +2988,63 @@ pub(crate) mod tests {
                 )
             })
             .collect()
+    }
+
+    // what this catches: Kimi's real loops (58 and 84 consecutive work turns on one card,
+    // each repeating the last, zero acts) settling as 58 lessons; and the rule reaching
+    // past the loop (Cormac on #4452): a single spoken turn and a verify re-read after an
+    // edit are kept, because only a CONSECUTIVE repeat is the loop.
+    #[test]
+    fn a_loop_across_turns_on_one_card_settles_once() {
+        use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
+        let call = |tool: Option<(&str, serde_json::Value)>| crate::genome::fine_tuning::LivedCall {
+            capture: uuid::Uuid::new_v4().to_string(),
+            request: TextGenerationRequest::default(),
+            response: TextGenerationResponse {
+                text: "thinking it over".into(),
+                finish_reason: crate::ai::FinishReason::Stop,
+                model: "m".into(),
+                provider: "p".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: "r".into(),
+                content: None,
+                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.into(), input }]),
+                reasoning: None,
+                routing: None,
+                error: None,
+                timing: None,
+            },
+        };
+        let card = Uuid::new_v4();
+        let row = |at: u64, lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>| StagedCredit {
+            id: Uuid::new_v4(),
+            card_id: card,
+            claim_id: None,
+            owner: None,
+            role: None,
+            receipts: Vec::new(),
+            served: None,
+            prompt: "p".into(),
+            completion: "c".into(),
+            lived,
+            staged_at_ms: at,
+        };
+        let read = || call(Some(("code/read", json!({"path": "xarray/core/merge.py"}))));
+        let edit = || call(Some(("code/edit", json!({"path": "xarray/core/merge.py"}))));
+        let rows = vec![
+            row(1, Some(vec![read()])),
+            row(2, Some(vec![read()])),                // the loop: repeats the turn before
+            row(3, Some(vec![call(None)])),            // a spoken turn: kept
+            row(4, Some(vec![call(None)])),            // a no-action run collapses
+            row(5, Some(vec![call(None)])),
+            row(6, None),                              // unjudgeable: settles, breaks the run
+            row(7, Some(vec![read(), edit()])),
+            row(8, Some(vec![read()])),                // the verify re-read after the edit: kept
+        ];
+        let verdicts: Vec<Option<&str>> = across_turns(&rows).into_iter().map(|(_, d)| d).collect();
+        let r = Some("repeats_the_previous_turn");
+        assert_eq!(verdicts, vec![None, r, None, r, r, None, None, None]);
     }
 
     // what this catches: a loop trained as lessons (Kimi's rule on card ad107e18: "61 act
