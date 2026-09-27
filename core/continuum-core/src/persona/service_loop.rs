@@ -1642,11 +1642,11 @@ async fn serve_persona_loop_inner(
             crate::persona::training_producer::produce(
                 ctx.identity.peer_id.as_uuid(),
                 ctx.identity.agent_name.clone(),
-                ctx.profile.model_id.clone(),
                 msg.text.clone(),
                 response_text.clone(),
                 // Captured in the cycle arm above, at selection. `None` is an ordinary
-                // conversation and submits immediately, exactly as before.
+                // conversation: it leaves a `training.example.unverified` probe and is NOT
+                // a training example (card 8e3dd206) — only a graded turn is.
                 turn_credit,
                 turn_generation_receipts,
             );

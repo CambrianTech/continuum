@@ -761,7 +761,6 @@ fn snapshot_digest(
 pub fn produce(
     persona_id: Uuid,
     persona_name: String,
-    base_model: String,
     prompt: String,
     completion: String,
     credit: Option<CapturedCredit>,
@@ -770,7 +769,6 @@ pub fn produce(
     produce_with_id(
         persona_id,
         persona_name,
-        base_model,
         prompt,
         completion,
         credit,
@@ -786,18 +784,42 @@ pub fn produce(
 pub fn produce_with_id(
     persona_id: Uuid,
     persona_name: String,
-    base_model: String,
     prompt: String,
     completion: String,
     // The card this turn was rooted at, captured AT SELECTION on her hands.
-    // `Some` routes the turn to STAGING; `None` is ordinary conversation and keeps
-    // the pre-existing immediate-submit behaviour byte-identical.
+    // `Some` routes the turn to STAGING (it submits only if the card settles PASS);
+    // `None` is ordinary conversation and is NOT a training example (card 8e3dd206).
     credit: Option<CapturedCredit>,
     // Every generation this turn dispatched, in order, faults included.
     generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     submission_id: Uuid,
     replaces: Option<Uuid>,
 ) {
+    // AN UNVERIFIED TURN IS NOT A TRAINING EXAMPLE (card 8e3dd206, 2026-09-27).
+    //
+    // This path used to submit every unlinked live turn that cleared a quality floor,
+    // and that floor is a LENGTH score (`0.275 + 0.3 * substance`): nothing in it knows
+    // whether the turn was right. Read on the fleet: the IntelMac's ~10 full buckets were
+    // tool-error echoes, refusals, the same failed `cargo test` output a dozen times, all
+    // at ~0.5 (Cormac); Kimi's 15 "code" examples were her room posts, with the 120-char
+    // stimulus as the whole prompt. Every bucket is an SFT target, so a genome trained on
+    // them learns the failure modes and to write status posts. The Python trainer failing
+    // is the only reason none was ever trained; the in-engine trainer (#4443) will succeed.
+    //
+    // What enters a bucket is a turn credited to a card that settles PASS (the staged
+    // path below), a lesson another citizen deliberately taught, or a curated/teacher
+    // corpus. The whole recorded turn as the example is card ad107e18.
+    let Some(credit) = credit.filter(|c| c.is_card_linked()) else {
+        crate::probe!(
+            class = "training.example.unverified",
+            persona = %persona_name,
+            prompt_chars = prompt.len() as u64,
+            completion_chars = completion.len() as u64,
+            "live turn with no verdict — not a training example (only a graded turn, a taught \
+             lesson or a curated corpus enters a bucket)"
+        );
+        return;
+    };
     let Some(executor) = EXECUTOR.cloned() else {
         // Expected during tests / before boot installs the executor. Named, not
         // silent — but debug, because a turn before install is normal at startup
@@ -811,92 +833,53 @@ pub fn produce_with_id(
 
     tokio::spawn(async move {
         // CARD-LINKED TURNS STAGE. The quality floor and the domain bucket are NOT
-        // decided here for them: `plan` applies the evidence floor and it needs a
-        // verdict, which does not exist until the card settles. Deciding now would
-        // bake in a judgment made without the evidence — the exact conflation this
-        // card exists to remove. Unlinked conversation still takes the immediate
-        // path below, byte-identical.
-        if let Some(credit) = credit.filter(|c| c.is_card_linked()) {
-            // The SAME identity-bearing connection `submit_plan` builds — not a bare
-            // `Connection::new(executor)`, which does not even satisfy `Transport`.
-            // The identity is load-bearing here and not merely for gating: the
-            // `@persona:{name}` handle these writes target resolves AS this persona,
-            // so a connection without her `LocalPersona` would stage her credit
-            // somewhere other than her own store.
-            let conn = Connection::new(InProcessTransport::new(
-                executor,
-                Some(CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(persona_id),
-                )),
-            ));
-            match stage_credit(
-                &conn,
-                &persona_name,
-                &credit,
-                generation_receipts,
-                prompt,
-                completion,
-                submission_id,
-                replaces.as_slice(),
-            )
-            .await
-            {
-                Ok(submission_id) => crate::probe!(
-                    class = "training.credit.staged",
-                    replaced_partial = replaces.is_some(),
-                    persona = %persona_name,
-                    card = %credit.card_id,
-                    submission = %submission_id,
-                    stampable = credit.claim.is_some(),
-                    "card-linked turn staged — it submits only if this card settles PASS"
-                ),
-                // Best-effort like the submit path below: a staging failure must
-                // never touch the turn that already happened. NAMED, not swallowed
-                // — a turn that failed to stage is credit that silently vanished.
-                Err(e) => crate::probe!(
-                    class = "training.credit.stage_failed",
-                    persona = %persona_name,
-                    card = %credit.card_id,
-                    error = %e,
-                    "card-linked turn could NOT be staged — this turn's credit is lost"
-                ),
-            }
-            return;
-        }
-
-        let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
-        crate::modules::citizen_health::note_credit_staged();
-        // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
-        // is the pre-cc34ac0f path, byte-identical.
-        //
-        // THIS IS THE ONLY NON-TEST CALL SITE, and it always passes `None`. There is
-        // no `produce_stamped` and nothing carries a settled card's verdict into this
-        // module, so the stamped path — including the evidence floor in [`plan`] — is
-        // UNREACHABLE in production today. An earlier version of this comment named
-        // `produce_stamped` as if it existed; it does not. Card 0d51573a owns minting
-        // the link (which turns produced which card, in which role) that a stamped
-        // caller would need before it could truthfully stamp anything.
-        let Some(plan) = plan(classifier, &prompt, &completion, None) else {
-            crate::probe!(
-                class = "training.example.skipped",
-                persona = %persona_name,
-                prompt_chars = prompt.len() as u64,
-                completion_chars = completion.len() as u64,
-                "live turn below the training-quality floor — not buffered"
-            );
-            return;
-        };
-        // One submit path, N experience sources — the live turn is the "live-turn"
-        // provenance into the shared flywheel entry.
-        submit_plan(
-            persona_id,
-            persona_name,
-            base_model,
+        // decided here: `plan` applies the evidence floor and it needs a verdict, which
+        // does not exist until the card settles. Deciding now would bake in a judgment
+        // made without the evidence.
+        // The SAME identity-bearing connection `submit_plan` builds — not a bare
+        // `Connection::new(executor)`, which does not even satisfy `Transport`.
+        // The identity is load-bearing here and not merely for gating: the
+        // `@persona:{name}` handle these writes target resolves AS this persona,
+        // so a connection without her `LocalPersona` would stage her credit
+        // somewhere other than her own store.
+        let conn = Connection::new(InProcessTransport::new(
             executor,
-            plan,
-            "live-turn",
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona_id),
+            )),
+        ));
+        match stage_credit(
+            &conn,
+            &persona_name,
+            &credit,
+            generation_receipts,
+            prompt,
+            completion,
+            submission_id,
+            replaces.as_slice(),
         )
-        .await;
+        .await
+        {
+            Ok(submission_id) => crate::probe!(
+                class = "training.credit.staged",
+                replaced_partial = replaces.is_some(),
+                persona = %persona_name,
+                card = %credit.card_id,
+                submission = %submission_id,
+                stampable = credit.claim.is_some(),
+                "card-linked turn staged — it submits only if this card settles PASS"
+            ),
+            // Best-effort: a staging failure must
+            // never touch the turn that already happened. NAMED, not swallowed
+            // — a turn that failed to stage is credit that silently vanished.
+            Err(e) => crate::probe!(
+                class = "training.credit.stage_failed",
+                persona = %persona_name,
+                card = %credit.card_id,
+                error = %e,
+                "card-linked turn could NOT be staged — this turn's credit is lost"
+            ),
+        }
     });
 }
 
