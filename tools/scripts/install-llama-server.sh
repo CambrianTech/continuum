@@ -193,7 +193,9 @@ declare -a CMAKE_ARGS=(
 )
 
 # Parallelism: nproc (Linux) / sysctl (macOS), default 4.
-JOBS="$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+# A warm build beside a CPU-served lane is given one job (card 682a5abf); that budget
+# arrives as CARGO_BUILD_JOBS and holds for the engine build too.
+JOBS="${CARGO_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # A reboot may build from a different worktree. Keep incremental metadata only
 # when it belongs to this source; the native installer uses the same guard.

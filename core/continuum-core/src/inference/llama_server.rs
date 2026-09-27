@@ -1425,14 +1425,39 @@ fn server_bin() -> String {
 /// when the engine is an operator override (`LLAMA_SERVER_BIN`: theirs, not ours to converge)
 /// or no stamp exists: nothing to compare, never a relaunch.
 pub(crate) fn installed_engine_commit() -> Option<String> {
+    let stamp = installed_engine_stamp()?;
+    let commit = stamp.split(':').next()?.trim();
+    (!commit.is_empty()).then(|| commit.to_string())
+}
+
+/// The backend the INSTALLED engine was built for, from the same stamp (`cpu`, `metal`,
+/// `cuda`, ...). `None` for an operator override or a missing stamp.
+pub fn installed_engine_backend() -> Option<String> {
+    let stamp = installed_engine_stamp()?;
+    let backend = stamp.split(':').nth(1)?.trim();
+    (!backend.is_empty()).then(|| backend.to_string())
+}
+
+/// The stamp install-llama-server.sh writes beside the owned engine, trimmed.
+fn installed_engine_stamp() -> Option<String> {
     let bin = server_bin();
     let path = std::path::Path::new(&bin);
     if !path.is_absolute() {
         return None; // a bare PATH lookup: not the owned install
     }
     let stamp = std::fs::read_to_string(path.parent()?.join(".llama-server.stamp")).ok()?;
-    let commit = stamp.trim().split(':').next()?.trim();
-    (!commit.is_empty()).then(|| commit.to_string())
+    Some(stamp.trim().to_string())
+}
+
+/// PURE: the job budget a warm build gets beside a lane served by `backend` (card 682a5abf).
+/// A CPU-served lane runs llama.cpp's default thread count, one per physical core (the core
+/// passes no `--threads`), so it already holds every core. Nice only reorders the queue, it
+/// frees no core, and a build at cargo's default jobs (one per logical CPU) took them anyway:
+/// the IntelMac (6 cores, 12 threads) went three hours at 0 acts with 7 of 11 generations
+/// dropped while it built (2026-09-27, Fable's health reads). So the build gets one job.
+/// A GPU-served lane prefills on its device, not on these cores: no cap, `None`.
+pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
+    (backend == Some("cpu")).then_some(1)
 }
 
 /// PURE: whether a running lane's `/props` `build_info` (`b10765-965d38a90`) names the
@@ -6424,6 +6449,17 @@ mod tests {
         let started = tokio::time::Instant::now();
         assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, condemned_later, |_| {}).await, None);
         assert!(started.elapsed() <= bound, "condemned at the first checkpoint ends it there: {:?}", started.elapsed());
+    }
+
+    // what this catches (card 682a5abf): a warm build beside a CPU-served lane at cargo's
+    // default jobs, taking the cores the lane decodes on (the IntelMac: 3 hours at 0 acts).
+    // A GPU-served or unknown engine keeps the uncapped build.
+    #[test]
+    fn a_warm_build_beside_a_cpu_lane_gets_one_job() {
+        assert_eq!(warm_build_jobs(Some("cpu")), Some(1));
+        assert_eq!(warm_build_jobs(Some("metal")), None);
+        assert_eq!(warm_build_jobs(Some("cuda")), None);
+        assert_eq!(warm_build_jobs(None), None, "no stamp: nothing known, no cap");
     }
 
     // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine
