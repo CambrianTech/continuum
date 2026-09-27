@@ -16,8 +16,9 @@
 //!   chat template, one window each, with loss only on the trained assistant turns.
 //! - admission: a MEASURED footprint per (model, window, rank, targets). A shape never run
 //!   before is admitted by leasing ALL the governed VRAM free right now (nothing else can grow
-//!   into the run) and its peak is measured and recorded, so the next run of that shape leases
-//!   its number. Never a guess: [`crate::forge::training_admission`] refuses unmeasured bytes.
+//!   into the run); the lease goes to the engine as its memory budget, the engine measures the
+//!   training graph before allocating it, and that measurement is recorded, so the next run of
+//!   that shape leases its number. Never a guess: [`crate::forge::training_admission`] refuses unmeasured bytes.
 //! - the artifact leaves the lanes' `--train-dir` (`engine-train`, swept of every file whose job
 //!   is not live) for the job's own directory BEFORE the job goes terminal (Fable's invariant on
 //!   #4438), and is a [`ArtifactFormat::GgufLora`].
@@ -34,7 +35,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -149,6 +149,87 @@ impl Footprints {
     }
 }
 
+/// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
+/// ONCE here instead of assembled field by field at the call site.
+#[derive(Debug, Clone, Serialize)]
+struct TrainRequest {
+    examples: Vec<EngineExample>,
+    /// a bare `<job>.gguf` name; the engine writes it inside the lane's `--train-dir`
+    out: String,
+    rank: u32,
+    alpha: u32,
+    /// GGUF module names, comma-separated
+    targets: String,
+    window: u32,
+    epochs: u32,
+    lr: f64,
+    val_split: f32,
+    seed: u32,
+    /// what training may add on the GPU: the job's governed lease, which the engine enforces
+    /// before allocating (the driver's own free figure is not physical on Windows)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_budget_mib: Option<u64>,
+}
+
+/// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
+/// shape exactly as serving's `wire_messages` framed it, with the tools she was offered).
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum EngineExample {
+    Pair {
+        prompt: String,
+        completion: String,
+    },
+    Conversation {
+        messages: Vec<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tools: Option<Value>,
+    },
+}
+
+/// `GET /train`'s run state. A state this core does not know is `Unknown`, never guessed into
+/// a known one (it counts as possibly running: see `EngineRun::running_ours`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TrainState {
+    Idle,
+    Starting,
+    Running,
+    Done,
+    Cancelled,
+    Error,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EpochReport {
+    train_loss: f64,
+    eval_loss: f64,
+}
+
+/// `GET /train`'s body. `state` is required: a body without one does not parse, and an
+/// unparsable status is retried like a lost one, never read as "not ours".
+#[derive(Debug, Clone, Deserialize)]
+struct TrainStatus {
+    state: TrainState,
+    #[serde(default)]
+    out: Option<String>,
+    #[serde(default)]
+    batch: Option<u64>,
+    #[serde(default)]
+    batch_max: Option<u64>,
+    #[serde(default)]
+    epochs: Vec<EpochReport>,
+    #[serde(default)]
+    trainable_tokens: Option<u64>,
+    /// the training graph the engine measured before allocating it: this shape's footprint
+    #[serde(default)]
+    graph_mib: Option<f64>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
 /// Where the lane serving `base` answers, if one does on this node.
 type LaneResolver = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -213,21 +294,19 @@ impl EngineLoraFineTuner {
 struct EngineRun {
     http: reqwest::Client,
     lane: String,
-    body: Value,
-    out: String,
+    body: TrainRequest,
+    /// where the engine writes this job's adapter (removed if a cancel races a finish)
+    adapter_path: PathBuf,
     epochs: u32,
-    /// The run's last status as the engine reported it (finish reads its losses).
-    last: Arc<Mutex<Option<Value>>>,
-    /// Physical VRAM use sampled through the run (the footprint measurement).
-    peak: Arc<AtomicU64>,
-    daemon: Option<Arc<crate::resources::ResourceDaemon>>,
+    /// The run's last status as the engine reported it (finish reads its losses and footprint).
+    last: Arc<Mutex<Option<TrainStatus>>>,
     /// The governed lease, held for exactly as long as the engine may be running this job's
     /// training: `run` returns only once it has ended there, and the lease drops with `self`.
     _lease: Option<crate::resources::LeaseGuard>,
 }
 
 impl EngineRun {
-    async fn status_once(&self) -> Result<Value, String> {
+    async fn status_once(&self) -> Result<TrainStatus, String> {
         let r = self
             .http
             .get(format!("{}/train", self.lane))
@@ -235,18 +314,12 @@ impl EngineRun {
             .send()
             .await
             .map_err(|e| format!("GET /train on {}: {e}", self.lane))?;
-        let s = r.json::<Value>().await.map_err(|e| format!("GET /train on {}: {e}", self.lane))?;
-        // a body without a state is an unreadable status, retried like a lost one, never read
-        // as "not ours" (which would end the job while the engine trains)
-        if s.get("state").and_then(Value::as_str).is_none() {
-            return Err(format!("GET /train on {}: no training state in {s}", self.lane));
-        }
-        Ok(s)
+        r.json::<TrainStatus>().await.map_err(|e| format!("GET /train on {}: {e}", self.lane))
     }
 
     /// The engine's training status, retried through a silence shorter than [`LANE_SILENCE`].
     /// `Err` means the lane has answered nothing for that long: it is gone, and the run with it.
-    async fn status(&self) -> Result<Value, String> {
+    async fn status(&self) -> Result<TrainStatus, String> {
         let since = tokio::time::Instant::now();
         loop {
             match self.status_once().await {
@@ -262,8 +335,8 @@ impl EngineRun {
     /// True while the engine MAY be running this job's training (it runs one at a time): the
     /// status is ours and not a known end. An unknown state counts as running: releasing the
     /// lease on a state nobody here understands is exactly the unsafe case.
-    fn running_ours(&self, s: &Value) -> bool {
-        self.ours(s) && !matches!(s.get("state").and_then(Value::as_str), Some("done" | "cancelled" | "error"))
+    fn running_ours(&self, s: &TrainStatus) -> bool {
+        self.ours(s) && !matches!(s.state, TrainState::Done | TrainState::Cancelled | TrainState::Error)
     }
 
     /// The one way out of a run that did not finish: make sure the engine is not still training
@@ -291,24 +364,18 @@ impl EngineRun {
         InPlaceEnd::Failed(why)
     }
 
-    fn sample(&self) {
-        if let Some(d) = &self.daemon {
-            self.peak.fetch_max(d.physical_used(crate::resources::ResourceKind::Vram), Ordering::Relaxed);
-        }
-    }
-
     /// The engine runs one training at a time; a status for a different `out` is not ours.
-    fn ours(&self, s: &Value) -> bool {
-        s.get("out").and_then(Value::as_str) == Some(self.out.as_str())
+    fn ours(&self, s: &TrainStatus) -> bool {
+        s.out.as_deref() == Some(self.body.out.as_str())
     }
 }
 
 /// Percent done and the current epoch from an engine status: completed epochs plus the current
 /// epoch's batch fraction.
-fn progress_of(s: &Value, epochs: u32) -> (f32, u32) {
-    let done = s.get("epochs").and_then(Value::as_array).map_or(0, |a| a.len()) as f32;
-    let batch = s.get("batch").and_then(Value::as_f64).unwrap_or(0.0) as f32; // unwrap_or: absent before the first batch — zero of this epoch is the truth
-    let max = s.get("batch_max").and_then(Value::as_f64).unwrap_or(0.0) as f32; // unwrap_or: absent before the first batch
+fn progress_of(s: &TrainStatus, epochs: u32) -> (f32, u32) {
+    let done = s.epochs.len() as f32;
+    let batch = s.batch.unwrap_or(0) as f32; // unwrap_or: absent before the first batch — zero of this epoch is the truth
+    let max = s.batch_max.unwrap_or(0) as f32; // unwrap_or: absent before the first batch
     let frac = if max > 0.0 { (batch / max).min(1.0) } else { 0.0 };
     let pct = if epochs == 0 { 0.0 } else { ((done + frac) / epochs as f32 * 100.0).min(100.0) };
     (pct, done as u32)
@@ -321,7 +388,6 @@ impl InPlaceRun for EngineRun {
     }
 
     async fn run(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
-        self.sample();
         match self
             .http
             .post(format!("{}/train", self.lane))
@@ -352,35 +418,38 @@ impl InPlaceRun for EngineRun {
                 _ = tick.tick() => {}
             }
             if cancelling {
-                // stops at the next training window; Cancelled only once the engine says so
+                // stops at the next training window; Cancelled only once the engine says so. A run
+                // that reached done in the meantime wrote its adapter: a cancelled job keeps none.
                 self.stop_ours().await;
+                let _ = std::fs::remove_file(&self.adapter_path); // absent unless the run finished first
                 return InPlaceEnd::Cancelled;
             }
-            self.sample();
             let s = match self.status().await {
                 Ok(s) => s,
                 Err(e) => return InPlaceEnd::Failed(e), // the lane is gone, and its run with it
             };
             if !self.ours(&s) {
                 // one run at a time: another run in the engine means ours has ended
-                return InPlaceEnd::Failed(format!("the engine's training run is no longer this job's (out {:?})", s.get("out")));
+                return InPlaceEnd::Failed(format!("the engine's training run is no longer this job's (out {:?})", s.out));
             }
-            let state = s.get("state").and_then(Value::as_str).unwrap_or("").to_owned(); // unwrap_or: a status with no state is an unknown state, handled below
             if let Ok(mut last) = self.last.lock() {
                 *last = Some(s.clone());
             }
-            match state.as_str() {
-                "starting" | "running" => {
+            match s.state {
+                TrainState::Starting | TrainState::Running => {
                     let (pct, epoch) = progress_of(&s, self.epochs);
                     progress.running(pct, epoch);
                 }
-                "done" => return InPlaceEnd::Finished,
-                "cancelled" => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
-                "error" => {
-                    let why = s.get("error").and_then(Value::as_str).unwrap_or("no error text"); // unwrap_or: the state alone is the failure
+                TrainState::Done => return InPlaceEnd::Finished,
+                TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
+                TrainState::Error => {
+                    let why = s.error.as_deref().unwrap_or("no error text"); // unwrap_or: the state alone is the failure
                     return InPlaceEnd::Failed(format!("the engine's training run failed: {why}"));
                 }
-                other => return self.failed(format!("the engine reports an unknown training state {other:?}")).await,
+                // idle while ours is named, or a state this core does not know: not a known end
+                TrainState::Idle | TrainState::Unknown => {
+                    return self.failed(format!("the engine reports training state {:?} for this job", s.state)).await
+                }
             }
         }
     }
@@ -453,24 +522,19 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             targets: targets.clone(),
         };
         let val = request.dataset.validation_split.clamp(0.0, 0.5);
-        let examples: Vec<Value> = request
-            .dataset
-            .examples
-            .iter()
-            .map(engine_example)
-            .collect();
-        let body = json!({
-            "examples": examples,
-            "out": out,
-            "rank": lora.rank,
-            "alpha": lora.alpha,
-            "targets": targets,
-            "window": schedule.sequence_length,
-            "epochs": schedule.epochs,
-            "lr": schedule.learning_rate,
-            "val_split": val,
-            "seed": 42,
-        });
+        let mut body = TrainRequest {
+            examples: request.dataset.examples.iter().map(engine_example).collect(),
+            out: out.clone(),
+            rank: lora.rank,
+            alpha: lora.alpha,
+            targets: targets.clone(),
+            window: schedule.sequence_length,
+            epochs: schedule.epochs,
+            lr: schedule.learning_rate,
+            val_split: val,
+            seed: 42,
+            memory_budget_mib: None,
+        };
         let measured = self.footprints.get(&shape);
         let footprints_path = self.footprints.path.clone();
         let http = self.http.clone();
@@ -480,7 +544,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let epochs = schedule.epochs;
         Ok(self.jobs.prepare(id, move |progress| async move {
             let consumer = format!("genome-train:{id}");
-            let (daemon, reservation) = if governed {
+            let reservation = if governed {
                 let daemon = crate::resources::ResourceDaemon::global()
                     .ok_or_else(|| failure("engine training requires the resource governor"))?;
                 // A measured shape leases its number; an unmeasured one is a calibration run
@@ -515,24 +579,20 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 )
                 .await
                 .map_err(FineTuningError::Transient)?;
-                (Some(daemon), Some(reservation))
+                // the engine refuses a graph over the lease before allocating it
+                body.memory_budget_mib = Some(bytes / (1024 * 1024));
+                Some(reservation)
             } else {
-                (None, None)
+                None
             };
             let last = Arc::new(Mutex::new(None));
-            let peak = Arc::new(AtomicU64::new(0));
-            let baseline = daemon
-                .as_ref()
-                .map_or(0, |d| d.physical_used(crate::resources::ResourceKind::Vram));
             let run = EngineRun {
                 http,
                 lane,
                 body,
-                out: out.clone(),
+                adapter_path: train_dir.join(&out),
                 epochs,
                 last: last.clone(),
-                peak: peak.clone(),
-                daemon,
                 _lease: reservation,
             };
             Ok(PreparedJob {
@@ -544,19 +604,17 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                         .ok()
                         .and_then(|l| l.clone())
                         .ok_or("the engine's final status was never read")?;
-                    let epochs_done = status.get("epochs").and_then(Value::as_array).cloned().unwrap_or_default(); // unwrap_or_default: no epochs means no loss, refused just below
-                    let final_loss = epochs_done.last().and_then(|e| e.get("train_loss")).and_then(Value::as_f64);
-                    let final_validation_loss = epochs_done.last().and_then(|e| e.get("eval_loss")).and_then(Value::as_f64);
+                    let final_loss = status.epochs.last().map(|e| e.train_loss);
+                    let final_validation_loss = status.epochs.last().map(|e| e.eval_loss);
                     let trainable = status
-                        .get("trainable_tokens")
-                        .and_then(Value::as_u64)
+                        .trainable_tokens
                         .ok_or("the engine reported no trainable-token count")?;
                     if trainable == 0 || final_loss.is_none_or(|l| !l.is_finite()) {
                         return Err("the engine produced no finite measured learning receipt".into());
                     }
-                    // the footprint this shape needs, measured (peak physical VRAM over the run
-                    // minus what was resident before it)
-                    let grown = peak.load(Ordering::Relaxed).saturating_sub(baseline);
+                    // the footprint this shape needs: the training graph the engine measured before
+                    // allocating it (exact, where a VRAM sample could miss the peak)
+                    let grown = status.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
                     if grown > 0 {
                         let store = Footprints { path: footprints_path };
                         if let Err(e) = store.record(&shape, grown, id) {
@@ -574,7 +632,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                         local_path: Some(adapter),
                         format: ArtifactFormat::GgufLora,
                         metrics: JobMetrics {
-                            trained_tokens: trainable * epochs_done.len() as u64,
+                            trained_tokens: trainable * status.epochs.len() as u64,
                             final_loss,
                             final_validation_loss,
                             wall_clock_ms,
@@ -601,9 +659,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
 /// results as `role: tool`), then her reply with its reasoning and tool calls. Earlier
 /// assistant turns in that history are context (`"train": false`), not this lesson. The tools she was offered ride along so the rendered prompt has the tool
 /// block she saw. Anything else goes as `{prompt, completion}`.
-fn engine_example(e: &TrainingExample) -> Value {
+fn engine_example(e: &TrainingExample) -> EngineExample {
     let Some(call) = e.lived.as_ref() else {
-        return json!({"prompt": e.prompt, "completion": e.completion});
+        return EngineExample::Pair {
+            prompt: e.prompt.clone(),
+            completion: e.completion.clone(),
+        };
     };
     use crate::inference::request_body::{close_trailing_assistant, wire_messages, wire_tool_call};
     // The history exactly as serving framed it; images drop (the trainer is text-only,
@@ -635,11 +696,15 @@ fn engine_example(e: &TrainingExample) -> Value {
         reply["tool_calls"] = json!(calls);
     }
     messages.push(reply);
-    let mut example = json!({"messages": messages});
-    if let Some(tools) = call.request.tools.as_deref().filter(|t| !t.is_empty()) {
-        example["tools"] = json!(crate::inference::request_body::openai_tools(tools));
+    EngineExample::Conversation {
+        messages,
+        tools: call
+            .request
+            .tools
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .map(|tools| json!(crate::inference::request_body::openai_tools(tools))),
     }
-    example
 }
 
 #[cfg(test)]
@@ -804,7 +869,7 @@ mod tests {
             metadata: None,
             lived: Some(super::super::LivedCall { capture: "c".into(), request, response }),
         };
-        let e = engine_example(&lived);
+        let e = serde_json::to_value(engine_example(&lived)).expect("test: wire");
         let m = e["messages"].as_array().expect("test: messages");
         assert_eq!(m.len(), 6);
         assert_eq!((m[0]["role"].as_str(), m[0]["content"].as_str()), (Some("system"), Some("you are Kimi")));
@@ -823,7 +888,7 @@ mod tests {
         let mut tick = lived.clone();
         let call = tick.lived.as_mut().expect("test: lived");
         call.request.messages = vec![ChatMessage::text("user", "go"), ChatMessage::text("assistant", "thinking it over")];
-        let e = engine_example(&tick);
+        let e = serde_json::to_value(engine_example(&tick)).expect("test: wire");
         let m = e["messages"].as_array().expect("test: messages");
         let roles: Vec<&str> = m.iter().filter_map(|x| x["role"].as_str()).collect();
         assert!(
@@ -831,7 +896,7 @@ mod tests {
             "never two assistant turns in a row, as serving never sends them: {roles:?}"
         );
         let plain = TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
-        assert_eq!(engine_example(&plain), json!({"prompt": "p", "completion": "c"}));
+        assert_eq!(serde_json::to_value(engine_example(&plain)).expect("test: wire"), json!({"prompt": "p", "completion": "c"}));
     }
 
     // what this catches: the dispatch end to end against an engine-shaped lane — the request
@@ -952,9 +1017,14 @@ mod tests {
     // epoch's batch fraction, capped at 100.
     #[test]
     fn progress_is_completed_epochs_plus_the_current_batch_fraction() {
-        let s = json!({"epochs": [{}], "batch": 2, "batch_max": 4});
-        assert_eq!(progress_of(&s, 2), (75.0, 1));
-        assert_eq!(progress_of(&json!({}), 2), (0.0, 0));
-        assert_eq!(progress_of(&json!({"epochs": [{}, {}, {}]}), 2).0, 100.0);
+        let st = |v: Value| serde_json::from_value::<TrainStatus>(v).expect("test: status");
+        let e = json!({"train_loss": 2.0, "eval_loss": 2.0});
+        assert_eq!(progress_of(&st(json!({"state": "running", "epochs": [e], "batch": 2, "batch_max": 4})), 2), (75.0, 1));
+        assert_eq!(progress_of(&st(json!({"state": "starting"})), 2), (0.0, 0));
+        assert_eq!(progress_of(&st(json!({"state": "done", "epochs": [e, e, e]})), 2).0, 100.0);
+        // the schema: a status without a state does not parse (retried, never read as "not ours"),
+        // and a state this core does not know is Unknown, not a known one
+        assert!(serde_json::from_value::<TrainStatus>(json!({"out": "x.gguf"})).is_err());
+        assert_eq!(st(json!({"state": "paused"})).state, TrainState::Unknown);
     }
 }
