@@ -1298,22 +1298,7 @@ struct PreparedCoreService {
 impl PreparedCoreService {
     #[cfg(windows)]
     fn run_installer_script(script: &str) -> Result<(), String> {
-        use std::os::windows::process::CommandExt;
-        // Like the existing warm build, this foreground operation completes
-        // before the transaction can release its install lease. In particular,
-        // do not apply the read-only scheduler probe's timeout to registration.
-        let status = std::process::Command::new(Self::shell()?)
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .creation_flags(0x0800_0000)
-            .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format!("installer operation could not start: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "installer operation failed ({status}); see its diagnostics above"
-            ));
-        }
-        Ok(())
+        supervisor_install::run_installer_script(&Self::shell()?, script)
     }
 
     #[cfg(windows)]

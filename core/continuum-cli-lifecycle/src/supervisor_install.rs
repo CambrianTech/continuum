@@ -514,6 +514,40 @@ pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<St
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Run a foreground install operation, keeping build progress on stdout and
+/// returning PowerShell's stderr with a failure. A hidden child's inherited
+/// console handles do not reliably show its errors to the operator.
+/// Unlike scheduler reads, registration/builds have no probe timeout: the child
+/// must finish before its caller releases the install lease.
+#[cfg(windows)]
+pub fn run_installer_script(shell: &std::path::Path, script: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let output = Command::new(shell)
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(0x0800_0000)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("installer operation could not start: {e}"))?;
+    let diagnostic = plain_stderr(&String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        let detail = if diagnostic.is_empty() {
+            "PowerShell returned no stderr; inspect the installer progress output"
+        } else {
+            &diagnostic
+        };
+        return Err(format!("installer operation failed ({}): {detail}", output.status));
+    }
+    // Successful native commands may still have warnings; do not swallow them.
+    if !diagnostic.is_empty() {
+        eprintln!("{diagnostic}");
+    }
+    Ok(())
+}
+
 /// What PowerShell said, as a human line. Under `-NonInteractive -EncodedCommand`
 /// its stderr is CLIXML (`#< CLIXML <Objs …><S S="Error">…</S>`) with CR/LF
 /// spelled `_x000D__x000A_`; a consent refusal reads as a 600-byte XML blob
@@ -904,6 +938,22 @@ mod tests {
             "Start-Process : This command cannot be run due to the error: The operation was canceled by the user."
         );
         assert_eq!(plain_stderr("  Access is denied.\n"), "Access is denied.");
+    }
+
+    // what this catches: the hidden installer child used to return only an exit
+    // code, forcing the operator to rerun the install by hand to see the error.
+    #[cfg(windows)]
+    #[test]
+    fn installer_failure_carries_powershell_diagnostics() {
+        let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows root"))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let error = run_installer_script(&shell, "throw 'installer diagnostic sentinel'")
+            .expect_err("the child throws without running an installer");
+        assert!(error.contains("installer diagnostic sentinel"), "{error}");
+        assert!(error.contains("installer operation failed"), "{error}");
+        let silent = run_installer_script(&shell, "exit 17").expect_err("nonzero exit");
+        assert!(silent.contains("17") && silent.contains("no stderr"), "{silent}");
+        run_installer_script(&shell, "exit 0").expect("successful child");
     }
 
     // what this catches (Fable, review of #4232): the elevated child registers only
