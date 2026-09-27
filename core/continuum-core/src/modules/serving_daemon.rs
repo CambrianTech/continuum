@@ -4206,6 +4206,15 @@ impl ServingDaemonModule {
             // distinguishes a healthy lane from an OOM-poisoned one (control-plane reads
             // stay 200 on a wedged backend). `decode_smoke_ok` is already bounded by
             // `DECODE_SMOKE_TIMEOUT`, so a wedged compute path resolves to `false` fast.
+            // The prefill knee's server-total rate, observe-only (card e370a673): one more
+            // bounded control-plane read per health tick.
+            if let Some(slots) = server.slots_body().await {
+                crate::inference::prefill_knee::observe_slots(
+                    &slots,
+                    crate::persona::trace::now_ms(),
+                    crate::cognition::resource_admission::served_lane_count(),
+                );
+            }
             let ok = server.decode_smoke_ok().await;
             if ok {
                 health_fails.store(0, Ordering::Relaxed);
