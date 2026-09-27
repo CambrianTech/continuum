@@ -244,6 +244,7 @@ mod tests {
                 provider_request_id: Some("served-request".into()),
             },
             capture: None,
+            genes: Vec::new(),
         };
         serde_json::from_value(json!({
             "submissionId": id,

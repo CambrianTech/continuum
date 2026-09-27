@@ -1117,6 +1117,9 @@ impl LlmDeliberationFaculty {
             .clone();
         // How much of this prompt her previous request already held (card 5b09111e).
         crate::cognition::prompt_prefix::observe(self.persona_id, &request);
+        // The genome this turn runs on, read before the request moves: the receipt names it,
+        // so the room's outcome for the turn can be credited to the genes that produced it.
+        let genes = super::provenance::genes_of(request.active_adapters.as_deref());
         let mut capture = self.prompt_capture.as_ref().map(|sink| {
             super::prompt_capture::CaptureLease::start(
                 Arc::clone(sink),
@@ -1474,7 +1477,8 @@ impl LlmDeliberationFaculty {
                     super::provenance::GenerationReceipt::faulted(request_id, error.to_string())
                 }
             }
-            .with_capture(completed.as_deref()),
+            .with_capture(completed.as_deref())
+            .with_genes(genes),
         );
         Some(gen_result)
     }
