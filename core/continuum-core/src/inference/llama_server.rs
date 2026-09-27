@@ -1356,6 +1356,33 @@ fn server_bin() -> String {
     "llama-server".to_string()
 }
 
+/// The engine commit the INSTALLED binary was built from: the stamp install-llama-server.sh
+/// writes beside it (`<commit>:<backend>`, written last, only after the build verified). The
+/// operand a running lane's own `/props` build is compared against (card 7c5f139d). `None`
+/// when the engine is an operator override (`LLAMA_SERVER_BIN`: theirs, not ours to converge)
+/// or no stamp exists: nothing to compare, never a relaunch.
+pub(crate) fn installed_engine_commit() -> Option<String> {
+    let bin = server_bin();
+    let path = std::path::Path::new(&bin);
+    if !path.is_absolute() {
+        return None; // a bare PATH lookup: not the owned install
+    }
+    let stamp = std::fs::read_to_string(path.parent()?.join(".llama-server.stamp")).ok()?;
+    let commit = stamp.trim().split(':').next()?.trim();
+    (!commit.is_empty()).then(|| commit.to_string())
+}
+
+/// PURE: whether a running lane's `/props` `build_info` (`b10765-965d38a90`) names the
+/// installed engine commit. Commits compare by prefix either way (short and full SHAs), so
+/// a lane is stale only when both are known and they disagree.
+pub(crate) fn lane_runs_installed_engine(build_info: &str, installed: &str) -> bool {
+    let lane = build_info.rsplit('-').next().unwrap_or(build_info).trim(); // unwrap_or: rsplit always yields one piece
+    if lane.is_empty() || installed.is_empty() {
+        return true;
+    }
+    lane.starts_with(installed) || installed.starts_with(lane)
+}
+
 /// Published serving state. One model, is it ready, on what `/v1` url. The
 /// daemon owns the `watch::Sender<ServingSnapshot>`; everything downstream
 /// (adapters, operators, a future grid allocator) reads it instead of probing
@@ -2811,6 +2838,14 @@ pub trait LlamaServerControl: Send + Sync {
     /// capacity ([[an-absence-is-an-unfinished-measurement]]).
     async fn served_lanes(&self) -> Result<u32, LlamaServerError>;
 
+    /// The engine build the running server reports (`/props` `build_info`, e.g.
+    /// `b10765-965d38a90`): the fourth adopt-or-relaunch operand, asked of the lane like the
+    /// window and the lanes (card 7c5f139d). `Ok(None)` = the server names none (a fake or
+    /// remote control, or an engine without the field): nothing to compare.
+    async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
+        Ok(None)
+    }
+
     /// The multimodal capabilities the running server ITSELF reports in `/props`
     /// (`modalities.vision` / `modalities.audio`) — the endpoint-side truth of
     /// whether the `--mmproj` projector actually loaded (#106). `Ok(None)` means
@@ -3293,7 +3328,38 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                      re-asked every tick and proceeds once the gate reopens",
                 );
             }
-            if (!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade && !refused_pressure {
+            // THE ENGINE ITSELF — the fourth operand (card 7c5f139d). A deploy installs the
+            // engine the pin names (install-llama-server.sh, stamp-gated, atomic), but every
+            // deploy leaves the lane up for the next core, so an adopted lane keeps running
+            // the binary it was launched from: the M5 and the IntelMac served 965d38a90 (no
+            // /train) for a day while the pin moved to 9733aca6c, and the M5 could not dream.
+            // Asked of the lane like the other three: its `/props` build against the
+            // installed stamp. Unknown on either side (a probe error, no field, an operator
+            // override, no stamp) is "engine OK": never a spurious relaunch. Not a resize, so
+            // neither the trade guard nor the memory gate applies: the relaunch is at the
+            // same size, onto the binary already on disk.
+            let installed_engine = installed_engine_commit();
+            let served_engine = match ctrl.served_engine_build().await {
+                Ok(build) => build,
+                Err(_) => None, // a probe error is "engine OK", as for the window and lanes
+            };
+            let engine_ok = match (&served_engine, &installed_engine) {
+                (Some(lane), Some(installed)) => lane_runs_installed_engine(lane, installed),
+                _ => true,
+            };
+            if !engine_ok {
+                crate::probe!(
+                    class = "serving.engine.converged",
+                    model = target.model_id(),
+                    from = served_engine.as_deref().unwrap_or(""), // probe field: engine_ok=false implies both are known
+                    to = installed_engine.as_deref().unwrap_or(""), // probe field: as above
+                    "the running lane is on an engine older than the installed one: relaunching \
+                     onto the installed binary (same size; a deploy converges the engine too)"
+                );
+            }
+            if !engine_ok
+                || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade && !refused_pressure)
+            {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
@@ -4295,6 +4361,11 @@ impl LlamaServerControl for LlamaServerProcess {
                         .to_string(),
                 )
             })
+    }
+
+    async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
+        let body = self.props_json().await?;
+        Ok(body.get("build_info").and_then(|v| v.as_str()).map(str::to_string))
     }
 
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
@@ -6015,6 +6086,20 @@ mod tests {
         let started = tokio::time::Instant::now();
         assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, stuck, |_| {}).await, None);
         assert!(started.elapsed() <= bound, "processing with nothing moving is stuck at the first checkpoint");
+    }
+
+    // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine
+    // forever — the M5 and IntelMac served b10765-965d38a90 (no /train) while the stamp
+    // moved on. A lane whose /props build names another commit than the installed stamp is
+    // stale; the same commit in short or full form is current; an unknown on either side
+    // is never a relaunch.
+    #[test]
+    fn a_lane_on_an_older_engine_than_the_installed_one_is_stale() {
+        assert!(!lane_runs_installed_engine("b10765-965d38a90", "9733aca6c"), "older engine: relaunch");
+        assert!(lane_runs_installed_engine("b10765-965d38a90", "965d38a90"), "same commit");
+        assert!(lane_runs_installed_engine("b10765-965d38a90", "965d38a900bc82e28900683f9e30f7333cbf3936"), "short vs full SHA");
+        assert!(lane_runs_installed_engine("", "9733aca6c"), "a lane naming no build is not stale");
+        assert!(lane_runs_installed_engine("b10765-965d38a90", ""), "no stamp: nothing to compare");
     }
 
     // what this catches: an engine older than --train-dir being handed the flag (it refuses to
