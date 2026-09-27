@@ -271,9 +271,10 @@ pub(crate) async fn ask_the_act_question(
                                         // turn's restore (IntelMac's review of #3846).
                                         body.working_memory.pin_fact_for_turns("released", &format!(
                                             "[released] The substrate released card {id8} after \
-                                             {acts_without_write} acts of mine without a change to a \
-                                             file — the investigation was long enough. A peer may take \
-                                             it. Pull it again only with a file:line edit in hand."
+                                             {acts_without_write} acts of mine with no edit and no \
+                                             work/note. A peer may take it. If I pull it again, my \
+                                             first acts are a work/note with the file:line I found, \
+                                             then the edit: a note is progress and resets the count."
                                         ), 2);
                                     }
                                 }
