@@ -1761,7 +1761,18 @@ impl Drop for WarmBuildReceipt {
 /// its CPU-served lane: 34 of 34 generations in an hour failed their prefill bound and the
 /// citizens took no turn (Cormac's read of the captures). Background priority costs the
 /// build nothing on an idle machine and hands the cores to serving on a busy one.
+///
+/// Priority alone did not protect a CPU-served lane (card 682a5abf): nice reorders the run
+/// queue but frees no core, and cargo's default jobs (one per logical CPU) took the cores the
+/// lane decodes on. Beside a CPU-served engine the build also takes ONE job
+/// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
+/// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
+/// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
 fn yield_to_serving(cmd: &mut std::process::Command) {
+    let backend = continuum_core::inference::llama_server::installed_engine_backend();
+    if let Some(jobs) = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref()) {
+        cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
+    }
     #[cfg(unix)]
     // SAFETY: the closure runs in the forked child before exec and calls only
     // setpriority, which is async-signal-safe; it touches no memory of the parent.
@@ -1770,6 +1781,9 @@ fn yield_to_serving(cmd: &mut std::process::Command) {
         cmd.pre_exec(|| {
             // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            // The background band, also on the child itself and inherited.
+            #[cfg(target_os = "macos")]
+            libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
             Ok(())
         });
     }
