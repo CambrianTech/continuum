@@ -34,7 +34,7 @@ use continuum_client::{ClientError, Connection};
 use continuum_core::runtime::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use continuum_core::runtime::deploy_provenance::{
-    cli_self_build, cli_staleness_note, deploy_verdict, CliSelfBuild,
+    cli_self_build, cli_staleness_note, deploy_verdict, sha_matches, CliSelfBuild,
 };
 use serde_json::Value;
 
@@ -138,6 +138,16 @@ async fn run() -> Result<(), CliError> {
             env!("CONTINUUM_BUILD_GIT_SHA"),
             env!("CONTINUUM_BUILD_AT"),
         );
+        return Ok(());
+    }
+    // The SHA this CLI was built from, alone on stdout — the same contract as the core's
+    // `--build-sha`, so `install` can pair the slot's CLI with its core (#4382 asked the CLI
+    // and no CLI ever answered: every install on an already-converged core failed there).
+    if first == "--build-sha" {
+        if !rest.is_empty() {
+            return Err(CliError::Command("usage: continuum --build-sha".into()));
+        }
+        println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
         return Ok(());
     }
     // Lifecycle verbs bypass remote command dispatch. Handle their help before
@@ -1487,7 +1497,19 @@ impl PreparedCoreService {
             };
             move_aside_and_copy(&built.path, &slot_core)?;
             if built_cli.is_file() {
-                move_aside_and_copy(&built_cli, &slot_cli)?;
+                // The CLI beside the artifact is only this build's when it says so: a skipped
+                // CLI build leaves an OLDER one there, and staging it rolled every PATH copy
+                // back (install's CLI arm follows the slot).
+                match binary_build_sha(&built_cli).await {
+                    Ok(sha) if sha_matches(&sha, &built.build_sha) => {
+                        move_aside_and_copy(&built_cli, &slot_cli)?;
+                    }
+                    Ok(sha) => println!(
+                        "⚠ the CLI beside the warm artifact is build {sha}, not {} — not staged; the slot's CLI stays as it was",
+                        built.build_sha
+                    ),
+                    Err(e) => println!("⚠ the CLI beside the warm artifact cannot state its build ({e}) — not staged; the slot's CLI stays as it was"),
+                }
             } else {
                 println!(
                     "⚠ no CLI beside the warm artifact ({}) — the slot's CLI stays as it was",
@@ -2007,7 +2029,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 cmd.arg(&script);
                 apply_core_runtime_env(&mut cmd);
                 if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
-                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
                 }
                 println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
                 prebuilt = Some(prepare_warm_build(cmd).await?);
@@ -2607,6 +2629,13 @@ fn home_dir() -> Result<String, String> {
         })
 }
 
+/// The image this CLI runs from, for `CONTINUUM_SKIP_SELF_BUILD`: the build script skips
+/// the CLI only when this IS the file it would write (a locked running image). "1" when the
+/// OS cannot say — the script's unconditional skip, never a build over a running image.
+fn running_cli_image() -> std::ffi::OsString {
+    std::env::current_exe().map_or_else(|_| "1".into(), PathBuf::into_os_string)
+}
+
 /// Ask an on-disk `continuum-core-server` artifact for its embedded build SHA
 /// (`--build-sha`, exits before any socket/side-effect). Loud on any failure — an artifact
 /// that cannot state its provenance cannot anchor a deploy receipt.
@@ -3069,11 +3098,22 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         let task = PreparedCoreService::query().await?;
         let release: CoreServiceDescription =
             serde_json::from_str(&task.description).map_err(|e| e.to_string())?;
-        let cli_sha = binary_build_sha(Path::new(&release.cli)).await?;
-        if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) {
-            return Err(format!("installed CLI reports {cli_sha}, tracked HEAD is {head}; refusing to reuse an unmatched release pair"));
+        // Reuse the installed core only when the slot's CLI is from the same commit. A CLI
+        // that is older, or cannot say what it is, is not a reason to stop: it is drift the
+        // build path below converges (it rebuilds the CLI and stages the pair together).
+        match binary_build_sha(Path::new(&release.cli)).await {
+            Ok(cli_sha) if continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) => {
+                Some(PathBuf::from(release.artifact))
+            }
+            Ok(cli_sha) => {
+                println!("  core: the slot's CLI is build {cli_sha}, HEAD is {head} — rebuilding the pair");
+                None
+            }
+            Err(e) => {
+                println!("  core: the slot's CLI cannot state its build ({e}) — rebuilding the pair");
+                None
+            }
         }
-        Some(PathBuf::from(release.artifact))
     } else {
         None
     };
@@ -4602,7 +4642,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
             // Say it out loud. A skipped build that looks like a completed one is how
             // stale binaries survive a "successful" deploy — #194, one tier up.
             eprintln!("▶ {reason}");
-            cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+            cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
         }
     }
     cmd.env("CONTINUUM_CORE_SOCKET", &socket);
