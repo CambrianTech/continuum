@@ -171,20 +171,7 @@ pub(crate) fn finish_body(
             && cfg.tool_protocol
                 == crate::model_registry::ToolProtocol::NativeFunctionCalling
         {
-            let openai_tools: Vec<Value> = tools
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema
-                        }
-                    })
-                })
-                .collect();
-            body["tools"] = json!(openai_tools);
+            body["tools"] = json!(openai_tools(tools));
 
             // Add tool_choice if specified
             if let Some(choice) = &request.tool_choice {
@@ -229,6 +216,25 @@ pub(crate) fn finish_body(
 /// reduces to clean text + no reasoning). Operates on string content (chat turns);
 /// multimodal/array content is left untouched (a follow-up can append a text part).
 /// No user message → no-op.
+/// The OpenAI `tools` param for a set of tool specs. One mapping: serving sends it,
+/// and the engine trainer sends the same list so a lived turn renders with the tool
+/// block it was served with.
+pub(crate) fn openai_tools(tools: &[crate::ai::types::NativeToolSpec]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema
+                }
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn apply_no_think_switch(messages: &mut [Value]) {
     for m in messages.iter_mut().rev() {
         if m.get("role").and_then(|r| r.as_str()) != Some("user") {
