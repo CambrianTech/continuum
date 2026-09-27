@@ -133,8 +133,8 @@ pub fn cli_staleness_note(
          build {cli_sha}, not {expected} ({expected_source}), and nothing in this run replaced \
          it. Any lifecycle fix that lives in the CLI — `start`/`stop`/`reboot`/`deploy-verify` \
          itself — is NOT deployed on this machine. `continuum reboot` rebuilds and reinstalls \
-         it (except where cli_self_build skips the platform); do that before trusting CLI-side \
-         behaviour."
+         it; on Windows the PATH copies follow the supervisor's slot and only \
+         `continuum install` refreshes them. Do that before trusting CLI-side behaviour."
     ))
 }
 
