@@ -1461,10 +1461,11 @@ pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
 }
 
 /// Free memory at which a warm build beside a serving core runs at cargo's own job count:
-/// rustc's codegen at the default jobs wants ~7 GiB (BigMama, 2026-09-05: test builds
-/// killed at 2.59 GiB free beside a 39 GiB server), and twelve leaves the server, the
-/// citizens and the build their room.
-pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+/// the measured uncapped peak (8.7 GB, every rustc together, the M5 on 2026-09-27) plus the
+/// reserve, rounded up (Cormac on #4479: at 12 the uncapped build would eat into the
+/// reserve). It coincides with where a second budgeted job would start, so between the
+/// floor and here the build takes one job.
+pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 13 * 1024 * 1024 * 1024;
 /// Below that, the build takes fewer jobs instead of refusing: each rustc job (and the
 /// codegen threads the jobserver lends it) is budgeted this much, after a reserve kept for
 /// the citizens and the core. Refusing outright at 12 GiB meant a node whose lane fills its
@@ -6502,7 +6503,9 @@ mod tests {
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024 - 1), Some(1));
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), Some(2));
-        assert_eq!(warm_build_jobs_for_memory(12 * gib), None);
+        assert_eq!(warm_build_jobs_for_memory(12 * gib), Some(1), "under the measured uncapped need");
+        assert_eq!(warm_build_jobs_for_memory(13 * gib), None);
+        assert!(WARM_BUILD_UNCAPPED_FREE_BYTES >= WARM_BUILD_RESERVE_BYTES + 8_700_000_000, "uncapped covers its measured peak plus the reserve");
     }
 
     // what this catches (card 682a5abf): a warm build beside a CPU-served lane at cargo's
