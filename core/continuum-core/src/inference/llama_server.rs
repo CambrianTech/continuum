@@ -966,6 +966,16 @@ pub fn page_geometry_key(per_slot_ctx: u32) -> u32 {
 
 /// The root every geometry dir lives under — the ONE path the disk reporter
 /// tracks and the spawn sweep walks.
+/// Where every lane's `POST /train` writes its adapters (`--train-dir`). One directory
+/// for all lanes: a job names its output `<job-uuid>.gguf`, and the engine trainer moves
+/// the finished adapter into the job's own directory, so this holds only runs in flight
+/// and the leftovers of a crashed one (tracked as `engine-train`, with its eviction
+/// decision in `disk_eviction`). `None` without a home directory: training is then off,
+/// never pointed at a temp dir nothing governs.
+pub fn engine_train_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".continuum").join("cache").join("engine-train"))
+}
+
 pub fn kv_pages_root() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir) // JUSTIFIED unwrap_or_else: no home dir = containerized oddity; pages in tmp still work, and the lane must not fail to spawn over cache placement
@@ -4551,6 +4561,20 @@ impl LlamaServerProcess {
             &target.model.id,
             target.served_total_ctx() / target.parallel_lanes().max(1),
         );
+        // In-engine training is an addition to the lane, never a condition of it: a
+        // directory that cannot be made turns /train off on this launch, says so, and
+        // the lane serves exactly as it would have.
+        let train_dir = engine_train_dir().and_then(|dir| match std::fs::create_dir_all(&dir) {
+            Ok(()) => Some(dir),
+            Err(e) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "engine train dir could not be created; /train is off on this lane"
+                );
+                None
+            }
+        });
         let moe_paths = if target.expert_placement.is_some() {
             moe_glass_box_paths(port)
         } else {
@@ -4563,6 +4587,11 @@ impl LlamaServerProcess {
             receipt
                 .require_absolute(&slot_save_dir)
                 .map_err(LlamaServerError::Spawn)?;
+            if let Some(dir) = &train_dir {
+                receipt
+                    .require_absolute(dir)
+                    .map_err(LlamaServerError::Spawn)?;
+            }
             for path in target
                 .adapters
                 .iter()
@@ -4768,6 +4797,7 @@ impl LlamaServerProcess {
             cpu_only: target.placement == LanePlacement::Cpu,
             chat_template: chat_template.as_deref(),
             loras: &lora_paths,
+            train_dir: train_dir.as_deref(),
             expert_ot: expert_ot.as_deref(),
             host_pinned_tensors: target.model.serving.host_pinned_tensors,
             fit_off: target.model.serving.fit_off,
