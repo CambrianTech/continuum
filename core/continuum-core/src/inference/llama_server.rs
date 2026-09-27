@@ -993,6 +993,66 @@ pub fn engine_train_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("cache").join("engine-train"))
 }
 
+/// PURE: the bare file name a gene is staged under inside the engine's --train-dir, the
+/// only folder `POST /lora-adapters/load` reads (a bare `.gguf` name: no separators, no
+/// "..", no control characters, at most 200 bytes). Keyed by the gene's own file name so the
+/// adapter catalog can be matched back to the genome path; `None` when that name cannot be
+/// made one (the gene then rides a relaunch, as before). The full path's hash rides in the
+/// name, so two genes that share a file name in different folders never collide.
+pub(crate) fn gene_stage_name(gene: &std::path::Path) -> Option<String> {
+    use sha2::Digest;
+    let stem = gene.file_stem()?.to_str()?;
+    let clean: String = stem
+        .chars()
+        .take(120)
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .collect();
+    let digest = sha2::Sha256::digest(gene.as_os_str().as_encoded_bytes());
+    let tag: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    clean
+        .chars()
+        .any(|c| c.is_ascii_alphanumeric())
+        .then(|| format!("gene-{clean}-{tag}.gguf"))
+}
+
+/// One `/lora-adapters/{load,unload}` answer.
+enum LoraPost {
+    Done,
+    /// The engine has no such route: it predates runtime adapter load.
+    NoRoute,
+    /// The adapter is active in a slot that is decoding: retry next tick.
+    Busy,
+}
+
+/// Reading a LoRA's tensors from disk onto the device: seconds for a large one, never the
+/// 5 s probe bound.
+const LORA_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Put `gene` into the engine's --train-dir as `into`: a hard link (no copy, no second
+/// footprint) when both sit on one filesystem, else a copy. An existing file of the same
+/// size is taken as this gene already staged.
+fn stage_gene(gene: &std::path::Path, into: &std::path::Path) -> std::io::Result<()> {
+    let len = std::fs::metadata(gene)?.len();
+    if std::fs::metadata(into).is_ok_and(|m| m.len() == len) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(into); // best effort: a stale file of another size is replaced below
+    std::fs::hard_link(gene, into).or_else(|_| std::fs::copy(gene, into).map(|_| ()))
+}
+
+/// What an in-place genome change came to (card 49b5e806, charter S1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenomeInPlace {
+    /// The running engine now serves the target's adapter set: no relaunch.
+    Adopted,
+    /// This engine cannot load at runtime (no --train-dir, or it predates
+    /// `/lora-adapters/load`), or a gene has no stageable name: relaunch, as before.
+    Unsupported,
+    /// A retiring adapter is active in a turn in flight: nothing changed, ask next tick
+    /// (a relaunch here would kill that turn).
+    Busy,
+}
+
 /// The root every geometry dir lives under — the ONE path the disk reporter
 /// tracks and the spawn sweep walks.
 pub fn kv_pages_root() -> PathBuf {
@@ -2690,6 +2750,17 @@ pub trait LlamaServerControl: Send + Sync {
     /// loaded set is per-request scale and never reaches here.
     async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError>;
 
+    /// Converge the running engine's adapter set onto `target`'s WITHOUT a relaunch:
+    /// load each new gene (dormant until a request gives it a scale) and retire each one
+    /// the target dropped (charter S1, card 49b5e806). The default cannot, so the genome
+    /// change rides a relaunch exactly as before.
+    async fn adopt_genome_in_place(
+        &self,
+        _target: &ServingTarget,
+    ) -> Result<GenomeInPlace, LlamaServerError> {
+        Ok(GenomeInPlace::Unsupported)
+    }
+
     /// (Re)spawn llama-server to serve `target` and block until it is ready.
     /// Switching models is a relaunch — there is no load-by-name API. The
     /// target carries the resolved model AND the host-fit served window, so the
@@ -3149,7 +3220,43 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
         // EQUAL to the target, short-circuiting to AlreadyServing — the exact silent
         // stale-serve the comment promises never happens. Honor the stated policy.
         let genome_matches = match ctrl.active_adapters().await {
-            Ok(active) => active == desired,
+            Ok(active) if active == desired => true,
+            Ok(active) => {
+                // A KNOWN set that differs: the engine takes the change in place (fork #26:
+                // /lora-adapters/load and /unload) instead of a relaunch that kills every
+                // turn in flight and re-prefills every slot (charter S1, card 49b5e806).
+                // Only an engine that cannot falls through to the relaunch.
+                match ctrl.adopt_genome_in_place(target).await {
+                    Ok(GenomeInPlace::Adopted) => {
+                        crate::probe!(
+                            class = "serving.genome.adopted_in_place",
+                            model = target.model_id(),
+                            from = active.len() as u64,
+                            to = desired.len() as u64,
+                            "the gene set changed and the running engine took it: no relaunch"
+                        );
+                        true
+                    }
+                    Ok(GenomeInPlace::Busy) => {
+                        crate::probe!(
+                            class = "serving.genome.in_place_busy",
+                            model = target.model_id(),
+                            "a retiring gene is active in a turn in flight: the change waits a tick"
+                        );
+                        return EnsureOutcome::AlreadyServing;
+                    }
+                    Ok(GenomeInPlace::Unsupported) => false,
+                    Err(e) => {
+                        crate::probe!(
+                            class = "serving.genome.in_place_failed",
+                            model = target.model_id(),
+                            error = %e,
+                            "the in-place gene change failed: relaunching onto the target set"
+                        );
+                        false
+                    }
+                }
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -3586,6 +3693,58 @@ impl LlamaServerProcess {
     /// metadata channel: served window, slot count, modalities, and (fork
     /// 3ca60da3c) measured weight residency. A connection error means nothing is
     /// up (normal pre-spawn) → Unreachable.
+    /// `GET /lora-adapters` as `(id, path)`: the engine's adapter catalog. Retired ids
+    /// are not listed (fork #26).
+    async fn lora_catalog(&self) -> Result<Vec<(i64, String)>, LlamaServerError> {
+        let url = format!("{}/lora-adapters", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!("/lora-adapters status {}", resp.status())));
+        }
+        let body: serde_json::Value =
+            resp.json().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        Ok(body
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|e| {
+                        Some((e.get("id")?.as_i64()?, e.get("path")?.as_str()?.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()) // unwrap_or_default: a non-array body lists nothing loaded
+    }
+
+    /// `POST /lora-adapters/{load,unload}`. 404 = an engine without the route (older than
+    /// fork #26); 503 = the adapter is active in a turn in flight (unload only).
+    async fn lora_post(&self, verb: &str, body: serde_json::Value) -> Result<LoraPost, LlamaServerError> {
+        let url = format!("{}/lora-adapters/{verb}", self.root);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .timeout(LORA_LOAD_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        match resp.status().as_u16() {
+            200..=299 => Ok(LoraPost::Done),
+            404 | 405 => Ok(LoraPost::NoRoute),
+            503 => Ok(LoraPost::Busy),
+            status => {
+                let text = resp.text().await.unwrap_or_default(); // unwrap_or_default: the status alone still names the failure
+                Err(LlamaServerError::Unreachable(format!("/lora-adapters/{verb} status {status}: {text}")))
+            }
+        }
+    }
+
     async fn props_json(&self) -> Result<serde_json::Value, LlamaServerError> {
         let url = format!("{}/props", self.root);
         let resp = self
@@ -4384,6 +4543,62 @@ impl LlamaServerControl for LlamaServerProcess {
         // The set we launched the current child with. llama.cpp exposes no query
         // for `/lora-adapters` contents, so the truthful answer is what WE loaded.
         Ok(self.served_adapters.lock().unwrap().clone())
+    }
+
+    async fn adopt_genome_in_place(
+        &self,
+        target: &ServingTarget,
+    ) -> Result<GenomeInPlace, LlamaServerError> {
+        let Some(dir) = engine_train_dir().filter(|_| engine_accepts_train_dir()) else {
+            return Ok(GenomeInPlace::Unsupported);
+        };
+        let active = self.served_adapters.lock().unwrap().clone();
+        let desired = target.adapter_paths();
+        let added: Vec<&String> = desired.iter().filter(|p| !active.contains(p)).collect();
+        let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
+        let mut staged = Vec::with_capacity(added.len());
+        for gene in &added {
+            let Some(name) = gene_stage_name(std::path::Path::new(gene.as_str())) else {
+                return Ok(GenomeInPlace::Unsupported);
+            };
+            staged.push((PathBuf::from(gene.as_str()), name));
+        }
+        // Retire first: a retire refused because a turn has it active changes nothing, so
+        // the whole change waits a tick rather than half-applying.
+        if !removed.is_empty() {
+            let catalog = self.lora_catalog().await?;
+            for gene in &removed {
+                let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
+                let id = catalog.iter().find_map(|(id, path)| {
+                    let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
+                    (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
+                });
+                let Some(id) = id else { continue }; // not loaded: nothing to retire
+                match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
+                    LoraPost::Done => {
+                        if let Some(name) = &stage {
+                            let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
+                        }
+                    }
+                    LoraPost::Busy => return Ok(GenomeInPlace::Busy),
+                    LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
+                }
+            }
+        }
+        for (gene, name) in staged {
+            let into = dir.join(&name);
+            tokio::task::spawn_blocking(move || stage_gene(&gene, &into))
+                .await
+                .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
+                .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
+            match self.lora_post("load", serde_json::json!({ "name": name })).await? {
+                LoraPost::Done => {}
+                LoraPost::Busy => return Ok(GenomeInPlace::Busy),
+                LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
+            }
+        }
+        *self.served_adapters.lock().unwrap() = desired;
+        Ok(GenomeInPlace::Adopted)
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
@@ -7667,6 +7882,9 @@ mod tests {
         /// target > served + tolerance) is a no-op for the model/adapter/decode
         /// tests; a grow-relaunch test sets it BELOW the target explicitly.
         served_window: u32,
+        /// What an in-place genome change comes to. Defaults to `Unsupported`, the
+        /// engine every pre-S1 test modelled: a genome change relaunches.
+        in_place: GenomeInPlace,
     }
 
     impl FakeControl {
@@ -7683,7 +7901,12 @@ mod tests {
                 owns: false,
                 served_lanes: 0,
                 served_window: 32768,
+                in_place: GenomeInPlace::Unsupported,
             }
+        }
+        fn with_in_place(mut self, outcome: GenomeInPlace) -> Self {
+            self.in_place = outcome;
+            self
         }
         /// Model a lane whose live per-slot window is SMALLER than the plan target —
         /// the starved boot-floor case the window-grow relaunch must catch.
@@ -7749,6 +7972,12 @@ mod tests {
         }
         async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
             Ok(self.active_adapters.clone())
+        }
+        async fn adopt_genome_in_place(
+            &self,
+            _target: &ServingTarget,
+        ) -> Result<GenomeInPlace, LlamaServerError> {
+            Ok(self.in_place)
         }
         async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
@@ -8268,6 +8497,33 @@ mod tests {
             1,
             "new gene must relaunch to repopulate the catalog"
         );
+    }
+
+    // what this catches (charter S1, card 49b5e806): a new gene on an engine that loads at
+    // runtime relaunching anyway, killing every turn in flight; and a retire refused
+    // because a turn holds the gene turning into that same relaunch instead of a wait.
+    #[tokio::test]
+    async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
+        for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
+            let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+                .with_active_adapters(vec!["/genes/a.gguf".into()])
+                .with_in_place(outcome);
+            let got = ensure_model_serving(
+                &ctrl,
+                &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]),
+                false,
+            )
+            .await;
+            assert_eq!(got, EnsureOutcome::AlreadyServing, "{outcome:?}");
+            assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{outcome:?}: no relaunch");
+        }
+        // The staged name: a bare .gguf the engine's confinement accepts, and two genes
+        // sharing a file name in different folders never collide.
+        let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")).expect("stageable");
+        let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf")).expect("stageable");
+        assert_ne!(a, b);
+        assert!(a.starts_with("gene-adapter-") && a.ends_with(".gguf"));
+        assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
     }
 
     // what this catches: nothing running (Unreachable) is NOT an error — it's
