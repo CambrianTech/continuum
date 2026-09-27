@@ -464,6 +464,11 @@ pub(crate) async fn ask_the_act_question(
                     // this card names the same genes (`GenerationReceipt::genes`).
                     let persona_uuid = ctx.identity.peer_id.as_uuid();
                     let card_uuid = held.first().map(|card| card.card_id.as_uuid());
+                    // Whatever ends this turn (settled, cancelled, a panic unwinding), her
+                    // genome goes back to what she had before it: a trial gene never leaks onto
+                    // her conversation turns (Cormac on #4474).
+                    let mut genome_back =
+                        crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
                     if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, card_uuid) {
                         crate::probe!(
                             class = "persona.genome.card_genes",
@@ -491,10 +496,11 @@ pub(crate) async fn ask_the_act_question(
                     )
                     .await;
                     // Her genome between cards is her promoted genome alone: a trial gene
-                    // rides only the cards that drew it.
+                    // rides only the cards that drew it. Unreadable: the pre-turn snapshot.
                     if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, None) {
-                        cycle.page_in(genes);
+                        genome_back.restore_to(genes);
                     }
+                    drop(genome_back);
                     // Give her back her own hands BEFORE anything else can
                     // observe them — every exit path from here (Spoke, Passed,
                     // Acted) must leave her rooted at home (#312).

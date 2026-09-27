@@ -136,6 +136,32 @@ pub fn live_genes(persona: Uuid, card: Option<Uuid>) -> Option<Vec<ActiveAdapter
     }
 }
 
+/// Puts her genome back when a work turn ends, however it ends: the snapshot taken before
+/// the turn by default, or her promoted genome when the turn got far enough to say so.
+/// Restores on drop, so a cancelled or unwinding turn cannot leave a trial gene on her
+/// cycle for the conversation turns that follow.
+pub struct GenomeRestore {
+    cycle: std::sync::Arc<crate::cognition::workspace::WorkspaceCycle>,
+    to: Vec<ActiveAdapterRequest>,
+}
+
+impl GenomeRestore {
+    pub fn snapshot(cycle: std::sync::Arc<crate::cognition::workspace::WorkspaceCycle>) -> Self {
+        let to = cycle.genome();
+        Self { cycle, to }
+    }
+
+    pub fn restore_to(&mut self, genes: Vec<ActiveAdapterRequest>) {
+        self.to = genes;
+    }
+}
+
+impl Drop for GenomeRestore {
+    fn drop(&mut self) {
+        self.cycle.page_in(std::mem::take(&mut self.to));
+    }
+}
+
 /// The trial file.
 pub struct GeneTrials {
     path: PathBuf,
