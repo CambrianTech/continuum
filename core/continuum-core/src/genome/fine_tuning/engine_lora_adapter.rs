@@ -596,41 +596,40 @@ impl FineTuningAdapter for EngineLoraFineTuner {
 }
 
 /// One example as `/train` reads it. A lived call goes as its served conversation: the
-/// system prompt, every served message, and her reply with its reasoning and tool calls.
-/// Earlier assistant turns in that history are context (`"train": false`), not this
-/// lesson. The tools she was offered ride along so the rendered prompt has the tool
+/// system prompt and every served message framed exactly as serving framed them
+/// ([`crate::inference::request_body::wire_messages`]: her earlier tool calls kept, tool
+/// results as `role: tool`), then her reply with its reasoning and tool calls. Earlier
+/// assistant turns in that history are context (`"train": false`), not this lesson. The tools she was offered ride along so the rendered prompt has the tool
 /// block she saw. Anything else goes as `{prompt, completion}`.
 fn engine_example(e: &TrainingExample) -> Value {
     let Some(call) = e.lived.as_ref() else {
         return json!({"prompt": e.prompt, "completion": e.completion});
     };
-    let mut messages = Vec::with_capacity(call.request.messages.len() + 2);
-    if let Some(system) = call.request.system_prompt.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(json!({"role": "system", "content": system}));
-    }
-    for m in &call.request.messages {
-        let mut msg = json!({"role": m.role, "content": m.content_text()});
-        if m.role == "assistant" {
-            msg["train"] = json!(false);
-        }
-        messages.push(msg);
+    use crate::inference::request_body::{wire_messages, wire_tool_call};
+    // The history exactly as serving framed it; images drop (the trainer is text-only,
+    // and a text model was served the description bridge anyway).
+    let mut messages = wire_messages(
+        &call.request.messages,
+        call.request.system_prompt.as_deref(),
+        false,
+        PROVIDER_ID,
+    );
+    for m in messages.iter_mut().filter(|m| m["role"] == "assistant") {
+        m["train"] = json!(false);
     }
     let r = &call.response;
+    let calls: Vec<Value> = r
+        .tool_calls
+        .iter()
+        .flatten()
+        .map(|c| wire_tool_call(&c.id, &c.name, &c.input))
+        .collect();
     let mut reply = json!({"role": "assistant", "content": r.text});
     if let Some(reasoning) = r.reasoning.as_deref().filter(|s| !s.is_empty()) {
         reply["reasoning_content"] = json!(reasoning);
     }
-    if let Some(calls) = r.tool_calls.as_ref().filter(|c| !c.is_empty()) {
-        reply["tool_calls"] = calls
-            .iter()
-            .map(|c| {
-                json!({
-                    "type": "function",
-                    "id": c.id,
-                    "function": {"name": c.name, "arguments": c.input.to_string()}
-                })
-            })
-            .collect();
+    if !calls.is_empty() {
+        reply["tool_calls"] = json!(calls);
     }
     messages.push(reply);
     let mut example = json!({"messages": messages});
@@ -749,12 +748,29 @@ mod tests {
     // she was offered must ride along so the prompt renders with its tool block.
     #[test]
     fn a_lived_call_is_sent_as_its_served_conversation_with_only_her_reply_trained() {
-        use crate::ai::types::{ChatMessage, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
+        use crate::ai::types::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
         let request = TextGenerationRequest {
             system_prompt: Some("you are Kimi".into()),
             messages: vec![
                 ChatMessage::text("user", "the build is red"),
-                ChatMessage::text("assistant", "earlier: I will look"),
+                ChatMessage {
+                    role: "assistant".into(),
+                    content: MessageContent::Parts(vec![ContentPart::ToolUse {
+                        id: "t0".into(),
+                        name: "code/run".into(),
+                        input: json!({"cmd": "cargo test"}),
+                    }]),
+                    name: None,
+                },
+                ChatMessage {
+                    role: "user".into(),
+                    content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                        tool_use_id: "t0".into(),
+                        content: "1 failed".into(),
+                        is_error: None,
+                    }]),
+                    name: None,
+                },
                 ChatMessage::text("user", "card: fix it"),
             ],
             tools: Some(vec![serde_json::from_value::<NativeToolSpec>(json!({
@@ -787,10 +803,14 @@ mod tests {
         };
         let e = engine_example(&lived);
         let m = e["messages"].as_array().expect("test: messages");
-        assert_eq!(m.len(), 5);
+        assert_eq!(m.len(), 6);
         assert_eq!((m[0]["role"].as_str(), m[0]["content"].as_str()), (Some("system"), Some("you are Kimi")));
-        assert_eq!(m[2]["train"], json!(false), "her earlier reply is context, not this lesson");
-        let reply = &m[4];
+        // the history is the one serving sent: her earlier act keeps its tool call, and its
+        // result is a tool message bound to that call (Cormac on #4445)
+        assert_eq!(m[2]["tool_calls"][0]["function"]["name"], "code/run");
+        assert_eq!(m[2]["train"], json!(false), "her earlier act is context, not this lesson");
+        assert_eq!((m[3]["role"].as_str(), m[3]["tool_call_id"].as_str()), (Some("tool"), Some("t0")));
+        let reply = &m[5];
         assert!(reply.get("train").is_none(), "the reply is trained");
         assert_eq!(reply["reasoning_content"], "read before guessing");
         assert_eq!(reply["tool_calls"][0]["function"]["name"], "code/read");
