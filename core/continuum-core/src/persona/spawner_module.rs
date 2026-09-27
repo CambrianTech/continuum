@@ -640,6 +640,10 @@ async fn draw_intents(
                 continue;
             }
         }
+        crate::persona::resting_seat::note_seated(
+            &intent.agent_name,
+            chrono::Utc::now().timestamp_millis().max(0) as u64,
+        );
         intents.push(intent);
     }
     // A DERIVED hold (a working round's team) seats its names FIRST and everyone else
