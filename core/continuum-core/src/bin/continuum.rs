@@ -1733,11 +1733,39 @@ impl Drop for WarmBuildReceipt {
     }
 }
 
+/// A warm build runs BESIDE a serving core by definition, so it yields the CPU to it: the
+/// lowest scheduling priority, inherited by cargo and every rustc it starts. At equal
+/// priority a deploy build on the IntelMac (2026-09-27, ~10 h, load 25 on 12 cores) starved
+/// its CPU-served lane: 34 of 34 generations in an hour failed their prefill bound and the
+/// citizens took no turn (Cormac's read of the captures). Background priority costs the
+/// build nothing on an idle machine and hands the cores to serving on a busy one.
+fn yield_to_serving(cmd: &mut std::process::Command) {
+    #[cfg(unix)]
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // setpriority, which is async-signal-safe; it touches no memory of the parent.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
+            libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            Ok(())
+        });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Children of a below-normal process inherit its class by default.
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+    }
+}
+
 async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCore, String> {
     let receipt = WarmBuildReceipt::create()?;
     cmd.env("CONTINUUM_BUILD_ONLY", "1")
         .env("CONTINUUM_BUILD_RECEIPT", &receipt.0)
         .stdin(Stdio::null());
+    yield_to_serving(&mut cmd);
     // Under the deploy consumer there is no terminal: the build's output goes to the
     // consumer's log, or a failing build leaves no reason anywhere (2026-09-19, the
     // 5090's first unattended deploy: 30 minutes of rustc, then nothing to read).
@@ -6519,6 +6547,20 @@ mod tests {
     }
 
     use super::*;
+
+    // what this catches: a warm build at normal priority beside a serving core, the
+    // contention that starved the IntelMac's CPU lane for ~10 h (2026-09-27). A child
+    // spawned through yield_to_serving must run at the lowest priority, where cargo and
+    // rustc inherit it.
+    #[cfg(unix)]
+    #[test]
+    fn a_warm_build_runs_at_the_lowest_priority_beside_the_serving_core() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "nice"]);
+        yield_to_serving(&mut cmd);
+        let out = cmd.output().expect("test: sh runs");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "19");
+    }
 
     // what this catches (2026-09-13): a warm build attempted without headroom (starving the
     // serving core, Joel 08-23) or without a build definition; and a refusal that does not
