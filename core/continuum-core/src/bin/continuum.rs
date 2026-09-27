@@ -3419,7 +3419,10 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     let tip = read_deploy_request_tip(&request_path);
     let running = running_build_sha().await;
     let repo = tracked_repo_dir()?;
-    let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
+    // Submodule pointers are not an operator's work here: aligning them to the tip's gitlinks
+    // is this consumer's own job (below), and counting a stale one as dirt wedged the node
+    // after the first pin bump (2026-09-27: every later tip refused as "uncommitted work").
+    let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"])?.is_empty();
     // The deploy claim is the tracker's own input (`deploy_claim::in_flight`): a live
     // owner under the ceiling blocks; an abandoned claim is swept by `reboot` itself.
     let build_in_flight = continuum_root()
@@ -3459,6 +3462,12 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
             let attempt = async {
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
+                // A checkout moves gitlinks, not submodule trees. Without this the llama.cpp
+                // pin moved in the index while the engine source stayed at the old commit
+                // (2026-09-27, #4437: the core deployed, core/vendor/llama.cpp stayed at
+                // 965d38a90). Initialized submodules only, so a deploy never starts a fresh
+                // clone; a submodule with local changes fails this loudly instead of losing them.
+                git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
                 // The warm build locates tools/scripts/start-server.sh by walking UP FROM
                 // THE CWD, and a scheduled task starts in System32 — the same wall the
                 // Macs' launchd tracker hit ("under launchd the cwd is /; continuum reboot
