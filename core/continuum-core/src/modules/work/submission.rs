@@ -243,11 +243,23 @@ fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    let Some(refs) = git(&["for-each-ref", "--format=%(objectname)", "refs/remotes"]) else {
+    let Some(refs) = git(&["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/remotes"]) else {
         return created.to_string();
     };
+    // Her OWN branch on a remote is not upstream (Cormac on #4442): the runtime pushes her
+    // branch after each act, so refs/remotes/<remote>/<her branch> is her own tip, the ref
+    // furthest past the creation base, and choosing it would make every submission empty.
+    // Skip the current branch's remote copies and its configured upstream.
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default(); // unwrap_or_default: a detached HEAD has no branch to exclude
+    let tracked = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default(); // unwrap_or_default: no upstream configured
     let mut best: Option<(u64, String)> = None;
-    for r in refs.lines().filter(|l| !l.is_empty()) {
+    for line in refs.lines().filter(|l| !l.is_empty()) {
+        let Some((name, r)) = line.split_once(' ') else { continue };
+        let ours = (!branch.is_empty() && name.split_once('/').is_some_and(|(_, b)| b == branch))
+            || (!tracked.is_empty() && name == tracked);
+        if ours || name.ends_with("/HEAD") {
+            continue;
+        }
         let Some(mb) = git(&["merge-base", "HEAD", r]) else { continue };
         if git(&["merge-base", "--is-ancestor", created, &mb]).is_none() {
             continue; // this remote does not descend from where her work began
@@ -1128,6 +1140,11 @@ mod tests {
         assert!(run(&["add", "hers.rs"]).status.success());
         let _mine = commit("her change");
         assert_eq!(super::past_upstream(dir.path(), &created), upstream, "the base moves past what upstream carries");
+        // her own branch pushed to the remote is NOT upstream (Cormac on #4442): the runtime
+        // pushes after each act, and that ref sits at her own tip
+        let branch = String::from_utf8(run(&["symbolic-ref", "--short", "HEAD"]).stdout).expect("branch").trim().to_string();
+        assert!(run(&["update-ref", &format!("refs/remotes/origin/{branch}"), "HEAD"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created), upstream, "her own pushed tip never becomes the base");
         // a remote that does not descend from the creation base is ignored
         assert!(run(&["update-ref", "refs/remotes/origin/stale", &created]).status.success());
         assert_eq!(super::past_upstream(dir.path(), &created), upstream);
