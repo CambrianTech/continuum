@@ -119,9 +119,36 @@ impl DeployBuildConsumer {
                 let cmd = p.cmd().iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
                 is_deploy_build_process(&p.name().to_string_lossy(), &cmd, &self.roots)
             })
-            .map(|p| p.memory())
+            .map(process_bytes)
             .fold(0u64, |acc, b| acc.saturating_add(b))
     }
+}
+
+/// What one build process holds. On macOS its physical footprint: RSS drops compressed
+/// pages, and a rustc under memory pressure is mostly compressed (Cormac, 2026-09-27: the
+/// IntelMac's continuum_core rustc read 1.16 GB RSS against a 9.25 GB phys_footprint_peak).
+/// Elsewhere, RSS.
+fn process_bytes(p: &sysinfo::Process) -> u64 {
+    #[cfg(target_os = "macos")]
+    if let Some(bytes) = phys_footprint(p.pid().as_u32()) {
+        return bytes;
+    }
+    p.memory()
+}
+
+#[cfg(target_os = "macos")]
+fn phys_footprint(pid: u32) -> Option<u64> {
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() }; // SAFETY: a plain C struct of integers; all-zero is a valid value
+    // SAFETY: `info` is a live rusage_info_v2, the layout RUSAGE_INFO_V2 names; the kernel
+    // writes at most that struct into it.
+    let rc = unsafe {
+        libc::proc_pid_rusage(
+            pid as libc::c_int,
+            libc::RUSAGE_INFO_V2,
+            &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t,
+        )
+    };
+    (rc == 0).then_some(info.ri_phys_footprint)
 }
 
 #[async_trait]

@@ -1462,11 +1462,11 @@ pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
 }
 
 /// Free memory at which a warm build beside a serving core runs at cargo's own job count:
-/// the measured uncapped peak (8.7 GB, every rustc together, the M5 on 2026-09-27) plus the
-/// reserve, rounded up (Cormac on #4479: at 12 the uncapped build would eat into the
-/// reserve). It coincides with where a second budgeted job would start, so between the
-/// floor and here the build takes one job.
-pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 13 * 1024 * 1024 * 1024;
+/// the first job's measured footprint plus one further job plus the reserve. Provisional
+/// until an uncapped build is measured by physical footprint (RSS undercounted it); it
+/// coincides with where a second budgeted job would start, so between the floor and here
+/// the build takes one job.
+pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// Below that, the build takes fewer jobs instead of refusing: each rustc job (and the
 /// codegen threads the jobserver lends it) is budgeted this much, after a reserve kept for
 /// the citizens and the core. Refusing outright at 12 GiB meant a node whose lane fills its
@@ -1474,12 +1474,12 @@ pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 13 * 1024 * 1024 * 1024;
 /// 4.4 GB) sat at 10.4 GiB free, and every tracker pass from 19:33Z on 2026-09-27 was
 /// refused, leaving it on c9ee8b1cc under a day of merges.
 ///
-/// MEASURED (the pre-registered check on #4478), the M5's warm build of 4284ebe4f at
-/// 20:14-20:25Z on 2026-09-27, sampled every 10 s: the largest single rustc peaked at
-/// 6.4 GB (continuum_core, one process whatever the job count) and every rustc together
-/// at 8.7 GB. So the budget is not a flat per-job figure: the FIRST job is continuum_core's
-/// front end, each further job a smaller crate beside it.
-pub const WARM_BUILD_FIRST_JOB_BYTES: u64 = 6656 * 1024 * 1024;
+/// MEASURED: the first job is continuum_core's compile, one process whatever the job count.
+/// Its physical footprint peaked at 9.25 GB (the IntelMac's live warm build, 2026-09-27,
+/// `footprint -p` and `vmmap --summary` agreeing; Cormac). An `ps` RSS read of the M5's
+/// build said 6.4 GB, but RSS drops compressed pages, and a rustc under pressure is mostly
+/// compressed. Each further job is a smaller crate beside it.
+pub const WARM_BUILD_FIRST_JOB_BYTES: u64 = 9728 * 1024 * 1024;
 pub const WARM_BUILD_JOB_BYTES: u64 = 2560 * 1024 * 1024;
 pub const WARM_BUILD_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// The floor: the first job plus the reserve. Below it the warm build refuses.
@@ -6498,14 +6498,14 @@ mod tests {
     #[test]
     fn a_warm_build_takes_the_jobs_its_free_memory_holds() {
         let gib = 1024 * 1024 * 1024;
-        // measured: continuum_core's front end alone peaked at 6.4 GB, so one job needs it
-        // plus the reserve; a second job only past another 2.5 GiB
-        assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 4 * gib + 6656 * 1024 * 1024);
+        // measured: continuum_core's compile alone peaked at 9.25 GB of physical footprint,
+        // so one job needs it plus the reserve; a second job only past another 2.5 GiB
+        assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 4 * gib + 9728 * 1024 * 1024);
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024 - 1), Some(1));
         assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), None, "where a second job would start, the build is already uncapped");
-        assert_eq!(warm_build_jobs_for_memory(12 * gib), Some(1), "under the measured uncapped need");
-        assert_eq!(warm_build_jobs_for_memory(13 * gib), None);
+        assert_eq!(warm_build_jobs_for_memory(14 * gib), Some(1), "above the floor, under the uncapped need");
+        assert_eq!(warm_build_jobs_for_memory(16 * gib), None);
         assert!(WARM_BUILD_UNCAPPED_FREE_BYTES >= WARM_BUILD_RESERVE_BYTES + 8_700_000_000, "uncapped covers its measured peak plus the reserve");
     }
 
