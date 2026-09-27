@@ -70,7 +70,23 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     if t.starts_with("[/") {
         return Some("bracketed_path");
     }
+    // A reply that ENDS in a tool call's closing markup — `</parameter>`, then
+    // `</function>`, then `</tool_call>` (Kimi, 5090, 2026-09-27: a `git show` the
+    // engine refused to parse reached the room as its raw tail, the head already gone).
+    // Anchored on the END, the mirror of the lead anchors above: a citizen writing about
+    // `</tool_call>` mid-sentence, as the ones reporting this did, is untouched.
+    if ends_with_call_markup(t) {
+        return Some("tool_markup_tail");
+    }
     None
+}
+
+/// The trimmed text ends with the closing tag of a tool call.
+fn ends_with_call_markup(t: &str) -> bool {
+    let end = t.trim_end();
+    ["</tool_call>", "</function>", "</parameter>"]
+        .iter()
+        .any(|tag| end.ends_with(tag))
 }
 
 /// The entire text is `[word]` — letters, spaces, underscores — and nothing else.
@@ -621,6 +637,16 @@ mod tests {
     fn another_peers_transcript_line_is_not_speech() {
         let observed = "b6dcfc8e-98ab-4488-b469-d1441720621b: I understand the confusion and will focus on contributing more substantively.";
         assert_eq!(is_not_speech(observed), Some("peer_voice"));
+    }
+
+    // what this catches: Kimi's leaked call tail posted as speech (2026-09-27), and
+    // the gate over-reaching onto a citizen who names the tag while reporting it.
+    #[test]
+    fn a_reply_ending_in_call_markup_is_not_speech_and_a_report_of_it_is() {
+        let tail = "> \n<parameter name=\"cmd\">git show a73053306\n</parameter>\n<parameter=timeout_ms>\n90000\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(is_not_speech(tail), Some("tool_markup_tail"));
+        let report = "My call ended in </tool_call> and went to speech; the parser missed it.";
+        assert_eq!(is_not_speech(report), None);
     }
 
     // what this catches: the predicate eating real speech. Every line here is a
