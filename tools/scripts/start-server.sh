@@ -1029,6 +1029,26 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
     || echo "  ⚠ background desktop build failed — read $ui_build_log" >&2) &
 fi
 
+# THE ENGINE CONVERGES ON A DEPLOY TOO (card 7c5f139d). A deploy's warm build runs this
+# script with BUILD_ONLY=1, and the engine install below the guard at the top is runtime-only,
+# so on the Macs the engine never followed the pin: the M5 and the IntelMac served 965d38a90
+# (no /train) a day after the pin reached 9733aca6c, and the M5 could not dream. The builder is
+# stamp-gated (skips at once when commit:backend match) and installs ATOMICALLY (rm, temp,
+# codesign, mv), so a running lane keeps its old inode and building beside a serving core is
+# safe; the new core then relaunches any lane whose /props build is older than the stamp.
+# macOS and Linux only: on Windows a running lane holds the engine's DLLs, and that path is
+# `continuum install`'s engine arm (#4382). A failed engine build never fails the core deploy:
+# the stamp is written only after a verified build, so the lane stays on the engine it has.
+if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ] && [ -z "${LLAMA_SERVER_BIN:-}" ]; then
+  case "$(uname -s)" in
+    Darwin|Linux)
+      if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
+        echo "⚠ engine build failed in the warm pass; the core deploys, lanes keep their current engine" >&2
+      fi
+      ;;
+  esac
+fi
+
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
   # The caller must launch THIS artifact, not guess our profile/target directory
   # or rerun the source launcher after stopping the old core. Publish only after
