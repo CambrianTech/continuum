@@ -465,14 +465,39 @@ pub(crate) async fn consume_sse_stream(
                 );
             }
             if local_lane {
-                crate::probe!(
-                    class = "inference.decode.failed",
-                    kind = "keepalive_masked_no_progress",
-                    name = %cfg.name,
-                    idle_secs = idle.as_secs(),
-                    "stream carried bytes but neither prefill nor decode advanced — counted toward relaunch"
-                );
-                crate::inference::llama_server::note_real_decode_failure();
+                // The same question the never-started path asks (card 2caa0de5): did the lane
+                // deliver real work to ANYONE while this request stalled? With 6 CPU slots, one
+                // request's prefill can sit behind the others' for the whole idle window while
+                // the engine is plainly working. That is starvation, and stamping it as wedge
+                // evidence relaunched a fresh, delivering lane on the IntelMac (2026-09-27
+                // 21:23Z: two stamps, `real_turn_failures`, while health read ok via real_work
+                // and slot_progress seconds earlier). The turn still fails either way; only a
+                // lane that delivered nothing to anyone in the window counts toward relaunch.
+                use crate::inference::llama_server::NeverStartedClass;
+                match crate::inference::llama_server::classify_never_started_timeout(
+                    crate::inference::llama_server::ms_since_real_work(),
+                    idle.as_millis() as u64,
+                ) {
+                    NeverStartedClass::WedgeEvidence => {
+                        crate::probe!(
+                            class = "inference.decode.failed",
+                            kind = "keepalive_masked_no_progress",
+                            name = %cfg.name,
+                            idle_secs = idle.as_secs(),
+                            "stream carried bytes but neither prefill nor decode advanced, and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
+                        );
+                        crate::inference::llama_server::note_real_decode_failure();
+                    }
+                    NeverStartedClass::Starved => {
+                        crate::probe!(
+                            class = "inference.queue_starved",
+                            provider = cfg.name.as_str(),
+                            waited_s = idle.as_secs(),
+                            stalled = "progress",
+                            "this request's progress stalled on a lane that delivered real work within the wait — oversubscription, not wedge evidence; no real-turn failure stamped",
+                        );
+                    }
+                }
             }
             return Err(format!(
                 "{}: no PROGRESS for {}s despite the stream carrying bytes — \

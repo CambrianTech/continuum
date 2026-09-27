@@ -285,7 +285,8 @@ pub enum NeverStartedClass {
     WedgeEvidence,
 }
 
-/// Classify a never-started stream timeout using the lane's OWN delivery record —
+/// Classify a stream timeout (never started, or started and then stalled with the stream still
+/// carrying keepalive bytes, card 2caa0de5) using the lane's OWN delivery record —
 /// the same "health is recent delivery, never a synthetic probe" principle as
 /// [`ms_since_real_decode`], applied to the failure side. Pure so the busy-lane
 /// and dead-lane rows are table-testable without a server.
