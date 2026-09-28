@@ -331,8 +331,10 @@ queries and directory surveys must not be collapsed into one orientation class.
 
 The settling driver uses its caller's act budget, declared discovery budget and
 existing lifecycle/deadline controls. It does not withdraw tools solely because
-inputs repeated. This deliberately allows more calls for a truly repetitive model
-up to the configured budget; an unlimited caller remains unlimited. Resource
+inputs repeated. Three consecutive repeats of both the request and its actual result yield the
+turn without declaring work complete. Changed results reset the streak; missing,
+spilled or declared-running evidence cannot establish it. Unlimited productive
+work remains unlimited. Resource
 policy belongs to the existing scheduling/budget owners, not a guessed diagnosis
 that a requested observation is useless. Legacy suppression statuses remain
 readable in stored observations but are no longer produced by new execution.

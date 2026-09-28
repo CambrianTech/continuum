@@ -17,7 +17,7 @@ use crate::cognition::workspace::{
 
 use super::apply::apply_act;
 use super::perception::{
-    any_real_receipt, claimed_file_without_act, collect_touched_paths, mutated_workspace,
+    any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace,
     wrote_without_observation,
 };
 use super::types::{SettleOutcome, SettleStep};
@@ -336,6 +336,11 @@ async fn settle_to_outcome(
 
     // Admission uses the caller's budget and lifecycle deadlines. Identical inputs
     // do not establish a stuck mind: repeated reads/retries can observe new state.
+    // Bound only a repeated input AND actual result, after executing the retry.
+    // This preserves unlimited productive work while yielding a fixed-point loop.
+    const STUCK_LIMIT: usize = 3;
+    let mut prior_evidence = None;
+    let mut stuck = 0usize;
     // A workspace-deliverable turn re-perceives on a zero-deliverable Speak (see the Spoke
     // arm). This used to be ONE-SHOT, and the glass box showed what that costs: on
     // sympy-21379 `persona.settle.no_deliverable` fired exactly once per run and she then
@@ -602,7 +607,7 @@ async fn settle_to_outcome(
         // Speaking is never gated.
         let discovery_open =
             !framing.workspace_deliverable || mutated_yet || acts < discovery_budget;
-        if !discovery_open && acts < max_acts && !saturation_probed {
+        if !discovery_open && acts < max_acts && stuck < STUCK_LIMIT && !saturation_probed {
             saturation_probed = true;
             crate::probe!(
                 class = "persona.settle.discovery_saturated",
@@ -615,7 +620,7 @@ async fn settle_to_outcome(
                  the empty-diff re-drive instead of being read away (#390 state gate)"
             );
         }
-        let may_act = acts < max_acts && discovery_open;
+        let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
         let act_started = std::time::Instant::now();
         crate::probe!(
             class = "settle.tick.start",
@@ -874,6 +879,30 @@ async fn settle_to_outcome(
                                 "acted with no workspace mutation receipt yet — recorded the fact on the act path (the settle path cannot reach a budget-exhausted turn)"
                             );
                         }
+                    }
+                }
+                let evidence = cycle.acting().and_then(|body| {
+                    batch_evidence(&calls, &body.working_memory.recent_acts())
+                });
+                if evidence.is_some() && evidence == prior_evidence {
+                    stuck += 1;
+                } else {
+                    stuck = 0;
+                }
+                prior_evidence = evidence;
+                if stuck >= STUCK_LIMIT {
+                    crate::probe!(
+                        class = "persona.settle.stuck_backstop",
+                        room_id = %room_id,
+                        acts = acts,
+                        stuck = stuck,
+                        "same calls and actual results repeated; yielding without claiming completion"
+                    );
+                    if let Some(body) = cycle.acting() {
+                        body.working_memory.record_fact(
+                            "[repetition] Consecutive executions returned the same results for \
+                             the same requests. This turn yields; the work is not declared complete."
+                        );
                     }
                 }
                 // The observation re-enters perception through MEMORY + the volatile

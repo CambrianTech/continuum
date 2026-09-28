@@ -1043,23 +1043,52 @@ mod tests {
         );
     }
 
-    // what this catches: identical requests must still execute up to the caller's
-    // budget; exhaustion returns unfinished work, never a fabricated conclusion.
+    // what this catches: changing results preserve productive iteration, while
+    // identical input AND output yields honestly after three repeated observations.
     #[tokio::test]
     async fn repeated_calls_respect_the_callers_budget() {
-        for results in [
-            ["unchanged"; 6],
-            ["pending 1", "pending 2", "running", "written", "tested", "done"],
+        for (results, expected_acts) in [
+            (["unchanged"; 6], 4),
+            (["pending 1", "pending 2", "running", "written", "tested", "done"], 6),
         ] {
             let exec = Arc::new(ScriptedExecutor::new(results));
             let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
                 .with_acting(body(exec.clone(), admission()));
             let outcome = drive_to_settle(&cycle, "go", 6, TurnFraming::ambient()).await;
-            assert_eq!(outcome.acts, 6);
-            assert!(exec.results.lock().unwrap().is_empty());
+            assert_eq!(outcome.acts, expected_acts);
+            assert_eq!(exec.results.lock().unwrap().len(), 6 - expected_acts);
             assert!(matches!(outcome.decision, Decision::Act { .. }));
             assert!(outcome.spoken.is_none());
         }
+    }
+
+    // what this catches: fixed-point evidence ignores correlation IDs but never
+    // treats running or missing full results as a completed unchanged observation.
+    #[tokio::test]
+    async fn fixed_point_requires_available_finished_result_evidence() {
+        use super::perception::batch_evidence;
+        use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+        let exec = Arc::new(ScriptedExecutor::new(["result"]));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec, admission()));
+        let mut call = tool_call();
+        let mut acts = acts_of(apply_act(
+            &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
+        ).await);
+        let original = batch_evidence(&[call.clone()], &acts);
+        assert!(original.is_some());
+        call.id = "new-attempt".into();
+        acts[0].call.id = call.id.clone();
+        acts[0].output.result.tool_use_id = call.id.clone();
+        assert!(original == batch_evidence(&[call.clone()], &acts));
+        acts[0].output.result.content = "changed".into();
+        assert!(original != batch_evidence(&[call.clone()], &acts));
+        acts[0].output.verdict = ActVerdict::Declared(ToolVerdict::Running);
+        assert!(batch_evidence(&[call.clone()], &acts).is_none());
+        acts[0].output.verdict = ActVerdict::Unprojected;
+        acts[0].output.result.spill_handle = Some("full-result".into());
+        assert!(batch_evidence(&[call.clone()], &acts).is_none());
+        assert!(batch_evidence(&[call], &[]).is_none());
     }
 
     // what this catches: the shared step's acting gate. `may_act = false` (how the

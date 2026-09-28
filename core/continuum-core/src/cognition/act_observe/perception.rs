@@ -24,6 +24,46 @@ pub(super) fn collect_touched_paths(touched: &mut Vec<String>, calls: &[ToolCall
     }
 }
 
+/// Evidence for a repeated batch, independent of per-attempt correlation IDs.
+/// Compare actual typed results, never rendered/nudged working-memory prose.
+#[derive(PartialEq)]
+pub(super) struct BatchActEvidence {
+    name: String,
+    input: serde_json::Value,
+    content: String,
+    error: Option<bool>,
+    verdict: crate::sdk_codegen::ActVerdict,
+}
+
+pub(super) fn batch_evidence(
+    calls: &[ToolCall],
+    recent: &[super::observation::Observation],
+) -> Option<Vec<BatchActEvidence>> {
+    if calls.is_empty() || recent.len() < calls.len() {
+        return None;
+    }
+    let latest = &recent[recent.len() - calls.len()..];
+    calls.iter().map(|call| {
+        let act = latest.iter().find(|act| act.call.id == call.id)?;
+        // Missing/full-result-spilled evidence and unfinished operations cannot
+        // establish an unchanged completed observation. They reset the streak.
+        if !matches!(act.status, super::observation::ActStatus::Executed)
+            || act.output.result.spill_handle.is_some()
+            || act.output.verdict.running()
+            || matches!(act.output.verdict, crate::sdk_codegen::ActVerdict::Undecodable)
+        {
+            return None;
+        }
+        Some(BatchActEvidence {
+            name: call.name.clone(),
+            input: call.input.clone(),
+            content: act.output.result.content.clone(),
+            error: act.output.result.is_error,
+            verdict: act.output.verdict,
+        })
+    }).collect()
+}
+
 /// The typed acts inside a slice of working-memory entries, oldest → newest —
 /// flattened across every receipt so a batch that ran N calls contributes N acts
 /// in order. The typed sibling of scanning receipt PROSE for `I ran …`, which is
