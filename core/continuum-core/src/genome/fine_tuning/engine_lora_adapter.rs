@@ -294,10 +294,10 @@ struct TrainRequest {
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_budget_mib: Option<u64>,
-    /// "left": an example longer than the window keeps the tail that ends her last reply, the
-    /// only span with loss (fork #29). A lived example is the whole served conversation, system
-    /// prompt and tool block included, and ran 14,519 tokens against a 1,025-token window on
-    /// Kimi's first dream (2026-09-28): refused whole without it. An engine before #29 ignores it.
+    /// "middle" (fork #29): at the served window a lived example trains whole; only a
+    /// conversation longer than serving's own window drops its OLDEST history exchanges, and
+    /// always keeps the system and tool head and her reply, the context serving always has
+    /// (Cormac on #29). An engine before #29 ignores it.
     fit: &'static str,
 }
 
@@ -756,7 +756,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             seed: 42,
             top_layers: depth,
             memory_budget_mib: None,
-            fit: "left",
+            fit: "middle",
         };
         let measured = self.footprints.get(&shape);
         let footprints_path = self.footprints.path.clone();
@@ -850,7 +850,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                         kept = status.examples.unwrap_or(0), // probe field: 0 = an engine that does not report it
                         truncated = status.examples_truncated.unwrap_or(0), // probe field: as above
                         skipped = status.examples_skipped.unwrap_or(0), // probe field: as above
-                        "how her examples met the window: kept whole, cut from the front to end her reply, or skipped"
+                        "how her examples met the window: kept whole, fitted by dropping their oldest history, or skipped"
                     );
                     let adapted = effective_depth(status.layers_adapted, status.n_layer);
                     if adapted != shape.depth {
@@ -1221,7 +1221,7 @@ mod tests {
         assert_eq!(body["examples"][0]["completion"], "c");
         // what this catches (Kimi's first dream, 2026-09-28): a lived example longer than the
         // window refused the whole run; the engine is asked to keep each example's tail
-        assert_eq!(body["fit"], "left", "a long example is fitted from the front, never refused whole");
+        assert_eq!(body["fit"], "middle", "a conversation longer than the served window drops its oldest history, never its head");
         assert!(body.get("text").is_none(), "examples, never a text corpus (the engine masks the prompts)");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
