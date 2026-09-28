@@ -9653,6 +9653,7 @@ pub(crate) mod tests {
             context_window: 25_075,
             lanes: 4,
             page_dir: None,
+            engine_bin: None,
         }
     }
 

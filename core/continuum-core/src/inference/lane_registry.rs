@@ -95,6 +95,12 @@ pub struct LaneRecord {
     /// its hand, see `sweep_stale_page_generations`).
     #[serde(default)]
     pub page_dir: Option<PathBuf>,
+    /// The engine binary this lane was launched from: how a deploy knows which engine slot a
+    /// live lane still runs, so it never builds into it (`engine_slots::idle_slot`, card
+    /// 2c5d0ec0), without guessing from the process table (unreadable across Windows service
+    /// sessions). `None` for lanes recorded before this field existed.
+    #[serde(default)]
+    pub engine_bin: Option<PathBuf>,
 }
 
 /// The LIVE-role lane left behind by a previous generation of this core, if one
@@ -445,6 +451,7 @@ mod tests {
             context_window: 1,
             lanes: 1,
             page_dir: None,
+            engine_bin: None,
         };
         record_in(dir.path(), &good).expect("write");
         assert_eq!(records_checked_in(dir.path()).expect("clean registry").len(), 1);
@@ -476,6 +483,7 @@ mod tests {
             context_window: 16_384,
             lanes: 4,
             page_dir: None,
+            engine_bin: None,
         }
     }
 
@@ -702,6 +710,7 @@ mod tests {
                         context_window: 8192,
                         lanes: 1,
                         page_dir: None,
+                        engine_bin: None,
                     },
                 )
                 .expect("record");
@@ -744,6 +753,7 @@ mod tests {
                     context_window: 8192,
                     lanes: 1,
                     page_dir: None,
+                    engine_bin: None,
                 },
             )
             .expect("record");
