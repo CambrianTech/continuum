@@ -1494,6 +1494,16 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
         board_held_by(self.airc.as_ref()).await
     }
 
+    /// The same board-true holds, each beside the room whose board carries it: the one walk
+    /// (`scoped_board_held_by`) the renewal loop reads, so focus and renewal never disagree.
+    async fn active_claims_by_room(&self) -> Result<Vec<(Option<uuid::Uuid>, airc_lib::WorkCard)>, AircError> {
+        Ok(scoped_board_held_by(self.airc.as_ref())
+            .await?
+            .into_iter()
+            .map(|(room, card)| (Some(room.channel.as_uuid()), card))
+            .collect())
+    }
+
     /// The board's own row for one card, from every room she is in — the same walk
     /// `card_in_subscribed_rooms` makes for claim staging, so a wake's "what became of my
     /// card" reads the truth the renewal loop reads.

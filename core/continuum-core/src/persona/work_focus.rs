@@ -14,6 +14,15 @@ pub fn focus_card<'a>(held: impl IntoIterator<Item = &'a WorkCard>) -> Option<&'
     })
 }
 
+/// The card THIS turn's activity is about. Focus is per activity (Joel, 2026-09-28): among
+/// the cards held on the board of `room`, the turn's own room, the usual choice; only when
+/// she holds none there does the whole-mind choice apply. Before this a turn in one activity
+/// rooted her hands at another activity's card because that card was chosen more recently.
+pub fn focus_card_for_room(held: &[(Option<uuid::Uuid>, WorkCard)], room: uuid::Uuid) -> Option<&WorkCard> {
+    focus_card(held.iter().filter(|(r, _)| *r == Some(room)).map(|(_, card)| card))
+        .or_else(|| focus_card(held.iter().map(|(_, card)| card)))
+}
+
 /// Shared intent ordering for turn focus and surplus-claim reconciliation.
 /// Missing/unknown history never becomes an inferred explicit choice.
 pub(crate) fn explicit_choice_key(
@@ -115,5 +124,25 @@ mod tests {
         assert!(recovery_preferred_over_live(&held[1], [&held[0]]));
         assert!(!recovery_preferred_over_live(&held[0], [&held[1]]));
         assert!(recovery_preferred_over_live(&held[0], std::iter::empty()));
+    }
+
+    // what this catches (Joel, 2026-09-28: focus is per activity): a turn in one activity
+    // rooting her hands at another activity's card because that card is the freshest
+    // whole-mind choice. The turn's own room decides first; a room where she holds nothing
+    // falls back to the whole-mind choice (the positive control), and so does a room unknown.
+    #[test]
+    fn a_turn_focuses_the_card_of_its_own_room_before_the_freshest_elsewhere() {
+        let (project, benchmark, lounge) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let here = card(Some(100), 100);
+        let elsewhere_fresher = card(Some(9_000), 9_000);
+        let held = vec![(Some(project), here.clone()), (Some(benchmark), elsewhere_fresher.clone()), (None, card(Some(50), 50))];
+        assert_eq!(focus_card_for_room(&held, project).map(|c| c.card_id), Some(here.card_id), "her project turn works the project card");
+        assert_eq!(focus_card_for_room(&held, benchmark).map(|c| c.card_id), Some(elsewhere_fresher.card_id));
+        assert_eq!(
+            focus_card_for_room(&held, lounge).map(|c| c.card_id),
+            Some(elsewhere_fresher.card_id),
+            "a room with no card of hers keeps the whole-mind choice"
+        );
+        assert!(focus_card_for_room(&[], project).is_none());
     }
 }
