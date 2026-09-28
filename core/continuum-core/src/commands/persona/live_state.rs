@@ -33,6 +33,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
+use airc_core::RoomId;
+
+use crate::identity::PeerId;
 use crate::modules::probe_query::{scan_ledger, ProbeRow, MAX_LIMIT};
 use crate::routing::probe_file_sink::ENV_PROBE_DIR;
 use crate::sdk_codegen::CommandError;
@@ -109,8 +112,8 @@ pub enum PersonaLiveStateUnknown {
 #[ts(export, export_to = "../../../protocol/typescript/persona/PersonaTurnView.ts")]
 pub struct PersonaTurnView {
     pub lamport: String,
-    #[ts(optional)]
-    pub room_id: Option<String>,
+    #[ts(optional, type = "string")]
+    pub room_id: Option<RoomId>,
     #[ts(type = "number")]
     pub started_ms: u64,
     #[ts(optional, type = "number")]
@@ -125,7 +128,9 @@ pub struct PersonaTurnView {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/persona/PersonaPerceivedRoom.ts")]
 pub struct PersonaPerceivedRoom {
-    pub room_id: String,
+    // absent: the probe named no room, or not one that parses as a room id
+    #[ts(optional, type = "string")]
+    pub room_id: Option<RoomId>,
     pub count: u32,
     #[ts(type = "number")]
     pub last_ms: u64,
@@ -152,8 +157,8 @@ pub struct PersonaActSummary {
 #[ts(export, export_to = "../../../protocol/typescript/persona/PersonaLiveState.ts")]
 pub struct PersonaLiveState {
     pub persona: String,
-    #[ts(optional)]
-    pub peer_id: Option<String>,
+    #[ts(optional, type = "string")]
+    pub peer_id: Option<PeerId>,
     /// Hosted on this node (her turns are in this node's ledger).
     pub hosted_here: bool,
     #[ts(type = "number")]
@@ -180,11 +185,19 @@ fn text(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Is this row hers? Probes key her by name in some classes and by peer id in others.
-fn is_hers(row: &ProbeRow, name: &str, peer: Option<&str>) -> bool {
-    ["persona", "persona_id", "peer_id"].iter().any(|k| {
-        text(row.fields.get(*k)).is_some_and(|v| v.eq_ignore_ascii_case(name) || peer.is_some_and(|p| v == p))
+/// Is this row hers? Probes key her by name in some classes and by peer id in others, always
+/// under `persona` or `persona_id`. Never `peer_id`: on a turn start that is the SENDER of the
+/// message she is answering, so matching it would count another citizen's turn, triggered by
+/// her message, as hers.
+fn is_hers(row: &ProbeRow, name: &str, peer: Option<PeerId>) -> bool {
+    ["persona", "persona_id"].iter().any(|k| {
+        text(row.fields.get(*k)).is_some_and(|v| v.eq_ignore_ascii_case(name) || peer.is_some_and(|p| v.eq_ignore_ascii_case(&p.to_string())))
     })
+}
+
+/// A room id as a probe wrote it; text that is not a room id names no room.
+fn room(v: Option<&Value>) -> Option<RoomId> {
+    text(v).and_then(|t| uuid::Uuid::parse_str(&t).ok()).map(RoomId::from_uuid)
 }
 
 /// The gate named in a gated pass reason (`gate-refused/<gate>:...`), and nothing else of it.
@@ -207,7 +220,7 @@ fn gate_name(reason: Option<&str>) -> PersonaTurnDetail {
 pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTurnView>, Vec<PersonaTurnView>, Vec<PersonaPerceivedRoom>, PersonaActSummary) {
     let mut turns: Vec<PersonaTurnView> = Vec::new();
     let mut by_lamport: BTreeMap<String, usize> = BTreeMap::new();
-    let mut perceived: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+    let mut perceived: BTreeMap<Option<uuid::Uuid>, (u32, u64)> = BTreeMap::new();
     let mut acts = PersonaActSummary::default();
     let mut tools: BTreeMap<String, u32> = BTreeMap::new();
     for row in rows {
@@ -218,7 +231,7 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
                 by_lamport.insert(lamport.clone(), turns.len());
                 turns.push(PersonaTurnView {
                     lamport,
-                    room_id: text(row.fields.get("room_id")),
+                    room_id: room(row.fields.get("room_id")),
                     started_ms: row.captured_at_ms,
                     ended_ms: None,
                     outcome: PersonaTurnOutcome::InFlight,
@@ -254,8 +267,9 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
                 }
             }
             "persona.turn.input_perceived" => {
-                let room = text(row.fields.get("input_room")).or_else(|| text(row.fields.get("active_room"))).unwrap_or_else(|| "(unknown room)".into()); // unwrap_or_else: a perceived input with no room still counts, under a named unknown
-                let e = perceived.entry(room).or_insert((0, 0));
+                // a perceived input with no room still counts, under an absent room
+                let at = room(row.fields.get("input_room")).or_else(|| room(row.fields.get("active_room")));
+                let e = perceived.entry(at.map(|r| r.as_uuid())).or_insert((0, 0));
                 e.0 += 1;
                 e.1 = e.1.max(row.captured_at_ms);
             }
@@ -281,7 +295,7 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
     let keep = turns.len().saturating_sub(turns_wanted as usize);
     let recent = turns.split_off(keep);
     let mut perceived: Vec<PersonaPerceivedRoom> =
-        perceived.into_iter().map(|(room_id, (count, last_ms))| PersonaPerceivedRoom { room_id, count, last_ms }).collect();
+        perceived.into_iter().map(|(at, (count, last_ms))| PersonaPerceivedRoom { room_id: at.map(RoomId::from_uuid), count, last_ms }).collect();
     perceived.sort_by(|a, b| b.last_ms.cmp(&a.last_ms));
     (current, recent, perceived, acts)
 }
@@ -323,7 +337,7 @@ crate::action_command! {
             }
         };
         let (name, peer) = match hosted {
-            Some((name, id)) => (name.clone(), Some(id.to_string())),
+            Some((name, id)) => (name.clone(), Some(PeerId::from_uuid(*id))),
             None => (wanted.clone(), None),
         };
         let as_of_ms = crate::persona::trace::now_ms();
@@ -337,7 +351,7 @@ crate::action_command! {
         let dir = PathBuf::from(dir);
         let classes: HashSet<String> = ["persona.turn", "persona.act"].iter().map(|s| s.to_string()).collect();
         let (needles, turns_wanted) = (
-            [Some(name.to_lowercase()), peer.clone().map(|p| p.to_lowercase())],
+            [Some(name.to_lowercase()), peer.map(|p| p.to_string())],
             p.turns.unwrap_or(DEFAULT_TURNS),
         );
         let scans = tokio::task::spawn_blocking(move || {
@@ -366,7 +380,7 @@ crate::action_command! {
                 }
             }
             for row in scan.events {
-                if is_hers(&row, &name, peer.as_deref())
+                if is_hers(&row, &name, peer)
                     && seen.insert((row.captured_at_ms, row.class.clone(), serde_json::to_string(&row.fields).unwrap_or_default())) // unwrap_or_default: a field map always serializes; an empty key only weakens dedupe
                 {
                     rows.push(row);
@@ -383,7 +397,7 @@ crate::action_command! {
         }
         Ok(PersonaLiveState {
             persona: name,
-            peer_id: peer.clone(),
+            peer_id: peer,
             hosted_here: peer.is_some(),
             since_ms,
             as_of_ms,
@@ -415,13 +429,13 @@ mod tests {
     #[test]
     fn one_read_shows_turns_silences_inputs_and_acts_without_her_words() {
         let rows = vec![
-            row(1, "persona.turn.input_perceived", json!({"persona": "k", "input_room": "cb2e", "active_room": "5dee"})),
-            row(2, "persona.turn.start", json!({"persona": "Kimi", "lamport": "10", "room_id": "5dee"})),
+            row(1, "persona.turn.input_perceived", json!({"persona": "k", "input_room": "cb2e21a1-999a-5a03-a184-df06e4ee7097", "active_room": "5dee0000-0000-4000-8000-000000000001"})),
+            row(2, "persona.turn.start", json!({"persona": "Kimi", "lamport": "10", "room_id": "5dee0000-0000-4000-8000-000000000001"})),
             row(3, "persona.act.observed", json!({"persona": "Kimi", "tools": "code/shell,code/read", "wrote": false})),
             row(4, "persona.turn.silent", json!({"persona": "Kimi", "lamport": "10", "gated": false, "pass_reason": "my private reasoning"})),
-            row(5, "persona.turn.start", json!({"persona": "Kimi", "lamport": "11", "room_id": "5dee"})),
+            row(5, "persona.turn.start", json!({"persona": "Kimi", "lamport": "11", "room_id": "5dee0000-0000-4000-8000-000000000001"})),
             row(6, "persona.turn.silent", json!({"persona": "Kimi", "lamport": "11", "gated": true, "pass_reason": "gate-refused/not_speech:bare_call: echo"})),
-            row(7, "persona.turn.start", json!({"persona": "Kimi", "lamport": "12", "room_id": "5dee"})),
+            row(7, "persona.turn.start", json!({"persona": "Kimi", "lamport": "12", "room_id": "5dee0000-0000-4000-8000-000000000001"})),
             row(8, "persona.act.observed", json!({"persona": "Kimi", "tools": "code/shell", "wrote": true})),
         ];
         let (current, recent, perceived, acts) = project(&rows, 10);
@@ -435,7 +449,8 @@ mod tests {
                 (PersonaTurnOutcome::InFlight, None),
             ]
         );
-        assert_eq!(perceived, vec![PersonaPerceivedRoom { room_id: "cb2e".into(), count: 1, last_ms: 1 }], "the ask's room, perceived");
+        let ask_room = RoomId::from_uuid(uuid::Uuid::parse_str("cb2e21a1-999a-5a03-a184-df06e4ee7097").expect("room uuid"));
+        assert_eq!(perceived, vec![PersonaPerceivedRoom { room_id: Some(ask_room), count: 1, last_ms: 1 }], "the ask's room, perceived");
         assert_eq!(acts.count, 2);
         assert_eq!(acts.wrote, 1);
         assert_eq!(acts.tools.first(), Some(&("code/shell".to_string(), 2)));
@@ -469,14 +484,18 @@ mod tests {
 
     // what this catches: probes key a citizen by name in some classes and by peer id in others;
     // a filter on one of them silently loses half her rows (Codex's UUID-only filter missed
-    // Kimi's name-keyed act rows on 2026-09-28).
+    // Kimi's name-keyed act rows on 2026-09-28). And a turn start's `peer_id` is the SENDER:
+    // Iris answering Kimi's message is Iris's turn, never Kimi's.
     #[test]
     fn her_rows_are_found_by_name_or_by_peer_id() {
+        let kimi = PeerId::from_uuid(uuid::Uuid::parse_str("e2f0e022-04ac-4d5e-9f10-1a2b3c4d5e6f").expect("peer uuid"));
         let by_name = row(1, "persona.turn.start", json!({"persona": "Kimi"}));
-        let by_id = row(2, "persona.turn.input_perceived", json!({"persona": "e2f0e022-04ac"}));
+        let by_id = row(2, "persona.turn.input_perceived", json!({"persona": kimi.to_string()}));
         let other = row(3, "persona.turn.start", json!({"persona": "Iris"}));
-        assert!(is_hers(&by_name, "kimi", Some("e2f0e022-04ac")));
-        assert!(is_hers(&by_id, "kimi", Some("e2f0e022-04ac")));
-        assert!(!is_hers(&other, "kimi", Some("e2f0e022-04ac")));
+        let answering_her = row(4, "persona.turn.start", json!({"persona": "Iris", "persona_id": "0000", "peer_id": kimi.to_string()}));
+        assert!(is_hers(&by_name, "kimi", Some(kimi)));
+        assert!(is_hers(&by_id, "kimi", Some(kimi)));
+        assert!(!is_hers(&other, "kimi", Some(kimi)));
+        assert!(!is_hers(&answering_her, "kimi", Some(kimi)), "her message's sender id on Iris's turn is not her turn");
     }
 }

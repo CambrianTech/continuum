@@ -3,4 +3,4 @@
 /**
  * Inputs she perceived in one room.
  */
-export type PersonaPerceivedRoom = { roomId: string, count: number, lastMs: number, };
+export type PersonaPerceivedRoom = { roomId?: string, count: number, lastMs: number, };
