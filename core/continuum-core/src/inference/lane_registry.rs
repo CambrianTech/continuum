@@ -110,6 +110,12 @@ pub struct LaneRecord {
 }
 
 impl LaneRecord {
+    /// The lane's root url, the one spelling every in-process client addresses it by (the
+    /// training run posts `/train` under it).
+    pub fn root_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
     /// This lane's engine incarnation.
     pub fn incarnation(&self) -> super::engine_residency::EngineIncarnation {
         super::engine_residency::EngineIncarnation { pid: self.pid, started_s: self.started_s, port: self.port }
