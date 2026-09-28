@@ -5,7 +5,7 @@ use crate::resources::{
 };
 use std::time::Duration;
 
-fn request(consumer: &str, bytes: u64) -> LeaseRequest {
+pub(crate) fn request(consumer: &str, bytes: u64) -> LeaseRequest {
     LeaseRequest {
         consumer_id: consumer.to_owned(),
         kind: ResourceKind::Vram,

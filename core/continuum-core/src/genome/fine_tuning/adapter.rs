@@ -208,6 +208,13 @@ pub trait FineTuningAdapter: Send + Sync {
     /// window — providers vary on how quickly they reflect the
     /// cancel in their status endpoint.
     async fn cancel(&self, handle: &JobHandle) -> Result<(), FineTuningError>;
+
+    /// Re-attach to `local_id`, a job a previous core started, when its run can outlive the
+    /// core (an in-engine run survives a core-only restart). The default is for adapters whose
+    /// runs die with the core: nothing is resident, so the caller may resume from the input.
+    async fn reattach(&self, _local_id: uuid::Uuid) -> Result<super::types::ReattachOutcome, FineTuningError> {
+        Ok(super::types::ReattachOutcome::NotResident)
+    }
 }
 
 /// Convenience alias for the shared-pointer adapter shape that

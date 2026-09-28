@@ -3461,7 +3461,12 @@ pub fn start_server(
         // In-engine training on the resident weights (the dream's trainer): selected by
         // preference ("engine-local") until its measured 27B run makes it the default
         // over the process trainers (charter S6); needs a live lane serving the base.
-        ft_registry.register(std::sync::Arc::new(EngineLoraFineTuner::new()));
+        // SHARED-RESIDENT-LIFECYCLE.md step 3: a run a previous core bound to a still-live engine
+        // gets its lease back HERE, before any module ticks and so before anything can admit
+        // into the memory it is using; the trigger's first tick then re-attaches it.
+        let engine_tuner = std::sync::Arc::new(EngineLoraFineTuner::new());
+        engine_tuner.reclaim_resident_leases();
+        ft_registry.register(engine_tuner);
 
         // OpenAI when credentials present. Other cloud LoRA-trainer
         // adapters (Mistral, Anthropic, Fireworks, DeepSeek,

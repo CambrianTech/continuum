@@ -28,7 +28,7 @@ use super::native_jobs::{
 };
 use super::{
     ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics,
-    TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus,
+    ReattachOutcome, TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -203,6 +203,47 @@ impl Shape {
             None => base,
         }
     }
+}
+
+/// A held-out share, exact: parts per million of the examples. Stored as an integer so the
+/// record that carries it compares exactly (a residency record is `Eq`) and round-trips
+/// deterministically; converted to the engine's `val_split` float only at the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SplitPpm(u32);
+
+impl From<f32> for SplitPpm {
+    fn from(share: f32) -> Self {
+        Self((share.clamp(0.0, 1.0) * 1_000_000.0).round() as u32)
+    }
+}
+
+impl From<SplitPpm> for f32 {
+    fn from(split: SplitPpm) -> Self {
+        split.0 as f32 / 1_000_000.0
+    }
+}
+
+/// Everything a successor core needs to RE-ATTACH to an in-engine run it did not start, and to
+/// finish it (SHARED-RESIDENT-LIFECYCLE.md step 3, card 7bb4e5a2). Recorded with the run's
+/// engine binding, inside the admission hold, so a binding that exists always says how to
+/// resume watching it. The engine's address is not here: it is the bound incarnation's own
+/// ([`crate::inference::engine_residency::EngineIncarnation::root_url`]), one source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineRunSpec {
+    /// Where the engine writes the run's adapter, stored whole so finishing never re-derives it
+    /// from a train dir that may since have moved (Cormac on the step-3 plan).
+    adapter_path: PathBuf,
+    /// Where the finished adapter is collected (the job's own directory).
+    job_dir: PathBuf,
+    epochs: u32,
+    /// The held-out share the run asked for: whether an eval loss is believed (`held_out_loss`).
+    val_split: SplitPpm,
+    /// The artifact's model id (`engine-local:<trait>:<job>`).
+    model_id: String,
+    /// The footprint key the run was planned under, for filing what it measured.
+    shape: Shape,
 }
 
 /// The window a run trains at: the engine's training context is n_ctx, which rounds up to a
@@ -449,6 +490,11 @@ pub struct EngineLoraFineTuner {
     /// Where a run's binding to its engine incarnation is recorded (`None`: no home, or a
     /// test with no engine; an ungoverned run binds nothing).
     residency_store: Option<PathBuf>,
+    /// Leases re-taken at boot for runs a previous core bound to a still-live engine
+    /// ([`Self::reclaim_resident_leases`]), held here until `reattach` hands each to its run or
+    /// the binding is released. The lease was in the dead core's memory; the engine's
+    /// allocation was not, so until this re-takes it a second job could be admitted into it.
+    resident_leases: Arc<Mutex<BTreeMap<Uuid, crate::resources::LeaseGuard>>>,
 }
 
 impl Default for EngineLoraFineTuner {
@@ -476,6 +522,7 @@ impl EngineLoraFineTuner {
             residency_store: crate::commands::benchmark::continuum_home()
                 .ok()
                 .map(|home| crate::inference::engine_residency::store_path(&home)),
+            resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -492,6 +539,7 @@ impl EngineLoraFineTuner {
             holds: TrainingHolds::new(),
             hold_store: None,
             residency_store: None,
+            resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 }
@@ -500,7 +548,11 @@ impl EngineLoraFineTuner {
 struct EngineRun {
     http: reqwest::Client,
     lane: String,
-    body: TrainRequest,
+    /// The run to POST, or `None` for a run this core RE-ATTACHED to: it is already training in
+    /// the engine, and POSTing it again would be the duplicate run step 3 exists to prevent.
+    start: Option<TrainRequest>,
+    /// The engine's name for the run (`/train`'s `out`), what every status is matched on.
+    out: String,
     /// where the engine writes this job's adapter (removed if a cancel races a finish)
     adapter_path: PathBuf,
     epochs: u32,
@@ -562,14 +614,21 @@ impl EngineProbe {
 
 impl EngineRun {
     async fn status_once(&self) -> Result<TrainStatus, String> {
-        let r = self
-            .http
-            .get(format!("{}/train", self.lane))
+        Self::status_at(&self.http, &self.lane).await
+    }
+
+    /// One `GET /train` on `lane`: the engine's training status, or why it could not be read.
+    async fn status_at(http: &reqwest::Client, lane: &str) -> Result<TrainStatus, String> {
+        let r = http
+            .get(format!("{lane}/train"))
             .timeout(Duration::from_secs(10))
             .send()
             .await
-            .map_err(|e| format!("GET /train on {}: {e}", self.lane))?;
-        r.json::<TrainStatus>().await.map_err(|e| format!("GET /train on {}: {e}", self.lane))
+            .map_err(|e| format!("GET /train on {lane}: {e}"))?;
+        if !r.status().is_success() {
+            return Err(format!("GET /train on {lane}: HTTP {}", r.status()));
+        }
+        r.json::<TrainStatus>().await.map_err(|e| format!("GET /train on {lane}: {e}"))
     }
 
     /// The engine's training status, retried through a silence shorter than [`LANE_SILENCE`].
@@ -621,7 +680,7 @@ impl EngineRun {
 
     /// The engine runs one training at a time; a status for a different `out` is not ours.
     fn ours(&self, s: &TrainStatus) -> bool {
-        s.out.as_deref() == Some(self.body.out.as_str())
+        s.out.as_deref() == Some(self.out.as_str())
     }
 
     /// Steer the engine's pause toward `want` (fork #28's contract): ask when the status says
@@ -636,7 +695,7 @@ impl EngineRun {
         let _ = self
             .http
             .post(format!("{}/train/{verb}", self.lane))
-            .json(&json!({ "out": self.body.out }))
+            .json(&json!({ "out": self.out }))
             .timeout(Duration::from_secs(10))
             .send()
             .await; // the status decides whether it took; a failure is retried on the next tick
@@ -673,7 +732,7 @@ impl InPlaceRun for EngineRun {
     async fn run(self: Box<Self>, cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
         let (store, job) = (self.hold_store.clone(), self.job);
         let residency = self.residency.clone();
-        let probe_run = EngineProbe { http: self.http.clone(), lane: self.lane.clone(), out: self.body.out.clone() };
+        let probe_run = EngineProbe { http: self.http.clone(), lane: self.lane.clone(), out: self.out.clone() };
         let mut end = self.run_steered(cancel, progress).await;
         // serving replaced the engine under this run anyway (an emergency): the failure says why
         if let (InPlaceEnd::Failed(why), Some((path, _))) = (&end, &residency) {
@@ -727,22 +786,25 @@ impl InPlaceRun for EngineRun {
 
 impl EngineRun {
     async fn run_steered(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
-        match self
-            .http
-            .post(format!("{}/train", self.lane))
-            .json(&self.body)
-            .timeout(Duration::from_secs(120))
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => {}
-            Ok(r) => {
-                // refused before any thread started: nothing of ours runs
-                let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
-                return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
+        // a re-attached run is already in the engine: it is watched, never started again
+        if let Some(body) = &self.start {
+            match self
+                .http
+                .post(format!("{}/train", self.lane))
+                .json(body)
+                .timeout(Duration::from_secs(120))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {}
+                Ok(r) => {
+                    // refused before any thread started: nothing of ours runs
+                    let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
+                    return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
+                }
+                // lost on the way back: the run may have started, so it is stopped before failing
+                Err(e) => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
             }
-            // lost on the way back: the run may have started, so it is stopped before failing
-            Err(e) => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
         }
         let mut tick = tokio::time::interval(POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -800,7 +862,7 @@ impl EngineRun {
                     if now_paused != was_paused {
                         crate::probe!(
                             class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
-                            out = self.body.out.as_str(),
+                            out = self.out.as_str(),
                             holds = reasons.join(",").as_str(),
                             // a pause with no hold is the engine yielding its slots to serving
                             yielding_to_serving = s.waiting_for_serving,
@@ -828,17 +890,211 @@ impl EngineRun {
 /// The adapter leaves the lanes' train dir for the job's own directory. Runs in `finish`, i.e.
 /// BEFORE the job goes terminal: the engine-train sweep deletes every file whose job is not live,
 /// so a finished gene left there would be deleted.
-fn move_adapter(train_dir: &Path, out: &str, job_dir: &Path) -> Result<PathBuf, String> {
-    let from = train_dir.join(out);
-    let size = std::fs::metadata(&from).map_err(|e| format!("the engine wrote no adapter at {}: {e}", from.display()))?.len();
+fn move_adapter(from: &Path, job_dir: &Path) -> Result<PathBuf, String> {
+    let size = std::fs::metadata(from).map_err(|e| format!("the engine wrote no adapter at {}: {e}", from.display()))?.len();
     if size == 0 {
         return Err(format!("the engine's adapter at {} is empty", from.display()));
     }
     let adapters = job_dir.join("adapters");
     std::fs::create_dir_all(&adapters).map_err(|e| format!("{}: {e}", adapters.display()))?;
     let to = adapters.join("adapter.gguf");
-    std::fs::rename(&from, &to).map_err(|e| format!("moving {} -> {}: {e}", from.display(), to.display()))?;
+    std::fs::rename(from, &to).map_err(|e| format!("moving {} -> {}: {e}", from.display(), to.display()))?;
     Ok(to)
+}
+
+/// What re-attaching decides from what it observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Disposition {
+    Attach,
+    Gone(String),
+    Uncertain(String),
+}
+
+/// PURE: the step-3 decision, from what was observed in order: the bound incarnation's liveness
+/// BEFORE asking, the engine's answer, and its liveness AFTER (the answer is this engine's only
+/// if the process did not change under the round trip). Only positive evidence decides:
+/// the same live incarnation answering with THIS run attaches, and a verifiably dead one is
+/// gone. An engine that answers with another run, or not at all, is not proof this run ended
+/// (Codex on the step-3 plan): that is uncertain, and uncertain never resumes.
+fn reattach_disposition(
+    before: crate::inference::engine_residency::Liveness,
+    has_spec: bool,
+    answer: Option<Result<TrainStatus, String>>,
+    after: crate::inference::engine_residency::Liveness,
+    out: &str,
+) -> Disposition {
+    use crate::inference::engine_residency::Liveness;
+    match before {
+        Liveness::Dead => return Disposition::Gone("its bound engine incarnation is verifiably gone".into()),
+        Liveness::Unknown => return Disposition::Uncertain("its bound engine's liveness cannot be read".into()),
+        Liveness::Alive => {}
+    }
+    if !has_spec {
+        return Disposition::Uncertain("the binding predates job_spec, so the run cannot be watched again here".into());
+    }
+    match answer {
+        None => return Disposition::Uncertain("the engine was not asked".into()),
+        Some(Err(e)) => return Disposition::Uncertain(format!("the engine did not answer: {e}")),
+        Some(Ok(s)) if s.out.as_deref() != Some(out) => {
+            return Disposition::Uncertain(format!("the engine reports run {:?}, not this one: not proof this run ended", s.out))
+        }
+        Some(Ok(_)) => {}
+    }
+    match after {
+        Liveness::Alive => Disposition::Attach,
+        Liveness::Dead => Disposition::Gone("its engine died while it was being asked".into()),
+        Liveness::Unknown => Disposition::Uncertain("its engine's liveness could not be re-read after the answer".into()),
+    }
+}
+
+impl EngineLoraFineTuner {
+    /// BOOT, before anything can admit (Cormac on the step-3 plan): re-take the governed lease
+    /// of every run a previous core bound to an engine that may still be running it. The lease
+    /// lived in the dead core's memory; the engine's allocation did not, so until this runs a
+    /// second job could be admitted into memory a surviving run is using. Called once, right
+    /// after the adapter is built and before any module ticks; a binding whose engine is
+    /// verifiably dead takes no lease (re-attach releases it).
+    pub fn reclaim_resident_leases(&self) {
+        use crate::inference::engine_residency::Liveness;
+        let (Some(store), Some(daemon)) = (self.residency_store.as_ref(), crate::resources::ResourceDaemon::global()) else {
+            return;
+        };
+        let bound = match crate::inference::engine_residency::all(store) {
+            Ok(bound) => bound,
+            Err(error) => {
+                crate::probe!(
+                    class = "training.reattach.store_unreadable",
+                    error = %error,
+                    "engine bindings cannot be read at boot: ownership is unknown, so serving stays off every engine it guards"
+                );
+                return;
+            }
+        };
+        for work in bound {
+            if work.engine.liveness() == Liveness::Dead || work.reserved_bytes == 0 {
+                continue;
+            }
+            let consumer = if work.consumer.is_empty() { format!("genome-train:{}", work.job) } else { work.consumer.clone() };
+            match daemon.acquire_guarded(&crate::forge::training_admission::request(&consumer, work.reserved_bytes)) {
+                Ok(guard) => {
+                    if let Ok(mut leases) = self.resident_leases.lock() {
+                        leases.insert(work.job, guard);
+                    }
+                    crate::probe!(
+                        class = "training.reattach.lease_reclaimed",
+                        job = %work.job,
+                        bytes = work.reserved_bytes,
+                        "a run bound to a live engine by a previous core: its lease is re-taken before anything can admit"
+                    );
+                }
+                Err(error) => crate::probe!(
+                    class = "training.reattach.lease_refused",
+                    job = %work.job,
+                    bytes = work.reserved_bytes,
+                    error = %format!("{error:?}"),
+                    "a surviving run's lease could not be re-taken: its memory is in use but unaccounted"
+                ),
+            }
+        }
+    }
+
+    /// Step 3: re-attach to `job` if a previous core bound it to an engine that is still running
+    /// it, under the SAME id and without POSTing it again. See [`ReattachOutcome`].
+    async fn reattach_job(&self, job: Uuid) -> Result<ReattachOutcome, FineTuningError> {
+        let Some(store) = self.residency_store.clone() else {
+            return Ok(ReattachOutcome::NotResident);
+        };
+        let lookup = store.clone();
+        let found = tokio::task::spawn_blocking(move || crate::inference::engine_residency::find(&lookup, job))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+        let work = match found {
+            Ok(Some(work)) => work,
+            Ok(None) => return Ok(ReattachOutcome::NotResident),
+            // an unreadable store is unknown ownership: never a reason to start the job again
+            Err(error) => return Ok(ReattachOutcome::Uncertain { reason: format!("engine bindings cannot be read: {error}") }),
+        };
+        let liveness = |engine: crate::inference::engine_residency::EngineIncarnation| async move {
+            tokio::task::spawn_blocking(move || engine.liveness())
+                .await
+                .unwrap_or(crate::inference::engine_residency::Liveness::Unknown) // unwrap_or: a probe that could not run proves nothing
+        };
+        let lane = work.engine.root_url();
+        let before = liveness(work.engine).await;
+        let answer = if before == crate::inference::engine_residency::Liveness::Alive && work.job_spec.is_some() {
+            let probe = EngineRun::status_at(&self.http, &lane).await;
+            Some(probe)
+        } else {
+            None
+        };
+        let after = liveness(work.engine).await;
+        match reattach_disposition(before, work.job_spec.is_some(), answer, after, &work.out) {
+            Disposition::Gone(reason) => {
+                let (release_store, bound) = (store.clone(), work.clone());
+                let released = tokio::task::spawn_blocking(move || crate::inference::engine_residency::release(&release_store, &bound)).await;
+                if let Ok(mut leases) = self.resident_leases.lock() {
+                    leases.remove(&job);
+                }
+                crate::probe!(
+                    class = "training.reattach.engine_gone",
+                    job = %job,
+                    released = matches!(released, Ok(Ok(true))),
+                    reason = reason.as_str(),
+                    "a previous core's run: its engine is verifiably gone, so its binding is released and the job may resume from its input"
+                );
+                Ok(ReattachOutcome::EngineGone { reason })
+            }
+            Disposition::Uncertain(reason) => {
+                crate::probe!(
+                    class = "training.reattach.uncertain",
+                    job = %job,
+                    pid = work.engine.pid as u64,
+                    reason = reason.as_str(),
+                    "a previous core's run may still be training: its binding and lease stay, serving stays off the engine, and it is NOT started again"
+                );
+                Ok(ReattachOutcome::Uncertain { reason })
+            }
+            Disposition::Attach => {
+                let Some(spec) = work.job_spec.clone() else {
+                    return Ok(ReattachOutcome::Uncertain { reason: "the binding carries no job_spec".into() });
+                };
+                let lease = self.resident_leases.lock().ok().and_then(|mut leases| leases.remove(&job));
+                if lease.is_none() {
+                    crate::probe!(
+                        class = "training.reattach.unleased",
+                        job = %job,
+                        "re-attached without a reclaimed lease: the run's memory is in use but not on the board"
+                    );
+                }
+                let last = Arc::new(Mutex::new(None));
+                let run = EngineRun {
+                    http: self.http.clone(),
+                    lane,
+                    start: None,
+                    out: work.out.clone(),
+                    adapter_path: spec.adapter_path.clone(),
+                    epochs: spec.epochs,
+                    last: last.clone(),
+                    holds: self.holds.clone(),
+                    job,
+                    hold_store: self.hold_store.clone(),
+                    residency: Some((store, work)),
+                    _lease: lease,
+                };
+                let finish = finish_run(job, spec, self.footprints.path.clone(), last);
+                let handle = self.jobs.prepare(job, move |_progress| async move {
+                    Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
+                });
+                crate::probe!(
+                    class = "training.reattach.attached",
+                    job = %job,
+                    "a run a previous core started is still this job's in its engine: watched again under the same id, never POSTed again"
+                );
+                Ok(ReattachOutcome::Attached { handle })
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -952,6 +1208,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let job_dir = job_dir_for(&request, id);
         let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
         let epochs = schedule.epochs;
+        let spec = EngineRunSpec {
+            adapter_path: train_dir.join(&out),
+            job_dir,
+            epochs,
+            val_split: SplitPpm::from(val),
+            model_id,
+            shape: shape.clone(),
+        };
         Ok(self.jobs.prepare(id, move |progress| async move {
             let consumer = format!("genome-train:{id}");
             let mut residency = None;
@@ -999,6 +1263,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     consumer: consumer.clone(),
                     reserved_bytes: bytes,
                     interrupted: None,
+                    job_spec: Some(spec.clone()),
                 };
                 let (bind_store, bind_work) = (store.clone(), bound.clone());
                 let bind = move || -> Result<(), String> {
@@ -1034,8 +1299,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             let run = EngineRun {
                 http,
                 lane,
-                body,
-                adapter_path: train_dir.join(&out),
+                start: Some(body),
+                out: out.clone(),
+                adapter_path: spec.adapter_path.clone(),
                 epochs,
                 last: last.clone(),
                 holds,
@@ -1046,94 +1312,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             };
             Ok(PreparedJob {
                 execution: Execution::InPlace(Box::new(run)),
-                finish: Box::new(move |wall_clock_ms| {
-                    let adapter = move_adapter(&train_dir, &out, &job_dir)?;
-                    let status = last
-                        .lock()
-                        .ok()
-                        .and_then(|l| l.clone())
-                        .ok_or("the engine's final status was never read")?;
-                    let final_loss = status.epochs.last().map(|e| e.train_loss);
-                    let final_validation_loss = held_out_loss(&status, val);
-                    let trainable = status
-                        .trainable_tokens
-                        .ok_or("the engine reported no trainable-token count")?;
-                    if trainable == 0 || final_loss.is_none_or(|l| !l.is_finite()) {
-                        return Err("the engine produced no finite measured learning receipt".into());
-                    }
-                    // the footprint this shape needs: the training graph the engine measured before
-                    // allocating it (exact, where a VRAM sample could miss the peak)
-                    let grown = status.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
-                    // recorded under the depth the engine ACTUALLY adapted: an engine that
-                    // ignored top_layers measured a full-depth graph, and that number must never
-                    // be leased for a reduced-depth run (Codex on #27)
-                    crate::probe!(
-                        class = "training.job.examples_fit",
-                        job = %id,
-                        kept = status.examples.unwrap_or(0), // probe field: 0 = an engine that does not report it
-                        truncated = status.examples_truncated.unwrap_or(0), // probe field: as above
-                        skipped = status.examples_skipped.unwrap_or(0), // probe field: as above
-                        "how her examples met the window: kept whole, fitted by dropping their oldest history, or skipped"
-                    );
-                    let adapted = effective_depth(status.layers_adapted, status.n_layer);
-                    if adapted != shape.depth {
-                        crate::probe!(
-                            class = "training.job.depth_differs",
-                            job = %id,
-                            asked = shape.depth.map_or(0, u64::from), // probe field: 0 = every block
-                            adapted = adapted.map_or(0, u64::from), // probe field: 0 = every block
-                            "the engine adapted a different depth than was asked (an engine without top_layers adapts every block)"
-                        );
-                    }
-                    // The footprint is filed under the geometry that RAN (fork #30 sizes the graph
-                    // to the data, the served window is only its ceiling): a graph measured at a
-                    // 15k window must never be leased for a 61k one (Codex on #4498).
-                    let ran_window = status.window.filter(|w| *w > 0).unwrap_or(shape.window);
-                    if ran_window != shape.window {
-                        crate::probe!(
-                            class = "training.job.window_used",
-                            job = %id,
-                            sent = u64::from(shape.window),
-                            used = u64::from(ran_window),
-                            "the engine sized its training graph to the data: the footprint is filed under the window that ran"
-                        );
-                    }
-                    let measured_shape = Shape { depth: adapted, window: ran_window, ..shape.clone() };
-                    // A depth equal to the model's block count IS full depth (fork #27 refuses one
-                    // past it): filed under the asked key too, or that request would calibrate on
-                    // every run (Cormac on #4472).
-                    let asked_full = matches!((shape.depth, status.n_layer), (Some(k), Some(n)) if k >= n);
-                    if grown > 0 {
-                        let store = Footprints { path: footprints_path };
-                        if asked_full {
-                            // the asked depth, at the window that ran
-                            let asked_ran = Shape { window: ran_window, ..shape.clone() };
-                            let _ = store.record(&asked_ran, grown, id); // best effort: the full-depth row below is the one that matters
-                        }
-                        if let Err(e) = store.record(&measured_shape, grown, id) {
-                            crate::probe!(
-                                class = "training.job.footprint_unrecorded",
-                                job = %id,
-                                error = %e,
-                                "the measured engine-training footprint could not be recorded; the next run of \
-                                 this shape calibrates again"
-                            );
-                        }
-                    }
-                    Ok(TrainingArtifact {
-                        model_id,
-                        local_path: Some(adapter),
-                        format: ArtifactFormat::GgufLora,
-                        metrics: JobMetrics {
-                            trained_tokens: trainable * status.epochs.len() as u64,
-                            final_loss,
-                            final_validation_loss,
-                            wall_clock_ms,
-                            layers_adapted: status.layers_adapted.or(status.n_layer),
-                            ..Default::default()
-                        },
-                    })
-                }),
+                finish: finish_run(id, spec, footprints_path, last),
             })
         }))
     }
@@ -1145,6 +1324,109 @@ impl FineTuningAdapter for EngineLoraFineTuner {
     async fn cancel(&self, handle: &JobHandle) -> Result<(), FineTuningError> {
         self.jobs.cancel(handle)
     }
+
+    async fn reattach(&self, local_id: Uuid) -> Result<ReattachOutcome, FineTuningError> {
+        self.reattach_job(local_id).await
+    }
+}
+
+/// A run's finish: collect its adapter into the job directory, read the engine's receipts, and
+/// file the footprint under the geometry that ran. ONE body for a run this core started and one
+/// it re-attached to (step 3), because both finish from the same [`EngineRunSpec`].
+fn finish_run(
+    job: Uuid,
+    spec: EngineRunSpec,
+    footprints_path: PathBuf,
+    last: Arc<Mutex<Option<TrainStatus>>>,
+) -> Box<dyn FnOnce(u64) -> Result<TrainingArtifact, String> + Send> {
+    Box::new(move |wall_clock_ms| {
+        let adapter = move_adapter(&spec.adapter_path, &spec.job_dir)?;
+        let status = last
+            .lock()
+            .ok()
+            .and_then(|l| l.clone())
+            .ok_or("the engine's final status was never read")?;
+        let final_loss = status.epochs.last().map(|e| e.train_loss);
+        let final_validation_loss = held_out_loss(&status, f32::from(spec.val_split));
+        let trainable = status
+            .trainable_tokens
+            .ok_or("the engine reported no trainable-token count")?;
+        if trainable == 0 || final_loss.is_none_or(|l| !l.is_finite()) {
+            return Err("the engine produced no finite measured learning receipt".into());
+        }
+        // the footprint this shape needs: the training graph the engine measured before
+        // allocating it (exact, where a VRAM sample could miss the peak)
+        let grown = status.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
+        // recorded under the depth the engine ACTUALLY adapted: an engine that
+        // ignored top_layers measured a full-depth graph, and that number must never
+        // be leased for a reduced-depth run (Codex on #27)
+        crate::probe!(
+            class = "training.job.examples_fit",
+            job = %job,
+            kept = status.examples.unwrap_or(0), // probe field: 0 = an engine that does not report it
+            truncated = status.examples_truncated.unwrap_or(0), // probe field: as above
+            skipped = status.examples_skipped.unwrap_or(0), // probe field: as above
+            "how her examples met the window: kept whole, fitted by dropping their oldest history, or skipped"
+        );
+        let adapted = effective_depth(status.layers_adapted, status.n_layer);
+        if adapted != spec.shape.depth {
+            crate::probe!(
+                class = "training.job.depth_differs",
+                job = %job,
+                asked = spec.shape.depth.map_or(0, u64::from), // probe field: 0 = every block
+                adapted = adapted.map_or(0, u64::from), // probe field: 0 = every block
+                "the engine adapted a different depth than was asked (an engine without top_layers adapts every block)"
+            );
+        }
+        // The footprint is filed under the geometry that RAN (fork #30 sizes the graph
+        // to the data, the served window is only its ceiling): a graph measured at a
+        // 15k window must never be leased for a 61k one (Codex on #4498).
+        let ran_window = status.window.filter(|w| *w > 0).unwrap_or(spec.shape.window);
+        if ran_window != spec.shape.window {
+            crate::probe!(
+                class = "training.job.window_used",
+                job = %job,
+                sent = u64::from(spec.shape.window),
+                used = u64::from(ran_window),
+                "the engine sized its training graph to the data: the footprint is filed under the window that ran"
+            );
+        }
+        let measured_shape = Shape { depth: adapted, window: ran_window, ..spec.shape.clone() };
+        // A depth equal to the model's block count IS full depth (fork #27 refuses one
+        // past it): filed under the asked key too, or that request would calibrate on
+        // every run (Cormac on #4472).
+        let asked_full = matches!((spec.shape.depth, status.n_layer), (Some(k), Some(n)) if k >= n);
+        if grown > 0 {
+            let store = Footprints { path: footprints_path };
+            if asked_full {
+                // the asked depth, at the window that ran
+                let asked_ran = Shape { window: ran_window, ..spec.shape.clone() };
+                let _ = store.record(&asked_ran, grown, job); // best effort: the full-depth row below is the one that matters
+            }
+            if let Err(e) = store.record(&measured_shape, grown, job) {
+                crate::probe!(
+                    class = "training.job.footprint_unrecorded",
+                    job = %job,
+                    error = %e,
+                    "the measured engine-training footprint could not be recorded; the next run of \
+                     this shape calibrates again"
+                );
+            }
+        }
+        Ok(TrainingArtifact {
+            model_id: spec.model_id.clone(),
+            local_path: Some(adapter),
+            format: ArtifactFormat::GgufLora,
+            metrics: JobMetrics {
+                trained_tokens: trainable * status.epochs.len() as u64,
+                final_loss,
+                final_validation_loss,
+                wall_clock_ms,
+                layers_adapted: status.layers_adapted.or(status.n_layer),
+                ..Default::default()
+            },
+        })
+    })
 }
 
 /// One example as `/train` reads it. A lived call goes as its served conversation: the
@@ -1527,6 +1809,99 @@ mod tests {
         assert_eq!(std::fs::read_dir(train.path()).unwrap().count(), 0, "nothing left in engine-train");
         assert_eq!(artifact.metrics.final_loss, Some(2.1));
         assert_eq!(artifact.metrics.trained_tokens, 80);
+        server.abort();
+    }
+
+    // what this catches (SHARED-RESIDENT-LIFECYCLE.md step 3, Codex and Cormac on the plan):
+    // re-attach deciding on anything but positive evidence. Only the SAME live incarnation
+    // answering with THIS run attaches; a verifiably dead one (including a new engine that took
+    // the port: the record's own start time no longer matches) is gone; an engine answering
+    // with another run, not answering, or unreadable, is uncertain and never resumes.
+    #[test]
+    fn re_attach_decides_only_on_positive_evidence() {
+        use crate::inference::engine_residency::{EngineIncarnation, Liveness, ProcessProbe};
+        let ours = |out: &str| -> TrainStatus {
+            serde_json::from_value(json!({"state": "running", "out": out})).expect("test: status")
+        };
+        let (a, d, u) = (Liveness::Alive, Liveness::Dead, Liveness::Unknown);
+        assert_eq!(reattach_disposition(a, true, Some(Ok(ours("j.gguf"))), a, "j.gguf"), Disposition::Attach);
+        for (before, spec, answer, after, why) in [
+            (a, true, Some(Ok(ours("other.gguf"))), a, "another run is not proof this one ended"),
+            (a, true, Some(Err("refused".to_string())), a, "no answer is not proof"),
+            (a, false, None, a, "a binding from before job_spec cannot be watched again"),
+            (u, true, None, u, "unreadable liveness"),
+            (a, true, Some(Ok(ours("j.gguf"))), u, "the answer is this engine's only if it is still the same process"),
+        ] {
+            assert!(matches!(reattach_disposition(before, spec, answer, after, "j.gguf"), Disposition::Uncertain(_)), "{why}");
+        }
+        assert!(matches!(reattach_disposition(d, true, None, d, "j.gguf"), Disposition::Gone(_)));
+        assert!(matches!(reattach_disposition(a, true, Some(Ok(ours("j.gguf"))), d, "j.gguf"), Disposition::Gone(_)));
+        // Cormac's (c): after a restart a NEW engine holds the same port; the old record's own
+        // incarnation reads dead, so the new engine is never asked and never attached to.
+        let old = EngineIncarnation { pid: 4242, started_s: 1_000, port: 58057 };
+        assert_eq!(old.liveness_with(|_| ProcessProbe::Present(2_000)), Liveness::Dead);
+        assert!(!ReattachOutcome::Uncertain { reason: String::new() }.permits_resume());
+        assert!(ReattachOutcome::EngineGone { reason: String::new() }.permits_resume());
+    }
+
+    // what this catches (step 3's whole point): a core-only restart losing a run that is still
+    // training, or starting it AGAIN. A successor tuner that never created the job finds its
+    // binding, watches the run in the engine under the SAME id WITHOUT a POST, finishes it into
+    // the job directory from the recorded spec, and releases the binding once the end is settled.
+    #[tokio::test]
+    async fn a_successor_core_reattaches_a_live_run_under_the_same_id_without_posting_it() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let home = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let job = Uuid::new_v4();
+        let out = format!("{job}.gguf");
+        // the previous core's POST: the run is in the engine before this core exists
+        reqwest::Client::new().post(format!("{url}/train")).json(&json!({"out": out})).send().await.expect("test: post");
+        *seen.lock().unwrap() = None;
+        let port: u16 = url.rsplit(':').next().and_then(|p| p.parse().ok()).expect("test: port");
+        let engine = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), port).expect("test: this process has a start time");
+        let store = crate::inference::engine_residency::store_path(home.path());
+        let job_dir = jobs.path().join(job.to_string());
+        let spec = EngineRunSpec {
+            adapter_path: train.path().join(&out),
+            job_dir: job_dir.clone(),
+            epochs: 2,
+            val_split: SplitPpm::from(0.1),
+            model_id: format!("{PROVIDER_ID}:code:{job}"),
+            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None },
+        };
+        let bound = crate::inference::engine_residency::ResidentWork {
+            job,
+            out: out.clone(),
+            engine,
+            base_model: "m".into(),
+            created_ms: 1,
+            consumer: format!("genome-train:{job}"),
+            reserved_bytes: 0,
+            interrupted: None,
+            job_spec: Some(spec),
+        };
+        crate::inference::engine_residency::record(&store, bound).expect("test: record");
+        let mut successor = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        successor.residency_store = Some(store.clone());
+
+        let ReattachOutcome::Attached { handle } = successor.reattach(job).await.expect("test: reattach") else {
+            panic!("test: a live run of this job must re-attach");
+        };
+        assert_eq!(handle.local_id, job, "the same job, not a new one");
+        let TrainingStatus::Completed { artifact } = wait_terminal(&successor, &handle).await else {
+            panic!("test: the re-attached run must finish");
+        };
+        assert!(seen.lock().unwrap().is_none(), "a re-attached run is never POSTed again");
+        let path = artifact.local_path.expect("test: path");
+        assert!(path.starts_with(&job_dir) && path.is_file(), "finished into the recorded job dir: {}", path.display());
+        assert_eq!(artifact.metrics.final_validation_loss, Some(2.4), "the recorded split decides the held-out loss");
+        assert!(
+            crate::inference::engine_residency::find(&store, job).expect("test: read").is_none(),
+            "the settled end released the binding"
+        );
+        assert!(matches!(successor.reattach(job).await.expect("test: again"), ReattachOutcome::NotResident));
         server.abort();
     }
 
