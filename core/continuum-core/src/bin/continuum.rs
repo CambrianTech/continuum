@@ -3682,11 +3682,24 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     // is this consumer's own job (below), and counting a stale one as dirt wedged the node
     // after the first pin bump (2026-09-27: every later tip refused as "uncommitted work").
     let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"])?.is_empty();
-    // The deploy claim is the tracker's own input (`deploy_claim::in_flight`): a live
-    // owner under the ceiling blocks; an abandoned claim is swept by `reboot` itself.
-    let build_in_flight = continuum_root()
-        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()).blocks())
-        .unwrap_or(false); // unwrap_or: no root = no claim file = nothing in flight
+    // The deploy claim is the tracker's own input (`deploy_claim::in_flight`). A LIVE owner
+    // excludes this consumer whether or not its claim expired: its checkout is its own, and
+    // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
+    // claim is swept (by `reboot` itself).
+    let gate = continuum_root()
+        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()))
+        .ok(); // no root = no claim file = nothing in flight
+    if let Some(continuum_core::runtime::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
+        .as_ref()
+        .filter(|g| g.excludes_deploy())
+    {
+        deploy_note(&format!(
+            "deploy owner pid {pid} is alive but made no progress ({}s old): not checking out under \
+             it. Sample it (`sample {pid}`), then stop it, to release the deploy tree.",
+            age_ms / 1000
+        ));
+    }
+    let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
     let prior_failures = tip
         .as_deref()

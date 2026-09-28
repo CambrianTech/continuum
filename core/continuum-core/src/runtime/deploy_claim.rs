@@ -176,9 +176,20 @@ pub enum AbandonReason {
 }
 
 impl DeployGate {
-    /// True only when a launcher must refuse. `Abandoned` deliberately does NOT block.
+    /// True only when a launcher must refuse. `Abandoned` deliberately does NOT block: a hung
+    /// deploy must never wedge the machine's cores.
     pub fn blocks(&self) -> bool {
         matches!(self, DeployGate::InProgress { .. })
+    }
+
+    /// True when ANOTHER DEPLOY must not start: the owner is in progress, or it expired while
+    /// still ALIVE (card 634f644d, Cormac and Codex on #4524). Expiry is a guess about progress
+    /// (CPU is not progress: a spin reads busy, an I/O or lock wait reads idle). A live
+    /// owner's checkout is its own however the guess falls, so the next consumer never
+    /// changes the deploy tree under it. The IntelMac, 2026-09-28: 43925 checked out 93499d5d6
+    /// under 7240's live build. Only a dead owner releases the deploy tree.
+    pub fn excludes_deploy(&self) -> bool {
+        matches!(self, DeployGate::InProgress { .. } | DeployGate::Abandoned { why: AbandonReason::Expired, .. })
     }
 }
 
@@ -503,6 +514,12 @@ mod tests {
         assert!(deploy_working(0.1, 97.0), "lock-blocked behind a compiling build: working");
         assert!(!deploy_working(0.1, 0.4), "nothing compiling anywhere: hung");
         assert!(is_compiler("rustc") && is_compiler("cargo.exe") && !is_compiler("rustfmt"));
+        // card 634f644d: however expiry guesses, a LIVE owner excludes the next deploy (it
+        // never releases the deploy tree), while a launch is not wedged by it; only a dead
+        // owner frees both.
+        assert!(hung.excludes_deploy() && !hung.blocks(), "hung and alive: no new deploy, but cores may launch");
+        let dead = decide(Some(&at(0, now - min, now - min)), false, now);
+        assert!(!dead.excludes_deploy() && !dead.blocks(), "a dead owner releases the deploy tree");
     }
 
     // what this catches: the renewer overwriting a claim another deploy took after this
