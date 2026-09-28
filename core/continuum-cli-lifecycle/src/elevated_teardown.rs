@@ -190,7 +190,7 @@ where
     C: HeldCapability,
     T: FnOnce(i32) -> Result<C, String>,
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = String>,
+    Fut: std::future::Future<Output = Result<String, String>>,
 {
     // THE CAPABILITY COMES FIRST, and everything after it is read THROUGH it. Taking it
     // kills nothing; what it buys is that the pid stops being a name two different
@@ -200,7 +200,7 @@ where
     target_is_our_core(plan, &image)?;
     // Only now, with the capability in hand and the target proven, may anything be
     // drained. A failure above this line leaves a serving core serving.
-    let graceful = drain().await;
+    let graceful = drain().await?;
     held.spend()?;
     Ok((image, graceful))
 }
@@ -408,7 +408,7 @@ mod tests {
             },
             || {
                 l.borrow_mut().push("drain");
-                async { "durable".to_string() }
+                async { Ok("durable".to_string()) }
             },
         )
         .await
@@ -432,7 +432,7 @@ mod tests {
             |_pid| Err("OpenProcess denied".to_string()),
             || {
                 l.borrow_mut().push("drain");
-                async { String::new() }
+                async { Ok(String::new()) }
             },
         )
         .await
@@ -456,7 +456,7 @@ mod tests {
             },
             || {
                 l.borrow_mut().push("drain");
-                async { String::new() }
+                async { Ok(String::new()) }
             },
         )
         .await
@@ -470,6 +470,30 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_restart_quiescence_prevents_termination() {
+        let p = plan();
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let taken = log.clone();
+        let ours = format!("{}\\core.exe", p.install_dir);
+        let result = teardown_sequence(
+            &p,
+            move |_| {
+                Ok(Recorder {
+                    log: taken,
+                    image: ours,
+                })
+            },
+            || async { Err("supervisor did not acknowledge stop".to_string()) },
+        )
+        .await;
+        assert!(result.unwrap_err().contains("did not acknowledge"));
+        assert_eq!(
+            log.borrow().as_slice(),
+            &["image"],
+            "no termination after refused stop admission"
+        );
+    }
     // what this catches (measured on the Windows node 2026-09-22): the core is ALREADY
     // DRAINED — ingress closed at 21:33:09, gate deliberately not reopening — and the
     // teardown runs against it anyway. The sequence must still terminate, and the
@@ -492,7 +516,7 @@ mod tests {
             || {
                 l.borrow_mut().push("drain");
                 // What an already-drained core answers: nothing left to do.
-                async { "NothingRunning".to_string() }
+                async { Ok("NothingRunning".to_string()) }
             },
         )
         .await

@@ -626,6 +626,108 @@ fn receipt_path(plan: &Path) -> PathBuf {
     plan.with_extension("receipt.txt")
 }
 
+/// Own the foreground core's lifetime. Task registration is not supervision:
+/// after an unsuccessful child exit this same host waits for the restart deadline
+/// and launches its replacement. No health polling and no second supervisor task.
+/// A successful exit is an explicit orderly stop and is never restarted.
+pub async fn supervise_core(
+    command: &mut tokio::process::Command,
+    on_spawn: impl FnMut(u32) -> Result<(), String>,
+    socket: &str,
+) -> Result<i32, String> {
+    #[cfg(windows)]
+    {
+        let signal = crate::windows_launch::ServiceStopSignal::create(socket)
+            .map_err(|e| format!("service-host stop channel: {e}"))?;
+        let wait = signal.wait_requested();
+        supervise_core_until(
+            command,
+            on_spawn,
+            std::time::Duration::from_secs(60),
+            async {
+                wait.await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())
+            },
+            || signal.acknowledge().map_err(|e| e.to_string()),
+        )
+        .await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = socket;
+        supervise_core_until(
+            command,
+            on_spawn,
+            std::time::Duration::from_secs(60),
+            std::future::pending(),
+            || Ok(()),
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+async fn supervise_core_with_delay(
+    command: &mut tokio::process::Command,
+    on_spawn: impl FnMut(u32) -> Result<(), String>,
+    retry_delay: std::time::Duration,
+) -> Result<i32, String> {
+    supervise_core_until(
+        command,
+        on_spawn,
+        retry_delay,
+        std::future::pending(),
+        || Ok(()),
+    )
+    .await
+}
+
+async fn supervise_core_until(
+    command: &mut tokio::process::Command,
+    mut on_spawn: impl FnMut(u32) -> Result<(), String>,
+    retry_delay: std::time::Duration,
+    stop: impl std::future::Future<Output = Result<(), String>>,
+    acknowledge_stop: impl Fn() -> Result<(), String>,
+) -> Result<i32, String> {
+    command.kill_on_drop(true);
+    tokio::pin!(stop);
+    loop {
+        let mut child = tokio::select! {
+            biased;
+            result = &mut stop => { result?; acknowledge_stop()?; return Ok(0); }
+            result = async { command.spawn() } => result.map_err(|e| format!("service-host cannot launch core: {e}"))?,
+        };
+        let pid = child
+            .id()
+            .ok_or("service-host core has no PID after spawn")?;
+        on_spawn(pid)?;
+        // Stop acknowledgement closes restart admission before the CLI drains
+        // or kills this child. The child remains available for its graceful save.
+        let status = tokio::select! {
+            biased;
+            result = &mut stop => {
+                result?;
+                acknowledge_stop()?;
+                child.wait().await.map_err(|e| format!("service-host cannot wait for stopped core {pid}: {e}"))?;
+                return Ok(0);
+            }
+            result = child.wait() => result.map_err(|e| format!("service-host cannot wait for core {pid}: {e}"))?,
+        };
+        if status.success() {
+            return Ok(0);
+        }
+        eprintln!(
+            "service-host: core {pid} exited {status}; restarting in {}s",
+            retry_delay.as_secs()
+        );
+        tokio::select! {
+            biased;
+            result = &mut stop => { result?; acknowledge_stop()?; return Ok(0); }
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
+    }
+}
 /// The unelevated verb: read both tasks, judge drift, elevate once if needed,
 /// verify by re-reading. `descriptor_cli` reads the installed CLI out of the core
 /// task's description (the release descriptor) — the caller owns that type.
@@ -839,6 +941,136 @@ mod tests {
         }
     }
 
+    // Real child-exit regression: the first process fails; its replacement
+    // stops cleanly. XML containing RestartOnFailure cannot prove this.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn failed_core_restarts_but_orderly_stop_ends_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("child.ps1");
+        let marker = dir.path().join("attempts.txt");
+        std::fs::write(
+            &script,
+            r#"
+param([string]$Marker)
+if (Test-Path -LiteralPath $Marker) {
+    Add-Content -LiteralPath $Marker -Value 'stopped'
+    exit 0
+}
+Set-Content -LiteralPath $Marker -Value 'failed'
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut command = tokio::process::Command::new("powershell.exe");
+        command
+            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .arg(&script)
+            .arg(&marker)
+            .creation_flags(0x08000000)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut pids = Vec::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            supervise_core_with_delay(
+                &mut command,
+                |pid| {
+                    pids.push(pid);
+                    Ok(())
+                },
+                std::time::Duration::ZERO,
+            ),
+        )
+        .await
+        .expect("supervisor failed to finish after orderly stop")
+        .unwrap();
+        assert_eq!(result, 0);
+        assert_eq!(
+            pids.len(),
+            2,
+            "one replacement, no restart of clean shutdown"
+        );
+        assert_ne!(pids[0], pids[1]);
+        assert_eq!(
+            std::fs::read_to_string(marker)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["failed", "stopped"]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_launch_does_not_claim_a_started_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = tokio::process::Command::new(dir.path().join("missing-core"));
+        let result = supervise_core_with_delay(
+            &mut command,
+            |_| panic!("no core was spawned"),
+            std::time::Duration::ZERO,
+        )
+        .await;
+        assert!(result.unwrap_err().contains("cannot launch core"));
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn explicit_stop_acknowledges_before_forced_child_exit_and_never_restarts() {
+        let socket = format!("supervisor-test-{}", uuid::Uuid::new_v4());
+        let remote = socket.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let stop = tokio::task::spawn_blocking(move || {
+            let pid = received
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            crate::windows_launch::stop_service_restarts(&remote).unwrap();
+            // Only after admission is closed may the CLI force a stuck core down.
+            let mut kill = std::process::Command::new("taskkill.exe");
+            use std::os::windows::process::CommandExt;
+            let status = kill
+                .args(["/F", "/PID", &format!("{pid}")])
+                .creation_flags(0x08000000)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        });
+        let mut command = tokio::process::Command::new("powershell.exe");
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30; exit 1",
+            ])
+            .creation_flags(0x08000000)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut starts = 0;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            supervise_core(
+                &mut command,
+                |pid| {
+                    starts += 1;
+                    sent.send(pid).map_err(|e| e.to_string())
+                },
+                &socket,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        stop.await.unwrap();
+        assert_eq!(
+            result, 0,
+            "intentional force-stop is not a crash to restart"
+        );
+        assert_eq!(starts, 1);
+    }
     // what this catches: the contract itself, as the scheduler will read it — S4U,
     // least privilege, a BOOT trigger for the core (a logon trigger is the 2 h 42 m
     // outage), restart forever for the core and a bounded repeating tick for the

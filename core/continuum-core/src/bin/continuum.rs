@@ -1215,20 +1215,10 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         command.env("CONTINUUM_CORE_SOCKET", &args[1]);
         command.stdin(Stdio::null()).creation_flags(0x0800_0000);
         let mut command = tokio::process::Command::from(command);
-        command.kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("service-host cannot launch {}: {e}", args[0]))?;
-        let pid = child
-            .id()
-            .ok_or("service-host core exited before PID registration")?;
-        std::fs::write(pidfile_for(&args[1]), pid.to_string())
-            .map_err(|e| format!("service-host cannot record core PID: {e}"))?;
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| format!("service-host cannot wait for core: {e}"))?;
-        Ok(status.code().unwrap_or(1))
+        continuum_cli_lifecycle::supervisor_install::supervise_core(&mut command, |pid| {
+            std::fs::write(pidfile_for(&args[1]), pid.to_string())
+                .map_err(|e| format!("service-host cannot record core PID: {e}"))
+        }, &args[1]).await
     }
 }
 
@@ -5430,6 +5420,13 @@ async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulSto
     }
 }
 
+#[cfg(windows)]
+async fn quiesce_service_restarts() -> Result<(), String> {
+    let endpoint = socket_path();
+    tokio::task::spawn_blocking(move || windows_launch::stop_service_restarts(&endpoint))
+        .await.map_err(|e| format!("service-host stop task failed: {e}"))?
+        .map_err(|e| format!("service-host restart admission was not stopped: {e}"))
+}
 async fn stop(options: StopOptions) -> Result<(), String> {
     // The consented child does ONE thing and returns; it never drains, never sweeps,
     // never asks for a second consent. Everything it is allowed to do is decided by the
@@ -5447,10 +5444,11 @@ async fn stop(options: StopOptions) -> Result<(), String> {
             // `MayDrain` gate live — the module stays a leaf and the token stays where it
             // can only be built by a preflight or by a held handle.
             return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
-                format!(
+                quiesce_service_restarts().await?;
+                Ok(format!(
                     "{:?}",
                     request_graceful_stop(&MayDrain::proven_by_held_handle()).await
-                )
+                ))
             })
             .await;
         }
@@ -5546,6 +5544,8 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
             ));
         }
     }
+    #[cfg(windows)]
+    quiesce_service_restarts().await?;
     let graceful = request_graceful_stop(&may_drain).await;
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,

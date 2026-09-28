@@ -172,7 +172,7 @@ pub(crate) async fn teardown_elevated<F, Fut>(
 ) -> Result<(), String>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = String>,
+    Fut: std::future::Future<Output = Result<String, String>>,
 {
     let receipt = receipt_path(plan_path);
     let result = async {

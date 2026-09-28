@@ -318,6 +318,117 @@ fn environment_block(command: &Command) -> io::Result<Vec<u16>> {
     Ok(block)
 }
 
+/// Stop admission for the one foreground service host before CLI teardown starts.
+/// Kernel events outlive neither owner nor requester: no stale stop file, polling,
+/// or second daemon. Global namespace crosses Task Scheduler's session boundary.
+pub struct ServiceStopSignal {
+    requested: std::sync::Arc<OwnedHandle>,
+    accepted: OwnedHandle,
+}
+
+fn service_event_name(socket: &str, kind: &str) -> Vec<u16> {
+    use sha2::{Digest, Sha256};
+    let key = socket.replace('/', "\\").to_ascii_lowercase();
+    let hash = format!("{:x}", Sha256::digest(key.as_bytes()));
+    format!("Global\\Continuum.Service.{hash}.{kind}")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect()
+}
+
+impl ServiceStopSignal {
+    pub fn create(socket: &str) -> io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        let make = |kind| {
+            let name = service_event_name(socket, kind);
+            let handle = unsafe { CreateEventW(ptr::null(), 1, 0, name.as_ptr()) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let existed = unsafe { windows_sys::Win32::Foundation::GetLastError() } == 183;
+            let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+            if existed {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "a service host already owns this endpoint",
+                ));
+            }
+            Ok(handle)
+        };
+        Ok(Self {
+            requested: std::sync::Arc::new(make("stop")?),
+            accepted: make("accepted")?,
+        })
+    }
+
+    /// Wait in the OS, not on a periodic liveness probe.
+    pub fn wait_requested(&self) -> tokio::task::JoinHandle<io::Result<()>> {
+        let event = self.requested.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = unsafe { WaitForSingleObject(event.as_raw_handle(), u32::MAX) };
+            if result == WAIT_OBJECT_0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        })
+    }
+
+    /// Called only once the host has committed to launching no more children.
+    pub fn acknowledge(&self) -> io::Result<()> {
+        if unsafe { windows_sys::Win32::System::Threading::SetEvent(self.accepted.as_raw_handle()) }
+            == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for ServiceStopSignal {
+    fn drop(&mut self) {
+        // Release the blocking waiter even when the child stops normally or
+        // startup fails before the service loop consumes a stop request.
+        unsafe {
+            windows_sys::Win32::System::Threading::SetEvent(self.requested.as_raw_handle());
+            windows_sys::Win32::System::Threading::SetEvent(self.accepted.as_raw_handle());
+        }
+    }
+}
+
+/// Acknowledge quiesced restart admission BEFORE draining/forcing down the core.
+/// Missing events mean an older or non-service host: existing teardown still owns it.
+pub fn stop_service_restarts(socket: &str) -> io::Result<()> {
+    use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+    const SYNCHRONIZE_ACCESS: u32 = 0x00100000;
+    let open = |kind, access| {
+        let name = service_event_name(socket, kind);
+        let handle = unsafe { OpenEventW(access, 0, name.as_ptr()) };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+        }
+    };
+    let request = match open("stop", EVENT_MODIFY_STATE) {
+        Ok(handle) => handle,
+        Err(e) if e.raw_os_error() == Some(2) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let ack = open("accepted", SYNCHRONIZE_ACCESS)?;
+    if unsafe { SetEvent(request.as_raw_handle()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    match unsafe { WaitForSingleObject(ack.as_raw_handle(), 5_000) } {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_TIMEOUT => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "service host did not acknowledge stop; core not drained",
+        )),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
