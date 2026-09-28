@@ -235,59 +235,16 @@ pub(crate) async fn ask_the_act_question(
                             class = "persona.work.write_or_release_gate",
                             persona = %ctx.identity.agent_name,
                             acts_without_write,
-                            "the work turn is gated: edit now or release the card"
+                            "a write-less stretch on a held card: the advisory checkpoint is shown (never a release)"
                         );
                     }
-                    // THE GOVERNOR. At twice the gate the substrate takes the second exit
-                    // for her: the card goes back on the deck with a receipt, a peer (or
-                    // she, with a plan) can take it, and her lane stops paying for
-                    // orientation. Review cards are not released (they carry no write).
-                    if crate::persona::work_burst::governor_releases(acts_without_write) {
-                        for c in &held {
-                            if crate::commands::benchmark::parse_review_title(&c.title).is_some() {
-                                continue;
-                            }
-                            let Some(claim_id) = c.claim_id.clone() else {
-                                continue;
-                            };
-                            let id8: String =
-                                c.card_id.as_uuid().to_string().chars().take(8).collect();
-                            let reason = format!(
-                                "released by the substrate: {acts_without_write} acts without a write"
-                            );
-                            match citizen.release_card(c.card_id, claim_id, &reason).await {
-                                Ok(()) => {
-                                    crate::probe!(
-                                        class = "persona.work.released_by_governor",
-                                        persona = %ctx.identity.agent_name,
-                                        card = %id8,
-                                        acts_without_write,
-                                        "write-or-release at twice the gate: the substrate released the card"
-                                    );
-                                    if let Some(body) = cycle.acting() {
-                                        // PINNED, like [hands]/[env] (#3845): a recorded fact is
-                                        // gone by her third act; this one must reach her NEXT work
-                                        // turn, where the pull decision is made. Unpinned at that
-                                        // turn's restore (IntelMac's review of #3846).
-                                        body.working_memory.pin_fact_for_turns("released", &format!(
-                                            "[released] The substrate released card {id8} after \
-                                             {acts_without_write} acts of mine with no edit and no \
-                                             work/note. A peer may take it. If I pull it again, my \
-                                             first acts are a work/note with the file:line I found, \
-                                             then the edit: a note is progress and resets the count."
-                                        ), 2);
-                                    }
-                                }
-                                Err(e) => crate::probe!(
-                                    class = "persona.work.governor_release_failed",
-                                    persona = %ctx.identity.agent_name,
-                                    card = %id8,
-                                    error = %e,
-                                    "the governor could not release the card — she keeps it this turn"
-                                ),
-                            }
-                        }
-                    }
+                    // NO GOVERNOR (card 3bd860ba, Joel 2026-09-28: responsibility is durable until
+                    // an explicit handoff). A write-less stretch is an OBSERVATION, never authority
+                    // over whose work a card is: planning, reading and review are real work with
+                    // no file change, and the act count released Kimi's multi-day project card with
+                    // her edits uncommitted. The gate probe above records the stretch; a card leaves
+                    // her only by her own release, an explicit reassignment, or an activity's
+                    // declared policy (the benchmark round's idle reconciler is one).
                     let burst_text = crate::persona::work_burst::held_work_burst_gated(
                         &held,
                         &last_state,
