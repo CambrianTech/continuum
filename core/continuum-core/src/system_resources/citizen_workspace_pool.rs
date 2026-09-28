@@ -196,6 +196,9 @@ enum ResidueKept {
     BuildLive(PathBuf),
     /// The tree or one of its locks could not be read, so idleness is unproven.
     Unreadable(String),
+    /// The tree was taken (parked, no longer `target`) but its delete stopped part way; the
+    /// remainder is swept by the next pass. Not a keep: named so a partial is never silent.
+    DeleteIncomplete(String),
     /// This platform cannot move a directory while holding a lock inside it, so the
     /// exclusion cannot span the take; the reclaim is deferred rather than raced.
     #[cfg(not(unix))]
@@ -207,6 +210,7 @@ impl ResidueKept {
         match self {
             Self::BuildLive(_) => "build_live",
             Self::Unreadable(_) => "unreadable",
+            Self::DeleteIncomplete(_) => "delete_incomplete",
             #[cfg(not(unix))]
             Self::Unsupported => "unsupported_platform",
         }
@@ -214,7 +218,7 @@ impl ResidueKept {
     fn detail(&self) -> String {
         match self {
             Self::BuildLive(lock) => lock.display().to_string(),
-            Self::Unreadable(e) => e.clone(),
+            Self::Unreadable(e) | Self::DeleteIncomplete(e) => e.clone(),
             #[cfg(not(unix))]
             Self::Unsupported => "no atomic move under a held lock on this platform".into(),
         }
@@ -287,7 +291,7 @@ fn take_target(target: &Path, locks: Vec<std::fs::File>) -> Result<(), ResidueKe
     std::fs::rename(target, &parked)
         .map_err(|e| ResidueKept::Unreadable(format!("park {}: {e}", target.display())))?;
     drop(locks);
-    std::fs::remove_dir_all(&parked).map_err(|e| ResidueKept::Unreadable(format!("delete {}: {e}", parked.display())))
+    std::fs::remove_dir_all(&parked).map_err(|e| ResidueKept::DeleteIncomplete(format!("{}: {e}", parked.display())))
 }
 
 #[cfg(not(unix))]
@@ -366,7 +370,7 @@ impl CitizenWorkspacePool {
             if !is_cargo_target(&target) {
                 continue;
             }
-            let (bytes, newest) = dir_bytes_and_newest(&target);
+            let (bytes, newest) = dir_bytes_and_newest_to(&target, u32::MAX);
             out.push(BuildResidue { peer_id, target, bytes, last_active_ms: newest });
         }
         out
@@ -383,9 +387,15 @@ impl CitizenWorkspacePool {
             let Ok(entries) = std::fs::read_dir(peer.path().join("workspace")) else { continue };
             for e in entries.flatten() {
                 if e.file_name().to_string_lossy().starts_with(PARKED_PREFIX) {
-                    let (bytes, _) = dir_bytes_and_newest(&e.path());
-                    if std::fs::remove_dir_all(e.path()).is_ok() {
-                        freed = freed.saturating_add(bytes);
+                    let (bytes, _) = dir_bytes_and_newest_to(&e.path(), u32::MAX);
+                    match std::fs::remove_dir_all(e.path()) {
+                        Ok(()) => freed = freed.saturating_add(bytes),
+                        Err(err) => crate::probe!(
+                            class = "disk.citizens.residue_kept",
+                            why = "delete_incomplete",
+                            detail = %format!("{}: {err}", e.path().display()),
+                            "a parked build tree still could not be deleted; the next pass tries again"
+                        ),
                     }
                 }
             }
@@ -433,7 +443,7 @@ impl CitizenWorkspacePool {
                     peer = %r.peer_id,
                     why = kept.why(),
                     detail = kept.detail().as_str(),
-                    "a citizen's build output was NOT reclaimed: it could not be proven idle and taken whole"
+                    "a citizen's build output was NOT fully reclaimed: it could not be proven idle and taken whole, or its delete stopped part way (the parked remainder is swept next pass)"
                 ),
             }
         }
@@ -446,6 +456,14 @@ impl CitizenWorkspacePool {
 /// rather than remembered, but a full recursive walk of 714 workspaces on every tick is
 /// exactly the hot-path cost this substrate forbids.
 fn dir_bytes_and_newest(dir: &Path) -> (u64, u64) {
+    dir_bytes_and_newest_to(dir, 6)
+}
+
+/// [`dir_bytes_and_newest`] to a chosen depth. A cargo target needs the whole tree: its
+/// freshest files live in `incremental/<crate>/<session>/` and `build/<crate>/out/**`, below
+/// the workspace walk's depth (Fable on #4528), and reading them only on a residue decision
+/// (under pressure, never per tick) is what makes "stale" true.
+fn dir_bytes_and_newest_to(dir: &Path, max_depth: u32) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut newest = 0u64;
     let mut stack = vec![(dir.to_path_buf(), 0u32)];
@@ -461,7 +479,7 @@ fn dir_bytes_and_newest(dir: &Path) -> (u64, u64) {
                 }
             }
             if meta.is_dir() {
-                if depth < 6 {
+                if depth < max_depth {
                     stack.push((entry.path(), depth + 1));
                 }
             } else {
@@ -1078,6 +1096,23 @@ mod tests {
         assert!(ws.join("NOTES.md").exists(), "her workspace and work stay");
         assert!(other.join("mine.txt").exists(), "a target without cargo's own file is not cargo's to reclaim");
         assert!(!ws.read_dir().expect("read ws").flatten().any(|e| e.file_name().to_string_lossy().starts_with(PARKED_PREFIX)), "nothing left parked");
+    }
+
+    // what this catches: Fable on #4528. A cargo target's live files sit deep
+    // (`incremental/<crate>/<session>/`, `build/<crate>/out/**`), below the workspace walk's
+    // depth, so a bounded walk read a busy tree as stale and small. The residue walk reaches
+    // the whole tree.
+    #[test]
+    fn the_residue_walk_reaches_the_deepest_build_files() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let peer = uuid::Uuid::from_u128(0x10e6_c5e5_0003);
+        let ws = root.path().join("peers").join(peer.to_string()).join("workspace");
+        let target = cargo_target(&ws);
+        let deep = target.join("debug/build/x-1/out/a/b/c/d/e");
+        std::fs::create_dir_all(&deep).expect("mkdir deep");
+        std::fs::write(deep.join("gen.rs"), vec![1u8; 1_000_000]).expect("deep file");
+        let found = CitizenWorkspacePool::build_residue_on_disk(root.path());
+        assert!(found[0].bytes >= 1_000_000, "a file ten levels down is counted: {}", found[0].bytes);
     }
 
     // what this catches: Codex's block on #4528. The first cut released cargo's locks BEFORE
