@@ -197,3 +197,55 @@ Because data is the bottleneck, the work that improves us most is the work that 
 4. Coursework (S2, S5).
 
 Compute is ahead of the data at every step of this list; the list is ordered by how much learning signal each step adds per day.
+
+## 9. The DREAM stage, as an interface (S4, drafted 2026-09-28)
+
+> Joel, 2026-09-28, after the first 27B dream was refused for a 14,519-token example against a 1,025-token window: "Stupidly low token sizes are idiotic … the same as inference. Gotta be huge." "Why is training following a totally different workflow." "You're not supposed to make learning so different from reality." "You guys keep screwing up academy."
+
+**What went wrong.** The batch job was the S3 interim, and we shipped it and tuned it as if it were the design:
+- `/train` running a job in a second context;
+- its own window (1024), its own caps (8192 in both the core and the fork);
+- its own dataset, request parameters and launch.
+
+Each failure that night came from the separateness. §8.1 already said what learning is. This section is that, made concrete.
+
+### 9.1 The rule
+
+**Learning sees what serving sees.**
+- **The context:** the dream context has the lane's served per-slot window. No request, plan or constant sets it.
+- **The examples:** each example is a served turn, rendered from the same messages and tools through the same template the slot used. So the tokens are the tokens she was served, whole, system and tool head included.
+- **The weights and lifecycle:** the dream runs on the same resident weights, under the same pause-for-turns lifecycle (#4485).
+- **What never exists on this path:** a window parameter, a dataset, or a launch.
+
+### 9.2 Engine (fork), one dream session per mind
+
+| Route | Does |
+|---|---|
+| `POST /dream/open {persona, rank, alpha, targets, top_layers, from?}` | Opens her standing session: a training context on the resident model at the served per-slot window. It holds her **shadow** adapter, initialised from `from` (her stable gene's file) or fresh, and her optimizer state. It measures the graph at open and refuses past `memory_budget_mib`. It is idempotent per persona. |
+| `POST /dream/example {persona, messages, tools}` | Arrival: the served turn, as the lived examples already carry it (`train:false` on history). Rendered once and queued. A conversation longer than the window is fit by dropping the oldest history (fit `middle`, fork #29); a head plus reply that still overflows is skipped and counted. |
+| *(no route)* the step | In the server loop, between decode batches, when the governor grants budget: one micro-step on the shadow from the arrival queue plus a replay draw. The per-step probe is `engine.dream.step {persona, step, loss, ms}`. A busy slot defers it at a window boundary; this is the #28 pause, generalized. |
+| `POST /dream/snapshot {persona, out}` | Writes the shadow as a GGUF-lora into `--train-dir`: the candidate gene. The session keeps stepping. |
+| `GET /dream` | Every session: persona, steps, queued, fitted/skipped, last loss, graph_mib, paused. |
+| `POST /dream/close {persona}` | Frees the session and its optimizer state (a lease release). |
+
+It builds on what exists: the trainer's context-on-the-same-model, the example renderer, `before_window` yielding, and pause/resume (#28). **Anustart** (pause to disk) becomes session persistence: the shadow and optimizer state are written at snapshot and at a deploy seam, and `open` resumes from them.
+
+### 9.3 Core, the only caller
+
+- **Open:** once per learning mind whose base this lane serves, when the governor grants a lease. The lease is the dream's measured graph at the served window (`engine-footprints.json`, keyed by the served window).
+- **Arrival:** the lifter's admit (a passing grade or a verdict, never raw drafting) posts `/dream/example` instead of filling a bucket for a later job.
+- **Snapshot:** at a `DreamTrigger` boundary (idle, a card boundary, the N examples or T minutes of §8.1). The snapshot goes to `adapter_manifest::register` and `GeneTrials::open`, the integrated gate (#4473-4476) exactly as today. Her real work judges it, and promotion or retirement follows the Beta-posterior checkpoints.
+- **Pausing:** holds (`hold_training_on`) pause the session like a run, and the next slice gives them triggers.
+
+### 9.4 What retires
+
+- `genome/job-create` with `engine-local` becomes the fallback for a lane without `/dream` (an external provider, an old engine).
+- The training-trigger bucket's dispatch threshold becomes the accumulation window of §8.1, not a job launch.
+- No window or sequence-length setting reaches the dream path.
+
+### 9.5 Gates (in order)
+
+1. On the 5090, a session opens at the served window (~61k) on Qwen3.8-27B with top_layers 8, and its measured graph fits the lease. If it does not, the answer is depth or activation recompute, never a smaller window.
+2. While 2 residents keep turning, arrivals step and the health line's directed wait stays flat.
+3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
+4. A deploy seam: the session is written, the next core `open`s it, and it resumes at its step count.
