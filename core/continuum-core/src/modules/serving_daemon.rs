@@ -9850,6 +9850,7 @@ pub(crate) mod tests {
             consumer: "genome-train:test".into(),
             reserved_bytes: 1 << 30,
             interrupted: None,
+            job_spec: None,
         };
         record(&store, bound.clone()).expect("test: record");
         assert!(daemon.reconcile_to_plan().is_none(), "an engine bound to live work is not reconciled");

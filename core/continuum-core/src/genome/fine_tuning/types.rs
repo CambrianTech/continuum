@@ -347,6 +347,38 @@ pub struct ScheduleParams {
 
 // ─── Handle + Status ─────────────────────────────────────────────────
 
+/// What re-attaching found for a job a previous core started (SHARED-RESIDENT-LIFECYCLE.md
+/// step 3). Only POSITIVE evidence changes ownership: a run still answering as this job's in
+/// the very incarnation it was bound to is re-attached, and a verifiably dead incarnation is
+/// released. Everything else is `Uncertain`: an engine answering with another run, or not
+/// answering, is not proof this run ended (Codex on the step-3 plan).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/fine_tuning/ReattachOutcome.ts")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReattachOutcome {
+    /// Still this job's run in its engine: watched again under the same id, never POSTed again.
+    Attached { handle: JobHandle },
+    /// No binding names the job (or this adapter's runs die with the core): resume as before.
+    NotResident,
+    /// The bound incarnation is verifiably dead: the binding is released and the run is gone.
+    EngineGone { reason: String },
+    /// Nothing proves the run ended and nothing reached it: the binding and its reservation
+    /// stay, serving stays off the engine, and nothing may start this job again until the
+    /// explicit recovery act decides.
+    Uncertain { reason: String },
+}
+
+impl ReattachOutcome {
+    /// THE one answer to "may this job be started again from its input?" (Cormac on the
+    /// step-3 plan: every resume path asks this, never its own scan). Exhaustive on purpose.
+    pub fn permits_resume(&self) -> bool {
+        match self {
+            ReattachOutcome::NotResident | ReattachOutcome::EngineGone { .. } => true,
+            ReattachOutcome::Attached { .. } | ReattachOutcome::Uncertain { .. } => false,
+        }
+    }
+}
+
 /// What [`super::FineTuningAdapter::create_job`] returns. Acts as a
 /// correlation token across the substrate side (`local_id`) and the
 /// provider side (`provider_job_id`).

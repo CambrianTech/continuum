@@ -194,6 +194,11 @@ pub struct ResidentWork {
     /// instead of it being reconstructed after the engine is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interrupted: Option<String>,
+    /// What a successor core needs to RE-ATTACH to this run without POSTing it again, and to
+    /// finish it (SHARED-RESIDENT-LIFECYCLE.md step 3, card 7bb4e5a2). Written with the binding
+    /// inside the admission hold. `None`: a record from before the field, never re-attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_spec: Option<crate::genome::fine_tuning::engine_lora_adapter::EngineRunSpec>,
 }
 
 /// The store's file under a continuum home.
@@ -247,6 +252,17 @@ pub fn record(path: &Path, work: ResidentWork) -> Result<(), String> {
     }
     all.push(work);
     write(path, &all)
+}
+
+/// Every recorded binding. `Err` when the store cannot be read: ownership is then unknown, and
+/// a caller must treat it as held.
+pub fn all(path: &Path) -> Result<Vec<ResidentWork>, String> {
+    read(path)
+}
+
+/// The binding recorded for `job`, if any. `Err` when the store cannot be read.
+pub fn find(path: &Path, job: Uuid) -> Result<Option<ResidentWork>, String> {
+    Ok(read(path)?.into_iter().find(|w| w.job == job))
 }
 
 /// Release EXACTLY `expected`: its engine acknowledged a terminal state for this run, or its
@@ -368,6 +384,7 @@ mod tests {
             consumer: format!("genome-train:{job}"),
             reserved_bytes: 1 << 30,
             interrupted: None,
+            job_spec: None,
         }
     }
 

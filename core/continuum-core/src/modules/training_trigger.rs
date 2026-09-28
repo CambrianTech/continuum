@@ -277,6 +277,38 @@ impl TrainingTriggerState {
         self.resumed_orphans.store(true, Ordering::Release);
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
         for orphan in board.take_orphans() {
+            // STEP 3 (SHARED-RESIDENT-LIFECYCLE.md): the job's run may have OUTLIVED the core
+            // (an in-engine run survives a core-only restart). Ask its adapter first; only an
+            // answer that permits it resumes, since a resume is a second POST into an engine
+            // the first run may still be training in. One rule: `permits_resume`.
+            match self.reattach(&executor, &orphan).await {
+                Ok(crate::genome::fine_tuning::ReattachOutcome::Attached { handle }) => {
+                    board.register(crate::genome::fine_tuning::WatchedJob {
+                        trigger_dispatch_id: orphan.trigger_dispatch_id,
+                        handle,
+                        persona_id: orphan.persona_id,
+                        persona_name: orphan.persona_name.clone(),
+                        base_model: orphan.base_model.clone(),
+                        trait_kind: orphan.trait_kind.clone(),
+                        eval_set: orphan.eval_set.clone(),
+                        // the gene's signature was minted in the dead core and is not journaled;
+                        // the gene still adopts, routed by the fallback path
+                        signature: None,
+                    });
+                    continue;
+                }
+                Ok(outcome) if !outcome.permits_resume() => continue, // held: the adapter's probe said why
+                Ok(_) => {}
+                Err(error) => {
+                    crate::probe!(
+                        class = "training.job.reattach_unanswered",
+                        local_id = %orphan.local_id,
+                        error = %error,
+                        "whether this job's run outlived the core could not be asked, so it is NOT started again"
+                    );
+                    continue;
+                }
+            }
             let origin = board.resume_origin(orphan.local_id);
             let attempt = board.resume_attempts(origin) + 1;
             if attempt > crate::genome::fine_tuning::job_board::MAX_RESUMES {
@@ -324,6 +356,21 @@ impl TrainingTriggerState {
                 }
             }
         }
+    }
+
+    /// Ask the orphan's adapter, through `genome/job-reattach`, whether its run outlived the
+    /// core. A job with no recorded provider was never an in-engine run: not resident.
+    async fn reattach(
+        &self,
+        executor: &CommandExecutor,
+        orphan: &crate::genome::fine_tuning::job_board::OrphanedJob,
+    ) -> Result<crate::genome::fine_tuning::ReattachOutcome, String> {
+        if orphan.provider_id.is_empty() {
+            return Ok(crate::genome::fine_tuning::ReattachOutcome::NotResident);
+        }
+        let params = serde_json::json!({ "providerId": orphan.provider_id, "localId": orphan.local_id });
+        let answer = executor.execute_json("genome/job-reattach", params).await.map_err(|e| e.to_string())?;
+        serde_json::from_value(answer).map_err(|e| format!("genome/job-reattach answered an unreadable outcome: {e}"))
     }
 
     pub(crate) async fn dispatch_job_create(
