@@ -84,10 +84,15 @@ fn named_slot(root: &Path, file: &str) -> Option<&'static str> {
 /// INSIDE a slot (what the Windows service-host set before `current` existed) is read as the
 /// slot it names rather than as an operator's own engine.
 pub fn slot_of(root: &Path, bin: &Path) -> Option<&'static str> {
-    // The service-host's descriptor carries Windows verbatim paths (`\\?\C:\...`), which
-    // `starts_with` never matches against a plain root.
-    let text = bin.to_string_lossy();
-    let bin = Path::new(text.strip_prefix(r"\\?\").unwrap_or(&text)); // unwrap_or: a path with no verbatim prefix is already plain
+    // Windows verbatim paths (`\\?\C:\...`) never `starts_with` a plain one. BOTH sides are
+    // normalized: the service-host derives `root` from the descriptor's own engine path, so a
+    // verbatim descriptor gives a verbatim root, and stripping only `bin` refused the slot and
+    // kept the core from starting.
+    let plain = |p: &Path| {
+        let text = p.to_string_lossy().into_owned();
+        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)) // unwrap_or: a path with no verbatim prefix is already plain
+    };
+    let (root, bin) = (plain(root), plain(bin));
     SLOTS.into_iter().find(|slot| bin.starts_with(root.join(slot)))
 }
 
@@ -463,6 +468,12 @@ mod tests {
         assert_eq!((current_slot(root), previous_slot(root)), (Some("engine-b"), Some("engine-a")));
         assert_eq!(resolve(root, None, Some("engine-c")), Resolved::Slot("engine-c"), "an empty current slot fails loud at spawn, never the legacy engine");
         assert_eq!(slot_of(root, Path::new(&format!(r"\\?\{a}"))), Some("engine-a"), "a verbatim-prefixed path is the same slot");
+        let verbatim_root = PathBuf::from(format!(r"\\?\{}", root.display()));
+        assert_eq!(
+            slot_of(&verbatim_root, Path::new(&format!(r"\\?\{a}"))),
+            Some("engine-a"),
+            "a verbatim descriptor gives a verbatim root: the service-host's own derivation"
+        );
     }
 
     // what this catches (Fable on #4491): a promoted engine that verifies and then fails at
