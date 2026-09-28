@@ -425,6 +425,76 @@ Sentinel does, in order:
 4. **Publication.** Refined artifacts land in the *refined* tier of the genome pool with full provenance: which traces, which outcomes, which previous artifact version this supersedes.
 5. **Adoption.** Demand-aligned recall (next section) starts picking the refined artifact for relevant queries because it scores higher on outcome-conditioned similarity. Old compositions invalidate naturally as their personas next page-fault.
 
+### Interaction learning across modalities — extension goal
+
+**Goal (Joel, 2026-09-28), not an end-to-end capability claim:** genome learning
+should cover navigation of unfamiliar websites and mobile apps, analytics
+dashboards, avatar actions, stepped games, and physical robot interactions through
+the same experience pathway. Coders extending a modality should express its data
+through traits and adapters into existing engram causality and tool/act state
+flows. Do not introduce a browser-only learning graph, robot-only curriculum, or
+another cognition scheduler. The graph is a view of linked existing records, not
+a requirement for a second graph database.
+
+An interaction links the observed state, intended action, attempted execution,
+resulting observation and evaluated outcome. Preserve actor, activity/project,
+execution host, timestamps, action/receipt identifiers and model/gene provenance.
+Branches, concurrent actions, interrupted attempts and delayed effects must remain
+representable; a linear click transcript is only one projection. An observation
+following an action is not automatically proof that the action caused it: retain
+the distinction between temporal association, reported cause and verified effect.
+
+Screenshots are first-class candidate learning data, alongside DOM/accessibility
+state, game state and sensor readings. Store media through existing artifact
+storage with stable references and provenance, rather than embedding image bytes
+in every event or treating a host-local path as a portable reference. Mouse, gaze
+or continuous sensor samples can enrich an episode; adapters should preserve
+timing and declared sampling/aggregation without requiring every sample to become
+a turn, engram or training example. Capture must respect the existing identity,
+scope, retention and sharing rules, including personal data visible on a page.
+
+Trait boundaries should separate observation capture, typed action execution and
+outcome evaluation. Reuse or extend existing contracts before defining a new
+trait. A browser adapter may expose navigation and form interaction, while a game
+adapter exposes moves and a robot adapter exposes actuator commands. Each reports
+its actual capabilities, state/version and unavailable operations explicitly;
+the common layer must not invent successful observations or substitute another
+actor, activity or device. Keep session state in the existing scoped activity
+machinery, with runtime handles owned by the execution host. Human UX, persona PX
+and agent clients should consume the same state and receipts.
+
+The reusable learning seam already has concrete entry points:
+`cognition/experience.rs` defines `ExperienceRecord` and `SalienceDetector`,
+`cognition/act_observe.rs` owns action/outcome flow, and the existing memory,
+academy and genome machinery consumes experience. Browser capture and vision
+commands are adapter entry points to inspect, not proof that images survive all
+the way into training. Trace their actual data path before extending it. A
+text-only training projection must not silently claim to retain visual evidence;
+an unsupported modality should remain an explicit capability gap.
+
+Reuse and refinement should normally precede creating new genes: recall relevant
+existing skills, evaluate them on the new activity, and use measured gaps to
+select lessons. Novelty alone does not establish usefulness or justify a new gene.
+Preserve source episodes, teacher/reviewer attribution and artifact lineage when
+an adapter projects an experience into curriculum.
+
+Acceptance proceeds through the existing activity workflow:
+
+1. Capture one real interaction, including before/after observations and the
+   action receipt, and verify its activity and actor associations survive storage
+   and replay. Replay of an external effect must not re-execute it implicitly.
+2. Verify the selected episode reaches curriculum with its media references and
+   outcome intact. Distinguish capture, perception, selection and training; none
+   proves the next stage automatically.
+3. Evaluate UI appearance, accessibility, navigation correctness and task success
+   separately where relevant. A visually attractive page can still be unusable;
+   a successful click sequence can still rest on a mistaken interpretation.
+4. Link curriculum to a trained artifact, held-out gain, safe adoption and gain on
+   new work, following [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md).
+   Test unfamiliar pages, layouts or environments, not only replay of a memorized
+   trajectory. Extend to contrasting adapters to expose accidental browser or
+   text assumptions; do not claim cross-modality transfer before measuring it.
+
 ### Local-First, Then Federated
 
 Two design choices that shape the rest of the architecture:
