@@ -119,7 +119,6 @@ crate::action_command! {
         let file_path = match LookAt::try_from(&p)? {
             LookAt::File(file) => file,
             LookAt::Page(url) => {
-                use crate::sdk_codegen::ActionCommand as _;
                 let shot = crate::commands::interface::capture::Capture
                     .run(ctx, crate::commands::interface::capture::CaptureParams {
                         target: "web".into(),
