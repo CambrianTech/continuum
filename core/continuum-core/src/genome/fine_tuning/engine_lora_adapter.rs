@@ -378,6 +378,10 @@ struct TrainStatus {
     examples_truncated: Option<u64>,
     #[serde(default)]
     examples_skipped: Option<u64>,
+    /// the window the engine's training graph actually used (fork #30: the longest fitted
+    /// example rounded up to 256, never above the window sent); absent on an engine before it
+    #[serde(default)]
+    window: Option<u32>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -877,7 +881,20 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                             "the engine adapted a different depth than was asked (an engine without top_layers adapts every block)"
                         );
                     }
-                    let measured_shape = Shape { depth: adapted, ..shape.clone() };
+                    // The footprint is filed under the geometry that RAN (fork #30 sizes the graph
+                    // to the data, the served window is only its ceiling): a graph measured at a
+                    // 15k window must never be leased for a 61k one (Codex on #4498).
+                    let ran_window = status.window.filter(|w| *w > 0).unwrap_or(shape.window);
+                    if ran_window != shape.window {
+                        crate::probe!(
+                            class = "training.job.window_used",
+                            job = %id,
+                            sent = u64::from(shape.window),
+                            used = u64::from(ran_window),
+                            "the engine sized its training graph to the data: the footprint is filed under the window that ran"
+                        );
+                    }
+                    let measured_shape = Shape { depth: adapted, window: ran_window, ..shape.clone() };
                     // A depth equal to the model's block count IS full depth (fork #27 refuses one
                     // past it): filed under the asked key too, or that request would calibrate on
                     // every run (Cormac on #4472).
@@ -885,7 +902,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     if grown > 0 {
                         let store = Footprints { path: footprints_path };
                         if asked_full {
-                            let _ = store.record(&shape, grown, id); // best effort: the full-depth row below is the one that matters
+                            // the asked depth, at the window that ran
+                            let asked_ran = Shape { window: ran_window, ..shape.clone() };
+                            let _ = store.record(&asked_ran, grown, id); // best effort: the full-depth row below is the one that matters
                         }
                         if let Err(e) = store.record(&measured_shape, grown, id) {
                             crate::probe!(
@@ -1065,6 +1084,11 @@ mod tests {
                         done["n_layer"] = json!(64);
                         done["layers_adapted"] = json!(asked.min(64));
                     }
+                    // fork #30: the engine sized its graph to the data and reports the window it used
+                    if mode == "sized" {
+                        done["window"] = json!(15_360);
+                        done["window_asked"] = l.body.as_ref().and_then(|b| b.get("window")).cloned().unwrap_or(Value::Null);
+                    }
                     axum::Json(done)
                 }
             }))
@@ -1240,6 +1264,31 @@ mod tests {
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             assert!(t.create_job(r).await.is_err(), "{why}");
         }
+        server.abort();
+    }
+
+    // what this catches (Codex on #4498): a footprint filed under the window SENT when the
+    // engine ran a smaller graph sized to the data. The lane serves 61,696 a slot; the engine
+    // trains at 15,360; the measured graph is filed under w15360, so it can never be leased for
+    // a real 61,696-token graph.
+    #[tokio::test]
+    async fn a_footprint_is_filed_under_the_window_the_engine_ran() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "sized").await;
+        let footprints = jobs.path().join("footprints.json");
+        let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), footprints.clone());
+        t.lane = Box::new(move |_| Some((url.clone(), 61_696)));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        let TrainingStatus::Completed { .. } = wait_terminal(&t, &h).await else {
+            panic!("test: not completed");
+        };
+        assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["window"].as_u64(), Some(61_696), "the served window is sent as the ceiling");
+        let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: footprint filed")).unwrap();
+        let keys: Vec<&String> = rows.as_object().unwrap().keys().collect();
+        assert_eq!(keys, vec!["ggml-org/Qwen3.8-27B-GGUF|w15360|r8|attn_q,attn_v"], "filed under the window that ran");
         server.abort();
     }
 
