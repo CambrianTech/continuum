@@ -275,9 +275,38 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     if t.starts_with("```") && has_namespaced_call_with_object(t) {
         return true;
     }
+    // THE SIXTH DIALECT (Kimi, 5090, 2026-09-28, into #cambriantech, flagged by Cormac): no
+    // bracket, no fence — the OBSERVATION BLOCK itself posted as her reply:
+    //
+    //   code/shell(cmd=cd …/workspace && ls state) because Let me organize …\n\nResult:\n
+    //   execution_id: a4e2… exit_code: 0 … stdout: airc-attach-cursor-…
+    //
+    // That is byte-for-byte the act_observe rendering (`{name}({args}){because}\nResult:\n`),
+    // i.e. her own tool transcript echoed as speech, and it enters every citizen's context.
+    // The discriminator is BOTH halves of that rendering: a namespaced verb CALLED at the lead
+    // (`ns/verb(` with a JSON or kwargs object) AND a `Result:` line after it. Either alone
+    // stays speech — a citizen writing "code/shell(cmd=…) is how you'd list it" has no Result
+    // line, and prose that mentions a "Result:" does not open with a call.
+    if opens_with_bare_call(t) && t.contains("\nResult:") {
+        return true;
+    }
     // The canonical envelope, with or without leading whitespace inside the object.
     let compact: String = t.chars().take(24).filter(|c| !c.is_whitespace()).collect();
     compact.starts_with("{\"tool_call\"")
+}
+
+/// `ns/verb(` at the very start of `t`, called with a JSON object or kwargs (`cmd=…`).
+fn opens_with_bare_call(t: &str) -> bool {
+    let Some((callee, after)) = t.split_once('(') else {
+        return false;
+    };
+    let seg = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-.".contains(c));
+    let namespaced = callee.len() <= 64 && callee.split_once('/').is_some_and(|(ns, verb)| seg(ns) && seg(verb));
+    let a = after.trim_start();
+    let kwargs = a
+        .split_once('=')
+        .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    namespaced && (a.starts_with('{') || kwargs)
 }
 
 /// A namespaced command invoked with an object — `code/shell({…})` — anywhere in `t`.
@@ -614,6 +643,20 @@ mod tests {
     // bracket — 15 such lines in the same measured window — but none is a tool envelope,
     // and silencing them here would hide problems that belong to other gates (#4067)
     // behind a "not speech" verdict. The slash is what makes a verb a COMMAND.
+    // what this catches (Kimi, 5090, 2026-09-28; Cormac flagged it): her own observation
+    // block, `code/shell(cmd=…) because …\nResult:\n…`, posted to the room as a reply with no
+    // bracket or fence around it. It needs BOTH the leading call and the Result line: a
+    // citizen explaining a call, or quoting a result mid-sentence, is still speech.
+    #[test]
+    fn an_echoed_observation_block_is_not_speech_but_explaining_a_call_is() {
+        let kimi = "code/shell(cmd=cd /c/Users/x/workspace && ls state) because Let me organize the current state of this room (cb2e21a1).\n\nResult:\nexecution_id: a4e208b2\nexit_code: 0\nstdout:\nairc-attach-cursor.json";
+        assert!(is_not_speech(kimi).is_some(), "her observation block is not her voice");
+        let json = "code/read({\"file_path\":\"src/main.rs\"})\nResult:\nfn main() {}";
+        assert!(is_not_speech(json).is_some());
+        assert!(is_not_speech("code/shell(cmd=ls state) is how you would list it; no need to run it twice.").is_none(), "explaining a call is speech");
+        assert!(is_not_speech("I ran it.\nResult: the tests pass now, 12 of 12.").is_none(), "a result reported in prose is speech");
+    }
+
     #[test]
     fn a_bracketed_word_that_is_not_a_command_is_still_speech() {
         for observed in [
