@@ -1117,6 +1117,8 @@ impl LlmDeliberationFaculty {
             .clone();
         // How much of this prompt her previous request already held (card 5b09111e).
         crate::cognition::prompt_prefix::observe(self.persona_id, &request);
+        // Stage the request for the reuse split (card 9e4d61e8); settled below on its result.
+        crate::cognition::prompt_prefix::stage_reuse(self.persona_id, &request_id, &request);
         // The genome this turn runs on, read before the request moves: the receipt names it,
         // so the room's outcome for the turn can be credited to the genes that produced it.
         let genes = super::provenance::genes_of(request.active_adapters.as_deref());
@@ -1468,6 +1470,15 @@ impl LlmDeliberationFaculty {
             Ok(response) => lease.finish(Some(response), None),
             Err(error) => lease.finish(None, Some(&error.to_string())),
         });
+        crate::cognition::prompt_prefix::settle_reuse(
+            self.persona_id,
+            &request_id,
+            gen_result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.timing.as_ref())
+                .map(|t| (t.cached_tokens, t.prefill_tokens)),
+        );
         receipts.push(
             match &gen_result {
                 Ok(response) => {
