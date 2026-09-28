@@ -49,7 +49,7 @@ impl WorkArtifactReference {
         // (Kimi, 2026-09-28). Name it and the fix rather than a parse error.
         if looks_like_git_sha(&self.hash) {
             return Err(CommandError::Invalid(format!(
-                "artifact hash '{}' is a git commit sha, not the patch's SHA-256. Omit artifact: \
+                "artifact hash '{}' looks like a git commit sha, not the patch's SHA-256. Omit artifact: \
                  work/submit computes it from your card checkout.",
                 self.hash.trim()
             )));
