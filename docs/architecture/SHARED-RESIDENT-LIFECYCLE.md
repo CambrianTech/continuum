@@ -6,7 +6,7 @@ Extends [One Resident Model](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md), [CBAR 
 
 ## Failure that defines the contract
 
-Attempt2 4169e970-ad49-42fe-9521-d6ff280dc88a started on engine25280, core4980. At12:29:07 the serving footprint included transient training allocations; the planner reported usable_gb0, chose a1.5B replacement, and committed that swap at12:29:22. Job failed at12:30:36 when the replacement returned no matching training out. The27B returned in engine30988; core4980 never restarted. Filtered diagnostic receipt is archived on the Windows node in team-proof-20260921/KIMI-ATTEMPT2-LANE-FAILURE.log; the causal timeline above is included here so review does not depend on access to that local file.
+Attempt 2 4169e970-ad49-42fe-9521-d6ff280dc88a started on engine 25280, core 4980. At 12:29:07 the serving footprint included transient training allocations; the planner reported usable_gb=0, chose a 1.5B replacement, and committed that swap at 12:29:22. Job failed at 12:30:36 when the replacement returned no matching training out. The 27B returned in engine 30988; core 4980 never restarted. Filtered diagnostic receipt is archived on the Windows node in team-proof-20260921/KIMI-ATTEMPT2-LANE-FAILURE.log; the causal timeline above is included here so review does not depend on access to that local file.
 
 Current seams: LifecycleGate serializes admission against serving operations; EngineRun retains a capacity LeaseGuard but no engine-lifetime ownership. ServingSteadyHold only delays optional geometry changes and can be overridden; model replacement bypasses it. Therefore neither a larger timeout nor another startup script closes this contract.
 
@@ -15,12 +15,12 @@ Current seams: LifecycleGate serializes admission against serving operations; En
 Extend the existing serving lifecycle authority and resource/job records. Do not create another manager, daemon, polling loop or source of truth.
 
 1. Resident identity: node, base revision/quantization, engine incarnation, endpoint and verified executable/build. Endpoint or PID alone is insufficient because both can be reused.
-2. Active work: existing job/session or activity identity, owning resident incarnation, desired state, observed state, capacity reservation, checkpoint reference and recovery disposition. Serving, training and evaluation declare their dependencies through the same ownership contract.
+2. Active work: existing job/session or activity identity, owning resident incarnation, desired state, observed state, capacity reservation, checkpoint reference and recovery disposition. Reuse `training_hold_store` (`state/training-holds.json`, #4522) for desired training holds, including its fail-closed read semantics; do not create a second hold store. Serving, training and evaluation declare their dependencies through the same ownership contract.
 3. Transition: operation identity, expected resident generation, requested target and reason, preparation/drain/checkpoint acknowledgments, committed result. Retrying the same operation returns its disposition rather than repeating side effects.
 
 The planner proposes changes. Only the lifecycle authority commits a resident replacement. Admission atomically establishes capacity plus resident ownership before work starts; every destructive transition checks that ownership at commit, not only when its plan was computed. No mutex is held across network or process waits: use the existing gate, generation checks, staged state and event/snapshot publication.
 
-The engine observes its actual steps, allocation and pause state. The core owns intent and recovery. The OS supervisor owns core process liveness and the minimal verified bootstrap path. Install and deploy request transitions; their success means observed convergence, not subprocess exit0.
+The engine observes its actual steps, allocation and pause state. The core owns intent and recovery. The OS supervisor owns core process liveness and the minimal verified bootstrap path. Install and deploy request transitions; their success means observed convergence, not subprocess exit 0.
 
 Existing integration points: `serving_daemon::LifecycleGate` and `AdmissionHold`, `forge::training_admission::wait_for_training_memory`, `ResourceDaemon`, and `OwnedEngineIdentity`. The current owned identity is an in-process weak owner plus an EngineGeneration UUID; it is NOT a durable PID-plus-start-time identity. Add a restart-surviving incarnation to the existing lane record, using PID and OS process start time with the recorded engine/build identity. Adoption must verify that incarnation rather than treating a newly minted core generation as proof of the same process.
 
@@ -64,16 +64,18 @@ Before durable suspension exists, planned destructive transitions defer during l
 
 Core-only restart can reattach to a surviving engine. Engine restart requires a checkpoint. These are distinct paths with distinct acceptance receipts.
 
+For an alive but unreachable engine, expose an explicit recovery act through the existing job-cancel/lifecycle path. Persist authorized interruption intent against the exact job and incarnation, then reconcile cancellation or perform the explicitly authorized fenced teardown. A cancel request alone is not proof of termination and must not release residency. Verify termination before replacement; report failure to obtain teardown authority instead of leaving an unexplained permanent wait or pretending cancellation succeeded. The ordinary scheduler may not infer this destructive authorization from a timeout.
+
 ## Delivery sequence and ownership
 
 1. Ownership contract through existing lifecycle gate and work records. Cover model/geometry replacement, cancellation, controller loss and terminal release together. Cormac owns the serving/training implementation per AIRC; Fable and Codex review. A training-only in-memory boolean is not sufficient acceptance.
-2. Correct resource attribution and contamination recovery. Same implementation owner coordinates resource seams; reuse ResourceDaemon, lease guards and footprint registry. Test the actual attempt2 sequence, including the transient allocation and restored clean sample.
-3. Startup reconciliation and core reattachment. Fable owns existing card7bb4e5a2; compose with step1, not another registry. Reconstruct ownership and desired holds before scheduler mutation. If steps1-2 ship first, learning dispatch stays gated until recovery is proven or an explicit supported limitation prevents unsafe transitions.
-4. End-to-end resident integration proof on5090, then M5 with its owner. Verify actual installed engine SHA, clean capacity, single run identity, completed optimizer update, interleaved normal room turn, pause/resume and no replacement across planner ticks. Run fault cases first through existing test facilities, not by killing the live persona. No duplicate build/install/run.
+2. Correct resource attribution and contamination recovery. Same implementation owner coordinates resource seams; reuse ResourceDaemon, lease guards and footprint registry. Test the actual attempt 2 sequence, including the transient allocation and restored clean sample.
+3. Startup reconciliation and core reattachment. Fable owns existing card 7bb4e5a2; compose with step 1, not another registry. Reconstruct ownership and desired holds before scheduler mutation. If steps 1–2 ship first, learning dispatch stays gated until recovery is proven or an explicit supported limitation prevents unsafe transitions.
+4. End-to-end resident integration proof on the 5090, then M5 with its owner. Verify actual installed engine SHA, clean capacity, single run identity, completed optimizer update, interleaved normal room turn, pause/resume and no replacement across planner ticks. Run fault cases first through existing test facilities, not by killing the live persona. No duplicate build/install/run.
 5. Full durable checkpoint and install/deploy convergence. Same transition protocol for manual restart, scheduled deploy, pause/suspend and boot. Retire duplicate decisions from wrappers as each caller migrates. Windows tasks remain bootstrap adapters.
-6. Learning proof through existing curriculum and GeneTrials: artifact -> genuinely held-out improvement -> safe adoption -> fresh work gain and retained prior skills. Partition experience/task families before deriving examples. The four-example split0 run is integration evidence only.
+6. Learning proof through existing curriculum and GeneTrials: artifact -> genuinely held-out improvement -> safe adoption -> fresh work gain and retained prior skills. Partition experience/task families before deriving examples. The four-example split=0 run is integration evidence only.
 
-Steps1-3 establish the architecture required before retrying Kimi safely. Full optimizer disk recovery can follow, with deferred destructive transitions honestly enforced until then. Each PR targets canary after owner review and appropriate CI; sync and actual runtime adoption are separate receipts.
+Steps 1–3 establish the architecture required before retrying Kimi safely. Full optimizer disk recovery can follow, with deferred destructive transitions honestly enforced until then. Each PR targets canary after owner review and appropriate CI; sync and actual runtime adoption are separate receipts.
 
 ## Acceptance matrix
 
@@ -86,4 +88,4 @@ Steps1-3 establish the architecture required before retrying Kimi safely. Full o
 - Install repeats or partially fails: one transition disposition, verified running build and work recovery, no duplicate daemon.
 - Trial candidate fails or regresses: stable genome remains active; training completion alone does not promote.
 
-Use existing test modules, fixtures, resource snapshots and command/event receipts. Latency and throughput numbers in the one-resident architecture remain gates to measure on5090 and M5, not outcomes established by these tests.
+Use existing test modules, fixtures, resource snapshots and command/event receipts. Latency and throughput numbers in the one-resident architecture remain gates to measure on the 5090 and M5, not outcomes established by these tests.
