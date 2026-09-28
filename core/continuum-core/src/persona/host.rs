@@ -673,7 +673,6 @@ impl PersonaSpawnSupervisor {
         for (slot_idx, result) in hosted_results.into_iter().enumerate() {
             match result {
                 Ok(ctx) => {
-                    self.clear_slot_failure(ctx.identity.peer_id.as_uuid());
                     self.spawn_and_attach(slot_idx, ctx, summary).await
                 }
                 Err(err) => {
@@ -745,6 +744,7 @@ impl PersonaSpawnSupervisor {
         {
             Ok(h) => h,
             Err(reason) => {
+                self.note_slot_failure(persona_id, &reason);
                 tracing::error!(
                     slot = slot_idx,
                     persona_id = %persona_id,
@@ -764,6 +764,9 @@ impl PersonaSpawnSupervisor {
         };
         match self.registry.attach_service_loop(persona_id, handle).await {
             Ok(()) => {
+                // Adapter construction alone is not recovery: priming and
+                // registry attachment must also succeed before resetting retries.
+                self.clear_slot_failure(persona_id);
                 summary.hosted += 1;
                 tracing::info!(
                     persona_id = %persona_id,
@@ -780,6 +783,11 @@ impl PersonaSpawnSupervisor {
             Err((returned_handle, reason)) => {
                 returned_handle.abort();
                 let _ = returned_handle.await;
+                // A concurrent winner already owns this slot; losing attachment
+                // is not a failure of that citizen's running loop.
+                if reason != "already attached" {
+                    self.note_slot_failure(persona_id, reason);
+                }
                 tracing::error!(
                     slot = slot_idx,
                     persona_id = %persona_id,
@@ -922,6 +930,78 @@ mod tests {
                 },
             ),
         }
+    }
+
+    // Priming fails AFTER an adapter was successfully built. That must accumulate
+    // the same retry budget as admission failure, rather than retrying every edge.
+    #[tokio::test]
+    async fn failed_priming_accumulates_backoff_without_holding_out_siblings() {
+        use crate::persona::airc_citizen::StubAircCitizen;
+        use crate::persona::hw_tier_descriptor::HwTierCategory;
+        use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
+        use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
+
+        let home = tempfile::tempdir().unwrap();
+        let registry = PersonaAircRuntimeRegistry::new();
+        let manager = Arc::new(
+            crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+                registry, home.path().join("unused.sock"), home.path().to_path_buf(),
+            ),
+        );
+        let factory = Arc::new(ScriptedPersonaAdapterFactory::heuristic());
+        let supervisor = PersonaSpawnSupervisor::new(
+            PersonaSpawnerModule::new(
+                crate::cognition::model_resolver::types::HwCapabilityTier::CpuOnly,
+                HwTierCategory::Compat,
+            ),
+            manager, factory.clone(), "test-tier",
+            crate::model_registry::init_global().unwrap(),
+            tokio::runtime::Handle::current(),
+        );
+        let persona = Uuid::new_v4();
+        let mut summary = BootSummary::default();
+        for attempt in 1..=2 {
+            let mut plan = plan_named("PrimeRetry");
+            plan.instance.peer_id = crate::identity::PeerId::from_uuid(persona);
+            plan.instance.home = home.path().join("persona");
+            plan.profile = Ok(PersonaInferenceProfile {
+                persona_id: persona,
+                persona_name: "PrimeRetry".into(),
+                model_id: "fake-model".into(),
+                gguf_local_path: None,
+                tier_category: HwTierCategory::Compat,
+                tier_id: "test-tier".into(),
+                context_length: 2048,
+                n_ubatch: 512,
+                n_batch: 2048,
+                n_seq_max: 1,
+                n_gpu_layers: 0,
+                sampling: SamplingProfile::chat_defaults(),
+                chat_template: None,
+                stop_sequences: vec![],
+            });
+            let mut contexts = materialize_adapters(
+                vec![plan], &*factory,
+                |id| Some(Arc::new(StubAircCitizen::new(id).with_rooms(vec![Uuid::new_v4()]))),
+                |_| None,
+            ).await;
+            let ctx = contexts.pop().unwrap().expect("adapter construction succeeds");
+            supervisor.spawn_and_attach(0, ctx, &mut summary).await;
+            let failures = supervisor.slot_backoff.lock().unwrap();
+            assert_eq!(failures[&persona].attempts, attempt);
+            assert!(summary.failures.last().unwrap().reason.contains("prime()"));
+        }
+        assert_eq!(summary.hosted, 0);
+        assert_eq!(summary.failures.len(), 2);
+        let mut retry = plan_named("PrimeRetry");
+        retry.instance.peer_id = crate::identity::PeerId::from_uuid(persona);
+        let sibling = plan_named("Unaffected");
+        let failures = supervisor.slot_backoff.lock().unwrap();
+        let kept = filter_by_backoff_with(
+            failures[&persona].until_ms - 1, &failures, vec![retry, sibling],
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].instance.agent_name, "Unaffected");
     }
 
     // what this catches: regression for the 2026-08-23 boot bypass — the
