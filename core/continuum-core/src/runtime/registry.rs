@@ -827,36 +827,46 @@ mod tests {
             text.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect()
         };
 
-        // (command type, defining file) for every top-level `impl ... ActionCommand for X`
+        // (command type, defining file) for every top-level `impl ... ActionCommand for X`,
+        // including a header whose `for X` wraps onto the next line (Fable on #4547).
         let mut impls: Vec<(String, std::path::PathBuf)> = Vec::new();
         for (path, text) in &code {
-            for line in text.lines().filter(|l| l.starts_with("impl")) {
-                if let Some(idx) = line.find("ActionCommand for ") {
-                    let name = name_after(&line[idx + "ActionCommand for ".len()..]);
-                    if !name.is_empty() {
-                        impls.push((name, path.clone()));
-                    }
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate().filter(|(_, l)| l.starts_with("impl")) {
+                let target = if let Some(idx) = line.find("ActionCommand for ") {
+                    Some(&line[idx + "ActionCommand for ".len()..])
+                } else if line.trim_end().ends_with("ActionCommand") {
+                    lines.get(i + 1).and_then(|next| next.trim_start().strip_prefix("for "))
+                } else {
+                    None
+                };
+                let name = target.map(name_after).unwrap_or_default(); // unwrap_or_default: not an ActionCommand header
+                if !name.is_empty() {
+                    impls.push((name, path.clone()));
                 }
             }
         }
         assert!(impls.len() > 50, "found only {} hand-written commands; the scan regressed", impls.len());
 
-        let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (_, text) in &code {
+        // Keyed by (file, type): a registration counts only in the file that implements the
+        // command, so a same-named type in another module cannot satisfy it (Fable on #4547).
+        let mut registered: std::collections::HashSet<(std::path::PathBuf, String)> = std::collections::HashSet::new();
+        for (path, text) in &code {
             for needle in ["register_command!(", "register_stateless_command!("] {
                 for (idx, _) in text.match_indices(needle) {
                     let arg = &text[idx + needle.len()..];
-                    let path: String = arg.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':').collect();
+                    let arg_path: String = arg.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':').collect();
                     // `crate::x::Y` registers `Y`
-                    if let Some(last) = path.rsplit("::").next().filter(|n| !n.is_empty()) {
-                        registered.insert(last.to_string());
+                    if let Some(last) = arg_path.rsplit("::").next().filter(|n| !n.is_empty()) {
+                        registered.insert((path.clone(), last.to_string()));
                     }
                 }
             }
         }
 
         let declared: std::collections::HashSet<&str> = UNREGISTERED_COMMANDS.iter().map(|(n, _)| *n).collect();
-        let stale: Vec<&str> = UNREGISTERED_COMMANDS.iter().map(|(n, _)| *n).filter(|n| registered.contains(*n)).collect();
+        let stale: Vec<&str> =
+            UNREGISTERED_COMMANDS.iter().map(|(n, _)| *n).filter(|n| registered.iter().any(|(_, r)| r == n)).collect();
         assert!(
             stale.is_empty(),
             "these commands are declared unregistered but now register a descriptor; delete \
@@ -865,7 +875,7 @@ mod tests {
 
         let mut missing: Vec<String> = impls
             .iter()
-            .filter(|(name, _)| !registered.contains(name) && !declared.contains(name.as_str()))
+            .filter(|(name, path)| !registered.contains(&(path.clone(), name.clone())) && !declared.contains(name.as_str()))
             .map(|(name, path)| format!("{name} ({})", path.display()))
             .collect();
         missing.sort();
