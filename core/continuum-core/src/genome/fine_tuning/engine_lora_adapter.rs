@@ -335,7 +335,9 @@ enum TrainState {
 #[derive(Debug, Clone, Deserialize)]
 struct EpochReport {
     train_loss: f64,
-    eval_loss: f64,
+    /// null when no held-out token was evaluated (fork #31); an engine before it reports 0.0
+    #[serde(default)]
+    eval_loss: Option<f64>,
 }
 
 /// `GET /train`'s body. `state` is required: a body without one does not parse, and an
@@ -353,6 +355,10 @@ struct TrainStatus {
     epochs: Vec<EpochReport>,
     #[serde(default)]
     trainable_tokens: Option<u64>,
+    /// the held-out trainable tokens the eval loss is measured over (fork #31); absent on an
+    /// engine before it
+    #[serde(default)]
+    eval_trainable_tokens: Option<u64>,
     /// the training graph the engine measured before allocating it: this shape's footprint
     #[serde(default)]
     graph_mib: Option<f64>,
@@ -562,6 +568,16 @@ impl EngineRun {
             .send()
             .await; // the status decides whether it took; a failure is retried on the next tick
     }
+}
+
+/// The run's HELD-OUT loss, only when held-out tokens were actually evaluated (Codex, attempt 2).
+/// With no split, the engine's empty eval result is a loss of 0.0, and read as a validation
+/// loss that would claim a perfect held-out score. An engine with fork #31 says how many
+/// held-out tokens it evaluated; one before it says nothing, and then only a run that asked for
+/// a split is believed to have one.
+fn held_out_loss(s: &TrainStatus, asked_split: f32) -> Option<f64> {
+    let evaluated = s.eval_trainable_tokens.map_or(asked_split > 0.0, |n| n > 0);
+    s.epochs.last().and_then(|e| e.eval_loss).filter(|_| evaluated)
 }
 
 /// Percent done and the current epoch from an engine status: completed epochs plus the current
@@ -896,7 +912,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                         .and_then(|l| l.clone())
                         .ok_or("the engine's final status was never read")?;
                     let final_loss = status.epochs.last().map(|e| e.train_loss);
-                    let final_validation_loss = status.epochs.last().map(|e| e.eval_loss);
+                    let final_validation_loss = held_out_loss(&status, val);
                     let trainable = status
                         .trainable_tokens
                         .ok_or("the engine reported no trainable-token count")?;
@@ -1626,6 +1642,21 @@ mod tests {
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.lora.as_mut().unwrap().target_modules = vec!["lm_head".into()];
         assert!(matches!(t.create_job(r).await, Err(FineTuningError::InvalidRequest(_))));
+    }
+
+    // what this catches (Codex on attempt 2): a run with no held-out split reporting a
+    // validation loss. The engine's empty eval result is 0.0, and read as a validation loss it
+    // claims a perfect held-out score. With fork #31 the count decides; before it, a run that
+    // asked for no split has no held-out loss, and a null eval loss is none either way.
+    #[test]
+    fn a_run_with_no_held_out_tokens_has_no_validation_loss() {
+        let st = |v: Value| serde_json::from_value::<TrainStatus>(v).expect("test: status");
+        let old = |eval| st(json!({"state": "done", "epochs": [{"train_loss": 2.0, "eval_loss": eval}]}));
+        assert_eq!(held_out_loss(&old(0.0), 0.0), None, "an old engine, no split asked: its 0.0 is no measurement");
+        assert_eq!(held_out_loss(&old(2.4), 0.1), Some(2.4), "an old engine, a split asked: believed");
+        let new = |eval: Value, n| st(json!({"state": "done", "eval_trainable_tokens": n, "epochs": [{"train_loss": 2.0, "eval_loss": eval}]}));
+        assert_eq!(held_out_loss(&new(Value::Null, 0), 0.1), None, "a split that rounded to no held-out tokens");
+        assert_eq!(held_out_loss(&new(json!(2.4), 512), 0.0), Some(2.4), "the engine's count decides, not the request");
     }
 
     // what this catches: progress that jumps or overflows — completed epochs plus the current
