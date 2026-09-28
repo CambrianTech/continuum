@@ -40,7 +40,6 @@ crate::action_command! {
     params: GithubIssueCreateParams,
     output: GithubIssueCreateResult,
     run(this, ctx, p) => {
-        super::require_operator(ctx, "code/github/issue-create")?;
         if p.title.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/issue-create: 'title' is required".into()));
         }
@@ -48,7 +47,7 @@ crate::action_command! {
         let mut args = vec![
             "issue".to_string(), "create".to_string(),
             "--title".to_string(), p.title,
-            "--body".to_string(), p.body,
+            "--body".to_string(), super::attributed(p.body, ctx),
         ];
         if let Some(labels) = p.labels.filter(|s| !s.trim().is_empty()) {
             args.push("--label".to_string());
