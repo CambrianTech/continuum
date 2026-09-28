@@ -185,6 +185,28 @@ pub fn retire(model: &str) -> bool {
     gone
 }
 
+/// Retire the model's record only if it was SAMPLED at or after `since_ms` (Fable on #4536):
+/// resident work bound at `since_ms` may be inside such a reading, while a record from before
+/// it is the last clean measurement and must stay to rule the plan. Pure, on the map it is
+/// given; [`retire_if_sampled_since`] applies it to the live records.
+pub(crate) fn retire_sampled_since(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, since_ms: u64) -> bool {
+    match costs.get(model) {
+        Some(c) if c.last_ms >= since_ms => apply_sample(costs, model, None),
+        _ => false,
+    }
+}
+
+/// [`retire_sampled_since`] on the live records, saved at once like [`retire`].
+pub fn retire_if_sampled_since(model: &str, since_ms: u64) -> bool {
+    let mut costs = COSTS.lock();
+    let gone = retire_sampled_since(&mut costs, model, since_ms);
+    if gone {
+        save_all(&costs);
+        LAST_SAVE_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+    gone
+}
+
 /// The fresh measured record for `model`, if any — per-token AND the geometry it was
 /// taken at, so a caller can turn an excess over a known rate into fixed bytes.
 pub fn measured_record(model: &str) -> Option<MeasuredCost> {

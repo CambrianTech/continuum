@@ -250,18 +250,21 @@ pub fn record(path: &Path, work: ResidentWork) -> Result<(), String> {
 }
 
 /// When this process last released resident work (unix ms, 0 = never), for
-/// [`released_within`].
+/// [`released_within`]. Per process by intent: a release by a predecessor core is not settled
+/// against here, because at boot `occupancy_with` releases dead work through [`on_released`],
+/// which notes it in this process.
 static LAST_RELEASE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Work just left its engine (step 2, attribution). Two consequences, in one place:
-/// - the model's measured footprint record is RETIRED: whatever it read while the work was
-///   resident may carry the work's allocations, and a record that cannot be re-confirmed
-///   clean must not rule the next plan (the next clean sample replaces it);
+/// - the model's measured footprint record is RETIRED if it was sampled while the work was
+///   bound (`last_ms >= created_ms`): that reading may carry the work's allocations. A record
+///   from before the work is the last clean measurement and stays (the next clean sample
+///   replaces a retired one);
 /// - the release time is noted, so the sampler waits out the engine's asynchronous frees and
 ///   the device's measurement lag before it reads the lane again ([`released_within`]).
 fn on_released(work: &ResidentWork) {
     LAST_RELEASE_MS.store(crate::persona::trace::now_ms(), std::sync::atomic::Ordering::Relaxed);
-    let retired = super::lane_footprint::retire(&work.base_model);
+    let retired = super::lane_footprint::retire_if_sampled_since(&work.base_model, work.created_ms);
     crate::probe!(
         class = "serving.residency.released",
         job = %work.job,
@@ -507,25 +510,27 @@ mod tests {
 
     // what this catches: step 2 (attribution). A footprint read while training was resident
     // carries the training allocation; left standing it rules the next plan as serving cost (the
-    // 5090's ~7.4 GB "fixed per-lane residency"). When the work leaves its engine, the model's
-    // record is retired and the release is noted for the sampler's settle.
+    // 5090's ~7.4 GB "fixed per-lane residency"). On release, a record sampled during the work
+    // is retired, one from before it (the last clean measurement) stays (Fable on #4536), and
+    // the release is noted for the sampler's settle. The records are a local map: this test
+    // never writes the live lane-footprint store.
     #[test]
-    fn releasing_resident_work_retires_the_models_footprint_record() {
+    fn a_release_retires_only_the_footprint_sampled_during_the_work() {
+        use super::super::lane_footprint::{retire_sampled_since, MeasuredCost};
+        let bound_at = 1_000;
+        let reading = |last_ms| MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, anon_bytes: 20 << 30, last_ms };
+        let mut costs = std::collections::BTreeMap::new();
+        costs.insert("during".to_string(), reading(bound_at + 60_000));
+        costs.insert("before".to_string(), reading(bound_at - 1));
+        assert!(retire_sampled_since(&mut costs, "during", bound_at), "sampled while bound: retired");
+        assert!(!retire_sampled_since(&mut costs, "before", bound_at), "the last clean record stays");
+        assert!(costs.contains_key("before") && !costs.contains_key("during"));
+
         let dir = tempfile::tempdir().expect("tempdir");
         let path = store_path(dir.path());
-        let model = "residency-test-model-4531";
-        assert!(
-            super::super::lane_footprint::observe(model, 1, 32_768, 20 * 1024 * 1024 * 1024, 0, 0).is_some(),
-            "test: a reading taken while the work was resident"
-        );
-        assert!(super::super::lane_footprint::measured_record(model).is_some());
-        let w = ResidentWork { base_model: model.into(), ..work(9, 25280, 1_000, 58057) };
+        let w = ResidentWork { base_model: "residency-test-no-record".into(), ..work(9, 25280, 1_000, 58057) };
         record(&path, w.clone()).expect("record");
         assert!(release(&path, &w).expect("release"));
-        assert!(
-            super::super::lane_footprint::measured_record(model).is_none(),
-            "the contaminated record is retired with the release"
-        );
         assert!(released_within(crate::persona::trace::now_ms(), 60_000), "noted for the sampler's settle");
     }
 
