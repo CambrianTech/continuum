@@ -235,7 +235,7 @@ pub(crate) async fn ask_the_act_question(
                             class = "persona.work.write_or_release_gate",
                             persona = %ctx.identity.agent_name,
                             acts_without_write,
-                            "the work turn is gated: edit now or release the card"
+                            "a write-less stretch on a held card: the advisory checkpoint is shown (never a release)"
                         );
                     }
                     // NO GOVERNOR (card 3bd860ba, Joel 2026-09-28: responsibility is durable until

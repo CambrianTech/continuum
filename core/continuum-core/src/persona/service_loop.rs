@@ -3075,9 +3075,9 @@ mod tests {
         );
     }
 
-    // what this catches (card 7e3e8070): the no-deliverable notice narrating instead of
-    // gating. Six acts on a held card with no file change → the work turn names the two
-    // ways out; an edit receipt resets the count and the gate stays out of the way.
+    // what this catches (card 7e3e8070, reshaped by 3bd860ba): six acts on a held card
+    // with no file change surface the advisory checkpoint (a note, a blocker, who can
+    // help; never a release demand); an edit receipt resets the count and it stays away.
     #[test]
     fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
         use crate::persona::work_burst::{
@@ -3102,12 +3102,11 @@ mod tests {
             acts_since_last_write(&looping, me),
             &CardProgress::default(),
         );
-        assert!(text.contains("[write or release]"), "{text}");
+        assert!(text.contains("[progress checkpoint]"), "{text}");
         assert!(text.contains("PASS: blocked"), "{text}");
-        // regression (Kimi, d33e928a, 2026-09-26): the gate named only "edit or release",
-        // so a citizen mid-diagnosis read past the one act that keeps a card — a note —
-        // and the governor released it twice. A note counts as progress; the gate says so.
-        assert!(text.contains("work/note") && text.contains("file:line"), "{text}");
+        // regression (Kimi, d33e928a, 2026-09-26): a citizen mid-diagnosis read past the
+        // one act that records progress, a note; the checkpoint names it.
+        assert!(text.contains("work/note"), "{text}");
 
         let mut edited = looping.clone();
         edited.push(row(
@@ -3120,7 +3119,7 @@ mod tests {
             "an edit resets the count"
         );
         // regression for the 2026-09-11 pull→release loop: a claim (the pull) after a
-        // governor release starts a fresh count, so the new hold is not released at once.
+        // release starts a fresh count, so the new hold opens without the checkpoint.
         let mut reclaimed = looping.clone();
         reclaimed.push(row(4, "💭 next ⚙ work/release abcd ✓"));
         reclaimed.push(row(5, "💭 pulled ⚙ work/claim ef01 ✓ ⚙ code/read c.py ✓"));
@@ -3136,8 +3135,8 @@ mod tests {
             &CardProgress::default(),
         );
         assert!(
-            !text.contains("[write or release]"),
-            "no gate after an edit: {text}"
+            !text.contains("[progress checkpoint]"),
+            "no checkpoint after an edit: {text}"
         );
         assert!(
             WRITE_OR_RELEASE_AFTER_ACTS >= 4,
