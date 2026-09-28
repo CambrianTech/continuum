@@ -318,6 +318,105 @@ fn environment_block(command: &Command) -> io::Result<Vec<u16>> {
     Ok(block)
 }
 
+/// A connection owns temporary restart exclusion. EOF (including caller death)
+/// releases it; only an explicit commit makes shutdown permanent.
+pub struct ServiceStopLease(tokio::net::windows::named_pipe::NamedPipeClient);
+
+impl ServiceStopLease {
+    pub async fn commit(mut self) -> io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        self.0.write_all(&[2]).await?;
+        match self.0.read_u8().await? {
+            3 => Ok(()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid service stop commit acknowledgement",
+            )),
+        }
+    }
+}
+
+pub struct ServiceStopServer {
+    pub requests: tokio::sync::mpsc::UnboundedReceiver<crate::supervisor_install::StopRequest>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ServiceStopServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn service_pipe_name(socket: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let key = socket.replace('/', "\\").to_ascii_lowercase();
+    let hash = format!("{:x}", Sha256::digest(key.as_bytes()));
+    format!(r"\\.\pipe\Continuum.Service.{hash}.stop")
+}
+
+impl ServiceStopServer {
+    pub fn create(socket: &str) -> io::Result<Self> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = service_pipe_name(socket);
+        let mut pipe = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)?;
+        let (send, requests) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            loop {
+                if pipe.connect().await.is_err() {
+                    break;
+                }
+                let (accepted, ack) = tokio::sync::oneshot::channel();
+                let (settled, decision) = tokio::sync::oneshot::channel();
+                if send
+                    .send(crate::supervisor_install::StopRequest { accepted, decision })
+                    .is_err()
+                {
+                    break;
+                }
+                let committed = if ack.await.is_ok() && pipe.write_all(&[1]).await.is_ok() {
+                    matches!(pipe.read_u8().await, Ok(2)) && pipe.write_all(&[3]).await.is_ok()
+                } else {
+                    false
+                };
+                let _ = settled.send(committed);
+                // Keep the old instance open until its replacement exists, so
+                // another host cannot claim this endpoint between callers.
+                match ServerOptions::new().create(&name) {
+                    Ok(next) => pipe = next,
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(Self { requests, task })
+    }
+}
+
+pub async fn stop_service_restarts(socket: &str) -> io::Result<Option<ServiceStopLease>> {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::windows::named_pipe::ClientOptions;
+    let mut pipe = match ClientOptions::new().open(service_pipe_name(socket)) {
+        Ok(pipe) => pipe,
+        // Legacy service hosts do not expose the protocol.
+        Err(e) if e.raw_os_error() == Some(2) => return Ok(None),
+        // A concurrent stop owns exclusion: refuse, never drain without it.
+        Err(e) => return Err(e),
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(5), pipe.read_u8()).await {
+        Ok(Ok(1)) => Ok(Some(ServiceStopLease(pipe))),
+        Ok(Ok(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid service stop acknowledgement",
+        )),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "service host did not acknowledge stop; core not drained",
+        )),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

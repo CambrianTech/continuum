@@ -1215,20 +1215,10 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         command.env("CONTINUUM_CORE_SOCKET", &args[1]);
         command.stdin(Stdio::null()).creation_flags(0x0800_0000);
         let mut command = tokio::process::Command::from(command);
-        command.kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("service-host cannot launch {}: {e}", args[0]))?;
-        let pid = child
-            .id()
-            .ok_or("service-host core exited before PID registration")?;
-        std::fs::write(pidfile_for(&args[1]), pid.to_string())
-            .map_err(|e| format!("service-host cannot record core PID: {e}"))?;
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| format!("service-host cannot wait for core: {e}"))?;
-        Ok(status.code().unwrap_or(1))
+        continuum_cli_lifecycle::supervisor_install::supervise_core(&mut command, |pid| {
+            std::fs::write(pidfile_for(&args[1]), pid.to_string())
+                .map_err(|e| format!("service-host cannot record core PID: {e}"))
+        }, &args[1]).await
     }
 }
 
@@ -5430,6 +5420,24 @@ async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulSto
     }
 }
 
+#[cfg(windows)]
+async fn quiesce_service_restarts() -> Result<Option<windows_launch::ServiceStopLease>, String> {
+    windows_launch::stop_service_restarts(&socket_path())
+        .await
+        .map_err(|e| format!("service-host restart admission was not stopped: {e}"))
+}
+#[cfg(windows)]
+async fn commit_service_stop(
+    lease: Option<windows_launch::ServiceStopLease>,
+) -> Result<(), String> {
+    if let Some(lease) = lease {
+        lease
+            .commit()
+            .await
+            .map_err(|e| format!("service-host stop commit failed: {e}"))?;
+    }
+    Ok(())
+}
 async fn stop(options: StopOptions) -> Result<(), String> {
     // The consented child does ONE thing and returns; it never drains, never sweeps,
     // never asks for a second consent. Everything it is allowed to do is decided by the
@@ -5446,13 +5454,16 @@ async fn stop(options: StopOptions) -> Result<(), String> {
             // The drain is supplied BY THE ROOT, which is where the socket and the
             // `MayDrain` gate live — the module stays a leaf and the token stays where it
             // can only be built by a preflight or by a held handle.
-            return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
-                format!(
+            let mut stop_lease = None;
+            elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
+                stop_lease = quiesce_service_restarts().await?;
+                Ok(format!(
                     "{:?}",
                     request_graceful_stop(&MayDrain::proven_by_held_handle()).await
-                )
+                ))
             })
-            .await;
+            .await?;
+            return commit_service_stop(stop_lease).await;
         }
         #[cfg(not(windows))]
         {
@@ -5546,6 +5557,13 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
             ));
         }
     }
+    #[cfg(windows)]
+    let stop_lease = if may_drain.borrow_authority_for.is_some() {
+        // The consented child already committed this host generation.
+        None
+    } else {
+        quiesce_service_restarts().await?
+    };
     let graceful = request_graceful_stop(&may_drain).await;
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
@@ -5698,6 +5716,8 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     if keep_lanes {
         println!("  leaving serving lane(s) up for adoption by the next core (reboot path)");
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
+        #[cfg(windows)]
+        commit_service_stop(stop_lease).await?;
         return Ok(graceful);
     }
     for outcome in continuum_core::inference::lane_registry::sweep_all() {
@@ -5724,6 +5744,8 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     }
 
     let _ = std::fs::remove_file(&socket);
+    #[cfg(windows)]
+    commit_service_stop(stop_lease).await?;
     Ok(graceful)
 }
 
