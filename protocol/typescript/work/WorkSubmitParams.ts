@@ -27,7 +27,7 @@ instance?: string,
  */
 base_sha?: string, 
 /**
- * Patch hash/size; computed if omitted.
+ * Omit: computed from your checkout. Not a git sha.
  */
 artifact?: WorkArtifactReference, 
 /**
