@@ -173,7 +173,7 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
         s.push_str(&p.ran.join("; "));
         s.push('.');
     }
-    s.push_str(" Do not re-read those; go on from your last thought.");
+    s.push_str(" Use these receipts to resume; re-read when the file may have changed or you need to verify it.");
     s
 }
 
@@ -198,9 +198,9 @@ fn is_write_verb(verb: &str) -> bool {
         || verb.starts_with("code/git/apply")
 }
 
-/// [`held_work_burst`] with the write-or-release gate: past
-/// [`WRITE_OR_RELEASE_AFTER_ACTS`] acts without a file change, the turn is told the
-/// investigation is finished and given exactly two ways out.
+/// [`held_work_burst`] with an advisory progress checkpoint. Receipt counts do
+/// not establish that investigation is finished or that responsibility should
+/// transfer (card 3bd860ba: multi-day project work includes reading and review).
 pub(crate) fn held_work_burst_gated(
     held: &[&airc_lib::WorkCard],
     last_state: &[String],
@@ -245,22 +245,21 @@ pub(crate) fn held_work_burst_gated(
          passing with a reason on ONE line: 'PASS: done' (the work is complete \
          and in the workspace), 'PASS: blocked — <one line why>', or \
          'PASS: nothing' (nothing to contribute). 'PASS: done' concludes the \
-         card, so use it only when the deliverable is really written. Speak only \
-         to report a result or blocker to the room.",
+         card, so use it only when the deliverable is complete and verified. You may \
+         ask collaborators for help, discuss a finding, or report a result or blocker \
+         to the room. Being blocked is not a request to hand off responsibility.",
     );
     if acts_without_write >= WRITE_OR_RELEASE_AFTER_ACTS {
         let _ = write!(
             s,
-            "\n[write or release] You have made {acts_without_write} acts on this card \
-             without recording progress. This turn does ONE of three things: make the \
-             edit now (code/edit or git_apply — the fix you have already named in your \
-             last thoughts); or, if the finding is not yet an edit, record it with \
-             work/note naming the file:line and what you found there (a note is progress \
-             and resets this count); or conclude 'PASS: blocked — <one line why>' and \
-             release the card so a peer can take it. No more reading, running, or status \
-             checks before one of those — at {governor} acts the substrate releases the \
-             card for you.",
-            governor = GOVERNOR_RELEASE_AFTER_ACTS
+            "\n[progress checkpoint] The receipt projection counts {acts_without_write} \
+             acts since the last recognized write or hold boundary. This is not a \
+             verdict on progress: reading, planning, verification and review can be \
+             useful work. Consider a work/note recording what changed in your \
+             understanding, the next step, or a specific blocker and who can help. \
+             Continue the appropriate investigation or action; do not make an edit \
+             just to reset a counter. If you choose a handoff, identify the remaining \
+             work and any uncommitted changes explicitly."
         );
     }
     s
@@ -440,6 +439,20 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
 #[cfg(test)]
 mod tests {
     use super::*;
+    // what this catches: card 3bd860ba's prompt coercing release or unnecessary
+    // edits when legitimate project investigation reaches either old threshold.
+    #[test]
+    fn progress_checkpoint_preserves_investigation_and_explicit_handoff() {
+        for acts in [WRITE_OR_RELEASE_AFTER_ACTS, GOVERNOR_RELEASE_AFTER_ACTS] {
+            let burst = held_work_burst_gated(&[], &[], acts, &CardProgress::default());
+            assert!(burst.contains("[progress checkpoint]"));
+            assert!(burst.contains("specific blocker and who can help"));
+            assert!(burst.contains("uncommitted changes explicitly"));
+            assert!(!burst.contains("release the card"));
+            assert!(!burst.contains("No more reading"));
+            assert!(!burst.contains("substrate releases"));
+        }
+    }
     // what this catches: the governor firing under the gate (a nag becoming a release
     // at six acts) or never (the sentence read and ignored forever). It releases at
     // exactly twice the gate.
