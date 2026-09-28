@@ -436,6 +436,27 @@ flows. Do not introduce a browser-only learning graph, robot-only curriculum, or
 another cognition scheduler. The graph is a view of linked existing records, not
 a requirement for a second graph database.
 
+**The longer-term goal is world-model learning on this same architecture.** A
+mind should learn to estimate the environment's state from partial observations,
+predict how actions may change it, compare predictions with observed outcomes,
+and improve its subsequent decisions. Initially that mind may be LLM-based;
+later, predictive, latent-state or other world-model implementations should use
+the same identity, activity, observation, action, memory and genome contracts.
+Keep model-specific representations and training objectives behind adapters:
+neither conversational text nor token prediction is the universal experience
+format. Conversely, do not require every model to expose the same latent state.
+
+Where a model supports prediction, associate its prediction, uncertainty and
+model/artifact version with the observations and actions it concerns. Preserve
+what was available at decision time so later outcomes cannot leak into prediction
+evaluation. Imagined or simulated transitions must remain distinguishable from
+observed transitions; they may support planning and training without becoming
+false execution receipts. An interaction graph supplies evidence for learning a
+world model; recording that graph alone does not establish that learning occurred.
+Evaluate predictive accuracy and uncertainty alongside task outcomes and transfer
+to unfamiliar environments. Prediction error is a candidate learning signal,
+not automatic evidence of a useful lesson or a reason to create another gene.
+
 An interaction links the observed state, intended action, attempted execution,
 resulting observation and evaluated outcome. Preserve actor, activity/project,
 execution host, timestamps, action/receipt identifiers and model/gene provenance.
