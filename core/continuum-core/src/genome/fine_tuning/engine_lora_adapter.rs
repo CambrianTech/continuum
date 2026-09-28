@@ -732,6 +732,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 request.base_model
             )));
         }
+        // the engine's context granularity is 256; rounding a smaller served window UP would
+        // train on more context than serving holds (Codex on #4498)
+        if served_window < 256 {
+            return Err(FineTuningError::InvalidRequest(format!(
+                "the live lane serving {} holds {served_window} tokens a slot, under the engine's 256-token training granularity: not training past what serving holds",
+                request.base_model
+            )));
+        }
         let window = train_window(served_window);
         crate::probe!(
             class = "training.job.window",
@@ -1225,10 +1233,13 @@ mod tests {
         let body = seen.lock().unwrap().clone().expect("test: /train was posted");
         assert_eq!(body["window"].as_u64(), Some(61_696), "the lane's served window, not the request's 1024");
 
-        t.lane = Box::new(move |_| Some((url.clone(), 0)));
-        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
-        r.local_artifact_dir = Some(jobs.path().to_path_buf());
-        assert!(t.create_job(r).await.is_err(), "an unknown served window is refused, never guessed");
+        for (served, why) in [(0, "an unknown served window is refused, never guessed"), (200, "a window under 256 is refused, never rounded up past serving")] {
+            let lane_url = url.clone();
+            t.lane = Box::new(move |_| Some((lane_url.clone(), served)));
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            assert!(t.create_job(r).await.is_err(), "{why}");
+        }
         server.abort();
     }
 
