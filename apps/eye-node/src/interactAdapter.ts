@@ -13,6 +13,14 @@
  * at most {@link MAX_SESSIONS} are open at once (opening one more is refused with the reason,
  * never an eviction of someone's live session), and `stop()` closes them all.
  *
+ * ## Hers alone, and only the web
+ *
+ * A session will hold her logins on job sites, so it is bound to the citizen who opened it:
+ * the core stamps the VERIFIED caller into `_callerPeerId` (never trusted from the request), and
+ * a handle used by anyone else is refused, so a handle pasted into a room cannot let another
+ * citizen drive her account. `target` and `goto` must be http(s): a `file://` page would render
+ * local files (config.env, keys) into her observation (Fable on #4551).
+ *
  * ## Never throws
  *
  * Like the siblings, every failure comes back as `{ success: false, error }`, the honest bare
@@ -39,6 +47,25 @@ export const MAX_SESSIONS = 8;
 
 type WebSession = Awaited<ReturnType<typeof PerceptionSession.openWeb>>;
 
+/** The field the core stamps with the verified caller's peer id (`CALLER_PEER_FIELD` in Rust). */
+export const CALLER_PEER_FIELD = '_callerPeerId';
+
+/** The verified caller the core forwarded, or undefined for a local operator call. */
+export function callerOf(raw: unknown): string | undefined {
+  const v = (raw as Record<string, unknown> | null)?.[CALLER_PEER_FIELD];
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/** An http(s) URL, never file://, data: or any other scheme a browser would render. */
+export function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 /** The wire action onto the surface's driver verb. Exhaustive: a new wire kind must be mapped. */
 export function toDomAction(action: PerceptionAction): DomAction {
   switch (action.kind) {
@@ -57,6 +84,8 @@ export function toDomAction(action: PerceptionAction): DomAction {
 
 interface Held {
   readonly session: WebSession;
+  /** The verified caller that opened it; only they may drive or close it. */
+  readonly owner: string | undefined;
   lastUsedMs: number;
 }
 
@@ -78,14 +107,20 @@ export class InteractSessions {
   /** Continue `params.session`, or open one at `params.target`; take the actions; observe. */
   async interact(params: InteractParams): Promise<InteractResult> {
     let handle = params.session;
+    const caller = callerOf(params);
     try {
       await this.sweep();
+      const offWeb = [params.target, ...params.actions.map((a) => (a.kind === 'goto' ? a.url : undefined))]
+        .filter((u): u is string => u !== undefined)
+        .find((u) => !isWebUrl(u));
+      if (offWeb !== undefined) return failure(`'${offWeb}' is not an http(s) URL; a session only opens web pages`);
       let held: Held | undefined;
       if (handle) {
         held = this.held.get(handle);
         if (!held) {
           return failure(`no live session '${handle}' (closed, expired after ${IDLE_MS / 60000} idle minutes, or from another eye-node); open a new one with target`);
         }
+        if (held.owner !== caller) return failure(`session '${handle}' belongs to another citizen`);
       } else {
         if (!params.target) return failure('pass target (a URL) to open a session, or session to continue one');
         if (this.held.size >= MAX_SESSIONS) {
@@ -94,7 +129,7 @@ export class InteractSessions {
         const viewport = params.viewport ? { width: params.viewport.width, height: params.viewport.height } : undefined;
         const session = await this.openWeb(params.target, viewport);
         handle = randomUUID();
-        held = { session, lastUsedMs: this.now() };
+        held = { session, owner: caller, lastUsedMs: this.now() };
         this.held.set(handle, held);
       }
       held.lastUsedMs = this.now();
@@ -117,6 +152,9 @@ export class InteractSessions {
   async close(params: SessionCloseParams): Promise<SessionCloseResult> {
     const held = this.held.get(params.session);
     if (!held) return { success: true, closed: false };
+    if (held.owner !== callerOf(params)) {
+      return { success: false, closed: false, error: `session '${params.session}' belongs to another citizen` };
+    }
     this.held.delete(params.session);
     try {
       await held.session.close();

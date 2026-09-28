@@ -84,6 +84,28 @@ describe('perception/interact sessions', () => {
     await sessions.closeAll();
   });
 
+  // what this catches (Fable on #4551): a handle pasted into a room letting another citizen
+  // drive (or close) her logged-in session, and a file:// page rendering local files into her
+  // observation.
+  it('binds a session to its opener and opens only web pages', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    const sessions = new InteractSessions(fakeOpen(log));
+    const kimi = { _callerPeerId: 'kimi' };
+    const s = (await sessions.interact({ ...kimi, target: 'https://jobs.example/', actions: [] } as never)).session!;
+    const stolen = await sessions.interact({ _callerPeerId: 'iris', session: s, actions: [] } as never);
+    expect(stolen.success).toBe(false);
+    expect(stolen.error).toMatch(/another citizen/);
+    expect((await sessions.close({ _callerPeerId: 'iris', session: s } as never)).success).toBe(false);
+    expect((await sessions.interact({ ...kimi, session: s, actions: [] } as never)).success).toBe(true);
+
+    expect((await sessions.interact({ ...kimi, target: 'file:///Users/k/.continuum/config.env', actions: [] } as never)).error).toMatch(/http\(s\)/);
+    const viaGoto = await sessions.interact({ ...kimi, session: s, actions: [{ kind: 'goto', url: 'file:///etc/hosts' }] } as never);
+    expect(viaGoto.success).toBe(false);
+    expect(log.acted).toEqual([]);
+    expect((await sessions.close({ ...kimi, session: s } as never)).closed).toBe(true);
+    await sessions.closeAll();
+  });
+
   // what this catches: a wire kind mapped onto the wrong driver verb.
   it('maps each wire action onto the driver verb of the same kind', () => {
     expect(toDomAction({ kind: 'type', selector: 'input', text: 'x' })).toEqual({ kind: 'type', selector: 'input', text: 'x' });
