@@ -456,7 +456,7 @@ impl PersonaAircRuntimeRegistry {
     ///     Err((handle, reason)) => {
     ///         handle.abort();
     ///         let _ = handle.await;
-    ///         tracing::warn!(reason, "attach failed, handle drained");
+    ///         tracing::warn!(reason = %reason, "attach failed, handle drained");
     ///     }
     /// }
     /// ```

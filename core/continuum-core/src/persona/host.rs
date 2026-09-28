@@ -795,9 +795,8 @@ impl PersonaSpawnSupervisor {
                     slot = slot_idx,
                     persona_id = %persona_id,
                     reason = %reason,
-                    "PersonaSpawnSupervisor: attach_service_loop failed; \
-                     spawned task drained. Persona registered but unattended — \
-                     fire `persona/spawn` to retry."
+                    "PersonaSpawnSupervisor: attach_service_loop rejected the candidate; \
+                     candidate task drained, existing slot ownership preserved."
                 );
                 summary.failures.push(BootSlotFailure {
                     slot_index: slot_idx,
