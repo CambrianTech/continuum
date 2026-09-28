@@ -1445,17 +1445,28 @@ async fn serve_persona_loop_inner(
                         // act is executed (→ Acted/ActUnfulfilled), never deferred.
                         unreachable!("live settle_step always permits its one act");
                     }
-                    crate::cognition::act_observe::SettleStep::Passed { .. } => {
+                    crate::cognition::act_observe::SettleStep::Passed { reason: pass_reason } => {
                         tracing::info!(
                             lamport = msg.lamport,
                             "persona chose silence (workspace) — substrate honors decision"
                         );
+                        // SAY WHY (Cormac, 2026-09-28: every turn his 8 citizens finished
+                        // ended "workspace-pass", 0 spoke, and the probe could not tell her
+                        // CHOICE of silence from a GATE that converted her draft into a pass,
+                        // or from no decision at all). The reason is the brain's; this line
+                        // only reports it.
+                        let (gated, pass_detail) = match pass_reason.as_deref() {
+                            Some(r) => (r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX), r),
+                            None => (false, "no-decision"),
+                        };
                         crate::probe!(
                             class = "persona.turn.silent",
                             persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
                             reason = "workspace-pass",
-                            "persona chose silence"
+                            gated = gated,
+                            pass_reason = %pass_detail.chars().take(240).collect::<String>(),
+                            "persona chose silence, or a gate converted her draft into a pass (gated) — pass_reason says which"
                         );
                         // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
                         // so holding work is what makes it fire — not declining to speak.
