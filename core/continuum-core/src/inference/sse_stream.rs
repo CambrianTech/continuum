@@ -474,8 +474,18 @@ pub(crate) async fn consume_sse_stream(
                 // and slot_progress seconds earlier). The turn still fails either way; only a
                 // lane that delivered nothing to anyone in the window counts toward relaunch.
                 use crate::inference::llama_server::NeverStartedClass;
+                // WHICH request, HOW FAR it got, and whether the lane was working for anyone
+                // else meanwhile (card 18d306f8): a reader must tell "starved behind a
+                // neighbour's prefill chunk" from "wedged" off this one row, without
+                // cross-reading the engine log (IntelMac 2026-09-28 05:07Z: a turn dropped
+                // at 96% of its prefill while slot 4 ingested a 25k prompt at 11 tok/s).
+                let since_work = crate::inference::llama_server::ms_since_real_work();
+                let (prefill_processed, prefill_total) = match phase {
+                    crate::inference::stream_liveness::StreamPhase::Prefilling { processed, total } => (processed, total),
+                    _ => (0, 0),
+                };
                 match crate::inference::llama_server::classify_never_started_timeout(
-                    crate::inference::llama_server::ms_since_real_work(),
+                    since_work,
                     idle.as_millis() as u64,
                 ) {
                     NeverStartedClass::WedgeEvidence => {
@@ -484,6 +494,12 @@ pub(crate) async fn consume_sse_stream(
                             kind = "keepalive_masked_no_progress",
                             name = %cfg.name,
                             idle_secs = idle.as_secs(),
+                            persona = probe_persona.as_str(),
+                            purpose = probe_purpose.as_str(),
+                            phase = ?phase,
+                            prefill_processed,
+                            prefill_total,
+                            ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
                             "stream carried bytes but neither prefill nor decode advanced, and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
                         );
                         crate::inference::llama_server::note_real_decode_failure();
@@ -494,6 +510,12 @@ pub(crate) async fn consume_sse_stream(
                             provider = cfg.name.as_str(),
                             waited_s = idle.as_secs(),
                             stalled = "progress",
+                            persona = probe_persona.as_str(),
+                            purpose = probe_purpose.as_str(),
+                            phase = ?phase,
+                            prefill_processed,
+                            prefill_total,
+                            ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
                             "this request's progress stalled on a lane that delivered real work within the wait — oversubscription, not wedge evidence; no real-turn failure stamped",
                         );
                     }
@@ -501,10 +523,11 @@ pub(crate) async fn consume_sse_stream(
             }
             return Err(format!(
                 "{}: no PROGRESS for {}s despite the stream carrying bytes — \
-                 keepalive-masked wedge (neither prefill nor decode advanced); \
+                 keepalive-masked wedge (neither prefill nor decode advanced; stalled in {:?}); \
                  refusing to wait on a stream that is alive but not working (#385)",
                 cfg.name,
-                idle.as_secs()
+                idle.as_secs(),
+                phase
             ));
         }
         let Some(chunk) = next else {
