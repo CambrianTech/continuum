@@ -130,13 +130,12 @@ pub(crate) struct PendingBatch {
     pub(crate) preferred_provider: Option<String>,
     pub(crate) min_examples: u32,
     pub(crate) validation_split: f32,
-    /// The gym that MEASURES this bucket's trait — the `cognition/eval` `eval_set`
-    /// JSONL path, carried verbatim onto the dispatched
-    /// [`TrainingJobRequest::eval_set`] so it rides the board to the L3 sentinel. A
+    /// The bucket's `cognition/eval` `eval_set` JSONL path (a manual spot-check gym),
+    /// carried verbatim onto the dispatched [`TrainingJobRequest::eval_set`]. A
     /// first-arrival-wins bucket policy field like `lora`/`schedule`: a later submit
     /// with a divergent gym is rejected `InconsistentBucket`, never silently merged.
-    /// `None` means the recipe declared no gym — the sentinel then REFUSES to adopt
-    /// rather than measuring against a default ([[fallbacks-are-illegal-fail-loud]]).
+    /// Adoption does not read it: the sentinel opens an in-room trial whether or not
+    /// a gym is declared, and the room's card outcomes decide the gene.
     pub(crate) eval_set: Option<String>,
 }
 

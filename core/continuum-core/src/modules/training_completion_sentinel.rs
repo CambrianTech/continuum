@@ -51,7 +51,8 @@
 //! and page the gene in on `lift > 0`. Joel, 2026-09-27: "The point is integrated not
 //! parallel." A score from a copy beside her life never reaches her turns, her rooms or
 //! her learning. Now `Completed { artifact }` does three things and decides nothing:
-//! a cheap pre-filter (training's own held-out loss must be a finite number), register
+//! a cheap pre-filter (training's own loss must be a finite number: a sanity gate, never
+//! evidence of gain), register
 //! the gene so the serving engine loads it in place and dormant, and open a
 //! [`GeneTrial`](crate::genome::gene_trial::GeneTrial). From then on each card she works
 //! draws an arm; the room's outcome for the card, credited through the receipts' `genes`,
@@ -147,16 +148,23 @@ impl TrainingCompletionSentinel {
                 return;
             };
 
-            // THE PRE-FILTER: training's own held-out loss. A run whose validation loss is not
-            // a finite number diverged or never measured itself; it never reaches her work.
-            // This is only the cheap gate: the verdict is her work's (below), never a harness.
-            let validation = artifact.metrics.final_validation_loss.or(artifact.metrics.final_loss);
-            if !validation.is_some_and(f64::is_finite) {
+            // THE PRE-FILTER: training's own loss. A run whose loss is not a finite number
+            // diverged; it never reaches her work. This is a SANITY gate, not evidence of gain:
+            // the verdict is her work's (below), never a harness. The loss is named for what it
+            // is: held-out only when the run split one off; a run with no split (val_split 0)
+            // reports its training loss, and a receipt calling that "held-out" claims a proof
+            // that was never taken (Codex, attempt 2).
+            let (loss, loss_kind) = match artifact.metrics.final_validation_loss {
+                Some(held_out) => (Some(held_out), "held_out"),
+                None => (artifact.metrics.final_loss, "training"),
+            };
+            if !loss.is_some_and(f64::is_finite) {
                 crate::probe!(
                     class = "genome.trial.refused",
                     persona = %job.persona_id,
                     gene = job.trait_kind.as_str(),
-                    "the trained gene reported no finite held-out loss: no trial opened, her genome unchanged"
+                    loss_kind = loss_kind,
+                    "the trained gene reported no finite loss: no trial opened, her genome unchanged"
                 );
                 return;
             }
@@ -210,7 +218,8 @@ impl TrainingCompletionSentinel {
                 trial = %trial.id,
                 base = job.base_model.as_str(),
                 share_milli = trial.share_milli as u64,
-                validation_loss = validation.unwrap_or_default(), // probe field: guarded finite above
+                loss = loss.unwrap_or_default(), // probe field: guarded finite above
+                loss_kind = loss_kind,
                 "a trained gene opened a trial: it now works a share of her cards, and her work's outcomes decide it"
             );
 
