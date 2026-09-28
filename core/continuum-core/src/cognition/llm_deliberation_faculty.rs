@@ -8134,11 +8134,12 @@ mod tests {
             // on the full catalog (+1045 over the 12100 surface as merged). The citizen's
             // own terminal-level hands are the point of the change, not framing growth;
             // per-turn selection and whole-request window accounting stay intact.
-            // 13200 -> 13400, stated plainly (2026-09-28, Joel: making cards toward an
+            // 13200 -> 13500, stated plainly (2026-09-28, Joel: making cards toward an
             // activity's goals is every participant's work): work/create joined the native
-            // surface (repo, title, body, priority, room). Before it a citizen could claim and
-            // move cards but not create one, so a project stayed one card.
-            const AGENTIC_SURFACE_CEILING: u32 = 13400;
+            // surface (repo, title, body, priority, and a REQUIRED room). Measured 13499 on
+            // CI before its docs were trimmed. Before it a citizen could claim and move cards
+            // but not create one, so a project stayed one card.
+            const AGENTIC_SURFACE_CEILING: u32 = 13500;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

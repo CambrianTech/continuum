@@ -1711,8 +1711,8 @@ pub struct WorkCreate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkCreateParams {
-    /// The activity room whose board receives the card — its id or its name.
-    /// Required: a default of "the current room" put project cards in #general.
+    /// The room whose board gets the card (id or name).
+    // Required: a "current room" default put project cards in #general.
     pub room: String,
     /// Repository key, e.g. `CambrianTech/continuum`.
     pub repo: String,
@@ -1726,8 +1726,8 @@ pub struct WorkCreateParams {
     pub priority: Option<CardPriority>,
 }
 
-/// A card's priority on the wire: a closed set serde refuses anything outside, never a
-/// string read loosely into a default.
+// A card's priority on the wire: a closed set serde refuses anything outside, never a
+// string read loosely into a default. (`//`, not `///`: a doc comment ships in her tool schema.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CardPriority {
@@ -1762,8 +1762,7 @@ impl ActionCommand for WorkCreate {
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Create a card on a room's board for work you know of: a slice, a follow-up, a review. \
-         Returns its card_id.";
+        "Create a card on a room's board for known work (a slice, follow-up, review).";
     type Params = WorkCreateParams;
     type Output = WorkCreateResult;
 
