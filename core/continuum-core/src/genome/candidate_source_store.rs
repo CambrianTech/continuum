@@ -150,7 +150,7 @@ impl GenomeStoreCandidateSource {
                     .cloned(),
                 // Fitness joins by gene NAME — the `geneId` the eval ledger
                 // writes IS the adapter alias the whole page-in chain speaks.
-                outcome_factor: fitness.outcome_factor(&a.alias),
+                outcome_factor: fitness.qualified_outcome_factor(&a.base_model_id, &a.path),
             })
             .collect();
         Self::new(layers, embedder)
