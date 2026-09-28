@@ -4000,9 +4000,11 @@ mod tests {
     #[tokio::test]
     async fn a_citizens_card_lands_in_the_named_room_created_by_her() {
         let home = tempfile::tempdir().expect("temp airc home");
-        let airc = Airc::open_with_wire_root_for_test(home.path(), home.path())
-            .await
-            .expect("a local airc scope opens without a daemon");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
         let project = airc.join("career-wrangler").await.expect("join the project room");
         let lobby = airc.join("general").await.expect("join the lobby; focus moves here");
 
