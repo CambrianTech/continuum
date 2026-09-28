@@ -21,7 +21,7 @@
 //! `gh` must be installed + authenticated (`gh auth login`) on the host. A missing/uauthed
 //! `gh` FAILS LOUD naming the fix — never a silent no-op ([[fallbacks-are-illegal-fail-loud]]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::modules::code::CodeState;
@@ -55,6 +55,57 @@ use pr_create::CodeGithubPrCreate;
 /// Reuse the git family's workspace-root resolution — a `gh` command operates on the
 /// SAME per-caller repo checkout `code/git/*` does.
 pub(crate) use super::git::workspace_root_for;
+
+/// How a bounded `gh` invocation failed. Typed so a caller can tell a timeout (the run was
+/// killed, whole process group) from a refusal `gh` itself reported.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum GhRunError {
+    #[error("could not run `gh` — is the GitHub CLI installed and authenticated? ({0})")]
+    Spawn(String),
+    #[error("`gh {args}` failed (exit {code:?}): {stderr}")]
+    Failed { args: String, code: Option<i32>, stderr: String },
+    #[error("`gh {args}` did not finish within {secs} s and was killed with its process group")]
+    TimedOut { args: String, secs: u64 },
+}
+
+impl From<GhRunError> for CommandError {
+    fn from(e: GhRunError) -> Self {
+        CommandError::Internal(format!("code/github: {e}"))
+    }
+}
+
+/// [`run_gh`] with a bound. A `gh` that outlives `bound` is killed together with its
+/// process group (`gh repo clone` runs `git` as a grandchild, which a parent-only kill
+/// would orphan); on Windows `kill_on_drop` alone covers the direct child. The same
+/// pattern as the grader's subprocess ceiling (`swe_bench`, task #381).
+pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
+    let mut cmd = tokio::process::Command::new("gh");
+    cmd.args(args).current_dir(root).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
+    let child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
+    #[cfg(unix)]
+    let pid = child.id();
+    match tokio::time::timeout(bound, child.wait_with_output()).await {
+        Ok(Ok(out)) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()),
+        Ok(Ok(out)) => Err(GhRunError::Failed {
+            args: args.join(" "),
+            code: out.status.code(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        }),
+        Ok(Err(e)) => Err(GhRunError::Spawn(e.to_string())),
+        Err(_elapsed) => {
+            // the dropped future killed gh; its group (pgid == gh's pid) takes the git with it
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGKILL);
+                }
+            }
+            Err(GhRunError::TimedOut { args: args.join(" "), secs: bound.as_secs() })
+        }
+    }
+}
 
 /// Run one `gh` invocation in `root`, off the runtime worker. Returns trimmed stdout on
 /// success; a non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix.

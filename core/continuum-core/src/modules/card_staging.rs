@@ -138,6 +138,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         None => match ensure_managed_clone(home, &repo).await {
             Ok(clone) => clone,
             Err(error) => {
+                let error = error.to_string();
                 crate::probe!(
                     class = "work.claim.repo_clone_failed",
                     claimer = %claimer,
@@ -218,19 +219,61 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     staged
 }
 
-/// Where a managed clone of `repo` lives: `<home>/repos/<owner>/<name>`, `home` being the
-/// continuum home. `None` for anything but a plain `owner/name`: the card's repo id is
-/// written by whichever peer created the card, and here it becomes a path and a `gh`
-/// argument, so `../x`, `a/b/c` and a leading `-` are refused. The shape check is the
+/// A card repo this node may clone: exactly `owner/name`. The card's repo id is written by
+/// whichever peer created the card, and here it becomes a path and a `gh` argument, so
+/// `../x`, `a/b/c` and a leading `-` are refused at construction. The shape check is the
 /// forge's one repo-id validator, not a second copy of it.
-fn managed_clone_path(home: &Path, repo: &str) -> Option<PathBuf> {
-    let id = crate::forge::publish_request::RepoId::parse(repo).ok()?;
-    let (owner, name) = id.as_str().split_once('/')?;
-    if owner.starts_with('-') || name.starts_with('-') {
-        return None;
-    }
-    Some(home.join("repos").join(owner).join(name))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloneableRepo {
+    owner: String,
+    name: String,
 }
+
+impl TryFrom<&str> for CloneableRepo {
+    type Error = CloneError;
+
+    fn try_from(repo: &str) -> Result<Self, Self::Error> {
+        let refused = |reason: String| CloneError::NotOwnerSlashName { repo: repo.to_string(), reason };
+        let id = crate::forge::publish_request::RepoId::parse(repo).map_err(|e| refused(e.to_string()))?;
+        let (owner, name) = id.as_str().split_once('/').ok_or_else(|| refused("no '/'".into()))?;
+        if owner.starts_with('-') || name.starts_with('-') {
+            return Err(refused("a segment starts with '-' and would read as a gh flag".into()));
+        }
+        Ok(Self { owner: owner.to_string(), name: name.to_string() })
+    }
+}
+
+impl std::fmt::Display for CloneableRepo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.owner, self.name)
+    }
+}
+
+impl CloneableRepo {
+    /// `<home>/repos/<owner>/<name>`, `home` being the continuum home.
+    pub(crate) fn managed_path(&self, home: &Path) -> PathBuf {
+        home.join("repos").join(&self.owner).join(&self.name)
+    }
+
+    /// The sibling a clone lands in before it is renamed into place.
+    fn partial_path(&self, home: &Path) -> PathBuf {
+        home.join("repos").join(&self.owner).join(format!(".{}.partial-{}", self.name, Uuid::new_v4()))
+    }
+}
+
+/// Why a repo card's repo could not be given a managed checkout.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum CloneError {
+    #[error("card repo '{repo}' is not a plain owner/name ({reason}), so it is not cloned")]
+    NotOwnerSlashName { repo: String, reason: String },
+    #[error("{path}: {error}")]
+    Io { path: PathBuf, error: String },
+    #[error(transparent)]
+    Gh(#[from] crate::commands::code::github::GhRunError),
+}
+
+/// How long one managed clone may run before it is killed with its process group.
+const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
 
 /// Clone `repo` into its managed checkout and record it, so this and every later claim
 /// of its cards cuts a per-card worktree from it. Idempotent: a clone another claim made
@@ -238,42 +281,37 @@ fn managed_clone_path(home: &Path, repo: &str) -> Option<PathBuf> {
 ///
 /// The clone lands in a sibling `.partial-` directory and is renamed into place only when
 /// it succeeded, so a node that dies mid-clone never leaves a half-cloned checkout that
-/// the next claim would adopt as real. Through `code/github`'s `run_gh` (the one GitHub
-/// client), so a private repo clones with the same auth the PR verbs use.
-async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, String> {
+/// the next claim would adopt as real. Through `code/github` (the one GitHub client), so a
+/// private repo clones with the same auth the PR verbs use, and a clone past
+/// [`CLONE_BOUND`] is killed with its `git` grandchild before its partial is removed.
+async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneError> {
     static CLONING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let target = managed_clone_path(home, repo)
-        .ok_or_else(|| format!("card repo '{repo}' is not a plain owner/name, so it is not cloned"))?;
+    let repo = CloneableRepo::try_from(repo)?;
+    let key = repo.to_string();
+    let target = repo.managed_path(home);
     // Two citizens claiming cards of the same new repo at once must not clone twice.
     let _one_clone_at_a_time = CLONING.lock().await;
-    if let Some(existing) = crate::modules::repo_registry::path_for(repo) {
+    if let Some(existing) = crate::modules::repo_registry::path_for(&key) {
         return Ok(existing);
     }
     if !target.join(".git").is_dir() {
-        let parent = target.parent().ok_or_else(|| format!("{} has no parent", target.display()))?;
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); // unwrap_or_default: a validated owner/name path always has a file name
-        let partial = parent.join(format!(".{name}.partial-{}", Uuid::new_v4()));
-        let args = vec!["repo".to_string(), "clone".to_string(), repo.to_string(), partial.to_string_lossy().into_owned()];
-        let cloned = tokio::time::timeout(
-            std::time::Duration::from_secs(900),
-            crate::commands::code::github::run_gh(parent.to_path_buf(), args),
-        )
-        .await;
-        let result = match cloned {
-            Ok(Ok(_)) => std::fs::rename(&partial, &target).map_err(|e| format!("{} → {}: {e}", partial.display(), target.display())),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err(format!("gh repo clone {repo} did not finish within 900 s")),
-        };
-        if result.is_err() {
+        let partial = repo.partial_path(home);
+        let parent = partial.parent().map(Path::to_path_buf).unwrap_or_else(|| home.to_path_buf()); // unwrap_or_else: partial_path always has the owner dir as parent
+        std::fs::create_dir_all(&parent).map_err(|e| CloneError::Io { path: parent.clone(), error: e.to_string() })?;
+        let args = vec!["repo".to_string(), "clone".to_string(), key.clone(), partial.to_string_lossy().into_owned()];
+        let cloned = crate::commands::code::github::run_gh_within(&parent, &args, CLONE_BOUND)
+            .await
+            .map_err(CloneError::from)
+            .and_then(|_| std::fs::rename(&partial, &target).map_err(|e| CloneError::Io { path: target.clone(), error: e.to_string() }));
+        if cloned.is_err() {
             let _ = std::fs::remove_dir_all(&partial);
         }
-        result?;
+        cloned?;
     }
-    crate::modules::repo_registry::record(repo, &target);
+    crate::modules::repo_registry::record(&key, &target);
     crate::probe!(
         class = "work.claim.repo_cloned",
-        repo = %repo,
+        repo = %key,
         path = %target.display(),
         "a repo card's repo had no checkout on this node — cloned into the managed checkout and recorded"
     );
@@ -505,16 +543,17 @@ mod tests {
     // escaping the managed clone root or reaching `gh` as a flag. `../x` would clone
     // outside `<home>/repos`, `a/b/c` is not a GitHub repo, and a leading `-` is parsed
     // by `gh repo clone` as an option. The positive control keeps this from passing
-    // when the resolver simply refuses everything.
+    // when the conversion simply refuses everything.
     #[test]
-    fn only_a_plain_owner_slash_name_gets_a_managed_clone_path() {
-        let home = Path::new("/h/.continuum");
-        assert_eq!(
-            managed_clone_path(home, "CambrianTech/career-wrangler").as_deref(),
-            Some(Path::new("/h/.continuum/repos/CambrianTech/career-wrangler"))
-        );
+    fn only_a_plain_owner_slash_name_is_cloneable() {
+        let repo = CloneableRepo::try_from("CambrianTech/career-wrangler").expect("a plain owner/name is cloneable");
+        assert_eq!(repo.to_string(), "CambrianTech/career-wrangler");
+        assert_eq!(repo.managed_path(Path::new("/h/.continuum")), Path::new("/h/.continuum/repos/CambrianTech/career-wrangler"));
         for hostile in ["../etc", "CambrianTech/..", "a/b/c", "-o/x", "owner/--upload-pack=x", "owner", "own er/x"] {
-            assert!(managed_clone_path(home, hostile).is_none(), "{hostile:?} must not become a clone path");
+            assert!(
+                matches!(CloneableRepo::try_from(hostile), Err(CloneError::NotOwnerSlashName { .. })),
+                "{hostile:?} must not be cloneable"
+            );
         }
     }
 
