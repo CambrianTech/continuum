@@ -60,6 +60,49 @@ pub struct PersonaLiveStateParams {
     pub turns: Option<u32>,
 }
 
+/// How a turn ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaTurnOutcome.ts")]
+pub enum PersonaTurnOutcome {
+    InFlight,
+    Spoke,
+    Silent,
+    Failed,
+    // A terminal row with no outcome recorded (only metrics).
+    Ended,
+}
+
+/// Why a turn ended as it did, in system terms only: never her own words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaTurnDetail.ts")]
+pub enum PersonaTurnDetail {
+    // She chose silence.
+    Chosen,
+    // A gate refused her draft; the gate's name.
+    Gated { gate: String },
+    // A gate refused her draft, and its reason carries no gate name this can show.
+    GatedUnnamed,
+    // A silence logged before the probe carried `gated` (#4533): which it was is unknown.
+    PredatesGatedField,
+    // Inference failed.
+    Inference,
+}
+
+/// Something `persona/live-state` could not determine. None of these means idle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaLiveStateUnknown.ts")]
+pub enum PersonaLiveStateUnknown {
+    // The window holds more matching rows than one scan returns; older turns are not shown.
+    Truncated { matched: u32, read: u32 },
+    // Not hosted here: her turns are in another node's ledger (grid/send the verb there).
+    HostedElsewhere,
+    // No rows for her in the window (the ledger may have rotated).
+    NoRowsInWindow,
+}
+
 /// One turn, as the ledger shows it.
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -72,13 +115,9 @@ pub struct PersonaTurnView {
     pub started_ms: u64,
     #[ts(optional, type = "number")]
     pub ended_ms: Option<u64>,
-    /// `in_flight`, `spoke`, `silent`, `failed`, or `ended` (a terminal row without an
-    /// outcome, e.g. only metrics).
-    pub outcome: String,
-    /// For `silent`: `gated:<gate>` when a gate refused her draft, else `chosen`. For
-    /// `failed`: the failure class. Never her own words.
+    pub outcome: PersonaTurnOutcome,
     #[ts(optional)]
-    pub detail: Option<String>,
+    pub detail: Option<PersonaTurnDetail>,
 }
 
 /// Inputs she perceived in one room.
@@ -128,7 +167,7 @@ pub struct PersonaLiveState {
     pub perceived: Vec<PersonaPerceivedRoom>,
     pub acts: PersonaActSummary,
     /// What could not be determined, and why. An empty window is not "idle".
-    pub unknowns: Vec<String>,
+    pub unknowns: Vec<PersonaLiveStateUnknown>,
     /// Where the answer came from: ledger files and how many rows were read.
     pub source: String,
 }
@@ -146,6 +185,21 @@ fn is_hers(row: &ProbeRow, name: &str, peer: Option<&str>) -> bool {
     ["persona", "persona_id", "peer_id"].iter().any(|k| {
         text(row.fields.get(*k)).is_some_and(|v| v.eq_ignore_ascii_case(name) || peer.is_some_and(|p| v == p))
     })
+}
+
+/// The gate named in a gated pass reason (`gate-refused/<gate>:...`), and nothing else of it.
+/// Only a reason that carries the gate prefix AND a plain identifier as the gate is named; any
+/// other text is her draft's business, so it reads as an unnamed gate (Fable on #4534: a
+/// reason without the prefix must not leak its text before the first colon).
+fn gate_name(reason: Option<&str>) -> PersonaTurnDetail {
+    let gate = reason
+        .and_then(|r| r.strip_prefix(crate::cognition::workspace::GATE_REFUSAL_PREFIX))
+        .and_then(|rest| rest.split(':').next())
+        .filter(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'));
+    match gate {
+        Some(gate) => PersonaTurnDetail::Gated { gate: gate.to_string() },
+        None => PersonaTurnDetail::GatedUnnamed,
+    }
 }
 
 /// THE PROJECTION, pure: her rows (chronological) into the view. Private model content never
@@ -167,7 +221,7 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
                     room_id: text(row.fields.get("room_id")),
                     started_ms: row.captured_at_ms,
                     ended_ms: None,
-                    outcome: "in_flight".into(),
+                    outcome: PersonaTurnOutcome::InFlight,
                     detail: None,
                 });
             }
@@ -176,29 +230,25 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
                 let turn = &mut turns[i];
                 turn.ended_ms = Some(turn.ended_ms.map_or(row.captured_at_ms, |e| e.max(row.captured_at_ms)));
                 match class {
-                    "persona.turn.spoke" => turn.outcome = "spoke".into(),
+                    "persona.turn.spoke" => turn.outcome = PersonaTurnOutcome::Spoke,
                     "persona.turn.silent" => {
-                        turn.outcome = "silent".into();
+                        turn.outcome = PersonaTurnOutcome::Silent;
                         // a gate's name is the system's; her own pass reason is private. A row
                         // from before the probe carried `gated` (#4533) cannot say which it was.
                         let gated = row.fields.get("gated").map(|g| g.as_bool() == Some(true) || g.as_str() == Some("true"));
-                        turn.detail = Some(if gated.is_none() {
-                            "unknown (row predates the gated field)".into()
-                        } else if gated == Some(true) {
-                            let reason = text(row.fields.get("pass_reason")).unwrap_or_default(); // unwrap_or_default: a gated row names its gate; an absent one reads as an unnamed gate
-                            let gate = reason.strip_prefix(crate::cognition::workspace::GATE_REFUSAL_PREFIX).unwrap_or(&reason); // unwrap_or: a reason without the prefix is still the gate's text
-                            format!("gated:{}", gate.split(':').next().unwrap_or("")) // unwrap_or: split always yields a first piece
-                        } else {
-                            "chosen".into()
+                        turn.detail = Some(match gated {
+                            None => PersonaTurnDetail::PredatesGatedField,
+                            Some(false) => PersonaTurnDetail::Chosen,
+                            Some(true) => gate_name(text(row.fields.get("pass_reason")).as_deref()),
                         });
                     }
                     "persona.turn.inference_failed" => {
-                        turn.outcome = "failed".into();
-                        turn.detail = Some("inference".into());
+                        turn.outcome = PersonaTurnOutcome::Failed;
+                        turn.detail = Some(PersonaTurnDetail::Inference);
                     }
                     _ => {
-                        if turn.outcome == "in_flight" {
-                            turn.outcome = "ended".into();
+                        if turn.outcome == PersonaTurnOutcome::InFlight {
+                            turn.outcome = PersonaTurnOutcome::Ended;
                         }
                     }
                 }
@@ -227,7 +277,7 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
     let mut tools: Vec<(String, u32)> = tools.into_iter().collect();
     tools.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     acts.tools = tools;
-    let current = turns.iter().rev().find(|t| t.outcome == "in_flight").cloned();
+    let current = turns.iter().rev().find(|t| t.outcome == PersonaTurnOutcome::InFlight).cloned();
     let keep = turns.len().saturating_sub(turns_wanted as usize);
     let recent = turns.split_off(keep);
     let mut perceived: Vec<PersonaPerceivedRoom> =
@@ -255,9 +305,23 @@ crate::action_command! {
         let roster = crate::persona::PersonaAircRuntimeRegistry::try_global()
             .map(|reg| reg.roster_snapshot())
             .unwrap_or_default(); // unwrap_or_default: no registry means no citizen is hosted here, reported as such below
-        let hosted = roster
-            .iter()
-            .find(|(name, id)| name.eq_ignore_ascii_case(&wanted) || id.to_string() == wanted || id.to_string().starts_with(&wanted));
+        // an exact name or full id wins; a short id prefix must name exactly one citizen
+        let exact = roster.iter().find(|(name, id)| name.eq_ignore_ascii_case(&wanted) || id.to_string() == wanted);
+        let hosted = match exact {
+            Some(hit) => Some(hit),
+            None => {
+                let by_prefix: Vec<&(String, uuid::Uuid)> = roster.iter().filter(|(_, id)| id.to_string().starts_with(&wanted)).collect();
+                if by_prefix.len() > 1 {
+                    let names: Vec<&str> = by_prefix.iter().map(|(n, _)| n.as_str()).collect();
+                    return Err(CommandError::Invalid(format!(
+                        "persona/live-state: '{wanted}' is the start of {} citizens' ids ({}); give more of it or her name",
+                        by_prefix.len(),
+                        names.join(", ")
+                    )));
+                }
+                by_prefix.into_iter().next()
+            }
+        };
         let (name, peer) = match hosted {
             Some((name, id)) => (name.clone(), Some(id.to_string())),
             None => (wanted.clone(), None),
@@ -293,11 +357,7 @@ crate::action_command! {
         for scan in scans {
             let scan = scan?;
             if scan.matched > scan.events.len() as u32 {
-                unknowns.push(format!(
-                    "the window holds {} matching rows and only the newest {} were read: older turns in it are not shown",
-                    scan.matched,
-                    scan.events.len()
-                ));
+                unknowns.push(PersonaLiveStateUnknown::Truncated { matched: scan.matched, read: scan.events.len() as u32 });
             }
             scanned = scanned.max(scan.scanned);
             for s in scan.sources {
@@ -316,15 +376,10 @@ crate::action_command! {
         rows.sort_by_key(|r| r.captured_at_ms);
         let (current_turn, recent_turns, perceived, acts) = project(&rows, turns_wanted);
         if peer.is_none() {
-            unknowns.push(format!(
-                "{name} is not hosted on this node, so her turns are in another node's ledger: send this verb there with grid/send"
-            ));
+            unknowns.push(PersonaLiveStateUnknown::HostedElsewhere);
         }
         if rows.is_empty() {
-            unknowns.push(
-                "no rows for her in this window: that is not the same as idle (the ledger may have rotated, or she is hosted elsewhere)"
-                    .into(),
-            );
+            unknowns.push(PersonaLiveStateUnknown::NoRowsInWindow);
         }
         Ok(PersonaLiveState {
             persona: name,
@@ -371,8 +426,15 @@ mod tests {
         ];
         let (current, recent, perceived, acts) = project(&rows, 10);
         assert_eq!(current.as_ref().map(|t| t.lamport.as_str()), Some("12"), "the turn in flight");
-        let outcomes: Vec<(&str, Option<&str>)> = recent.iter().map(|t| (t.outcome.as_str(), t.detail.as_deref())).collect();
-        assert_eq!(outcomes, vec![("silent", Some("chosen")), ("silent", Some("gated:not_speech")), ("in_flight", None)]);
+        let outcomes: Vec<(PersonaTurnOutcome, Option<PersonaTurnDetail>)> = recent.iter().map(|t| (t.outcome, t.detail.clone())).collect();
+        assert_eq!(
+            outcomes,
+            vec![
+                (PersonaTurnOutcome::Silent, Some(PersonaTurnDetail::Chosen)),
+                (PersonaTurnOutcome::Silent, Some(PersonaTurnDetail::Gated { gate: "not_speech".into() })),
+                (PersonaTurnOutcome::InFlight, None),
+            ]
+        );
         assert_eq!(perceived, vec![PersonaPerceivedRoom { room_id: "cb2e".into(), count: 1, last_ms: 1 }], "the ask's room, perceived");
         assert_eq!(acts.count, 2);
         assert_eq!(acts.wrote, 1);
@@ -391,7 +453,18 @@ mod tests {
         ];
         let (current, recent, _, _) = project(&rows, 10);
         assert!(current.is_none());
-        assert_eq!(recent[0].detail.as_deref(), Some("unknown (row predates the gated field)"));
+        assert_eq!(recent[0].detail, Some(PersonaTurnDetail::PredatesGatedField));
+    }
+
+    // what this catches (Fable on #4534): a gated reason WITHOUT the gate prefix leaking her
+    // own text up to its first colon. Only a prefixed reason with a plain identifier as the
+    // gate is named; everything else is an unnamed gate.
+    #[test]
+    fn a_gated_reason_names_only_a_prefixed_plain_gate() {
+        assert_eq!(gate_name(Some("gate-refused/not_speech:bare_call: x")), PersonaTurnDetail::Gated { gate: "not_speech".into() });
+        assert_eq!(gate_name(Some("my private plan: do x")), PersonaTurnDetail::GatedUnnamed, "no prefix: her words stay hers");
+        assert_eq!(gate_name(Some("gate-refused/Her Words:x")), PersonaTurnDetail::GatedUnnamed, "not a plain identifier");
+        assert_eq!(gate_name(None), PersonaTurnDetail::GatedUnnamed);
     }
 
     // what this catches: probes key a citizen by name in some classes and by peer id in others;
