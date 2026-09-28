@@ -39,9 +39,15 @@
 //! Residency pins a whole workspace, and that is right for her work. It was also pinning her
 //! BUILD OUTPUT forever. Measured on the IntelMac, 2026-09-28: three resident citizens at
 //! 15 GB each, 12 GB of each a private cargo `target/` last written Sep 4. That is 36 of
-//! 45 GB, unevictable by design while she stays resident. So a second, narrower pass reclaims
-//! one thing inside a RESIDENT workspace, `workspace/target`, and only when every one of
-//! these holds (Codex's gates on 10e6c5e5):
+//! 45 GB, unevictable by design while she stays resident.
+//!
+//! It is reclaimed ONLY on request, through `system/reclaim-build-residue`, never by pressure
+//! relief (Codex's decision on #4528). Cargo 1.95 locks only `target/<profile>/.cargo-lock`,
+//! never the tree, so no lock this pass can take spans a build that starts a NEW profile, and a
+//! session may point its own CARGO_TARGET_DIR anywhere. Every substrate cargo writes to the
+//! shared cache, which is why these trees are residue, but "no writer" is not provable from
+//! outside cargo. So the reclaim is an explicit, quiescent act, and even then it takes one
+//! thing inside a workspace, `workspace/target`, only when every one of these holds:
 //!
 //! - **Rebuildable, proven, not named:** the tree carries the cachedir signature AND cargo's
 //!   `.rustc_info.json`. A directory called `target` that cargo did not write is left alone.
@@ -403,51 +409,98 @@ impl CitizenWorkspacePool {
         freed
     }
 
-    /// Reclaim stale build output, residents included, under the gates in the module doc.
-    fn evict_build_residue(root: &Path, roster: &Roster, now_ms: u64, want_bytes: u64) -> u64 {
+    /// The explicit reclaim (`system/reclaim-build-residue`): every stale cargo build tree under
+    /// `root`, residents included, each reported. With `apply = false` nothing is touched: each
+    /// tree is judged under the same gates and reported as it WOULD be decided.
+    pub fn reclaim_build_residue(root: &Path, now_ms: u64, apply: bool) -> Vec<ResidueOutcome> {
+        Self::reclaim_with_roster(root, &Self::roster(), now_ms, apply)
+    }
+
+    fn reclaim_with_roster(root: &Path, roster: &Roster, now_ms: u64, apply: bool) -> Vec<ResidueOutcome> {
         if *roster == Roster::Unreadable {
-            return 0;
+            return vec![ResidueOutcome::refused_all("the persona roster could not be read, so nothing is touched")];
         }
-        let mut freed = Self::sweep_parked(root);
+        let mut out = Vec::new();
+        if apply {
+            let swept = Self::sweep_parked(root);
+            if swept > 0 {
+                out.push(ResidueOutcome::swept(swept));
+            }
+        }
         let residue = Self::build_residue_on_disk(root);
-        for r in residue_to_drop(&residue, roster, now_ms, want_bytes) {
+        for r in residue_to_drop(&residue, roster, now_ms, u64::MAX) {
+            let idle_days = now_ms.saturating_sub(r.last_active_ms) / (24 * 60 * 60 * 1000);
             // ONLY `peers/<peer>/workspace/target`, by construction (build_residue_on_disk)
-            debug_assert!(r.target.ends_with("workspace/target"));
             if !r.target.ends_with("workspace/target") {
                 continue;
             }
             // her hands for the whole transaction: no staged solve starts inside this tree
             let Some(_hands) = crate::modules::work::HandsLease::try_take(r.peer_id) else {
-                crate::probe!(
-                    class = "disk.citizens.residue_kept",
-                    peer = %r.peer_id,
-                    why = "solve_live",
-                    "a citizen's build output was NOT reclaimed: she is mid-solve"
-                );
+                out.push(ResidueOutcome::of(&r, idle_days, Err("solve_live".into())));
                 continue;
             };
-            let taken = hold_cargo_locks(&r.target).and_then(|locks| take_target(&r.target, locks));
-            match taken {
-                Ok(()) => {
-                    freed = freed.saturating_add(r.bytes);
-                    crate::probe!(
-                        class = "disk.citizens.residue_reclaimed",
-                        peer = %r.peer_id,
-                        freed_mb = r.bytes / (1024 * 1024),
-                        idle_days = now_ms.saturating_sub(r.last_active_ms) / (24 * 60 * 60 * 1000),
-                        "a citizen's stale cargo build output was reclaimed under cargo's own lock (her workspace and work untouched; the next build rebuilds it)"
-                    );
-                }
-                Err(kept) => crate::probe!(
-                    class = "disk.citizens.residue_kept",
-                    peer = %r.peer_id,
-                    why = kept.why(),
-                    detail = kept.detail().as_str(),
-                    "a citizen's build output was NOT fully reclaimed: it could not be proven idle and taken whole, or its delete stopped part way (the parked remainder is swept next pass)"
-                ),
-            }
+            let decided = match hold_cargo_locks(&r.target) {
+                Err(kept) => Err(format!("{}: {}", kept.why(), kept.detail())),
+                Ok(_locks) if !apply => Ok(false), // judged idle; a dry run takes nothing
+                Ok(locks) => take_target(&r.target, locks).map(|()| true).map_err(|kept| format!("{}: {}", kept.why(), kept.detail())),
+            };
+            let outcome = ResidueOutcome::of(&r, idle_days, decided);
+            crate::probe!(
+                class = "disk.citizens.residue",
+                peer = %r.peer_id,
+                decision = outcome.decision.as_str(),
+                bytes = r.bytes,
+                idle_days,
+                "an explicit build-residue reclaim decided one citizen's cargo target"
+            );
+            out.push(outcome);
         }
-        freed
+        out
+    }
+}
+
+/// What the explicit reclaim decided for one tree (or for the whole pass).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/system/ResidueOutcome.ts")]
+pub struct ResidueOutcome {
+    /// The citizen (her peer id), or empty for a pass-wide line.
+    pub peer: String,
+    pub path: String,
+    #[ts(type = "number")]
+    pub bytes: u64,
+    #[ts(type = "number")]
+    pub idle_days: u64,
+    /// `reclaimed`, `would_reclaim` (dry run, proven idle), `kept`, `swept` (parked leftovers),
+    /// or `refused` (nothing judged).
+    pub decision: String,
+    /// Why it was kept or refused (`solve_live`, `build_live: <lock>`, `unreadable: …`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub why: Option<String>,
+}
+
+impl ResidueOutcome {
+    fn of(r: &BuildResidue, idle_days: u64, decided: Result<bool, String>) -> Self {
+        let (decision, why) = match decided {
+            Ok(true) => ("reclaimed", None),
+            Ok(false) => ("would_reclaim", None),
+            Err(why) => ("kept", Some(why)),
+        };
+        Self {
+            peer: r.peer_id.to_string(),
+            path: r.target.display().to_string(),
+            bytes: r.bytes,
+            idle_days,
+            decision: decision.to_string(),
+            why,
+        }
+    }
+    fn swept(bytes: u64) -> Self {
+        Self { peer: String::new(), path: String::new(), bytes, idle_days: 0, decision: "swept".into(), why: None }
+    }
+    fn refused_all(why: &str) -> Self {
+        Self { peer: String::new(), path: String::new(), bytes: 0, idle_days: 0, decision: "refused".into(), why: Some(why.into()) }
     }
 }
 
@@ -858,11 +911,9 @@ impl ResourcePool for CitizenWorkspacePool {
                 "dormant citizens' WORKSPACES dropped (memory untouched) — each re-stages on her next claim; dirty checkouts archived as patches"
             );
         }
-        // Still short after whole dormant workspaces: a resident's stale build output is the
-        // next thing that holds no work (card 10e6c5e5; each reclaim carries its own probe).
-        if freed < want_bytes {
-            freed = freed.saturating_add(Self::evict_build_residue(&root, &roster, now_ms, want_bytes - freed));
-        }
+        // A RESIDENT's build output is NOT reclaimed here (Codex on #4528): cargo has no
+        // exclusion spanning every entry path, so automatic pressure relief cannot prove no
+        // writer exists. It is reclaimed only through `system/reclaim-build-residue`.
         freed
     }
 }
@@ -1062,8 +1113,8 @@ mod tests {
         target
     }
 
-    // what this catches: the residue pass taking something that is not provably cargo's build
-    // output, or taking it while a build is live. Only a CACHEDIR-tagged `target/` is residue;
+    // what this catches: the explicit reclaim taking something that is not provably cargo's
+    // build output, taking it while a build is live, or touching anything on a dry run. Only a CACHEDIR-tagged `target/` is residue;
     // a held `.cargo-lock` keeps it; once the lock is free a resident's target goes and every
     // other file in her workspace (her notes, her checkouts) stays.
     #[cfg(unix)]
@@ -1087,12 +1138,21 @@ mod tests {
         let later = found[0].last_active_ms + DORMANT_AFTER_MS + 1;
         let held = std::fs::OpenOptions::new().read(true).write(true).open(target.join("debug/.cargo-lock")).expect("open lock");
         held.lock().expect("a live build holds cargo's lock");
-        assert_eq!(CitizenWorkspacePool::evict_build_residue(root.path(), &roster, later, u64::MAX), 0, "a live build keeps it");
+        let decision = |out: Vec<ResidueOutcome>| out.into_iter().map(|o| o.decision).collect::<Vec<_>>();
+        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true)), vec!["kept"], "a live build keeps it");
         assert!(target.exists());
         drop(held);
 
-        assert!(CitizenWorkspacePool::evict_build_residue(root.path(), &roster, later, u64::MAX) > 0);
-        assert!(!target.exists(), "idle, tagged, stale: reclaimed");
+        // a dry run judges and takes nothing (Codex on #4528: explicit, never automatic)
+        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, false)), vec!["would_reclaim"]);
+        assert!(target.exists(), "a dry run touches nothing");
+        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true)), vec!["reclaimed"]);
+        assert!(!target.exists(), "idle, tagged, stale, applied: reclaimed");
+        assert_eq!(
+            decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &Roster::Unreadable, later, true)),
+            vec!["refused"],
+            "an unreadable roster judges nothing"
+        );
         assert!(ws.join("NOTES.md").exists(), "her workspace and work stay");
         assert!(other.join("mine.txt").exists(), "a target without cargo's own file is not cargo's to reclaim");
         assert!(!ws.read_dir().expect("read ws").flatten().any(|e| e.file_name().to_string_lossy().starts_with(PARKED_PREFIX)), "nothing left parked");
