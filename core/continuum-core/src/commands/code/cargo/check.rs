@@ -75,6 +75,7 @@ crate::action_command! {
     pub struct CargoCheck { state: Arc<CodeState> }
     name: "code/cargo/check",
     access: AiSafe,
+    native: true, // a capable citizen's working set (Joel, 2026-09-28: offered, like Claude's)
     params: CargoCheckParams,
     output: CargoCheckResult,
     run(this, ctx, p) => {

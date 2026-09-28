@@ -1439,6 +1439,7 @@ pub struct CodeShellPollParams {
 impl ActionCommand for CodeShellPoll {
     const NAME: &'static str = "code/shell-poll";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const NATIVE: bool = true; // follow a long command (install, build, server), like Claude's
     const DESCRIPTION: &'static str =
         "Poll a shell execution by its execution_id handle: current status, accumulated \
          stdout/stderr, and exit_code once finished. The non-blocking way to follow a long command.";
@@ -1488,6 +1489,7 @@ pub struct CodeShellKillResult {
 impl ActionCommand for CodeShellKill {
     const NAME: &'static str = "code/shell-kill";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const NATIVE: bool = true; // follow a long command (install, build, server), like Claude's
     const DESCRIPTION: &'static str =
         "Terminate a running shell execution by its execution_id handle.";
     type Params = CodeShellKillParams;

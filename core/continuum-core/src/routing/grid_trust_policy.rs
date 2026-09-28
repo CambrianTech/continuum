@@ -133,15 +133,26 @@ impl GridTrustAuthPolicy {
             None => TrustLevel::Owner,
             Some(c) => match c.source {
                 CallerSource::Local => TrustLevel::Owner,
-                // A local in-process persona — the owner's own agent on this box —
-                // resolves to Trusted: close-to-full access (file/shell/git via the
-                // Privileged→Trusted tier) but capped below Owner, so the most
-                // destructive ops stay the human operator's. Unforgeable remotely.
-                CallerSource::LocalPersona => TrustLevel::Trusted,
-                // WS thin-client callers share the remote (non-owner) path: an
-                // unauthenticated socket carries a nil peer_id → no registered
-                // trust → Provisional. A future GH-auth handshake raises this.
-                CallerSource::Airc | CallerSource::Tcp | CallerSource::Ws => {
+                // A CITIZEN (a local in-process persona, or one calling over airc) gets
+                // the access her COGNITIVE LEVEL earns, never a transport ceiling (Joel,
+                // 2026-09-28): `access_decision`. A local persona's level is the model
+                // this node serves; an airc caller's is not carried yet, so it reads as
+                // unknown, which gets MORE (Trusted). An operator block still holds, and
+                // a recorded decision (earned access) wins over both.
+                CallerSource::LocalPersona => crate::routing::access_decision::policy().citizen_trust(
+                    c.peer_id.as_uuid(),
+                    crate::routing::access_decision::local_cognitive_rank(),
+                    None,
+                ),
+                CallerSource::Airc => {
+                    let registered = self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id.as_uuid()));
+                    crate::routing::access_decision::policy().citizen_trust(c.peer_id.as_uuid(), None, registered)
+                }
+                // An unauthenticated socket (TCP IPC, a WS thin client) is not a citizen
+                // and carries no verified identity: the registered trust if the bridge
+                // knows the peer, capped, else Provisional. A future GH-auth handshake
+                // raises this.
+                CallerSource::Tcp | CallerSource::Ws => {
                     match self
                         .trust_source
                         .as_ref()
@@ -174,51 +185,50 @@ impl GridTrustAuthPolicy {
     }
 }
 
-/// The trust ceiling applied to airc-sourced callers until the
-/// airc↔grid trust bridge can resolve a peer's real `TrustLevel`.
-/// `Provisional` admits `ai/generate` (continuum#1649) and denies every
-/// `Trusted`/`Owner` command.
-const AIRC_CALLER_CEILING: TrustLevel = TrustLevel::Provisional;
+/// The ceiling for an UNAUTHENTICATED socket caller (TCP IPC, a WS thin client, a positron
+/// observer): not a citizen, no verified identity. `Provisional` admits `ai/generate`
+/// (continuum#1649) and denies every `Trusted`/`Owner` command. Citizens are decided by
+/// `access_decision`, never by this ceiling.
+const UNAUTHENTICATED_SOCKET_CEILING: TrustLevel = TrustLevel::Provisional;
 
 /// The effective grid [`TrustLevel`] of a caller — the ONE place the caller→trust
 /// rule lives, so the [`gate`](GridTrustAuthPolicy::gate) and every trust-aware
 /// consumer (e.g. `commands/list` filtering "what can THIS caller call") share it
-/// and can't drift. Local / substrate callers are the owner on their own box;
-/// airc-sourced callers are capped at [`AIRC_CALLER_CEILING`] until the airc↔grid
-/// per-peer trust bridge resolves a peer's real level.
+/// and can't drift. Local / substrate callers are the owner on their own box; a citizen
+/// (local persona or airc caller) gets what her cognitive level earns
+/// (`access_decision`); an unauthenticated socket is capped at
+/// [`UNAUTHENTICATED_SOCKET_CEILING`].
 pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
     match caller {
         None => TrustLevel::Owner,
         Some(c) => match c.source {
             CallerSource::Local => TrustLevel::Owner,
-            // A local in-process persona (the owner's agent) is Trusted — the same
-            // resolution as the gate's resolve_trust, so offer == authorized.
-            CallerSource::LocalPersona => TrustLevel::Trusted,
-            // TODO(airc-trust-bridge): EVERY airc caller maps to the Provisional
-            // ceiling regardless of the peer's real grid trust — so a `Blocked`
-            // peer is NOT distinguished here and gets Provisional's AiSafe surface.
-            // This preserves prior gate behavior; closing it needs the airc↔grid
-            // per-peer trust resolution (so Blocked/Trusted/Owner peers map to their
-            // real level). Until then, upstream airc enrollment must keep blocked
-            // peers from reaching the gate. Flagged by adversarial review 2026-06-21.
-            CallerSource::Airc => AIRC_CALLER_CEILING,
+            // A citizen: the access her cognitive level earns (`access_decision`), the
+            // same resolution as the gate's resolve_trust, so offer == authorized. This
+            // static path has no trust bridge, so an operator block is enforced at the gate.
+            CallerSource::LocalPersona => crate::routing::access_decision::policy().citizen_trust(
+                c.peer_id.as_uuid(),
+                crate::routing::access_decision::local_cognitive_rank(),
+                None,
+            ),
+            CallerSource::Airc => crate::routing::access_decision::policy().citizen_trust(c.peer_id.as_uuid(), None, None),
             // A TCP IPC caller is an unauthenticated remote socket — never owner.
             // Capped at the same remote ceiling as airc (Provisional): it can run
             // the AiSafe surface but NOT Owner-gated commands (data/delete,
             // grid/trust, …). Closes the "TCP == local owner" hole (security review
             // 2026-06-21). Stricter-than-airc (it has no verified peer) is a future
             // refinement; non-owner is the load-bearing guarantee.
-            CallerSource::Tcp => AIRC_CALLER_CEILING,
+            CallerSource::Tcp => UNAUTHENTICATED_SOCKET_CEILING,
             // A WS thin-client caller is an unauthenticated socket — same remote
             // Provisional ceiling as TCP (AiSafe surface, never Owner-gated) until
             // the GH-auth handshake (task #29) authenticates the socket.
-            CallerSource::Ws => AIRC_CALLER_CEILING,
+            CallerSource::Ws => UNAUTHENTICATED_SOCKET_CEILING,
             // A positron AI observer is clamped at the SAME Provisional ceiling —
             // AiSafe surface only, never Owner-gated. The confused-deputy divergence
             // from Ws (never rising with socket auth) lives in `resolve_trust`, which
             // is the bridge-consulting path; this static offer==authorized surface is
             // already the floor, so observer and Ws coincide here.
-            CallerSource::PositronObserver { .. } => AIRC_CALLER_CEILING,
+            CallerSource::PositronObserver { .. } => UNAUTHENTICATED_SOCKET_CEILING,
         },
     }
 }
@@ -302,13 +312,12 @@ mod tests {
         route(&CommandUri::local(path))
     }
 
-    // what this catches: the hard ACL gate's reason for existing — a
-    // cross-grid (airc) caller can invoke ai/generate (the Provisional
-    // cross-grid-inference rule) but is DENIED every privileged command.
-    // Without this an untrusted room peer could data/delete via the
-    // persona's command-inbound pump.
+    // what this catches: the Owner line holds for a citizen calling over airc. She gets the
+    // working surface her cognitive level earns (Privileged, e.g. gpu/budget: Joel,
+    // 2026-09-28, citizens are not crippled by transport), but the destructive Owner-only
+    // commands (data/delete, grid/trust, grid/pair) stay the human operator's.
     #[test]
-    fn airc_caller_may_generate_but_not_privileged() {
+    fn airc_citizen_gets_the_working_surface_but_not_owner_ops() {
         let policy = GridTrustAuthPolicy::new();
         let airc = CallerIdentity::airc(crate::identity::PeerId::new());
 
@@ -324,7 +333,12 @@ mod tests {
         // grid peer leasing this node's GPU legitimately needs capacity
         // visibility. The mutating tier is what stays out of reach: gpu/budget
         // (`access: Privileged` → Trusted) must be denied a Provisional caller.
-        for privileged in ["data/delete", "grid/trust", "grid/pair", "gpu/budget"] {
+        assert_eq!(
+            policy.gate(&decision("gpu/budget"), Some(&airc)),
+            Verdict::Allowed,
+            "a citizen's working surface (Privileged) is not withheld by transport"
+        );
+        for privileged in ["data/delete", "grid/trust", "grid/pair"] {
             match policy.gate(&decision(privileged), Some(&airc)) {
                 Verdict::Forbidden {
                     reason: ForbiddenReason::NoPermissionForUri(uri),
@@ -513,10 +527,9 @@ mod tests {
     // what this catches: THE local-persona trust tier — Asha. A local in-process
     // persona resolves to Trusted: it may run AiSafe tools (code/read) AND the
     // Privileged local-operator tier (code/shell — bash), but is STILL denied
-    // Owner-only ops (data/delete stays the human operator's). And a remote
-    // Provisional airc peer is DENIED code/shell — no cross-grid RCE. This is the
-    // gate half of "Asha codes like a peer, the internet doesn't" (relies on
-    // code/read=AiSafe + code/shell=Privileged in the registry).
+    // Owner-only ops (data/delete stays the human operator's). A citizen over airc
+    // gets the same shell (access follows cognitive level, not transport); only an
+    // explicit block or a recorded decision narrows it.
     #[test]
     fn local_persona_is_trusted_runs_shell_but_not_owner_ops() {
         let policy = GridTrustAuthPolicy::new();
@@ -545,14 +558,26 @@ mod tests {
             "Owner-only ops stay the human operator's, even for Asha"
         );
 
-        // A remote Provisional airc peer must NOT get bash — the RCE boundary.
+        // A citizen calling over airc gets the same shell a local one does: access follows
+        // cognitive level, never transport (Joel, 2026-09-28). Unknown level = more.
         let remote = CallerIdentity::airc(crate::identity::PeerId::new());
-        assert!(
-            matches!(
-                policy.gate(&decision("code/shell"), Some(&remote)),
-                Verdict::Forbidden { .. }
-            ),
-            "a remote Provisional peer is denied shell — no cross-grid RCE"
+        assert_eq!(
+            policy.gate(&decision("code/shell"), Some(&remote)),
+            Verdict::Allowed,
+            "a citizen over airc has the shell, like Claude or Codex"
+        );
+        // A recorded decision restricts her (the earned-access path works both ways).
+        let mut restricted = crate::routing::access_decision::policy();
+        restricted.decisions.push(crate::routing::access_decision::AccessDecision {
+            peer: remote.peer_id.as_uuid(),
+            level: TrustLevel::Provisional,
+            reason: "test: reviewed down".into(),
+            decided_by: None,
+            decided_ms: 1,
+        });
+        assert_eq!(
+            restricted.citizen_trust(remote.peer_id.as_uuid(), None, None),
+            TrustLevel::Provisional
         );
     }
 

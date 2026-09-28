@@ -5294,6 +5294,9 @@ fn metrics_from(
 /// selected on the COMMAND names (`code/read`, `work/state`, …) before the wire
 /// dialect renames them (`edit_file`, `list_recipes`, …).
 fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
+    let policy = crate::routing::access_decision::policy();
+    let capable = crate::routing::access_decision::local_cognitive_rank()
+        .map_or(true, |rank| rank >= policy.full_access_min_rank); // an unknown level gets more, not less
     raw.iter()
         .filter(|s| {
             let n = s.name.as_str();
@@ -5315,7 +5318,11 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // 9/16 (#4102), the night the landings stopped. A reviewer who holds a
             // review card, or a citizen reading receipts, reaches them through
             // `commands/list`; the holder's own hands are `work/get` and `work/submit`.
-            n.starts_with("code/")
+            // HER HANDS FOLLOW HER COGNITIVE LEVEL (Joel, 2026-09-28: the citizens were
+            // hand-crippled; the point is a team that replaces Claude or Codex). A capable
+            // model gets every offered verb, web and vision included, like Claude; only a
+            // model below the policy's threshold keeps the focused working set.
+            capable || n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
                 || n.starts_with("cargo/")
@@ -5520,12 +5527,17 @@ mod tests {
         })
         .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
+        // A capable citizen (an unknown level counts as capable: more, not less) is offered
+        // every verb, like Claude (Joel, 2026-09-28); only the misread reviewer verbs stay
+        // out of her hands.
         assert_eq!(
             hands,
             [
                 "code/read",
                 "work/state",
+                "chat/send",
                 "commands/list",
+                "room/join",
                 "code/git/status",
                 "work/submit"
             ],

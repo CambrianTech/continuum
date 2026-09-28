@@ -38,6 +38,7 @@ crate::action_command! {
     pub struct CodeGitLog { state: Arc<CodeState> }
     name: "code/git/log",
     access: AiSafe,
+    native: true, // a capable citizen's working set (Joel, 2026-09-28: offered, like Claude's)
     aliases: &["git_log"],
     params: GitLogParams,
     output: GitLogResult,
