@@ -70,7 +70,7 @@ const LEDGER_BASENAME: &str = "continuum-probes.jsonl";
 const DEFAULT_LIMIT: u32 = 50;
 
 /// Hard ceiling on rows in one response — a `limit` of 100k would blow the IPC frame.
-const MAX_LIMIT: u32 = 2_000;
+pub(crate) const MAX_LIMIT: u32 = 2_000;
 
 /// Accept `"a"`, `"a,b"`, or `["a","b"]` for a list-shaped param.
 ///
@@ -299,18 +299,18 @@ impl ActionCommand for ProbeQuery {
 
 /// Raw scan output, before the summary sentence is composed.
 #[derive(Debug)]
-struct Scan {
-    events: Vec<ProbeRow>,
-    matched: u32,
-    scanned: u32,
-    sources: Vec<String>,
+pub(crate) struct Scan {
+    pub(crate) events: Vec<ProbeRow>,
+    pub(crate) matched: u32,
+    pub(crate) scanned: u32,
+    pub(crate) sources: Vec<String>,
 }
 
 /// Walk every ledger generation oldest-first, keeping the newest `limit` matches.
 ///
 /// Split out so the filtering rules are unit-testable against a temp dir without an
 /// async runtime, a live core, or an env var.
-fn scan_ledger(
+pub(crate) fn scan_ledger(
     dir: &PathBuf,
     filter: &HashSet<String>,
     since_ms: Option<u64>,
