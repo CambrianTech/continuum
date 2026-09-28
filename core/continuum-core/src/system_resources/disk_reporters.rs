@@ -303,6 +303,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
         // cache class rather than data.
         TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
+        // Managed clones of repos a citizen claimed a card for when this node had no
+        // checkout (`card_staging::ensure_managed_clone`). One full clone per repo, and
+        // every per-card worktree for that repo is cut from it.
+        TrackedDir::new("repos", home.join(".continuum/repos")),
         // THE LARGEST THING ON THE 5090'S SYSTEM VOLUME WAS INVISIBLE (2026-09-18, the
         // day it hit 0 bytes free): the Kimi K3 expert-bank container, 760 GB, plus
         // 25 GB of MoE probe runs — both written under the home by the K3 pager work
