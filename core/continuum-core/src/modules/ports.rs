@@ -8,9 +8,10 @@
 //! gets the same port after a deploy (the respawn of declared services, card 2effe50e, reads it).
 //!
 //! - The lease is the authority AMONG CITIZENS, not an OS reservation: a port is taken only if
-//!   nobody holds a lease on it AND it binds right now (the one probe,
-//!   [`crate::utils::ports::first_bindable`]). A foreign process that later sits on a leased
-//!   port shows up as her server's bind error; the lease stays hers.
+//!   nobody holds a lease on it AND nothing uses it right now: loopback binds and no server
+//!   answers a loopback connect, which also sees a wildcard listener on Windows (the one probe,
+//!   [`crate::utils::ports::first_unused`]). A foreign process that later sits on a leased port
+//!   shows up as her server's bind error; the lease stays hers.
 //! - A release does not free the port at once (Codex on the plan): her service may still be
 //!   running, or restarting between listens. The row is kept as released, the port stays
 //!   unavailable to anyone else for [`RELEASE_QUARANTINE_MS`], and re-leasing the same service
@@ -52,9 +53,6 @@ pub const MAX_LEASES_PER_CITIZEN: usize = 16;
 /// How long a released port stays unavailable to anyone else: long enough for a service that
 /// was still shutting down, or restarting, to be gone.
 pub const RELEASE_QUARANTINE_MS: u64 = 10 * 60 * 1000;
-
-/// Where a leased port must bind to be free: citizen services listen on loopback.
-const LEASE_HOST: &str = "127.0.0.1";
 
 /// One leased port: `service` (her name for it) of `holder` listens on `port` of `node`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Entity)]
@@ -123,7 +121,7 @@ fn unbindable_note(runs: &[(u16, u16)]) -> String {
     }
     let named: Vec<String> = runs.iter().map(|&(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect();
     format!(
-        "; these would not bind here: {} (on Windows, Hyper-V and WinNAT reserve port blocks: \
+        "; these are in use or would not bind here: {} (on Windows, Hyper-V and WinNAT reserve port blocks: \
          netsh int ipv4 show excludedportrange protocol=tcp)",
         named.join(", ")
     )
@@ -189,10 +187,10 @@ pub(crate) fn decide(
     pick(&unavailable).map(LeaseDecision::Take).ok_or(PortLeaseError::RangeExhausted { unbindable: Vec::new() })
 }
 
-/// The first port in [`CITIZEN_PORT_RANGE`] not in `unavailable` that binds right now. The
-/// probe is a non-blocking bind per candidate, microseconds each, so it runs inline.
+/// The first port in [`CITIZEN_PORT_RANGE`] not in `unavailable` that nothing uses right now.
+/// BLOCKING (a loopback connect per candidate): [`PortLeases::lease`] runs it off the runtime.
 fn first_free_citizen_port(unavailable: &BTreeSet<u16>) -> Option<u16> {
-    crate::utils::ports::first_bindable(LEASE_HOST, CITIZEN_PORT_RANGE.filter(|p| !unavailable.contains(p)))
+    crate::utils::ports::first_unused(CITIZEN_PORT_RANGE.filter(|p| !unavailable.contains(p)))
 }
 
 /// The node's port leases: the store, and every lease row held in memory for the synchronous
@@ -241,17 +239,24 @@ impl PortLeases {
         let node = (self.node)().ok_or(PortLeaseError::NodeUnknown)?;
         let now = crate::persona::trace::now_ms();
         let on_node = self.on_this_node();
-        let decision = decide(&on_node, holder, service, now, first_free_citizen_port).map_err(|e| match e {
-            // only on this refusal is the whole range probed, to name what would not bind
-            PortLeaseError::RangeExhausted { .. } => {
-                let unavailable: BTreeSet<u16> =
-                    on_node.iter().filter(|l| l.active() || l.quarantined(now)).map(|l| l.port).collect();
-                let candidates = CITIZEN_PORT_RANGE.filter(|p| !unavailable.contains(p));
-                let bindable = |p: u16| crate::utils::ports::first_bindable(LEASE_HOST, [p]).is_some();
-                PortLeaseError::RangeExhausted { unbindable: unbindable_runs(candidates, bindable) }
-            }
-            other => other,
-        })?;
+        // the probe connects to loopback per candidate (blocking, up to a few hundred ms on
+        // Windows), so the decision runs off the async runtime
+        let (decide_on, wanted) = (on_node.clone(), service.to_string());
+        let decision = tokio::task::spawn_blocking(move || {
+            decide(&decide_on, holder, &wanted, now, first_free_citizen_port).map_err(|e| match e {
+                // only on this refusal is the whole range probed, to name what is in use
+                PortLeaseError::RangeExhausted { .. } => {
+                    let unavailable: BTreeSet<u16> =
+                        decide_on.iter().filter(|l| l.active() || l.quarantined(now)).map(|l| l.port).collect();
+                    let candidates = CITIZEN_PORT_RANGE.filter(|p| !unavailable.contains(p));
+                    let usable = |p: u16| crate::utils::ports::first_unused([p]).is_some();
+                    PortLeaseError::RangeExhausted { unbindable: unbindable_runs(candidates, usable) }
+                }
+                other => other,
+            })
+        })
+        .await
+        .map_err(|e| PortLeaseError::Store(format!("the port probe task failed: {e}")))??;
         match decision {
             LeaseDecision::Held(lease) => Ok((lease, false)),
             LeaseDecision::Reclaim(mut lease) => {
@@ -457,18 +462,19 @@ mod tests {
         assert!(decide(&on_node, kimi, "other", during, first_not_in).is_ok(), "a released lease does not count toward her cap");
     }
 
-    // what this catches: the probe choosing a port that is in use on the host (bound by a
-    // process with no lease), or one another citizen leases.
+    // what this catches: the probe choosing a port that is in use on the host (a process with
+    // no lease listening on it, on the wildcard as most dev servers do, which a loopback bind
+    // alone misses on Windows: Fable on #4540), or one another citizen leases.
     #[test]
-    fn a_new_lease_skips_leased_and_bound_ports() {
+    fn a_new_lease_skips_leased_and_listened_ports() {
         let first = *CITIZEN_PORT_RANGE.start();
-        let squatter = std::net::TcpListener::bind((LEASE_HOST, first + 1)).ok();
+        let squatter = std::net::TcpListener::bind(("0.0.0.0", first + 1)).ok();
         let unavailable: BTreeSet<u16> = [first].into_iter().collect();
         let chosen = first_free_citizen_port(&unavailable).expect("a free port in range");
         assert!(CITIZEN_PORT_RANGE.contains(&chosen));
         assert_ne!(chosen, first, "a leased port is never chosen");
         if squatter.is_some() {
-            assert_ne!(chosen, first + 1, "a port bound on the host is never chosen");
+            assert_ne!(chosen, first + 1, "a port a wildcard server listens on is never chosen");
         }
     }
 
