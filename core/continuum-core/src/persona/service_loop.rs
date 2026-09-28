@@ -129,6 +129,13 @@ pub trait PersonaConversation: Send + Sync {
     /// because a restart loaded them through `page_recent`.
     async fn high_water_mark(&self, limit: usize) -> Result<u64, String>;
 
+    /// The cutoff established by successful priming. Live conversations freeze
+    /// this at attach, so starting the loop does not issue another fallible RPC.
+    async fn initial_water_mark(&self, limit: usize) -> Result<u64, String> {
+        self.high_water_mark(limit).await
+    }
+
+
     /// Yield the next inbound message, or `Ok(None)` when the
     /// stream is exhausted (daemon disconnected, peer gone). On
     /// transient errors (stream lag, transport hiccup) the impl
@@ -416,7 +423,7 @@ async fn serve_persona_loop_inner(
     // first `next_message` returns a typed `Err("called before prime()")`
     // — fail-loud, not silently-warm.
     let mut high_water = conversation
-        .high_water_mark(opts.page_recent_limit)
+        .initial_water_mark(opts.page_recent_limit)
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
     // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
