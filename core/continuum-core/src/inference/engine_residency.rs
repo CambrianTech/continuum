@@ -246,7 +246,48 @@ pub fn record(path: &Path, work: ResidentWork) -> Result<(), String> {
         ));
     }
     all.push(work);
-    write(path, &all)
+    write(path, &all)?;
+    // work is bound: a footprint sample begun before this may straddle it, and is refused
+    super::lane_footprint::residency_changed();
+    Ok(())
+}
+
+/// When this process last released resident work (unix ms, 0 = never), for
+/// [`released_within`].
+static LAST_RELEASE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// When this process first asked [`released_within`]. A predecessor core may have released work
+/// moments before it exited, and this process cannot know (Codex on #4536), so its start counts
+/// as a release: the first settle window is waited out, never assumed clean.
+static FIRST_ASKED_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// Work just left its engine (step 2, attribution). Two consequences, in one place:
+/// - the model's measured footprint record is RETIRED if it was sampled while the work was
+///   bound (`last_ms >= created_ms`): that reading may carry the work's allocations. A record
+///   from before the work is the last clean measurement and stays (the next clean sample
+///   replaces a retired one);
+/// - the release time is noted, so the sampler waits out the engine's asynchronous frees and
+///   the device's measurement lag before it reads the lane again ([`released_within`]).
+fn on_released(work: &ResidentWork) {
+    // first: a footprint sample in flight across the work's residency is refused
+    super::lane_footprint::residency_changed();
+    LAST_RELEASE_MS.store(crate::persona::trace::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    let retired = super::lane_footprint::retire_if_sampled_since(&work.base_model, work.created_ms);
+    crate::probe!(
+        class = "serving.residency.released",
+        job = %work.job,
+        base = work.base_model.as_str(),
+        footprint_retired = retired,
+        "resident work left its engine: the model's footprint record is retired until a clean sample"
+    );
+}
+
+/// Did this process release resident work within `window_ms` of `now_ms`?
+/// The first call in a process counts as a release (see [`FIRST_ASKED_MS`]).
+pub fn released_within(now_ms: u64, window_ms: u64) -> bool {
+    let first = *FIRST_ASKED_MS.get_or_init(|| now_ms);
+    let last = LAST_RELEASE_MS.load(std::sync::atomic::Ordering::Relaxed).max(first);
+    now_ms.saturating_sub(last) < window_ms
 }
 
 /// Release EXACTLY `expected`: its engine acknowledged a terminal state for this run, or its
@@ -261,6 +302,7 @@ pub fn release(path: &Path, expected: &ResidentWork) -> Result<bool, String> {
         return Ok(false);
     }
     write(path, &all)?;
+    on_released(expected);
     Ok(true)
 }
 
@@ -328,6 +370,7 @@ pub fn occupancy_with(path: &Path, port: u16, probe: &dyn Fn(u32) -> ProcessProb
             return Occupancy::Unknown(why);
         }
         for w in &dead {
+            on_released(w);
             crate::probe!(
                 class = "serving.residency.released_on_death",
                 job = %w.job,
@@ -363,7 +406,8 @@ mod tests {
                 started_s,
                 port,
             },
-            base_model: "qwen3-27b".into(),
+            // never a real model: a release retires the live footprint record of this name
+            base_model: "residency-test-base".into(),
             created_ms: 1,
             consumer: format!("genome-train:{job}"),
             reserved_bytes: 1 << 30,
@@ -473,6 +517,66 @@ mod tests {
             b"{not a list",
             "left for a human"
         );
+    }
+
+    // what this catches: step 2 (attribution). A footprint read while training was resident
+    // carries the training allocation; left standing it rules the next plan as serving cost (the
+    // 5090's ~7.4 GB "fixed per-lane residency"). On release, a record sampled during the work
+    // is retired, one from before it (the last clean measurement) stays (Fable on #4536), and
+    // the release is noted for the sampler's settle. The records are a local map: this test
+    // never writes the live lane-footprint store.
+    #[test]
+    fn a_release_retires_only_the_footprint_sampled_during_the_work() {
+        use super::super::lane_footprint::{retire_sampled_since, MeasuredCost};
+        let bound_at = 1_000;
+        let reading = |last_ms| MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, anon_bytes: 20 << 30, last_ms };
+        let mut costs = std::collections::BTreeMap::new();
+        costs.insert("during".to_string(), reading(bound_at + 60_000));
+        costs.insert("before".to_string(), reading(bound_at - 1));
+        assert!(retire_sampled_since(&mut costs, "during", bound_at), "sampled while bound: retired");
+        assert!(!retire_sampled_since(&mut costs, "before", bound_at), "the last clean record stays");
+        assert!(costs.contains_key("before") && !costs.contains_key("during"));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = store_path(dir.path());
+        let w = work(9, 25280, 1_000, 58057);
+        record(&path, w.clone()).expect("record");
+        assert!(release(&path, &w).expect("release"));
+        assert!(released_within(crate::persona::trace::now_ms(), 60_000), "noted for the sampler's settle");
+    }
+
+    // what this catches (Codex on #4536): a footprint sample that checked occupancy while the
+    // engine was free, then measured (awaiting) while work bound and trained, publishing the
+    // contaminated reading, or one in flight across a release writing it back after the
+    // release retired the record. Binding and releasing advance the residency epoch; a sample
+    // publishes only under the epoch it began with.
+    #[test]
+    fn a_sample_that_straddles_a_residency_change_is_never_published() {
+        use super::super::lane_footprint::{begin_sample, publish_sample, MeasuredCost};
+        let reading = MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, anon_bytes: 20 << 30, last_ms: 5 };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = store_path(dir.path());
+        let w = work(10, 25281, 1_000, 58058);
+
+        // a sample begins with the engine free, then work binds while it measures
+        let before_bind = begin_sample();
+        record(&path, w.clone()).expect("record");
+        let after_bind = begin_sample();
+        assert!(after_bind.0 > before_bind.0, "binding advances the epoch");
+        let mut costs = std::collections::BTreeMap::new();
+        assert!(publish_sample(&mut costs, after_bind.0, before_bind, "m", Some(&reading)).is_err());
+        assert!(costs.is_empty(), "the straddling reading is dropped");
+
+        // a sample in flight across the release
+        assert!(release(&path, &w).expect("release"));
+        let after_release = begin_sample();
+        assert!(after_release.0 > after_bind.0, "releasing advances the epoch");
+        assert!(publish_sample(&mut costs, after_release.0, after_bind, "m", Some(&reading)).is_err());
+        assert!(costs.is_empty(), "nothing written back after the release");
+
+        // control: a sample whose residency held publishes
+        assert_eq!(publish_sample(&mut costs, after_release.0, after_release, "m", Some(&reading)), Ok(true));
+        assert!(costs.contains_key("m"));
     }
 
     // what this catches (Codex on #4531): an OS inspection failure read as death. An unreadable
