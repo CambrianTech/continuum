@@ -29,7 +29,7 @@ use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::inference::llama_server::EngineProbe;
-use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPin};
+use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPermit, SlotPin};
 
 /// What a turn holds for the whole generation. Dropping it releases the concurrency
 /// permit and the slot pin (RAII). An incomplete call also invalidates local KV
@@ -41,7 +41,7 @@ pub struct TurnAdmission {
     /// The slot pin — held so eviction cannot reassign this turn's slot mid-decode.
     _pin: Option<SlotPin>,
     /// Serializes same-slot operations even when distinct adapters admit the key.
-    _slot_permit: Option<OwnedSemaphorePermit>,
+    _slot_permit: Option<SlotPermit>,
     page_confirmed: bool,
     restored: bool,
     saved_evictee: bool,
@@ -223,12 +223,46 @@ async fn admit(
         return Ok(admission);
     }
     if let (Some(k), Some(pool)) = (key, pool.as_ref()) {
-        if pool.lease(k).await.is_some() {
-            // Pin before waiting for the physical-slot permit: a same-activity
-            // returner must await the prior owner without permitting eviction.
-            let Some((slot, pin)) = pool.pin_slot(&k) else {
-                return Ok(admission);
-            };
+        // A TURN NEVER RUNS UNPINNED OVER A RESIDENT (card ff9ecfd8). When every slot is pinned
+        // by an in-flight turn, `lease` frees nothing, and a pin can also lose a race to an
+        // eviction between lease and pin. Both used to return this admission with no slot: the
+        // server then placed the turn on whichever slot freed and overwrote a resident's KV with
+        // no save (8 of 13 contended leases on the M5, 19 of 36 on the IntelMac, 2026-09-28).
+        // The server cannot run the turn before a slot frees anyway, so the turn waits for a
+        // slot release and leases again; the evictee is then saved by the paging plan below.
+        // Warm-ahead is best-effort and still gives up at once.
+        let started = std::time::Instant::now();
+        let mut waited = false;
+        let pinned = loop {
+            let released = pool.released();
+            let notified = released.notified();
+            tokio::pin!(notified);
+            // Registered BEFORE the check, so a release between the check and the wait is
+            // never missed.
+            notified.as_mut().enable();
+            if pool.lease(k).await.is_some() {
+                // Pin before waiting for the physical-slot permit: a same-activity
+                // returner must await the prior owner without permitting eviction.
+                if let Some(pinned) = pool.pin_slot(&k) {
+                    break Some(pinned);
+                }
+            }
+            if warm_only {
+                break None;
+            }
+            waited = true;
+            notified.await;
+        };
+        if waited {
+            crate::probe!(
+                class = "inference.slot_affinity.waited",
+                persona = %k.persona,
+                room = %k.room,
+                ms = started.elapsed().as_millis() as u64,
+                "every slot was pinned: the turn waited for a release instead of running unpinned over a resident"
+            );
+        }
+        if let Some((slot, pin)) = pinned {
             admission._pin = Some(pin);
             admission._slot_permit = Some(pool.acquire_slot(slot).await?);
             admission._endpoint.check_ready()?;
@@ -818,6 +852,38 @@ mod tests {
                 .is_err(),
             "failed transition remains closed"
         );
+    }
+
+    // what this catches (card ff9ecfd8): a turn that finds every slot pinned used to be
+    // admitted with NO slot, so the server placed it on whichever slot freed and overwrote a
+    // resident's KV with no save (M5 8/13, IntelMac 19/36 contended leases). It must wait,
+    // stay pending while the slot is held, and land PINNED on the freed slot once the holder
+    // drops; warm-ahead still gives up at once.
+    #[tokio::test]
+    async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() {
+        let root = "test://all-pinned";
+        let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot
+        let sem = Arc::new(Semaphore::new(2)); // lanes free: only the slot is contended
+        let client = reqwest::Client::new();
+        let a = ActivityKey::new(Uuid::from_u128(11), Uuid::from_u128(12)).unwrap(); // test: non-nil ids
+        let b = ActivityKey::new(Uuid::from_u128(13), Uuid::from_u128(14)).unwrap(); // test: non-nil ids
+        let adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO)
+            .await
+            .expect("test: A admitted");
+        let slot_a = adm_a.slot().expect("A pinned the one slot"); // test: a 1-slot pool leases to the first admission
+
+        let warm = warm_ahead(&sem, b, pool.clone(), &client, root);
+        assert!(warm.await.is_ok(), "warm-ahead is best-effort: it gives up at once, never waits");
+
+        let turn_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+        tokio::pin!(turn_b);
+        assert!(futures::poll!(&mut turn_b).is_pending(), "B was admitted unpinned while every slot was held");
+        drop(adm_a);
+        let adm_b = tokio::time::timeout(std::time::Duration::from_secs(5), turn_b)
+            .await
+            .expect("test: B woke on the release")
+            .expect("test: B admitted");
+        assert_eq!(adm_b.slot(), Some(slot_a), "B must land PINNED on the freed slot");
     }
 
     // what this catches: warm-ahead at 4fe7e312 marked a lease warm even when

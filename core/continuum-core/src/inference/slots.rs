@@ -198,6 +198,24 @@ pub struct KvSlotPool {
     saved: Mutex<std::collections::HashSet<ActivityKey>>,
     /// Physical-slot admission also excludes concurrent requests for the same key.
     operations: Vec<Arc<tokio::sync::Semaphore>>,
+    /// Signalled whenever a slot's operation permit is released: what a turn that found every
+    /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
+    /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
+    released: Arc<tokio::sync::Notify>,
+}
+
+/// A slot's operation permit. Dropping it wakes turns waiting for a slot
+/// ([`KvSlotPool::released`]); the holder's pin was already dropped (field order in
+/// `TurnAdmission`), so a woken turn finds that lease evictable.
+pub struct SlotPermit {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    released: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for SlotPermit {
+    fn drop(&mut self) {
+        self.released.notify_waiters();
+    }
 }
 
 /// What a Turn must do AROUND its request to honor the KV paging design — the
@@ -384,6 +402,7 @@ impl KvSlotPool {
             operations: (0..n_slots)
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
                 .collect(),
+            released: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -445,6 +464,18 @@ impl KvSlotPool {
             }
             if self.free.lock().is_empty() {
                 let evicted = self.pool.evict_at_least(1);
+                if evicted == 0 {
+                    // Nothing to evict: every lease is pinned by an in-flight turn. Said as
+                    // what it is (it read "engine evicted" with evicted_count 0, Fable on the
+                    // M5); the caller waits for a release rather than running unpinned.
+                    crate::probe!(
+                        class = "inference.slot_affinity.all_pinned",
+                        persona = %key.persona,
+                        room = %key.room,
+                        "all slots are pinned by in-flight turns: nothing to evict"
+                    );
+                    return None;
+                }
                 crate::probe!(
                     class = "inference.slot_affinity.evicted",
                     evicted_count = evicted,
@@ -452,9 +483,6 @@ impl KvSlotPool {
                      warm prefix is forfeit and its next turn re-prefills (or restores \
                      its page at this node's measured switch cost — inference.kv_page.action ms)",
                 );
-                if evicted == 0 {
-                    return None;
-                }
             }
             let free = Arc::clone(&self.free);
             let res = self
@@ -513,19 +541,22 @@ impl KvSlotPool {
     }
 
     /// Hold through paging and generation; pins alone only exclude eviction.
-    pub(crate) async fn acquire_slot(
-        &self,
-        slot: u32,
-    ) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    pub(crate) async fn acquire_slot(&self, slot: u32) -> Result<SlotPermit, String> {
         let operation = self
             .operations
             .get(slot as usize)
             .ok_or("unknown physical KV slot")?;
-        operation
+        let permit = operation
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| "physical KV slot admission closed".to_string())
+            .map_err(|_| "physical KV slot admission closed".to_string())?;
+        Ok(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
+    }
+
+    /// The signal a slot release raises; see [`Self::released`] on the struct.
+    pub(crate) fn released(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.released)
     }
 
     /// Caller holds the physical-slot permit and activity pin before changing attribution.
