@@ -8099,12 +8099,19 @@ mod tests {
             // First cut cost +117 guard tokens and tripped this ceiling AND the 8192
             // survival check below by TWO tokens; the docs were made terse instead of
             // moving either number. The surface is within the ceiling as it stood.
-            const AGENTIC_SURFACE_CEILING: u32 = 12100;
+            // 12100 -> 13200, stated plainly (#4532, Joel 2026-09-28: "give them more not
+            // less"): a capable citizen's work turn now carries the hands a Claude or Codex
+            // session has — code/shell-poll, code/git/add, code/git/push,
+            // code/github/pr-create, code/github/pr-comment — as natives. Measured 13145
+            // on the full catalog (+1045 over the 12100 surface as merged). The citizen's
+            // own terminal-level hands are the point of the change, not framing growth;
+            // per-turn selection and whole-request window accounting stay intact.
+            const AGENTIC_SURFACE_CEILING: u32 = 13200;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (schema projection 11974, ceiling \
+                "the agentic surface is now {surface} tokens (ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );
