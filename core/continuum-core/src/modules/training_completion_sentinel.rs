@@ -51,7 +51,7 @@
 //! and page the gene in on `lift > 0`. Joel, 2026-09-27: "The point is integrated not
 //! parallel." A score from a copy beside her life never reaches her turns, her rooms or
 //! her learning. Now `Completed { artifact }` does three things and decides nothing:
-//! a cheap pre-filter (training's own held-out loss must be a finite number), register
+//! a cheap pre-filter (reported validation or training loss must be finite), register
 //! the gene so the serving engine loads it in place and dormant, and open a
 //! [`GeneTrial`](crate::genome::gene_trial::GeneTrial). From then on each card she works
 //! draws an arm; the room's outcome for the card, credited through the receipts' `genes`,
@@ -61,7 +61,7 @@
 //!
 //! the convert (an MLX export) can take minutes. Running it inline would stall the
 //! tick task. So the sentinel CLAIMS the job (atomic remove from the board) the
-//! instant it sees `Completed`, then spawns the eval→page-in chain off the tick. The
+//! instant it sees `Completed`, then spawns the register→trial chain off the tick. The
 //! claim guarantees no later tick re-handles the same completion; the spawn keeps the
 //! poll cadence crisp (mirrors the producer's best-effort spawn).
 
@@ -147,16 +147,19 @@ impl TrainingCompletionSentinel {
                 return;
             };
 
-            // THE PRE-FILTER: training's own held-out loss. A run whose validation loss is not
-            // a finite number diverged or never measured itself; it never reaches her work.
-            // This is only the cheap gate: the verdict is her work's (below), never a harness.
-            let validation = artifact.metrics.final_validation_loss.or(artifact.metrics.final_loss);
-            if !validation.is_some_and(f64::is_finite) {
+            // A finite reported loss is only a sanity gate, not evidence of improvement.
+            // Preserve validation-first admission, including refusing non-finite validation
+            // even when training loss is finite. Runs without validation use training loss.
+            let (loss, loss_source) = match artifact.metrics.final_validation_loss {
+                Some(loss) => (Some(loss), "validation"),
+                None => (artifact.metrics.final_loss, "training"),
+            };
+            if !loss.is_some_and(f64::is_finite) {
                 crate::probe!(
                     class = "genome.trial.refused",
                     persona = %job.persona_id,
                     gene = job.trait_kind.as_str(),
-                    "the trained gene reported no finite held-out loss: no trial opened, her genome unchanged"
+                    "the trained gene reported no finite loss: no trial opened, her genome unchanged"
                 );
                 return;
             }
@@ -210,7 +213,8 @@ impl TrainingCompletionSentinel {
                 trial = %trial.id,
                 base = job.base_model.as_str(),
                 share_milli = trial.share_milli as u64,
-                validation_loss = validation.unwrap_or_default(), // probe field: guarded finite above
+                loss = loss.unwrap_or_default(), // probe field: guarded finite above
+                loss_source = loss_source,
                 "a trained gene opened a trial: it now works a share of her cards, and her work's outcomes decide it"
             );
 
