@@ -869,19 +869,14 @@ fn chosen_port() -> u16 {
     DEFAULT_PORT
 }
 
-/// Scan `[base, base + PORT_SCAN_WINDOW)` for a port we can bind right now. A
-/// successful bind-then-drop proves the port is free; the brief TOCTOU gap until
+/// Scan `[base, base + PORT_SCAN_WINDOW)` for a port we can bind right now, through the
+/// one probe ([`crate::utils::ports::first_bindable`]). The brief TOCTOU gap until
 /// llama-server claims it is absorbed by the readiness poll (a lost race surfaces
 /// loudly as `NotReady`, never a silent wrong-port serve). If nothing in the
 /// window is free we return `base` and let the spawn fail loud
 /// ([[fallbacks-are-illegal-fail-loud]]).
 fn first_free_port(base: u16) -> u16 {
-    for port in base..base.saturating_add(PORT_SCAN_WINDOW) {
-        if std::net::TcpListener::bind((DEFAULT_HOST, port)).is_ok() {
-            return port;
-        }
-    }
-    base
+    crate::utils::ports::first_bindable(DEFAULT_HOST, base..base.saturating_add(PORT_SCAN_WINDOW)).unwrap_or(base) // unwrap_or: nothing free in the window -> base, so the spawn's bind fails LOUD (never a silent wrong port)
 }
 
 /// The OpenAI-compatible base url personas' inference adapters point at.

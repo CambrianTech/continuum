@@ -739,7 +739,9 @@ fn infer_field_type(ty: &Type) -> InferredFieldType {
         // PathBuf / Path serdes as String; without this branch they
         // fall to the "any other named type → Json" tail.
         Some("PathBuf" | "Path") => InferredFieldType::String,
-        Some("Uuid") => InferredFieldType::Uuid,
+        // airc's actor and room ids are `#[serde(transparent)]` UUID newtypes: a Uuid column,
+        // indexable, not the Json tail every other named type falls to.
+        Some("Uuid" | "PeerId" | "RoomId") => InferredFieldType::Uuid,
         Some("bool") => InferredFieldType::Boolean,
         Some(
             "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
