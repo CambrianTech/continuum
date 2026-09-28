@@ -1909,6 +1909,38 @@ mod tests {
         assert!(exec.results.lock().unwrap().is_empty());
     }
 
+    // what this catches: identical relative requests in different rooms retain
+    // their current execution scope and call/result correlation, never reuse history.
+    #[tokio::test]
+    async fn repeated_request_keeps_current_room_and_returns_fresh_evidence() {
+        let exec = Arc::new(ScriptedExecutor::new(["room-a content", "room-b content"]));
+        let wm = Arc::new(WorkingMemory::new(3));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body_with_wm(exec.clone(), admission(), wm.clone()));
+        let rooms = [Uuid::new_v4(), Uuid::new_v4()];
+        for (i, room) in rooms.into_iter().enumerate() {
+            let id = format!("read-{i}");
+            let call = ToolCall {
+                id: id.clone(),
+                name: "code/read".into(),
+                input: serde_json::json!({"file_path": "README.md"}),
+            };
+            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new()).await);
+            assert!(matches!(acts[0].status, ActStatus::Executed));
+            assert_eq!(acts[0].output.result.tool_use_id, id);
+            assert!(acts[0].output.result.content.contains(if i == 0 {
+                "room-a content"
+            } else {
+                "room-b content"
+            }));
+        }
+        assert_eq!(*exec.rooms.lock().unwrap(), rooms.to_vec());
+        let feedback = wm.recent().join("\n");
+        assert!(!feedback.contains("already in my working memory"));
+        assert!(!feedback.contains("result has not changed"));
+        assert!(exec.results.lock().unwrap().is_empty());
+    }
+
     // what this catches: SETTLE IS A REST, NOT A HALT — the metronome does not
     // crank to a halt after one answer. The SAME mind (same cycle, same body,
     // same accumulating memory) settles concern A, then RE-AWAKENS on a fresh
