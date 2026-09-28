@@ -87,12 +87,17 @@ pub fn render_model_card(req: &PublishRequest) -> String {
     s
 }
 
-/// HF's own fetch instructions for a bundle: the gene is in its bundle folder at a pinned
-/// commit, never at the repo root (Codex on #4529).
+/// HF's own fetch instructions for a bundle: the gene is in its own bundle folder, never at
+/// the repo root. The card is written before its upload's commit exists, so it names the
+/// branch and says so; the VERIFIED copy is the publish receipt's pinned commit (Codex on
+/// #4529).
 fn quick_start(repo: &str, revision: &str, path: &str, gene: &str) -> String {
     format!(
         "## Quick Start\n\n```bash\nhf download {repo} {path}/{gene} --revision {revision} --local-dir .\n\
-         # page it into llama-server with:  --lora ./{path}/{gene}\n```\n"
+         # page it into llama-server with:  --lora ./{path}/{gene}\n```\n\n\
+         `{revision}` is a moving branch. The copy verified at publication is the commit named in \
+         the publish receipt; pass that commit as `--revision` to fetch exactly it. Its \
+         `manifest.json` lists every file's sha256.\n"
     )
 }
 
@@ -276,9 +281,10 @@ impl Publisher for HfPublisher {
             HfFailure::Absent => self.uncertain(format!("hf upload: repo {} not found or not writable", dest.as_str())),
             HfFailure::Other(detail) => self.uncertain(detail),
         })?;
-        // the receipt pins the upload's full commit: from the CLI when it reports one, else
-        // main right after the upload (which contains this bundle's folder); unresolved is
-        // uncertainty, never a silent fall back to "main"
+        // the receipt pins a full commit: the upload's own when the CLI reports it; otherwise
+        // main resolved right after the upload, which is a verified snapshot CONTAINING this
+        // bundle's folder but not necessarily the upload's exact commit (Codex). Either way
+        // read-back verifies that commit. Unresolved is uncertainty, never a silent "main"
         let revision = match commit_of(&stdout) {
             Some(sha) => sha,
             None => self.resolve_main(dest.as_str()).await.map_err(|f| match f {
