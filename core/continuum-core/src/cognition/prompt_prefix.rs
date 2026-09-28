@@ -126,7 +126,9 @@ pub(crate) fn extends_whole(previous: &[String], now: &[String]) -> bool {
 /// id) is pinned from one row (Fable on the M5, card 11291f5a). `None` when `now` extends
 /// `previous` whole.
 pub(crate) fn first_divergence(previous: &[String], now: &[String]) -> Option<(String, String, String)> {
-    const WINDOW: usize = 48;
+    // The length of the log excerpt each side of the divergence shows: a reader's glimpse, not a
+    // context or prompt budget (nothing is sized by it).
+    const EXCERPT_LEN: usize = 48;
     let label = |i: usize| match i {
         0 => "model".to_string(),
         1 => "system".to_string(),
@@ -135,14 +137,14 @@ pub(crate) fn first_divergence(previous: &[String], now: &[String]) -> Option<(S
     };
     for (i, prev) in previous.iter().enumerate() {
         let Some(cur) = now.get(i) else {
-            return Some((label(i), window_at(prev, 0, WINDOW), "(absent)".to_string()));
+            return Some((label(i), window_at(prev, 0, EXCERPT_LEN), "(absent)".to_string()));
         };
         if prev != cur {
             let at = prev.char_indices().zip(cur.chars()).find(|((_, a), b)| a != b).map_or_else(
                 || prev.len().min(cur.len()), // one is a prefix of the other: they part where the shorter ends
                 |((byte, _), _)| byte,
             );
-            return Some((label(i), window_at(prev, at, WINDOW), window_at(cur, at, WINDOW)));
+            return Some((label(i), window_at(prev, at, EXCERPT_LEN), window_at(cur, at, EXCERPT_LEN)));
         }
     }
     None
