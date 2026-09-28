@@ -50,13 +50,11 @@ const MAX_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/vision/VisionLookParams.ts")]
 pub struct VisionLookParams {
-    /// Path to an image file to look at (png/jpg/gif/webp/bmp), as you would pass it to
-    /// code/read. Give this or `url`.
+    /// An image file (png/jpg/gif/webp/bmp), as for code/read. Or give url.
     #[serde(default)]
     #[ts(optional)]
     pub file_path: Option<String>,
-    /// An http(s) page to look at, rendered in a headless browser (e.g. your dev server,
-    /// `http://localhost:5173`). Give this or `file_path`.
+    /// An http(s) page, e.g. your dev server at http://localhost:5173.
     #[serde(default)]
     #[ts(optional)]
     pub url: Option<String>,
