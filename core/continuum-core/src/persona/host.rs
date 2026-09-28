@@ -34,7 +34,7 @@
 //! shrinks to ~10 lines that construct + call the supervisor.
 
 use crate::persona::airc_persona_conversation::AircPersonaConversation;
-use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
+use crate::persona::airc_runtime_registry::{PersonaAircRuntimeRegistry, ServiceLoopAttachError};
 use crate::persona::identity_provider::PersonaIdentityProvider;
 use crate::persona::role_template::RoleId;
 use crate::persona::service_loop::{
@@ -785,13 +785,16 @@ impl PersonaSpawnSupervisor {
                 let _ = returned_handle.await;
                 // A concurrent winner already owns this slot; losing attachment
                 // is not a failure of that citizen's running loop.
-                if reason != "already attached" {
-                    self.note_slot_failure(persona_id, reason);
+                match reason {
+                    ServiceLoopAttachError::AlreadyAttached => {}
+                    ServiceLoopAttachError::MissingSlot => {
+                        self.note_slot_failure(persona_id, &reason.to_string());
+                    }
                 }
                 tracing::error!(
                     slot = slot_idx,
                     persona_id = %persona_id,
-                    reason = reason,
+                    reason = %reason,
                     "PersonaSpawnSupervisor: attach_service_loop failed; \
                      spawned task drained. Persona registered but unattended — \
                      fire `persona/spawn` to retry."
