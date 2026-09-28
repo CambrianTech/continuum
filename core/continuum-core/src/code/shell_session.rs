@@ -233,10 +233,7 @@ impl ShellSession {
         // start script pins. A later explicit env set through the session still
         // overrides.
         let mut env = HashMap::new();
-        let shared_target = std::env::var("CARGO_TARGET_DIR")
-            .map(std::path::PathBuf::from)
-            .ok()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum/cache/cargo-target")));
+        let shared_target = crate::paths::shared_cargo_target_dir();
         if let Some(t) = shared_target {
             env.insert("CARGO_TARGET_DIR".to_string(), t.display().to_string());
         }

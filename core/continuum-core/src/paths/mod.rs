@@ -42,6 +42,27 @@ fn resolve_home(
         .or_else(native)
 }
 
+/// THE machine's shared cargo target dir: the one tree every substrate cargo build writes
+/// and the disk governor tracks and evicts (`system_resources::disk_reporters`). A configured
+/// `CARGO_TARGET_DIR` wins: an operator may keep it on another volume (the 5090's
+/// `D:\continuum-cold\cargo-target`), and deriving the home default there instead leaves the
+/// real tree unreported and unowned while a second cache recompiles the whole graph (#4548).
+/// Otherwise `<home>/.continuum/cache/cargo-target`. `None` only with no home: never a guessed
+/// path such as `target/`.
+pub fn shared_cargo_target_dir() -> Option<std::path::PathBuf> {
+    resolve_cargo_target(std::env::var_os("CARGO_TARGET_DIR").map(Into::into), home_dir())
+}
+
+/// PURE: [`shared_cargo_target_dir`] from its inputs (an empty configured value is unset).
+pub(crate) fn resolve_cargo_target(
+    configured: Option<std::path::PathBuf>,
+    home: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    configured
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| home.map(|h| h.join(".continuum").join("cache").join("cargo-target")))
+}
+
 #[cfg(test)]
 thread_local! {
     // The recorder's existing per-thread fixture-root seam, shared with the
@@ -78,6 +99,27 @@ impl Drop for NativeHomeOverride {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 9d77bc84): the shared cargo cache derived as the home default
+    // while the operator configured it elsewhere (the 5090 on D:), so the disk governor
+    // tracked an empty tree and builds wrote a second cache; and an empty or missing value
+    // turned into a guessed path.
+    #[test]
+    fn a_configured_cargo_target_wins_and_the_default_is_under_home() {
+        let home = std::path::PathBuf::from("/home/u");
+        let configured = std::path::PathBuf::from("/cold/cargo-target");
+        assert_eq!(resolve_cargo_target(Some(configured.clone()), Some(home.clone())), Some(configured));
+        assert_eq!(
+            resolve_cargo_target(None, Some(home.clone())),
+            Some(home.join(".continuum").join("cache").join("cargo-target"))
+        );
+        assert_eq!(
+            resolve_cargo_target(Some(std::path::PathBuf::new()), Some(home.clone())),
+            Some(home.join(".continuum").join("cache").join("cargo-target")),
+            "an empty CARGO_TARGET_DIR is unset"
+        );
+        assert_eq!(resolve_cargo_target(None, None), None, "no home: no guessed path");
+    }
 
     // What this catches (f098571b): native fallback must not replace an explicit
     // HOME override; unresolved storage must not become the current directory.

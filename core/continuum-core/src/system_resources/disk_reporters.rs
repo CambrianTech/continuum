@@ -250,7 +250,14 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     };
 
     let mut dirs = vec![
-        TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
+        // The SHARED target follows a configured CARGO_TARGET_DIR (the 5090 keeps it on D:),
+        // resolved by the one authority every substrate cargo build also uses; tracking the
+        // home default there reported an empty tree while the real one grew unowned.
+        TrackedDir::new(
+            "cargo-target",
+            crate::paths::resolve_cargo_target(std::env::var_os("CARGO_TARGET_DIR").map(Into::into), Some(home.to_path_buf()))
+                .unwrap_or_else(|| home.join(".continuum/cache/cargo-target")), // unwrap_or_else: unreachable, a home is given
+        ),
         // THE CACHE I INVENTED IS A CACHE THE SUBSTRATE OWNS (Joel, 2026-09-08: "the
         // system is supposed to manage disk; you've been defying design principles so it
         // can't"). Worktree builds must not write into the shared target — a worktree
