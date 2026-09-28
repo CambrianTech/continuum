@@ -50,14 +50,47 @@ const MAX_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/vision/VisionLookParams.ts")]
 pub struct VisionLookParams {
-    /// Path to the image file to look at (png/jpg/gif/webp/bmp), as you would
-    /// pass it to code/read.
-    pub file_path: String,
+    /// Path to an image file to look at (png/jpg/gif/webp/bmp), as you would pass it to
+    /// code/read. Give this or `url`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub file_path: Option<String>,
+    /// An http(s) page to look at, rendered in a headless browser (e.g. your dev server,
+    /// `http://localhost:5173`). Give this or `file_path`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub url: Option<String>,
     /// Optional: what to focus on ("count the shapes", "read the chart title").
     /// Omit for a general description.
     #[serde(default)]
     #[ts(optional)]
     pub focus: Option<String>,
+}
+
+/// What to look at: exactly one of a file or a page. A page is http(s) only: the renderer
+/// runs as the core, and a `file://` url would let a look reach files outside her workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LookAt {
+    File(String),
+    Page(String),
+}
+
+impl TryFrom<&VisionLookParams> for LookAt {
+    type Error = CommandError;
+
+    fn try_from(p: &VisionLookParams) -> Result<Self, Self::Error> {
+        match (p.file_path.as_deref().map(str::trim), p.url.as_deref().map(str::trim)) {
+            (Some(file), None) if !file.is_empty() => Ok(LookAt::File(file.to_string())),
+            (None, Some(url)) if url.starts_with("http://") || url.starts_with("https://") => Ok(LookAt::Page(url.to_string())),
+            (None, Some(url)) => Err(CommandError::Invalid(format!(
+                "vision/look: url '{url}' must be http:// or https:// (a page, e.g. your dev server); for a file use file_path"
+            ))),
+            (Some(_), Some(_)) => Err(CommandError::Invalid("vision/look: give file_path OR url, not both".into())),
+            (None, None) | (Some(_), None) => Err(CommandError::Invalid(
+                "vision/look: give file_path (an image in your workspace) or url (an http(s) page)".into(),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -80,28 +113,43 @@ crate::action_command! {
     native: true,
     params: VisionLookParams,
     output: VisionLookResult,
-    run(this, _ctx, p) => {
-        let path = std::path::Path::new(&p.file_path);
+    run(this, ctx, p) => {
+        // A page is rendered first (the SAME capture a builder uses, scoped to her), then
+        // looked at exactly like a file: one sight, whatever she is looking at.
+        let file_path = match LookAt::try_from(&p)? {
+            LookAt::File(file) => file,
+            LookAt::Page(url) => {
+                use crate::sdk_codegen::ActionCommand as _;
+                let shot = crate::commands::interface::capture::Capture
+                    .run(ctx, crate::commands::interface::capture::CaptureParams {
+                        target: "web".into(),
+                        url: Some(url),
+                        ..Default::default()
+                    })
+                    .await?;
+                shot.path
+            }
+        };
+        let path = std::path::Path::new(&file_path);
         let Some(mime) = mime_for(path) else {
             return Err(CommandError::Invalid(format!(
-                "vision/look: '{}' does not look like an image file \
-                 (png/jpg/gif/webp/bmp)",
-                p.file_path
+                "vision/look: '{file_path}' does not look like an image file \
+                 (png/jpg/gif/webp/bmp)"
             )));
         };
         let meta = std::fs::metadata(path).map_err(|e| {
-            CommandError::Invalid(format!("vision/look: cannot read '{}': {e}", p.file_path))
+            CommandError::Invalid(format!("vision/look: cannot read '{file_path}': {e}"))
         })?;
         if meta.len() > MAX_IMAGE_BYTES {
             return Err(CommandError::Invalid(format!(
                 "vision/look: '{}' is {} bytes — larger than the {}MB cap",
-                p.file_path,
+                file_path,
                 meta.len(),
                 MAX_IMAGE_BYTES / (1024 * 1024)
             )));
         }
         let bytes = std::fs::read(path).map_err(|e| {
-            CommandError::Invalid(format!("vision/look: cannot read '{}': {e}", p.file_path))
+            CommandError::Invalid(format!("vision/look: cannot read '{file_path}': {e}"))
         })?;
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes); // boundary: vision model API takes base64 image payloads on the wire
@@ -155,5 +203,20 @@ mod tests {
         assert!(mime_for(std::path::Path::new("shot.JPG")).is_some());
         assert!(mime_for(std::path::Path::new("notes.txt")).is_none());
         assert!(mime_for(std::path::Path::new("Makefile")).is_none());
+    }
+
+    // what this catches: a look at a PAGE that could reach host files (file:// runs as the
+    // core, outside her workspace), or an ambiguous call silently picking one target. Exactly
+    // one of file_path or an http(s) url; the page is what a designer or QA needs to see.
+    #[test]
+    fn a_look_is_one_file_or_one_http_page() {
+        let at = |file: Option<&str>, url: Option<&str>| {
+            LookAt::try_from(&VisionLookParams { file_path: file.map(Into::into), url: url.map(Into::into), focus: None })
+        };
+        assert_eq!(at(Some("shot.png"), None).ok(), Some(LookAt::File("shot.png".into())));
+        assert_eq!(at(None, Some("http://localhost:5173")).ok(), Some(LookAt::Page("http://localhost:5173".into())));
+        assert!(at(None, Some("file:///Users/x/.ssh/id_rsa")).is_err(), "a file url never reaches the renderer");
+        assert!(at(Some("a.png"), Some("http://x")).is_err(), "both is ambiguous");
+        assert!(at(None, None).is_err());
     }
 }

@@ -2,10 +2,15 @@
 
 export type VisionLookParams = { 
 /**
- * Path to the image file to look at (png/jpg/gif/webp/bmp), as you would
- * pass it to code/read.
+ * Path to an image file to look at (png/jpg/gif/webp/bmp), as you would pass it to
+ * code/read. Give this or `url`.
  */
-file_path: string, 
+file_path?: string, 
+/**
+ * An http(s) page to look at, rendered in a headless browser (e.g. your dev server,
+ * `http://localhost:5173`). Give this or `file_path`.
+ */
+url?: string, 
 /**
  * Optional: what to focus on ("count the shapes", "read the chart title").
  * Omit for a general description.
