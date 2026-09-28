@@ -2084,7 +2084,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     if options.service && !options.require_engine_receipt {
         match std::env::current_dir() {
             Ok(repo) => match PreparedCoreService::prepare_engine(&repo).await {
-                Ok(Some(_)) => deploy_note("▶ engine built into its idle slot and promoted; the next core converges its lanes onto it"),
+                Ok(Some((_, engine))) => deploy_note(&format!("▶ verified engine slot promoted ({}); the next core converges its lanes onto it", engine.display())),
                 Ok(None) => {}
                 Err(e) => deploy_note(&format!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has")),
             },
