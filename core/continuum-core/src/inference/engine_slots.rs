@@ -33,6 +33,13 @@ const CURRENT_FILE: &str = "current";
 /// The file naming the slot `current` replaced: the rollback when a promoted engine fails.
 const PREVIOUS_FILE: &str = "previous";
 
+/// Written inside a slot at the first launch from it that came up ready: the engine has proven
+/// itself on this machine. Cleared whenever the slot is promoted or registered anew (a freshly
+/// built engine proves nothing yet). Only an UNPROVEN current engine is rolled back after a
+/// failed launch (Fable on #4491): NotReady also comes from memory, a model load or a wedge,
+/// and demoting a good engine on one of those would silently run the node on the older one.
+const VERIFIED_FILE: &str = ".verified";
+
 /// The engine's stamp file inside a slot (`<commit>:<backend>`, written last by the installer
 /// after the binary verified).
 pub const STAMP_FILE: &str = ".llama-server.stamp";
@@ -142,12 +149,14 @@ static RESTORED: parking_lot::Mutex<Option<&'static str>> = parking_lot::const_m
 /// A launch from the current slot failed (spawn or readiness): put the previous engine back so
 /// the next launch takes it (Fable on #4491: a promoted engine can pass its stamp and still fail
 /// at launch, a CUDA DLL, a driver, and on a first-and-only machine nothing else would bring the
-/// node back). Returns `(failed, restored)` when it rolled back, `Ok(None)` when there is nothing
-/// to roll back from (no slot recorded) or the failing engine is the one a rollback already
-/// restored. The caller skips this under an operator override (their engine, not a slot) and
+/// node back). Only an UNPROVEN current engine (no ready launch since its promotion): a proven one
+/// that fails is the ordinary launch-failure path, since NotReady also comes from memory, a model
+/// load or a wedge. Returns `(failed, restored)` when it rolled back, `Ok(None)` when there is
+/// nothing to roll back from (no slot recorded), the current engine has proven itself, or it is
+/// the one a rollback already restored. The caller skips this under an operator override (their engine, not a slot) and
 /// while a deploy holds the claim (it is mid-promote).
 pub fn rollback_after_failed_launch(root: &Path) -> Result<Option<(&'static str, &'static str)>, String> {
-    let Some(failed) = current_slot(root) else {
+    let Some(failed) = current_slot(root).filter(|slot| !is_verified(root, slot)) else {
         return Ok(None);
     };
     let mut restored = RESTORED.lock();
@@ -279,7 +288,30 @@ pub fn promote(root: &Path, slot: &str, want_stamp: &str) -> Result<(), String> 
         Some(old) if old != slot => write_pointer(root, PREVIOUS_FILE, old)?,
         _ => {}
     }
+    clear_verified(root, slot)?;
     write_pointer(root, CURRENT_FILE, slot)
+}
+
+/// Record that `slot`'s engine came up ready on this machine. Idempotent.
+pub fn mark_verified(root: &Path, slot: &str) -> Result<(), String> {
+    let slot = known(slot)?;
+    let path = root.join(slot).join(VERIFIED_FILE);
+    if path.is_file() {
+        return Ok(());
+    }
+    std::fs::write(&path, b"").map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Whether `slot`'s engine has come up ready on this machine since it was last promoted.
+pub fn is_verified(root: &Path, slot: &str) -> bool {
+    root.join(slot).join(VERIFIED_FILE).is_file()
+}
+
+fn clear_verified(root: &Path, slot: &str) -> Result<(), String> {
+    match std::fs::remove_file(root.join(slot).join(VERIFIED_FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{slot}: {e}")),
+        _ => Ok(()),
+    }
 }
 
 /// Put `previous` back as the active engine because `failed` failed at launch (Fable on the
@@ -322,6 +354,7 @@ pub fn register(root: &Path, slot: &str) -> Result<bool, String> {
         Some(old) => write_pointer(root, PREVIOUS_FILE, old)?,
         None => {}
     }
+    clear_verified(root, slot)?;
     write_pointer(root, CURRENT_FILE, slot).map(|()| true)
 }
 
@@ -449,5 +482,27 @@ mod tests {
         assert_eq!(current_slot(root), Some("engine-a"));
         assert_eq!(rollback_after_failed_launch(root), Ok(None), "the restored engine failing is not rolled back onto the failed one");
         assert_eq!(current_slot(root), Some("engine-a"));
+    }
+
+    // what this catches (Fable on #4491): a GOOD engine demoted after a NotReady that was memory,
+    // a model load or a wedge, silently running the node on the older engine. An engine that
+    // came up ready once is proven; its later failures are ordinary launch failures. A fresh
+    // promotion clears the proof, so the next build into that slot starts unproven.
+    #[test]
+    fn a_proven_engine_is_never_rolled_back_and_a_promotion_clears_the_proof() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let root = dir.path();
+        engine(root, "engine-a", "good00:cuda");
+        promote(root, "engine-a", "good00:cuda").unwrap();
+        engine(root, "engine-b", "new000:cuda");
+        promote(root, "engine-b", "new000:cuda").unwrap();
+        mark_verified(root, "engine-b").unwrap();
+        assert_eq!(rollback_after_failed_launch(root), Ok(None), "launched ready once, then NotReady: not the engine's fault");
+        assert_eq!(current_slot(root), Some("engine-b"));
+        engine(root, "engine-c", "nxt000:cuda");
+        mark_verified(root, "engine-c").unwrap(); // a proof left behind by the slot's previous engine
+        promote(root, "engine-c", "nxt000:cuda").unwrap();
+        assert!(!is_verified(root, "engine-c"), "a freshly promoted engine has proven nothing");
+        assert!(is_verified(root, "engine-b"), "the replaced engine keeps its proof");
     }
 }

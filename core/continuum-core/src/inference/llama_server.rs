@@ -1459,6 +1459,27 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     }
 }
 
+/// A launch came up ready: when it ran from an engine slot, that engine has proven itself on this
+/// machine, and a later failure of it is never read as a promotion fault
+/// ([`crate::inference::engine_slots::rollback_after_failed_launch`]). `program` is the binary
+/// the launch actually ran, not a fresh resolution (a promote may have moved `current` since).
+fn mark_engine_proven(program: Option<String>) {
+    let (Some(program), Ok(home)) = (program, crate::commands::benchmark::continuum_home()) else {
+        return; // no launch record or no home: nothing to mark
+    };
+    let root = crate::inference::engine_slots::root(&home);
+    if let Some(slot) = crate::inference::engine_slots::slot_of(&root, Path::new(&program)) {
+        if let Err(reason) = crate::inference::engine_slots::mark_verified(&root, slot) {
+            crate::probe!(
+                class = "serving.engine.verify_mark_failed",
+                slot = slot,
+                reason = reason.as_str(),
+                "an engine came up ready but its proof could not be written: a later failure of it may be rolled back"
+            );
+        }
+    }
+}
+
 /// The engine commit the INSTALLED binary was built from: the stamp install-llama-server.sh
 /// writes beside it (`<commit>:<backend>`, written last, only after the build verified). The
 /// operand a running lane's own `/props` build is compared against (card 7c5f139d). `None`
@@ -3738,6 +3759,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             // comment on `reset_real_decode_failures` always promised "the freshly
             // relaunched lane starts clean" — this is the site that makes it true.
             reset_real_decode_failures();
+            mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
             EnsureOutcome::Spawned {
                 model: target.model_id().to_string(),
             }
@@ -3749,6 +3771,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             match ctrl.serve_if_current(target, current).await {
                 Ok(()) => {
                     reset_real_decode_failures();
+                    mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
                     EnsureOutcome::Spawned {
                         model: target.model_id().to_string(),
                     }
