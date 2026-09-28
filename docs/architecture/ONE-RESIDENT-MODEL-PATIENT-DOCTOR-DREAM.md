@@ -254,3 +254,41 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 2. Two minds' states swap through the one context while residents keep turning, and the directed wait stays flat.
 3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
 4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
+
+## 10. Coursework is a room, not a runner (mapped 2026-09-28)
+
+Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learning follow the same runtime and room state, with as few differences from inference as possible.
+
+### 10.1 What exists today (source-read)
+
+| Path | What it builds | Where it leaves the normal turn |
+|---|---|---|
+| **Normal turn** | `serve_persona_loop` / `ask_the_act_question` → `drive_to_settle_with_credit` → `settle_step`. The faculty's `build_request_within` carries the system prompt, the authorized tools, `active_adapters` from her genome, `room_id`, `persona_id` and the purpose. The lane governor admits it, the prefill throttle gates it, the slot is pinned per activity, and her gene provenance and prompt capture are recorded. | (reference) |
+| `genome/teach` `teacher_generate` (teach.rs ~473) | A raw request: `TEACHER_SYSTEM` plus the task prompt, no tools, no adapters, no room, no persona. Purpose `genome/teach` puts it in the Probe slot class. | It calls the adapter directly: no faculty, no governor, no capture, no provenance, no warm slot. `test_grade` grades it, and it writes to `datasets/`. |
+| `synthesize_remediation*` + `academy_batch` | Teacher trajectories on `share_teacher_lane`, `PrivateTeacherLane`, or an owned restore of the incumbent. | A parallel lane world, and the teacher is not a seated mind. |
+| `teach/bridge` | Candidate datasets, held-out disjointness, `submit_training`. | A second entry into training beside the bucket or credit path. |
+| `cognition/eval` `run_eval` | Forks her REAL cycle (`fork_eval_cycle*`: her faculties, tools and prompt) and runs `drive_to_settle`. | Detached, `room_id` optional, and the progress ledger is separate. The one academy path already on the canonical turn. |
+| `benchmark_standing` | `activity/spawn` with `recipe: benchmark/round` (base `academy`): a room, imported cards, a seated team, residents pulling cards through `act_question`, and settle credit. | None. **This is the shape coursework takes.** |
+
+### 10.2 The target
+
+- **A coursework round is an activity:** `activity/spawn` with a `coursework/round` recipe, the benchmark-round pattern. Standing dispatch opens it the way `benchmark_standing` does.
+- **Lessons are cards:** a grader-backed card source replaces `select_teach_tasks`. Each card carries its task and its test oracle, and the test is the card's verdict (`Verdict` → `OutcomeStamp` → settle), not a side grader.
+- **The doctor is a seated mind:** a teacher persona on the same base (the doctor role, with its own slot affinity, S2), taking normal turns in the room. A lesson is the doctor demonstrating on the card, and then the patient attempting it. An exam is the patient alone.
+- **Every turn is canonical:** the room, persona, tools, genome, governor, slot and capture are identical to work, and only the declared fields differ (scenario provenance, grade, training).
+- **Learning flows through one path:**
+  - The patient's passing turns go through `stage_credit` → `settle_card_credit`, and arrive in her dream session (§9) with provenance `coursework`.
+  - The doctor's demonstration arrives as a shared lesson, at the lower weight of §8.3.
+  - Her gene trials draw arms on coursework cards like on any card.
+- **Held-out stays held-out:** the manifest provenance of §9.3 keeps her disjoint held-out defects checkable, and coursework never counts as new-work gain.
+
+### 10.3 What retires
+
+`teacher_generate`'s raw request, `synthesize_remediation*`, the `academy_batch` lane dance, `PrivateTeacherLane` when the teacher shares her base, `teach/bridge`'s separate `submit_training` entry, and `datasets/` as a training input. `cognition/eval` stays for held-out evaluation, with a room and provenance always set.
+
+### 10.4 Build order
+
+1. The `coursework/round` recipe plus the grader-backed card source (test = verdict).
+2. The doctor seated as a persona on the same base (S2 slot affinity), with the demonstration turn.
+3. The credit path (the patient's passing turns and the doctor's lessons as arrivals with provenance), feeding §9's session.
+4. Retire the listed code once the round runs a lesson end to end. Acceptance, per Codex: the same scenario through the normal path and through coursework has the same canonical turn inputs except the declared fields.
