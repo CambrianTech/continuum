@@ -2666,6 +2666,7 @@ impl DeployClaimGuard {
             started_ms: started,
             target_sha: target_sha.to_string(),
             renewed_ms: started,
+            progress_ms: started,
         };
         match deploy_claim::write(&root, &claim) {
             Ok(()) => {
@@ -2673,15 +2674,22 @@ impl DeployClaimGuard {
                 let renew_root = root.clone();
                 let renewer = std::thread::Builder::new()
                     .name("deploy-claim-renewer".into())
-                    .spawn(move || loop {
-                        match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                if !deploy_claim::renew(&renew_root, pid, now_ms()) {
-                                    return; // no longer ours (or unwritable): stop renewing
+                    .spawn(move || {
+                        // One System for the renewer's life: each refresh's cpu_usage is the
+                        // average since the previous one, i.e. over the whole renewal interval.
+                        let mut sys = sysinfo::System::new();
+                        let _ = deploy_working(&mut sys, pid); // the baseline refresh
+                        loop {
+                            match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    let working = deploy_working(&mut sys, pid);
+                                    if !deploy_claim::renew(&renew_root, pid, now_ms(), working) {
+                                        return; // no longer ours (or unwritable): stop renewing
+                                    }
                                 }
+                                // the guard dropped (Disconnected) or said stop
+                                _ => return,
                             }
-                            // the guard dropped (Disconnected) or said stop
-                            _ => return,
                         }
                     })
                     .ok();
@@ -2696,6 +2704,28 @@ impl DeployClaimGuard {
             }
         }
     }
+}
+
+/// Was the deploy working since the previous refresh of `sys`? Its process tree's CPU (the
+/// owner plus every descendant, so the rustc under cargo under this reboot counts), or a
+/// compiler busy anywhere on the host (an owner blocked on the shared cargo lock is waiting on
+/// progress). Card 80ead731.
+fn deploy_working(sys: &mut sysinfo::System, pid: i32) -> bool {
+    use continuum_core::runtime::deploy_claim;
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cpu());
+    let procs: Vec<(i32, Option<i32>, f32)> = sys
+        .processes()
+        .values()
+        .map(|p| (p.pid().as_u32() as i32, p.parent().map(|par| par.as_u32() as i32), p.cpu_usage()))
+        .collect();
+    let host_compilers: f32 = sys
+        .processes()
+        .values()
+        .filter(|p| deploy_claim::is_compiler(&p.name().to_string_lossy()))
+        .map(|p| p.cpu_usage())
+        .sum();
+    deploy_claim::deploy_working(deploy_claim::tree_cpu_percent(pid, &procs), host_compilers)
 }
 
 impl Drop for DeployClaimGuard {
@@ -3652,11 +3682,24 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     // is this consumer's own job (below), and counting a stale one as dirt wedged the node
     // after the first pin bump (2026-09-27: every later tip refused as "uncommitted work").
     let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"])?.is_empty();
-    // The deploy claim is the tracker's own input (`deploy_claim::in_flight`): a live
-    // owner under the ceiling blocks; an abandoned claim is swept by `reboot` itself.
-    let build_in_flight = continuum_root()
-        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()).blocks())
-        .unwrap_or(false); // unwrap_or: no root = no claim file = nothing in flight
+    // The deploy claim is the tracker's own input (`deploy_claim::in_flight`). A LIVE owner
+    // excludes this consumer whether or not its claim expired: its checkout is its own, and
+    // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
+    // claim is swept (by `reboot` itself).
+    let gate = continuum_root()
+        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()))
+        .ok(); // no root = no claim file = nothing in flight
+    if let Some(continuum_core::runtime::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
+        .as_ref()
+        .filter(|g| g.excludes_deploy())
+    {
+        deploy_note(&format!(
+            "deploy owner pid {pid} is alive but made no progress ({}s old): not checking out under \
+             it. Sample it (`sample {pid}`), then stop it, to release the deploy tree.",
+            age_ms / 1000
+        ));
+    }
+    let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
     let prior_failures = tip
         .as_deref()

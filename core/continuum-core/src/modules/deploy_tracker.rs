@@ -374,8 +374,9 @@ impl ServiceModule for DeployTrackerModule {
             Ok(None) => (None, Some("branch has no tip".to_string()), Checks::Unknown),
             Err(e) => (None, Some(e), Checks::Unknown),
         };
+        // a live owner excludes a new deploy even past its claim's expiry (card 634f644d)
         let build_in_flight =
-            crate::runtime::deploy_claim::in_flight(&self.root, now).blocks();
+            crate::runtime::deploy_claim::in_flight(&self.root, now).excludes_deploy();
         let inputs = TickInputs {
             running_sha: Some(running_sha().to_string()),
             tip_sha,

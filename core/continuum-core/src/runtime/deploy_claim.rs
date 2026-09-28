@@ -101,10 +101,28 @@ pub const CLAIM_RENEW_EVERY_MS: u64 = 5 * 60 * 1000;
 /// `kill -9`'d owner whose pid is reused frees the gate within half an hour, not four.
 pub const CLAIM_STALE_MS: u64 = 6 * CLAIM_RENEW_EVERY_MS;
 
-/// A renewing claim older than this is abandoned even while it renews: a hung build (the
-/// owner alive, its renewer ticking, nothing progressing) must not block launches forever.
-/// 12 h is 2.6x the slowest build on record (275 min, above).
+/// A renewing claim from a writer that does NOT report progress (`progress_ms == 0`, a CLI
+/// from before progress reporting, still installed while the fleet rolls) is abandoned past
+/// this age: its renewer ticks whether or not the build moves, so age is its only hung-build
+/// bound. 12 h is 2.6x the slowest build on record (275 min, above).
 pub const CLAIM_HARD_CAP_MS: u64 = 12 * 60 * 60 * 1000;
+
+/// AGE CANNOT TELL HUNG FROM SLOW (card 80ead731). On the IntelMac, 2026-09-28, the 12 h cap
+/// abandoned consumer 7240 while it was alive, renewing and compiling. A second consumer took
+/// the claim and checked out a new tip under the live build, dooming it to a HEAD mismatch.
+/// So a progress-reporting owner is hung only when its process tree has done no CPU work
+/// (below [`WORKING_CPU_PERCENT`]) for this long, however old the build is.
+// derived-or-floor: a floor — far past any quiet phase of a real build (a crate download, a
+// single rustc of continuum-core, the final link all burn CPU), and shorter than the
+// 4 h the tracker would otherwise stall behind a truly hung build.
+pub const CLAIM_STALLED_MS: u64 = 60 * 60 * 1000;
+
+/// The CPU, as a percent of one core averaged over one renewal interval, at or above which
+/// the owner's process tree counts as working. A compiling rustc runs near 100; a hung or
+/// lock-blocked cargo sits near 0.
+// derived-or-floor: a floor — well above an idle process tree's background noise,
+// well below one busy compiler thread.
+pub const WORKING_CPU_PERCENT: f32 = 5.0;
 
 /// What one deploying process published about itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +140,11 @@ pub struct DeployClaim {
     /// [`CLAIM_STALE_MS`], which is worse than today.
     #[serde(default)]
     pub renewed_ms: u64,
+    /// Epoch-ms of the last renewal at which the owner's process tree was WORKING (CPU at or
+    /// above [`WORKING_CPU_PERCENT`] over the interval). `0` is a writer that does not report
+    /// progress; it keeps [`CLAIM_HARD_CAP_MS`].
+    #[serde(default)]
+    pub progress_ms: u64,
 }
 
 /// The gate an implicit launcher must pass.
@@ -148,14 +171,35 @@ pub enum AbandonReason {
     /// The deploying process is gone (crashed, killed, or simply finished without
     /// clearing — the RAII release should prevent the last one, but never assume it).
     OwnerDead,
-    /// Older than [`CLAIM_MAX_AGE_MS`]. Covers a hung build and a recycled pid.
-    Expired,
+    /// No renewal proves the owner is still ours: a renewing claim silent for
+    /// [`CLAIM_STALE_MS`], or a non-renewing claim past [`CLAIM_MAX_AGE_MS`]. The pid may be
+    /// dead or recycled (owner_alive is pid-only), so the claim releases.
+    Silent,
+    /// Still renewing (so the owner IS this deploy, alive) but hung: no work for
+    /// [`CLAIM_STALLED_MS`], or, for a writer without progress reporting, past
+    /// [`CLAIM_HARD_CAP_MS`]. It excludes the next deploy until it dies (card 634f644d).
+    Stalled,
 }
 
 impl DeployGate {
-    /// True only when a launcher must refuse. `Abandoned` deliberately does NOT block.
+    /// True only when a launcher must refuse. `Abandoned` deliberately does NOT block: a hung
+    /// deploy must never wedge the machine's cores.
     pub fn blocks(&self) -> bool {
         matches!(self, DeployGate::InProgress { .. })
+    }
+
+    /// True when ANOTHER DEPLOY must not start: the owner is in progress, or it expired while
+    /// still ALIVE (card 634f644d, Cormac and Codex on #4524). Expiry is a guess about progress
+    /// (CPU is not progress: a spin reads busy, an I/O or lock wait reads idle). A live
+    /// owner's checkout is its own however the guess falls, so the next consumer never
+    /// changes the deploy tree under it. The IntelMac, 2026-09-28: 43925 checked out 93499d5d6
+    /// under 7240's live build. Only a dead owner releases the deploy tree.
+    ///
+    /// Only a STALLED claim excludes: its renewals prove the owner is this deploy. A SILENT one
+    /// cannot prove it, since the pid may be recycled (Cormac on #4524), so it releases, or a
+    /// recycled pid would exclude deploys forever.
+    pub fn excludes_deploy(&self) -> bool {
+        matches!(self, DeployGate::InProgress { .. } | DeployGate::Abandoned { why: AbandonReason::Stalled, .. })
     }
 }
 
@@ -176,18 +220,22 @@ pub fn decide(claim: Option<&DeployClaim>, owner_alive: bool, now_ms: u64) -> De
         };
     }
     let expired = if claim.renewed_ms == 0 {
-        // A non-renewing writer: the old age rule.
-        age_ms >= CLAIM_MAX_AGE_MS
+        // A non-renewing writer: the old age rule, and nothing proves the pid is still ours.
+        (age_ms >= CLAIM_MAX_AGE_MS).then_some(AbandonReason::Silent)
+    } else if now_ms.saturating_sub(claim.renewed_ms) >= CLAIM_STALE_MS {
+        Some(AbandonReason::Silent)
     } else {
-        // A renewing writer: silence, or a hung build past the hard cap.
-        now_ms.saturating_sub(claim.renewed_ms) >= CLAIM_STALE_MS || age_ms >= CLAIM_HARD_CAP_MS
-    };
-    if expired {
-        return DeployGate::Abandoned {
-            pid: claim.pid,
-            age_ms,
-            why: AbandonReason::Expired,
+        // Renewing: the owner is this deploy. Hung is judged by progress, or by age for a
+        // writer that does not report progress.
+        let hung = if claim.progress_ms == 0 {
+            age_ms >= CLAIM_HARD_CAP_MS
+        } else {
+            now_ms.saturating_sub(claim.progress_ms) >= CLAIM_STALLED_MS
         };
+        hung.then_some(AbandonReason::Stalled)
+    };
+    if let Some(why) = expired {
+        return DeployGate::Abandoned { pid: claim.pid, age_ms, why };
     }
     DeployGate::InProgress {
         pid: claim.pid,
@@ -218,17 +266,57 @@ pub fn write(root: &Path, claim: &DeployClaim) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-/// The owner's renewal: stamp `renewed_ms` on the claim, but only if the claim on disk is
-/// still THIS pid's (another deploy that took the gate after an abandonment is never
-/// overwritten). Returns whether the claim is still ours; the renewer stops when it is not.
-pub fn renew(root: &Path, pid: i32, now_ms: u64) -> bool {
+/// The owner's renewal: stamp `renewed_ms` on the claim, and `progress_ms` too when its
+/// process tree was `working` over the interval, but only if the claim on disk is still THIS
+/// pid's (another deploy that took the gate after an abandonment is never overwritten).
+/// Returns whether the claim is still ours; the renewer stops when it is not.
+pub fn renew(root: &Path, pid: i32, now_ms: u64, working: bool) -> bool {
     match read(root) {
         Some(mut claim) if claim.pid == pid => {
             claim.renewed_ms = now_ms;
+            if working {
+                claim.progress_ms = now_ms;
+            }
             write(root, &claim).is_ok()
         }
         _ => false,
     }
+}
+
+/// Whether a process name is a Rust compiler or build driver (`rustc`, `cargo`, with or
+/// without `.exe`).
+pub fn is_compiler(name: &str) -> bool {
+    let stem = name.strip_suffix(".exe").unwrap_or(name); // unwrap_or: a name without .exe is its own stem
+    stem == "rustc" || stem == "cargo"
+}
+
+/// Is the deploy WORKING over the last interval? Its own tree's CPU, OR a compiler burning CPU
+/// anywhere on the host. The second covers an owner blocked on the shared target dir's cargo
+/// lock (Cormac on #4524: 7240 at ~0% for 3 h+ behind another build). It is waiting on a
+/// build that progresses, which is not hung; hung is no compile making progress on the
+/// machine at all. `tree_cpu` is [`tree_cpu_percent`]; `host_compiler_cpu` sums
+/// [`is_compiler`] processes.
+pub fn deploy_working(tree_cpu: f32, host_compiler_cpu: f32) -> bool {
+    tree_cpu >= WORKING_CPU_PERCENT || host_compiler_cpu >= WORKING_CPU_PERCENT
+}
+
+/// The CPU of `root` and every descendant, summed: `procs` is (pid, parent, cpu percent) for
+/// every process. Pure, so the renewer's sampling stays a thin sysinfo read.
+pub fn tree_cpu_percent(root: i32, procs: &[(i32, Option<i32>, f32)]) -> f32 {
+    let mut in_tree = std::collections::HashSet::from([root]);
+    // parents before children is not guaranteed, so grow the tree until it stops growing
+    loop {
+        let before = in_tree.len();
+        for (pid, parent, _) in procs {
+            if parent.is_some_and(|p| in_tree.contains(&p)) {
+                in_tree.insert(*pid);
+            }
+        }
+        if in_tree.len() == before {
+            break;
+        }
+    }
+    procs.iter().filter(|(pid, _, _)| in_tree.contains(pid)).map(|(_, _, cpu)| cpu).sum()
 }
 
 /// Read the current claim, if any. A malformed file reads as None: an unparseable advisory
@@ -284,6 +372,7 @@ mod tests {
             started_ms,
             target_sha: "deadbeef".into(),
             renewed_ms: 0,
+            progress_ms: 0,
         }
     }
 
@@ -325,7 +414,7 @@ mod tests {
         assert!(!old.blocks(), "an expired claim must not block: {old:?}");
         assert!(matches!(
             old,
-            DeployGate::Abandoned { why: AbandonReason::Expired, .. }
+            DeployGate::Abandoned { why: AbandonReason::Silent, .. }
         ));
 
         // One millisecond under the cap still blocks — the boundary is not off by one.
@@ -371,13 +460,14 @@ mod tests {
             started_ms,
             target_sha: "2989557f".into(),
             renewed_ms,
+            progress_ms: 0,
         };
         // 275 min into the build, renewed a minute ago: still in progress.
         let now = 275 * min;
         assert!(decide(Some(&renewing(0, now - min)), true, now).blocks(), "a slow live build must keep the gate");
-        // The same claim silent for CLAIM_STALE_MS: abandoned, and said as Expired.
+        // The same claim silent for CLAIM_STALE_MS: abandoned, and said as Silent.
         let g = decide(Some(&renewing(0, now - CLAIM_STALE_MS)), true, now);
-        assert!(matches!(g, DeployGate::Abandoned { why: AbandonReason::Expired, .. }), "{g:?}");
+        assert!(matches!(g, DeployGate::Abandoned { why: AbandonReason::Silent, .. }), "{g:?}");
         // Renewing, but past the hard cap: a hung build yields.
         let hung = CLAIM_HARD_CAP_MS + min;
         assert!(!decide(Some(&renewing(0, hung - min)), true, hung).blocks(), "a hung build must not block forever");
@@ -391,6 +481,58 @@ mod tests {
         ));
     }
 
+    // what this catches: card 80ead731 — the 12 h cap abandoning a LIVE, renewing, COMPILING
+    // owner on the IntelMac (2026-09-28); a second consumer then checked out a new tip under
+    // the live build. A progress-reporting claim blocks at any age while its tree works, is
+    // hung only after CLAIM_STALLED_MS without work, and still goes stale on silence. A renewal
+    // stamps progress only when working, and the tree's CPU includes every descendant (the
+    // rustc under cargo under the reboot), not the idle owner alone.
+    #[test]
+    fn a_compiling_owner_never_expires_on_age_and_a_workless_one_is_hung() {
+        let min = 60 * 1000;
+        let at = |started_ms: u64, renewed_ms: u64, progress_ms: u64| DeployClaim {
+            pid: 7240,
+            started_ms,
+            target_sha: "f03812d9e".into(),
+            renewed_ms,
+            progress_ms,
+        };
+        let now = 15 * 60 * min; // 15 h into the build, past the old 12 h cap
+        assert!(decide(Some(&at(0, now - min, now - min)), true, now).blocks(), "compiling at 15 h: still in flight");
+        let hung = decide(Some(&at(0, now - min, now - CLAIM_STALLED_MS)), true, now);
+        assert!(matches!(hung, DeployGate::Abandoned { why: AbandonReason::Stalled, .. }), "renewing but workless for an hour: {hung:?}");
+        assert!(!decide(Some(&at(0, now - CLAIM_STALE_MS, now - min)), true, now).blocks(), "silence still expires");
+
+        let root = std::env::temp_dir().join(format!("deploy-claim-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write(&root, &at(1_000, 1_000, 1_000)).expect("write");
+        assert!(renew(&root, 7240, 5_000, false));
+        assert_eq!(read(&root).map(|c| (c.renewed_ms, c.progress_ms)), Some((5_000, 1_000)), "an idle interval renews without progress");
+        assert!(renew(&root, 7240, 9_000, true));
+        assert_eq!(read(&root).map(|c| (c.renewed_ms, c.progress_ms)), Some((9_000, 9_000)));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // reboot 7240 (idle) -> cargo 25000 (idle) -> rustc 34000 (compiling); 99 is unrelated
+        let procs = [(7240, Some(1), 0.2), (25000, Some(7240), 0.1), (34000, Some(25000), 96.0), (99, Some(1), 80.0)];
+        assert!(tree_cpu_percent(7240, &procs) >= WORKING_CPU_PERCENT, "the rustc under cargo is the owner's work");
+        assert!(tree_cpu_percent(25000, &procs[..2]) < WORKING_CPU_PERCENT, "an idle cargo is not working");
+        // Cormac on #4524: an owner blocked on the cargo lock behind ANOTHER build is waiting on
+        // progress, not hung; with no compiler busy anywhere on the host, it is hung.
+        assert!(deploy_working(0.1, 97.0), "lock-blocked behind a compiling build: working");
+        assert!(!deploy_working(0.1, 0.4), "nothing compiling anywhere: hung");
+        assert!(is_compiler("rustc") && is_compiler("cargo.exe") && !is_compiler("rustfmt"));
+        // card 634f644d: however expiry guesses, a LIVE owner excludes the next deploy (it
+        // never releases the deploy tree), while a launch is not wedged by it; only a dead
+        // owner frees both.
+        assert!(hung.excludes_deploy() && !hung.blocks(), "hung and alive: no new deploy, but cores may launch");
+        // Cormac on #4524: a SILENT claim may be a recycled pid, so it must release, or a
+        // stranger's process would exclude deploys forever.
+        let silent = decide(Some(&at(0, now - CLAIM_STALE_MS, now - CLAIM_STALE_MS)), true, now);
+        assert!(matches!(silent, DeployGate::Abandoned { why: AbandonReason::Silent, .. }) && !silent.excludes_deploy());
+        let dead = decide(Some(&at(0, now - min, now - min)), false, now);
+        assert!(!dead.excludes_deploy() && !dead.blocks(), "a dead owner releases the deploy tree");
+    }
+
     // what this catches: the renewer overwriting a claim another deploy took after this
     // one was abandoned. It restamps only its own pid's claim and reports when it lost it.
     #[test]
@@ -400,12 +542,12 @@ mod tests {
         let mut mine = claim(4242, 1_000);
         mine.renewed_ms = 1_000;
         write(&root, &mine).expect("write");
-        assert!(renew(&root, 4242, 5_000), "its own claim renews");
+        assert!(renew(&root, 4242, 5_000, false), "its own claim renews");
         assert_eq!(read(&root).map(|c| c.renewed_ms), Some(5_000));
-        assert!(!renew(&root, 9999, 6_000), "a foreign pid never restamps");
+        assert!(!renew(&root, 9999, 6_000, true), "a foreign pid never restamps");
         assert_eq!(read(&root).map(|c| (c.pid, c.renewed_ms)), Some((4242, 5_000)));
         clear(&root, 4242).expect("clear");
-        assert!(!renew(&root, 4242, 7_000), "no claim: nothing to renew, and the renewer stops");
+        assert!(!renew(&root, 4242, 7_000, true), "no claim: nothing to renew, and the renewer stops");
         let _ = std::fs::remove_dir_all(&root);
     }
 
