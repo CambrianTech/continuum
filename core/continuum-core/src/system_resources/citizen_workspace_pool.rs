@@ -484,9 +484,13 @@ impl CitizenWorkspacePool {
     }
 }
 
-/// Is the node quiet enough to take build trees (Fable's gates on #4528)? Every one is
-/// host-wide, so it covers the writers lock enumeration cannot see: a shell with its own
-/// `--target-dir`, an external build, a cargo starting a new profile.
+/// Is the node quiet enough to take build trees (Fable's gates on #4528)? Each gate is a
+/// SNAPSHOT, not a proof of ownership (Codex): it is taken right before each take, so it
+/// narrows what can race the rename to a build or turn that starts in the instant between the
+/// check and the rename. It reaches writers lock enumeration cannot see (a session's own
+/// `--target-dir`, an external build, a cargo starting a new profile) only as far as they are
+/// running when it looks. That residual is why this is an explicit, operator-invoked act and
+/// never pressure relief.
 /// - no `cargo` or `rustc` process anywhere on the host (`deploy_claim::is_compiler`);
 /// - no deploy in flight (`deploy_claim::in_flight(..).excludes_deploy()`);
 /// - no citizen turn in flight (`turn_ingress::in_flight()`).
