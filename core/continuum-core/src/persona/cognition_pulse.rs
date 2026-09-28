@@ -55,6 +55,47 @@ pub fn touch(persona_id: Uuid, now_ms: u64) {
     }
 }
 
+/// Whether her COGNITION LOOP is running right now: a different fact from recent work.
+/// A resting citizen has a live loop and no recent turn; a citizen whose loop exited has
+/// neither, yet her airc runtime kept beaconing "ready" every minute (Kimi after the 5090
+/// rehost, 2026-09-28, card 7524aa5b: 50 minutes ready, deaf to directed messages). The loop
+/// holds a [`LoopGuard`] for its whole life; the presence heartbeat reads [`loop_running`].
+/// This is a lifecycle fact, and deliberately NOT a [`touch`]: it never earns a renewal.
+pub fn enter_loop(persona_id: Uuid) -> LoopGuard {
+    if let Ok(mut loops) = loops().lock() {
+        *loops.entry(persona_id).or_insert(0) += 1;
+    }
+    LoopGuard(persona_id)
+}
+
+/// Is a cognition loop running for her in this process?
+pub fn loop_running(persona_id: Uuid) -> bool {
+    loops().lock().map(|loops| loops.get(&persona_id).is_some_and(|n| *n > 0)).unwrap_or(false) // a poisoned map cannot vouch for her: not running, said as such
+}
+
+/// Held by a running cognition loop; dropping it (a return, an error, a panic unwinding)
+/// ends the claim that she is thinking.
+#[must_use = "the loop is running only while the guard is held"]
+pub struct LoopGuard(Uuid);
+
+impl Drop for LoopGuard {
+    fn drop(&mut self) {
+        if let Ok(mut loops) = loops().lock() {
+            if let Some(n) = loops.get_mut(&self.0) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    loops.remove(&self.0);
+                }
+            }
+        }
+    }
+}
+
+fn loops() -> &'static Mutex<HashMap<Uuid, u32>> {
+    static LOOPS: OnceLock<Mutex<HashMap<Uuid, u32>>> = OnceLock::new();
+    LOOPS.get_or_init(Default::default)
+}
+
 /// Milliseconds since her last stamped cognition. `None` = never stamped in
 /// this process — callers decide the posture; the renewal gate treats it as
 /// NOT earned (an unstamped persona renewing forever is the exact lie this
@@ -169,6 +210,29 @@ pub fn renewal_earned(idle: Option<u64>, ttl_ms: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 7524aa5b): a citizen reading as running after her loop
+    // exited (Kimi, 2026-09-28: fifty minutes of "ready" beacons from a dead loop). The guard
+    // is the claim; dropping it, including by an error return, ends it; two overlapping loops
+    // (a restart racing the old one) count as running until both end.
+    #[test]
+    fn the_loop_is_running_only_while_its_guard_is_held() {
+        let persona = Uuid::new_v4();
+        assert!(!loop_running(persona));
+        let first = enter_loop(persona);
+        assert!(loop_running(persona));
+        let second = enter_loop(persona);
+        drop(first);
+        assert!(loop_running(persona), "the overlapping loop still runs");
+        drop(second);
+        assert!(!loop_running(persona), "no loop: she is not thinking, whatever the runtime says");
+        let ended_by_error = || -> Result<(), ()> {
+            let _live = enter_loop(persona);
+            Err(())
+        };
+        assert!(ended_by_error().is_err());
+        assert!(!loop_running(persona), "an error return releases the claim");
+    }
 
     // Regression 1fc73f18: active work outlives a turn-start stamp; cancellation
     // and failure do not mint completion, and card A cannot renew card B.

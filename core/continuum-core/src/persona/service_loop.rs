@@ -401,6 +401,9 @@ pub async fn serve_persona_loop(
     opts: ServeOptions,
 ) -> Result<ServeOutcome, String> {
     use tracing::Instrument;
+    // Her presence reads THIS: "ready" means a loop is running, not merely that her airc
+    // runtime is up (card 7524aa5b). Held for the loop's whole life, released on any exit.
+    let _live = crate::persona::cognition_pulse::enter_loop(ctx.identity.peer_id.as_uuid());
     serve_persona_loop_inner(ctx, conversation, opts)
         .instrument(ctx.span())
         .await
