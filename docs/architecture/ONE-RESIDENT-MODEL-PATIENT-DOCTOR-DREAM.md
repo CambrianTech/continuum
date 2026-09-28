@@ -279,8 +279,14 @@ Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learn
 - **Learning flows through one path:**
   - The patient's passing turns go through `stage_credit` → `settle_card_credit`, and arrive in her dream session (§9) with provenance `coursework`.
   - The doctor's demonstration arrives as a shared lesson, at the lower weight of §8.3.
-  - Her gene trials draw arms on coursework cards like on any card.
+  - Coursework verdicts are their OWN evidence stream: what she was taught, not whether it transfers. **The promotion gate judges real work only** (Cormac on #4500). Lessons repeat by design, so a snapshot trained on task T would otherwise be judged on T again in the next round. The §9 judge invariant is keyed by **task identity** (the coursework task id, or a content hash of the prompt and oracle), not by card instance, wherever coursework evidence is read.
 - **Held-out stays held-out:** the manifest provenance of §9.3 keeps her disjoint held-out defects checkable, and coursework never counts as new-work gain.
+- **Contained, using existing primitives** (Cormac on #4500). Real tools mean real effects, so a round is a branch of her state, not her state:
+  - The round's cards check out a **scenario workspace**: the per-card checkout that `work_pull` already makes, with no promotion path to her real branch.
+  - Memory writes and noteworthy flags from a coursework turn carry `provenance: coursework`, so recall can weight or exclude them.
+  - Room posts stay in the round's room.
+  - **Acceptance:** a coursework round leaves her real workspace, memory and rooms unchanged, except for the declared learning arrivals. Run a round, then diff.
+- **Priority:** coursework never outranks a real card for a slot or a turn. It is standing dispatch beside real work on the same lanes, under the one governor rule, so a round can never eat the node's residents.
 
 ### 10.3 What retires
 
@@ -291,4 +297,5 @@ Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learn
 1. The `coursework/round` recipe plus the grader-backed card source (test = verdict).
 2. The doctor seated as a persona on the same base (S2 slot affinity), with the demonstration turn.
 3. The credit path (the patient's passing turns and the doctor's lessons as arrivals with provenance), feeding §9's session.
-4. Retire the listed code once the round runs a lesson end to end. Acceptance, per Codex: the same scenario through the normal path and through coursework has the same canonical turn inputs except the declared fields.
+4. The containment test: a round runs, and the diff of her real workspace, memory and rooms shows only the declared learning arrivals.
+5. Retire the listed code once the round runs a lesson end to end. Acceptance, per Codex: the same scenario through the normal path and through coursework has the same canonical turn inputs except the declared fields.
