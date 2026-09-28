@@ -241,7 +241,11 @@ else
   # get_tensor / upload_expert / MXFP4 patches) while continuum-core linked the NEW lib.
   # Always calling it is the llama-server twin of the #194 stale-check start-server already
   # does for continuum-core-server: one artifact, one fork, kept in lockstep by construction.
-  if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
+  # The installer prints the engine it installed or found current: the active engine slot
+  # once slots are in use (card 7a6a033a), else the pre-slot path.
+  if INSTALLED_BIN="$("$SCRIPT_DIR/install-llama-server.sh")"; then
+    [ -n "$INSTALLED_BIN" ] && [ -x "$INSTALLED_BIN" ] && OWNED_BIN="$INSTALLED_BIN"
+  else
     echo "⚠ install-llama-server.sh failed; falling back to any existing owned/PATH binary" >&2
   fi
   if [ -x "$OWNED_BIN" ]; then
