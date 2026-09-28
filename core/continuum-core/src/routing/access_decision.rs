@@ -91,7 +91,8 @@ impl AccessPolicy {
     /// 3. `Blocked` if the operator blocked her;
     /// 4. an unknown identity: `Provisional`;
     /// 5. otherwise by cognitive level: below the threshold `Provisional`, at or above it or
-    ///    unmeasured `Trusted`.
+    ///    unmeasured `Trusted`, CAPPED by her registered trust when she has one (a peer
+    ///    registered `Provisional` stays `Provisional`; Cormac on #4532).
     pub fn citizen_trust(&self, peer: Uuid, known: bool, rank: Option<u8>, registered: Option<TrustLevel>) -> TrustLevel {
         if self.unreadable {
             return TrustLevel::Provisional;
@@ -105,10 +106,11 @@ impl AccessPolicy {
         if !known {
             return TrustLevel::Provisional;
         }
-        match rank {
+        let by_capability = match rank {
             Some(r) if r < self.full_access_min_rank => TrustLevel::Provisional,
             _ => TrustLevel::Trusted,
-        }
+        };
+        registered.map_or(by_capability, |cap| by_capability.min(cap))
     }
 }
 
@@ -201,6 +203,9 @@ mod tests {
         // Cormac on #4532: an unknown IDENTITY is not an unknown capability; enrolling in a
         // room never grants a shell
         assert_eq!(policy.citizen_trust(peer, false, None, None), TrustLevel::Provisional, "a stranger is restricted");
+        // and registered trust caps what capability grants
+        assert_eq!(policy.citizen_trust(peer, true, None, Some(TrustLevel::Provisional)), TrustLevel::Provisional, "registered Provisional stays Provisional");
+        assert_eq!(policy.citizen_trust(peer, true, Some(42), Some(TrustLevel::Owner)), TrustLevel::Trusted, "a registered Owner peer still gets Trusted, never Owner, by capability");
         policy.full_access_min_rank = 45;
         assert_eq!(policy.citizen_trust(peer, true, Some(42), None), TrustLevel::Provisional, "the threshold is data");
         policy.decisions.push(AccessDecision {
