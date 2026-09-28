@@ -77,8 +77,8 @@ pub struct PortsListResult {
 impl From<PortLeaseError> for CommandError {
     fn from(e: PortLeaseError) -> Self {
         match e {
-            PortLeaseError::Store(_) => CommandError::Internal(e.to_string()),
-            PortLeaseError::InvalidService(_) | PortLeaseError::AtCap { .. } | PortLeaseError::RangeExhausted => {
+            PortLeaseError::Store(_) | PortLeaseError::NodeUnknown => CommandError::Internal(e.to_string()),
+            PortLeaseError::InvalidService(_) | PortLeaseError::AtCap { .. } | PortLeaseError::RangeExhausted { .. } => {
                 CommandError::Invalid(e.to_string())
             }
         }
@@ -119,7 +119,7 @@ pub struct PortsRelease {
 #[async_trait]
 impl ActionCommand for PortsRelease {
     const NAME: &'static str = "ports/release";
-    const DESCRIPTION: &'static str = "End your lease on a service's port once the service is gone for good, so the port can be leased again. Example: ports/release --service cw-web.";
+    const DESCRIPTION: &'static str = "End your lease on a service's port once the service is gone for good. The port stays unavailable to others for ten minutes, in case the service is still stopping, and leasing the same service again gives it back. Example: ports/release --service cw-web.";
     type Params = PortsServiceParams;
     type Output = PortsReleaseResult;
 

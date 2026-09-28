@@ -685,10 +685,12 @@ mod tests {
         use crate::modules::ports::PortLease;
         let lease = |service: &str, port| PortLease {
             base: crate::orm::entity::BaseEntity::for_new_record(),
+            node: crate::identity::PeerId::from_uuid(persona()),
             holder: crate::identity::PeerId::from_uuid(persona()),
             service: service.into(),
             port,
             leased_at_ms: 1,
+            released_at_ms: None,
         };
         assert_eq!(render_ports(&[]), None);
         let line = render_ports(&[lease("cw-db", 31_001), lease("cw-web", 31_000)]).expect("a line");

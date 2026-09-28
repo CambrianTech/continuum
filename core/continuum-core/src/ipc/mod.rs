@@ -3523,7 +3523,10 @@ pub fn start_server(
 
         // Port leases for citizen services (card 0c42c0bf): a dev server or database a citizen
         // runs gets a port clear of every other citizen's and of Continuum's own.
-        runtime.register(Arc::new(crate::modules::ports::PortsModule::new()));
+        let ports_node = airc_interceptor_cell.clone();
+        runtime.register(Arc::new(crate::modules::ports::PortsModule::new(Arc::new(move || {
+            ports_node.get().map(|core| core.peer_id())
+        }))));
 
         // TrainingCompletionSentinel: L3 of the dev-task continuous-learning loop.
         // Polls in-flight training jobs (the TrainingJobBoard the trigger writes to);
