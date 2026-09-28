@@ -1,0 +1,165 @@
+/**
+ * interactAdapter — fulfils `perception/interact` and `perception/session-close` (card
+ * 3569675f): a persona drives a LIVE page across calls and sees it after each step.
+ *
+ * observe and hot-edit reopen the page per call. A citizen checking her own site needs the
+ * page to persist: open her dev server, click through a flow, fill a form, and see what each
+ * step did. This adapter keeps each `PerceptionSession` behind an opaque handle, so the next
+ * call continues on the same page (cookies, storage and navigation kept).
+ *
+ * ## Bounded, never leaked
+ *
+ * A browser per session is real memory. Sessions close after {@link IDLE_MS} without a call,
+ * at most {@link MAX_SESSIONS} are open at once (opening one more is refused with the reason,
+ * never an eviction of someone's live session), and `stop()` closes them all.
+ *
+ * ## Never throws
+ *
+ * Like the siblings, every failure comes back as `{ success: false, error }`, the honest bare
+ * contract, never a fabricated observation.
+ */
+
+import { randomUUID } from 'node:crypto';
+
+import { PerceptionSession } from '@continuum/perception';
+import type { DomAction, Observation } from '@continuum/perception';
+
+import type { InteractParams } from '../../../protocol/typescript/perception/InteractParams';
+import type { InteractResult } from '../../../protocol/typescript/perception/InteractResult';
+import type { PerceptionAction } from '../../../protocol/typescript/perception/PerceptionAction';
+import type { SessionCloseParams } from '../../../protocol/typescript/perception/SessionCloseParams';
+import type { SessionCloseResult } from '../../../protocol/typescript/perception/SessionCloseResult';
+
+import { mapNode, perceptToImage } from './observeAdapter';
+
+/** A session idle this long is closed and its browser released. */
+export const IDLE_MS = 10 * 60 * 1000;
+/** The most sessions (browsers) one eye-node holds at once. */
+export const MAX_SESSIONS = 8;
+
+type WebSession = Awaited<ReturnType<typeof PerceptionSession.openWeb>>;
+
+/** The wire action onto the surface's driver verb. Exhaustive: a new wire kind must be mapped. */
+export function toDomAction(action: PerceptionAction): DomAction {
+  switch (action.kind) {
+    case 'click':
+      return { kind: 'click', selector: action.selector };
+    case 'type':
+      return { kind: 'type', selector: action.selector, text: action.text };
+    case 'press':
+      return { kind: 'press', key: action.key };
+    case 'hover':
+      return { kind: 'hover', selector: action.selector };
+    case 'goto':
+      return { kind: 'goto', url: action.url };
+  }
+}
+
+interface Held {
+  readonly session: WebSession;
+  lastUsedMs: number;
+}
+
+/** Opens a web session; injectable so the registry is testable without a browser. */
+export type OpenWeb = (url: string, viewport?: { width: number; height: number }) => Promise<WebSession>;
+
+export class InteractSessions {
+  private readonly held = new Map<string, Held>();
+  private readonly sweeper: ReturnType<typeof setInterval>;
+
+  constructor(
+    private readonly openWeb: OpenWeb = (url, viewport) => PerceptionSession.openWeb({ url, viewport }),
+    private readonly now: () => number = Date.now,
+  ) {
+    this.sweeper = setInterval(() => void this.sweep(), 60_000);
+    this.sweeper.unref?.();
+  }
+
+  /** Continue `params.session`, or open one at `params.target`; take the actions; observe. */
+  async interact(params: InteractParams): Promise<InteractResult> {
+    let handle = params.session;
+    try {
+      await this.sweep();
+      let held: Held | undefined;
+      if (handle) {
+        held = this.held.get(handle);
+        if (!held) {
+          return failure(`no live session '${handle}' (closed, expired after ${IDLE_MS / 60000} idle minutes, or from another eye-node); open a new one with target`);
+        }
+      } else {
+        if (!params.target) return failure('pass target (a URL) to open a session, or session to continue one');
+        if (this.held.size >= MAX_SESSIONS) {
+          return failure(`this eye-node already holds ${MAX_SESSIONS} open sessions; close one with perception/session-close`);
+        }
+        const viewport = params.viewport ? { width: params.viewport.width, height: params.viewport.height } : undefined;
+        const session = await this.openWeb(params.target, viewport);
+        handle = randomUUID();
+        held = { session, lastUsedMs: this.now() };
+        this.held.set(handle, held);
+      }
+      held.lastUsedMs = this.now();
+      const view = params.selector ? { selector: params.selector } : undefined;
+      if (params.actions.length === 0) {
+        const observation = await held.session.observe(view);
+        return success(observation, handle);
+      }
+      const { observation, delta } = await held.session.interact(params.actions.map(toDomAction), view);
+      return {
+        ...success(observation, handle),
+        delta: { pixelsChanged: delta.pixelsChanged, totalPixels: delta.totalPixels, ratio: delta.ratio },
+      };
+    } catch (err) {
+      // the session (if any) stays open: one failed click must not cost her the page
+      return { ...failure(err instanceof Error ? err.message : String(err)), session: handle };
+    }
+  }
+
+  async close(params: SessionCloseParams): Promise<SessionCloseResult> {
+    const held = this.held.get(params.session);
+    if (!held) return { success: true, closed: false };
+    this.held.delete(params.session);
+    try {
+      await held.session.close();
+      return { success: true, closed: true };
+    } catch (err) {
+      return { success: false, closed: true, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Close every session idle past {@link IDLE_MS}. */
+  async sweep(): Promise<void> {
+    const now = this.now();
+    const stale = [...this.held].filter(([, h]) => now - h.lastUsedMs >= IDLE_MS);
+    for (const [handle, h] of stale) {
+      this.held.delete(handle);
+      await h.session.close().catch(() => undefined);
+    }
+  }
+
+  get size(): number {
+    return this.held.size;
+  }
+
+  /** Close everything (the eye-node is stopping). */
+  async closeAll(): Promise<void> {
+    clearInterval(this.sweeper);
+    const all = [...this.held.values()];
+    this.held.clear();
+    await Promise.all(all.map((h) => h.session.close().catch(() => undefined)));
+  }
+}
+
+function success(observation: Observation, session: string): InteractResult {
+  return {
+    success: true,
+    url: observation.structure.url,
+    title: observation.structure.title,
+    image: perceptToImage(observation.percept),
+    structure: mapNode(observation.structure.tree),
+    session,
+  };
+}
+
+function failure(error: string): InteractResult {
+  return { success: false, error };
+}
