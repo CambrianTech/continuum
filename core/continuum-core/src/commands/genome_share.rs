@@ -298,21 +298,47 @@ crate::register_stateless_command!(GenomeList);
 pub struct GenomePushParams {
     /// The gene to publish, by its registered name (`genome/list` shows them).
     pub gene: String,
-    /// Target HF repo (`namespace/name`), e.g. `continuum-ai/ornith-code-asha`.
+    /// Target repo (`namespace/name`): the HF repo and/or the GitHub `owner/repo` the gene
+    /// is published to, e.g. `continuum-ai/ornith-code-asha`.
     pub repo: String,
     /// Direct parent alloy hashes for the lineage DAG — the genes this one forked
     /// from/built on. Empty = a root gene (a lineage origin). Signed into provenance.
     #[serde(default)]
     pub parent_alloy_hashes: Vec<String>,
+    /// Where to publish: any of `huggingface`, `github`. The SAME bundle goes to each, proven
+    /// by read-back. Empty means `["huggingface"]`.
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+/// Where one target now serves the gene, verified by read-back.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomePushReceipt.ts")]
+pub struct GenomePushReceipt {
+    /// The publisher (`huggingface`, `github`).
+    pub transport: String,
+    /// Where the gene lives there.
+    pub location: String,
+    /// The bundle identity that destination was verified to serve.
+    pub digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/GenomePushResult.ts")]
 pub struct GenomePushResult {
-    /// Where the gene now lives (the HF URL).
-    pub location: String,
-    /// Whether the self-describing signature.json rode along.
-    pub signed: bool,
+    /// One receipt per target that published, each verified by read-back.
+    pub receipts: Vec<GenomePushReceipt>,
+    /// `target: error` for each target that did not; a retry reconciles the ones that landed.
+    pub failures: Vec<String>,
+    /// The bundle's identity (sha256 of its manifest), the same on every destination.
+    pub digest: String,
+    /// Whether the behavior signature (signature.json, routing by distance) rode along. It
+    /// proves nothing about who made the gene.
+    pub has_behavior_signature: bool,
+    /// Whether cryptographic provenance (provenance.json: this node's key over the gene's
+    /// content hash and parents) rode along AND verified against the gene and its parents.
+    /// This is what "signed" means.
+    pub provenance_verified: bool,
     /// The decayed lift the card publishes (the receipts' verdict).
     pub lift: f64,
 }
@@ -325,13 +351,14 @@ impl ActionCommand for GenomePush {
     const NAME: &'static str = "genome/push";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Publish a gene to the HF genome commons: the gguf-lora + a self-describing card \
-         (base_model lineage frontmatter for HF's own discovery chain, fitness provenance, \
-         and signature.json so pulling nodes route it by distance immediately). STRICTLY \
+        "Publish a gene to the genome commons (Hugging Face and/or GitHub, `targets`): one \
+         content-addressed bundle (the gguf-lora, signature.json so pulling nodes route it by \
+         distance, provenance.json signed by this node's key, and a manifest) delivered to each \
+         target and verified by read-back, with a card per provider. STRICTLY \
          OPT-IN (agree to the covenant via `genome/sharing --agree true`) and receipts-gated: a gene with no eval \
          receipts, or with measured harm, is refused — a card without receipts is an \
-         opinion. Auth rides the `hf` CLI (HF_TOKEN). Example: \
-         `continuum genome/push --gene code --repo continuum-ai/ornith-code-asha`.";
+         opinion. Auth rides the `hf` CLI (HF_TOKEN) and the `gh` CLI (GH_TOKEN). Example: \
+         `continuum genome/push --gene code --repo continuum-ai/ornith-code-asha --targets huggingface,github`.";
     type Params = GenomePushParams;
     type Output = GenomePushResult;
 
@@ -369,7 +396,6 @@ impl ActionCommand for GenomePush {
             .by_path
             .get(&adapter.path.display().to_string())
             .and_then(|s| serde_json::to_string_pretty(s).ok());
-        let signed = signature_json.is_some();
 
         // COMMONS PROVENANCE (trust spine rung 1): sign the gene with THIS node's
         // citizen key (`identity.key`, 32 raw ed25519 bytes) over its content hash +
@@ -415,21 +441,42 @@ impl ActionCommand for GenomePush {
             path.exists()
         })
         .map_err(|e| CommandError::Invalid(format!("genome/push: {e}")))?;
-        use crate::forge::publisher::Publisher as _;
-        let receipt = crate::forge::hf_publisher::HfPublisher::new()
-            .publish(&req)
+        // One staged bundle to every target through the one dispatcher; each is proven by
+        // read-back, and each succeeds or fails on its own (Codex, the dual-host acceptance).
+        let targets = if p.targets.is_empty() { vec!["huggingface".to_string()] } else { p.targets.clone() };
+        let (bundle, outcomes) = crate::forge::publisher::publish_everywhere(&req, &targets)
             .await
-            .map_err(|e| CommandError::Invalid(format!("genome/push upload: {e}")))?;
-
+            .map_err(|e| CommandError::Invalid(format!("genome/push: {e}")))?;
+        let mut receipts = Vec::new();
+        let mut failures = Vec::new();
+        for (target, outcome) in outcomes {
+            match outcome {
+                Ok(r) => receipts.push(GenomePushReceipt { transport: r.transport, location: r.location, digest: r.digest }),
+                Err(e) => failures.push(format!("{target}: {e}")),
+            }
+        }
         crate::probe!(
             class = "genome.push",
             gene = %p.gene,
             repo = %p.repo,
-            signed = %signed,
+            digest = %bundle.digest,
+            published = receipts.len() as u64,
+            failed = failures.len() as u64,
+            provenance_verified = bundle.manifest.provenance_verified,
             lift = %rec.decayed_mean_lift,
-            "gene published to the commons"
+            "gene bundle published to the commons, each target proven by read-back"
         );
-        Ok(GenomePushResult { location: receipt.location, signed, lift: rec.decayed_mean_lift })
+        if receipts.is_empty() {
+            return Err(CommandError::Invalid(format!("genome/push: no target published: {}", failures.join("; "))));
+        }
+        Ok(GenomePushResult {
+            receipts,
+            failures,
+            digest: bundle.digest,
+            has_behavior_signature: bundle.manifest.has_behavior_signature,
+            provenance_verified: bundle.manifest.provenance_verified,
+            lift: rec.decayed_mean_lift,
+        })
     }
 }
 

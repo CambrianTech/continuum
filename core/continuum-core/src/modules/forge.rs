@@ -828,7 +828,7 @@ struct ForgePublishParams {
     rank: Option<i64>,
     /// Held-out lift as a fraction (0.051 = +5.1pts). Gate is `> 0`.
     lift: f64,
-    /// Which publisher adapter to use. Default `"huggingface"`.
+    /// Which publisher to use: `"huggingface"` (default) or `"github"`.
     #[serde(default)]
     target: Option<String>,
 }
@@ -839,7 +839,6 @@ struct ForgePublishParams {
 /// `PublishRequest::build` before any transport is touched.
 async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, String> {
     use crate::forge::publish_request::{PublishInputs, PublishRequest};
-    use crate::forge::publisher::Publisher;
 
     let inputs = PublishInputs {
         repo_id: p.repo_id,
@@ -861,24 +860,17 @@ async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, String> {
     let req = PublishRequest::build(&inputs, |path| path.exists())
         .map_err(|e| format!("forge/publish: {e}"))?;
 
-    let target = p.target.as_deref().unwrap_or("huggingface");
-    let publisher: Box<dyn Publisher> = match target {
-        "huggingface" | "hf" => Box::new(crate::forge::hf_publisher::HfPublisher::new()),
-        other => {
-            return Err(format!(
-                "forge/publish: unknown target '{other}' — 'huggingface' is the only publisher \
-                 built; a grid publisher (outlier B) satisfies the same trait when wired"
-            ))
-        }
-    };
-
-    let receipt = publisher
-        .publish(&req)
+    // one dispatcher, one staged bundle, proven by read-back (forge::publisher)
+    let target = p.target.clone().unwrap_or_else(|| "huggingface".to_string());
+    let (bundle, mut results) = crate::forge::publisher::publish_everywhere(&req, std::slice::from_ref(&target))
         .await
         .map_err(|e| format!("forge/publish: {e}"))?;
+    let (_, outcome) = results.pop().ok_or("forge/publish: no target was attempted")?;
+    let receipt = outcome.map_err(|e| format!("forge/publish: {e}"))?;
     Ok(CommandResult::Json(serde_json::json!({
         "transport": receipt.transport,
         "location": receipt.location,
+        "digest": bundle.digest,
         "liftPct": req.lift_pct,
         "tags": req.tags,
     })))

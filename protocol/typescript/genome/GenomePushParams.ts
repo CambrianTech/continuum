@@ -6,11 +6,17 @@ export type GenomePushParams = {
  */
 gene: string, 
 /**
- * Target HF repo (`namespace/name`), e.g. `continuum-ai/ornith-code-asha`.
+ * Target repo (`namespace/name`): the HF repo and/or the GitHub `owner/repo` the gene
+ * is published to, e.g. `continuum-ai/ornith-code-asha`.
  */
 repo: string, 
 /**
  * Direct parent alloy hashes for the lineage DAG — the genes this one forked
  * from/built on. Empty = a root gene (a lineage origin). Signed into provenance.
  */
-parent_alloy_hashes: Array<string>, };
+parent_alloy_hashes: Array<string>, 
+/**
+ * Where to publish: any of `huggingface`, `github`. The SAME bundle goes to each, proven
+ * by read-back. Empty means `["huggingface"]`.
+ */
+targets: Array<string>, };
