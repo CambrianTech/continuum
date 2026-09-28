@@ -520,7 +520,13 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     # readable live engine inside the answer refuses.
     $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
     Set-Content -LiteralPath $fakeCli -Value @'
-if ($args[0] -eq '--help') { 'continuum engine idle-slot'; exit 0 }
+if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+if ($args[0] -eq 'engine' -and $args[1] -eq 'promote') {
+    if ($env:FAKE_PROMOTE_RC) { 'refused'; exit ([int]$env:FAKE_PROMOTE_RC) }
+    Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'bin\current') -Value $args[2]
+    Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'promoted-with') -Value "$($args[2]) $($args[3])"
+    exit 0
+}
 if ($args[0] -eq 'engine' -and $args[1] -eq 'idle-slot') {
     if ($env:FAKE_IDLE_RC) { exit ([int]$env:FAKE_IDLE_RC) }
     Join-Path $env:CONTINUUM_HOME ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
@@ -560,6 +566,24 @@ exit 64
         if (-not $refused) { throw 'A first install with every slot live was not refused' }
     } finally { $script:liveProcesses = @() }
     Write-Output 'PASS: the engine slot is the core answer from its lane records when the CLI knows the verb'
+
+    # card d5584dfc: a drift-verified slot is promoted by the core's own verb (current is the one
+    # truth), with the stamp the build wrote; a refused promote throws; a CLI without the verb
+    # leaves the release registration to bootstrap, and says so.
+    $promoteSlot = Join-Path $installed 'bin\engine-c'
+    New-Item -ItemType Directory -Force -Path $promoteSlot | Out-Null
+    Set-Content -LiteralPath (Join-Path $promoteSlot '.llama-server.stamp') -Value 'abc1234:cuda'
+    try {
+        if (-not (Invoke-CoreEnginePromote -Cli $fakeCli -InstallRoot $installed -Slot $promoteSlot)) { throw 'A CLI with the verb did not promote' }
+        if ((Get-Content -LiteralPath (Join-Path $installed 'promoted-with') -Raw).Trim() -cne 'engine-c abc1234:cuda') { throw 'Promoted without the slot stamp' }
+        $env:FAKE_PROMOTE_RC = '1'
+        $refused = $false
+        try { Invoke-CoreEnginePromote -Cli $fakeCli -InstallRoot $installed -Slot $promoteSlot | Out-Null } catch { $refused = $_ -match 'refused engine-c' }
+        if (-not $refused) { throw 'A refused promote was not surfaced' }
+        $env:FAKE_PROMOTE_RC = $null
+        if (Invoke-CoreEnginePromote -Cli (Join-Path $scratch 'no-such-cli.exe') -InstallRoot $installed -Slot $promoteSlot 3>$null) { throw 'A missing CLI claimed a promotion' }
+    } finally { $env:FAKE_PROMOTE_RC = $null }
+    Write-Output 'PASS: a verified engine slot is promoted by the core verb with its own stamp'
 
     # Compile a tiny native child: arguments containing spaces must
     # arrive unchanged and a nonzero exit must reach Task Scheduler.

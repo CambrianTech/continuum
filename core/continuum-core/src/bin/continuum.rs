@@ -1182,12 +1182,12 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command);
-        // The registered engine is RECORDED as the slot `current` names, not injected as
-        // `LLAMA_SERVER_BIN`: the core reads that variable as an operator's pin and never
-        // converges it, which kept #4464's engine convergence off on every Windows node
-        // (card 2c5d0ec0). The registered release is the promotion on Windows, so `register`
-        // moves `current` to it and keeps the replaced slot as the rollback. An operator's own
-        // `LLAMA_SERVER_BIN` in the environment still passes through untouched.
+        // The engine the core runs is the slot `current` names, never an injected
+        // `LLAMA_SERVER_BIN` (the core reads that as an operator's pin and never converges it,
+        // card 2c5d0ec0). `current` is the one truth on every OS (card d5584dfc): the registered
+        // release only BOOTSTRAPS it when none is recorded, so an unattended deploy's promote and
+        // an automatic rollback survive this restart. An operator's own `LLAMA_SERVER_BIN` in the
+        // environment still passes through untouched.
         if command_env(&command, "LLAMA_SERVER_BIN").is_none_or(|value| value.is_empty()) {
             let engine = Path::new(&args[2]);
             if !engine.is_file() {
@@ -1196,7 +1196,7 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
             // A refused registration must never keep the core down (Fable on #4497): on a
             // first-and-only machine that is a dark node. The registered engine is the one the
             // installer verified, so it is launched as before, pinned, and the refusal is said.
-            match continuum_core::inference::engine_slots::register_service_engine(engine) {
+            match continuum_core::inference::engine_slots::bootstrap_service_engine(engine) {
                 Ok(true) => eprintln!("service-host: {} is now the current engine", engine.display()),
                 Ok(false) => {}
                 Err(why) => {
@@ -1369,9 +1369,15 @@ impl PreparedCoreService {
         let task = Self::query().await?;
         let description: CoreServiceDescription = serde_json::from_str(&task.description)
             .map_err(|e| format!("installed service descriptor: {e}"))?;
-        let directory = Path::new(&description.engine)
-            .parent()
-            .ok_or("installed engine has no directory")?;
+        // The engine the core RUNS: the slot `current` names (card d5584dfc), else, before any
+        // slot is recorded, the one the release registered.
+        let directory = match continuum_core::inference::engine_slots::active_engine_dir() {
+            Some(dir) => dir,
+            None => Path::new(&description.engine)
+                .parent()
+                .ok_or("installed engine has no directory")?
+                .to_path_buf(),
+        };
         let repo = repo.to_string_lossy().replace('\'', "''");
         Self::powershell(&format!(
             "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}')",
@@ -2082,6 +2088,22 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         .map(|p| p.build_sha.clone())
         .or_else(git_head_short_sha);
     let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
+    // UNATTENDED Windows deploy (card d5584dfc, option (b)): build the pinned engine into the idle
+    // slot and promote `current`, the same unprivileged sequence the bash installer runs, while
+    // the old core still serves. It never re-registers the scheduled task (an elevation nobody is
+    // there to answer), and an engine that does not build never fails the core deploy: the lanes
+    // keep the engine they have. `install` takes the attended path below.
+    #[cfg(windows)]
+    if options.service && !options.require_engine_receipt {
+        match std::env::current_dir() {
+            Ok(repo) => match PreparedCoreService::prepare_engine(&repo).await {
+                Ok(Some(_)) => println!("▶ engine built into its idle slot and promoted; the next core converges its lanes onto it"),
+                Ok(None) => {}
+                Err(e) => println!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has"),
+            },
+            Err(e) => println!("⚠ engine not updated this deploy (no working directory: {e})"),
+        }
+    }
     #[cfg(windows)]
     let prepared_engine = if options.require_engine_receipt {
         Some(std::env::current_dir().map_err(|e| e.to_string())?)

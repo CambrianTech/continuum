@@ -363,16 +363,39 @@ pub fn register(root: &Path, slot: &str) -> Result<bool, String> {
     write_pointer(root, CURRENT_FILE, slot).map(|()| true)
 }
 
-/// The Windows service-host's registration of the engine its release names: the slot root is
-/// derived from the engine path itself (`<root>/<slot>/llama-server.exe`), then [`register`].
-/// An Err is a refusal the caller must degrade from, never a reason to keep the core down.
-pub fn register_service_engine(engine: &Path) -> Result<bool, String> {
+/// The Windows service-host's start: BOOTSTRAP `current` from the engine its registered release
+/// names, only when `current` is absent or names a slot without a stamped engine. Otherwise
+/// `current` stands and the core launches it (card d5584dfc, option (b), Fable): `current` is the
+/// one truth on every OS, so a promotion by an unattended deploy (`continuum engine promote`, an
+/// unprivileged file write) and an automatic rollback both survive a restart, and a Windows
+/// engine update never needs the task re-registered (an elevation no unattended deploy can
+/// answer). The slot root is derived from the engine path (`<root>/<slot>/llama-server.exe`).
+/// A standing `current` wins before the release is examined; only with nothing standing is an
+/// engine outside the slots (or unstamped) refused, which the caller degrades from, never a reason
+/// to keep the core down. Returns whether `current` changed.
+pub fn bootstrap_service_engine(engine: &Path) -> Result<bool, String> {
     let root = engine
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| format!("{} has no slot root", engine.display()))?;
+    // A standing engine wins before anything about the release is checked: the core runs
+    // `current`, and a release that names a stale or foreign path does not stop it.
+    let standing = current_slot(root).filter(|c| slot_bin(root, c).is_file() && slot_stamp(root, c).is_some());
+    if standing.is_some() {
+        return Ok(false);
+    }
     let slot = slot_of(root, engine).ok_or_else(|| format!("{} is not in an engine slot", engine.display()))?;
     register(root, slot)
+}
+
+/// The engine directory the core runs: the slot `current` names when it holds a stamped engine
+/// under `<continuum_home>/bin`. What the Windows deploy's drift check compares the pin against,
+/// since with `current` as the truth the registered descriptor can name an older slot.
+pub fn active_engine_dir() -> Option<PathBuf> {
+    let home = crate::commands::benchmark::continuum_home().ok()?;
+    let root = root(&home);
+    let slot = current_slot(&root)?;
+    (slot_bin(&root, slot).is_file() && slot_stamp(&root, slot).is_some()).then(|| root.join(slot))
 }
 
 fn known(slot: &str) -> Result<&'static str, String> {
@@ -529,26 +552,38 @@ mod tests {
         assert!(is_verified(root, "engine-b"), "the replaced engine keeps its proof");
     }
 
-    // what this catches (#4497): the service-host's own derivation of the slot from the
-    // registered engine path. A slot engine registers (idempotently); an engine outside the
-    // slots or without a stamp is REFUSED, which the service-host degrades from rather than
-    // keeping the core down.
+    // what this catches (card d5584dfc, option (b)): a promotion undone by the next restart. The
+    // service host writes `current` from its registered release only to BOOTSTRAP (none recorded,
+    // or it names a slot with no stamped engine); a stamped `current` stands, so an unattended
+    // deploy's promote and an automatic rollback survive the restart. A descriptor outside the
+    // slots is refused whatever `current` says.
     #[test]
-    fn a_service_engine_registers_from_its_own_path_and_a_foreign_one_is_refused() {
+    fn the_service_host_bootstraps_current_and_never_overwrites_a_promotion() {
         let dir = tempfile::tempdir().expect("test: dir");
         let root = dir.path();
         engine(root, "engine-b", "bbb000:cuda");
         let b = slot_bin(root, "engine-b");
-        assert_eq!(register_service_engine(&b), Ok(true));
-        assert_eq!(register_service_engine(&b), Ok(false), "each service start re-registers: idempotent");
+        assert_eq!(bootstrap_service_engine(&b), Ok(true), "nothing recorded: bootstrapped from the release");
+        assert_eq!(bootstrap_service_engine(&b), Ok(false), "each service start: idempotent");
+        engine(root, "engine-c", "ccc000:cuda");
+        promote(root, "engine-c", "ccc000:cuda").unwrap();
+        assert_eq!(bootstrap_service_engine(&b), Ok(false), "the release still names b, the deploy promoted c");
+        assert_eq!(current_slot(root), Some("engine-c"), "a promotion survives the restart");
+        std::fs::remove_file(root.join("engine-c").join(STAMP_FILE)).unwrap();
+        assert_eq!(bootstrap_service_engine(&b), Ok(true), "current names an unstamped slot: bootstrapped");
         assert_eq!(current_slot(root), Some("engine-b"));
         let foreign = root.join("elsewhere").join(exe_name());
         std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
         std::fs::write(&foreign, b"x").unwrap();
-        assert!(register_service_engine(&foreign).is_err(), "outside the slots: refused, never registered");
-        std::fs::create_dir_all(root.join("engine-c")).unwrap();
-        std::fs::write(slot_bin(root, "engine-c"), b"x").unwrap();
-        assert!(register_service_engine(&slot_bin(root, "engine-c")).is_err(), "no stamp: refused");
-        assert_eq!(current_slot(root), Some("engine-b"), "a refusal moves nothing");
+        assert_eq!(bootstrap_service_engine(&foreign), Ok(false), "a stale or foreign release never stops a standing engine");
+        let fresh = tempfile::tempdir().expect("test: dir");
+        let stray = fresh.path().join("elsewhere").join(exe_name());
+        std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+        std::fs::write(&stray, b"x").unwrap();
+        assert!(bootstrap_service_engine(&stray).is_err(), "nothing standing and outside the slots: refused");
+        std::fs::create_dir_all(fresh.path().join("engine-a")).unwrap();
+        std::fs::write(slot_bin(fresh.path(), "engine-a"), b"x").unwrap();
+        assert!(bootstrap_service_engine(&slot_bin(fresh.path(), "engine-a")).is_err(), "nothing recorded and no stamp: refused");
+        assert_eq!(current_slot(fresh.path()), None, "a refusal moves nothing");
     }
 }
