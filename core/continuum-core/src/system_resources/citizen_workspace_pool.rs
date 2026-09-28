@@ -51,16 +51,25 @@
 //!
 //! - **Rebuildable, proven, not named:** the tree carries the cachedir signature AND cargo's
 //!   `.rustc_info.json`. A directory called `target` that cargo did not write is left alone.
-//! - **No build is live:** every `.cargo-lock` under it takes an exclusive, non-blocking
-//!   lock. That is cargo's own build-directory lock, so a running cargo refuses us.
+//! - **No existing profile is building:** every `.cargo-lock` under it takes an exclusive,
+//!   non-blocking lock (cargo's own per-profile lock). A DEFENSE, not a proof: it cannot see
+//!   a build that starts a profile with no lock file yet.
+//! - **The node is quiescent:** no cargo or rustc anywhere on the host, no deploy and no
+//!   citizen turn in flight, checked before the pass and again before each take. A snapshot,
+//!   not a proof (see [`node_quiescence`]).
 //! - **No solve is live:** the reclaim holds the citizen's hands (`work::HandsLease`) for the
 //!   whole transaction, so a staged solve cannot start inside a tree being removed.
 //! - **The roster is readable** (unreadable = nothing, as for whole workspaces).
-//! - **Untouched for [`DORMANT_AFTER_MS`]:** policy, not proof; the lock is the proof.
+//! - **Untouched for [`DORMANT_AFTER_MS`]:** policy.
+//!
+//! None of these, alone or together, proves no writer exists (Codex on #4528); together they
+//! narrow the race to a build that starts in the instant before a take, which is why the
+//! reclaim is operator-invoked, never automatic.
 //!
 //! Nothing is preserved, because a cargo-owned tree holds no work. Cargo's locks are HELD
-//! across the take: the tree is renamed aside under them, so no build can be inside it when it
-//! is deleted (Windows cannot rename under a held lock, so there the reclaim is deferred).
+//! across the take: the tree is renamed aside under them, so no build of an EXISTING profile
+//! is inside it when it is deleted (Windows cannot rename under a held lock, so there the
+//! reclaim is deferred).
 //! Any read error on the way refuses. Staged `swe/` checkouts in a resident
 //! workspace are NOT covered here: they are work until their card is terminal, and that
 //! needs the card and its runs (the second half of 10e6c5e5).
