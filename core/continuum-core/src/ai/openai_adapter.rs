@@ -1013,8 +1013,11 @@ pub(crate) fn extract_reasoning(
 ) -> (String, Option<String>) {
     const OPEN: &str = "<think>";
     const CLOSE: &str = "</think>";
-    // A bare close: reasoning that began before `content` ends at the LAST `</think>`.
-    let (content, carried) = match content.rfind(CLOSE) {
+    // A bare close: reasoning that began before `content` ends at its LAST STANDALONE
+    // `</think>` (alone on its line, as the model's own close is: `\n</think>\n\n`). A close
+    // written inline is a quote, in her thinking or in an answer, and closes nothing (Cormac
+    // on #4493: an answer that says "a bare `</think>`" must keep its head).
+    let (content, carried) = match last_standalone(content, CLOSE) {
         Some(close) if !content[..close].contains(OPEN) => {
             (&content[close + CLOSE.len()..], Some(content[..close].trim()))
         }
@@ -1041,8 +1044,9 @@ pub(crate) fn extract_reasoning(
     let before = content[..open_idx].trim();
     let after_open = &content[open_idx + OPEN.len()..];
 
-    // The LAST close: a close tag she quoted mid-thought is not the end of her thinking.
-    match after_open.rfind(CLOSE) {
+    // The last STANDALONE close, else the first close: a close she quoted inline mid-thought
+    // is not the end of her thinking, and a compact `<think>x</think>answer` still splits.
+    match last_standalone(after_open, CLOSE).or_else(|| after_open.find(CLOSE)) {
         // (2) Well-formed <think>…</think>: answer is whatever sits OUTSIDE the block.
         Some(close_rel) => {
             let reasoning = after_open[..close_rel].trim();
@@ -1067,6 +1071,19 @@ pub(crate) fn extract_reasoning(
             )
         }
     }
+}
+
+/// PURE: the byte index of the last `tag` that stands alone on its line (only whitespace
+/// between it and the line's start and end), or `None`.
+fn last_standalone(text: &str, tag: &str) -> Option<usize> {
+    text.match_indices(tag)
+        .map(|(i, _)| i)
+        .filter(|&i| {
+            let before = text[..i].rsplit('\n').next().unwrap_or(""); // unwrap_or: rsplit always yields a piece
+            let after = text[i + tag.len()..].split('\n').next().unwrap_or(""); // unwrap_or: as above
+            before.trim().is_empty() && after.trim().is_empty()
+        })
+        .last()
 }
 
 // `apply_no_think_switch` / `close_trailing_assistant` live in `crate::inference::request_body` (S3b decompose).
@@ -3201,8 +3218,17 @@ mod tests {
         assert_eq!((text.as_str(), reasoning.as_deref()), ("yes", Some("Two is even.")), "a clean split is untouched");
 
         let (text, reasoning) = extract_reasoning("<think>no case for a bare </think> yet, so\n</think>\n\nFixed.", None);
-        assert_eq!(text, "Fixed.", "an inline block ends at its last close, not the quoted one");
+        assert_eq!(text, "Fixed.", "an inline block ends at its standalone close, not the quoted one");
         assert!(reasoning.expect("kept").contains("no case for a bare"));
+
+        // Cormac on #4493: an ANSWER that quotes the tag inline keeps its head, in both shapes.
+        let answer = "The split has no case for a bare `</think>` with no opening tag.";
+        let (text, reasoning) = extract_reasoning(answer, Some("She is asking about the split."));
+        assert_eq!((text.as_str(), reasoning.as_deref()), (answer, Some("She is asking about the split.")));
+        let (text, _) = extract_reasoning(&format!("<think>\nshort\n</think>\n\n{answer}"), None);
+        assert_eq!(text, answer);
+        let (text, _) = extract_reasoning("<think>x</think>compact answer", None);
+        assert_eq!(text, "compact answer", "a compact block with no standalone close still splits");
     }
 
     // what this catches: a plain answer with no reasoning passes through untouched,
