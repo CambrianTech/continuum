@@ -456,6 +456,13 @@ impl KvSlotPool {
         // Allocation races are retryable, not evidence that every lease is pinned.
         // Only a failed eviction below may return None: admission parks on that
         // result and needs a real holder to eventually signal its release (#4515).
+        //
+        // INVARIANT this unbounded loop rests on (Fable on #4516): an evicted lease hands its
+        // index back SYNCHRONOUSLY (KvSlotLease's Drop pushes to `free`), so each extra pass costs
+        // exactly one eviction per race actually lost. Never hold a clone of a NON-pinned
+        // `Arc<KvSlotLease>` across an await: if one outlived its eviction, `free` would stay
+        // empty and every pass would evict ANOTHER resident, a cascade the old two-round bound
+        // capped. Pins are never evicted, so a pinned clone is safe.
         loop {
             if self.free.lock().is_empty() {
                 let evicted = self.pool.evict_at_least(1);

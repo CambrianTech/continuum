@@ -922,6 +922,43 @@ mod tests {
         assert_eq!(adm_b.slot(), Some(slot_a), "B must land PINNED on the freed slot");
     }
 
+    // what this catches (Codex on #4515): a turn that pinned its slot and is then CANCELLED
+    // while awaiting the slot's operation permit (pin held, no permit) frees an evictable lease,
+    // and no SlotPermit drop will ever announce it; a turn parked on the all-pinned pool must
+    // still wake, lease and pin. The permit stays held by a stand-in decode throughout, so the
+    // only possible wake is the cancelled admission's own Drop.
+    #[tokio::test]
+    async fn a_cancelled_pin_holder_wakes_a_turn_parked_on_an_all_pinned_pool() {
+        let root = "test://cancelled-pin";
+        let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot, index 0
+        let sem = Arc::new(Semaphore::new(3));
+        let client = reqwest::Client::new();
+        let a = ActivityKey::new(Uuid::from_u128(21), Uuid::from_u128(22)).unwrap(); // test: non-nil ids
+        let b = ActivityKey::new(Uuid::from_u128(23), Uuid::from_u128(24)).unwrap(); // test: non-nil ids
+        // A decode is in flight on slot 0, so A leases and pins, then waits for the permit.
+        let busy = pool.acquire_slot(0).await.expect("test: the stand-in decode holds slot 0");
+        let mut turn_a = Box::pin(admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO));
+        assert!(futures::poll!(&mut turn_a).is_pending(), "A waits for the slot permit");
+        assert!(pool.pin(&a).is_some(), "A holds its lease, pinned");
+        let turn_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+        tokio::pin!(turn_b);
+        assert!(futures::poll!(&mut turn_b).is_pending(), "every slot pinned: B parks");
+        assert!(pool.pin(&b).is_none(), "B has no lease while it is parked");
+        // Cancel A while it holds a pin and no permit.
+        drop(turn_a);
+        for _ in 0..16 {
+            let _ = futures::poll!(&mut turn_b);
+            tokio::task::yield_now().await;
+        }
+        assert!(pool.pin(&b).is_some(), "B was never woken: a cancelled pin holder announced nothing");
+        drop(busy);
+        let adm_b = tokio::time::timeout(std::time::Duration::from_secs(5), turn_b)
+            .await
+            .expect("test: B completes once the permit frees")
+            .expect("test: B admitted");
+        assert_eq!(adm_b.slot(), Some(0), "B lands pinned on the slot A gave up");
+    }
+
     // what this catches: warm-ahead at 4fe7e312 marked a lease warm even when
     // no restore occurred, failed, or was cancelled; later turns skipped restore.
     #[tokio::test]
