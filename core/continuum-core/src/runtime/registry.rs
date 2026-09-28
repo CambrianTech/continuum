@@ -800,6 +800,95 @@ mod tests {
         })
     }
 
+    // what this catches: a hand-written `impl ActionCommand for X` with no descriptor.
+    // A stateful command reaches the registry through its module's `commands()`, and its
+    // descriptor comes separately from `register_command!(X)` (or
+    // `register_stateless_command!(X)`) at the declaration. Shipping only the constructor
+    // passes every lib test and panics at BOOT in `register`'s descriptor audit, which is
+    // how #4540's `ports/*` took the 5090's core down on 2026-09-28 (fixed in #4546). This
+    // catches it in CI for every command, not only the ones whose module a test registers.
+    // `action_command!` registers its own descriptor, so only hand-written impls are
+    // scanned; impls nested in test modules (indented) are fixtures and exempt. A command
+    // deliberately left unregistered is declared in UNREGISTERED_COMMANDS with why.
+    #[test]
+    fn every_hand_written_command_registers_its_descriptor() {
+        /// Commands deliberately left without a descriptor, each with the reason. An entry
+        /// that later registers is stale and fails below, so the list stays honest.
+        const UNREGISTERED_COMMANDS: &[(&str, &str)] = &[
+            ("InferenceOpenCommand", "duplicates handle_module's ai/inference/open; handed to no module (task #17)"),
+            ("InferenceFindCommand", "inference_session helper verb; handed to no module (task #17)"),
+            ("InferenceCloseCommand", "duplicates handle_module's ai/inference/close; handed to no module (task #17)"),
+            ("InferenceGenerateCommand", "duplicates handle_module's ai/inference/generate; handed to no module (task #17)"),
+            ("InferenceEnsureCommand", "inference_session helper verb; handed to no module (task #17)"),
+        ];
+        let code: Vec<(std::path::PathBuf, String)> =
+            crate_src_files().iter().map(|(p, t)| (p.clone(), code_only(t))).collect();
+        let name_after = |text: &str| -> String {
+            text.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect()
+        };
+
+        // (command type, defining file) for every top-level `impl ... ActionCommand for X`,
+        // including a header whose `for X` wraps onto the next line (Fable on #4547).
+        let mut impls: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for (path, text) in &code {
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate().filter(|(_, l)| l.starts_with("impl")) {
+                let target = if let Some(idx) = line.find("ActionCommand for ") {
+                    Some(&line[idx + "ActionCommand for ".len()..])
+                } else if line.trim_end().ends_with("ActionCommand") {
+                    lines.get(i + 1).and_then(|next| next.trim_start().strip_prefix("for "))
+                } else {
+                    None
+                };
+                let name = target.map(name_after).unwrap_or_default(); // unwrap_or_default: not an ActionCommand header
+                if !name.is_empty() {
+                    impls.push((name, path.clone()));
+                }
+            }
+        }
+        assert!(impls.len() > 50, "found only {} hand-written commands; the scan regressed", impls.len());
+
+        // Keyed by (file, type): a registration counts only in the file that implements the
+        // command, so a same-named type in another module cannot satisfy it (Fable on #4547).
+        let mut registered: std::collections::HashSet<(std::path::PathBuf, String)> = std::collections::HashSet::new();
+        for (path, text) in &code {
+            for needle in ["register_command!(", "register_stateless_command!("] {
+                for (idx, _) in text.match_indices(needle) {
+                    let arg = &text[idx + needle.len()..];
+                    let arg_path: String = arg.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':').collect();
+                    // `crate::x::Y` registers `Y`
+                    if let Some(last) = arg_path.rsplit("::").next().filter(|n| !n.is_empty()) {
+                        registered.insert((path.clone(), last.to_string()));
+                    }
+                }
+            }
+        }
+
+        let declared: std::collections::HashSet<&str> = UNREGISTERED_COMMANDS.iter().map(|(n, _)| *n).collect();
+        let stale: Vec<&str> =
+            UNREGISTERED_COMMANDS.iter().map(|(n, _)| *n).filter(|n| registered.iter().any(|(_, r)| r == n)).collect();
+        assert!(
+            stale.is_empty(),
+            "these commands are declared unregistered but now register a descriptor; delete \
+             their UNREGISTERED_COMMANDS entry: {stale:?}"
+        );
+
+        let mut missing: Vec<String> = impls
+            .iter()
+            .filter(|(name, path)| !registered.contains(&(path.clone(), name.clone())) && !declared.contains(name.as_str()))
+            .map(|(name, path)| format!("{name} ({})", path.display()))
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "these commands implement ActionCommand by hand but register no descriptor, so \
+             the core PANICS AT BOOT when their module registers them:\n  {}\n\nAdd \
+             `crate::register_command!(Type);` beside each (see commands/genome_recall.rs), or \
+             `crate::register_stateless_command!(Type);` for a Default-constructed one.",
+            missing.join("\n  ")
+        );
+    }
+
     #[test]
     // what this catches: a ServiceModule that is implemented, tested and
     // green but handed to `register()` nowhere — so its handle_command,
