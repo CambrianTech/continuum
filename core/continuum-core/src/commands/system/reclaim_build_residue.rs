@@ -5,7 +5,9 @@
 //! every substrate cargo was pointed at the shared cache (the IntelMac, 2026-09-28: 36 GB
 //! across three residents, last written Sep 4). Cargo has no lock spanning every build entry
 //! path, so pressure relief cannot prove no writer exists; this verb is the explicit,
-//! quiescent act instead. Run it when no build is expected in citizens' workspaces.
+//! quiescent act instead, and it ENFORCES quiescence: `--apply` refuses while any cargo or
+//! rustc runs anywhere on the host, a deploy is in flight, or a citizen turn is in flight,
+//! checked before the pass and again before each take (Fable on #4528).
 //!
 //! A DRY RUN by default: it judges each tree under the gates
 //! ([`crate::system_resources::citizen_workspace_pool`]) and takes nothing. `--apply true`
@@ -49,11 +51,12 @@ crate::action_command! {
     params: ReclaimBuildResidueParams,
     output: ReclaimBuildResidueResult,
     run(_this, _ctx, p) => {
-        let root = crate::commands::benchmark::continuum_home()?.join("citizens");
+        let home = crate::commands::benchmark::continuum_home()?;
+        let root = home.join("citizens");
         let now_ms = crate::persona::trace::now_ms();
         let apply = p.apply;
         let outcomes = tokio::task::spawn_blocking(move || {
-            CitizenWorkspacePool::reclaim_build_residue(&root, now_ms, apply)
+            CitizenWorkspacePool::reclaim_build_residue(&root, &home, now_ms, apply)
         })
         .await
         .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("reclaim task: {e}")))?;

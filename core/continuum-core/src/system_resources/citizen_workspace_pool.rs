@@ -412,13 +412,32 @@ impl CitizenWorkspacePool {
     /// The explicit reclaim (`system/reclaim-build-residue`): every stale cargo build tree under
     /// `root`, residents included, each reported. With `apply = false` nothing is touched: each
     /// tree is judged under the same gates and reported as it WOULD be decided.
-    pub fn reclaim_build_residue(root: &Path, now_ms: u64, apply: bool) -> Vec<ResidueOutcome> {
-        Self::reclaim_with_roster(root, &Self::roster(), now_ms, apply)
+    pub fn reclaim_build_residue(root: &Path, home: &Path, now_ms: u64, apply: bool) -> Vec<ResidueOutcome> {
+        let home = home.to_path_buf();
+        Self::reclaim_with_roster(root, &Self::roster(), now_ms, apply, &move || node_quiescence(&home))
     }
 
-    fn reclaim_with_roster(root: &Path, roster: &Roster, now_ms: u64, apply: bool) -> Vec<ResidueOutcome> {
+    /// `quiescent` is the node-wide gate (Fable on #4528: "quiescent" must be enforced, not
+    /// a doc sentence): `Err(why)` refuses. It is asked once before anything is judged and
+    /// again immediately before each take, because a build or turn can start in between.
+    fn reclaim_with_roster(
+        root: &Path,
+        roster: &Roster,
+        now_ms: u64,
+        apply: bool,
+        quiescent: &dyn Fn() -> Result<(), String>,
+    ) -> Vec<ResidueOutcome> {
         if *roster == Roster::Unreadable {
             return vec![ResidueOutcome::refused_all("the persona roster could not be read, so nothing is touched")];
+        }
+        if let Err(why) = quiescent() {
+            if apply {
+                return vec![ResidueOutcome::refused_all(&format!("the node is not quiescent: {why}"))];
+            }
+            // a dry run still reports every tree, and says the apply would be refused now
+            let mut out = vec![ResidueOutcome::refused_all(&format!("an apply now would be refused: {why}"))];
+            out.extend(Self::reclaim_with_roster(root, roster, now_ms, false, &|| Ok(())).into_iter());
+            return out;
         }
         let mut out = Vec::new();
         if apply {
@@ -442,7 +461,13 @@ impl CitizenWorkspacePool {
             let decided = match hold_cargo_locks(&r.target) {
                 Err(kept) => Err(format!("{}: {}", kept.why(), kept.detail())),
                 Ok(_locks) if !apply => Ok(false), // judged idle; a dry run takes nothing
-                Ok(locks) => take_target(&r.target, locks).map(|()| true).map_err(|kept| format!("{}: {}", kept.why(), kept.detail())),
+                // asked again right before the take: a build or turn may have started since
+                Ok(locks) => match quiescent() {
+                    Err(why) => Err(format!("not_quiescent: {why}")),
+                    Ok(()) => take_target(&r.target, locks)
+                        .map(|()| true)
+                        .map_err(|kept| format!("{}: {}", kept.why(), kept.detail())),
+                },
             };
             let outcome = ResidueOutcome::of(&r, idle_days, decided);
             crate::probe!(
@@ -457,6 +482,33 @@ impl CitizenWorkspacePool {
         }
         out
     }
+}
+
+/// Is the node quiet enough to take build trees (Fable's gates on #4528)? Every one is
+/// host-wide, so it covers the writers lock enumeration cannot see: a shell with its own
+/// `--target-dir`, an external build, a cargo starting a new profile.
+/// - no `cargo` or `rustc` process anywhere on the host (`deploy_claim::is_compiler`);
+/// - no deploy in flight (`deploy_claim::in_flight(..).excludes_deploy()`);
+/// - no citizen turn in flight (`turn_ingress::in_flight()`).
+/// `Err` names the first gate that refuses.
+fn node_quiescence(home: &Path) -> Result<(), String> {
+    let turns = crate::cognition::turn_ingress::in_flight();
+    if turns > 0 {
+        return Err(format!("citizen_turn_in_flight: {turns}"));
+    }
+    let now_ms = crate::persona::trace::now_ms();
+    if crate::runtime::deploy_claim::in_flight(home, now_ms).excludes_deploy() {
+        return Err("deploy_in_flight".to_string());
+    }
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    if let Some((pid, name)) = sys.processes().iter().find_map(|(pid, p)| {
+        let name = p.name().to_string_lossy().into_owned();
+        crate::runtime::deploy_claim::is_compiler(&name).then(|| (pid.as_u32(), name))
+    }) {
+        return Err(format!("compiler_running: {name} (pid {pid})"));
+    }
+    Ok(())
 }
 
 /// What the explicit reclaim decided for one tree (or for the whole pass).
@@ -1139,17 +1191,23 @@ mod tests {
         let held = std::fs::OpenOptions::new().read(true).write(true).open(target.join("debug/.cargo-lock")).expect("open lock");
         held.lock().expect("a live build holds cargo's lock");
         let decision = |out: Vec<ResidueOutcome>| out.into_iter().map(|o| o.decision).collect::<Vec<_>>();
-        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true)), vec!["kept"], "a live build keeps it");
+        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true, &|| Ok(()))), vec!["kept"], "a live build keeps it");
         assert!(target.exists());
         drop(held);
 
         // a dry run judges and takes nothing (Codex on #4528: explicit, never automatic)
-        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, false)), vec!["would_reclaim"]);
+        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, false, &|| Ok(()))), vec!["would_reclaim"]);
         assert!(target.exists(), "a dry run touches nothing");
-        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true)), vec!["reclaimed"]);
+        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true, &|| Ok(()))), vec!["reclaimed"]);
         assert!(!target.exists(), "idle, tagged, stale, applied: reclaimed");
+        // Fable on #4528: quiescence is enforced, not documented. A node with a compiler or a
+        // turn running refuses the apply outright and touches nothing.
+        let again = cargo_target(&ws);
+        let busy = || Err::<(), String>("compiler_running: rustc (pid 1)".into());
+        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later + 1, true, &busy)), vec!["refused"]);
+        assert!(again.exists(), "a busy node takes nothing");
         assert_eq!(
-            decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &Roster::Unreadable, later, true)),
+            decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &Roster::Unreadable, later, true, &|| Ok(()))),
             vec!["refused"],
             "an unreadable roster judges nothing"
         );
