@@ -128,7 +128,14 @@ impl Publisher for GhPublisher {
             })?;
         } else {
             let notes = std::env::temp_dir().join(format!("continuum-gh-notes-{}.md", uuid::Uuid::new_v4()));
-            tokio::fs::write(&notes, &bundle.card).await.map_err(|e| self.uncertain(format!("could not write release notes: {e}")))?;
+            // GitHub's card: the shared card plus GitHub's own fetch instructions (outside identity)
+            let card = format!(
+                "{}## Quick Start\n\n```bash\ngh release download {tag} --repo {}\n# page it into llama-server with:  --lora ./{}\n```\n",
+                bundle.card,
+                dest.as_str(),
+                bundle.manifest.gene
+            );
+            tokio::fs::write(&notes, card).await.map_err(|e| self.uncertain(format!("could not write release notes: {e}")))?;
             let title = format!("gene {} {}", bundle.manifest.trait_kind, bundle.short());
             let created = self.gh(&create_args(dest.as_str(), &tag, &title, &notes.to_string_lossy(), &files)).await;
             let _ = tokio::fs::remove_file(&notes).await;
