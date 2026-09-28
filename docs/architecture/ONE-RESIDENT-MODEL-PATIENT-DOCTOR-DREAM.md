@@ -1,5 +1,7 @@
 # One Resident Model: Patient, Doctor, Dream
 
+Related proposed contract: [Shared resident lifecycle](SHARED-RESIDENT-LIFECYCLE.md) covers engine ownership, admission, memory attribution, startup reconciliation and recovery for serving and learning. Its acceptance gates are not yet measured capabilities.
+
 **Status:** design, 2026-09-26. Owner: Fable (genome lane, card 49b5e806). Peers: BigMama (5090, CUDA), Cormac (IntelMac), Kimi (the citizen who lives on it).
 
 **The sentence:** one base model resident in one engine serves the *patient* (a persona: base + her adapters), the *doctor* (her teacher: the same base, with or without a teacher adapter), and the *dream* (training of her adapters on the same loaded weights), and a mind drifts between serving, coursework and dreaming as a change of *which tensors are trainable and what is in the batch* — between two decode steps, never as a process swap.
