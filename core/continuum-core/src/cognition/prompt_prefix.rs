@@ -83,8 +83,8 @@ static LAST: LazyLock<dashmap::DashMap<uuid::Uuid, Vec<String>>> = LazyLock::new
 /// why the split is a CANDIDATE gap, never a causal one (Codex on #4487).
 fn fingerprint(req: &TextGenerationRequest) -> Vec<String> {
     let mut out = Vec::with_capacity(req.messages.len() + 3);
-    out.push(format!("<model>{}", req.model.as_deref().unwrap_or("")));
-    out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or("")));
+    out.push(format!("<model>{}", req.model.as_deref().unwrap_or(""))); // unwrap_or: no model named = the lane's default, fingerprinted as empty on both sides
+    out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or(""))); // unwrap_or: no system prompt renders as an empty one
     out.push(format!(
         "<tools>{}",
         req.tools.as_ref().map(|t| serde_json::to_string(t).unwrap_or_default()).unwrap_or_default() // unwrap_or_default: an unserializable surface compares as empty on both sides
