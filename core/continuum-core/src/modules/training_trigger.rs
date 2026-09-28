@@ -192,6 +192,43 @@ pub struct TrainingTriggerState {
     pub(crate) test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
 }
 
+/// What the trigger does with one orphan, given what re-attach answered (step 3).
+#[derive(Debug)]
+enum OrphanStep {
+    /// Its run is still going: watch it under the same id for the sentinel's chain.
+    Register(Box<crate::genome::fine_tuning::WatchedJob>),
+    /// Its run may still be training: hold it and ask again later. Never resumed.
+    Hold,
+    /// Nothing is resident: resume it from its input, as before step 3.
+    Resume,
+}
+
+/// PURE: the step for an orphan from re-attach's answer. Only `Resume` may reach
+/// `genome/job-create`, and only an answer that `permits_resume`; an answer that could not be
+/// had at all holds, like an uncertain one.
+fn orphan_step(
+    orphan: &crate::genome::fine_tuning::job_board::OrphanedJob,
+    answer: Result<crate::genome::fine_tuning::ReattachOutcome, String>,
+) -> OrphanStep {
+    use crate::genome::fine_tuning::ReattachOutcome;
+    match answer {
+        Ok(ReattachOutcome::Attached { handle }) => OrphanStep::Register(Box::new(crate::genome::fine_tuning::WatchedJob {
+            trigger_dispatch_id: orphan.trigger_dispatch_id,
+            handle,
+            persona_id: orphan.persona_id,
+            persona_name: orphan.persona_name.clone(),
+            base_model: orphan.base_model.clone(),
+            trait_kind: orphan.trait_kind.clone(),
+            eval_set: orphan.eval_set.clone(),
+            // the gene's signature was minted in the dead core and is not journaled; the gene
+            // still adopts, routed by the fallback path
+            signature: None,
+        })),
+        Ok(outcome) if outcome.permits_resume() => OrphanStep::Resume,
+        Ok(_) | Err(_) => OrphanStep::Hold,
+    }
+}
+
 /// How long a held orphan waits before re-attach is asked again: long enough that an engine
 /// that stays silent costs a probe a minute, short enough that serving is freed within a minute
 /// of the engine answering.
@@ -294,12 +331,7 @@ impl TrainingTriggerState {
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
         let now = crate::persona::trace::now_ms();
         // the held ones whose time to ask again has come, and (once) the boot's orphans
-        let mut due = Vec::new();
-        if let Ok(mut held) = self.held_orphans.lock() {
-            let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *held).into_iter().partition(|(_, next)| *next <= now);
-            *held = waiting;
-            due.extend(ready.into_iter().map(|(orphan, _)| orphan));
-        }
+        let mut due = self.take_due_orphans(now);
         if !self.resumed_orphans.swap(true, Ordering::AcqRel) {
             due.extend(board.take_orphans());
         }
@@ -308,38 +340,26 @@ impl TrainingTriggerState {
             // (an in-engine run survives a core-only restart). Ask its adapter first; only an
             // answer that permits it resumes, since a resume is a second POST into an engine
             // the first run may still be training in. One rule: `permits_resume`.
-            match self.reattach(&executor, &orphan).await {
-                Ok(crate::genome::fine_tuning::ReattachOutcome::Attached { handle }) => {
-                    board.register(crate::genome::fine_tuning::WatchedJob {
-                        trigger_dispatch_id: orphan.trigger_dispatch_id,
-                        handle,
-                        persona_id: orphan.persona_id,
-                        persona_name: orphan.persona_name.clone(),
-                        base_model: orphan.base_model.clone(),
-                        trait_kind: orphan.trait_kind.clone(),
-                        eval_set: orphan.eval_set.clone(),
-                        // the gene's signature was minted in the dead core and is not journaled;
-                        // the gene still adopts, routed by the fallback path
-                        signature: None,
-                    });
+            let answer = self.reattach(&executor, &orphan).await;
+            if let Err(error) = &answer {
+                crate::probe!(
+                    class = "training.job.reattach_unanswered",
+                    local_id = %orphan.local_id,
+                    error = %error,
+                    "whether this job's run outlived the core could not be asked, so it is NOT started again; asked again later"
+                );
+            }
+            match orphan_step(&orphan, answer) {
+                OrphanStep::Register(watched) => {
+                    board.register(*watched);
                     continue;
                 }
-                Ok(outcome) if !outcome.permits_resume() => {
-                    // held: the adapter's probe said why; asked again later, never resumed meanwhile
+                OrphanStep::Hold => {
+                    // held: asked again later, never resumed meanwhile
                     self.hold_orphan(orphan, now);
                     continue;
                 }
-                Ok(_) => {}
-                Err(error) => {
-                    crate::probe!(
-                        class = "training.job.reattach_unanswered",
-                        local_id = %orphan.local_id,
-                        error = %error,
-                        "whether this job's run outlived the core could not be asked, so it is NOT started again; asked again later"
-                    );
-                    self.hold_orphan(orphan, now);
-                    continue;
-                }
+                OrphanStep::Resume => {}
             }
             let origin = board.resume_origin(orphan.local_id);
             let attempt = board.resume_attempts(origin) + 1;
@@ -396,6 +416,16 @@ impl TrainingTriggerState {
         if let Ok(mut held) = self.held_orphans.lock() {
             held.push((orphan, now_ms + HELD_ORPHAN_REASK_MS));
         }
+    }
+
+    /// The held orphans whose wait is up at `now_ms`, taken out of the held set to be asked again.
+    fn take_due_orphans(&self, now_ms: u64) -> Vec<crate::genome::fine_tuning::job_board::OrphanedJob> {
+        let Ok(mut held) = self.held_orphans.lock() else {
+            return Vec::new(); // a poisoned lock yields nothing to ask, never a panic in the tick
+        };
+        let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *held).into_iter().partition(|(_, next)| *next <= now_ms);
+        *held = waiting;
+        due.into_iter().map(|(orphan, _)| orphan).collect()
     }
 
     /// Ask the orphan's adapter, through `genome/job-reattach`, whether its run outlived the
@@ -662,6 +692,44 @@ impl ServiceModule for TrainingTriggerModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Cormac on #4537): an orphan whose engine was silent at boot asked
+    // once and dropped, holding serving off its run for the engine's life; or, worse, resumed
+    // (a second POST into an engine still training it). Uncertain on the first tick holds it;
+    // it is not due again before its wait; on the next ask an Attached answer registers the
+    // SAME job. Neither tick is a Resume, the only step that reaches genome/job-create.
+    #[test]
+    fn an_uncertain_orphan_is_held_then_reattached_and_never_resumed() {
+        use crate::genome::fine_tuning::{job_board::OrphanedJob, JobHandle, ReattachOutcome};
+        let state = TrainingTriggerState::new();
+        let job = Uuid::new_v4();
+        let orphan = OrphanedJob {
+            local_id: job,
+            trigger_dispatch_id: None,
+            provider_id: "engine-local".into(),
+            persona_id: Uuid::new_v4(),
+            persona_name: "Kimi".into(),
+            base_model: "qwen3.8-27b".into(),
+            trait_kind: "code".into(),
+            eval_set: None,
+        };
+        let t0 = 1_000_000;
+        let first = orphan_step(&orphan, Ok(ReattachOutcome::Uncertain { reason: "no answer".into() }));
+        assert!(matches!(first, OrphanStep::Hold), "tick 1: uncertain holds");
+        state.hold_orphan(orphan, t0);
+        assert!(state.take_due_orphans(t0 + 1).is_empty(), "not asked again before its wait");
+        let mut due = state.take_due_orphans(t0 + HELD_ORPHAN_REASK_MS);
+        assert_eq!(due.len(), 1, "asked again once its wait is up");
+        let again = due.remove(0);
+        let handle = JobHandle { provider_id: "engine-local".into(), provider_job_id: job.to_string(), local_id: job };
+        let OrphanStep::Register(watched) = orphan_step(&again, Ok(ReattachOutcome::Attached { handle })) else {
+            panic!("tick 2: an attached run is registered, never resumed");
+        };
+        assert_eq!(watched.handle.local_id, job, "the same job, watched again");
+        assert!(state.take_due_orphans(u64::MAX).is_empty(), "a registered job is no longer held");
+        assert!(matches!(orphan_step(&again, Err("executor down".into())), OrphanStep::Hold), "no answer holds too");
+        assert!(matches!(orphan_step(&again, Ok(ReattachOutcome::NotResident)), OrphanStep::Resume), "positive control");
+    }
 
     // What this catches (278afa6c): malformed command output cannot turn an
     // uncertain provider creation into a safe retry. Exercise the actual decoder.
