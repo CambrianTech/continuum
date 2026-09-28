@@ -1098,14 +1098,17 @@ fn mark_told(persona_id: uuid::Uuid, root: &std::path::Path) {
         .insert(persona_id, root.to_path_buf());
 }
 
-/// PURE: the line that tells her where her hands now stand and what did not move.
+/// PURE: the line that tells her where her hands now stand and what did not move. The
+/// branch is the card's EXPECTED branch (derived from the card), never asserted as the
+/// checked-out HEAD, which an existing tree may have moved (Codex on #4555).
 fn rooted_notice(repo: &str, root: &std::path::Path, branch: &str) -> String {
     format!(
         "[workspace] For your held card on {repo}, your hands now stand in its own checkout: \
-         {root}, on branch {branch}. Paths in code/* are relative to it (docs/x.md, not \
-         <repo>/docs/x.md). Your home workspace is unchanged: a copy of this repo you keep \
-         there is a SEPARATE tree, and anything not pushed from it lives only there. \
-         Commits here land on {branch} until you push them where the project wants them.",
+         {root}. The card's branch is {branch}; git status shows what is actually checked \
+         out. Paths in code/* are relative to it (docs/x.md, not <repo>/docs/x.md). Your \
+         home workspace is unchanged: a copy of this repo you keep there is a SEPARATE tree, \
+         and anything not pushed from it lives only there. Commits here stay on the checked \
+         out branch until you push them where the project wants them.",
         root = root.display()
     )
 }
