@@ -585,8 +585,8 @@ impl InPlaceRun for EngineRun {
         let (store, job) = (self.hold_store.clone(), self.job);
         let end = self.run_steered(cancel, progress).await;
         // The job ended (finished, failed or cancelled), and its pauses end with it. A dropped
-        // future (a core shutting down) never reaches this line, so a run the next core adopts
-        // keeps its pauses.
+        // future (a core shutting down) never reaches this line, so its intent stays on disk for
+        // the re-attach path that does not exist yet (see training_hold_store).
         if let Some(store) = store {
             let released = tokio::task::spawn_blocking(move || {
                 super::training_hold_store::release_job(&store, job, super::training_hold_store::now_ms())
@@ -666,8 +666,11 @@ impl EngineRun {
                     // a pause asked through genome/job-pause, read every tick: it outlives the core
                     if let Some(store) = &self.hold_store {
                         let now = super::training_hold_store::now_ms();
-                        let persisted = super::training_hold_store::live_on(store, self.job, now).await;
-                        reasons.extend(persisted.into_iter().map(|h| h.reason));
+                        match super::training_hold_store::live_on(store, self.job, now).await {
+                            Ok(persisted) => reasons.extend(persisted.into_iter().map(|h| h.reason)),
+                            // unreadable intent holds: a paused job is never resumed on a guess
+                            Err(e) => reasons.push(format!("hold store unreadable: {e}")),
+                        }
                     }
                     self.steer_pause(&s, !reasons.is_empty()).await;
                     // the worker's own state: paused while it waits at a boundary, whatever was
@@ -1459,7 +1462,7 @@ mod tests {
     // what this catches (Joel's continual minds; Codex and Cormac on the hold design): a pause
     // asked through genome/job-pause that does not reach the engine, a release that leaves the
     // run paused, or a pause that outlives its job. The pause is a persisted fact keyed by the
-    // job, so a relaunched core reads it; the run steers to it every tick; releasing resumes and
+    // job; the run steers to it every tick; releasing resumes and
     // the run finishes; and a job that ends (here cancelled while paused) takes its pauses with
     // it, while another job's pause stands.
     #[tokio::test]
@@ -1501,11 +1504,11 @@ mod tests {
             } else {
                 t.cancel(&h).await.expect("test: cancel");
                 assert!(matches!(wait_terminal(&t, &h).await, TrainingStatus::Cancelled));
-                assert!(store::live_on(&holds, h.local_id, store::now_ms()).await.is_empty(), "the job's end took its pause with it");
+                assert!(store::live_on(&holds, h.local_id, store::now_ms()).await.unwrap().is_empty(), "the job's end took its pause with it");
             }
             server.abort();
         }
-        let left = store::live_on(&holds, bystander.job, store::now_ms()).await;
+        let left = store::live_on(&holds, bystander.job, store::now_ms()).await.unwrap();
         assert_eq!(left.len(), 1, "another job's pause stands");
     }
 

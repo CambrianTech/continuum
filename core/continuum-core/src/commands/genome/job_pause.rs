@@ -2,8 +2,9 @@
 //! next window boundary, keeping its optimizer, adapter and memory, and resume it.
 //!
 //! The pause is a persisted fact keyed by the job
-//! ([`crate::genome::fine_tuning::training_hold_store`]), so it outlives a core relaunch; the
-//! job's run steers the engine to it every tick. It is the one door: a direct engine
+//! ([`crate::genome::fine_tuning::training_hold_store`]); the job's run steers the engine to it
+//! every tick. (It is durable intent; a relaunched core does not yet re-attach to a running
+//! job, see the store's module doc.) It is the one door: a direct engine
 //! `/train/pause` with no hold is steered back by design. A paused run KEEPS its allocation,
 //! so a pause reduces compute demand and never relieves memory.
 
@@ -78,8 +79,7 @@ fn store_path() -> Result<std::path::PathBuf, JobPauseOutcome> {
 
 crate::action_command! {
     /// Pause a live in-engine training job at its next window boundary until `genome/job-resume`
-    /// or `ttlMs` passes. The pause is persisted, so it outlives a core relaunch; the job keeps
-    /// its optimizer, adapter and memory while paused.
+    /// or `ttlMs` passes. The job keeps its optimizer, adapter and memory while paused.
     pub struct GenomeJobPause { registry: Arc<FineTuningRegistry> }
     name: "genome/job-pause",
     access: Privileged,
