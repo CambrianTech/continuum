@@ -110,7 +110,8 @@ pub fn card_branch(card: &airc_lib::WorkCard) -> String {
 /// any other card of a repo this node has a checkout of gets airc's per-card
 /// worktree (`airc_lib::work_worktree`, #1377 — the same one the CLI gives an
 /// agent), so a citizen with no cwd can pull a continuum card and root her hands
-/// there. A repo this node never checked out stages as Ordinary, said in a probe.
+/// there. A repo this node never checked out is cloned into a managed checkout first
+/// ([`ensure_managed_clone`]); a clone that fails is `Failed { stage: "clone" }`.
 pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
     if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
         return stage_for_claimer(home, claimer, &card.title).await;
@@ -127,16 +128,29 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
         return Staging::Ready { path: existing };
     }
-    let Some(clone) = crate::modules::repo_registry::path_for(&repo) else {
-        crate::probe!(
-            class = "work.claim.repo_unstaged",
-            claimer = %claimer,
-            repo = %repo,
-            "repo card claimed but this node has no recorded checkout of the repo — hands stay home"
-        );
-        return Staging::Ordinary;
-    };
     let started = std::time::Instant::now();
+    // A repo this node never checked out is CLONED, not refused. Before this, the claim
+    // staged as Ordinary and her hands stayed on the resident checkout, so a citizen who
+    // pulled a card for another project (career-wrangler, 2026-09-28) had git, the PR
+    // verbs and the build all pointed at continuum while she worked someone else's repo.
+    let clone = match crate::modules::repo_registry::path_for(&repo) {
+        Some(clone) => clone,
+        None => match ensure_managed_clone(home, &repo).await {
+            Ok(clone) => clone,
+            Err(error) => {
+                let error = error.to_string();
+                crate::probe!(
+                    class = "work.claim.repo_clone_failed",
+                    claimer = %claimer,
+                    repo = %repo,
+                    error = %error,
+                    ms = started.elapsed().as_millis() as u64,
+                    "repo card claimed, this node had no checkout, and the managed clone failed"
+                );
+                return Staging::Failed { stage: "clone", error };
+            }
+        },
+    };
     let spec_card = card.card_id;
     let clone_for_spawn = clone.clone();
     let branch_for_spawn = branch.clone();
@@ -203,6 +217,124 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         "on-claim staging — a repo card gets airc's per-card worktree"
     );
     staged
+}
+
+/// A card repo this node may clone: exactly `owner/name`. The card's repo id is written by
+/// whichever peer created the card, and here it becomes a path and a `gh` argument, so
+/// `../x`, `a/b/c` and a leading `-` are refused at construction. The shape check is the
+/// forge's one repo-id validator, not a second copy of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloneableRepo {
+    owner: String,
+    name: String,
+}
+
+impl TryFrom<&str> for CloneableRepo {
+    type Error = CloneError;
+
+    fn try_from(repo: &str) -> Result<Self, Self::Error> {
+        let refused = |reason: String| CloneError::NotOwnerSlashName { repo: repo.to_string(), reason };
+        let id = crate::forge::publish_request::RepoId::parse(repo).map_err(|e| refused(e.to_string()))?;
+        let (owner, name) = id.as_str().split_once('/').ok_or_else(|| refused("no '/'".into()))?;
+        if owner.starts_with('-') || name.starts_with('-') {
+            return Err(refused("a segment starts with '-' and would read as a gh flag".into()));
+        }
+        Ok(Self { owner: owner.to_string(), name: name.to_string() })
+    }
+}
+
+impl std::fmt::Display for CloneableRepo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.owner, self.name)
+    }
+}
+
+impl CloneableRepo {
+    /// `<home>/repos/<owner>/<name>`, `home` being the continuum home.
+    pub(crate) fn managed_path(&self, home: &Path) -> PathBuf {
+        home.join("repos").join(&self.owner).join(&self.name)
+    }
+
+    /// The sibling a clone lands in before it is renamed into place.
+    fn partial_path(&self, home: &Path) -> PathBuf {
+        home.join("repos").join(&self.owner).join(format!(".{}.partial-{}", self.name, Uuid::new_v4()))
+    }
+}
+
+/// Why a repo card's repo could not be given a managed checkout.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum CloneError {
+    #[error("card repo '{repo}' is not a plain owner/name ({reason}), so it is not cloned")]
+    NotOwnerSlashName { repo: String, reason: String },
+    #[error("{path}: {error}")]
+    Io { path: PathBuf, error: String },
+    #[error(transparent)]
+    Gh(#[from] crate::commands::code::github::GhRunError),
+}
+
+impl CloneError {
+    /// Whether the clone's `.partial-` directory must be KEPT: a timed-out clone's `git` may
+    /// still be writing it (a timeout never asserts the tree exited), so only the repos
+    /// class's `.partial-` sweep (card 5c5f3b42) removes it. Every other failure ended
+    /// before or with `gh`, and its partial is removed at once. Exhaustive on purpose: a new
+    /// variant must decide.
+    fn leaves_a_partial_that_may_still_be_written(&self) -> bool {
+        use crate::commands::code::github::GhRunError;
+        match self {
+            CloneError::Gh(GhRunError::TimedOut { .. }) => true,
+            CloneError::Gh(GhRunError::Spawn(_) | GhRunError::Failed { .. }) => false,
+            CloneError::NotOwnerSlashName { .. } | CloneError::Io { .. } => false,
+        }
+    }
+}
+
+/// How long one managed clone may run before its process tree is killed.
+const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Clone `repo` into its managed checkout and record it, so this and every later claim
+/// of its cards cuts a per-card worktree from it. Idempotent: a clone another claim made
+/// first, or one whose registry entry was lost, is adopted rather than cloned again.
+///
+/// The clone lands in a sibling `.partial-` directory and is renamed into place only when
+/// it succeeded, so a node that dies mid-clone never leaves a half-cloned checkout that
+/// the next claim would adopt as real. Through `code/github` (the one GitHub client), so a
+/// private repo clones with the same auth the PR verbs use, and a clone past
+/// [`CLONE_BOUND`] has its tree killed and its partial KEPT (the tree may still be writing),
+/// while a clone `gh` itself refused has its partial removed.
+async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneError> {
+    static CLONING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let repo = CloneableRepo::try_from(repo)?;
+    let key = repo.to_string();
+    let target = repo.managed_path(home);
+    // Two citizens claiming cards of the same new repo at once must not clone twice.
+    let _one_clone_at_a_time = CLONING.lock().await;
+    if let Some(existing) = crate::modules::repo_registry::path_for(&key) {
+        return Ok(existing);
+    }
+    if !target.join(".git").is_dir() {
+        let partial = repo.partial_path(home);
+        let parent = partial.parent().map(Path::to_path_buf).unwrap_or_else(|| home.to_path_buf()); // unwrap_or_else: partial_path always has the owner dir as parent
+        std::fs::create_dir_all(&parent).map_err(|e| CloneError::Io { path: parent.clone(), error: e.to_string() })?;
+        let args = vec!["repo".to_string(), "clone".to_string(), key.clone(), partial.to_string_lossy().into_owned()];
+        let cloned = crate::commands::code::github::run_gh_within(&parent, &args, CLONE_BOUND)
+            .await
+            .map_err(CloneError::from)
+            .and_then(|_| std::fs::rename(&partial, &target).map_err(|e| CloneError::Io { path: target.clone(), error: e.to_string() }));
+        if let Err(e) = &cloned {
+            if !e.leaves_a_partial_that_may_still_be_written() {
+                let _ = std::fs::remove_dir_all(&partial);
+            }
+        }
+        cloned?;
+    }
+    crate::modules::repo_registry::record(&key, &target);
+    crate::probe!(
+        class = "work.claim.repo_cloned",
+        repo = %key,
+        path = %target.display(),
+        "a repo card's repo had no checkout on this node — cloned into the managed checkout and recorded"
+    );
+    Ok(target)
 }
 
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
@@ -424,6 +556,36 @@ mod tests {
             staged,
             Staging::Failed { stage: "setup_shell", error: "boom".to_string() }
         );
+    }
+
+    // what this catches: a card's repo id (written by whichever peer created the card)
+    // escaping the managed clone root or reaching `gh` as a flag. `../x` would clone
+    // outside `<home>/repos`, `a/b/c` is not a GitHub repo, and a leading `-` is parsed
+    // by `gh repo clone` as an option. The positive control keeps this from passing
+    // when the conversion simply refuses everything.
+    #[test]
+    fn only_a_plain_owner_slash_name_is_cloneable() {
+        let repo = CloneableRepo::try_from("CambrianTech/career-wrangler").expect("a plain owner/name is cloneable");
+        assert_eq!(repo.to_string(), "CambrianTech/career-wrangler");
+        assert_eq!(repo.managed_path(Path::new("/h/.continuum")), Path::new("/h/.continuum/repos/CambrianTech/career-wrangler"));
+        for hostile in ["../etc", "CambrianTech/..", "a/b/c", "-o/x", "owner/--upload-pack=x", "owner", "own er/x"] {
+            assert!(
+                matches!(CloneableRepo::try_from(hostile), Err(CloneError::NotOwnerSlashName { .. })),
+                "{hostile:?} must not be cloneable"
+            );
+        }
+    }
+
+    // what this catches (Codex on #4535): a timed-out clone's partial deleted while its git
+    // may still be writing, because a reaped gh was read as a dead tree. Only a timeout keeps
+    // it; a clone gh refused is removed at once (the positive control).
+    #[test]
+    fn only_a_timed_out_clone_keeps_its_partial() {
+        use crate::commands::code::github::{GhRunError, TreeKill};
+        let timed_out = CloneError::Gh(GhRunError::TimedOut { args: "repo clone o/r".into(), secs: 900, tree_kill: TreeKill::Delivered });
+        assert!(timed_out.leaves_a_partial_that_may_still_be_written(), "even a delivered tree kill does not prove the tree exited");
+        let refused = CloneError::Gh(GhRunError::Failed { args: "repo clone o/r".into(), code: Some(1), stderr: "not found".into() });
+        assert!(!refused.leaves_a_partial_that_may_still_be_written());
     }
 
     fn generic_card(title: &str) -> airc_lib::WorkCard {

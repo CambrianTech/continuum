@@ -1175,6 +1175,16 @@ mod tests {
             "eye-profiles",
         ];
         let deferred = [
+            // Registered 2026-09-28 with claim-time cloning: a repo card for a repo the
+            // node never checked out is cloned here so the citizen's hands root in it.
+            // Deferred, not owned, because blind deletion is UNSAFE: every live per-card
+            // worktree is a linked worktree of one of these clones and dies with it.
+            (
+                "repos",
+                "5c5f3b42: managed-clone pool — evict a clone no live card worktree is cut \
+                 from and no claimed card names, oldest first, retiring its repo_registry \
+                 entry in the same step; sweep `.partial-` dirs a timed-out clone left",
+            ),
             (
                 "hf-hub",
                 "#155: hub LRU keyed on last-access — downloads are re-fetchable. Measured \

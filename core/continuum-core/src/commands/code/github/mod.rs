@@ -21,7 +21,7 @@
 //! `gh` must be installed + authenticated (`gh auth login`) on the host. A missing/uauthed
 //! `gh` FAILS LOUD naming the fix — never a silent no-op ([[fallbacks-are-illegal-fail-loud]]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::modules::code::CodeState;
@@ -56,34 +56,142 @@ use pr_create::CodeGithubPrCreate;
 /// SAME per-caller repo checkout `code/git/*` does.
 pub(crate) use super::git::workspace_root_for;
 
+/// How a bounded `gh` invocation failed. Typed so a caller can tell a timeout from a refusal
+/// `gh` itself reported. A timeout never asserts that `gh`'s descendants exited: a caller
+/// must treat anything they were writing as possibly still being written.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum GhRunError {
+    #[error("could not run `gh` — is the GitHub CLI installed and authenticated? ({0})")]
+    Spawn(String),
+    #[error("`gh {args}` failed (exit {code:?}): {stderr}")]
+    Failed { args: String, code: Option<i32>, stderr: String },
+    #[error("`gh {args}` did not finish within {secs} s; a tree kill was {tree_kill} and gh itself was stopped, but its descendants' exit is not asserted")]
+    TimedOut { args: String, secs: u64, tree_kill: TreeKill },
+}
+
+/// What the platform said about the tree kill, reported as said, never upgraded to "exited".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TreeKill {
+    Delivered,
+    Refused,
+    NoPid,
+}
+
+impl std::fmt::Display for TreeKill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TreeKill::Delivered => "delivered",
+            TreeKill::Refused => "refused by the platform",
+            TreeKill::NoPid => "impossible (no pid)",
+        })
+    }
+}
+
+impl From<GhRunError> for CommandError {
+    fn from(e: GhRunError) -> Self {
+        CommandError::Internal(format!("code/github: {e}"))
+    }
+}
+
+/// How long a killed `gh` gets to be reaped.
+const GH_REAP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Kill `pid` and every descendant while `pid` is still alive, so the walk can find them:
+/// Unix, the process group it leads (spawned with `process_group(0)`); Windows,
+/// `taskkill /F /T`, the same tree kill `lane_process::kill9` uses, with its outcome kept.
+fn kill_gh_tree(pid: u32) -> TreeKill {
+    #[cfg(unix)]
+    {
+        // SAFETY: killpg only sends a signal to the group gh leads; no memory is touched
+        let rc = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+        if rc == 0 { TreeKill::Delivered } else { TreeKill::Refused }
+    }
+    #[cfg(windows)]
+    {
+        let ok = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ok { TreeKill::Delivered } else { TreeKill::Refused }
+    }
+}
+
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buf).await;
+    }
+    buf
+}
+
+/// [`run_gh`] with a bound. A `gh` that outlives `bound` is killed with its whole tree
+/// (`gh repo clone` runs `git` as a descendant) BEFORE `gh` itself is reaped, because
+/// Windows' tree walk starts from the live parent; then `gh` is reaped. A timeout is
+/// [`GhRunError::TimedOut`] carrying what the platform said about the tree kill, and never
+/// claims the tree exited.
+pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
+    let mut cmd = gh_command(root, args);
+    cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
+    let mut child = cmd.spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
+    let stdout = tokio::spawn(read_all(child.stdout.take()));
+    let stderr = tokio::spawn(read_all(child.stderr.take()));
+    let joined = args.join(" ");
+    match tokio::time::timeout(bound, child.wait()).await {
+        Ok(Ok(status)) => {
+            let out = stdout.await.unwrap_or_default(); // unwrap_or_default: a reader task that panicked reads as empty output
+            let err = stderr.await.unwrap_or_default(); // unwrap_or_default: as above
+            if status.success() {
+                Ok(String::from_utf8_lossy(&out).trim().to_string())
+            } else {
+                Err(GhRunError::Failed { args: joined, code: status.code(), stderr: String::from_utf8_lossy(&err).trim().to_string() })
+            }
+        }
+        Ok(Err(e)) => Err(GhRunError::Spawn(e.to_string())),
+        Err(_elapsed) => {
+            let tree_kill = child.id().map_or(TreeKill::NoPid, kill_gh_tree);
+            let _ = child.start_kill();
+            // reap gh so it is not left a zombie; this says nothing about its descendants
+            let _ = tokio::time::timeout(GH_REAP_BOUND, child.wait()).await;
+            Err(GhRunError::TimedOut { args: joined, secs: bound.as_secs(), tree_kill })
+        }
+    }
+}
+
 /// Run one `gh` invocation in `root`, off the runtime worker. Returns trimmed stdout on
 /// success; a non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix.
 /// `gh` reads the repo + auth from the workspace + the host's gh config — never a param.
 pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, CommandError> {
-    tokio::task::spawn_blocking(move || {
-        let out = std::process::Command::new("gh")
-            .args(&args)
-            .current_dir(&root)
-            .output()
-            .map_err(|e| {
-                CommandError::Internal(format!(
-                    "code/github: could not run `gh` — is the GitHub CLI installed and \
-                     authenticated? Install it, then `gh auth login`. ({e})"
-                ))
-            })?;
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-        } else {
-            Err(CommandError::Internal(format!(
-                "code/github: `gh {}` failed (exit {:?}): {}",
-                args.join(" "),
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )))
-        }
-    })
-    .await
-    .map_err(|e| CommandError::Internal(format!("gh task panicked: {e}")))?
+    let out = gh_command(&root, &args).output().await.map_err(|e| {
+        CommandError::Internal(format!(
+            "code/github: could not run `gh` — is the GitHub CLI installed and \
+             authenticated? Install it, then `gh auth login`. ({e})"
+        ))
+    })?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(CommandError::Internal(format!(
+            "code/github: `gh {}` failed (exit {:?}): {}",
+            args.join(" "),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
+/// THE one place a `gh` process is built (the source-hygiene rule: GitHub goes through this
+/// module's client). Output is piped and stdin closed; callers add only what they need.
+fn gh_command(root: &Path, args: &[String]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("gh");
+    cmd.args(args)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd
 }
 
 /// The GitHub-collaboration command objects the code module contributes to the kernel's
