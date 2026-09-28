@@ -1378,46 +1378,36 @@ pub fn page_dirs_of(
     (dirs, complete)
 }
 
-/// Path to the `llama-server` binary — the inference engine WE OWN, built from
-/// our vendored llama.cpp submodule by `tools/scripts/install-llama-server.sh`
-/// into `~/.continuum/bin`. Resolution order:
-///   1. `LLAMA_SERVER_BIN` launch environment, then config override,
-///   2. our owned install at `~/.continuum/bin/llama-server` (the normal case —
-///      the core knows where its own engine lives; no reliance on a launcher
-///      munging `PATH`, no borrowing `~/.unsloth`'s build),
-///   3. bare `"llama-server"` (let the OS resolve it on `PATH`).
-/// We do NOT silently fall back to a different engine — a missing binary
-/// surfaces loudly when spawn is attempted ([[fallbacks-are-illegal-fail-loud]]).
+/// Path to the `llama-server` binary: the engine WE OWN, built from the vendored llama.cpp
+/// submodule into a slot under `<continuum_home>/bin` ([`engine_slots`]). Resolution:
+///   1. `LLAMA_SERVER_BIN` (launch environment, then config): an operator's own engine,
+///      launched as given and never converged, wherever it points;
+///   2. the slot `current` names;
+///   3. the pre-slot owned install `<continuum_home>/bin/llama-server[.exe]`;
+///   4. bare `"llama-server"` (let the OS resolve it on `PATH`).
+/// We do NOT silently fall back to a different engine: a missing binary surfaces loudly when
+/// spawn is attempted ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// [`engine_slots`]: crate::inference::engine_slots
 fn server_bin() -> String {
-    if let Some(over) = std::env::var("LLAMA_SERVER_BIN")
+    use crate::inference::engine_slots::{self as slots, Resolved};
+    let over = std::env::var("LLAMA_SERVER_BIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| crate::config_env::read("LLAMA_SERVER_BIN"))
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        return over;
+        .filter(|s| !s.is_empty());
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return over.unwrap_or_else(|| "llama-server".to_string()); // no home: only an override or PATH can name an engine
+    };
+    let root = slots::root(&home);
+    let as_string = |p: PathBuf| p.to_string_lossy().into_owned();
+    match slots::resolve(&root, over.as_deref(), slots::current_slot(&root)) {
+        Resolved::Operator(bin) => bin,
+        Resolved::Slot(slot) => as_string(slots::slot_bin(&root, slot)),
+        Resolved::Legacy(bin) => as_string(bin),
+        Resolved::Path => "llama-server".to_string(),
     }
-    // Windows: `HOME` is usually unset (the home is `USERPROFILE`) and the binary
-    // carries `.exe` — probing only the unix name silently skipped the owned
-    // install and fell through to a bare PATH lookup that spawns nothing (live
-    // repro 2026-07-24, BigMama: planned lane, empty log, no server).
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    if let Some(home) = home {
-        let name = if cfg!(windows) {
-            "llama-server.exe"
-        } else {
-            "llama-server"
-        };
-        let owned = std::path::Path::new(&home)
-            .join(".continuum")
-            .join("bin")
-            .join(name);
-        if owned.is_file() {
-            return owned.to_string_lossy().into_owned();
-        }
-    }
-    "llama-server".to_string()
 }
 
 /// The engine commit the INSTALLED binary was built from: the stamp install-llama-server.sh
@@ -3726,7 +3716,9 @@ struct OwnedEngine {
 pub struct LlamaServerProcess {
     root: String,
     v1_url: String,
-    bin: String,
+    /// A test's fixture engine in place of [`server_bin`]'s per-launch resolution.
+    #[cfg(test)]
+    bin_pin: Option<String>,
     client: reqwest::Client,
     /// The live child, if one is running. `std::sync::Mutex` (not tokio) because
     /// it is held only for the brief swap/kill, never across an await.
@@ -3974,7 +3966,8 @@ impl LlamaServerProcess {
         Self {
             root: serving_root(),
             v1_url: serving_v1_url(),
-            bin: server_bin(),
+            #[cfg(test)]
+            bin_pin: None,
             client,
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
@@ -4005,7 +3998,8 @@ impl LlamaServerProcess {
         Self {
             root,
             v1_url,
-            bin: server_bin(),
+            #[cfg(test)]
+            bin_pin: None,
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
@@ -5056,7 +5050,7 @@ impl LlamaServerControl for LlamaServerProcess {
             .prepared
             .as_ref()
             .ok_or_else(|| LlamaServerError::Spawn("original launch was not captured".into()))?;
-        prepared.validate_restoration(&self.root, &self.bin).await
+        prepared.validate_restoration(&self.root, &prepared.engine_program).await
     }
 
     async fn restore_owned_launch(
@@ -5165,10 +5159,23 @@ impl LlamaServerControl for LlamaServerProcess {
 }
 
 impl LlamaServerProcess {
+    /// The engine this launch runs: [`server_bin`], resolved now (see `prepare_local_launch`).
+    fn engine_bin(&self) -> String {
+        #[cfg(test)]
+        if let Some(pin) = &self.bin_pin {
+            return pin.clone();
+        }
+        server_bin()
+    }
+
     async fn prepare_local_launch(
         &self,
         target: &ServingTarget,
     ) -> Result<PreparedLocalLaunch, LlamaServerError> {
+        // The engine is resolved per launch, never cached on the process: after a promote the
+        // next launch must take the slot `current` now names (card 2c5d0ec0), or #4464's
+        // convergence relaunches onto the binary it is trying to leave.
+        let bin = self.engine_bin();
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
@@ -5191,13 +5198,13 @@ impl LlamaServerProcess {
         // Cold application hashing stays off runtime workers and before any
         // endpoint mutation. Legacy launches keep their existing loader behavior.
         let engine_install =
-            crate::inference::engine_install::EngineInstallReceipt::prepare(self.bin.clone())
+            crate::inference::engine_install::EngineInstallReceipt::prepare(bin.clone())
                 .await
                 .map_err(LlamaServerError::Spawn)?;
         let engine_command = || -> Result<tokio::process::Command, LlamaServerError> {
             match &engine_install {
                 Some(receipt) => receipt.command().map_err(LlamaServerError::Spawn),
-                None => Ok(tokio::process::Command::new(&self.bin)),
+                None => Ok(tokio::process::Command::new(&bin)),
             }
         };
 
@@ -5290,7 +5297,7 @@ impl LlamaServerProcess {
         // Ask the ENGINE what KV cache types its build accepts, before deciding. Once
         // per process, bounded, with a named outcome — every probe on a launch path
         // gets both ([[every-probe-on-a-boot-or-launch-path-gets-a-bound-and-a-named-outcome]]).
-        ensure_engine_kv_support_recorded(&self.bin, engine_command()?).await;
+        ensure_engine_kv_support_recorded(&bin, engine_command()?).await;
         // THE KV CACHE TYPE IS A DECISION, NOT A VARIABLE A HUMAN ONCE EXPORTED
         // (2026-09-20). This used to be two raw `config_env` reads: unset →
         // no `--cache-type-k/v` flag at all (the engine's f16 default, 65,536 B/token
@@ -5517,7 +5524,7 @@ impl LlamaServerProcess {
             Err(_) => {
                 crate::probe!(
                     class = "serving.version_probe_timeout",
-                    bin = %self.bin,
+                    bin = %bin,
                     "`--version` did not answer in 10 s — neither verified nor refused; launching anyway"
                 );
                 String::new()
@@ -5525,20 +5532,20 @@ impl LlamaServerProcess {
         };
         crate::probe!(
             class = "serving.server_version",
-            bin = %self.bin,
+            bin = %bin,
             version = %version.lines().next().unwrap_or("").trim(), // unwrap_or: no output = empty receipt, spawn reports the real failure
             "the serving binary named its build"
         );
         if is_debug_build(&version) {
             crate::probe!(
                 class = "serving.debug_build_refused",
-                bin = %self.bin,
+                bin = %bin,
                 "refused to serve from a DEBUG build — build for speed"
             );
             return Err(LlamaServerError::Spawn(format!(
                 "{} is a DEBUG build (asserts enabled; its speed is not valid). Rebuild llama-server in \
                  release from the canary pin and relaunch — a debug server never hosts a lane.",
-                self.bin
+                bin
             )));
         }
         // BACKEND RECEIPT (card c0bc4027): what does this binary actually LOAD?
@@ -5564,7 +5571,7 @@ impl LlamaServerProcess {
             Ok(Err(e)) => {
                 crate::probe!(
                     class = "serving.backend_probe_failed",
-                    bin = %self.bin,
+                    bin = %bin,
                     error = %e,
                     "`--list-devices` could not run — the spawn below reports the real failure"
                 );
@@ -5573,7 +5580,7 @@ impl LlamaServerProcess {
             Err(_) => {
                 crate::probe!(
                     class = "serving.backend_probe_timeout",
-                    bin = %self.bin,
+                    bin = %bin,
                     "`--list-devices` did not answer in 10 s — backend initialisation hangs on \
                      this host; the lane serves on the CPU and says so"
                 );
@@ -5582,13 +5589,13 @@ impl LlamaServerProcess {
         };
         let cpu_by_plan = target.placement == LanePlacement::Cpu;
         let verdict = crate::inference::backend_receipt::backend_verdict(
-            &self.bin,
+            &bin,
             receipt.as_ref(),
             cpu_by_plan,
         );
         crate::probe!(
             class = "serving.backend_receipt",
-            bin = %self.bin,
+            bin = %bin,
             backend = verdict.backend_label(),
             device = %match &verdict {
                 crate::inference::backend_receipt::BackendVerdict::Gpu { device } => device.as_str(),
@@ -5601,7 +5608,7 @@ impl LlamaServerProcess {
             crate::inference::backend_receipt::BackendVerdict::Refused { reason } => {
                 crate::probe!(
                     class = "serving.backend_refused",
-                    bin = %self.bin,
+                    bin = %bin,
                     reason = %reason,
                     "refused to serve from a binary that loads no GPU backend on a GPU host"
                 );
@@ -5674,7 +5681,7 @@ impl LlamaServerProcess {
         };
         Ok(PreparedLocalLaunch {
             target: target.clone(),
-            engine_program: self.bin.clone(),
+            engine_program: bin.clone(),
             endpoint: self.root.clone(),
             invocation,
             engine_install,
@@ -5695,7 +5702,7 @@ impl LlamaServerProcess {
         restore_session: Option<&OwnedRestoreSession>,
         mut reservation: Option<crate::resources::LeaseGuard>,
     ) -> Result<(), LlamaServerError> {
-        if prepared.engine_program != self.bin || prepared.endpoint != self.root {
+        if prepared.endpoint != self.root {
             return Err(LlamaServerError::Spawn(
                 "prepared launch belongs to another endpoint".into(),
             ));
@@ -5703,7 +5710,7 @@ impl LlamaServerProcess {
         let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
         if restoring {
-            prepared.validate_restoration(&self.root, &self.bin).await?;
+            prepared.validate_restoration(&self.root, &prepared.engine_program).await?;
         }
         let target = &prepared.target;
         let gguf = prepared.gguf.clone();
@@ -5929,7 +5936,7 @@ impl LlamaServerProcess {
             Ok(child) => child,
             Err(error) => {
                 generation.observed_exit(); // No child was created for this generation.
-                return Err(LlamaServerError::Spawn(format!("{}: {error}", self.bin)));
+                return Err(LlamaServerError::Spawn(format!("{}: {error}", prepared.engine_program)));
             }
         };
         let child_pid = child.id();
@@ -5944,7 +5951,7 @@ impl LlamaServerProcess {
             class = "serving.prompt_cache.launch",
             model = target.model.id.as_str(),
             artifact = %gguf.display(),
-            engine = %self.bin,
+            engine = %prepared.engine_program,
             pid = ?child_pid,
             port = port,
             requested_mib = target.host_prompt_cache_mib as u64,
@@ -6053,6 +6060,7 @@ impl LlamaServerProcess {
                 context_window: target.context_window,
                 lanes: target.lanes,
                 page_dir: Some(slot_save_dir.clone()),
+                engine_bin: Some(PathBuf::from(&prepared.engine_program)),
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
@@ -6084,13 +6092,13 @@ impl LlamaServerProcess {
             }
             crate::probe!(
                 class = "serving.debug_build_refused",
-                bin = %self.bin,
+                bin = %prepared.engine_program,
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
             );
             return Err(LlamaServerError::Spawn(format!(
                 "{} announced itself a DEBUG build on startup (asserts enabled; its speed is not valid). \
                  Rebuild llama-server in release from the canary pin and relaunch.",
-                self.bin
+                prepared.engine_program
             )));
         }
         // READY AND ACCEPTED: this lane owns its page dir. Sweep sibling generations
@@ -6197,7 +6205,7 @@ impl LlamaServerProcess {
                      than serve every citizen from system RAM behind a green /health. Check the \
                      backend build (a DL-backend build can list CUDA0 from a shell and still fail \
                      to load it under the core) — last stderr:\n{}",
-                    self.bin,
+                    prepared.engine_program,
                     self.stderr_log_tail()
                 )));
             }
@@ -6262,7 +6270,7 @@ impl LlamaServerProcess {
         // not carry saved eligibility across engines. Never probe to rediscover it.
         let revisions = std::iter::once(gguf.clone())
             .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
-            .chain(std::iter::once(PathBuf::from(&self.bin)))
+            .chain(std::iter::once(PathBuf::from(&prepared.engine_program)))
             .map(|path| {
                 let metadata = std::fs::metadata(&path).ok()?;
                 Some((path, metadata.len(), metadata.modified().ok()?))
@@ -6280,7 +6288,7 @@ impl LlamaServerProcess {
                     context,
                     slots,
                     cache_type: kv_cache_type,
-                    engine: self.bin.clone(),
+                    engine: prepared.engine_program.clone(),
                     revisions,
                 },
             )
@@ -6290,6 +6298,7 @@ impl LlamaServerProcess {
             target,
             invocation,
             Some(prepared.clone()),
+            &prepared.engine_program,
             context,
             slots,
         );
@@ -6302,6 +6311,7 @@ impl LlamaServerProcess {
         target: &ServingTarget,
         invocation: &crate::inference::lane_args::LaneInvocation,
         prepared: Option<Arc<PreparedLocalLaunch>>,
+        engine_program: &str,
         context: u32,
         lanes: u32,
     ) {
@@ -6322,7 +6332,7 @@ impl LlamaServerProcess {
                     generation: generation.clone(),
                 },
                 target: target.clone(),
-                engine_program: self.bin.clone(),
+                engine_program: engine_program.to_string(),
                 invocation: invocation.clone(),
                 observed_context_window: context,
                 observed_lanes: lanes,
@@ -6783,7 +6793,7 @@ mod tests {
                 path: PathBuf::from(relative_root.path().file_name().unwrap()).join("adapter.gguf"),
             });
             let original =
-                std::mem::replace(&mut process.bin, program.to_string_lossy().into_owned());
+                process.bin_pin.replace(program.to_string_lossy().into_owned());
             let admitted = std::sync::atomic::AtomicBool::new(false);
             std::fs::write(engine.join("engine-install.pending"), b"interrupted copy").unwrap();
             let incomplete = process
@@ -6818,7 +6828,7 @@ mod tests {
             .await
             .unwrap();
             let engine_install = crate::inference::engine_install::EngineInstallReceipt::prepare(
-                process.bin.clone(),
+                process.engine_bin(),
             )
             .await
             .unwrap();
@@ -6834,7 +6844,7 @@ mod tests {
             );
             let prepared = Arc::new(PreparedLocalLaunch {
                 target: requested.clone(),
-                engine_program: process.bin.clone(),
+                engine_program: process.engine_bin(),
                 endpoint: process.root.clone(),
                 invocation: invocation.clone(),
                 engine_install: engine_install.clone(),
@@ -6852,6 +6862,7 @@ mod tests {
                 &requested,
                 &invocation,
                 Some(prepared),
+                &process.engine_bin(),
                 11008,
                 4,
             );
@@ -6903,7 +6914,7 @@ mod tests {
                 .as_mut()
                 .unwrap()
                 .verified_target = None;
-            process.bin = original;
+            process.bin_pin = original;
             assert!(!admitted.load(std::sync::atomic::Ordering::SeqCst));
             assert!(!generation.has_exited());
             assert!(process
@@ -6940,7 +6951,7 @@ mod tests {
         );
         invocation.constrain_to_cpu();
         let launched = invocation.clone();
-        process.record_verified_target(&generation, &launch_target, &invocation, None, 11008, 4);
+        process.record_verified_target(&generation, &launch_target, &invocation, None, &process.engine_bin(), 11008, 4);
         // A later resolved choice cannot mutate the already verified generation.
         invocation.args.push("--different-future-policy".into());
         let recorded = process
@@ -6949,7 +6960,7 @@ mod tests {
         assert_eq!(recorded.target.context_window, launch_target.context_window);
         assert_eq!(recorded.observed_context_window, 11008);
         assert_eq!(recorded.observed_lanes, 4);
-        assert_eq!(recorded.engine_program, process.bin);
+        assert_eq!(recorded.engine_program, process.engine_bin());
         assert_eq!(recorded.invocation, launched);
         let restore_admitted = std::sync::atomic::AtomicBool::new(false);
         let no_original = process
@@ -7002,7 +7013,7 @@ mod tests {
             kept.invocation, launched,
             "AlreadyServing keeps original resolved invocation"
         );
-        assert_eq!(kept.engine_program, process.bin);
+        assert_eq!(kept.engine_program, process.engine_bin());
         assert!(matches!(
             process.idle_if_current(&|| false).await,
             Err(LlamaServerError::Superseded)
@@ -7344,7 +7355,7 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             let mut process = LlamaServerProcess::with_root(format!("http://127.0.0.1:{port}"));
-            process.bin = program.to_string_lossy().into_owned();
+            process.bin_pin = Some(program.to_string_lossy().into_owned());
             let mut requested = target("prepared-launch-fixture");
             requested.model.gguf_local_path = Some(weights);
             requested.placement = LanePlacement::Cpu;
@@ -7422,6 +7433,7 @@ mod tests {
                 &prepared.target,
                 &prepared.invocation,
                 Some(prepared.clone()),
+                &process.engine_bin(),
                 11008,
                 4,
             );
@@ -7558,6 +7570,7 @@ mod tests {
                 &prepared.target,
                 &prepared.invocation,
                 Some(prepared.clone()),
+                &process.engine_bin(),
                 11008,
                 4,
             );
@@ -7574,7 +7587,7 @@ mod tests {
                         context: 11008,
                         slots: 4,
                         cache_type: Some("q8_0".into()),
-                        engine: process.bin.clone(),
+                        engine: process.engine_bin(),
                         revisions: Some(vec![]),
                     },
                 )
@@ -9190,6 +9203,7 @@ mod tests {
             context_window: 32768,
             lanes: 1,
             page_dir: Some(b_dir.clone()),
+            engine_bin: None,
         };
         let (before_tx, before_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
@@ -9277,6 +9291,7 @@ mod tests {
             context_window: 4096,
             lanes: 1,
             page_dir: page_dir.map(PathBuf::from),
+            engine_bin: None,
         };
         let alive = |pid: u32| pid != 3;
         let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, Some("/p/b")), rec(3, None)], alive);

@@ -116,6 +116,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "install"
                 | "verify"
                 | "checkpoint"
+                | "engine"
                 | "service-host"
         ) && args
             .iter()
@@ -161,6 +162,22 @@ async fn run() -> Result<(), CliError> {
     // not mutate the checkout registry as a side effect.
     if first == "checkpoint" {
         return checkpoint(CheckpointCommand::parse(args)?).map_err(CliError::from);
+    }
+    // Engine slots (card 2c5d0ec0): offline, like checkpoint. The installers call these
+    // with the deploy lock held; exit 3 means no slot is idle and the engine build is skipped.
+    if first == "engine" {
+        use continuum_core::inference::engine_slots::{run_verb, VerbError};
+        match run_verb(&args.collect::<Vec<_>>()) {
+            Ok(out) => {
+                println!("{out}");
+                return Ok(());
+            }
+            Err(VerbError::NoIdleSlot) => {
+                eprintln!("{}", VerbError::NoIdleSlot);
+                std::process::exit(3);
+            }
+            Err(e) => return Err(CliError::Command(e.to_string())),
+        }
     }
     if first == "service-host" {
         let code = service_host(args.collect()).await?;
@@ -1165,12 +1182,27 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command);
+        // The registered engine is RECORDED as the slot `current` names, not injected as
+        // `LLAMA_SERVER_BIN`: the core reads that variable as an operator's pin and never
+        // converges it, which kept #4464's engine convergence off on every Windows node
+        // (card 2c5d0ec0). The registered release is the promotion on Windows, so `register`
+        // moves `current` to it and keeps the replaced slot as the rollback. An operator's own
+        // `LLAMA_SERVER_BIN` in the environment still passes through untouched.
         if command_env(&command, "LLAMA_SERVER_BIN").is_none_or(|value| value.is_empty()) {
+            use continuum_core::inference::engine_slots;
             let engine = Path::new(&args[2]);
             if !engine.is_file() {
                 return Err(format!("service-host engine missing: {}", engine.display()));
             }
-            command.env("LLAMA_SERVER_BIN", engine);
+            let root = engine
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| format!("service-host engine has no slot root: {}", engine.display()))?;
+            let slot = engine_slots::slot_of(root, engine)
+                .ok_or_else(|| format!("service-host engine is not in an engine slot: {}", engine.display()))?;
+            if engine_slots::register(root, slot)? {
+                eprintln!("service-host: {slot} is now the current engine");
+            }
         }
         command.env("CONTINUUM_CORE_SOCKET", &args[1]);
         command.stdin(Stdio::null()).creation_flags(0x0800_0000);
@@ -5805,7 +5837,10 @@ fn usage() -> String {
      \n\
      Legacy checkpoint recovery (local; no running core required):\n  \
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
-       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n\
+       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n  \
+       continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
+       continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
+       continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
      \n\
      Desktop (the core serves it; no port to remember):\n  \
        continuum desktop               open the desktop in your browser (alias: uu desktop)\n\

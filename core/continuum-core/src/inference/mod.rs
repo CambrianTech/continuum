@@ -51,6 +51,7 @@ pub mod lane;
 pub mod lane_pidfile;
 pub mod lane_process;
 pub mod decode_knee;
+pub mod engine_slots;
 pub mod lane_footprint;
 pub mod prefill_knee;
 pub mod prefill_rate;
