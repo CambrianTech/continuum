@@ -1391,7 +1391,7 @@ impl PreparedCoreService {
         // bash installer's exit 3). An explicit line, never an empty receipt, so a script that
         // wrote nothing is still a failure.
         if let Some(reason) = receipt.skipped()? {
-            println!("▶ engine handoff skipped this deploy: {reason}");
+            deploy_note(&format!("▶ engine handoff skipped this deploy: {reason}"));
             return Ok(None);
         }
         Ok(Some((original, receipt.artifact()?)))
@@ -2084,11 +2084,11 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     if options.service && !options.require_engine_receipt {
         match std::env::current_dir() {
             Ok(repo) => match PreparedCoreService::prepare_engine(&repo).await {
-                Ok(Some(_)) => println!("▶ engine built into its idle slot and promoted; the next core converges its lanes onto it"),
+                Ok(Some((_, engine))) => deploy_note(&format!("▶ verified engine slot promoted ({}); the next core converges its lanes onto it", engine.display())),
                 Ok(None) => {}
-                Err(e) => println!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has"),
+                Err(e) => deploy_note(&format!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has")),
             },
-            Err(e) => println!("⚠ engine not updated this deploy (no working directory: {e})"),
+            Err(e) => deploy_note(&format!("⚠ engine not updated this deploy (no working directory: {e})")),
         }
     }
     #[cfg(windows)]
