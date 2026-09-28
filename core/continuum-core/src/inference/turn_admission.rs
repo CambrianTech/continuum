@@ -260,6 +260,14 @@ async fn admit(
                 if let Some(pinned) = pool.pin_slot(&k) {
                     break Some(pinned);
                 }
+                if warm_only {
+                    break None;
+                }
+                // Leased, then evicted before the pin: the pool CHANGED rather than filled,
+                // and no release may ever be announced for it (the evicting worker can cancel
+                // before it pins), so retry now instead of waiting (Codex on #4515).
+                tokio::task::yield_now().await;
+                continue;
             }
             if warm_only {
                 break None;
