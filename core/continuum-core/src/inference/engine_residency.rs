@@ -32,8 +32,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// One engine process: its pid, its OS start time, and the port it serves. `started_s == 0`
-/// is a record from before the field and never matches a live process.
+/// One engine process: its pid, its OS start time, and the port it serves. A binding is only
+/// ever recorded with a NONZERO start time; `started_s == 0` (a lane record from before the
+/// field) cannot be verified either way and reads as [`Liveness::Unknown`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineIncarnation {
     pub pid: u32,
@@ -42,20 +43,37 @@ pub struct EngineIncarnation {
     pub port: u16,
 }
 
-/// Is this incarnation the process running now?
+/// Is this incarnation the process running now? THREE answers, not two (Codex on #4531): an OS
+/// inspection that could not read the process is not proof that it died.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Liveness {
-    /// A process with this pid exists and started at this time.
+    /// A process with this pid exists and started at exactly this time.
     Alive,
-    /// No such process, or the pid belongs to a process started at another time.
+    /// VERIFIED gone: no process has this pid, or one does and it started at a different
+    /// (readable, nonzero) time, i.e. the pid was reused.
     Dead,
+    /// The process table could not answer (a start time it cannot read, a legacy record with
+    /// no start time). Held, never released.
+    Unknown,
 }
 
-/// The OS start time of `pid`, seconds since the epoch, or `None` when no such process exists.
-pub fn process_start_s(pid: u32) -> Option<u64> {
+/// What the OS says about one pid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessProbe {
+    /// A process with this pid exists; its start time, or 0 when it cannot be read.
+    Present(u64),
+    /// No process has this pid.
+    Absent,
+}
+
+/// Ask the OS about `pid`. On Unix, absence is CONFIRMED with `kill(pid, 0)`: `ESRCH` is the
+/// kernel saying no such process, while `EPERM` means it exists (another user's), so a process
+/// the table cannot inspect is never read as gone. Elsewhere the process table's own listing
+/// decides.
+pub fn probe_process(pid: u32) -> ProcessProbe {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     if pid == 0 {
-        return None;
+        return ProcessProbe::Absent;
     }
     let target = Pid::from_u32(pid);
     let mut sys = System::new();
@@ -64,11 +82,32 @@ pub fn process_start_s(pid: u32) -> Option<u64> {
         true,
         ProcessRefreshKind::nothing(),
     );
-    sys.process(target).map(|p| p.start_time())
+    if let Some(p) = sys.process(target) {
+        return ProcessProbe::Present(p.start_time());
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 performs only the existence and permission check; nothing is sent.
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        if rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
+            return ProcessProbe::Present(0);
+        }
+    }
+    ProcessProbe::Absent
+}
+
+/// The OS start time of `pid` (nonzero), or `None` when the process is absent or its start
+/// time cannot be read. A binding is only recorded from a `Some`.
+pub fn process_start_s(pid: u32) -> Option<u64> {
+    match probe_process(pid) {
+        ProcessProbe::Present(s) if s != 0 => Some(s),
+        _ => None,
+    }
 }
 
 impl EngineIncarnation {
-    /// The incarnation of the process `pid` serving `port` right now.
+    /// The incarnation of the process `pid` serving `port` right now, only when its start time
+    /// is readable (a binding without one could never be verified or released).
     pub fn of(pid: u32, port: u16) -> Option<Self> {
         process_start_s(pid).map(|started_s| Self {
             pid,
@@ -77,17 +116,20 @@ impl EngineIncarnation {
         })
     }
 
-    /// Alive only when the same pid exists with the same start time; anything else is death
-    /// (or recycling, which is the same fact for the process this names).
-    pub fn liveness_with(&self, start_of: impl Fn(u32) -> Option<u64>) -> Liveness {
-        match start_of(self.pid) {
-            Some(started) if self.started_s != 0 && started == self.started_s => Liveness::Alive,
-            _ => Liveness::Dead,
+    pub fn liveness_with(&self, probe: impl Fn(u32) -> ProcessProbe) -> Liveness {
+        if self.started_s == 0 {
+            return Liveness::Unknown;
+        }
+        match probe(self.pid) {
+            ProcessProbe::Absent => Liveness::Dead,
+            ProcessProbe::Present(0) => Liveness::Unknown,
+            ProcessProbe::Present(s) if s == self.started_s => Liveness::Alive,
+            ProcessProbe::Present(_) => Liveness::Dead, // the pid was reused by a later process
         }
     }
 
     pub fn liveness(&self) -> Liveness {
-        self.liveness_with(process_start_s)
+        self.liveness_with(probe_process)
     }
 
     /// The root url every in-process client addresses this engine by.
@@ -107,6 +149,12 @@ pub struct ResidentWork {
     pub engine: EngineIncarnation,
     pub base_model: String,
     pub created_ms: u64,
+    /// The governed reservation this work holds (the resource consumer and its bytes), so a
+    /// successor core re-accounts exactly that allocation instead of re-admitting (step 3).
+    #[serde(default)]
+    pub consumer: String,
+    #[serde(default)]
+    pub reserved_bytes: u64,
     /// Set when serving had to replace this work's engine anyway (an emergency it may not
     /// wait out), BEFORE the replacement commits, so the run's failure names the reason
     /// instead of it being reconstructed after the engine is gone.
@@ -141,22 +189,40 @@ fn write(path: &Path, all: &[ResidentWork]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Record live work. Refuses (never overwrites) when the store cannot be read.
+/// Two records name the same binding: the same job, the same engine run, the same
+/// incarnation. What `release` fences on, so a stale controller can never remove a successor's
+/// binding for the same job (Codex on #4531).
+fn same_binding(a: &ResidentWork, b: &ResidentWork) -> bool {
+    a.job == b.job && a.out == b.out && a.engine == b.engine
+}
+
+/// Record live work. Idempotent for the same binding; REFUSES a different binding for a job
+/// that is already bound (a rebind is its own decision, never an overwrite), and refuses when
+/// the store cannot be read.
 pub fn record(path: &Path, work: ResidentWork) -> Result<(), String> {
     let _guard = WRITE.lock().unwrap_or_else(|p| p.into_inner()); // a poisoned guard still serializes; the data is the file
     let mut all = read(path)?;
-    all.retain(|w| w.job != work.job);
+    if let Some(existing) = all.iter().find(|w| w.job == work.job) {
+        if same_binding(existing, &work) {
+            return Ok(());
+        }
+        return Err(format!(
+            "job {} is already bound to engine pid {} (out {}); not overwriting it with pid {} (out {})",
+            work.job, existing.engine.pid, existing.out, work.engine.pid, work.out
+        ));
+    }
     all.push(work);
     write(path, &all)
 }
 
-/// Release one job's record: its engine acknowledged a terminal state, or its incarnation is
-/// verifiably dead. Returns whether a record was there.
-pub fn release(path: &Path, job: Uuid) -> Result<bool, String> {
+/// Release EXACTLY `expected`: its engine acknowledged a terminal state for this run, or its
+/// incarnation is verifiably dead. A record for the same job with a different binding (a
+/// successor) is left alone. Returns whether the binding was there.
+pub fn release(path: &Path, expected: &ResidentWork) -> Result<bool, String> {
     let _guard = WRITE.lock().unwrap_or_else(|p| p.into_inner()); // a poisoned guard still serializes; the data is the file
     let mut all = read(path)?;
     let before = all.len();
-    all.retain(|w| w.job != job);
+    all.retain(|w| !same_binding(w, expected));
     if all.len() == before {
         return Ok(false);
     }
@@ -209,10 +275,11 @@ impl Occupancy {
     }
 }
 
-/// THE QUESTION, with liveness injected: may serving disturb the engine serving `port`? Work
-/// bound to an incarnation that is verifiably dead is released on the way (its death is the
-/// release evidence). Work on another port is not this engine's.
-pub fn occupancy_with(path: &Path, port: u16, start_of: &dyn Fn(u32) -> Option<u64>) -> Occupancy {
+/// THE QUESTION, with the process table injected: may serving disturb the engine serving
+/// `port`? Work bound to an incarnation that is VERIFIABLY dead is released on the way (its
+/// death is the release evidence); work whose engine cannot be verified either way is held,
+/// never released. Work on another port is not this engine's.
+pub fn occupancy_with(path: &Path, port: u16, probe: &dyn Fn(u32) -> ProcessProbe) -> Occupancy {
     let _guard = WRITE.lock().unwrap_or_else(|p| p.into_inner()); // a poisoned guard still serializes; the data is the file
     let all = match read(path) {
         Ok(all) => all,
@@ -220,7 +287,7 @@ pub fn occupancy_with(path: &Path, port: u16, start_of: &dyn Fn(u32) -> Option<u
     };
     let (dead, live): (Vec<ResidentWork>, Vec<ResidentWork>) = all
         .into_iter()
-        .partition(|w| w.engine.liveness_with(start_of) == Liveness::Dead);
+        .partition(|w| w.engine.liveness_with(probe) == Liveness::Dead);
     if !dead.is_empty() {
         if let Err(why) = write(path, &live) {
             // could not release: the dead records stand, and so does the hold
@@ -246,7 +313,7 @@ pub fn occupancy_with(path: &Path, port: u16, start_of: &dyn Fn(u32) -> Option<u
 
 /// [`occupancy_with`] against the real process table.
 pub fn occupancy(path: &Path, port: u16) -> Occupancy {
-    occupancy_with(path, port, &process_start_s)
+    occupancy_with(path, port, &probe_process)
 }
 
 #[cfg(test)]
@@ -264,26 +331,35 @@ mod tests {
             },
             base_model: "qwen3-27b".into(),
             created_ms: 1,
+            consumer: format!("genome-train:{job}"),
+            reserved_bytes: 1 << 30,
             interrupted: None,
         }
     }
 
-    // what this catches: Kimi's attempt 2. Serving replaced an engine that hosted a live run
-    // because nothing recorded the binding. A recorded run holds its OWN incarnation's port and
-    // no other; a recycled pid (same number, other start time) is death, and death releases
-    // the record without any acknowledgment; an unreadable store holds rather than guesses.
+    // what this catches: Kimi's attempt 2 (serving replaced an engine hosting a live run, with
+    // no record of the binding), and Codex's fence on #4531. A recorded run holds its OWN
+    // incarnation's port and no other; a reused pid (a readable, different start) is death and
+    // releases the record; an unreadable store holds; a release removes only its exact binding.
     #[test]
     fn resident_work_holds_its_incarnation_until_it_is_verifiably_dead() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = store_path(dir.path());
+        let gone = |_: u32| ProcessProbe::Absent;
         assert_eq!(
-            occupancy_with(&path, 58057, &|_| None),
+            occupancy_with(&path, 58057, &gone),
             Occupancy::Free,
             "no file, no work"
         );
 
         record(&path, work(1, 25280, 1_000, 58057)).expect("record");
-        let alive = |pid: u32| (pid == 25280).then_some(1_000);
+        let alive = |pid: u32| {
+            if pid == 25280 {
+                ProcessProbe::Present(1_000)
+            } else {
+                ProcessProbe::Absent
+            }
+        };
         assert!(
             matches!(occupancy_with(&path, 58057, &alive), Occupancy::Resident(ref w) if w.len() == 1)
         );
@@ -294,26 +370,47 @@ mod tests {
         );
 
         // the pid now belongs to a process started later: not the engine the run lived in
-        let recycled = |pid: u32| (pid == 25280).then_some(2_000);
+        let reused = |pid: u32| {
+            if pid == 25280 {
+                ProcessProbe::Present(2_000)
+            } else {
+                ProcessProbe::Absent
+            }
+        };
         assert_eq!(
-            occupancy_with(&path, 58057, &recycled),
+            occupancy_with(&path, 58057, &reused),
             Occupancy::Free,
-            "a recycled pid is death"
+            "a reused pid is verified death"
         );
         assert!(
             read(&path).expect("read").is_empty(),
             "death released the record"
         );
 
-        record(&path, work(2, 25280, 1_000, 58057)).expect("record");
+        // a release is FENCED on the exact binding: a stale controller cannot remove a successor
+        let first = work(2, 25280, 1_000, 58057);
+        record(&path, first.clone()).expect("record");
         assert!(
-            release(&path, Uuid::from_u128(2)).expect("release"),
-            "an acknowledged end releases"
+            record(&path, work(2, 30988, 3_000, 58057)).is_err(),
+            "a different binding for the job is refused, never overwritten"
         );
-        assert!(!release(&path, Uuid::from_u128(2)).expect("release"));
+        let stale = ResidentWork {
+            out: "someone-else.gguf".into(),
+            ..first.clone()
+        };
+        assert!(
+            !release(&path, &stale).expect("release"),
+            "a stale binding releases nothing"
+        );
+        assert!(
+            release(&path, &first).expect("release"),
+            "the exact binding releases"
+        );
+        assert!(!release(&path, &first).expect("release"));
 
         // an emergency replacement tells the work BEFORE it commits
-        record(&path, work(4, 25280, 1_000, 58057)).expect("record");
+        let w4 = work(4, 25280, 1_000, 58057);
+        record(&path, w4.clone()).expect("record");
         assert_eq!(
             interrupt(&path, 58057, "kv paging unverified").expect("interrupt"),
             vec![Uuid::from_u128(4)]
@@ -322,14 +419,17 @@ mod tests {
             interruption_of(&path, Uuid::from_u128(4)).as_deref(),
             Some("kv paging unverified")
         );
-        release(&path, Uuid::from_u128(4)).expect("release");
+        let told = ResidentWork {
+            interrupted: Some("kv paging unverified".into()),
+            ..w4
+        };
+        assert!(release(&path, &told).expect("release"));
 
         std::fs::write(&path, b"{not a list").expect("corrupt");
         assert!(
             matches!(occupancy_with(&path, 58057, &alive), Occupancy::Unknown(_)),
             "unreadable holds"
         );
-        assert!(occupancy_with(&path, 58057, &alive).holds());
         assert!(
             record(&path, work(3, 1, 1, 1)).is_err(),
             "a write refuses over unreadable state"
@@ -341,22 +441,53 @@ mod tests {
         );
     }
 
-    // what this catches: an incarnation matched by pid alone. A record from before the start
-    // time existed (0) must never match, or every legacy record would read as a live engine.
+    // what this catches (Codex on #4531): an OS inspection failure read as death. An unreadable
+    // start time and a legacy record with none are UNKNOWN, and unknown work is held, never
+    // released; only absence or a readable different start is death.
     #[test]
-    fn an_incarnation_matches_only_the_same_process_start() {
+    fn an_unreadable_process_is_unknown_and_held_never_dead() {
         let inc = EngineIncarnation {
             pid: 7,
             started_s: 100,
             port: 1,
         };
-        assert_eq!(inc.liveness_with(|_| Some(100)), Liveness::Alive);
-        assert_eq!(inc.liveness_with(|_| Some(101)), Liveness::Dead);
-        assert_eq!(inc.liveness_with(|_| None), Liveness::Dead);
+        assert_eq!(
+            inc.liveness_with(|_| ProcessProbe::Present(100)),
+            Liveness::Alive
+        );
+        assert_eq!(
+            inc.liveness_with(|_| ProcessProbe::Present(101)),
+            Liveness::Dead,
+            "reused pid"
+        );
+        assert_eq!(
+            inc.liveness_with(|_| ProcessProbe::Absent),
+            Liveness::Dead,
+            "no such process"
+        );
+        assert_eq!(
+            inc.liveness_with(|_| ProcessProbe::Present(0)),
+            Liveness::Unknown,
+            "start unreadable"
+        );
         let legacy = EngineIncarnation {
             started_s: 0,
             ..inc
         };
-        assert_eq!(legacy.liveness_with(|_| Some(0)), Liveness::Dead);
+        assert_eq!(
+            legacy.liveness_with(|_| ProcessProbe::Present(0)),
+            Liveness::Unknown,
+            "legacy record"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = store_path(dir.path());
+        record(&path, work(5, 7, 100, 1)).expect("record");
+        let unreadable = |_: u32| ProcessProbe::Present(0);
+        assert!(
+            occupancy_with(&path, 1, &unreadable).holds(),
+            "unknown liveness holds the engine"
+        );
+        assert_eq!(read(&path).expect("read").len(), 1, "and releases nothing");
     }
 }

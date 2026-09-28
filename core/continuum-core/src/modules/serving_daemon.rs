@@ -9841,12 +9841,21 @@ pub(crate) mod tests {
 
         let store = store_path(&crate::commands::benchmark::continuum_home().expect("test: a test home"));
         let job = uuid::Uuid::from_u128(0xef9d_f13b);
-        record(&store, ResidentWork { job, out: "run.gguf".into(), engine, base_model: "qwen3-27b".into(), created_ms: 1, interrupted: None })
-            .expect("test: record");
+        let bound = ResidentWork {
+            job,
+            out: "run.gguf".into(),
+            engine,
+            base_model: "qwen3-27b".into(),
+            created_ms: 1,
+            consumer: "genome-train:test".into(),
+            reserved_bytes: 1 << 30,
+            interrupted: None,
+        };
+        record(&store, bound.clone()).expect("test: record");
         assert!(daemon.reconcile_to_plan().is_none(), "an engine bound to live work is not reconciled");
         assert_eq!(serves.load(Ordering::SeqCst), 0, "nothing was launched over the run");
 
-        release(&store, job).expect("test: release");
+        release(&store, &bound).expect("test: release");
         let handle = daemon.reconcile_to_plan().expect("released: the plan proceeds");
         handle.await.unwrap();
         assert_eq!(serves.load(Ordering::SeqCst), 1);
