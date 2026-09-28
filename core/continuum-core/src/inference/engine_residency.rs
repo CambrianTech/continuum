@@ -62,14 +62,18 @@ pub enum Liveness {
 pub enum ProcessProbe {
     /// A process with this pid exists; its start time, or 0 when it cannot be read.
     Present(u64),
-    /// No process has this pid.
+    /// POSITIVELY absent: the kernel said no such process.
     Absent,
+    /// The OS could not answer either way. Never read as absence (Codex on #4531).
+    Unreadable,
 }
 
-/// Ask the OS about `pid`. On Unix, absence is CONFIRMED with `kill(pid, 0)`: `ESRCH` is the
-/// kernel saying no such process, while `EPERM` means it exists (another user's), so a process
-/// the table cannot inspect is never read as gone. Elsewhere the process table's own listing
-/// decides.
+/// Ask the OS about `pid`. The process table answers when it lists the pid. When it does not,
+/// absence needs POSITIVE evidence from the kernel, and every other failure is `Unreadable`:
+/// - Unix: `kill(pid, 0)` returning `ESRCH` is absence; success or `EPERM` means it exists
+///   (another user's); any other error is unreadable.
+/// - Windows: `OpenProcess` failing with `ERROR_INVALID_PARAMETER` is absence (no such pid);
+///   a handle means it exists; any other failure (access denied, …) is unreadable.
 pub fn probe_process(pid: u32) -> ProcessProbe {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     if pid == 0 {
@@ -85,15 +89,45 @@ pub fn probe_process(pid: u32) -> ProcessProbe {
     if let Some(p) = sys.process(target) {
         return ProcessProbe::Present(p.start_time());
     }
-    #[cfg(unix)]
-    {
-        // SAFETY: signal 0 performs only the existence and permission check; nothing is sent.
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        if rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
-            return ProcessProbe::Present(0);
-        }
+    kernel_says(pid)
+}
+
+#[cfg(unix)]
+fn kernel_says(pid: u32) -> ProcessProbe {
+    // SAFETY: signal 0 performs only the existence and permission check; nothing is sent.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return ProcessProbe::Present(0);
     }
-    ProcessProbe::Absent
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => ProcessProbe::Absent,
+        Some(libc::EPERM) => ProcessProbe::Present(0),
+        _ => ProcessProbe::Unreadable,
+    }
+}
+
+#[cfg(windows)]
+fn kernel_says(pid: u32) -> ProcessProbe {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a query-only handle for exactly this pid, closed once below.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if !handle.is_null() {
+        // SAFETY: `handle` came from a successful OpenProcess and is closed once, here.
+        unsafe { CloseHandle(handle) };
+        return ProcessProbe::Present(0);
+    }
+    // SAFETY: reads this thread's last error, set by the failed OpenProcess above.
+    if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
+        ProcessProbe::Absent
+    } else {
+        ProcessProbe::Unreadable
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn kernel_says(_pid: u32) -> ProcessProbe {
+    ProcessProbe::Unreadable
 }
 
 /// The OS start time of `pid` (nonzero), or `None` when the process is absent or its start
@@ -122,7 +156,7 @@ impl EngineIncarnation {
         }
         match probe(self.pid) {
             ProcessProbe::Absent => Liveness::Dead,
-            ProcessProbe::Present(0) => Liveness::Unknown,
+            ProcessProbe::Unreadable | ProcessProbe::Present(0) => Liveness::Unknown,
             ProcessProbe::Present(s) if s == self.started_s => Liveness::Alive,
             ProcessProbe::Present(_) => Liveness::Dead, // the pid was reused by a later process
         }
@@ -469,6 +503,11 @@ mod tests {
             inc.liveness_with(|_| ProcessProbe::Present(0)),
             Liveness::Unknown,
             "start unreadable"
+        );
+        assert_eq!(
+            inc.liveness_with(|_| ProcessProbe::Unreadable),
+            Liveness::Unknown,
+            "the OS could not answer: never death"
         );
         let legacy = EngineIncarnation {
             started_s: 0,
