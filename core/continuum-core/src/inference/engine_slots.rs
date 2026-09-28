@@ -133,6 +133,32 @@ pub fn live_lane_engines() -> Result<Vec<Option<PathBuf>>, String> {
         .collect())
 }
 
+/// The slot the last automatic rollback restored, so a restored engine that ALSO fails to launch
+/// is not rolled "back" onto the engine it replaced: that would swap two failing engines
+/// forever. A failure of the restored engine is not the promotion's fault; it stays up for a
+/// human, loudly, as every other launch failure does.
+static RESTORED: parking_lot::Mutex<Option<&'static str>> = parking_lot::const_mutex(None);
+
+/// A launch from the current slot failed (spawn or readiness): put the previous engine back so
+/// the next launch takes it (Fable on #4491: a promoted engine can pass its stamp and still fail
+/// at launch, a CUDA DLL, a driver, and on a first-and-only machine nothing else would bring the
+/// node back). Returns `(failed, restored)` when it rolled back, `Ok(None)` when there is nothing
+/// to roll back from (no slot recorded) or the failing engine is the one a rollback already
+/// restored. The caller skips this under an operator override (their engine, not a slot) and
+/// while a deploy holds the claim (it is mid-promote).
+pub fn rollback_after_failed_launch(root: &Path) -> Result<Option<(&'static str, &'static str)>, String> {
+    let Some(failed) = current_slot(root) else {
+        return Ok(None);
+    };
+    let mut restored = RESTORED.lock();
+    if *restored == Some(failed) {
+        return Ok(None);
+    }
+    let back = rollback(root, failed)?;
+    *restored = Some(back);
+    Ok(Some((failed, back)))
+}
+
 /// Why an `engine` verb failed: [`VerbError::NoIdleSlot`] is its own exit code (3), so the
 /// install scripts skip the engine build this deploy and say so rather than fail the deploy.
 #[derive(Debug)]
@@ -404,5 +430,24 @@ mod tests {
         assert_eq!((current_slot(root), previous_slot(root)), (Some("engine-b"), Some("engine-a")));
         assert_eq!(resolve(root, None, Some("engine-c")), Resolved::Slot("engine-c"), "an empty current slot fails loud at spawn, never the legacy engine");
         assert_eq!(slot_of(root, Path::new(&format!(r"\\?\{a}"))), Some("engine-a"), "a verbatim-prefixed path is the same slot");
+    }
+
+    // what this catches (Fable on #4491): a promoted engine that verifies and then fails at
+    // launch leaves a first-and-only machine dark until a human runs rollback. A failed launch
+    // from the current slot restores the previous one, once: the restored engine failing too
+    // is not rolled "back" onto the failed one (a swap loop between two bad engines).
+    #[test]
+    fn a_failed_launch_restores_the_previous_engine_once_and_never_swaps_back() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let root = dir.path();
+        assert_eq!(rollback_after_failed_launch(root), Ok(None), "no slot recorded: nothing to roll back");
+        engine(root, "engine-a", "good00:cuda");
+        promote(root, "engine-a", "good00:cuda").unwrap();
+        engine(root, "engine-b", "bad000:cuda");
+        promote(root, "engine-b", "bad000:cuda").unwrap();
+        assert_eq!(rollback_after_failed_launch(root), Ok(Some(("engine-b", "engine-a"))));
+        assert_eq!(current_slot(root), Some("engine-a"));
+        assert_eq!(rollback_after_failed_launch(root), Ok(None), "the restored engine failing is not rolled back onto the failed one");
+        assert_eq!(current_slot(root), Some("engine-a"));
     }
 }

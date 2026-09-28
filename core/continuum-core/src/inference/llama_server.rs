@@ -1391,12 +1391,7 @@ pub fn page_dirs_of(
 /// [`engine_slots`]: crate::inference::engine_slots
 fn server_bin() -> String {
     use crate::inference::engine_slots::{self as slots, Resolved};
-    let over = std::env::var("LLAMA_SERVER_BIN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| crate::config_env::read("LLAMA_SERVER_BIN"))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let over = engine_override();
     let Ok(home) = crate::commands::benchmark::continuum_home() else {
         return over.unwrap_or_else(|| "llama-server".to_string()); // no home: only an override or PATH can name an engine
     };
@@ -1407,6 +1402,60 @@ fn server_bin() -> String {
         Resolved::Slot(slot) => as_string(slots::slot_bin(&root, slot)),
         Resolved::Legacy(bin) => as_string(bin),
         Resolved::Path => "llama-server".to_string(),
+    }
+}
+
+/// `LLAMA_SERVER_BIN` (launch environment, then config): an operator's own engine.
+fn engine_override() -> Option<String> {
+    std::env::var("LLAMA_SERVER_BIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| crate::config_env::read("LLAMA_SERVER_BIN"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// A launch failed at spawn or readiness: when it ran from the current engine slot, put the
+/// previous engine back (card 2c5d0ec0, Fable on #4491). Never under an operator override (their
+/// engine, not a slot) and never while a deploy holds the claim (it is mid-promote and owns the
+/// pointers). Returns whether the next launch will take a different engine.
+fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
+    if !matches!(error, LlamaServerError::Spawn(_) | LlamaServerError::NotReady(..)) || engine_override().is_some() {
+        return false;
+    }
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return false; // no home: no slots to roll between
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0); // unwrap_or: a clock before the epoch reads as age 0, which keeps a live claim blocking
+    if crate::runtime::deploy_claim::in_flight(&home, now_ms).blocks() {
+        return false;
+    }
+    let root = crate::inference::engine_slots::root(&home);
+    match crate::inference::engine_slots::rollback_after_failed_launch(&root) {
+        Ok(Some((failed, restored))) => {
+            crate::probe!(
+                class = "serving.engine.rolled_back",
+                failed = failed,
+                restored = restored,
+                error = error.to_string().as_str(),
+                "a launch from the current engine slot failed: the previous engine is current again \
+                 and the lane relaunches on it"
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(reason) => {
+            crate::probe!(
+                class = "serving.engine.rollback_refused",
+                reason = reason.as_str(),
+                error = error.to_string().as_str(),
+                "a launch from the current engine slot failed and no intact previous engine can be restored"
+            );
+            false
+        }
     }
 }
 
@@ -3694,6 +3743,22 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             }
         }
         Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
+        // One relaunch onto the restored engine; the engine is resolved per launch, so this
+        // `serve` takes the slot the rollback made current.
+        Err(reason) if roll_back_engine_after_failed_launch(&reason) => {
+            match ctrl.serve_if_current(target, current).await {
+                Ok(()) => {
+                    reset_real_decode_failures();
+                    EnsureOutcome::Spawned {
+                        model: target.model_id().to_string(),
+                    }
+                }
+                Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
+                Err(again) => EnsureOutcome::Degraded {
+                    reason: format!("{reason}; after rolling the engine back: {again}"),
+                },
+            }
+        }
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
         },
