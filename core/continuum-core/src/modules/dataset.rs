@@ -872,12 +872,17 @@ pub struct DatasetModule {
     service: Arc<DatasetService>,
 }
 
-/// The ONE default datasets root (`~/.continuum/datasets`). Producers
+/// The ONE default datasets root (`<continuum home>/datasets`). Producers
 /// (`dataset/*` commands) and consumers (`genome/job-create` by `datasetName`)
-/// both resolve through here — the location is defined once.
+/// both resolve through here — the location is defined once, and the home through
+/// [`crate::commands::benchmark::continuum_home`], the resolution every other store uses.
+/// It read `HOME` alone before, and a Windows core started by its scheduled task has no
+/// `HOME`, so `dataset/list` on the 5090 read `/tmp\.continuum\datasets` and found nothing
+/// (Codex, 2026-09-28, preparing Kimi's first dream).
 pub fn default_datasets_root() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".continuum").join("datasets")
+    crate::commands::benchmark::continuum_home()
+        .unwrap_or_else(|_| std::env::temp_dir().join(".continuum")) // unwrap_or_else: no home anywhere, the same last resort as before, now the OS temp dir
+        .join("datasets")
 }
 
 impl Default for DatasetModule {
