@@ -201,6 +201,36 @@ function Select-CoreEngineSlot {
     return $engineSlot
 }
 
+function Invoke-CoreEnginePromote {
+    # `current` is the one truth on every OS (card d5584dfc, option (b)): a drift-verified slot is
+    # promoted by the core's own verb, an unprivileged file write, so neither an unattended deploy
+    # nor install needs the scheduled task re-registered for the engine to change. Returns $false
+    # (and says so) when this CLI predates the verb; then the release registration bootstraps
+    # `current` at the next service start, as before. A refused promote throws.
+    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$Slot)
+    # Native stderr under 'Stop' is terminating in Windows PowerShell 5.1: read exit codes.
+    $ErrorActionPreference = 'Continue'
+    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) {
+        Write-Warning 'No registered CLI to promote the engine with; the release registration bootstraps it.'
+        return $false
+    }
+    try { $help = (& $Cli --help 2>&1 | Out-String) } catch { $help = '' }
+    if ($help -notmatch 'continuum engine promote') {
+        Write-Warning 'This CLI predates engine slots: the release registration bootstraps the engine this deploy.'
+        return $false
+    }
+    $name = Split-Path -Leaf $Slot
+    $stamp = (Get-Content -LiteralPath (Join-Path $Slot '.llama-server.stamp') -Raw -ErrorAction Stop).Trim()
+    $saved = $env:CONTINUUM_HOME
+    try {
+        $env:CONTINUUM_HOME = $InstallRoot
+        $said = (& $Cli engine promote $name $stamp 2>&1 | Out-String).Trim()
+        $code = $LASTEXITCODE
+    } finally { $env:CONTINUUM_HOME = $saved }
+    if ($code -ne 0) { throw "continuum engine promote refused $name (exit $code): $said" }
+    return $true
+}
+
 function Prepare-CoreServiceEngine {
     param([Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$Description,
@@ -228,6 +258,9 @@ function Prepare-CoreServiceEngine {
     if ($drift) { throw $drift }
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     if ($task.Description -cne $Description) { throw 'Installed release changed during engine preparation.' }
+    # The verified slot becomes the engine by the core's own verb, for install and unattended
+    # deploy alike (card d5584dfc); install still registers it as the release's bootstrap engine.
+    $null = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
     [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
 }
 
