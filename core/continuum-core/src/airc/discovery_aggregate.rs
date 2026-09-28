@@ -266,57 +266,76 @@ impl From<DiscoveryError> for DiscoveryFailure {
     }
 }
 
-/// Recover a daemon whose socket nobody holds: remove the stale file, start a daemon by
-/// the same path `airc status` uses (it starts one when none answers), and wait — bounded
-/// — for the new socket to answer. Returns `true` when a retry is worth making. A socket
-/// some process still holds is NOT stale (a wedged daemon is a different fault) and is
-/// left alone. Every outcome is a probe: `airc.daemon.recovered`.
+/// Ask AIRC's lifecycle owner to reconnect, then verify the resolved endpoint by RPC.
+/// `status` is observation-only. Socket cleanup and singleton ownership belong to
+/// `join`; absence of a platform utility such as lsof is not proof of a dead owner.
 async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
+    use std::process::Stdio;
     use tokio::process::Command;
-    let bound = std::time::Duration::from_secs(5);
-    let held = tokio::time::timeout(bound, Command::new("lsof").arg("-t").arg(socket).output())
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false); // JUSTIFIED unwrap_or: lsof absent or hung = cannot prove a holder; treat as unheld and try (the retry is bounded and harmless)
-    if held {
+
+    // An explicit endpoint may belong to an externally managed/test daemon.
+    // Default-context join cannot start that endpoint and must not mutate another
+    // scope as a side effect of probing it.
+    if std::env::var_os(super::discovery::AIRC_DAEMON_SOCKET_ENV).is_some() {
         crate::probe!(
             class = "airc.daemon.recovered",
             socket = %socket.display(),
-            outcome = "held_not_stale",
-            "a process still holds the daemon socket — not a stale file; no recovery attempted"
+            outcome = "explicit_endpoint",
+            "explicit AIRC endpoint is unreachable; its lifecycle remains externally owned"
         );
         return false;
     }
-    let existed = socket.exists();
-    if existed {
-        let _ = std::fs::remove_file(socket);
-    }
+
     let started = std::time::Instant::now();
-    let start = tokio::time::timeout(std::time::Duration::from_secs(30), Command::new("airc").arg("status").output()).await;
-    let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
-    if start_ok || socket.exists() {
-        // A daemon was started. Whether it answers within THIS function's wait or not,
-        // the patience loop now measures its budget from here — a slow daemon is a
-        // daemon, and the verdict must not be the one its own start time bought.
+    let mut join = Command::new("airc");
+    join.arg("join")
+        // Core startup is automation even when launched from an agent shell.
+        // Without this supported opt-out, join can remain attached to a live feed.
+        .env("AIRC_NO_ATTACH", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    join.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let start = tokio::time::timeout(std::time::Duration::from_secs(30), join.status()).await;
+    let start_ok = matches!(&start, Ok(Ok(status)) if status.success());
+    let join_exit_code = start
+        .as_ref()
+        .ok()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|s| s.code());
+    let join_timed_out = start.is_err();
+    if start_ok {
+        // Successful join warrants the existing bounded patience extension, but
+        // neither its exit status nor a socket file establishes daemon health.
         note_daemon_started();
     }
     let mut answered = false;
-    while started.elapsed() < std::time::Duration::from_secs(25) {
-        if socket.exists() && discover_peer_id(socket).await.is_ok() {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
+    while tokio::time::Instant::now() < deadline {
+        if matches!(
+            tokio::time::timeout_at(deadline, discover_peer_id(socket)).await,
+            Ok(Ok(_))
+        ) {
             answered = true;
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep_until(std::cmp::min(
+            deadline,
+            tokio::time::Instant::now() + std::time::Duration::from_millis(500),
+        ))
+        .await;
     }
     crate::probe!(
         class = "airc.daemon.recovered",
         socket = %socket.display(),
-        outcome = if answered { "recovered" } else if start_ok { "started_not_answering" } else { "start_failed" },
-        stale_file_removed = existed,
+        outcome = if answered { "recovered" } else if start_ok { "joined_not_answering" } else { "join_failed" },
         waited_ms = started.elapsed().as_millis() as u64,
-        "dead airc daemon: stale socket cleared and a daemon started by the core itself"
+        join_exit_code = ?join_exit_code,
+        join_timed_out,
+        "AIRC-owned join recovery completed; endpoint health verified independently"
     );
     answered
 }
