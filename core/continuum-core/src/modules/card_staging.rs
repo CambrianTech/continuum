@@ -272,7 +272,7 @@ pub(crate) enum CloneError {
     Gh(#[from] crate::commands::code::github::GhRunError),
 }
 
-/// How long one managed clone may run before it is killed with its process group.
+/// How long one managed clone may run before its process tree is killed.
 const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
 
 /// Clone `repo` into its managed checkout and record it, so this and every later claim
@@ -283,7 +283,8 @@ const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
 /// it succeeded, so a node that dies mid-clone never leaves a half-cloned checkout that
 /// the next claim would adopt as real. Through `code/github` (the one GitHub client), so a
 /// private repo clones with the same auth the PR verbs use, and a clone past
-/// [`CLONE_BOUND`] is killed with its `git` grandchild before its partial is removed.
+/// [`CLONE_BOUND`] is killed with its `git` descendant; its partial is removed only once
+/// that tree's exit is confirmed.
 async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneError> {
     static CLONING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let repo = CloneableRepo::try_from(repo)?;
@@ -303,8 +304,14 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
             .await
             .map_err(CloneError::from)
             .and_then(|_| std::fs::rename(&partial, &target).map_err(|e| CloneError::Io { path: target.clone(), error: e.to_string() }));
-        if cloned.is_err() {
-            let _ = std::fs::remove_dir_all(&partial);
+        match &cloned {
+            Ok(()) => {}
+            // the tree may still be writing it: keep it, and the `.partial-` sweep of the
+            // repos class (card 5c5f3b42) removes it once nothing holds it
+            Err(CloneError::Gh(crate::commands::code::github::GhRunError::TimedOutUnconfirmed { .. })) => {}
+            Err(_) => {
+                let _ = std::fs::remove_dir_all(&partial);
+            }
         }
         cloned?;
     }

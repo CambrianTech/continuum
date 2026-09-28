@@ -56,16 +56,19 @@ use pr_create::CodeGithubPrCreate;
 /// SAME per-caller repo checkout `code/git/*` does.
 pub(crate) use super::git::workspace_root_for;
 
-/// How a bounded `gh` invocation failed. Typed so a caller can tell a timeout (the run was
-/// killed, whole process group) from a refusal `gh` itself reported.
+/// How a bounded `gh` invocation failed. Typed so a caller can tell a timeout from a refusal
+/// `gh` itself reported, and a timeout whose process tree is confirmed gone from one that is
+/// not (whose output directory may still be written to).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum GhRunError {
     #[error("could not run `gh` — is the GitHub CLI installed and authenticated? ({0})")]
     Spawn(String),
     #[error("`gh {args}` failed (exit {code:?}): {stderr}")]
     Failed { args: String, code: Option<i32>, stderr: String },
-    #[error("`gh {args}` did not finish within {secs} s and was killed with its process group")]
+    #[error("`gh {args}` did not finish within {secs} s; its process tree was killed and has exited")]
     TimedOut { args: String, secs: u64 },
+    #[error("`gh {args}` did not finish within {secs} s; its process tree was killed but its exit was not confirmed")]
+    TimedOutUnconfirmed { args: String, secs: u64 },
 }
 
 impl From<GhRunError> for CommandError {
@@ -74,35 +77,69 @@ impl From<GhRunError> for CommandError {
     }
 }
 
-/// [`run_gh`] with a bound. A `gh` that outlives `bound` is killed together with its
-/// process group (`gh repo clone` runs `git` as a grandchild, which a parent-only kill
-/// would orphan); on Windows `kill_on_drop` alone covers the direct child. The same
-/// pattern as the grader's subprocess ceiling (`swe_bench`, task #381).
+/// How long a killed `gh` tree gets to be reaped before its exit counts as unconfirmed.
+const GH_REAP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Kill `pid` and every descendant while `pid` is still alive, so the walk can find them:
+/// Unix, the process group it leads (spawned with `process_group(0)`); Windows,
+/// `taskkill /F /T` through `lane_process::kill9`, the one Windows tree kill.
+fn kill_gh_tree(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::killpg(pid as i32, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    crate::inference::lane_process::kill9(pid);
+}
+
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buf).await;
+    }
+    buf
+}
+
+/// [`run_gh`] with a bound. A `gh` that outlives `bound` is killed with its whole tree
+/// (`gh repo clone` runs `git` as a descendant) BEFORE `gh` itself is reaped, because
+/// Windows' tree walk starts from the live parent; then its exit is awaited. Only a
+/// confirmed exit is [`GhRunError::TimedOut`]; otherwise [`GhRunError::TimedOutUnconfirmed`]
+/// tells the caller the tree may still be writing.
 pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
     let mut cmd = tokio::process::Command::new("gh");
-    cmd.args(args).current_dir(root).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.args(args)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
-    let child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
-    #[cfg(unix)]
-    let pid = child.id();
-    match tokio::time::timeout(bound, child.wait_with_output()).await {
-        Ok(Ok(out)) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()),
-        Ok(Ok(out)) => Err(GhRunError::Failed {
-            args: args.join(" "),
-            code: out.status.code(),
-            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        }),
+    let mut child = cmd.spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
+    let stdout = tokio::spawn(read_all(child.stdout.take()));
+    let stderr = tokio::spawn(read_all(child.stderr.take()));
+    let joined = args.join(" ");
+    match tokio::time::timeout(bound, child.wait()).await {
+        Ok(Ok(status)) => {
+            let out = stdout.await.unwrap_or_default(); // unwrap_or_default: a reader task that panicked reads as empty output
+            let err = stderr.await.unwrap_or_default(); // unwrap_or_default: as above
+            if status.success() {
+                Ok(String::from_utf8_lossy(&out).trim().to_string())
+            } else {
+                Err(GhRunError::Failed { args: joined, code: status.code(), stderr: String::from_utf8_lossy(&err).trim().to_string() })
+            }
+        }
         Ok(Err(e)) => Err(GhRunError::Spawn(e.to_string())),
         Err(_elapsed) => {
-            // the dropped future killed gh; its group (pgid == gh's pid) takes the git with it
-            #[cfg(unix)]
-            if let Some(pid) = pid {
-                unsafe {
-                    libc::killpg(pid as i32, libc::SIGKILL);
-                }
+            if let Some(pid) = child.id() {
+                kill_gh_tree(pid);
             }
-            Err(GhRunError::TimedOut { args: args.join(" "), secs: bound.as_secs() })
+            let _ = child.start_kill();
+            match tokio::time::timeout(GH_REAP_BOUND, child.wait()).await {
+                Ok(Ok(_)) => Err(GhRunError::TimedOut { args: joined, secs: bound.as_secs() }),
+                Ok(Err(_)) | Err(_) => Err(GhRunError::TimedOutUnconfirmed { args: joined, secs: bound.as_secs() }),
+            }
         }
     }
 }
