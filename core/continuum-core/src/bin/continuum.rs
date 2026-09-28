@@ -1350,6 +1350,8 @@ impl PreparedCoreService {
         // do not apply the read-only scheduler probe's timeout to registration.
         let status = std::process::Command::new(Self::shell()?)
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            // 5.1 rebuilds its own module path; a pwsh 7 caller's breaks Get-FileHash (card 1b040de5)
+            .env_remove("PSModulePath")
             .creation_flags(0x0800_0000)
             .stdin(Stdio::null())
             .status()
