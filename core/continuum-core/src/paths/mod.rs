@@ -43,23 +43,47 @@ fn resolve_home(
 }
 
 /// THE machine's shared cargo target dir: the one tree every substrate cargo build writes
-/// and the disk governor tracks and evicts (`system_resources::disk_reporters`). A configured
-/// `CARGO_TARGET_DIR` wins: an operator may keep it on another volume (the 5090's
-/// `D:\continuum-cold\cargo-target`), and deriving the home default there instead leaves the
-/// real tree unreported and unowned while a second cache recompiles the whole graph (#4548).
-/// Otherwise `<home>/.continuum/cache/cargo-target`. `None` only with no home: never a guessed
-/// path such as `target/`.
+/// and the disk governor tracks and evicts (`system_resources::disk_reporters`). The SAME rule
+/// `start.ps1` applies before it builds, so the governor and the builds agree:
+/// 1. `CARGO_TARGET_DIR`, from the process env or `~/.continuum/config.env`;
+/// 2. else `<CONTINUUM_STORAGE_PATH>/cargo-target`, the cold-storage installer's routing (the
+///    5090's `D:\continuum-cold\cargo-target`), from the env or `config.env`;
+/// 3. else `<home>/.continuum/cache/cargo-target`.
+///
+/// `config.env` matters because the core often runs as a service (a Windows scheduled task)
+/// that inherits no user or shell environment (Fable on #4549). Deriving the home default while
+/// the build writes elsewhere leaves the real tree unreported and unowned (the 2026-07-13
+/// shape), and a second cache recompiles the whole graph (#4548). `None` only with no home and
+/// nothing configured: never a guessed path such as `target/`.
 pub fn shared_cargo_target_dir() -> Option<std::path::PathBuf> {
-    resolve_cargo_target(std::env::var_os("CARGO_TARGET_DIR").map(Into::into), home_dir())
+    resolve_cargo_target(configured("CARGO_TARGET_DIR"), configured("CONTINUUM_STORAGE_PATH"), home_dir())
 }
 
-/// PURE: [`shared_cargo_target_dir`] from its inputs (an empty configured value is unset).
+/// [`shared_cargo_target_dir`] with `home` as the default's root (the disk registry's own home).
+pub(crate) fn shared_cargo_target_dir_under(home: &std::path::Path) -> std::path::PathBuf {
+    resolve_cargo_target(configured("CARGO_TARGET_DIR"), configured("CONTINUUM_STORAGE_PATH"), Some(home.to_path_buf()))
+        .unwrap_or_else(|| home.join(".continuum").join("cache").join("cargo-target")) // unwrap_or_else: unreachable, a home is given
+}
+
+/// A setting from the process env, else `~/.continuum/config.env`; blank is unset.
+fn configured(key: &str) -> Option<std::path::PathBuf> {
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| crate::config_env::read(key).filter(|v| !v.trim().is_empty()))
+        .map(std::path::PathBuf::from)
+}
+
+/// PURE: [`shared_cargo_target_dir`] from its inputs (an empty value is unset).
 pub(crate) fn resolve_cargo_target(
-    configured: Option<std::path::PathBuf>,
+    target: Option<std::path::PathBuf>,
+    storage: Option<std::path::PathBuf>,
     home: Option<std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
-    configured
-        .filter(|path| !path.as_os_str().is_empty())
+    let set = |p: &std::path::PathBuf| !p.as_os_str().is_empty();
+    target
+        .filter(set)
+        .or_else(|| storage.filter(set).map(|s| s.join("cargo-target")))
         .or_else(|| home.map(|h| h.join(".continuum").join("cache").join("cargo-target")))
 }
 
@@ -101,24 +125,21 @@ mod tests {
     use super::*;
 
     // what this catches (card 9d77bc84): the shared cargo cache derived as the home default
-    // while the operator configured it elsewhere (the 5090 on D:), so the disk governor
-    // tracked an empty tree and builds wrote a second cache; and an empty or missing value
-    // turned into a guessed path.
+    // while the build writes elsewhere (the 5090: CONTINUUM_STORAGE_PATH routes it to D:), so
+    // the disk governor tracked an empty tree and builds wrote a second cache; the rule
+    // drifting from start.ps1's order; and an empty or missing value becoming a guessed path.
     #[test]
-    fn a_configured_cargo_target_wins_and_the_default_is_under_home() {
-        let home = std::path::PathBuf::from("/home/u");
-        let configured = std::path::PathBuf::from("/cold/cargo-target");
-        assert_eq!(resolve_cargo_target(Some(configured.clone()), Some(home.clone())), Some(configured));
-        assert_eq!(
-            resolve_cargo_target(None, Some(home.clone())),
-            Some(home.join(".continuum").join("cache").join("cargo-target"))
-        );
-        assert_eq!(
-            resolve_cargo_target(Some(std::path::PathBuf::new()), Some(home.clone())),
-            Some(home.join(".continuum").join("cache").join("cargo-target")),
-            "an empty CARGO_TARGET_DIR is unset"
-        );
-        assert_eq!(resolve_cargo_target(None, None), None, "no home: no guessed path");
+    fn the_cargo_target_follows_start_ps1_order() {
+        use std::path::PathBuf;
+        let home = PathBuf::from("/home/u");
+        let default = home.join(".continuum").join("cache").join("cargo-target");
+        let explicit = PathBuf::from("/fast/target");
+        let storage = PathBuf::from("/cold");
+        assert_eq!(resolve_cargo_target(Some(explicit.clone()), Some(storage.clone()), Some(home.clone())), Some(explicit), "CARGO_TARGET_DIR wins");
+        assert_eq!(resolve_cargo_target(None, Some(storage.clone()), Some(home.clone())), Some(storage.join("cargo-target")), "cold-storage routing");
+        assert_eq!(resolve_cargo_target(None, None, Some(home.clone())), Some(default.clone()));
+        assert_eq!(resolve_cargo_target(Some(PathBuf::new()), Some(PathBuf::new()), Some(home)), Some(default), "blank is unset");
+        assert_eq!(resolve_cargo_target(None, None, None), None, "nothing known: no guessed path");
     }
 
     // What this catches (f098571b): native fallback must not replace an explicit
