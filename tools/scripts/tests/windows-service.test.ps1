@@ -514,6 +514,40 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     if (-not $refused) { throw 'Inaccessible image path was treated as an empty slot' }
     Write-Output 'PASS: active core/engine slots and inaccessible image paths are protected'
 
+    # Card 2c5d0ec0: with a CLI that knows `continuum engine idle-slot`, the engine slot is the
+    # CORE's answer from its lane records, not a process-table guess (a service-session lane's
+    # path is unreadable from here). Exit 3 refuses; an answer outside the slots refuses; a
+    # readable live engine inside the answer refuses.
+    $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
+    Set-Content -LiteralPath $fakeCli -Value @'
+if ($args[0] -eq '--help') { 'continuum engine idle-slot'; exit 0 }
+if ($args[0] -eq 'engine' -and $args[1] -eq 'idle-slot') {
+    if ($env:FAKE_IDLE_RC) { exit ([int]$env:FAKE_IDLE_RC) }
+    Join-Path $env:CONTINUUM_HOME ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
+}
+exit 64
+'@
+    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = $null })
+    try {
+        $env:FAKE_IDLE_SLOT = 'engine-b'; $env:FAKE_IDLE_RC = $null
+        $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli
+        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installed 'bin\engine-b'))) { throw "The core's idle slot was not used: $picked" }
+        $env:FAKE_IDLE_RC = '3'
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
+        if (-not $refused) { throw 'No idle slot (exit 3) was not refused' }
+        $env:FAKE_IDLE_RC = $null; $env:FAKE_IDLE_SLOT = 'service-a'
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'not an engine slot' }
+        if (-not $refused) { throw 'An answer outside the engine slots was accepted' }
+        $env:FAKE_IDLE_SLOT = 'engine-a'
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed 'bin\engine-a\llama-server.exe') })
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'running engine executes from it' }
+        if (-not $refused) { throw 'A readable live engine inside the core answer was overwritten' }
+    } finally { $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null; $script:liveProcesses = @() }
+    Write-Output 'PASS: the engine slot is the core answer from its lane records when the CLI knows the verb'
+
     # Compile a tiny native child: arguments containing spaces must
     # arrive unchanged and a nonzero exit must reach Task Scheduler.
     $child = Join-Path $scratch 'child with spaces.exe'
