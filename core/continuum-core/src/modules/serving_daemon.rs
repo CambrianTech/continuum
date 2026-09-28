@@ -2333,9 +2333,36 @@ impl ServingDaemonModule {
         self.spawn_baseline_vram.fetch_min(now, Ordering::Relaxed);
     }
 
+    /// The live lane's url when it hosts an in-engine training run (or one that ended within
+    /// the settle interval). Serving neither measures that lane nor replaces it: the training
+    /// graph is not serving cost, and a relaunch kills the run (Kimi's attempt 2, 2026-09-28).
+    fn lane_hosting_training(&self, now_ms: u64) -> Option<String> {
+        if !crate::inference::lane_training::any_resident(now_ms) {
+            return None; // the common case, answered without a file read
+        }
+        // the same live-lane record the training run chose its lane from (`live_lane_for`)
+        let url = (self.inherited_lane)()?.root_url();
+        crate::inference::lane_training::training_resident_on(&url, now_ms).then_some(url)
+    }
+
     async fn sample_lane_footprint(&self) {
         let now = crate::persona::trace::now_ms();
         if !crate::inference::lane_footprint::sample_due(now) {
+            return;
+        }
+        // A lane hosting a training run holds the training graph, optimizer and adapter beside
+        // its KV. Read as serving cost it became the model's record (~7.4 GB of "fixed per-lane
+        // residency" on the 5090), the 27B stopped fitting, and the plan downshifted the lane
+        // the run was training in. The reading is WITHHELD while it trains and for one sample
+        // interval after; the previous record stands, and the next clean sample replaces it.
+        if let Some(lane) = self.lane_hosting_training(now) {
+            crate::probe!(
+                class = "serving.footprint.unmeasured",
+                leg = "training_resident",
+                lane = lane.as_str(),
+                "the lane hosts an in-engine training run: its footprint is not serving cost, so the \
+                 per-token reading is WITHHELD and the model's record stands"
+            );
             return;
         }
         let live = self.serving_tx.borrow().clone();
@@ -2965,6 +2992,46 @@ impl ServingDaemonModule {
                     Some("KV paging completion unverified; replacing owned engine".into());
                 Self::emit_serving(self.bus.get(), &live);
                 let _ = self.serving_tx.send_replace(live);
+            }
+        }
+        // A LANE THAT HOSTS A TRAINING RUN IS NOT RECONCILED (Kimi's attempt 2, 5090,
+        // 2026-09-28 12:29Z: the plan downshifted the 27B to a 1.5B under a live /train, the swap
+        // killed the lane, and the run with it). Every path below can relaunch the lane: a model
+        // swap, a window re-home, a genome page-in, an empty-plan retirement. So none runs while
+        // it trains, and the streaks those paths earn restart from zero, so a plan formed under
+        // the training's memory cannot commit the instant it ends. The one exception is an
+        // emergency this owner may not wait out, an engine whose KV paging is unverified: that
+        // replacement proceeds, and the run is told why before its lane goes.
+        let now = crate::persona::trace::now_ms();
+        if let Some(lane) = self.lane_hosting_training(now) {
+            if self.server.paging_recovery_required() {
+                let told = crate::inference::lane_training::lane_lost_under_training(
+                    &lane,
+                    "an emergency replacement: the engine's KV paging completion is unverified",
+                );
+                crate::probe!(
+                    class = "serving.reconcile.training_lane_replaced",
+                    lane = lane.as_str(),
+                    run_told = told,
+                    "an emergency replaces a lane that hosts a training run; the run is told why before its lane goes"
+                );
+            } else {
+                self.model_change_streak.store(0, Ordering::Relaxed);
+                self.rehome_streak.store(0, Ordering::Relaxed);
+                self.downshift_streak.store(0, Ordering::Relaxed);
+                *self.pending_model_change.lock().unwrap_or_else(|p| p.into_inner()) = None; // unwrap_or_else: a poisoned streak cell is still cleared
+                static LAST_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                // one row per settle interval while held, not one per tick
+                if now.saturating_sub(LAST_HELD.load(Ordering::Relaxed)) >= crate::inference::lane_training::TRAINING_SETTLE_MS {
+                    LAST_HELD.store(now, Ordering::Relaxed);
+                    crate::probe!(
+                        class = "serving.reconcile.held_for_training",
+                        lane = lane.as_str(),
+                        plan_model = planned.plan.as_ref().map(|p| p.base_model.model_id.as_str()).unwrap_or("<none>"), // unwrap_or: probe label for an empty plan
+                        "the lane hosts a training run: no relaunch, swap, re-home or retirement until it ends"
+                    );
+                }
+                return None;
             }
         }
         // Pull the desired model id, the host-fit PER-LANE served window, AND
@@ -9754,6 +9821,32 @@ pub(crate) mod tests {
         );
         // …and a true cold boot still has no incumbent at all.
         assert_eq!(incumbent_for_plan(None, None), None);
+    }
+
+    // what this catches: Kimi's attempt 2 (5090, 2026-09-28 12:29Z). The plan wanted a different
+    // lane while an in-engine training run lived in the current one, the reconcile relaunched
+    // it, and the run died with its lane. A lane that hosts a run is not reconciled: the same
+    // plan that would otherwise serve now spawns nothing while the run is registered.
+    #[tokio::test]
+    async fn a_lane_hosting_a_training_run_is_never_relaunched_under_it() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let mut daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
+        let lane = LaneRecord { port: 61347, ..inherited_27b() };
+        let url = lane.root_url();
+        daemon.set_inherited_lane(Arc::new(move || Some(lane.clone())));
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+        daemon.publish_plan(budget, &candidates, &candidates);
+
+        let training = crate::inference::lane_training::training_starts_on(&url);
+        assert!(daemon.reconcile_to_plan().is_none(), "a lane that hosts a run is not reconciled");
+        assert_eq!(serves.load(Ordering::SeqCst), 0, "nothing was launched over the run");
+        drop(training);
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "an ended run's lane settles for one sample interval before serving may act on it"
+        );
+        assert_eq!(serves.load(Ordering::SeqCst), 0);
     }
 
     // what this catches: a published plan drives a reconcile that brings the

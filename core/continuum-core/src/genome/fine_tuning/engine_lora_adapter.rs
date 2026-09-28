@@ -401,7 +401,7 @@ type LaneResolver = Box<dyn Fn(&str) -> Option<(String, u32)> + Send + Sync>;
 
 fn live_lane_for(base: &str) -> Option<(String, u32)> {
     let rec = crate::inference::lane_registry::live_lane()?;
-    (rec.model == base).then(|| (format!("http://127.0.0.1:{}", rec.port), rec.context_window))
+    (rec.model == base).then(|| (rec.root_url(), rec.context_window))
 }
 
 /// Admission: the governed lease a run holds for its life. `Governed` in production;
@@ -599,7 +599,20 @@ impl InPlaceRun for EngineRun {
 
     async fn run(self: Box<Self>, cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
         let (store, job) = (self.hold_store.clone(), self.job);
-        let end = self.run_steered(cancel, progress).await;
+        // The lane hosts this run for its whole life: serving must neither measure the training
+        // graph as its own cost nor replace the lane under it (Kimi's attempt 2, killed by our
+        // own planner, 2026-09-28). The guard drops when this function returns, however it
+        // returns, including a dropped future.
+        let lane = self.lane.clone();
+        let _hosted = crate::inference::lane_training::training_starts_on(&lane);
+        let end = match self.run_steered(cancel, progress).await {
+            // serving had to replace the lane anyway (an emergency): the failure says so
+            InPlaceEnd::Failed(why) => match crate::inference::lane_training::lost_reason(&lane) {
+                Some(reason) => InPlaceEnd::Failed(format!("{why}; serving replaced the lane under this run: {reason}")),
+                None => InPlaceEnd::Failed(why),
+            },
+            other => other,
+        };
         // The job ended (finished, failed or cancelled), and its pauses end with it. A dropped
         // future (a core shutting down) never reaches this line, so its intent stays on disk for
         // the re-attach path that does not exist yet (see training_hold_store).

@@ -103,6 +103,14 @@ pub struct LaneRecord {
     pub engine_bin: Option<PathBuf>,
 }
 
+impl LaneRecord {
+    /// The lane's root url, the one spelling every in-process client addresses it by (the
+    /// training run posts `/train` under it; serving asks [`super::lane_training`] by it).
+    pub fn root_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
 /// The LIVE-role lane left behind by a previous generation of this core, if one
 /// is still running — a **past form of ourself**.
 ///
