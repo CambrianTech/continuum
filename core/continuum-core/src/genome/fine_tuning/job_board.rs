@@ -110,11 +110,9 @@ pub struct WatchedJob {
     /// The domain bucket (`DomainClassifier` output) this layer specializes — used
     /// as the gene NAME on page-in and the eval gene label.
     pub trait_kind: String,
-    /// The gym that measures this trait — the `cognition/eval` `eval_set` JSONL path,
-    /// carried verbatim from the [`super::types::TrainingJobRequest`]. The sentinel
-    /// passes it to the A/B eval; `None` means the recipe declared no gym, so the
-    /// gene is unmeasurable and the sentinel refuses to adopt it (never falls back to
-    /// a default gym — [[fallbacks-are-illegal-fail-loud]]).
+    /// The `cognition/eval` `eval_set` JSONL path, carried verbatim from the
+    /// [`super::types::TrainingJobRequest`] for a manual spot-check. The sentinel does
+    /// not read it: a gene's verdict is its in-room trial, never an A/B eval.
     pub eval_set: Option<String>,
     /// The gene's embedding-space identity, MINTED at `genome/job-create` — the
     /// one moment the training corpus is in hand (before this field the chain

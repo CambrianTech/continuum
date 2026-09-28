@@ -1093,11 +1093,10 @@ pub fn produce_received(
 /// dispatching received lessons on demand) produces byte-identical params to the
 /// fire-and-forget producers. `source: raw` = unfiltered capture; minExamples omitted →
 /// DEFAULT_MIN_EXAMPLES (the trigger auto-fires job-create at the threshold). `evalSet`
-/// rides the {trait → gym} edge: the committed gym that MEASURES `plan.trait_kind`. When
-/// the trait HAS a gym it is declared so the L3 sentinel can A/B and adopt the gene; when
-/// it has NONE the field is OMITTED and the sentinel REFUSES to adopt as unmeasurable
-/// ([[fallbacks-are-illegal-fail-loud]]) — never paged into a live persona on a gym that
-/// doesn't measure its trait. `provenance` is metadata only (live-turn vs received-lesson).
+/// rides the {trait → gym} edge: the committed gym for `plan.trait_kind` when there is one
+/// (omitted when there is none), kept for a manual spot-check. Adoption does not read it:
+/// the sentinel opens an in-room gene trial either way. `provenance` is metadata only
+/// (live-turn vs received-lesson).
 /// The audit metadata every example of a plan carries: source, quality, the bare
 /// domain, and the card stamp when there is one.
 fn example_metadata(plan: &SubmitPlan, provenance: &str) -> serde_json::Value {

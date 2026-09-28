@@ -52,11 +52,10 @@ pub struct SubmitParams {
     pub trait_kind: String,
     pub examples: Vec<TrainingExample>,
     pub source: TrainingSource,
-    /// The gym that MEASURES this trait — the `cognition/eval` `eval_set` JSONL path.
+    /// The trait's `cognition/eval` `eval_set` JSONL path, a manual spot-check gym.
     /// First-arrival pins it for the bucket; a later submit with a divergent gym is
-    /// rejected `InconsistentBucket`. Rides onto the dispatched `TrainingJobRequest`
-    /// so the L3 sentinel measures the gene on its OWN declared gym; `None` means no
-    /// gym → the sentinel refuses to adopt ([[fallbacks-are-illegal-fail-loud]]).
+    /// rejected `InconsistentBucket`. It rides onto the dispatched `TrainingJobRequest`;
+    /// adoption does not read it (the gene's verdict is its in-room trial).
     #[serde(default)]
     #[ts(optional)]
     pub eval_set: Option<String>,
