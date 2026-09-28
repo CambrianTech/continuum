@@ -327,7 +327,7 @@ impl PortLeases {
 
 /// `holder`'s leases on this node, for her grounding; empty before the ports module is up.
 pub fn held_by(holder: PeerId) -> Vec<PortLease> {
-    NODE_LEASES.get().map(|leases| leases.held_by(holder)).unwrap_or_default()
+    NODE_LEASES.get().map(|leases| leases.held_by(holder)).unwrap_or_default() // unwrap_or_default: before the ports module is up nobody holds a lease; her grounding shows none
 }
 
 /// Owns the node's [`PortLeases`] and the `ports/*` verbs.

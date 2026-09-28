@@ -876,7 +876,7 @@ fn chosen_port() -> u16 {
 /// window is free we return `base` and let the spawn fail loud
 /// ([[fallbacks-are-illegal-fail-loud]]).
 fn first_free_port(base: u16) -> u16 {
-    crate::utils::ports::first_bindable(DEFAULT_HOST, base..base.saturating_add(PORT_SCAN_WINDOW)).unwrap_or(base)
+    crate::utils::ports::first_bindable(DEFAULT_HOST, base..base.saturating_add(PORT_SCAN_WINDOW)).unwrap_or(base) // unwrap_or: nothing free in the window -> base, so the spawn's bind fails LOUD (never a silent wrong port)
 }
 
 /// The OpenAI-compatible base url personas' inference adapters point at.
