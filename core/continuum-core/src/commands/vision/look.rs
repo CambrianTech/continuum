@@ -73,15 +73,34 @@ enum LookAt {
     Page(String),
 }
 
+/// A page the renderer may load: http(s) on this machine only. The renderer runs as the
+/// core, so any other host (an internal endpoint, cloud metadata at 169.254.169.254) would
+/// be reached with the core's network position (Cormac on #4539).
+fn is_loopback_page(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default(); // unwrap_or_default: split always yields a first piece
+    // userinfo ("user@host") is refused outright: it is how a host is disguised
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(), // unwrap_or_default: as above
+        None => authority.split(':').next().unwrap_or_default(), // unwrap_or_default: as above
+    };
+    matches!(host.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1")
+}
+
 impl TryFrom<&VisionLookParams> for LookAt {
     type Error = CommandError;
 
     fn try_from(p: &VisionLookParams) -> Result<Self, Self::Error> {
         match (p.file_path.as_deref().map(str::trim), p.url.as_deref().map(str::trim)) {
             (Some(file), None) if !file.is_empty() => Ok(LookAt::File(file.to_string())),
-            (None, Some(url)) if url.starts_with("http://") || url.starts_with("https://") => Ok(LookAt::Page(url.to_string())),
+            (None, Some(url)) if is_loopback_page(url) => Ok(LookAt::Page(url.to_string())),
             (None, Some(url)) => Err(CommandError::Invalid(format!(
-                "vision/look: url '{url}' must be http:// or https:// (a page, e.g. your dev server); for a file use file_path"
+                "vision/look: url '{url}' must be an http(s) page on this machine (localhost, 127.0.0.1 or [::1], e.g. your dev server); for a file use file_path, for a public page web/fetch"
             ))),
             (Some(_), Some(_)) => Err(CommandError::Invalid("vision/look: give file_path OR url, not both".into())),
             (None, None) | (Some(_), None) => Err(CommandError::Invalid(
@@ -203,8 +222,9 @@ mod tests {
     }
 
     // what this catches: a look at a PAGE that could reach host files (file:// runs as the
-    // core, outside her workspace), or an ambiguous call silently picking one target. Exactly
-    // one of file_path or an http(s) url; the page is what a designer or QA needs to see.
+    // core, outside her workspace) or another host from the core's network position (cloud
+    // metadata, an internal endpoint, a userinfo-disguised host), or an ambiguous call
+    // silently picking one target. Exactly one of file_path or a loopback http(s) url.
     #[test]
     fn a_look_is_one_file_or_one_http_page() {
         let at = |file: Option<&str>, url: Option<&str>| {
@@ -213,6 +233,15 @@ mod tests {
         assert_eq!(at(Some("shot.png"), None).ok(), Some(LookAt::File("shot.png".into())));
         assert_eq!(at(None, Some("http://localhost:5173")).ok(), Some(LookAt::Page("http://localhost:5173".into())));
         assert!(at(None, Some("file:///Users/x/.ssh/id_rsa")).is_err(), "a file url never reaches the renderer");
+        assert!(at(None, Some("http://[::1]:5173/app")).is_ok());
+        for outside in [
+            "http://169.254.169.254/latest/meta-data",
+            "https://example.com",
+            "http://localhost@evil.example/",
+            "http://10.0.0.5:8080",
+        ] {
+            assert!(at(None, Some(outside)).is_err(), "{outside} is not this machine");
+        }
         assert!(at(Some("a.png"), Some("http://x")).is_err(), "both is ambiguous");
         assert!(at(None, None).is_err());
     }
