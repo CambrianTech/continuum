@@ -4129,7 +4129,10 @@ impl ServingDaemonModule {
     /// lane: the rate only counts intervals with prompt left to prefill, and a lane proven
     /// alive by real work skips the smoke probe below. Read inside that probe, it ran only
     /// on idle lanes and never published (the M5, 2026-09-27: zero `would_clamp` rows over
-    /// a saturated afternoon). Never during a reconcile's swap, and never stacked.
+    /// a saturated afternoon). Not started while a reconcile is in flight, and never stacked.
+    /// A reconcile that begins after the read started can replace the engine under it; the
+    /// window discards that interval itself (a task counter going backwards, or a read gap
+    /// past `MAX_READ_GAP_MS`), so a sample never spans an engine replacement.
     fn spawn_prefill_knee_read(&self) -> Option<JoinHandle<()>> {
         if self.reconciling.load(Ordering::Acquire) || self.prefill_knee_reading.swap(true, Ordering::AcqRel) {
             return None;
