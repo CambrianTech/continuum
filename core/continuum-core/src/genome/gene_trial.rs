@@ -328,7 +328,6 @@ pub fn credit_settled_card(persona: Uuid, card: Uuid, passed: bool, turns: &[Car
 /// out of the adapter manifest, so the serving engine retires it in place, and the same
 /// ledger row records the loss. Either way the trial row, already written, is the receipt.
 fn apply_decision(t: &GeneTrial, now_ms: u64) {
-    let rate = |a: ArmTally| if a.settled == 0 { 0.0 } else { f64::from(a.passed) / f64::from(a.settled) };
     if t.state == TrialState::Retired {
         if let Err(error) = crate::forge::adapter_manifest::unregister(&t.path) {
             crate::probe!(
@@ -340,15 +339,7 @@ fn apply_decision(t: &GeneTrial, now_ms: u64) {
         }
     }
     if let Some(dir) = crate::genome::fitness_ledger::GeneFitnessIndex::default_dir() {
-        let row = serde_json::json!({
-            "geneId": t.alias,
-            "lift": rate(t.candidate) - rate(t.stable),
-            "passRate": rate(t.candidate),
-            "basePassRate": rate(t.stable),
-            "capturedAtMs": now_ms,
-            "source": "her-work",
-            "trial": t.id,
-        });
+        let row = fitness_receipt(t, now_ms);
         let line = format!("{row}\n");
         let path = dir.join(format!("{}.jsonl", t.persona_id));
         let written = std::fs::create_dir_all(&dir).and_then(|_| {
@@ -378,6 +369,33 @@ fn apply_decision(t: &GeneTrial, now_ms: u64) {
         reason = verdict.map_or("", |v| v.reason.as_str()),
         "her work decided a gene: promoted into her genome, or retired out of it"
     );
+}
+
+/// Preserve the evidence behind a scalar lift in the existing fitness ledger.
+/// A path identifies the trial artifact locally; it is not a content hash or
+/// proof of compatibility with another base or combination of adapters.
+fn fitness_receipt(t: &GeneTrial, now_ms: u64) -> serde_json::Value {
+    let rate = |a: ArmTally| if a.settled == 0 { 0.0 } else { f64::from(a.passed) / f64::from(a.settled) };
+    let (candidate, stable) = t.verdict.as_ref()
+        .map_or((t.candidate, t.stable), |v| (v.candidate, v.stable));
+    serde_json::json!({
+        "geneId": t.alias,
+        "lift": rate(candidate) - rate(stable),
+        "passRate": rate(candidate),
+        "basePassRate": rate(stable),
+        "capturedAtMs": now_ms,
+        "source": "her-work",
+        "trial": t.id,
+        "personaId": t.persona_id,
+        "baseModelId": t.base_model_id,
+        "adapterPath": t.path,
+        "openedAtMs": t.opened_at_ms,
+        "trialState": t.state,
+        "candidate": candidate,
+        "stable": stable,
+        "verdict": t.verdict,
+        "creditedCardIds": t.credited_cards,
+    })
 }
 
 /// The trial file.
@@ -556,7 +574,19 @@ mod tests {
         assert!(genes_for_turn(&trials, Uuid::nil(), "qwen-27b", Some(card_on)).is_empty());
 
         let verdict = TrialVerdict { candidate: ArmTally { settled: 6, passed: 4 }, stable: ArmTally { settled: 6, passed: 3 }, reason: "no worse".into() };
-        store.decide(t.id, TrialState::Promoted, verdict.clone(), 30).unwrap().expect("decided");
+        let decided = store.decide(t.id, TrialState::Promoted, verdict.clone(), 30).unwrap().expect("decided");
+        // Regression: flattening a verdict into lift alone loses base, sample
+        // size and lineage, and decide()'s supplied tallies need not match t's counters.
+        let receipt = fitness_receipt(&decided, 30);
+        assert_eq!(receipt["baseModelId"], "qwen-27b");
+        assert_eq!(receipt["personaId"], kimi.to_string());
+        assert_eq!(receipt["trial"], t.id.to_string());
+        assert_eq!(receipt["adapterPath"], "/genes/k1.gguf");
+        assert_eq!(receipt["candidate"]["settled"], 6);
+        assert_eq!(receipt["stable"]["passed"], 3);
+        assert_eq!(receipt["trialState"], "promoted");
+        assert_eq!(receipt["verdict"]["reason"], "no worse");
+        assert!((receipt["lift"].as_f64().expect("test: numeric lift") - 1.0 / 6.0).abs() < 1e-12);
         assert!(store.decide(t.id, TrialState::Retired, verdict, 40).unwrap().is_none(), "decided once");
         let trials = store.load().unwrap();
         assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", None).len(), 1, "promoted runs every turn");
