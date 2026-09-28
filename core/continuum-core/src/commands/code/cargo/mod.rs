@@ -81,14 +81,12 @@ pub(crate) struct CargoRun {
     pub duration_ms: u64,
 }
 
-/// Pin cargo's artifact dir to the ONE shared cache (`$HOME/.continuum/cache/cargo-target`)
-/// so persona-driven builds never scatter ghost `target/` dirs. `None` if `$HOME` is
-/// unset — then cargo falls back to its own default rather than us guessing a path.
+/// Pin cargo's artifact dir to the ONE shared cache ([`crate::paths::shared_cargo_target_dir`]:
+/// a configured `CARGO_TARGET_DIR`, else under home) so persona-driven builds never scatter
+/// ghost `target/` dirs. `None` with no home: cargo then keeps its own default rather than
+/// us guessing a path.
 fn shared_target_dir() -> Option<String> {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .map(|h| format!("{h}/.continuum/cache/cargo-target"))
+    crate::paths::shared_cargo_target_dir().map(|p| p.display().to_string())
 }
 
 /// Run `cargo <args>` in `root` under a wall-clock timeout, capturing output.
