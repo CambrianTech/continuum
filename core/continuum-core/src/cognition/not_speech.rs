@@ -295,18 +295,20 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     compact.starts_with("{\"tool_call\"")
 }
 
-/// `ns/verb(` at the very start of `t`, called with a JSON object or kwargs (`cmd=…`).
+/// A namespaced command CALLED at the very start of `t`: `ns/verb(` or a deeper path
+/// (`collaboration/chat/send(`), with a JSON object, kwargs (`cmd=…`), or no arguments.
 fn opens_with_bare_call(t: &str) -> bool {
     let Some((callee, after)) = t.split_once('(') else {
         return false;
     };
     let seg = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-.".contains(c));
-    let namespaced = callee.len() <= 64 && callee.split_once('/').is_some_and(|(ns, verb)| seg(ns) && seg(verb));
+    // every segment of the path, and at least two of them (Cormac on #4525)
+    let namespaced = callee.len() <= 96 && callee.contains('/') && callee.split('/').all(seg);
     let a = after.trim_start();
     let kwargs = a
         .split_once('=')
         .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
-    namespaced && (a.starts_with('{') || kwargs)
+    namespaced && (a.starts_with('{') || a.starts_with(')') || kwargs)
 }
 
 /// A namespaced command invoked with an object — `code/shell({…})` — anywhere in `t`.
@@ -653,6 +655,10 @@ mod tests {
         assert!(is_not_speech(kimi).is_some(), "her observation block is not her voice");
         let json = "code/read({\"file_path\":\"src/main.rs\"})\nResult:\nfn main() {}";
         assert!(is_not_speech(json).is_some());
+        // Cormac on #4525: deeper command paths, and a call with no arguments
+        assert!(is_not_speech("collaboration/chat/send(room=general, message=hi)\nResult:\nshortId: abc").is_some());
+        assert!(is_not_speech("genome/training-trigger/submit({\"x\":1})\nResult:\nok").is_some());
+        assert!(is_not_speech("work/list()\nResult:\n3 cards").is_some());
         assert!(is_not_speech("code/shell(cmd=ls state) is how you would list it; no need to run it twice.").is_none(), "explaining a call is speech");
         assert!(is_not_speech("I ran it.\nResult: the tests pass now, 12 of 12.").is_none(), "a result reported in prose is speech");
     }
