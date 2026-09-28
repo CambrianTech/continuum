@@ -569,6 +569,9 @@ mod tests {
         promote(root, "engine-c", "ccc000:cuda").unwrap();
         assert_eq!(bootstrap_service_engine(&b), Ok(false), "the release still names b, the deploy promoted c");
         assert_eq!(current_slot(root), Some("engine-c"), "a promotion survives the restart");
+        std::fs::remove_file(&b).unwrap();
+        assert_eq!(bootstrap_service_engine(&b), Ok(false), "the release's own binary gone: the standing engine still starts");
+        std::fs::write(&b, b"bin").unwrap();
         std::fs::remove_file(root.join("engine-c").join(STAMP_FILE)).unwrap();
         assert_eq!(bootstrap_service_engine(&b), Ok(true), "current names an unstamped slot: bootstrapped");
         assert_eq!(current_slot(root), Some("engine-b"));
