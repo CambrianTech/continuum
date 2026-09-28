@@ -57,18 +57,34 @@ use pr_create::CodeGithubPrCreate;
 pub(crate) use super::git::workspace_root_for;
 
 /// How a bounded `gh` invocation failed. Typed so a caller can tell a timeout from a refusal
-/// `gh` itself reported, and a timeout whose process tree is confirmed gone from one that is
-/// not (whose output directory may still be written to).
+/// `gh` itself reported. A timeout never asserts that `gh`'s descendants exited: a caller
+/// must treat anything they were writing as possibly still being written.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum GhRunError {
     #[error("could not run `gh` — is the GitHub CLI installed and authenticated? ({0})")]
     Spawn(String),
     #[error("`gh {args}` failed (exit {code:?}): {stderr}")]
     Failed { args: String, code: Option<i32>, stderr: String },
-    #[error("`gh {args}` did not finish within {secs} s; its process tree was killed and has exited")]
-    TimedOut { args: String, secs: u64 },
-    #[error("`gh {args}` did not finish within {secs} s; its process tree was killed but its exit was not confirmed")]
-    TimedOutUnconfirmed { args: String, secs: u64 },
+    #[error("`gh {args}` did not finish within {secs} s; a tree kill was {tree_kill} and gh itself was stopped, but its descendants' exit is not asserted")]
+    TimedOut { args: String, secs: u64, tree_kill: TreeKill },
+}
+
+/// What the platform said about the tree kill, reported as said, never upgraded to "exited".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TreeKill {
+    Delivered,
+    Refused,
+    NoPid,
+}
+
+impl std::fmt::Display for TreeKill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TreeKill::Delivered => "delivered",
+            TreeKill::Refused => "refused by the platform",
+            TreeKill::NoPid => "impossible (no pid)",
+        })
+    }
 }
 
 impl From<GhRunError> for CommandError {
@@ -77,19 +93,27 @@ impl From<GhRunError> for CommandError {
     }
 }
 
-/// How long a killed `gh` tree gets to be reaped before its exit counts as unconfirmed.
+/// How long a killed `gh` gets to be reaped.
 const GH_REAP_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Kill `pid` and every descendant while `pid` is still alive, so the walk can find them:
 /// Unix, the process group it leads (spawned with `process_group(0)`); Windows,
-/// `taskkill /F /T` through `lane_process::kill9`, the one Windows tree kill.
-fn kill_gh_tree(pid: u32) {
+/// `taskkill /F /T`, the same tree kill `lane_process::kill9` uses, with its outcome kept.
+fn kill_gh_tree(pid: u32) -> TreeKill {
     #[cfg(unix)]
-    unsafe {
-        libc::killpg(pid as i32, libc::SIGKILL);
+    {
+        // SAFETY: killpg only sends a signal to the group gh leads; no memory is touched
+        let rc = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+        if rc == 0 { TreeKill::Delivered } else { TreeKill::Refused }
     }
     #[cfg(windows)]
-    crate::inference::lane_process::kill9(pid);
+    {
+        let ok = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ok { TreeKill::Delivered } else { TreeKill::Refused }
+    }
 }
 
 async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
@@ -103,9 +127,9 @@ async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
 
 /// [`run_gh`] with a bound. A `gh` that outlives `bound` is killed with its whole tree
 /// (`gh repo clone` runs `git` as a descendant) BEFORE `gh` itself is reaped, because
-/// Windows' tree walk starts from the live parent; then its exit is awaited. Only a
-/// confirmed exit is [`GhRunError::TimedOut`]; otherwise [`GhRunError::TimedOutUnconfirmed`]
-/// tells the caller the tree may still be writing.
+/// Windows' tree walk starts from the live parent; then `gh` is reaped. A timeout is
+/// [`GhRunError::TimedOut`] carrying what the platform said about the tree kill, and never
+/// claims the tree exited.
 pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
     let mut cmd = tokio::process::Command::new("gh");
     cmd.args(args)
@@ -132,14 +156,11 @@ pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time
         }
         Ok(Err(e)) => Err(GhRunError::Spawn(e.to_string())),
         Err(_elapsed) => {
-            if let Some(pid) = child.id() {
-                kill_gh_tree(pid);
-            }
+            let tree_kill = child.id().map_or(TreeKill::NoPid, kill_gh_tree);
             let _ = child.start_kill();
-            match tokio::time::timeout(GH_REAP_BOUND, child.wait()).await {
-                Ok(Ok(_)) => Err(GhRunError::TimedOut { args: joined, secs: bound.as_secs() }),
-                Ok(Err(_)) | Err(_) => Err(GhRunError::TimedOutUnconfirmed { args: joined, secs: bound.as_secs() }),
-            }
+            // reap gh so it is not left a zombie; this says nothing about its descendants
+            let _ = tokio::time::timeout(GH_REAP_BOUND, child.wait()).await;
+            Err(GhRunError::TimedOut { args: joined, secs: bound.as_secs(), tree_kill })
         }
     }
 }

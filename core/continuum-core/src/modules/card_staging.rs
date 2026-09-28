@@ -272,6 +272,22 @@ pub(crate) enum CloneError {
     Gh(#[from] crate::commands::code::github::GhRunError),
 }
 
+impl CloneError {
+    /// Whether the clone's `.partial-` directory must be KEPT: a timed-out clone's `git` may
+    /// still be writing it (a timeout never asserts the tree exited), so only the repos
+    /// class's `.partial-` sweep (card 5c5f3b42) removes it. Every other failure ended
+    /// before or with `gh`, and its partial is removed at once. Exhaustive on purpose: a new
+    /// variant must decide.
+    fn leaves_a_partial_that_may_still_be_written(&self) -> bool {
+        use crate::commands::code::github::GhRunError;
+        match self {
+            CloneError::Gh(GhRunError::TimedOut { .. }) => true,
+            CloneError::Gh(GhRunError::Spawn(_) | GhRunError::Failed { .. }) => false,
+            CloneError::NotOwnerSlashName { .. } | CloneError::Io { .. } => false,
+        }
+    }
+}
+
 /// How long one managed clone may run before its process tree is killed.
 const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
 
@@ -283,8 +299,8 @@ const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
 /// it succeeded, so a node that dies mid-clone never leaves a half-cloned checkout that
 /// the next claim would adopt as real. Through `code/github` (the one GitHub client), so a
 /// private repo clones with the same auth the PR verbs use, and a clone past
-/// [`CLONE_BOUND`] is killed with its `git` descendant; its partial is removed only once
-/// that tree's exit is confirmed.
+/// [`CLONE_BOUND`] has its tree killed and its partial KEPT (the tree may still be writing),
+/// while a clone `gh` itself refused has its partial removed.
 async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneError> {
     static CLONING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let repo = CloneableRepo::try_from(repo)?;
@@ -304,12 +320,8 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
             .await
             .map_err(CloneError::from)
             .and_then(|_| std::fs::rename(&partial, &target).map_err(|e| CloneError::Io { path: target.clone(), error: e.to_string() }));
-        match &cloned {
-            Ok(()) => {}
-            // the tree may still be writing it: keep it, and the `.partial-` sweep of the
-            // repos class (card 5c5f3b42) removes it once nothing holds it
-            Err(CloneError::Gh(crate::commands::code::github::GhRunError::TimedOutUnconfirmed { .. })) => {}
-            Err(_) => {
+        if let Err(e) = &cloned {
+            if !e.leaves_a_partial_that_may_still_be_written() {
                 let _ = std::fs::remove_dir_all(&partial);
             }
         }
@@ -562,6 +574,18 @@ mod tests {
                 "{hostile:?} must not be cloneable"
             );
         }
+    }
+
+    // what this catches (Codex on #4535): a timed-out clone's partial deleted while its git
+    // may still be writing, because a reaped gh was read as a dead tree. Only a timeout keeps
+    // it; a clone gh refused is removed at once (the positive control).
+    #[test]
+    fn only_a_timed_out_clone_keeps_its_partial() {
+        use crate::commands::code::github::{GhRunError, TreeKill};
+        let timed_out = CloneError::Gh(GhRunError::TimedOut { args: "repo clone o/r".into(), secs: 900, tree_kill: TreeKill::Delivered });
+        assert!(timed_out.leaves_a_partial_that_may_still_be_written(), "even a delivered tree kill does not prove the tree exited");
+        let refused = CloneError::Gh(GhRunError::Failed { args: "repo clone o/r".into(), code: Some(1), stderr: "not found".into() });
+        assert!(!refused.leaves_a_partial_that_may_still_be_written());
     }
 
     fn generic_card(title: &str) -> airc_lib::WorkCard {
