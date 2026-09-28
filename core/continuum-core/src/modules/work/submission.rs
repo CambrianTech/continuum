@@ -30,7 +30,7 @@ fn room_label(name: &str, channel: Uuid) -> String {
     export_to = "../../../protocol/typescript/work/WorkArtifactReference.ts"
 )]
 pub struct WorkArtifactReference {
-    /// SHA-256 of the patch bytes, not a git sha.
+    /// SHA-256 of the patch bytes (64 hex), not a git sha.
     pub hash: String,
     /// Artifact byte length.
     #[ts(type = "number")]

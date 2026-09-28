@@ -5,7 +5,7 @@
  */
 export type WorkArtifactReference = { 
 /**
- * SHA-256 of the patch bytes, not a git sha.
+ * SHA-256 of the patch bytes (64 hex), not a git sha.
  */
 hash: string, 
 /**
