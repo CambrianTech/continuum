@@ -599,6 +599,7 @@ mod tests {
             started_ms: now_ms - 1_000,
             target_sha: "deadbeef00".into(),
             renewed_ms: 0,
+            progress_ms: 0,
         };
         crate::runtime::deploy_claim::write(&root, &dead).expect("claim written");
         assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Stop);
@@ -608,6 +609,7 @@ mod tests {
             started_ms: now_ms - 1_000,
             target_sha: "cafef00d00".into(),
             renewed_ms: 0,
+            progress_ms: 0,
         };
         crate::runtime::deploy_claim::write(&root, &live).expect("claim written");
         assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Deploy(live));
@@ -641,6 +643,7 @@ mod tests {
             started_ms: 0,
             target_sha: "abcdef123456789".into(),
             renewed_ms: 0,
+            progress_ms: 0,
         };
         let h = Handoff {
             written_ms: 60_000,
