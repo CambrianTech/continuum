@@ -210,7 +210,7 @@ impl Shape {
 /// serving process down (fork #27 now refuses it). Rounded DOWN, so the lease never grows past
 /// what was asked; at least one 256-token context.
 fn train_window(sequence_length: u32) -> u32 {
-    ((sequence_length / 256).max(1) * 256).min(8192)
+    (sequence_length / 256).max(1) * 256
 }
 
 /// The depth a finished run actually adapted, as the shape it is recorded under: the engine's
@@ -294,6 +294,11 @@ struct TrainRequest {
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_budget_mib: Option<u64>,
+    /// "middle" (fork #29): at the served window a lived example trains whole; only a
+    /// conversation longer than serving's own window drops its OLDEST history exchanges, and
+    /// always keeps the system and tool head and her reply, the context serving always has
+    /// (Cormac on #29). An engine before #29 ignores it.
+    fit: &'static str,
 }
 
 /// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
@@ -365,16 +370,28 @@ struct TrainStatus {
     n_layer: Option<u32>,
     #[serde(default)]
     layers_adapted: Option<u32>,
+    /// examples kept, cut from the front to fit the window, and skipped because her last
+    /// reply alone did not fit (fork #29); absent on an engine before it
+    #[serde(default)]
+    examples: Option<u64>,
+    #[serde(default)]
+    examples_truncated: Option<u64>,
+    #[serde(default)]
+    examples_skipped: Option<u64>,
     #[serde(default)]
     error: Option<String>,
 }
 
 /// Where the lane serving `base` answers, if one does on this node.
-type LaneResolver = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// The live lane serving a base: its url and the per-slot window it was launched with (0 =
+/// a record from before that field, which is unknown). One lookup decides both, so the
+/// training window can never come from a second source that disagrees with the lane
+/// (Cormac on #4498).
+type LaneResolver = Box<dyn Fn(&str) -> Option<(String, u32)> + Send + Sync>;
 
-fn live_lane_for(base: &str) -> Option<String> {
+fn live_lane_for(base: &str) -> Option<(String, u32)> {
     let rec = crate::inference::lane_registry::live_lane()?;
-    (rec.model == base).then(|| format!("http://127.0.0.1:{}", rec.port))
+    (rec.model == base).then(|| (format!("http://127.0.0.1:{}", rec.port), rec.context_window))
 }
 
 /// Admission: the governed lease a run holds for its life. `Governed` in production;
@@ -424,7 +441,8 @@ impl EngineLoraFineTuner {
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
-            lane: Box::new(move |_| Some(lane_url.clone())),
+            // a lane launched at 256 per slot: the window every existing test asserts
+            lane: Box::new(move |_| Some((lane_url.clone(), 256))),
             train_dir: Some(train_dir),
             footprints: Footprints { path: footprints },
             admission: Admission::Ungoverned,
@@ -675,7 +693,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         if request.dataset.examples.is_empty()
             || schedule.epochs == 0
             || schedule.epochs > 100
-            || !(16..=8192).contains(&schedule.sequence_length)
+            || schedule.sequence_length < 16
             || !schedule.learning_rate.is_finite()
             || schedule.learning_rate <= 0.0
             || schedule.learning_rate > 1.0
@@ -683,11 +701,11 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             || lora.alpha == 0
         {
             return Err(FineTuningError::InvalidRequest(
-                "invalid engine training data/schedule/LoRA geometry (epochs 1-100, sequence_length 16-8192, lr (0,1], rank 1-256)".into(),
+                "invalid engine training data/schedule/LoRA geometry (epochs 1-100, sequence_length >= 16, lr (0,1], rank 1-256)".into(),
             ));
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
-        let lane = (self.lane)(&request.base_model).ok_or_else(|| {
+        let (lane, served_window) = (self.lane)(&request.base_model).ok_or_else(|| {
             FineTuningError::InvalidRequest(format!(
                 "no live lane serves {} on this node: in-engine training runs on the resident weights",
                 request.base_model
@@ -699,15 +717,37 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
         let id = Uuid::new_v4();
         let out = format!("{id}.gguf");
-        let window = train_window(schedule.sequence_length);
-        if window != schedule.sequence_length {
-            crate::probe!(
-                class = "training.job.window_rounded",
-                asked = schedule.sequence_length as u64,
-                sent = window as u64,
-                "the training window rounded down to a multiple of 256 (the engine's context granularity)"
-            );
+        // LEARNING SEES WHAT SERVING SEES (Joel, 2026-09-28: "stupidly low token sizes are
+        // idiotic ... the same as inference"; "you're not supposed to make learning so different
+        // from reality"). The window is the per-slot window the matched lane was LAUNCHED with,
+        // from the same record that chose the lane: her turns run in it, so a lived example
+        // trains whole with its system and tool head. No request sets it (§9.1): a record that
+        // predates the field is refused, never trained at a guessed window (Cormac on #4498:
+        // a fallback to the request's length is attempt #1 again). The engine measures the
+        // training graph at this window before allocating and refuses past the lease: a window
+        // that does not fit is an engineering problem, never a smaller window.
+        if served_window == 0 {
+            return Err(FineTuningError::InvalidRequest(format!(
+                "the live lane serving {} has no recorded served window (a record from before the field): not training at a guessed window",
+                request.base_model
+            )));
         }
+        // the engine's context granularity is 256; rounding a smaller served window UP would
+        // train on more context than serving holds (Codex on #4498)
+        if served_window < 256 {
+            return Err(FineTuningError::InvalidRequest(format!(
+                "the live lane serving {} holds {served_window} tokens a slot, under the engine's 256-token training granularity: not training past what serving holds",
+                request.base_model
+            )));
+        }
+        let window = train_window(served_window);
+        crate::probe!(
+            class = "training.job.window",
+            requested = schedule.sequence_length as u64,
+            served = u64::from(served_window),
+            sent = window as u64,
+            "the training window: the matched lane's served per-slot window, rounded to the engine's 256 granularity; the request's length never decides it"
+        );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
         let shape = Shape {
@@ -731,6 +771,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             seed: 42,
             top_layers: depth,
             memory_budget_mib: None,
+            fit: "middle",
         };
         let measured = self.footprints.get(&shape);
         let footprints_path = self.footprints.path.clone();
@@ -818,6 +859,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     // recorded under the depth the engine ACTUALLY adapted: an engine that
                     // ignored top_layers measured a full-depth graph, and that number must never
                     // be leased for a reduced-depth run (Codex on #27)
+                    crate::probe!(
+                        class = "training.job.examples_fit",
+                        job = %id,
+                        kept = status.examples.unwrap_or(0), // probe field: 0 = an engine that does not report it
+                        truncated = status.examples_truncated.unwrap_or(0), // probe field: as above
+                        skipped = status.examples_skipped.unwrap_or(0), // probe field: as above
+                        "how her examples met the window: kept whole, fitted by dropping their oldest history, or skipped"
+                    );
                     let adapted = effective_depth(status.layers_adapted, status.n_layer);
                     if adapted != shape.depth {
                         crate::probe!(
@@ -1164,8 +1213,38 @@ mod tests {
         assert_eq!(serde_json::to_value(engine_example(&plain)).expect("test: wire"), json!({"prompt": "p", "completion": "c"}));
     }
 
+    // what this catches (Joel, 2026-09-28; Cormac on #4498): a training window set by the
+    // REQUEST instead of the lane. Her lane serves 61,696 tokens a slot; the request carries a
+    // plan's 1024; the run trains at 61,696, from the same record that chose the lane. A lane
+    // record with no served window is refused, never trained at a guessed one.
+    #[tokio::test]
+    async fn the_training_window_is_the_lanes_served_window_never_the_requests() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let served = url.clone();
+        t.lane = Box::new(move |_| Some((served.clone(), 61_696)));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        r.schedule.as_mut().expect("test: schedule").sequence_length = 1024;
+        let h = t.create_job(r).await.expect("test: create");
+        let _ = wait_terminal(&t, &h).await;
+        let body = seen.lock().unwrap().clone().expect("test: /train was posted");
+        assert_eq!(body["window"].as_u64(), Some(61_696), "the lane's served window, not the request's 1024");
+
+        for (served, why) in [(0, "an unknown served window is refused, never guessed"), (200, "a window under 256 is refused, never rounded up past serving")] {
+            let lane_url = url.clone();
+            t.lane = Box::new(move |_| Some((lane_url.clone(), served)));
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            assert!(t.create_job(r).await.is_err(), "{why}");
+        }
+        server.abort();
+    }
+
     // what this catches: the dispatch end to end against an engine-shaped lane — the request
-    // reaches /train as examples with GGUF targets and the request's window/epochs/rank; the
+    // reaches /train as examples with GGUF targets and the lane's window, the request's epochs/rank; the
     // finished adapter LEAVES the lanes' train dir for the job dir before the job is terminal
     // (Fable's invariant: the engine-train sweep deletes files of jobs that are not live); the
     // artifact is a GgufLora with the engine's losses and trainable-token count.
@@ -1185,6 +1264,9 @@ mod tests {
         assert_eq!(body["targets"], "attn_q,attn_v");
         assert_eq!((body["window"].as_u64(), body["epochs"].as_u64(), body["rank"].as_u64()), (Some(256), Some(2), Some(8)));
         assert_eq!(body["examples"][0]["completion"], "c");
+        // what this catches (Kimi's first dream, 2026-09-28): a lived example longer than the
+        // window refused the whole run; the engine is asked to keep each example's tail
+        assert_eq!(body["fit"], "middle", "a conversation longer than the served window drops its oldest history, never its head");
         assert!(body.get("text").is_none(), "examples, never a text corpus (the engine masks the prompts)");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
@@ -1379,7 +1461,7 @@ mod tests {
         assert_eq!(effective_depth(Some(64), Some(64)), None);
         assert_eq!(effective_depth(None, None), None);
         // the window is a multiple of 256, rounded down, never under one context
-        assert_eq!((train_window(1536), train_window(1600), train_window(100), train_window(9000)), (1536, 1536, 256, 8192));
+        assert_eq!((train_window(1536), train_window(1600), train_window(100), train_window(61_696)), (1536, 1536, 256, 61_696), "no fixed ceiling: the served window is the window");
     }
 
     // what this catches: a request the engine cannot run is refused before any job exists:
