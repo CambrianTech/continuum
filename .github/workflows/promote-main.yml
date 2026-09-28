@@ -162,7 +162,9 @@ jobs:
             range="origin/${TARGET_BRANCH}..origin/${SOURCE_BRANCH}"
           fi
           count="$(git rev-list --count "$range")"
-          commits="$(git log --oneline "$range" | head -50)"
+          # -n 50, never `| head -50`: under pipefail, head closing the pipe SIGPIPEs git
+          # (exit 141) whenever more than 50 commits are owed, failing every promote.
+          commits="$(git log --oneline -n 50 "$range")"
           git checkout -q -B "$branch" "origin/${SOURCE_BRANCH}"
           git merge -q -s ours --no-ff "origin/${TARGET_BRANCH}" \
             -m "promote: record ${TARGET_BRANCH}'s history — the tree is ${SOURCE_BRANCH}'s (${short})"
