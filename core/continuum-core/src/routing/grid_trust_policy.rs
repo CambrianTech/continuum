@@ -141,12 +141,17 @@ impl GridTrustAuthPolicy {
                 // a recorded decision (earned access) wins over both.
                 CallerSource::LocalPersona => crate::routing::access_decision::policy().citizen_trust(
                     c.peer_id.as_uuid(),
+                    true,
                     crate::routing::access_decision::local_cognitive_rank(),
                     None,
                 ),
+                // an airc peer's IDENTITY is known only through registered trust (or a
+                // recorded decision, which citizen_trust checks first); a stranger stays
+                // Provisional however she arrived (Cormac on #4532: no cross-grid RCE)
                 CallerSource::Airc => {
                     let registered = self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id.as_uuid()));
-                    crate::routing::access_decision::policy().citizen_trust(c.peer_id.as_uuid(), None, registered)
+                    let known = registered.is_some_and(|t| t > TrustLevel::Blocked);
+                    crate::routing::access_decision::policy().citizen_trust(c.peer_id.as_uuid(), known, None, registered)
                 }
                 // An unauthenticated socket (TCP IPC, a WS thin client) is not a citizen
                 // and carries no verified identity: the registered trust if the bridge
@@ -208,10 +213,13 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
             // static path has no trust bridge, so an operator block is enforced at the gate.
             CallerSource::LocalPersona => crate::routing::access_decision::policy().citizen_trust(
                 c.peer_id.as_uuid(),
+                true,
                 crate::routing::access_decision::local_cognitive_rank(),
                 None,
             ),
-            CallerSource::Airc => crate::routing::access_decision::policy().citizen_trust(c.peer_id.as_uuid(), None, None),
+            // no trust bridge on this static path: an airc caller is known only through a
+            // recorded decision, so a stranger stays Provisional (the gate may know more)
+            CallerSource::Airc => crate::routing::access_decision::policy().citizen_trust(c.peer_id.as_uuid(), false, None, None),
             // A TCP IPC caller is an unauthenticated remote socket — never owner.
             // Capped at the same remote ceiling as airc (Provisional): it can run
             // the AiSafe surface but NOT Owner-gated commands (data/delete,
@@ -318,8 +326,15 @@ mod tests {
     // commands (data/delete, grid/trust, grid/pair) stay the human operator's.
     #[test]
     fn airc_citizen_gets_the_working_surface_but_not_owner_ops() {
-        let policy = GridTrustAuthPolicy::new();
+        // a KNOWN citizen (registered trust); a stranger stays Provisional (Cormac on #4532)
+        struct Known(Uuid);
+        impl PeerTrustSource for Known {
+            fn trust_of(&self, peer_id: Uuid) -> Option<TrustLevel> {
+                (peer_id == self.0).then_some(TrustLevel::Trusted)
+            }
+        }
         let airc = CallerIdentity::airc(crate::identity::PeerId::new());
+        let policy = GridTrustAuthPolicy::with_trust_source(Arc::new(Known(airc.peer_id.as_uuid())));
 
         assert_eq!(
             policy.gate(&decision("ai/generate"), Some(&airc)),
@@ -558,13 +573,26 @@ mod tests {
             "Owner-only ops stay the human operator's, even for Asha"
         );
 
-        // A citizen calling over airc gets the same shell a local one does: access follows
-        // cognitive level, never transport (Joel, 2026-09-28). Unknown level = more.
+        // A KNOWN citizen calling over airc (registered trust) gets the same shell a local one
+        // does: access follows cognitive level, never transport (Joel, 2026-09-28). A stranger
+        // who merely enrolled does not (Cormac on #4532: no cross-grid RCE).
+        struct Known(Uuid);
+        impl PeerTrustSource for Known {
+            fn trust_of(&self, peer_id: Uuid) -> Option<TrustLevel> {
+                (peer_id == self.0).then_some(TrustLevel::Trusted)
+            }
+        }
         let remote = CallerIdentity::airc(crate::identity::PeerId::new());
+        let bridged = GridTrustAuthPolicy::with_trust_source(Arc::new(Known(remote.peer_id.as_uuid())));
         assert_eq!(
-            policy.gate(&decision("code/shell"), Some(&remote)),
+            bridged.gate(&decision("code/shell"), Some(&remote)),
             Verdict::Allowed,
-            "a citizen over airc has the shell, like Claude or Codex"
+            "a known citizen over airc has the shell, like Claude or Codex"
+        );
+        let stranger = CallerIdentity::airc(crate::identity::PeerId::new());
+        assert!(
+            matches!(bridged.gate(&decision("code/shell"), Some(&stranger)), Verdict::Forbidden { .. }),
+            "an unknown peer never gets a shell by enrolling"
         );
         // A recorded decision restricts her (the earned-access path works both ways).
         let mut restricted = crate::routing::access_decision::policy();
@@ -576,7 +604,7 @@ mod tests {
             decided_ms: 1,
         });
         assert_eq!(
-            restricted.citizen_trust(remote.peer_id.as_uuid(), None, None),
+            restricted.citizen_trust(remote.peer_id.as_uuid(), true, None, None),
             TrustLevel::Provisional
         );
     }

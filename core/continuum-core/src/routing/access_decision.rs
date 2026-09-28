@@ -10,8 +10,14 @@
 //!   capability scale, the Artificial Analysis index the planner already ranks by) gets the
 //!   operator's working surface, `Trusted`: shell, push, database writes, agents, pipelines;
 //! - a weak one gets the restricted surface, `Provisional`;
-//! - an unknown level gets MORE, not less (`Trusted`): a missing measurement never cripples;
-//! - a peer the operator explicitly `Blocked` stays blocked.
+//! - an unknown CAPABILITY gets MORE, not less (`Trusted`): a missing measurement never
+//!   cripples a known citizen;
+//! - but an unknown IDENTITY is not an unknown capability (Cormac on #4532): an airc peer this
+//!   node does not know (no registered trust, no recorded decision) stays `Provisional` until a
+//!   decision is recorded, so enrolling in a room never grants a shell;
+//! - a peer the operator explicitly `Blocked` stays blocked;
+//! - an unreadable policy restricts every citizen (`Provisional`) and says so, because falling
+//!   back to defaults would silently drop recorded blocks.
 //!
 //! Access is COMMAND-BASED like everything else: `access/get` reads the policy and
 //! `access/set` changes it (the threshold, and per-citizen DECISIONS). A decision is how
@@ -63,23 +69,41 @@ pub struct AccessPolicy {
     pub full_access_min_rank: u8,
     /// Per-citizen decisions; a decision wins over the capability default.
     pub decisions: Vec<AccessDecision>,
+    /// The policy file exists but could not be read: every citizen is restricted until
+    /// `access/set` rewrites it. Never persisted.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub unreadable: bool,
 }
 
 impl Default for AccessPolicy {
     fn default() -> Self {
-        Self { full_access_min_rank: DEFAULT_FULL_ACCESS_MIN_RANK, decisions: Vec::new() }
+        Self { full_access_min_rank: DEFAULT_FULL_ACCESS_MIN_RANK, decisions: Vec::new(), unreadable: false }
     }
 }
 
 impl AccessPolicy {
-    /// The level a citizen gets: her recorded decision if one exists; else `Blocked` if the
-    /// operator blocked her; else by cognitive level (unknown = full).
-    pub fn citizen_trust(&self, peer: Uuid, rank: Option<u8>, registered: Option<TrustLevel>) -> TrustLevel {
+    /// The level a citizen gets. `known` is whether her IDENTITY is known to this node (a
+    /// local persona, or a peer with registered trust); an unknown identity never reaches the
+    /// capability default.
+    /// 1. an unreadable policy: `Provisional` for everyone (never drop a recorded block);
+    /// 2. her recorded decision, if one exists (earned access, both ways);
+    /// 3. `Blocked` if the operator blocked her;
+    /// 4. an unknown identity: `Provisional`;
+    /// 5. otherwise by cognitive level: below the threshold `Provisional`, at or above it or
+    ///    unmeasured `Trusted`.
+    pub fn citizen_trust(&self, peer: Uuid, known: bool, rank: Option<u8>, registered: Option<TrustLevel>) -> TrustLevel {
+        if self.unreadable {
+            return TrustLevel::Provisional;
+        }
         if let Some(decision) = self.decisions.iter().find(|d| d.peer == peer) {
             return decision.level;
         }
         if registered == Some(TrustLevel::Blocked) {
             return TrustLevel::Blocked;
+        }
+        if !known {
+            return TrustLevel::Provisional;
         }
         match rank {
             Some(r) if r < self.full_access_min_rank => TrustLevel::Provisional,
@@ -93,8 +117,9 @@ fn policy_path() -> Option<PathBuf> {
 }
 
 /// The policy as last read or set; loaded on first use. A missing file is the default. A file
-/// that cannot be parsed also reads as the default and is reported, because failing CLOSED here
-/// would lock every citizen out (less, never more).
+/// that exists but cannot be read or parsed marks the policy `unreadable`, which restricts
+/// every citizen until `access/set` rewrites it (Cormac on #4532: reading it as the default
+/// would silently drop recorded blocks).
 static POLICY: RwLock<Option<AccessPolicy>> = RwLock::new(None);
 
 /// The current policy (cheap after the first read).
@@ -102,20 +127,23 @@ pub fn policy() -> AccessPolicy {
     if let Some(p) = POLICY.read().unwrap_or_else(|p| p.into_inner()).as_ref() {
         return p.clone();
     }
-    let loaded = policy_path()
-        .and_then(|path| std::fs::read(&path).ok().map(|b| (path, b)))
-        .map(|(path, bytes)| {
-            serde_json::from_slice::<AccessPolicy>(&bytes).unwrap_or_else(|e| {
-                crate::probe!(
-                    class = "access.policy.unreadable",
-                    path = %path.display(),
-                    error = %e,
-                    "the access policy file does not parse: the defaults apply until access/set rewrites it"
-                );
-                AccessPolicy::default()
-            })
-        })
-        .unwrap_or_default(); // unwrap_or_default: no file is the default policy
+    let unreadable = |path: &std::path::Path, error: String| {
+        crate::probe!(
+            class = "access.policy.unreadable",
+            path = %path.display(),
+            error = %error,
+            "the access policy file cannot be read: every citizen is restricted until access/set rewrites it"
+        );
+        AccessPolicy { unreadable: true, ..AccessPolicy::default() }
+    };
+    let loaded = match policy_path() {
+        None => AccessPolicy::default(),
+        Some(path) => match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<AccessPolicy>(&bytes).unwrap_or_else(|e| unreadable(&path, e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => AccessPolicy::default(),
+            Err(e) => unreadable(&path, e.to_string()),
+        },
+    };
     *POLICY.write().unwrap_or_else(|p| p.into_inner()) = Some(loaded.clone());
     loaded
 }
@@ -166,12 +194,15 @@ mod tests {
     fn access_follows_cognitive_level_and_a_recorded_decision_wins() {
         let peer = Uuid::from_u128(7);
         let mut policy = AccessPolicy::default();
-        assert_eq!(policy.citizen_trust(peer, Some(42), None), TrustLevel::Trusted, "the 27B coder");
-        assert_eq!(policy.citizen_trust(peer, None, None), TrustLevel::Trusted, "unknown gets more, not less");
-        assert_eq!(policy.citizen_trust(peer, Some(12), None), TrustLevel::Provisional, "a weak model is restricted");
-        assert_eq!(policy.citizen_trust(peer, Some(42), Some(TrustLevel::Blocked)), TrustLevel::Blocked);
+        assert_eq!(policy.citizen_trust(peer, true, Some(42), None), TrustLevel::Trusted, "the 27B coder");
+        assert_eq!(policy.citizen_trust(peer, true, None, None), TrustLevel::Trusted, "an unmeasured known citizen gets more, not less");
+        assert_eq!(policy.citizen_trust(peer, true, Some(12), None), TrustLevel::Provisional, "a weak model is restricted");
+        assert_eq!(policy.citizen_trust(peer, true, Some(42), Some(TrustLevel::Blocked)), TrustLevel::Blocked);
+        // Cormac on #4532: an unknown IDENTITY is not an unknown capability; enrolling in a
+        // room never grants a shell
+        assert_eq!(policy.citizen_trust(peer, false, None, None), TrustLevel::Provisional, "a stranger is restricted");
         policy.full_access_min_rank = 45;
-        assert_eq!(policy.citizen_trust(peer, Some(42), None), TrustLevel::Provisional, "the threshold is data");
+        assert_eq!(policy.citizen_trust(peer, true, Some(42), None), TrustLevel::Provisional, "the threshold is data");
         policy.decisions.push(AccessDecision {
             peer,
             level: TrustLevel::Trusted,
@@ -179,6 +210,9 @@ mod tests {
             decided_by: None,
             decided_ms: 1,
         });
-        assert_eq!(policy.citizen_trust(peer, Some(12), Some(TrustLevel::Blocked)), TrustLevel::Trusted, "a decision wins");
+        assert_eq!(policy.citizen_trust(peer, false, Some(12), None), TrustLevel::Trusted, "a decision wins, even for a stranger");
+        // an unreadable policy restricts everyone and never silently drops a recorded block
+        let broken = AccessPolicy { unreadable: true, ..policy };
+        assert_eq!(broken.citizen_trust(peer, true, Some(42), None), TrustLevel::Provisional);
     }
 }
