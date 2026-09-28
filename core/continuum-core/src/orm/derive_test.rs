@@ -156,6 +156,9 @@ struct TypeInferenceProbe {
 
     /// u128 — Number variant we missed in the original list.
     big_number: u128,
+
+    /// airc's actor id, a transparent UUID newtype → FieldType::Uuid.
+    holder: crate::identity::PeerId,
 }
 
 /// Child entity exercising `#[entity(foreign_key(...))]` — references
@@ -503,6 +506,16 @@ fn systemtime_infers_as_date() {
         .find(|f| f.name == "when")
         .expect("when field present");
     assert_eq!(when.field_type, FieldType::Date);
+}
+
+/// What this catches: airc's `PeerId` (a transparent UUID newtype) bucketed as Json, like
+/// any unknown named type, so a column keyed by a citizen could not be indexed as an id
+/// (the port lease's `holder`, card 0c42c0bf).
+#[test]
+fn peer_id_infers_as_uuid() {
+    let schema = TypeInferenceProbe::collection_schema();
+    let holder = schema.fields.iter().find(|f| f.name == "holder").expect("holder field present");
+    assert_eq!(holder.field_type, FieldType::Uuid);
 }
 
 /// What this catches: PathBuf → FieldType::String, not Json. Reviewer-1

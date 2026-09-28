@@ -3521,6 +3521,10 @@ pub fn start_server(
                 .with_teacher_serving(serving_daemon.clone()),
         ));
 
+        // Port leases for citizen services (card 0c42c0bf): a dev server or database a citizen
+        // runs gets a port clear of every other citizen's and of Continuum's own.
+        runtime.register(Arc::new(crate::modules::ports::PortsModule::new()));
+
         // TrainingCompletionSentinel: L3 of the dev-task continuous-learning loop.
         // Polls in-flight training jobs (the TrainingJobBoard the trigger writes to);
         // on completion runs `cognition/eval` and pages the gene into the live

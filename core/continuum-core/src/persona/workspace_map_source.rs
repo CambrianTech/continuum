@@ -193,6 +193,17 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
     )
 }
 
+/// Her leased service ports as one grounding line, so a dev server she started is found on
+/// its port without guessing or re-asking (card 0c42c0bf). `None` when she holds none: the
+/// line costs nothing until she leases.
+fn render_ports(leases: &[crate::modules::ports::PortLease]) -> Option<String> {
+    if leases.is_empty() {
+        return None;
+    }
+    let listed: Vec<String> = leases.iter().map(|l| format!("{} -> {}", l.service, l.port)).collect();
+    Some(format!("Your leased service ports (ports/lease, ports/list): {}", listed.join(", ")))
+}
+
 /// Reads the layout from the persona's OWN citizen layer — the copy-on-write
 /// workspace their hands actually act in (`<home>/citizens/peers/<peer>/
 /// workspace`), the same root [`ensure_engine`](crate::modules::code_commands::ensure_engine)
@@ -424,7 +435,12 @@ impl RagSource for WorkspaceMapSource {
             }
         };
 
-        let body = render_layout(&layout);
+        let mut body = render_layout(&layout);
+        let ports = crate::modules::ports::held_by(crate::identity::PeerId::from_uuid(self.persona_id));
+        if let Some(line) = render_ports(&ports) {
+            body.push('\n');
+            body.push_str(&line);
+        }
         let Some(content) = Self::fit_body(&body, budget) else {
             return empty(resolution);
         };
@@ -661,6 +677,25 @@ mod tests {
 
     // what this catches: an absurdly tiny budget never overspends — either no
     // block, or a block that fits the budget (same contract as the doctrine).
+    // what this catches (card 0c42c0bf): a citizen who leased a port for her dev server not
+    // seeing it in her grounding, so she guesses a port or re-leases every turn; and a line
+    // that costs prompt tokens for a citizen who holds no leases.
+    #[test]
+    fn her_leased_ports_are_one_line_and_absent_when_she_has_none() {
+        use crate::modules::ports::PortLease;
+        let lease = |service: &str, port| PortLease {
+            base: crate::orm::entity::BaseEntity::for_new_record(),
+            holder: crate::identity::PeerId::from_uuid(persona()),
+            service: service.into(),
+            port,
+            leased_at_ms: 1,
+        };
+        assert_eq!(render_ports(&[]), None);
+        let line = render_ports(&[lease("cw-db", 31_001), lease("cw-web", 31_000)]).expect("a line");
+        assert!(line.contains("cw-db -> 31001") && line.contains("cw-web -> 31000"), "{line}");
+        assert!(!line.contains('\n'), "one line");
+    }
+
     #[tokio::test]
     async fn tiny_budget_never_overspends() {
         let reader = Arc::new(StubReader::ok(&["apps", "core", "docs", "src", "tools"]));
