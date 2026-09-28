@@ -1190,15 +1190,19 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         // environment still passes through untouched.
         if command_env(&command, "LLAMA_SERVER_BIN").is_none_or(|value| value.is_empty()) {
             let engine = Path::new(&args[2]);
-            if !engine.is_file() {
-                return Err(format!("service-host engine missing: {}", engine.display()));
-            }
-            // A refused registration must never keep the core down (Fable on #4497): on a
-            // first-and-only machine that is a dark node. The registered engine is the one the
-            // installer verified, so it is launched as before, pinned, and the refusal is said.
+            // A standing `current` is the engine, whatever the release still names: the release's
+            // own binary may be gone (its slot rebuilt or reclaimed) and the core must still start
+            // on the engine `current` names (Codex on #4509, card 6de412bb). Only with nothing
+            // standing does the release's engine matter, and then it must exist.
             match continuum_core::inference::engine_slots::bootstrap_service_engine(engine) {
                 Ok(true) => eprintln!("service-host: {} is now the current engine", engine.display()),
                 Ok(false) => {}
+                // A refused bootstrap must never keep the core down (Fable on #4497): on a
+                // first-and-only machine that is a dark node. The registered engine is the one the
+                // installer verified, so it is launched as before, pinned, and the refusal is said.
+                Err(why) if !engine.is_file() => {
+                    return Err(format!("service-host engine missing and no engine is current: {} ({why})", engine.display()));
+                }
                 Err(why) => {
                     eprintln!(
                         "service-host: ENGINE NOT REGISTERED ({why}); launching {} pinned as LLAMA_SERVER_BIN so the core does not stay down. It will not converge until this is fixed.",
