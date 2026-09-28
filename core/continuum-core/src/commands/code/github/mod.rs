@@ -131,13 +131,8 @@ async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
 /// [`GhRunError::TimedOut`] carrying what the platform said about the tree kill, and never
 /// claims the tree exited.
 pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
-    let mut cmd = tokio::process::Command::new("gh");
-    cmd.args(args)
-        .current_dir(root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+    let mut cmd = gh_command(root, args);
+    cmd.kill_on_drop(true);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
     let mut child = cmd.spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
@@ -169,30 +164,34 @@ pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time
 /// success; a non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix.
 /// `gh` reads the repo + auth from the workspace + the host's gh config — never a param.
 pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, CommandError> {
-    tokio::task::spawn_blocking(move || {
-        let out = std::process::Command::new("gh")
-            .args(&args)
-            .current_dir(&root)
-            .output()
-            .map_err(|e| {
-                CommandError::Internal(format!(
-                    "code/github: could not run `gh` — is the GitHub CLI installed and \
-                     authenticated? Install it, then `gh auth login`. ({e})"
-                ))
-            })?;
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-        } else {
-            Err(CommandError::Internal(format!(
-                "code/github: `gh {}` failed (exit {:?}): {}",
-                args.join(" "),
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )))
-        }
-    })
-    .await
-    .map_err(|e| CommandError::Internal(format!("gh task panicked: {e}")))?
+    let out = gh_command(&root, &args).output().await.map_err(|e| {
+        CommandError::Internal(format!(
+            "code/github: could not run `gh` — is the GitHub CLI installed and \
+             authenticated? Install it, then `gh auth login`. ({e})"
+        ))
+    })?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(CommandError::Internal(format!(
+            "code/github: `gh {}` failed (exit {:?}): {}",
+            args.join(" "),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
+/// THE one place a `gh` process is built (the source-hygiene rule: GitHub goes through this
+/// module's client). Output is piped and stdin closed; callers add only what they need.
+fn gh_command(root: &Path, args: &[String]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("gh");
+    cmd.args(args)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd
 }
 
 /// The GitHub-collaboration command objects the code module contributes to the kernel's
