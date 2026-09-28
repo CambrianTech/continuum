@@ -43,8 +43,8 @@
 //! one thing inside a RESIDENT workspace, `workspace/target`, and only when every one of
 //! these holds (Codex's gates on 10e6c5e5):
 //!
-//! - **Rebuildable, proven, not named:** the tree carries cargo's own `CACHEDIR.TAG`
-//!   signature. A directory called `target` that cargo did not write is left alone.
+//! - **Rebuildable, proven, not named:** the tree carries the cachedir signature AND cargo's
+//!   `.rustc_info.json`. A directory called `target` that cargo did not write is left alone.
 //! - **No build is live:** every `.cargo-lock` under it takes an exclusive, non-blocking
 //!   lock. That is cargo's own build-directory lock, so a running cargo refuses us.
 //! - **No solve is live:** the reclaim holds the citizen's hands (`work::HandsLease`) for the
@@ -52,9 +52,10 @@
 //! - **The roster is readable** (unreadable = nothing, as for whole workspaces).
 //! - **Untouched for [`DORMANT_AFTER_MS`]:** policy, not proof; the lock is the proof.
 //!
-//! Nothing is preserved, because a cargo-tagged tree holds no work. The locks are released
-//! just before the delete (Windows cannot delete a file held open), so a build that starts in
-//! that instant fails and rebuilds; nothing is lost. Staged `swe/` checkouts in a resident
+//! Nothing is preserved, because a cargo-owned tree holds no work. Cargo's locks are HELD
+//! across the take: the tree is renamed aside under them, so no build can be inside it when it
+//! is deleted (Windows cannot rename under a held lock, so there the reclaim is deferred).
+//! Any read error on the way refuses. Staged `swe/` checkouts in a resident
 //! workspace are NOT covered here: they are work until their card is terminal, and that
 //! needs the card and its runs (the second half of 10e6c5e5).
 //!
@@ -133,8 +134,8 @@ pub fn workspaces_to_drop(
     taken
 }
 
-/// Cargo writes this signature as the first line of `CACHEDIR.TAG` in every target dir it
-/// creates (the cachedir spec). It is the proof that a tree is build output.
+/// The cachedir-spec signature cargo writes as the first line of `CACHEDIR.TAG`. Generic to
+/// the spec, so [`is_cargo_target`] pairs it with a cargo-only file.
 const CARGO_CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
 
 /// One citizen's rebuildable build output, as the residue decision sees it.
@@ -179,45 +180,119 @@ pub fn residue_to_drop(
     taken
 }
 
-/// Is `dir` a tree cargo wrote? Its `CACHEDIR.TAG` must begin with cargo's signature.
+/// Is `dir` a tree cargo wrote? The cachedir signature alone is a GENERIC cache marker any
+/// tool may write (Codex on #4528), so it must sit beside `.rustc_info.json`, the file cargo
+/// writes at the root of every target dir it owns.
 fn is_cargo_target(dir: &Path) -> bool {
     std::fs::read_to_string(dir.join("CACHEDIR.TAG")).is_ok_and(|t| t.starts_with(CARGO_CACHEDIR_SIGNATURE))
+        && dir.join(".rustc_info.json").is_file()
 }
 
-/// Every `.cargo-lock` in a target dir: `target/<profile>/.cargo-lock` and, for a cross
-/// build, `target/<triple>/<profile>/.cargo-lock`.
-fn cargo_locks_in(target: &Path) -> Vec<PathBuf> {
+/// Why a residue tree was kept. Every one of them is a refusal: a tree this pass cannot
+/// prove idle and take whole is never touched (Codex on #4528: fail closed).
+#[derive(Debug)]
+enum ResidueKept {
+    /// Cargo holds this build lock: a build is live in the tree.
+    BuildLive(PathBuf),
+    /// The tree or one of its locks could not be read, so idleness is unproven.
+    Unreadable(String),
+    /// This platform cannot move a directory while holding a lock inside it, so the
+    /// exclusion cannot span the take; the reclaim is deferred rather than raced.
+    #[cfg(not(unix))]
+    Unsupported,
+}
+
+impl ResidueKept {
+    fn why(&self) -> &'static str {
+        match self {
+            Self::BuildLive(_) => "build_live",
+            Self::Unreadable(_) => "unreadable",
+            #[cfg(not(unix))]
+            Self::Unsupported => "unsupported_platform",
+        }
+    }
+    fn detail(&self) -> String {
+        match self {
+            Self::BuildLive(lock) => lock.display().to_string(),
+            Self::Unreadable(e) => e.clone(),
+            #[cfg(not(unix))]
+            Self::Unsupported => "no atomic move under a held lock on this platform".into(),
+        }
+    }
+}
+
+/// Every `.cargo-lock` in a target dir (the artifact-dir lock at its root and each profile's
+/// build-dir lock, `target/[<triple>/]<profile>/.cargo-lock`). Any read error is an `Err`:
+/// a lock this walk could not see is a build it cannot rule out.
+fn cargo_locks_in(target: &Path) -> Result<Vec<PathBuf>, ResidueKept> {
+    let unreadable = |p: &Path, e: std::io::Error| ResidueKept::Unreadable(format!("{}: {e}", p.display()));
     let mut out = Vec::new();
     let mut stack = vec![(target.to_path_buf(), 0u32)];
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for e in entries.flatten() {
-            let path = e.path();
-            if e.file_name() == ".cargo-lock" {
+        for entry in std::fs::read_dir(&dir).map_err(|e| unreadable(&dir, e))? {
+            let entry = entry.map_err(|e| unreadable(&dir, e))?;
+            let path = entry.path();
+            if entry.file_name() == ".cargo-lock" {
                 out.push(path);
-            } else if depth < 2 && e.file_type().is_ok_and(|t| t.is_dir()) {
+            } else if depth < 2 && entry.file_type().map_err(|e| unreadable(&path, e))?.is_dir() {
                 stack.push((path, depth + 1));
             }
         }
     }
-    out
+    Ok(out)
 }
 
-/// Is any cargo build using this target dir right now? Tries cargo's own build-directory
-/// lock on every `.cargo-lock`; one held means a build is live. Returns the held lock's path.
-fn live_build_in(target: &Path) -> Option<PathBuf> {
-    for lock in cargo_locks_in(target) {
-        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&lock) else {
-            // cannot open cargo's lock: cannot prove the build is idle, so treat it as live
-            return Some(lock);
-        };
-        if file.try_lock().is_err() {
-            return Some(lock);
+/// Take cargo's own locks on every build lock in the tree and HOLD them: the returned files
+/// keep the exclusion until they drop. A lock held elsewhere means a live build; a lock that
+/// cannot be opened or locked for any other reason is unproven, and both refuse.
+fn hold_cargo_locks(target: &Path) -> Result<Vec<std::fs::File>, ResidueKept> {
+    let mut held = Vec::new();
+    for lock in cargo_locks_in(target)? {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .map_err(|e| ResidueKept::Unreadable(format!("{}: {e}", lock.display())))?;
+        match file.try_lock() {
+            Ok(()) => held.push(file),
+            Err(std::fs::TryLockError::WouldBlock) => return Err(ResidueKept::BuildLive(lock)),
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(ResidueKept::Unreadable(format!("{}: {e}", lock.display())))
+            }
         }
-        // dropping `file` releases the lock before the delete (Windows cannot remove a file
-        // held open); see the module doc for why that instant is safe
     }
-    None
+    Ok(held)
+}
+
+/// The prefix a reclaimed tree is moved to before it is deleted. A leftover one (a delete
+/// interrupted by a crash) is swept by the next pass: nothing builds into it, because cargo
+/// only ever addresses `target`.
+const PARKED_PREFIX: &str = ".target-reclaim-";
+
+/// THE TAKE, with cargo's exclusion spanning it (Codex on #4528: releasing the locks before
+/// the delete let a build start inside a tree being removed). While every build lock is held
+/// the tree is renamed aside, which is atomic on one filesystem, so from that instant any new
+/// build creates a fresh `target`; only then are the locks released and the parked tree
+/// deleted. Windows cannot rename a directory holding an open handle inside it, so there the
+/// exclusion cannot span the take and the reclaim is deferred.
+///
+/// The one residual shape, named rather than hidden: a cargo that began waiting on the lock
+/// inside the take's own microseconds is released holding the PARKED file's lock, and it then
+/// builds into a fresh `target`, where a second cargo starting at that moment would take a new
+/// lock. Two builds queued inside one rename is the whole exposure, and it costs a rebuild,
+/// never work.
+#[cfg(unix)]
+fn take_target(target: &Path, locks: Vec<std::fs::File>) -> Result<(), ResidueKept> {
+    let parked = target.with_file_name(format!("{PARKED_PREFIX}{}", uuid::Uuid::new_v4()));
+    std::fs::rename(target, &parked)
+        .map_err(|e| ResidueKept::Unreadable(format!("park {}: {e}", target.display())))?;
+    drop(locks);
+    std::fs::remove_dir_all(&parked).map_err(|e| ResidueKept::Unreadable(format!("delete {}: {e}", parked.display())))
+}
+
+#[cfg(not(unix))]
+fn take_target(_target: &Path, _locks: Vec<std::fs::File>) -> Result<(), ResidueKept> {
+    Err(ResidueKept::Unsupported)
 }
 
 pub struct CitizenWorkspacePool {
@@ -297,10 +372,34 @@ impl CitizenWorkspacePool {
         out
     }
 
+    /// Delete trees an earlier take parked but did not finish deleting (a crash mid-delete).
+    /// Only `peers/<peer>/workspace/.target-reclaim-*`, which nothing builds into.
+    fn sweep_parked(root: &Path) -> u64 {
+        let Ok(peers) = std::fs::read_dir(root.join("peers")) else {
+            return 0;
+        };
+        let mut freed = 0u64;
+        for peer in peers.flatten() {
+            let Ok(entries) = std::fs::read_dir(peer.path().join("workspace")) else { continue };
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with(PARKED_PREFIX) {
+                    let (bytes, _) = dir_bytes_and_newest(&e.path());
+                    if std::fs::remove_dir_all(e.path()).is_ok() {
+                        freed = freed.saturating_add(bytes);
+                    }
+                }
+            }
+        }
+        freed
+    }
+
     /// Reclaim stale build output, residents included, under the gates in the module doc.
     fn evict_build_residue(root: &Path, roster: &Roster, now_ms: u64, want_bytes: u64) -> u64 {
+        if *roster == Roster::Unreadable {
+            return 0;
+        }
+        let mut freed = Self::sweep_parked(root);
         let residue = Self::build_residue_on_disk(root);
-        let mut freed = 0u64;
         for r in residue_to_drop(&residue, roster, now_ms, want_bytes) {
             // ONLY `peers/<peer>/workspace/target`, by construction (build_residue_on_disk)
             debug_assert!(r.target.ends_with("workspace/target"));
@@ -317,25 +416,25 @@ impl CitizenWorkspacePool {
                 );
                 continue;
             };
-            if let Some(lock) = live_build_in(&r.target) {
-                crate::probe!(
+            let taken = hold_cargo_locks(&r.target).and_then(|locks| take_target(&r.target, locks));
+            match taken {
+                Ok(()) => {
+                    freed = freed.saturating_add(r.bytes);
+                    crate::probe!(
+                        class = "disk.citizens.residue_reclaimed",
+                        peer = %r.peer_id,
+                        freed_mb = r.bytes / (1024 * 1024),
+                        idle_days = now_ms.saturating_sub(r.last_active_ms) / (24 * 60 * 60 * 1000),
+                        "a citizen's stale cargo build output was reclaimed under cargo's own lock (her workspace and work untouched; the next build rebuilds it)"
+                    );
+                }
+                Err(kept) => crate::probe!(
                     class = "disk.citizens.residue_kept",
                     peer = %r.peer_id,
-                    why = "build_live",
-                    lock = %lock.display(),
-                    "a citizen's build output was NOT reclaimed: cargo holds its build lock"
-                );
-                continue;
-            }
-            if std::fs::remove_dir_all(&r.target).is_ok() {
-                freed = freed.saturating_add(r.bytes);
-                crate::probe!(
-                    class = "disk.citizens.residue_reclaimed",
-                    peer = %r.peer_id,
-                    freed_mb = r.bytes / (1024 * 1024),
-                    idle_days = now_ms.saturating_sub(r.last_active_ms) / (24 * 60 * 60 * 1000),
-                    "a citizen's stale cargo build output was reclaimed (her workspace and work untouched; the next build rebuilds it)"
-                );
+                    why = kept.why(),
+                    detail = kept.detail().as_str(),
+                    "a citizen's build output was NOT reclaimed: it could not be proven idle and taken whole"
+                ),
             }
         }
         freed
@@ -939,6 +1038,7 @@ mod tests {
         let target = workspace.join("target");
         std::fs::create_dir_all(target.join("debug/deps")).expect("mkdir target"); // expect: tempdir is writable
         std::fs::write(target.join("CACHEDIR.TAG"), format!("{CARGO_CACHEDIR_SIGNATURE}\n# cargo\n")).expect("tag");
+        std::fs::write(target.join(".rustc_info.json"), b"{}").expect("rustc info");
         std::fs::write(target.join("debug/.cargo-lock"), b"").expect("lock file");
         std::fs::write(target.join("debug/deps/libx.rlib"), vec![0u8; 4096]).expect("artifact");
         target
@@ -948,6 +1048,7 @@ mod tests {
     // output, or taking it while a build is live. Only a CACHEDIR-tagged `target/` is residue;
     // a held `.cargo-lock` keeps it; once the lock is free a resident's target goes and every
     // other file in her workspace (her notes, her checkouts) stays.
+    #[cfg(unix)]
     #[test]
     fn only_idle_cargo_tagged_output_is_reclaimed_and_her_work_stays() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -958,6 +1059,8 @@ mod tests {
         let other = root.path().join("peers").join(untagged.to_string()).join("workspace/target");
         std::fs::create_dir_all(&other).expect("mkdir untagged target");
         std::fs::write(other.join("mine.txt"), b"not cargo's").expect("write");
+        // the generic cachedir marker alone is not cargo's proof (Codex on #4528)
+        std::fs::write(other.join("CACHEDIR.TAG"), CARGO_CACHEDIR_SIGNATURE).expect("generic tag");
 
         let found = CitizenWorkspacePool::build_residue_on_disk(root.path());
         assert_eq!(found.iter().map(|r| r.peer_id).collect::<Vec<_>>(), vec![tagged], "only the cargo-tagged tree");
@@ -973,6 +1076,45 @@ mod tests {
         assert!(CitizenWorkspacePool::evict_build_residue(root.path(), &roster, later, u64::MAX) > 0);
         assert!(!target.exists(), "idle, tagged, stale: reclaimed");
         assert!(ws.join("NOTES.md").exists(), "her workspace and work stay");
-        assert!(other.join("mine.txt").exists(), "an untagged target is not cargo's to reclaim");
+        assert!(other.join("mine.txt").exists(), "a target without cargo's own file is not cargo's to reclaim");
+        assert!(!ws.read_dir().expect("read ws").flatten().any(|e| e.file_name().to_string_lossy().starts_with(PARKED_PREFIX)), "nothing left parked");
+    }
+
+    // what this catches: Codex's block on #4528. The first cut released cargo's locks BEFORE
+    // the delete, so any build could start inside a tree being removed. The exclusion must span
+    // the take: while this pass holds the locks, another cargo cannot take them, and the tree
+    // is already parked (not at `target`) when they are released.
+    #[cfg(unix)]
+    #[test]
+    fn cargos_lock_is_held_across_the_take_so_no_build_starts_inside_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = cargo_target(tmp.path());
+        let locks = hold_cargo_locks(&target).expect("idle: every lock taken");
+        let rival = std::fs::OpenOptions::new().read(true).write(true).open(target.join("debug/.cargo-lock")).expect("open");
+        assert!(matches!(rival.try_lock(), Err(std::fs::TryLockError::WouldBlock)), "a build cannot start while the take holds the lock");
+        drop(rival);
+        take_target(&target, locks).expect("taken");
+        assert!(!target.exists(), "gone from `target`, where every build looks");
+    }
+
+    // what this catches: the fail-open half of Codex's block. A lock walk that cannot read part
+    // of the tree must refuse, not return "no locks" and allow the delete.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_tree_is_kept_because_idleness_is_unproven() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = cargo_target(tmp.path());
+        let sealed = target.join("release");
+        std::fs::create_dir_all(&sealed).expect("mkdir");
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).expect("seal");
+        if std::fs::read_dir(&sealed).is_ok() {
+            // a superuser reads through mode 000, so the premise cannot be built here
+            std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).expect("unseal");
+            return;
+        }
+        let got = hold_cargo_locks(&target);
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).expect("unseal");
+        assert!(matches!(got, Err(ResidueKept::Unreadable(_))), "an unreadable subtree refuses: {got:?}");
     }
 }
