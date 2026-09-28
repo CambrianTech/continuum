@@ -1455,10 +1455,16 @@ fn installed_engine_stamp() -> Option<String> {
 /// passes no `--threads`), so it already holds every core. Nice only reorders the queue, it
 /// frees no core, and a build at cargo's default jobs (one per logical CPU) took them anyway:
 /// the IntelMac (6 cores, 12 threads) went three hours at 0 acts with 7 of 11 generations
-/// dropped while it built (2026-09-27, Fable's health reads). So the build gets one job.
+/// dropped while it built (2026-09-27, Fable's health reads). So the build is capped.
+///
+/// TWO jobs, not one (the pre-registered step on #4471): at one job the IntelMac's warm build
+/// of f03812d9e ran past the registered 6 h bound (19:14Z start, still compiling its bins at
+/// 01:14Z), and a build that outlasts canary's pace means the node never deploys. At one job
+/// rustc held ~0.5 of a core while the lane's llama-server held ~3 cores and the core ~2, so
+/// one more job costs the lane little and roughly halves the wall time.
 /// A GPU-served lane prefills on its device, not on these cores: no cap, `None`.
 pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
-    (backend == Some("cpu")).then_some(1)
+    (backend == Some("cpu")).then_some(2)
 }
 
 /// Free memory at which a warm build beside a serving core runs at cargo's own job count:
@@ -6513,8 +6519,8 @@ mod tests {
     // default jobs, taking the cores the lane decodes on (the IntelMac: 3 hours at 0 acts).
     // A GPU-served or unknown engine keeps the uncapped build.
     #[test]
-    fn a_warm_build_beside_a_cpu_lane_gets_one_job() {
-        assert_eq!(warm_build_jobs(Some("cpu")), Some(1));
+    fn a_warm_build_beside_a_cpu_lane_gets_a_capped_job_count() {
+        assert_eq!(warm_build_jobs(Some("cpu")), Some(2));
         assert_eq!(warm_build_jobs(Some("metal")), None);
         assert_eq!(warm_build_jobs(Some("cuda")), None);
         assert_eq!(warm_build_jobs(None), None, "no stamp: nothing known, no cap");
