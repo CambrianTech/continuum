@@ -234,15 +234,6 @@ fn priority_str(p: Priority) -> &'static str {
     }
 }
 
-fn parse_priority(s: &str) -> Priority {
-    match s.to_ascii_lowercase().as_str() {
-        "p0" => Priority::P0,
-        "p1" => Priority::P1,
-        "p3" => Priority::P3,
-        _ => Priority::P2,
-    }
-}
-
 /// Resolve a card id THE WAY THE BOARD TEACHES IT. The board projection renders
 /// cards with 8-char short ids (`card 08ece9e8 [Open]`); the lifecycle verbs
 /// demanded the full 32-char UUID, so a persona quoting the id she was SHOWN
@@ -1733,9 +1724,31 @@ pub struct WorkCreateParams {
     /// Optional card body / description.
     #[serde(default)]
     pub body: Option<String>,
-    /// Priority: one of p0, p1, p2, p3. Defaults to p2.
+    /// p0 (urgent) to p3 (whenever). Defaults to p2.
     #[serde(default)]
-    pub priority: Option<String>,
+    pub priority: Option<CardPriority>,
+}
+
+/// A card's priority on the wire: a closed set serde refuses anything outside, never a
+/// string read loosely into a default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CardPriority {
+    P0,
+    P1,
+    P2,
+    P3,
+}
+
+impl From<CardPriority> for Priority {
+    fn from(priority: CardPriority) -> Self {
+        match priority {
+            CardPriority::P0 => Priority::P0,
+            CardPriority::P1 => Priority::P1,
+            CardPriority::P2 => Priority::P2,
+            CardPriority::P3 => Priority::P3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1746,10 +1759,14 @@ pub struct WorkCreateResult {
 #[async_trait]
 impl ActionCommand for WorkCreate {
     const NAME: &'static str = "work/create";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    // Making cards toward an activity's goals is every participant's work (Joel,
+    // 2026-09-28): a citizen who could claim and move cards but not create them could not
+    // break a project into slices. The card is created under HER airc identity.
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Create a work card on the shared airc board (repo + title + optional body/priority). \
-         Returns the new card_id.";
+        "Create a card on a room's board for work you know of: a slice, a follow-up, a review. \
+         Returns its card_id.";
     type Params = WorkCreateParams;
     type Output = WorkCreateResult;
 
@@ -1760,7 +1777,7 @@ impl ActionCommand for WorkCreate {
         let mut req = CreateWorkCard::new(
             repo,
             p.title,
-            parse_priority(p.priority.as_deref().unwrap_or("p2")),
+            Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
         );
         req.body = p.body;
         let room = crate::modules::room_resolve::resolve_room(&airc, p.room.as_deref()).await?;
@@ -3989,7 +4006,7 @@ mod tests {
         let mut request = CreateWorkCard::new(
             repo.clone(),
             "serve-time pin match gap",
-            parse_priority("p1"),
+            Priority::P1,
         );
         request.body = Some("Review the serving match against the actual source.".to_string());
         let card = airc
@@ -4001,7 +4018,7 @@ mod tests {
             .create_work_card(CreateWorkCard::new(
                 repo,
                 "local task",
-                parse_priority("p2"),
+                Priority::P2,
             ))
             .await
             .expect("card created on the current board");

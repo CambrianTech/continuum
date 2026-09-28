@@ -819,8 +819,11 @@ mod tests {
         // < 42 → < 47, stated plainly (2026-09-28, Joel: citizens get Claude's hands):
         // code/shell-poll (follow a long install, build or server), code/git/add,
         // code/git/push, code/github/pr-create and code/github/pr-comment joined.
+        // < 47 -> < 48, stated plainly (2026-09-28, Joel: every activity's participants make
+        // cards toward its goals): work/create joined; a citizen could claim and move cards
+        // but not create them, so she could not break a project into slices.
         assert!(
-            names.len() < 47,
+            names.len() < 48,
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );
