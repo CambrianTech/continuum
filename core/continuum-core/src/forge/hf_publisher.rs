@@ -12,7 +12,7 @@
 //! The network spawn itself is integration (needs `hf` + an `HF_TOKEN`) and fails
 //! LOUD via [`PublishError::Transport`] ([[fallbacks-are-illegal-fail-loud]]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -102,12 +102,17 @@ pub fn render_model_card(req: &PublishRequest) -> String {
 /// The argv (after the `hf` program) for uploading a staged folder to a repo —
 /// factored out so it's assertable without spawning anything. Uploads the whole
 /// staging dir (the gguf-lora + the rendered README) to the repo root.
-fn upload_args(repo_id: &str, staging_dir: &str, digest: &str) -> Vec<String> {
+/// Where a bundle lives in an HF repo: its own folder, named by the bundle.
+fn bundle_path(bundle: &GeneBundle) -> String {
+    format!("genes/{}", bundle.name())
+}
+
+fn upload_args(repo_id: &str, staging_dir: &str, path_in_repo: &str, digest: &str) -> Vec<String> {
     vec![
         "upload".to_string(),
         repo_id.to_string(),
         staging_dir.to_string(),
-        ".".to_string(),
+        path_in_repo.to_string(),
         "--repo-type".to_string(),
         "model".to_string(),
         "--commit-message".to_string(),
@@ -123,34 +128,56 @@ fn download_args(repo_id: &str, files: &[String], dir: &str) -> Vec<String> {
     args
 }
 
+/// A definite absence (the repo or the file does not exist), as opposed to auth, network or
+/// timeout, which are uncertainty and never read as absent (Cormac, Codex on #4529).
+fn is_definitely_absent(stderr: &str) -> bool {
+    ["404", "EntryNotFound", "Entry Not Found", "RepositoryNotFound", "Repository Not Found"]
+        .iter()
+        .any(|m| stderr.contains(m))
+}
+
+/// The commit a finished upload landed as, when the CLI reports it (`…/commit/<sha>`).
+fn commit_of(stdout: &str) -> Option<String> {
+    let (_, after) = stdout.rsplit_once("/commit/")?;
+    let sha: String = after.chars().take_while(char::is_ascii_hexdigit).collect();
+    (sha.len() >= 7).then_some(sha)
+}
+
 /// Publishes to a Hugging Face model repo through the `hf` CLI (auth: HF_TOKEN).
 #[derive(Debug, Default)]
 pub struct HfPublisher;
+
+/// How an `hf` invocation failed: a definite absence, or anything else.
+enum HfFailure {
+    Absent,
+    Other(String),
+}
 
 impl HfPublisher {
     pub fn new() -> Self {
         Self
     }
 
-    fn fail(&self, detail: String) -> PublishError {
-        PublishError::Transport { transport: self.name().to_string(), detail }
+    fn uncertain(&self, detail: String) -> PublishError {
+        PublishError::Uncertain { transport: self.name().to_string(), detail }
     }
 
-    async fn hf(&self, args: &[String]) -> Result<(), PublishError> {
+    async fn hf(&self, args: &[String]) -> Result<String, HfFailure> {
         let out = tokio::process::Command::new("hf").args(args).output().await.map_err(|e| {
-            self.fail(format!("`hf` CLI not runnable ({e}); install huggingface_hub and authenticate (HF_TOKEN)"))
+            HfFailure::Other(format!("`hf` CLI not runnable ({e}); install huggingface_hub and authenticate (HF_TOKEN)"))
         })?;
-        if !out.status.success() {
-            return Err(self.fail(format!("hf {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr).trim())));
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
         }
-        Ok(())
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if is_definitely_absent(&stderr) { HfFailure::Absent } else { HfFailure::Other(format!("hf {} failed: {stderr}", args[0])) })
     }
 
-    fn receipt(&self, dest: &RepoId, digest: &str) -> PublicationReceipt {
+    fn receipt(&self, dest: &RepoId, bundle: &GeneBundle, revision: Option<&str>) -> PublicationReceipt {
         PublicationReceipt {
             transport: self.name().to_string(),
-            location: format!("https://huggingface.co/{}", dest.as_str()),
-            digest: digest.to_string(),
+            location: format!("https://huggingface.co/{}/tree/{}/{}", dest.as_str(), revision.unwrap_or("main"), bundle_path(bundle)),
+            digest: bundle.digest.clone(),
         }
     }
 }
@@ -163,37 +190,61 @@ impl Publisher for HfPublisher {
 
     async fn find(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<Option<PublicationReceipt>, PublishError> {
         let dir = std::env::temp_dir().join(format!("continuum-hf-find-{}", uuid::Uuid::new_v4()));
-        let args = download_args(dest.as_str(), &[gene_bundle::MANIFEST.to_string()], &dir.to_string_lossy());
-        // an absent repo or manifest is "not there yet", never an error
-        let served = match self.hf(&args).await {
-            Ok(()) => std::fs::read(dir.join(gene_bundle::MANIFEST)).ok(),
-            Err(_) => None,
-        };
+        let manifest = format!("{}/{}", bundle_path(bundle), gene_bundle::MANIFEST);
+        let result = self.hf(&download_args(dest.as_str(), &[manifest.clone()], &dir.to_string_lossy())).await;
+        let served = std::fs::read(dir.join(&manifest)).ok();
         let _ = std::fs::remove_dir_all(&dir);
-        let same = served.is_some_and(|body| {
-            use sha2::{Digest, Sha256};
-            Sha256::digest(&body).iter().map(|b| format!("{b:02x}")).collect::<String>() == bundle.digest
-        });
-        Ok(same.then(|| self.receipt(dest, &bundle.digest)))
+        match result {
+            Err(HfFailure::Absent) => Ok(None),
+            Err(HfFailure::Other(detail)) => Err(self.uncertain(detail)),
+            // the bundle's own folder is named by its digest, so a manifest there is this
+            // bundle's; read-back decides whether the copy is whole
+            Ok(_) if served.is_some() => Ok(Some(self.receipt(dest, bundle, None))),
+            Ok(_) => Err(self.uncertain("hf download reported success but wrote no manifest".into())),
+        }
     }
 
     async fn deliver(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<PublicationReceipt, PublishError> {
         // HF's card is its README: staged beside the bundle, outside its identity
         tokio::fs::write(bundle.dir.join(gene_bundle::CARD), &bundle.card)
             .await
-            .map_err(|e| self.fail(format!("could not write model card: {e}")))?;
-        self.hf(&upload_args(dest.as_str(), &bundle.dir.to_string_lossy(), &bundle.digest)).await?;
-        Ok(self.receipt(dest, &bundle.digest))
+            .map_err(|e| self.uncertain(format!("could not write model card: {e}")))?;
+        let args = upload_args(dest.as_str(), &bundle.dir.to_string_lossy(), &bundle_path(bundle), &bundle.digest);
+        let stdout = self.hf(&args).await.map_err(|f| match f {
+            HfFailure::Absent => self.uncertain(format!("hf upload: repo {} not found or not writable", dest.as_str())),
+            HfFailure::Other(detail) => self.uncertain(detail),
+        })?;
+        Ok(self.receipt(dest, bundle, commit_of(&stdout).as_deref()))
     }
 
-    async fn fetch(&self, dest: &RepoId, _receipt: &PublicationReceipt, into: &Path) -> Result<(), PublishError> {
+    async fn fetch(&self, dest: &RepoId, receipt: &PublicationReceipt, into: &Path) -> Result<PathBuf, PublishError> {
+        let path = receipt
+            .location
+            .split_once("/tree/")
+            .and_then(|(_, rest)| rest.split_once('/'))
+            .map(|(_, path)| path.to_string())
+            .ok_or_else(|| self.uncertain(format!("not a bundle location: {}", receipt.location)))?;
         let dir = into.to_string_lossy().into_owned();
-        self.hf(&download_args(dest.as_str(), &[gene_bundle::MANIFEST.to_string()], &dir)).await?;
-        let body = std::fs::read(into.join(gene_bundle::MANIFEST)).map_err(|e| self.fail(format!("manifest not fetched: {e}")))?;
-        let manifest: gene_bundle::BundleManifest =
-            serde_json::from_slice(&body).map_err(|e| self.fail(format!("served manifest unreadable: {e}")))?;
-        let names: Vec<String> = manifest.files.iter().map(|f| f.name.clone()).collect();
-        self.hf(&download_args(dest.as_str(), &names, &dir)).await
+        let manifest = format!("{path}/{}", gene_bundle::MANIFEST);
+        match self.hf(&download_args(dest.as_str(), &[manifest], &dir)).await {
+            Ok(_) | Err(HfFailure::Absent) => {}
+            Err(HfFailure::Other(detail)) => return Err(self.uncertain(detail)),
+        }
+        let bundle_dir = into.join(&path);
+        // names reach the CLI only after the served manifest passes the bundle's own check;
+        // a malformed one is left for verify_dir to report as corrupt
+        let names = std::fs::read(bundle_dir.join(gene_bundle::MANIFEST))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<gene_bundle::BundleManifest>(&b).ok())
+            .filter(|m| gene_bundle::check_manifest(m).is_ok())
+            .map(|m| m.files.into_iter().map(|f| format!("{path}/{}", f.name)).collect::<Vec<_>>());
+        if let Some(names) = names {
+            match self.hf(&download_args(dest.as_str(), &names, &dir)).await {
+                Ok(_) | Err(HfFailure::Absent) => {}
+                Err(HfFailure::Other(detail)) => return Err(self.uncertain(detail)),
+            }
+        }
+        Ok(bundle_dir)
     }
 }
 
@@ -249,18 +300,24 @@ mod tests {
     // what this catches: the upload targets the right repo + repo-type, and uploads
     // the staged folder — the argv the network spawn will run, assertable without a
     // network.
-    // what this catches: the upload targets the right repo and repo type, uploads the staged
-    // bundle folder, and names the bundle digest in the commit; the fetch downloads only the
-    // named files. The argv the network spawn runs, assertable without a network.
+    // what this catches (Cormac on #4529): bundles uploaded to the repo ROOT, so a second gene
+    // overwrote the first and its receipt read as a mismatch. Each bundle uploads into its own
+    // folder, the digest in the commit; a download names only files; only a definite 404 is
+    // "absent" (auth or network is uncertainty); the commit a CLI reports is parsed.
     #[test]
-    fn hf_args_target_the_repo_and_name_the_bundle() {
-        let args = upload_args("continuum-ai/qwen3-coder-30b", "/tmp/stage", "abc123");
+    fn hf_puts_each_bundle_in_its_own_folder_and_only_a_404_is_absent() {
+        let args = upload_args("continuum-ai/q", "/tmp/stage", "genes/code-0123456789abcdef", "abc123");
         assert_eq!(
             args,
-            vec!["upload", "continuum-ai/qwen3-coder-30b", "/tmp/stage", ".", "--repo-type", "model", "--commit-message", "gene bundle abc123"]
+            vec!["upload", "continuum-ai/q", "/tmp/stage", "genes/code-0123456789abcdef", "--repo-type", "model", "--commit-message", "gene bundle abc123"]
         );
-        let dl = download_args("continuum-ai/q", &["manifest.json".into(), "a.gguf".into()], "/tmp/x");
-        assert_eq!(dl, vec!["download", "continuum-ai/q", "manifest.json", "a.gguf", "--local-dir", "/tmp/x", "--repo-type", "model"]);
+        let dl = download_args("continuum-ai/q", &["genes/x/manifest.json".into()], "/tmp/x");
+        assert_eq!(dl, vec!["download", "continuum-ai/q", "genes/x/manifest.json", "--local-dir", "/tmp/x", "--repo-type", "model"]);
+        assert!(is_definitely_absent("huggingface_hub.errors.EntryNotFoundError: 404 Client Error"));
+        assert!(!is_definitely_absent("401 Client Error: Unauthorized"), "auth is uncertainty, never absence");
+        assert!(!is_definitely_absent("Read timed out"));
+        assert_eq!(commit_of("done: https://huggingface.co/o/r/commit/0a1b2c3d4e5f\n").as_deref(), Some("0a1b2c3d4e5f"));
+        assert_eq!(commit_of("no url here"), None);
     }
 
     #[test]

@@ -16,15 +16,17 @@
 //! reshapes what a gene is. They only find, deliver and fetch.
 //!
 //! A publication is proven by READ-BACK, never by an upload's exit status: [`publish_to`]
-//! fetches what the destination serves and requires the staged digest. A retry reconciles
-//! per (destination, digest): a copy already there and intact is reused, never re-uploaded,
-//! and a partial one is repaired.
+//! fetches what the destination serves and requires the staged digest (transport integrity;
+//! who made the gene is the bundle's verified provenance, see `gene_bundle`). A retry
+//! reconciles per (destination, digest): an intact copy is reused, never re-uploaded; a copy
+//! POSITIVELY read as partial or wrong is repaired; and a copy that could not be judged
+//! (auth, network, timeout) is reported as uncertain and never overwritten on a guess.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use super::gene_bundle::{self, GeneBundle};
+use super::gene_bundle::{self, Custody, GeneBundle};
 use super::publish_request::{PublishError, PublishRequest, RepoId};
 
 /// Where a published bundle landed, and which bundle it is. `location` is the
@@ -47,8 +49,9 @@ pub trait Publisher: Send + Sync {
     /// Short, stable name for logs and selection (`"huggingface"`, `"github"`, …).
     fn name(&self) -> &'static str;
 
-    /// Does `dest` already hold this bundle? `Some` names where; the caller still verifies it
-    /// by read-back before trusting it. Used to make a retry idempotent.
+    /// Does `dest` already hold this bundle? `Ok(Some)` names where (the caller still verifies
+    /// it by read-back); `Ok(None)` ONLY for a definite absence (a 404); anything else (auth,
+    /// network, timeout) is `Err(Uncertain)`, never read as absent.
     async fn find(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<Option<PublicationReceipt>, PublishError>;
 
     /// Deliver the bundle's identity files to `dest`, creating or REPAIRING (overwriting a
@@ -56,39 +59,58 @@ pub trait Publisher: Send + Sync {
     /// [`publish_to`] proves it by read-back.
     async fn deliver(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<PublicationReceipt, PublishError>;
 
-    /// Fetch what `receipt` names at `dest` into `into` (flat files, manifest included).
-    async fn fetch(&self, dest: &RepoId, receipt: &PublicationReceipt, into: &Path) -> Result<(), PublishError>;
+    /// Fetch what `receipt` names at `dest` into `into`, returning the directory that holds
+    /// the flat bundle files (manifest included). A failure to fetch is `Err(Uncertain)`.
+    async fn fetch(&self, dest: &RepoId, receipt: &PublicationReceipt, into: &Path) -> Result<PathBuf, PublishError>;
 }
 
-/// Read `receipt` back from `dest` and require that it serves `bundle`'s digest.
-async fn verify(publisher: &dyn Publisher, dest: &RepoId, bundle: &GeneBundle, receipt: &PublicationReceipt) -> Result<(), PublishError> {
+/// What reading a receipt back found.
+enum ReadBack {
+    /// The destination serves exactly the staged bundle.
+    Intact,
+    /// Positively read and wrong: partial, altered, malformed, or another bundle. Repairable.
+    Corrupt(String),
+}
+
+/// Read `receipt` back from `dest`. `Err` is uncertainty (the fetch or a read failed), which
+/// is never treated as corruption.
+async fn read_back(publisher: &dyn Publisher, dest: &RepoId, bundle: &GeneBundle, receipt: &PublicationReceipt) -> Result<ReadBack, PublishError> {
     let transport = publisher.name().to_string();
     let into = std::env::temp_dir().join(format!("continuum-readback-{}", uuid::Uuid::new_v4()));
-    let served = async {
-        publisher.fetch(dest, receipt, &into).await?;
-        gene_bundle::verify_dir(&into).map_err(|detail| PublishError::Transport { transport: transport.clone(), detail })
+    let judged = async {
+        let dir = publisher.fetch(dest, receipt, &into).await?;
+        Ok::<_, PublishError>(match gene_bundle::verify_dir(&dir) {
+            Ok(served) if served == bundle.digest => ReadBack::Intact,
+            Ok(served) => ReadBack::Corrupt(format!("serves bundle {served}, not {}", bundle.digest)),
+            Err(Custody::Corrupt(d)) => ReadBack::Corrupt(d),
+            Err(Custody::Unreadable(detail)) => return Err(PublishError::Uncertain { transport: transport.clone(), detail }),
+        })
     }
     .await;
     let _ = std::fs::remove_dir_all(&into);
-    let served = served?;
-    if served != bundle.digest {
-        return Err(PublishError::DigestMismatch { transport, staged: bundle.digest.clone(), served });
-    }
-    Ok(())
+    judged
 }
 
-/// Publish `bundle` to `dest` through one provider, proven by read-back. An intact copy
-/// already there is reused (no second upload); a partial or wrong one is repaired by
-/// delivering again, then verified.
+/// Publish `bundle` to `dest` through one provider, proven by read-back.
+/// - an intact copy already there is reused (no second upload);
+/// - a copy positively read as corrupt is repaired by delivering again, then re-verified;
+/// - anything uncertain (find or read-back could not judge) returns `Uncertain` and
+///   overwrites nothing.
 pub async fn publish_to(publisher: &dyn Publisher, dest: &RepoId, bundle: &GeneBundle) -> Result<PublicationReceipt, PublishError> {
     if let Some(existing) = publisher.find(dest, bundle).await? {
-        if verify(publisher, dest, bundle, &existing).await.is_ok() {
+        if let ReadBack::Intact = read_back(publisher, dest, bundle, &existing).await? {
             return Ok(existing);
         }
     }
     let receipt = publisher.deliver(dest, bundle).await?;
-    verify(publisher, dest, bundle, &receipt).await?;
-    Ok(receipt)
+    match read_back(publisher, dest, bundle, &receipt).await? {
+        ReadBack::Intact => Ok(receipt),
+        ReadBack::Corrupt(detail) => Err(PublishError::DigestMismatch {
+            transport: publisher.name().to_string(),
+            staged: bundle.digest.clone(),
+            served: detail,
+        }),
+    }
 }
 
 /// The one place a target name becomes a provider. Both publishing callers (`forge/publish`,
@@ -130,12 +152,19 @@ mod tests {
     use std::sync::Mutex;
 
     /// An in-memory destination: a map from location to the files it serves. `corrupt` makes
-    /// every delivery store a tampered copy (a destination serving the wrong bytes).
+    /// every delivery store a tampered copy (a destination serving the wrong bytes);
+    /// `find_fails` / `fetch_fails` make those calls uncertain (auth, network, timeout).
     #[derive(Default)]
     struct MemoryPublisher {
         store: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
         deliveries: Mutex<u32>,
         corrupt: bool,
+        find_fails: bool,
+        fetch_fails: bool,
+    }
+
+    fn uncertain(detail: &str) -> PublishError {
+        PublishError::Uncertain { transport: "memory".into(), detail: detail.into() }
     }
 
     impl MemoryPublisher {
@@ -150,6 +179,9 @@ mod tests {
             "memory"
         }
         async fn find(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<Option<PublicationReceipt>, PublishError> {
+            if self.find_fails {
+                return Err(uncertain("401 from the destination"));
+            }
             let location = Self::location(dest, bundle);
             Ok(self.store.lock().unwrap().contains_key(&location).then(|| PublicationReceipt {
                 transport: "memory".into(),
@@ -162,7 +194,7 @@ mod tests {
             let mut files = HashMap::new();
             for path in bundle.files() {
                 let mut bytes = std::fs::read(&path).unwrap();
-                if self.corrupt && path.file_name().unwrap() == bundle.gene_file.as_str() {
+                if self.corrupt && path.file_name().unwrap() == bundle.manifest.gene.as_str() {
                     bytes.push(b'!');
                 }
                 files.insert(path.file_name().unwrap().to_string_lossy().into_owned(), bytes);
@@ -171,12 +203,15 @@ mod tests {
             self.store.lock().unwrap().insert(location.clone(), files);
             Ok(PublicationReceipt { transport: "memory".into(), location, digest: bundle.digest.clone() })
         }
-        async fn fetch(&self, _dest: &RepoId, receipt: &PublicationReceipt, into: &Path) -> Result<(), PublishError> {
+        async fn fetch(&self, _dest: &RepoId, receipt: &PublicationReceipt, into: &Path) -> Result<PathBuf, PublishError> {
+            if self.fetch_fails {
+                return Err(uncertain("connection reset"));
+            }
             std::fs::create_dir_all(into).unwrap();
             for (name, bytes) in self.store.lock().unwrap().get(&receipt.location).cloned().unwrap_or_default() {
                 std::fs::write(into.join(name), bytes).unwrap();
             }
-            Ok(())
+            Ok(into.to_path_buf())
         }
     }
 
@@ -190,7 +225,11 @@ mod tests {
                 base_model: "ggml-org/Qwen3.8-27B-GGUF".to_string(),
                 trait_kind: "code".to_string(),
                 lift: 0.05,
-                provenance_json: Some("{\"signer\":\"k\"}".to_string()),
+                provenance_json: Some({
+                    let key = crate::contracts::signing::ContractSigningKey::from_bytes(&[7u8; 32]);
+                    let pv = crate::forge::provenance::GenomeProvenance::sign(&key, b"GGUF-lora", vec!["aaaa".into()]).unwrap();
+                    serde_json::to_string(&pv).unwrap()
+                }),
                 parent_alloy_hashes: vec!["aaaa".into()],
                 ..Default::default()
             },
@@ -216,14 +255,32 @@ mod tests {
         publish_to(&good, &dest, &bundle).await.expect("test: retry");
         assert_eq!(*good.deliveries.lock().unwrap(), 1, "an intact copy is reused, never re-uploaded");
 
-        // a partial copy (the gene missing) is repaired by delivering again
-        good.store.lock().unwrap().get_mut(&first.location).unwrap().remove(&bundle.gene_file);
+        // a copy positively read as partial (the gene missing) is repaired by delivering again
+        good.store.lock().unwrap().get_mut(&first.location).unwrap().remove(&bundle.manifest.gene);
         publish_to(&good, &dest, &bundle).await.expect("test: repaired");
         assert_eq!(*good.deliveries.lock().unwrap(), 2);
 
         // a destination serving a tampered gene fails read-back: never reported as published
         let bad = MemoryPublisher { corrupt: true, ..Default::default() };
         assert!(publish_to(&bad, &dest, &bundle).await.is_err(), "wrong bytes served is not a publication");
+    }
+
+    // what this catches (Codex, Cormac on #4529): find mapped auth and network errors to
+    // "absent", and publish_to turned every read-back failure into a re-upload, so an intact
+    // mirror was rewritten on a guess. Uncertainty returns Uncertain and delivers NOTHING.
+    #[tokio::test]
+    async fn uncertainty_never_overwrites_a_copy_it_could_not_judge() {
+        let dir = tempfile::tempdir().unwrap();
+        let (dest, bundle) = staged(dir.path());
+        let find_fails = MemoryPublisher { find_fails: true, ..Default::default() };
+        assert!(matches!(publish_to(&find_fails, &dest, &bundle).await, Err(PublishError::Uncertain { .. })));
+        assert_eq!(*find_fails.deliveries.lock().unwrap(), 0, "an uncertain find delivers nothing");
+
+        let flaky = MemoryPublisher::default();
+        publish_to(&flaky, &dest, &bundle).await.expect("test: first publish");
+        let flaky = MemoryPublisher { fetch_fails: true, store: Mutex::new(flaky.store.into_inner().unwrap()), ..Default::default() };
+        assert!(matches!(publish_to(&flaky, &dest, &bundle).await, Err(PublishError::Uncertain { .. })));
+        assert_eq!(*flaky.deliveries.lock().unwrap(), 0, "an intact mirror is never rewritten because read-back was unsure");
     }
 
     // what this catches: a caller naming a provider type directly (genome/push hardcoded HF).

@@ -336,8 +336,9 @@ pub struct GenomePushResult {
     /// proves nothing about who made the gene.
     pub has_behavior_signature: bool,
     /// Whether cryptographic provenance (provenance.json: this node's key over the gene's
-    /// content hash and parents) rode along. This is what "signed" means.
-    pub provenance_signed: bool,
+    /// content hash and parents) rode along AND verified against the gene and its parents.
+    /// This is what "signed" means.
+    pub provenance_verified: bool,
     /// The decayed lift the card publishes (the receipts' verdict).
     pub lift: f64,
 }
@@ -461,7 +462,7 @@ impl ActionCommand for GenomePush {
             digest = %bundle.digest,
             published = receipts.len() as u64,
             failed = failures.len() as u64,
-            provenance_signed = bundle.manifest.provenance_signed,
+            provenance_verified = bundle.manifest.provenance_verified,
             lift = %rec.decayed_mean_lift,
             "gene bundle published to the commons, each target proven by read-back"
         );
@@ -473,7 +474,7 @@ impl ActionCommand for GenomePush {
             failures,
             digest: bundle.digest,
             has_behavior_signature: bundle.manifest.has_behavior_signature,
-            provenance_signed: bundle.manifest.provenance_signed,
+            provenance_verified: bundle.manifest.provenance_verified,
             lift: rec.decayed_mean_lift,
         })
     }

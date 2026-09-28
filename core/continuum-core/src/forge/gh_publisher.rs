@@ -5,15 +5,16 @@
 //! A gene is a RELEASE whose assets are the staged bundle's identity files, byte-for-byte the
 //! same as on HF. The release tag names the gene and its identity,
 //! `gene-<trait>-<digest16>`, so one gene is one tag and a retry finds it by name. The card
-//! is the release notes (provider-specific, outside the identity). Auth and transfer ride
-//! the `gh` CLI (`GH_TOKEN` or `gh auth login`); a private repo is only a matter of which
-//! repo the token can write, not a different code path.
+//! is the release notes (provider-specific, outside the identity). Auth and transfer go
+//! through the ONE GitHub client, `code/github`'s `run_gh` (the source-hygiene rule: GitHub
+//! is never a second `gh` spawn); a private repo is only a matter of which repo the token
+//! can write, not a different code path.
 //!
 //! What this adapter proves about the interface: nothing in the path is HF-shaped. No
 //! repo-type, no model-card frontmatter, no revision model; only a destination
 //! (`owner/repo`), a bundle, and a read-back.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -21,17 +22,15 @@ use super::gene_bundle::GeneBundle;
 use super::publish_request::{PublishError, RepoId};
 use super::publisher::{PublicationReceipt, Publisher};
 
-/// The release tag for a bundle: `gene-<trait>-<first 16 hex of the digest>`. A trait is
-/// reduced to `[a-z0-9-]` so any trait name forms a valid tag.
-fn release_tag(trait_kind: &str, digest: &str) -> String {
-    let slug: String = trait_kind
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let slug = slug.trim_matches('-');
-    let slug = if slug.is_empty() { "gene" } else { slug };
-    format!("gene-{slug}-{}", &digest[..digest.len().min(16)])
+/// The release tag for a bundle: `gene-<trait>-<digest16>`, the bundle's one name.
+fn release_tag(bundle: &GeneBundle) -> String {
+    format!("gene-{}", bundle.name())
+}
+
+/// A definite absence (no such release or repo), as opposed to auth, network or rate limits,
+/// which are uncertainty and never read as absent (Cormac, Codex on #4529).
+fn is_definitely_absent(error: &str) -> bool {
+    ["release not found", "HTTP 404", "Not Found"].iter().any(|m| error.contains(m))
 }
 
 fn view_args(repo: &str, tag: &str) -> Vec<String> {
@@ -61,23 +60,28 @@ fn download_args(repo: &str, tag: &str, dir: &str) -> Vec<String> {
 #[derive(Debug, Default)]
 pub struct GhPublisher;
 
+/// How a `gh` invocation failed: a definite absence, or anything else.
+enum GhFailure {
+    Absent,
+    Other(String),
+}
+
 impl GhPublisher {
     pub fn new() -> Self {
         Self
     }
 
-    fn fail(&self, detail: String) -> PublishError {
-        PublishError::Transport { transport: self.name().to_string(), detail }
+    fn uncertain(&self, detail: String) -> PublishError {
+        PublishError::Uncertain { transport: self.name().to_string(), detail }
     }
 
-    async fn gh(&self, args: &[String]) -> Result<(), PublishError> {
-        let out = tokio::process::Command::new("gh").args(args).output().await.map_err(|e| {
-            self.fail(format!("`gh` CLI not runnable ({e}); install it and authenticate (GH_TOKEN or `gh auth login`)"))
-        })?;
-        if !out.status.success() {
-            return Err(self.fail(format!("gh {} {} failed: {}", args[0], args[1], String::from_utf8_lossy(&out.stderr).trim())));
-        }
-        Ok(())
+    /// One `gh` call through the shared client. `--repo` names the destination explicitly, so
+    /// the working directory is only a neutral place to run from.
+    async fn gh(&self, args: &[String]) -> Result<String, GhFailure> {
+        crate::commands::code::github::run_gh(std::env::temp_dir(), args.to_vec()).await.map_err(|e| {
+            let text = e.to_string();
+            if is_definitely_absent(&text) { GhFailure::Absent } else { GhFailure::Other(text) }
+        })
     }
 
     fn receipt(&self, dest: &RepoId, tag: &str, digest: &str) -> PublicationReceipt {
@@ -100,36 +104,50 @@ impl Publisher for GhPublisher {
     }
 
     async fn find(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<Option<PublicationReceipt>, PublishError> {
-        let tag = release_tag(&bundle.manifest.trait_kind, &bundle.digest);
-        // an absent release is "not there yet", never an error; read-back decides whether it is whole
-        Ok(self
-            .gh(&view_args(dest.as_str(), &tag))
-            .await
-            .ok()
-            .map(|()| self.receipt(dest, &tag, &bundle.digest)))
+        let tag = release_tag(bundle);
+        match self.gh(&view_args(dest.as_str(), &tag)).await {
+            Ok(_) => Ok(Some(self.receipt(dest, &tag, &bundle.digest))),
+            Err(GhFailure::Absent) => Ok(None),
+            Err(GhFailure::Other(detail)) => Err(self.uncertain(detail)),
+        }
     }
 
     async fn deliver(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<PublicationReceipt, PublishError> {
-        let tag = release_tag(&bundle.manifest.trait_kind, &bundle.digest);
+        let tag = release_tag(bundle);
         let files: Vec<String> = bundle.files().iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        if self.gh(&view_args(dest.as_str(), &tag)).await.is_ok() {
-            // the release exists but did not verify: repair every asset in place
-            self.gh(&upload_args(dest.as_str(), &tag, &files)).await?;
+        let exists = match self.gh(&view_args(dest.as_str(), &tag)).await {
+            Ok(_) => true,
+            Err(GhFailure::Absent) => false,
+            Err(GhFailure::Other(detail)) => return Err(self.uncertain(detail)),
+        };
+        if exists {
+            // the release exists and was read back as corrupt: repair every asset in place
+            self.gh(&upload_args(dest.as_str(), &tag, &files)).await.map_err(|f| match f {
+                GhFailure::Absent => self.uncertain(format!("release {tag} vanished during repair")),
+                GhFailure::Other(detail) => self.uncertain(detail),
+            })?;
         } else {
             let notes = std::env::temp_dir().join(format!("continuum-gh-notes-{}.md", uuid::Uuid::new_v4()));
-            tokio::fs::write(&notes, &bundle.card).await.map_err(|e| self.fail(format!("could not write release notes: {e}")))?;
-            let title = format!("gene {} {}", bundle.manifest.trait_kind, &bundle.digest[..bundle.digest.len().min(16)]);
+            tokio::fs::write(&notes, &bundle.card).await.map_err(|e| self.uncertain(format!("could not write release notes: {e}")))?;
+            let title = format!("gene {} {}", bundle.manifest.trait_kind, bundle.short());
             let created = self.gh(&create_args(dest.as_str(), &tag, &title, &notes.to_string_lossy(), &files)).await;
             let _ = tokio::fs::remove_file(&notes).await;
-            created?;
+            created.map_err(|f| match f {
+                GhFailure::Absent => self.uncertain(format!("repo {} not found or not writable", dest.as_str())),
+                GhFailure::Other(detail) => self.uncertain(detail),
+            })?;
         }
         Ok(self.receipt(dest, &tag, &bundle.digest))
     }
 
-    async fn fetch(&self, dest: &RepoId, receipt: &PublicationReceipt, into: &Path) -> Result<(), PublishError> {
-        let tag = Self::tag_of(receipt).ok_or_else(|| self.fail(format!("not a release location: {}", receipt.location)))?;
-        std::fs::create_dir_all(into).map_err(|e| self.fail(format!("{}: {e}", into.display())))?;
-        self.gh(&download_args(dest.as_str(), tag, &into.to_string_lossy())).await
+    async fn fetch(&self, dest: &RepoId, receipt: &PublicationReceipt, into: &Path) -> Result<PathBuf, PublishError> {
+        let tag = Self::tag_of(receipt).ok_or_else(|| self.uncertain(format!("not a release location: {}", receipt.location)))?;
+        std::fs::create_dir_all(into).map_err(|e| self.uncertain(format!("{}: {e}", into.display())))?;
+        match self.gh(&download_args(dest.as_str(), tag, &into.to_string_lossy())).await {
+            // an absent release fetches nothing, and verify_dir reports that as corrupt custody
+            Ok(_) | Err(GhFailure::Absent) => Ok(into.to_path_buf()),
+            Err(GhFailure::Other(detail)) => Err(self.uncertain(detail)),
+        }
     }
 }
 
@@ -144,8 +162,8 @@ mod tests {
     #[test]
     fn gh_args_address_one_release_per_bundle() {
         let digest = "0123456789abcdef0123456789abcdef";
-        assert_eq!(release_tag("code", digest), "gene-code-0123456789abcdef");
-        assert_eq!(release_tag("Tool Use/v2", digest), "gene-tool-use-v2-0123456789abcdef");
+        assert!(is_definitely_absent("code/github: `gh release view` failed (exit Some(1)): release not found"));
+        assert!(!is_definitely_absent("code/github: `gh release view` failed: HTTP 401: Bad credentials"), "auth is uncertainty, never absence");
         let files = vec!["/b/adapter.gguf".to_string(), "/b/manifest.json".to_string()];
         assert_eq!(
             create_args("CambrianTech/genes", "gene-code-01", "gene code 01", "/n.md", &files),

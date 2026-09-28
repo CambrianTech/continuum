@@ -21,9 +21,10 @@ digest: string,
 has_behavior_signature: boolean, 
 /**
  * Whether cryptographic provenance (provenance.json: this node's key over the gene's
- * content hash and parents) rode along. This is what "signed" means.
+ * content hash and parents) rode along AND verified against the gene and its parents.
+ * This is what "signed" means.
  */
-provenance_signed: boolean, 
+provenance_verified: boolean, 
 /**
  * The decayed lift the card publishes (the receipts' verdict).
  */

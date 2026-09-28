@@ -46,6 +46,10 @@ pub enum PublishError {
     /// A destination served a bundle whose identity differs from the one staged: the
     /// publication is not proven (read-back is the proof, never an upload's exit status).
     DigestMismatch { transport: String, staged: String, served: String },
+    /// Whether the destination holds the bundle could not be determined (auth, network,
+    /// timeout, an unreadable fetch). Nothing is overwritten on a guess: the caller retries or
+    /// reports it, never re-uploads over a copy it could not judge (Codex, Cormac on #4529).
+    Uncertain { transport: String, detail: String },
 }
 
 impl std::fmt::Display for PublishError {
@@ -67,6 +71,9 @@ impl std::fmt::Display for PublishError {
             }
             Self::Transport { transport, detail } => {
                 write!(f, "publish via {transport} failed: {detail}")
+            }
+            Self::Uncertain { transport, detail } => {
+                write!(f, "publish via {transport} uncertain, nothing overwritten: {detail}")
             }
             Self::DigestMismatch { transport, staged, served } => write!(
                 f,
