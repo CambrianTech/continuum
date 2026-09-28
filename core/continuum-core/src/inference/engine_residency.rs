@@ -249,6 +249,34 @@ pub fn record(path: &Path, work: ResidentWork) -> Result<(), String> {
     write(path, &all)
 }
 
+/// When this process last released resident work (unix ms, 0 = never), for
+/// [`released_within`].
+static LAST_RELEASE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Work just left its engine (step 2, attribution). Two consequences, in one place:
+/// - the model's measured footprint record is RETIRED: whatever it read while the work was
+///   resident may carry the work's allocations, and a record that cannot be re-confirmed
+///   clean must not rule the next plan (the next clean sample replaces it);
+/// - the release time is noted, so the sampler waits out the engine's asynchronous frees and
+///   the device's measurement lag before it reads the lane again ([`released_within`]).
+fn on_released(work: &ResidentWork) {
+    LAST_RELEASE_MS.store(crate::persona::trace::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    let retired = super::lane_footprint::retire(&work.base_model);
+    crate::probe!(
+        class = "serving.residency.released",
+        job = %work.job,
+        base = work.base_model.as_str(),
+        footprint_retired = retired,
+        "resident work left its engine: the model's footprint record is retired until a clean sample"
+    );
+}
+
+/// Did this process release resident work within `window_ms` of `now_ms`?
+pub fn released_within(now_ms: u64, window_ms: u64) -> bool {
+    let last = LAST_RELEASE_MS.load(std::sync::atomic::Ordering::Relaxed);
+    last != 0 && now_ms.saturating_sub(last) < window_ms
+}
+
 /// Release EXACTLY `expected`: its engine acknowledged a terminal state for this run, or its
 /// incarnation is verifiably dead. A record for the same job with a different binding (a
 /// successor) is left alone. Returns whether the binding was there.
@@ -261,6 +289,7 @@ pub fn release(path: &Path, expected: &ResidentWork) -> Result<bool, String> {
         return Ok(false);
     }
     write(path, &all)?;
+    on_released(expected);
     Ok(true)
 }
 
@@ -328,6 +357,7 @@ pub fn occupancy_with(path: &Path, port: u16, probe: &dyn Fn(u32) -> ProcessProb
             return Occupancy::Unknown(why);
         }
         for w in &dead {
+            on_released(w);
             crate::probe!(
                 class = "serving.residency.released_on_death",
                 job = %w.job,
@@ -473,6 +503,30 @@ mod tests {
             b"{not a list",
             "left for a human"
         );
+    }
+
+    // what this catches: step 2 (attribution). A footprint read while training was resident
+    // carries the training allocation; left standing it rules the next plan as serving cost (the
+    // 5090's ~7.4 GB "fixed per-lane residency"). When the work leaves its engine, the model's
+    // record is retired and the release is noted for the sampler's settle.
+    #[test]
+    fn releasing_resident_work_retires_the_models_footprint_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = store_path(dir.path());
+        let model = "residency-test-model-4531";
+        assert!(
+            super::super::lane_footprint::observe(model, 1, 32_768, 20 * 1024 * 1024 * 1024, 0, 0).is_some(),
+            "test: a reading taken while the work was resident"
+        );
+        assert!(super::super::lane_footprint::measured_record(model).is_some());
+        let w = ResidentWork { base_model: model.into(), ..work(9, 25280, 1_000, 58057) };
+        record(&path, w.clone()).expect("record");
+        assert!(release(&path, &w).expect("release"));
+        assert!(
+            super::super::lane_footprint::measured_record(model).is_none(),
+            "the contaminated record is retired with the release"
+        );
+        assert!(released_within(crate::persona::trace::now_ms(), 60_000), "noted for the sampler's settle");
     }
 
     // what this catches (Codex on #4531): an OS inspection failure read as death. An unreadable
