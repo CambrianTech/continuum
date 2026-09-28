@@ -6155,6 +6155,8 @@ impl LlamaServerProcess {
                 lanes: target.lanes,
                 page_dir: Some(slot_save_dir.clone()),
                 engine_bin: Some(PathBuf::from(&prepared.engine_program)),
+                // the OS start time with the pid names this exact process (residency step 1)
+                started_s: crate::inference::engine_residency::process_start_s(pid).unwrap_or(0), // unwrap_or: 0 never matches a live process, so an unreadable start time holds nothing
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
@@ -9298,6 +9300,7 @@ mod tests {
             lanes: 1,
             page_dir: Some(b_dir.clone()),
             engine_bin: None,
+            started_s: 0,
         };
         let (before_tx, before_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
@@ -9386,6 +9389,7 @@ mod tests {
             lanes: 1,
             page_dir: page_dir.map(PathBuf::from),
             engine_bin: None,
+            started_s: 0,
         };
         let alive = |pid: u32| pid != 3;
         let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, Some("/p/b")), rec(3, None)], alive);

@@ -35,8 +35,27 @@ pub(crate) async fn wait_for_training_memory(
     serving: &LifecycleGate,
     consumer: &str,
     bytes: u64,
-    mut waiting: impl FnMut(u64),
+    waiting: impl FnMut(u64),
 ) -> Result<LeaseGuard, String> {
+    wait_for_training_memory_bound(daemon, serving, consumer, bytes, waiting, || Ok(())).await
+}
+
+/// [`wait_for_training_memory`], plus `bind`: run once the lease is granted and BEFORE the
+/// serving gate is released, so whatever it establishes is in place before any relaunch can
+/// take the gate (SHARED-RESIDENT-LIFECYCLE.md step 1: "establish the residency record inside
+/// the existing admission hold, after capacity admission and before dropping that hold").
+/// In-engine training binds its run to the engine incarnation here. A `bind` error refuses
+/// the admission: the lease is released and the error returned, so a lane replaced while the
+/// job waited is never trained on.
+pub(crate) async fn wait_for_training_memory_bound(
+    daemon: std::sync::Arc<ResourceDaemon>,
+    serving: &LifecycleGate,
+    consumer: &str,
+    bytes: u64,
+    mut waiting: impl FnMut(u64),
+    bind: impl FnOnce() -> Result<(), String>,
+) -> Result<LeaseGuard, String> {
+    let mut bind = Some(bind);
     if bytes == 0 {
         return Err("training memory requirement must be measured before admission".into());
     }
@@ -76,6 +95,18 @@ pub(crate) async fn wait_for_training_memory(
         };
         serving_refusal_said = None;
         let attempt = daemon.acquire_guarded(&request(consumer, bytes));
+        // bound while the gate is still held; a failed bind drops the lease with the error
+        let attempt = match attempt {
+            Ok(guard) => match bind.take().map_or(Ok(()), |b| b()) {
+                Ok(()) => Ok(guard),
+                Err(why) => {
+                    drop(guard);
+                    drop(hold);
+                    return Err(why);
+                }
+            },
+            Err(e) => Err(e),
+        };
         drop(hold);
         match attempt {
             Ok(guard) => return Ok(guard),
