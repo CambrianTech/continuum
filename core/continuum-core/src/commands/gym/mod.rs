@@ -94,7 +94,7 @@ fn cargo_test(dir: &Path) -> (bool, String) {
         .arg("test")
         .arg("--quiet")
         .current_dir(dir)
-        .env("CARGO_TARGET_DIR", shared_target_dir())
+        .envs(shared_target_dir().map(|t| ("CARGO_TARGET_DIR", t)))
         .output()
     {
         Ok(o) => {
@@ -114,18 +114,11 @@ fn cargo_test(dir: &Path) -> (bool, String) {
     }
 }
 
-/// The machine's ONE cargo cache — mined-task builds must never grow a
-/// per-checkout target/ (the citizen-layer economy applies to gym tasks too).
-fn shared_target_dir() -> String {
-    std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| {
-                h.join(".continuum/cache/cargo-target")
-                    .display()
-                    .to_string()
-            })
-            .unwrap_or_else(|| "target".to_string())
-    })
+/// The machine's ONE cargo cache ([`crate::paths::shared_cargo_target_dir`]): mined-task
+/// builds must never grow a per-checkout target/ (the citizen-layer economy applies to gym
+/// tasks too). `None` with no home: the env is left unset rather than a guessed `target`.
+fn shared_target_dir() -> Option<String> {
+    crate::paths::shared_cargo_target_dir().map(|p| p.display().to_string())
 }
 
 /// One mined, DOUBLY-VERIFIED task, as emitted (a superset of the EvalTask
@@ -440,9 +433,9 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
                 f = source_file
             ),
             dod_shell: format!(
-                "{restore_tests}cd {d} && CARGO_TARGET_DIR={t} cargo test --quiet",
+                "{restore_tests}cd {d} && {t}cargo test --quiet",
                 d = task_dir.display(),
-                t = shared_target_dir()
+                t = shared_target_dir().map(|t| format!("CARGO_TARGET_DIR={t} ")).unwrap_or_default() // unwrap_or_default: no shared cache, no env prefix
             ),
             setup_shell: break_cmd,
             commit: commit.to_string(),
