@@ -185,6 +185,8 @@ pub(crate) struct EvalLaneInner {
     pub(crate) served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     placement: PlacementEvidence,
+    /// Manifest identity captured when this lane loaded its gene; never re-resolved after evaluation.
+    measured_gene: Option<crate::forge::adapter_manifest::TrainedAdapter>,
 }
 
 /// A cheap, cloneable handle to a (possibly shared) [`EvalLaneInner`]. Field reads
@@ -682,18 +684,7 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
         .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
-    let entry = manifest
-        .iter()
-        .find(|a| {
-            a.alias == gene.name
-                || (!gene.path.is_empty() && a.path.to_string_lossy() == gene.path)
-        })
-        .ok_or_else(|| {
-            CommandError::NotFound(format!(
-                "gene '{}' is not in the trained-adapter manifest — train and register it before measuring its lift",
-                gene.name
-            ))
-        })?;
+    let entry = resolve_eval_gene(&manifest, &gene.name, &gene.path)?;
     let base_id = entry.base_model_id.clone();
 
     // 2. Resolve that base from the model registry — fail loud, never serve a
@@ -815,8 +806,34 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
             adapter: std::sync::Arc::new(adapter),
             served_ctx,
             placement: placement_evidence,
+            measured_gene: Some(entry.clone()),
         }),
     })
+}
+
+/// Resolve the artifact before acquisition. A supplied path is authoritative;
+/// an alias alone must identify exactly one manifest entry.
+fn resolve_eval_gene<'a>(
+    manifest: &'a [crate::forge::adapter_manifest::TrainedAdapter],
+    alias: &str,
+    path: &str,
+) -> Result<&'a crate::forge::adapter_manifest::TrainedAdapter, CommandError> {
+    let mut matches = manifest.iter().filter(|entry| {
+        if path.is_empty() {
+            entry.alias == alias
+        } else {
+            entry.path.to_string_lossy() == path
+        }
+    });
+    let entry = matches.next().ok_or_else(|| CommandError::NotFound(format!(
+        "gene '{alias}' (path '{path}') is not in the trained-adapter manifest"
+    )))?;
+    if matches.next().is_some() {
+        return Err(CommandError::Invalid(format!(
+            "gene '{alias}' (path '{path}') matches multiple manifest entries; require an unambiguous artifact"
+        )));
+    }
+    Ok(entry)
 }
 
 /// Stand up an ephemeral measurement lane for a BARE base model (no gene, no LoRA) — the
@@ -910,6 +927,7 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         ))
     })?;
     Ok(EvalLaneInner {
+        measured_gene: None,
         lane: Some(lane),
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
@@ -1149,6 +1167,7 @@ async fn share_live_serving_lane_from_snapshot(
         "measuring through the live lane — no second copy of these weights cold-loaded"
     );
     Some(EvalLaneInner {
+        measured_gene: None,
         // Nothing spawned here, so nothing to kill on drop — the living persona's lane
         // outlives every measurement that borrows it.
         lane: None,
@@ -1213,6 +1232,7 @@ async fn build_external_eval_lane_inner(
         .await
         .unwrap_or(base.context_window);
     Ok(EvalLaneInner {
+        measured_gene: None,
         lane: None,
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
@@ -2851,6 +2871,7 @@ impl CognitionEval {
                 p.note.as_deref(),
                 &eval_set_label,
                 _fleet_lease.as_ref().map(|_| true),
+                _eval_lane.as_ref().and_then(|lane| lane.measured_gene.as_ref()),
             );
             return Ok(result);
         }
@@ -3056,6 +3077,7 @@ impl CognitionEval {
             p.note.as_deref(),
             &eval_set_label,
             _fleet_lease.as_ref().map(|_| true),
+            None,
         );
         Ok(result)
     }
@@ -3432,9 +3454,7 @@ crate::register_stateless_command!(CognitionEvalStatus);
 /// The progress-ledger directory (`~/.continuum/progress`), the ONE place
 /// [`append_progress_ledger`] writes and `cognition/eval-status` reads.
 pub(crate) fn progress_ledger_dir() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".continuum/progress"))
+    dirs::home_dir().map(|home| home.join(".continuum/progress"))
 }
 
 /// The terminal ledger row for `run_id` in a KNOWN persona's ledger, newest-first.
@@ -3682,11 +3702,11 @@ fn append_progress_ledger(
     note: Option<&str>,
     eval_set: &str,
     clean_lane: Option<bool>,
+    measured_gene: Option<&crate::forge::adapter_manifest::TrainedAdapter>,
 ) {
-    let Some(home) = std::env::var("HOME").ok() else {
+    let Some(dir) = progress_ledger_dir() else {
         return;
     };
-    let dir = std::path::PathBuf::from(home).join(".continuum/progress");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
@@ -3715,6 +3735,8 @@ fn append_progress_ledger(
         "totalDecodeMs": result.total_decode_ms,
         "totalOutputTokens": result.total_output_tokens,
         "geneId": result.gene_id,
+        "baseModelId": measured_gene.map(|gene| &gene.base_model_id),
+        "adapterPath": measured_gene.map(|gene| &gene.path),
         "basePassRate": result.base_pass_rate,
         "lift": result.lift,
         "note": note,
@@ -5465,6 +5487,22 @@ crate::register_stateless_command!(CognitionEval);
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eval_gene_path_wins_over_reused_alias_and_ambiguity_refuses() {
+        // Regression for #4504: never credit a different base selected by an alias collision.
+        use crate::forge::adapter_manifest::TrainedAdapter;
+        let manifest = vec![
+            TrainedAdapter { alias: "same".into(), path: "/old".into(), base_model_id: "a".into() },
+            TrainedAdapter { alias: "same".into(), path: "/new".into(), base_model_id: "b".into() },
+        ];
+        let selected = resolve_eval_gene(&manifest, "same", "/new").expect("explicit artifact");
+        assert_eq!(selected.base_model_id, "b");
+        assert_eq!(selected.path, std::path::Path::new("/new"));
+        assert!(resolve_eval_gene(&manifest, "same", "").is_err());
+        assert!(resolve_eval_gene(&manifest, "same", "/missing").is_err());
+        assert!(resolve_eval_gene(&manifest[..1], "same", "").is_ok());
+    }
+
     use super::*;
 
     // what this catches: defect 2's sibling (2026-08-23, MirrorCode maiden round):
