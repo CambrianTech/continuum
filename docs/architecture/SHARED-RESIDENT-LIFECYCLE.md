@@ -22,7 +22,19 @@ The planner proposes changes. Only the lifecycle authority commits a resident re
 
 The engine observes its actual steps, allocation and pause state. The core owns intent and recovery. The OS supervisor owns core process liveness and the minimal verified bootstrap path. Install and deploy request transitions; their success means observed convergence, not subprocess exit0.
 
-Existing integration points: `serving_daemon::LifecycleGate` and `AdmissionHold`, `forge::training_admission::wait_for_training_memory`, `ResourceDaemon`, and the existing owned-engine process identity (PID plus start time). Reconcile model swaps, geometry changes, page-in, empty-plan retirement, footprint sampling and emergency paging recovery must consume this authority. The exact record schema is an implementation decision; these identities and ordering guarantees are mandatory.
+Existing integration points: `serving_daemon::LifecycleGate` and `AdmissionHold`, `forge::training_admission::wait_for_training_memory`, `ResourceDaemon`, and `OwnedEngineIdentity`. The current owned identity is an in-process weak owner plus an EngineGeneration UUID; it is NOT a durable PID-plus-start-time identity. Add a restart-surviving incarnation to the existing lane record, using PID and OS process start time with the recorded engine/build identity. Adoption must verify that incarnation rather than treating a newly minted core generation as proof of the same process.
+
+Reconcile model swaps, geometry changes, page-in, empty-plan retirement (`idle_if_current`), broker memory-pressure relief, footprint sampling and emergency paging recovery must consume this authority. In `wait_for_training_memory`, establish the residency record inside the existing admission hold, after capacity admission and before dropping that hold or sending POST /train. The exact record schema is an implementation decision; these identities and ordering guarantees are mandatory.
+
+## Population, agency and activation
+
+Durable persona identity, hosted activation, attention, activity membership, warm KV state and a compute permit are distinct. Creating 100 personas must not eagerly create 100 model processes, warm slots or concurrent turns. At equal active workload, test that increasing the dormant population does not multiply inference work or prevent startup. Metadata storage and discovery may scale with population; this is not a claim of zero cost.
+
+Activation can come from a directed room event, an assigned activity or a persona's scheduled self-directed initiative. Resource admission bounds execution without erasing that initiative: retain pending intent and explain deferred work. A nursery is an ordinary activity/recipe that creates a durable identity and can request activation; creation itself does not confer a permanent compute reservation. Coursework, simulation, evaluation and dreaming use the same room/activity state and scheduling primitives as ordinary life.
+
+Placement must consider measured throughput, prefix reuse and the latency budget as well as memory. Grid capacity participates in the same society. Distinct identities can share a resident base while retaining their own memory, relationships and stable adapter selection. Provider registry availability is not a prerequisite for an installed persona to keep working.
+
+The current evidence does not establish the 100-persona gate: the M5 owner reports 16 canonical personas, 6 hosted and 755 peer-state directories, most of which are fork residue rather than citizens. The IntelMac owner reports 8 canonical personas and severe uncached-prefill latency. Neither directory counts nor memory-fit lane counts prove useful activity. Keep these owner-reported baselines separate from future acceptance measurements.
 
 ## Invariants
 
@@ -31,7 +43,7 @@ Existing integration points: `serving_daemon::LifecycleGate` and `AdmissionHold`
 - In-place pause retains residency and memory; disk suspension releases them only after an acknowledged durable checkpoint and teardown.
 - Dropping a controller future or losing HTTP contact does not prove the engine stopped. Preserve ownership as uncertain until terminal/cancel acknowledgment or verified incarnation death. A stale controller cannot release a successor's ownership.
 - On core startup, reconcile existing engine identity, durable work and observed state before allowing replacement decisions or new learning dispatch. Reattach to the same job without POSTing another run. Ambiguity blocks destructive transitions while existing healthy serving continues.
-- Genuine engine death or emergency pressure can trigger recovery. Record the interruption and recovery disposition; do not report successful resume without evidence. If the engine is dead, an acknowledgment from it is impossible and verified death is the release evidence.
+- Genuine engine death or emergency pressure can trigger recovery. For an intentional emergency replacement, persist and publish the job interruption reason before committing replacement; do not reconstruct it only after the engine disappears. Do not report successful resume without evidence. If the engine is already dead, an acknowledgment from it is impossible and verified incarnation death releases its ownership even without an ACK.
 - Human room state and persona perception use the same published state. A log parser is diagnostic, never the operational workflow.
 
 ## Memory accounting
