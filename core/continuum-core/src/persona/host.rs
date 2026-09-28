@@ -942,6 +942,7 @@ mod tests {
         use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
 
         let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
         let registry = PersonaAircRuntimeRegistry::new();
         let manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
