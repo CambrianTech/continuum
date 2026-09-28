@@ -43,7 +43,8 @@ pub trait AircWorkReader: Send + Sync {
 
     /// The cards she holds, each beside the ROOM whose board carries it, so a turn roots at
     /// the card of ITS OWN activity (focus is per activity, Joel 2026-09-28). Default: every
-    /// card with its room unknown, so focus falls back to the whole-mind choice.
+    /// card with its room unknown. Such a claim is visible as work but cannot implicitly
+    /// select a checkout for a particular activity.
     async fn active_claims_by_room(&self) -> Result<Vec<(Option<uuid::Uuid>, WorkCard)>, AircError> {
         Ok(self.active_claims().await?.into_iter().map(|card| (None, card)).collect())
     }
