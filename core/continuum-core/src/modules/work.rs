@@ -1712,11 +1712,8 @@ pub struct WorkCreate {
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkCreateParams {
     /// The activity room whose board receives the card — its id or its name.
-    /// Omitted = the caller's current room (the lobby on a fresh node, which is
-    /// how project cards ended up in #general). Name the room.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub room: Option<String>,
+    /// Required: a default of "the current room" put project cards in #general.
+    pub room: String,
     /// Repository key, e.g. `CambrianTech/continuum`.
     pub repo: String,
     /// Human-readable card title.
@@ -1772,6 +1769,13 @@ impl ActionCommand for WorkCreate {
 
     async fn run(&self, ctx: &Ctx, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
+        Self::create(&airc, p).await
+    }
+}
+
+impl WorkCreate {
+    /// The card lands on the NAMED room's board under the caller's own airc identity.
+    async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
         let repo = RepoId::new(p.repo)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
         let mut req = CreateWorkCard::new(
@@ -1780,7 +1784,7 @@ impl ActionCommand for WorkCreate {
             Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
         );
         req.body = p.body;
-        let room = crate::modules::room_resolve::resolve_room(&airc, p.room.as_deref()).await?;
+        let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
         let card_id = airc
             .create_work_card_in(&room, req)
             .await
@@ -3988,6 +3992,44 @@ mod tests {
             );
             assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
+    }
+    /// what this catches: a citizen's card landing somewhere other than the room she
+    /// named (the old "current room" default put project cards in #general), or under
+    /// an identity that is not hers — work/create is how an activity's participants
+    /// break its goals into slices, so both the board and the author must be right.
+    #[tokio::test]
+    async fn a_citizens_card_lands_in_the_named_room_created_by_her() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await
+            .expect("a local airc scope opens without a daemon");
+        let project = airc.join("career-wrangler").await.expect("join the project room");
+        let lobby = airc.join("general").await.expect("join the lobby; focus moves here");
+
+        let made = WorkCreate::create(
+            &airc,
+            WorkCreateParams {
+                room: "career-wrangler".to_string(),
+                repo: "github.com/CambrianTech/career-wrangler".to_string(),
+                title: "job list page".to_string(),
+                body: None,
+                priority: Some(CardPriority::P1),
+            },
+        )
+        .await
+        .expect("card created");
+
+        let id = WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid"));
+        let horizon = board_horizon(&airc).await.expect("subscribed boards");
+        let (room, card) = horizon
+            .boards
+            .iter()
+            .find_map(|(r, b)| b.card(id).map(|c| (r, c)))
+            .expect("the created card is on a subscribed board");
+        assert_eq!(room.channel, project.channel, "the named room, not the focused lobby");
+        assert_ne!(room.channel, lobby.channel);
+        assert_eq!(card.created_by, airc.peer_id(), "authored under her own identity");
+        assert_eq!(card.priority, Priority::P1);
     }
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
