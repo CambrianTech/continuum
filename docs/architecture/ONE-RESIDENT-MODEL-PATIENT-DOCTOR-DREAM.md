@@ -237,7 +237,7 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 ### 9.3 Invariants, each with a test
 
 - One owner per `(persona, base)` on the grid: a second `open` elsewhere refuses.
-- An arrival id trains at most once, across a lost ack or a retry.
+- An arrival id trains at most once, across a lost ack or a retry. **Acceptance-once is not application-once across a crash** (Codex on #4500). Each checkpoint writes the shadow, optimizer, accumulator and RNG **atomically with the journal cursor it consumed through**. A step that ran after the last checkpoint and before a crash is undone by restoring that checkpoint and replaying the journal from its cursor. A crash after a checkpoint resumes at its cursor. So every accepted arrival is applied exactly once to the state that survives.
 - A card that judges snapshot *k* was never consumed by snapshot *k*. Trials draw her next cards, and replay must not break that.
 - Held-out and coursework provenance survive into the snapshot manifest (Kimi's disjointness is checkable after the fact).
 - A step never exceeds its measured chunk budget while a slot is busy, and a directed turn's wait stays on the latency line.
