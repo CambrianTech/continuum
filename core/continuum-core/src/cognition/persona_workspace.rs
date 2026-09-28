@@ -1035,15 +1035,22 @@ pub(crate) async fn root_at_held_card(
             // 822c4253): staging a card's checkout moved Kimi from the career-wrangler/
             // tree she had built at home into a per-card worktree on a card branch, and
             // her next code/read of career-wrangler/docs/... failed with no word of why.
-            if newly_rooted(hands.persona_id, &ws) {
+            // Recorded as told only AFTER the line is pinned (Cormac on #4555): marking
+            // first would leave a body-less turn "told" and silent at this checkout forever.
+            if !already_told(hands.persona_id, &ws) {
                 let branch = crate::modules::card_staging::card_branch(focus);
-                if let Some(body) = cycle.acting() {
-                    body.working_memory.pin_fact_for_turns(
-                        "rooted",
-                        &rooted_notice(&focus.repo.to_string(), &ws, &branch),
-                        3,
-                    );
-                }
+                let Some(body) = cycle.acting() else {
+                    return HeldCardTurn {
+                        credit: Some(credit),
+                        hands: Some(hands),
+                    };
+                };
+                body.working_memory.pin_fact_for_turns(
+                    "rooted",
+                    &rooted_notice(&focus.repo.to_string(), &ws, &branch),
+                    3,
+                );
+                mark_told(hands.persona_id, &ws);
                 crate::probe!(
                     class = "persona.work.root_moved",
                     peer = %peer_id,
@@ -1073,15 +1080,22 @@ static ANNOUNCED_ROOTS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Whether `root` differs from the checkout she was last told about, recording it as
-/// told. A per-turn rooting at the same checkout says nothing.
-fn newly_rooted(persona_id: uuid::Uuid, root: &std::path::Path) -> bool {
-    let mut told = ANNOUNCED_ROOTS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
-    if told.get(&persona_id).is_some_and(|r| r == root) {
-        return false;
-    }
-    told.insert(persona_id, root.to_path_buf());
-    true
+/// Whether `root` is the checkout she was last told about. A per-turn rooting at the
+/// same checkout says nothing.
+fn already_told(persona_id: uuid::Uuid, root: &std::path::Path) -> bool {
+    ANNOUNCED_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .get(&persona_id)
+        .is_some_and(|r| r == root)
+}
+
+/// Record `root` as told, once the line naming it is pinned in her window.
+fn mark_told(persona_id: uuid::Uuid, root: &std::path::Path) {
+    ANNOUNCED_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .insert(persona_id, root.to_path_buf());
 }
 
 /// PURE: the line that tells her where her hands now stand and what did not move.
@@ -1926,10 +1940,12 @@ mod tests {
     fn she_is_told_when_her_hands_move_and_only_then() {
         let kimi = Uuid::new_v4();
         let card = std::path::Path::new("/w/worktrees/af4e2cea");
-        assert!(newly_rooted(kimi, card), "first rooting is news");
-        assert!(!newly_rooted(kimi, card), "the same checkout next turn is not");
-        assert!(newly_rooted(kimi, std::path::Path::new("/w/worktrees/b0b0b0b0")));
-        assert!(newly_rooted(Uuid::new_v4(), card), "per citizen, never shared");
+        assert!(!already_told(kimi, card), "first rooting is news");
+        assert!(!already_told(kimi, card), "checking does not record: only a pinned line does");
+        mark_told(kimi, card);
+        assert!(already_told(kimi, card), "the same checkout next turn is not news");
+        assert!(!already_told(kimi, std::path::Path::new("/w/worktrees/b0b0b0b0")));
+        assert!(!already_told(Uuid::new_v4(), card), "per citizen, never shared");
         let line = rooted_notice("CambrianTech/career-wrangler", card, "af4e2cea/a-real-product");
         for want in ["/w/worktrees/af4e2cea", "af4e2cea/a-real-product", "docs/x.md", "home workspace is unchanged"] {
             assert!(line.contains(want), "{want}: {line}");
