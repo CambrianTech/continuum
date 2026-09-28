@@ -42,6 +42,9 @@ pub struct TurnAdmission {
     _pin: Option<SlotPin>,
     /// Serializes same-slot operations even when distinct adapters admit the key.
     _slot_permit: Option<SlotPermit>,
+    /// The pool's slot-release signal, held once this admission pins a slot: its drop raises
+    /// it after the pin is gone (see `Drop`), so a turn waiting for a slot wakes.
+    released: Option<Arc<tokio::sync::Notify>>,
     page_confirmed: bool,
     restored: bool,
     saved_evictee: bool,
@@ -108,6 +111,16 @@ impl Drop for TurnAdmission {
         }
         if let Some((pool, key, slot)) = self.uncommitted.take() {
             pool.forget_resident(slot, key);
+        }
+        // Unpin BEFORE any release is announced, so a woken turn finds this lease evictable.
+        // A pin dropped with no slot permit (cancelled while awaiting it, or acquire_slot
+        // failed) has no SlotPermit drop to announce it, so it announces here (Fable on #4515).
+        let pinned_without_permit = self._pin.is_some() && self._slot_permit.is_none();
+        drop(self._pin.take());
+        if pinned_without_permit {
+            if let Some(released) = &self.released {
+                released.notify_waiters();
+            }
         }
     }
 }
@@ -205,6 +218,7 @@ async fn admit(
         slot: None,
         _pin: None,
         _slot_permit: None,
+        released: None,
         page_confirmed: false,
         restored: false,
         saved_evictee: false,
@@ -251,7 +265,18 @@ async fn admit(
                 break None;
             }
             waited = true;
+            // Never hold a lane while waiting for a slot (Fable on #4515): the lane semaphore
+            // is sized to every server slot, scratch included, so a held permit would block
+            // traffic that could run now, and a slot holder's nested call could need it.
+            admission._permit = None;
             notified.await;
+            admission._permit = Some(
+                concurrency
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("adapter semaphore never closed"), // expect: the semaphore lives as long as the adapter, never closed
+            );
         };
         if waited {
             crate::probe!(
@@ -264,6 +289,7 @@ async fn admit(
         }
         if let Some((slot, pin)) = pinned {
             admission._pin = Some(pin);
+            admission.released = Some(pool.released());
             admission._slot_permit = Some(pool.acquire_slot(slot).await?);
             admission._endpoint.check_ready()?;
             let pg = pool.plan_paging(slot, k);
@@ -386,6 +412,7 @@ pub(crate) async fn admit_transient(
         slot: None,
         _pin: None,
         _slot_permit: None,
+        released: None,
         page_confirmed: false,
         restored: false,
         saved_evictee: false,
@@ -878,6 +905,7 @@ mod tests {
         let turn_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
         tokio::pin!(turn_b);
         assert!(futures::poll!(&mut turn_b).is_pending(), "B was admitted unpinned while every slot was held");
+        assert_eq!(sem.available_permits(), 1, "a turn waiting for a slot must not hold a lane permit (Fable on #4515)");
         drop(adm_a);
         let adm_b = tokio::time::timeout(std::time::Duration::from_secs(5), turn_b)
             .await
