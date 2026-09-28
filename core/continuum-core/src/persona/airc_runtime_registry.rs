@@ -64,6 +64,15 @@ use uuid::Uuid;
 use crate::persona::airc_runtime::PersonaAircRuntime;
 use crate::persona::service_loop::ServeOutcome;
 
+/// Attachment decisions are lifecycle facts; display text is only diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ServiceLoopAttachError {
+    #[error("persona slot no longer exists")]
+    MissingSlot,
+    #[error("persona slot already owns a service loop")]
+    AlreadyAttached,
+}
+
 /// One slot in The Grid's roster — a persona's airc presence plus
 /// (optionally) the supervising tokio task that's running her
 /// service loop.
@@ -447,14 +456,14 @@ impl PersonaAircRuntimeRegistry {
     ///     Err((handle, reason)) => {
     ///         handle.abort();
     ///         let _ = handle.await;
-    ///         tracing::warn!(reason, "attach failed, handle drained");
+    ///         tracing::warn!(reason = %reason, "attach failed, handle drained");
     ///     }
     /// }
     /// ```
     ///
     /// Error reasons:
-    /// - `"no slot"` if the persona isn't in the registry.
-    /// - `"already attached"` if a service loop is already attached.
+    /// - [`ServiceLoopAttachError::MissingSlot`] if the persona isn't in the registry.
+    /// - [`ServiceLoopAttachError::AlreadyAttached`] if a service loop is already attached.
     ///   The caller is responsible for `shutdown_slot`-ing the prior
     ///   loop before attaching a replacement; the registry refuses
     ///   silent overwrites to avoid leaking the prior task.
@@ -462,15 +471,15 @@ impl PersonaAircRuntimeRegistry {
         &self,
         persona_id: Uuid,
         handle: JoinHandle<Result<ServeOutcome, String>>,
-    ) -> Result<(), (JoinHandle<Result<ServeOutcome, String>>, &'static str)> {
+    ) -> Result<(), (JoinHandle<Result<ServeOutcome, String>>, ServiceLoopAttachError)> {
         let Some(slot_ref) = self.inner.get(&persona_id) else {
-            return Err((handle, "no slot"));
+            return Err((handle, ServiceLoopAttachError::MissingSlot));
         };
         let slot = slot_ref.clone();
         drop(slot_ref); // release the DashMap read guard before awaiting the Mutex
         let mut loop_slot = slot.service_loop.lock().await;
         if loop_slot.is_some() {
-            return Err((handle, "already attached"));
+            return Err((handle, ServiceLoopAttachError::AlreadyAttached));
         }
         *loop_slot = Some(handle);
         Ok(())
@@ -786,7 +795,7 @@ mod tests {
             .attach_service_loop(nonexistent, handle)
             .await
             .expect_err("must error when slot missing");
-        assert_eq!(reason, "no slot");
+        assert_eq!(reason, ServiceLoopAttachError::MissingSlot);
         // The handle came back live — caller hasn't drained it yet.
         assert!(!returned_handle.is_finished());
         returned_handle.abort();
