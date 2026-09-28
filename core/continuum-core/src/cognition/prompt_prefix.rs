@@ -119,6 +119,41 @@ pub(crate) fn extends_whole(previous: &[String], now: &[String]) -> bool {
     now.len() >= previous.len() && previous.iter().zip(now).all(|(a, b)| a == b)
 }
 
+/// PURE: where `now` first departs from `previous` as the split fingerprints them: the element
+/// (`model`, `system`, `tools`, or `message N`) and a short window of each side from the first
+/// differing character. What a `prompt_changed` row needs to say, so a request whose RENDER is
+/// identical but whose fingerprint differs (an unrendered field such as a regenerated tool-call
+/// id) is pinned from one row (Fable on the M5, card 11291f5a). `None` when `now` extends
+/// `previous` whole.
+pub(crate) fn first_divergence(previous: &[String], now: &[String]) -> Option<(String, String, String)> {
+    const WINDOW: usize = 48;
+    let label = |i: usize| match i {
+        0 => "model".to_string(),
+        1 => "system".to_string(),
+        2 => "tools".to_string(),
+        n => format!("message {}", n - 3),
+    };
+    for (i, prev) in previous.iter().enumerate() {
+        let Some(cur) = now.get(i) else {
+            return Some((label(i), window_at(prev, 0, WINDOW), "(absent)".to_string()));
+        };
+        if prev != cur {
+            let at = prev.char_indices().zip(cur.chars()).find(|((_, a), b)| a != b).map_or_else(
+                || prev.len().min(cur.len()), // one is a prefix of the other: they part where the shorter ends
+                |((byte, _), _)| byte,
+            );
+            return Some((label(i), window_at(prev, at, WINDOW), window_at(cur, at, WINDOW)));
+        }
+    }
+    None
+}
+
+/// Up to `n` chars of `s` from byte `at` (snapped to a char boundary).
+fn window_at(s: &str, at: usize, n: usize) -> String {
+    let at = (0..=at.min(s.len())).rev().find(|&b| s.is_char_boundary(b)).unwrap_or(0); // unwrap_or: byte 0 is always a boundary
+    s[at..].chars().take(n).collect()
+}
+
 /// PURE: the split, from whether the request extends the last answered one and that one's
 /// engine token count.
 pub(crate) fn split_reuse(extends_previous: bool, previous_prompt_tokens: Option<u32>, cached: u32) -> Option<ReuseSplit> {
@@ -164,15 +199,24 @@ pub(crate) fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option
             prefill = u64::from(prefill),
             "the request extended the last answered one whole: the reusable tokens the engine did not serve are a candidate slot loss (template and truncation not verified)"
         ),
-        Some(ReuseSplit::PromptChanged { cached }) => crate::probe!(
-            class = "delib.prompt.reuse_split",
-            persona = %persona,
-            request = request_id,
-            kind = "prompt_changed",
-            cached = u64::from(cached),
-            prefill = u64::from(prefill),
-            "the request changed inside the last answered one: its own change is delib.prompt.common_prefix; no gap is guessed"
-        ),
+        Some(ReuseSplit::PromptChanged { cached }) => {
+            let (element, was, is) = COMMITTED
+                .get(&persona)
+                .and_then(|c| first_divergence(&c.0, &now))
+                .unwrap_or_default(); // unwrap_or_default: a changed request always diverges; empty only if the record moved meanwhile
+            crate::probe!(
+                class = "delib.prompt.reuse_split",
+                persona = %persona,
+                request = request_id,
+                kind = "prompt_changed",
+                cached = u64::from(cached),
+                prefill = u64::from(prefill),
+                diverged_in = element.as_str(),
+                was = was.as_str(),
+                is = is.as_str(),
+                "the request changed inside the last answered one, first at diverged_in: its own change is delib.prompt.common_prefix; no gap is guessed"
+            )
+        }
         None => {}
     }
     COMMITTED.insert(persona, (now, cached.saturating_add(prefill)));
@@ -259,6 +303,24 @@ mod tests {
         assert!(!COMMITTED.contains_key(&persona), "a request that never settled leaves nothing to compare");
         settle_reuse(persona, "c", Some((0, 10)));
         assert!(PENDING.contains_key(&persona), "a late completion of c must not erase d, staged since");
+    }
+
+    // what this catches (card 11291f5a, Fable on the M5): identical RENDERS filed as prompt_changed
+    // because an unrendered field differed. The row must name the element and show both sides at
+    // the first differing char, so one row pins the volatile field.
+    #[test]
+    fn a_changed_request_names_its_first_divergent_element_and_both_sides() {
+        let prev: Vec<String> = ["<model>m", "<system>s", "<tools>[]", r#"{"role":"assistant","content":[{"type":"tool_use","id":"call_a1","name":"x"}]}"#]
+            .map(String::from)
+            .to_vec();
+        let mut now = prev.clone();
+        now[3] = r#"{"role":"assistant","content":[{"type":"tool_use","id":"call_b7","name":"x"}]}"#.to_string();
+        let (element, was, is) = first_divergence(&prev, &now).expect("they differ");
+        assert_eq!(element, "message 0");
+        assert!(was.starts_with("a1") && is.starts_with("b7"), "{was} / {is}");
+        assert_eq!(first_divergence(&prev, &[prev.clone(), vec!["more".into()]].concat()), None, "an extension is not a divergence");
+        let (element, _, is) = first_divergence(&prev, &prev[..2]).expect("a dropped element");
+        assert_eq!((element.as_str(), is.as_str()), ("tools", "(absent)"));
     }
 
     // what this catches (Fable on #4487): a tool-surface change read as a kept prompt. The
