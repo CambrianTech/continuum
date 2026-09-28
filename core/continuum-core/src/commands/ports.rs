@@ -96,6 +96,7 @@ fn holder(ctx: &Ctx, verb: &str) -> Result<PeerId, CommandError> {
 pub struct PortsLease {
     leases: Arc<LateBound<PortLeases>>,
 }
+crate::register_command!(PortsLease);
 
 #[async_trait]
 impl ActionCommand for PortsLease {
@@ -115,6 +116,7 @@ impl ActionCommand for PortsLease {
 pub struct PortsRelease {
     leases: Arc<LateBound<PortLeases>>,
 }
+crate::register_command!(PortsRelease);
 
 #[async_trait]
 impl ActionCommand for PortsRelease {
@@ -134,6 +136,7 @@ impl ActionCommand for PortsRelease {
 pub struct PortsList {
     leases: Arc<LateBound<PortLeases>>,
 }
+crate::register_command!(PortsList);
 
 #[async_trait]
 impl ActionCommand for PortsList {

@@ -414,6 +414,13 @@ mod tests {
         Arc::new(move || Some(peer(n)))
     }
 
+    // Regression: the production boot guard must accept every ports command.
+    // Lease-store tests alone missed missing descriptors and shipped a startup panic.
+    #[test]
+    fn ports_module_registers_through_the_production_boot_guard() {
+        crate::runtime::ModuleRegistry::new().register(Arc::new(PortsModule::new(node(1))));
+    }
+
     fn first_not_in(unavailable: &BTreeSet<u16>) -> Option<u16> {
         CITIZEN_PORT_RANGE.clone().find(|p| !unavailable.contains(p))
     }
