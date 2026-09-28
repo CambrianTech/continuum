@@ -2095,14 +2095,14 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 "installed release changed during preparation; running Core preserved".into(),
             );
         }
-        let repo = repo.to_string_lossy().replace('\'', "''");
+        let repo_arg = repo.to_string_lossy().replace('\'', "''");
         let directory = engine
             .parent()
             .ok_or("prepared engine has no directory")?
             .to_string_lossy()
             .replace('\'', "''");
         let drift = PreparedCoreService::powershell(&format!(
-            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}')"
+            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo_arg}')"
         )).await?;
         if !drift.is_empty() {
             return Err(format!("prepared engine changed before stop: {drift}"));
@@ -2111,6 +2111,11 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             .as_ref()
             .ok_or("engine handoff requires a verified Core artifact")?;
         PrebuiltCore::prepare(&candidate.path).await?;
+        // Registration can fail even after Task Scheduler accepted the new engine
+        // (Windows install, 2026-09-28). Do it while the old core is still alive:
+        // Register-CoreServiceRelease validates and registers, but never launches.
+        // An error here must not strand the node after a successful teardown.
+        PreparedCoreService::register_engine(repo, original, engine).await?;
     }
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
     // running core, and refusing to continue would leave the node down over a module that
@@ -2130,8 +2135,10 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         }
     }
     #[cfg(windows)]
-    if let Some((repo, (original, engine))) = &prepared_engine {
-        PreparedCoreService::register_engine(repo, original, engine).await?;
+    if prepared_engine.is_some() {
+        // A source build is still a Cargo artifact until the staging above. Do
+        // not mark the service prepared before that copy, or it would skip
+        // staging and compare the registered slot against the Cargo path.
         let candidate = prebuilt
             .as_ref()
             .ok_or("engine handoff requires a verified Core artifact")?;
