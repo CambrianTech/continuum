@@ -623,10 +623,21 @@ impl LlmDeliberationFaculty {
         // [[budget-at-assembly-never-clamp-the-prompt]]
         let raw = persona_tools::native_tool_specs();
         self.native_command_names = raw.iter().map(|s| s.name.clone()).collect();
-        self.hands_specs = hands_surface(&raw)
-            .into_iter()
-            .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
-            .collect();
+        // A capable citizen's EXTENDED hands (the web, push and PR verbs) go on the wire when
+        // the served window's tool share holds them; on a window that cannot, she keeps the
+        // core working set and the rest stay one `commands/list` away. The window decides
+        // what fits, never who is capable: an 8k window spending its whole share on tools
+        // leaves her newest line nowhere to go (card dec1a7ff's survival check).
+        let to_wire = |specs: Vec<NativeToolSpec>| -> Vec<NativeToolSpec> {
+            specs.into_iter().map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style)).collect()
+        };
+        let full_hands = to_wire(hands_surface(&raw));
+        let share = super::context_budget::ContextBudget::from_window(self.binding.load().context_window).tool_surface_tokens();
+        self.hands_specs = if Self::tool_surface_tokens_of(&full_hands) <= share {
+            full_hands
+        } else {
+            to_wire(core_hands(&raw))
+        };
         self.native_specs = raw
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
@@ -5293,6 +5304,19 @@ fn metrics_from(
 /// Her HANDS: the file / work / git / cargo / tool verbs plus the discovery pair,
 /// selected on the COMMAND names (`code/read`, `work/state`, …) before the wire
 /// dialect renames them (`edit_file`, `list_recipes`, …).
+/// The verbs a capable citizen's hands add over the core working set: the web, and the
+/// push and PR verbs that make a change land without an operator (#4532). Offered only when
+/// the served window's tool share holds them (see `rebuild_tool_surface`).
+fn is_extended_hand(name: &str) -> bool {
+    name.starts_with("web/")
+        || matches!(name, "code/shell-poll" | "code/git/add" | "code/git/push" | "code/github/pr-create" | "code/github/pr-comment")
+}
+
+/// Her hands without the extended verbs: what a window too small for the full set carries.
+fn core_hands(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
+    hands_surface(raw).into_iter().filter(|s| !is_extended_hand(&s.name)).collect()
+}
+
 fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
     let policy = crate::routing::access_decision::policy();
     let capable = crate::routing::access_decision::local_cognitive_rank()
@@ -5545,6 +5569,10 @@ mod tests {
             ],
             "git/apply, work/submission and work/review are reviewer verbs, not hands; work/submit is the holder's"
         );
+        // what this also catches: a window too small for the extended verbs keeps her CORE
+        // hands (never nothing), with the web and the push/PR verbs one commands/list away.
+        let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
+        assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
     }
 
     // what this catches: the live registry's command names drifting away from the
