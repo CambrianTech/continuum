@@ -1029,7 +1029,7 @@ const SWE_CLAIM_ATTEMPTS: u32 = 3;
 /// One-per-persona solve lease — see the "ONE PAIR OF HANDS" note in
 /// [`dispatch_staged_swe_solve`]. RAII: dropping the lease (any exit path,
 /// panics included) frees the persona for the next solve.
-struct HandsLease(uuid::Uuid);
+pub(crate) struct HandsLease(uuid::Uuid);
 
 fn busy_hands() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uuid>> {
     static BUSY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<uuid::Uuid>>> =
@@ -1038,7 +1038,9 @@ fn busy_hands() -> &'static std::sync::Mutex<std::collections::HashSet<uuid::Uui
 }
 
 impl HandsLease {
-    fn try_take(persona: uuid::Uuid) -> Option<Self> {
+    /// Take this persona's hands, or `None` while a solve holds them. Disk reclaim of a
+    /// resident's workspace takes them too, so no solve starts inside a tree being removed.
+    pub(crate) fn try_take(persona: uuid::Uuid) -> Option<Self> {
         let mut g = busy_hands().lock().expect("busy-hands lock never poisoned"); // expect: guards a HashSet op only
         if g.insert(persona) {
             Some(Self(persona))

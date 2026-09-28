@@ -34,6 +34,30 @@
 //! pool only ever removes `citizens/peers/<uuid>/workspace`, never the base, never a
 //! peer's memory, never anything outside that path.
 //!
+//! # A resident's rebuildable residue (card 10e6c5e5)
+//!
+//! Residency pins a whole workspace, and that is right for her work. It was also pinning her
+//! BUILD OUTPUT forever. Measured on the IntelMac, 2026-09-28: three resident citizens at
+//! 15 GB each, 12 GB of each a private cargo `target/` last written Sep 4. That is 36 of
+//! 45 GB, unevictable by design while she stays resident. So a second, narrower pass reclaims
+//! one thing inside a RESIDENT workspace, `workspace/target`, and only when every one of
+//! these holds (Codex's gates on 10e6c5e5):
+//!
+//! - **Rebuildable, proven, not named:** the tree carries cargo's own `CACHEDIR.TAG`
+//!   signature. A directory called `target` that cargo did not write is left alone.
+//! - **No build is live:** every `.cargo-lock` under it takes an exclusive, non-blocking
+//!   lock. That is cargo's own build-directory lock, so a running cargo refuses us.
+//! - **No solve is live:** the reclaim holds the citizen's hands (`work::HandsLease`) for the
+//!   whole transaction, so a staged solve cannot start inside a tree being removed.
+//! - **The roster is readable** (unreadable = nothing, as for whole workspaces).
+//! - **Untouched for [`DORMANT_AFTER_MS`]:** policy, not proof; the lock is the proof.
+//!
+//! Nothing is preserved, because a cargo-tagged tree holds no work. The locks are released
+//! just before the delete (Windows cannot delete a file held open), so a build that starts in
+//! that instant fails and rebuilds; nothing is lost. Staged `swe/` checkouts in a resident
+//! workspace are NOT covered here: they are work until their card is terminal, and that
+//! needs the card and its runs (the second half of 10e6c5e5).
+//!
 //! # What actually filled the disk, measured rather than assumed
 //!
 //! 715 peer directories existed and only **12** held a workspace: the other 703 are a
@@ -109,6 +133,93 @@ pub fn workspaces_to_drop(
     taken
 }
 
+/// Cargo writes this signature as the first line of `CACHEDIR.TAG` in every target dir it
+/// creates (the cachedir spec). It is the proof that a tree is build output.
+const CARGO_CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+
+/// One citizen's rebuildable build output, as the residue decision sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildResidue {
+    pub peer_id: uuid::Uuid,
+    /// `citizens/peers/<peer>/workspace/target`, carrying cargo's CACHEDIR.TAG.
+    pub target: PathBuf,
+    pub bytes: u64,
+    /// Newest mtime anywhere under the target dir.
+    pub last_active_ms: u64,
+}
+
+/// THE RESIDUE DECISION, pure: stale cargo build output, largest first, until `want_bytes` is
+/// covered. Residency does NOT exempt it (that is the point: see the module doc), but an
+/// unreadable roster still takes nothing, and output touched inside the dormancy window stays.
+/// The liveness proofs (cargo's lock, the citizen's hands) are taken at the act, not here.
+pub fn residue_to_drop(
+    residue: &[BuildResidue],
+    roster: &Roster,
+    now_ms: u64,
+    want_bytes: u64,
+) -> Vec<BuildResidue> {
+    if *roster == Roster::Unreadable {
+        return Vec::new();
+    }
+    let mut candidates: Vec<&BuildResidue> = residue
+        .iter()
+        .filter(|r| now_ms.saturating_sub(r.last_active_ms) >= DORMANT_AFTER_MS)
+        .filter(|r| r.bytes > 0)
+        .collect();
+    candidates.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.peer_id.cmp(&b.peer_id)));
+    let mut taken = Vec::new();
+    let mut freed = 0u64;
+    for c in candidates {
+        if freed >= want_bytes {
+            break;
+        }
+        freed = freed.saturating_add(c.bytes);
+        taken.push(c.clone());
+    }
+    taken
+}
+
+/// Is `dir` a tree cargo wrote? Its `CACHEDIR.TAG` must begin with cargo's signature.
+fn is_cargo_target(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("CACHEDIR.TAG")).is_ok_and(|t| t.starts_with(CARGO_CACHEDIR_SIGNATURE))
+}
+
+/// Every `.cargo-lock` in a target dir: `target/<profile>/.cargo-lock` and, for a cross
+/// build, `target/<triple>/<profile>/.cargo-lock`.
+fn cargo_locks_in(target: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![(target.to_path_buf(), 0u32)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            if e.file_name() == ".cargo-lock" {
+                out.push(path);
+            } else if depth < 2 && e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    out
+}
+
+/// Is any cargo build using this target dir right now? Tries cargo's own build-directory
+/// lock on every `.cargo-lock`; one held means a build is live. Returns the held lock's path.
+fn live_build_in(target: &Path) -> Option<PathBuf> {
+    for lock in cargo_locks_in(target) {
+        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&lock) else {
+            // cannot open cargo's lock: cannot prove the build is idle, so treat it as live
+            return Some(lock);
+        };
+        if file.try_lock().is_err() {
+            return Some(lock);
+        }
+        // dropping `file` releases the lock before the delete (Windows cannot remove a file
+        // held open); see the module doc for why that instant is safe
+    }
+    None
+}
+
 pub struct CitizenWorkspacePool {
     tracked: Arc<TrackedDir>,
     budget_bytes: u64,
@@ -159,6 +270,75 @@ impl CitizenWorkspacePool {
             });
         }
         out
+    }
+
+    /// Every peer workspace's cargo build output, resident or not: the residue pass decides.
+    fn build_residue_on_disk(root: &Path) -> Vec<BuildResidue> {
+        let Ok(entries) = std::fs::read_dir(root.join("peers")) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            let Some(peer_id) = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| uuid::Uuid::parse_str(n).ok())
+            else {
+                continue;
+            };
+            let target = dir.join("workspace").join("target");
+            if !is_cargo_target(&target) {
+                continue;
+            }
+            let (bytes, newest) = dir_bytes_and_newest(&target);
+            out.push(BuildResidue { peer_id, target, bytes, last_active_ms: newest });
+        }
+        out
+    }
+
+    /// Reclaim stale build output, residents included, under the gates in the module doc.
+    fn evict_build_residue(root: &Path, roster: &Roster, now_ms: u64, want_bytes: u64) -> u64 {
+        let residue = Self::build_residue_on_disk(root);
+        let mut freed = 0u64;
+        for r in residue_to_drop(&residue, roster, now_ms, want_bytes) {
+            // ONLY `peers/<peer>/workspace/target`, by construction (build_residue_on_disk)
+            debug_assert!(r.target.ends_with("workspace/target"));
+            if !r.target.ends_with("workspace/target") {
+                continue;
+            }
+            // her hands for the whole transaction: no staged solve starts inside this tree
+            let Some(_hands) = crate::modules::work::HandsLease::try_take(r.peer_id) else {
+                crate::probe!(
+                    class = "disk.citizens.residue_kept",
+                    peer = %r.peer_id,
+                    why = "solve_live",
+                    "a citizen's build output was NOT reclaimed: she is mid-solve"
+                );
+                continue;
+            };
+            if let Some(lock) = live_build_in(&r.target) {
+                crate::probe!(
+                    class = "disk.citizens.residue_kept",
+                    peer = %r.peer_id,
+                    why = "build_live",
+                    lock = %lock.display(),
+                    "a citizen's build output was NOT reclaimed: cargo holds its build lock"
+                );
+                continue;
+            }
+            if std::fs::remove_dir_all(&r.target).is_ok() {
+                freed = freed.saturating_add(r.bytes);
+                crate::probe!(
+                    class = "disk.citizens.residue_reclaimed",
+                    peer = %r.peer_id,
+                    freed_mb = r.bytes / (1024 * 1024),
+                    idle_days = now_ms.saturating_sub(r.last_active_ms) / (24 * 60 * 60 * 1000),
+                    "a citizen's stale cargo build output was reclaimed (her workspace and work untouched; the next build rebuilds it)"
+                );
+            }
+        }
+        freed
     }
 }
 
@@ -561,6 +741,11 @@ impl ResourcePool for CitizenWorkspacePool {
                 "dormant citizens' WORKSPACES dropped (memory untouched) — each re-stages on her next claim; dirty checkouts archived as patches"
             );
         }
+        // Still short after whole dormant workspaces: a resident's stale build output is the
+        // next thing that holds no work (card 10e6c5e5; each reclaim carries its own probe).
+        if freed < want_bytes {
+            freed = freed.saturating_add(Self::evict_build_residue(&root, &roster, now_ms, want_bytes - freed));
+        }
         freed
     }
 }
@@ -727,4 +912,67 @@ mod tests {
         assert!(!names.contains("huge.o"), "build output is not archived: {names}");
     }
 
+    fn residue(n: u128, bytes: u64, last_active_ms: u64) -> BuildResidue {
+        BuildResidue {
+            peer_id: uuid::Uuid::from_u128(n),
+            target: PathBuf::from(format!("/tmp/peer{n}/workspace/target")),
+            bytes,
+            last_active_ms,
+        }
+    }
+
+    // what this catches: card 10e6c5e5, the IntelMac's 36 GB. A RESIDENT citizen's stale build
+    // output must be reclaimable (residency pins her work, not her build cache), while output
+    // she touched this week stays and an unreadable roster still takes nothing.
+    #[test]
+    fn a_residents_stale_build_output_is_reclaimable_and_fresh_output_is_not() {
+        let now = 30 * 24 * 60 * 60 * 1000u64;
+        let stale = residue(1, 12_000_000_000, now - DORMANT_AFTER_MS - 1);
+        let fresh = residue(2, 9_000_000_000, now - 60_000);
+        let roster = Roster::Live(vec![stale.peer_id, fresh.peer_id]); // both resident
+        let all = vec![stale.clone(), fresh];
+        assert_eq!(residue_to_drop(&all, &roster, now, u64::MAX), vec![stale], "stale output, resident or not");
+        assert!(residue_to_drop(&all, &Roster::Unreadable, now, u64::MAX).is_empty());
+    }
+
+    fn cargo_target(workspace: &Path) -> PathBuf {
+        let target = workspace.join("target");
+        std::fs::create_dir_all(target.join("debug/deps")).expect("mkdir target"); // expect: tempdir is writable
+        std::fs::write(target.join("CACHEDIR.TAG"), format!("{CARGO_CACHEDIR_SIGNATURE}\n# cargo\n")).expect("tag");
+        std::fs::write(target.join("debug/.cargo-lock"), b"").expect("lock file");
+        std::fs::write(target.join("debug/deps/libx.rlib"), vec![0u8; 4096]).expect("artifact");
+        target
+    }
+
+    // what this catches: the residue pass taking something that is not provably cargo's build
+    // output, or taking it while a build is live. Only a CACHEDIR-tagged `target/` is residue;
+    // a held `.cargo-lock` keeps it; once the lock is free a resident's target goes and every
+    // other file in her workspace (her notes, her checkouts) stays.
+    #[test]
+    fn only_idle_cargo_tagged_output_is_reclaimed_and_her_work_stays() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (tagged, untagged) = (uuid::Uuid::from_u128(0x10e6_c5e5_0001), uuid::Uuid::from_u128(0x10e6_c5e5_0002));
+        let ws = root.path().join("peers").join(tagged.to_string()).join("workspace");
+        let target = cargo_target(&ws);
+        std::fs::write(ws.join("NOTES.md"), b"what I was in the middle of\n").expect("note");
+        let other = root.path().join("peers").join(untagged.to_string()).join("workspace/target");
+        std::fs::create_dir_all(&other).expect("mkdir untagged target");
+        std::fs::write(other.join("mine.txt"), b"not cargo's").expect("write");
+
+        let found = CitizenWorkspacePool::build_residue_on_disk(root.path());
+        assert_eq!(found.iter().map(|r| r.peer_id).collect::<Vec<_>>(), vec![tagged], "only the cargo-tagged tree");
+
+        let roster = Roster::Live(vec![tagged, untagged]);
+        let later = found[0].last_active_ms + DORMANT_AFTER_MS + 1;
+        let held = std::fs::OpenOptions::new().read(true).write(true).open(target.join("debug/.cargo-lock")).expect("open lock");
+        held.lock().expect("a live build holds cargo's lock");
+        assert_eq!(CitizenWorkspacePool::evict_build_residue(root.path(), &roster, later, u64::MAX), 0, "a live build keeps it");
+        assert!(target.exists());
+        drop(held);
+
+        assert!(CitizenWorkspacePool::evict_build_residue(root.path(), &roster, later, u64::MAX) > 0);
+        assert!(!target.exists(), "idle, tagged, stale: reclaimed");
+        assert!(ws.join("NOTES.md").exists(), "her workspace and work stay");
+        assert!(other.join("mine.txt").exists(), "an untagged target is not cargo's to reclaim");
+    }
 }
