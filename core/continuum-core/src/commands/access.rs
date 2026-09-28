@@ -27,6 +27,32 @@ pub struct AccessGetResult {
     pub local_citizen_level: TrustLevel,
 }
 
+/// The level `access/set` records for one citizen, or `clear` to remove her decision so the
+/// capability default applies again. A closed set on the wire: serde refuses anything else,
+/// so no caller string is ever interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/access/AccessLevelChange.ts")]
+#[serde(rename_all = "lowercase")]
+pub enum AccessLevelChange {
+    Blocked,
+    Provisional,
+    Trusted,
+    Owner,
+    Clear,
+}
+
+impl From<AccessLevelChange> for Option<TrustLevel> {
+    fn from(change: AccessLevelChange) -> Self {
+        match change {
+            AccessLevelChange::Blocked => Some(TrustLevel::Blocked),
+            AccessLevelChange::Provisional => Some(TrustLevel::Provisional),
+            AccessLevelChange::Trusted => Some(TrustLevel::Trusted),
+            AccessLevelChange::Owner => Some(TrustLevel::Owner),
+            AccessLevelChange::Clear => None,
+        }
+    }
+}
+
 /// Wire shape for `access/set`. Every field is optional; what is given changes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/access/AccessSetParams.ts")]
@@ -35,30 +61,14 @@ pub struct AccessSetParams {
     #[ts(optional)]
     pub full_access_min_rank: Option<u8>,
     /// The citizen (peer id) a decision is about.
+    #[ts(optional, type = "string")]
+    pub peer: Option<Uuid>,
+    /// The level to grant that citizen, or `clear` to remove her decision.
     #[ts(optional)]
-    pub peer: Option<String>,
-    /// The level to grant that citizen (`blocked`, `provisional`, `trusted`, `owner`), or
-    /// `clear` to remove her decision so the capability default applies again.
-    #[ts(optional)]
-    pub level: Option<String>,
+    pub level: Option<AccessLevelChange>,
     /// Why: reputation, a review, an incident. Required with a level.
     #[ts(optional)]
     pub reason: Option<String>,
-}
-
-fn parse_level(level: &str) -> Result<Option<TrustLevel>, CommandError> {
-    Ok(Some(match level.trim().to_ascii_lowercase().as_str() {
-        "clear" => return Ok(None),
-        "blocked" => TrustLevel::Blocked,
-        "provisional" => TrustLevel::Provisional,
-        "trusted" => TrustLevel::Trusted,
-        "owner" => TrustLevel::Owner,
-        other => {
-            return Err(CommandError::Invalid(format!(
-                "access/set: level '{other}' is not one of blocked, provisional, trusted, owner, clear"
-            )))
-        }
-    }))
 }
 
 crate::action_command! {
@@ -91,12 +101,10 @@ crate::action_command! {
         if let Some(rank) = p.full_access_min_rank {
             policy.full_access_min_rank = rank;
         }
-        match (p.peer.as_deref(), p.level.as_deref()) {
-            (Some(peer), Some(level)) => {
-                let peer = Uuid::parse_str(peer.trim())
-                    .map_err(|e| CommandError::Invalid(format!("access/set: peer is not a peer id: {e}")))?;
+        match (p.peer, p.level) {
+            (Some(peer), Some(change)) => {
                 policy.decisions.retain(|d| d.peer != peer);
-                if let Some(level) = parse_level(level)? {
+                if let Some(level) = Option::<TrustLevel>::from(change) {
                     let reason = p.reason.clone().filter(|r| !r.trim().is_empty()).ok_or_else(|| {
                         CommandError::Invalid("access/set: a decision needs a reason (it is shown wherever it is read)".into())
                     })?;
@@ -110,7 +118,7 @@ crate::action_command! {
                 }
             }
             (None, None) => {}
-            _ => return Err(CommandError::Invalid("access/set: a decision needs both peer and level".into())),
+            (Some(_), None) | (None, Some(_)) => return Err(CommandError::Invalid("access/set: a decision needs both peer and level".into())),
         }
         access_decision::store(policy.clone()).map_err(CommandError::Internal)?;
         let rank = access_decision::local_cognitive_rank();
