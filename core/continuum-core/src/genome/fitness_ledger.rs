@@ -69,6 +69,7 @@ pub struct GeneFitnessIndex {
     by_gene: BTreeMap<String, GeneFitnessRecord>,
     /// Total gene-labeled rows across ALL genes (the UCB `N`).
     total_trials: u32,
+    qualified: BTreeMap<String, Box<GeneFitnessIndex>>,
 }
 
 impl GeneFitnessIndex {
@@ -77,6 +78,27 @@ impl GeneFitnessIndex {
     /// rows are skipped silently: the ledger is append-only telemetry, and a
     /// torn tail line must never zero the whole index.
     pub fn fold_rows<'a>(rows: impl Iterator<Item = &'a serde_json::Value>, now_ms: u64) -> Self {
+        let rows: Vec<_> = rows.collect();
+        let mut index = Self::fold_alias_rows(rows.iter().copied(), now_ms);
+        let mut by_base: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+        for row in rows {
+            let (Some(base), Some(path)) = (
+                row.get("baseModelId").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+                row.get("adapterPath").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
+            ) else { continue };
+            // Keep the original receipt intact; this projection keys the existing fold
+            // by local artifact path within its base, never by a display alias.
+            let mut projected = row.clone();
+            projected["geneId"] = serde_json::Value::String(path.to_owned());
+            by_base.entry(base.to_owned()).or_default().push(projected);
+        }
+        index.qualified = by_base.into_iter().map(|(base, rows)| {
+            (base, Box::new(Self::fold_alias_rows(rows.iter(), now_ms)))
+        }).collect();
+        index
+    }
+
+    fn fold_alias_rows<'a>(rows: impl Iterator<Item = &'a serde_json::Value>, now_ms: u64) -> Self {
         let mut acc: BTreeMap<String, (f64, f64, u32, u64, f64)> = BTreeMap::new();
         // (weighted_lift_sum, weight_sum, trials, latest_ms, tps_sum)
         let mut total = 0u32;
@@ -114,7 +136,7 @@ impl GeneFitnessIndex {
                 )
             })
             .collect();
-        Self { by_gene, total_trials: total }
+        Self { by_gene, total_trials: total, qualified: BTreeMap::new() }
     }
 
     /// Load every persona's progress ledger under `progress_dir`. A missing
@@ -141,6 +163,15 @@ impl GeneFitnessIndex {
         dirs::home_dir().map(|h| h.join(".continuum/progress"))
     }
 
+    /// Unknown/legacy receipts cannot establish fitness for a qualified artifact.
+    /// This pools observations of the same local artifact across personas; persona
+    /// conditioning and immutable content identity remain separate concerns.
+    pub fn qualified_outcome_factor(&self, base: &str, path: &Path) -> f32 {
+        self.qualified.get(base).map_or(UNMEASURED_NEUTRAL, |index| {
+            index.outcome_factor(&path.to_string_lossy())
+        })
+    }
+
     pub fn record(&self, gene: &str) -> Option<&GeneFitnessRecord> {
         self.by_gene.get(gene)
     }
@@ -165,6 +196,22 @@ mod tests {
     use serde_json::json;
 
     const DAY_MS: u64 = 24 * 3600 * 1000;
+
+    #[test]
+    fn qualified_fitness_excludes_other_artifacts_bases_and_legacy_rows() {
+        let rows = vec![
+            json!({"geneId":"same", "baseModelId":"a", "adapterPath":"/one", "lift":0.8,"capturedAtMs":100}),
+            json!({"geneId":"same", "baseModelId":"a", "adapterPath":"/two", "lift":-0.8,"capturedAtMs":100}),
+            json!({"geneId":"same", "baseModelId":"b", "adapterPath":"/one", "lift":-0.8,"capturedAtMs":100}),
+            json!({"geneId":"same", "lift":-1.0,"capturedAtMs":100}),
+        ];
+        let index = GeneFitnessIndex::fold_rows(rows.iter(), 100);
+        assert!(index.qualified_outcome_factor("a", Path::new("/one")) > 0.5);
+        assert!(index.qualified_outcome_factor("a", Path::new("/two")) < 0.5);
+        assert!(index.qualified_outcome_factor("b", Path::new("/one")) < 0.5);
+        assert_eq!(index.qualified_outcome_factor("c", Path::new("/one")), 0.5);
+    }
+
 
     fn row(gene: Option<&str>, lift: f64, ts: u64) -> serde_json::Value {
         match gene {
