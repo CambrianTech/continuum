@@ -17,7 +17,7 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1", features = ["time", "process", "rt", "macros"] }  # launchd interval + supervisor_install process/timeout — PRODUCTION code, not tests
+tokio = { version = "1", features = ["time", "process", "rt", "macros", "net", "io-util", "sync"] }  # launchd interval + supervisor_install process/timeout — PRODUCTION code, not tests
 sha2 = "0.10"
 base64 = "0.22"
 

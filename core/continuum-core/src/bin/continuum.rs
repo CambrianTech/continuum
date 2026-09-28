@@ -5421,11 +5421,22 @@ async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulSto
 }
 
 #[cfg(windows)]
-async fn quiesce_service_restarts() -> Result<(), String> {
-    let endpoint = socket_path();
-    tokio::task::spawn_blocking(move || windows_launch::stop_service_restarts(&endpoint))
-        .await.map_err(|e| format!("service-host stop task failed: {e}"))?
+async fn quiesce_service_restarts() -> Result<Option<windows_launch::ServiceStopLease>, String> {
+    windows_launch::stop_service_restarts(&socket_path())
+        .await
         .map_err(|e| format!("service-host restart admission was not stopped: {e}"))
+}
+#[cfg(windows)]
+async fn commit_service_stop(
+    lease: Option<windows_launch::ServiceStopLease>,
+) -> Result<(), String> {
+    if let Some(lease) = lease {
+        lease
+            .commit()
+            .await
+            .map_err(|e| format!("service-host stop commit failed: {e}"))?;
+    }
+    Ok(())
 }
 async fn stop(options: StopOptions) -> Result<(), String> {
     // The consented child does ONE thing and returns; it never drains, never sweeps,
@@ -5443,14 +5454,16 @@ async fn stop(options: StopOptions) -> Result<(), String> {
             // The drain is supplied BY THE ROOT, which is where the socket and the
             // `MayDrain` gate live — the module stays a leaf and the token stays where it
             // can only be built by a preflight or by a held handle.
-            return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
-                quiesce_service_restarts().await?;
+            let mut stop_lease = None;
+            elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
+                stop_lease = quiesce_service_restarts().await?;
                 Ok(format!(
                     "{:?}",
                     request_graceful_stop(&MayDrain::proven_by_held_handle()).await
                 ))
             })
-            .await;
+            .await?;
+            return commit_service_stop(stop_lease).await;
         }
         #[cfg(not(windows))]
         {
@@ -5545,7 +5558,12 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
         }
     }
     #[cfg(windows)]
-    quiesce_service_restarts().await?;
+    let stop_lease = if may_drain.borrow_authority_for.is_some() {
+        // The consented child already committed this host generation.
+        None
+    } else {
+        quiesce_service_restarts().await?
+    };
     let graceful = request_graceful_stop(&may_drain).await;
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
@@ -5698,6 +5716,8 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     if keep_lanes {
         println!("  leaving serving lane(s) up for adoption by the next core (reboot path)");
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
+        #[cfg(windows)]
+        commit_service_stop(stop_lease).await?;
         return Ok(graceful);
     }
     for outcome in continuum_core::inference::lane_registry::sweep_all() {
@@ -5724,6 +5744,8 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     }
 
     let _ = std::fs::remove_file(&socket);
+    #[cfg(windows)]
+    commit_service_stop(stop_lease).await?;
     Ok(graceful)
 }
 

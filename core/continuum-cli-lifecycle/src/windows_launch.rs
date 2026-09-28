@@ -318,115 +318,103 @@ fn environment_block(command: &Command) -> io::Result<Vec<u16>> {
     Ok(block)
 }
 
-/// Stop admission for the one foreground service host before CLI teardown starts.
-/// Kernel events outlive neither owner nor requester: no stale stop file, polling,
-/// or second daemon. Global namespace crosses Task Scheduler's session boundary.
-pub struct ServiceStopSignal {
-    requested: std::sync::Arc<OwnedHandle>,
-    accepted: OwnedHandle,
+/// A connection owns temporary restart exclusion. EOF (including caller death)
+/// releases it; only an explicit commit makes shutdown permanent.
+pub struct ServiceStopLease(tokio::net::windows::named_pipe::NamedPipeClient);
+
+impl ServiceStopLease {
+    pub async fn commit(mut self) -> io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        self.0.write_all(&[2]).await?;
+        match self.0.read_u8().await? {
+            3 => Ok(()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid service stop commit acknowledgement",
+            )),
+        }
+    }
 }
 
-fn service_event_name(socket: &str, kind: &str) -> Vec<u16> {
+pub struct ServiceStopServer {
+    pub requests: tokio::sync::mpsc::UnboundedReceiver<crate::supervisor_install::StopRequest>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ServiceStopServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn service_pipe_name(socket: &str) -> String {
     use sha2::{Digest, Sha256};
     let key = socket.replace('/', "\\").to_ascii_lowercase();
     let hash = format!("{:x}", Sha256::digest(key.as_bytes()));
-    format!("Global\\Continuum.Service.{hash}.{kind}")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect()
+    format!(r"\\.\pipe\Continuum.Service.{hash}.stop")
 }
 
-impl ServiceStopSignal {
+impl ServiceStopServer {
     pub fn create(socket: &str) -> io::Result<Self> {
-        use windows_sys::Win32::System::Threading::CreateEventW;
-        let make = |kind| {
-            let name = service_event_name(socket, kind);
-            let handle = unsafe { CreateEventW(ptr::null(), 1, 0, name.as_ptr()) };
-            if handle.is_null() {
-                return Err(io::Error::last_os_error());
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = service_pipe_name(socket);
+        let mut pipe = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)?;
+        let (send, requests) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            loop {
+                if pipe.connect().await.is_err() {
+                    break;
+                }
+                let (accepted, ack) = tokio::sync::oneshot::channel();
+                let (settled, decision) = tokio::sync::oneshot::channel();
+                if send
+                    .send(crate::supervisor_install::StopRequest { accepted, decision })
+                    .is_err()
+                {
+                    break;
+                }
+                let committed = if ack.await.is_ok() && pipe.write_all(&[1]).await.is_ok() {
+                    matches!(pipe.read_u8().await, Ok(2)) && pipe.write_all(&[3]).await.is_ok()
+                } else {
+                    false
+                };
+                let _ = settled.send(committed);
+                // Keep the old instance open until its replacement exists, so
+                // another host cannot claim this endpoint between callers.
+                match ServerOptions::new().create(&name) {
+                    Ok(next) => pipe = next,
+                    Err(_) => break,
+                }
             }
-            let existed = unsafe { windows_sys::Win32::Foundation::GetLastError() } == 183;
-            let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
-            if existed {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "a service host already owns this endpoint",
-                ));
-            }
-            Ok(handle)
-        };
-        Ok(Self {
-            requested: std::sync::Arc::new(make("stop")?),
-            accepted: make("accepted")?,
-        })
-    }
-
-    /// Wait in the OS, not on a periodic liveness probe.
-    pub fn wait_requested(&self) -> tokio::task::JoinHandle<io::Result<()>> {
-        let event = self.requested.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = unsafe { WaitForSingleObject(event.as_raw_handle(), u32::MAX) };
-            if result == WAIT_OBJECT_0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        })
-    }
-
-    /// Called only once the host has committed to launching no more children.
-    pub fn acknowledge(&self) -> io::Result<()> {
-        if unsafe { windows_sys::Win32::System::Threading::SetEvent(self.accepted.as_raw_handle()) }
-            == 0
-        {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+        });
+        Ok(Self { requests, task })
     }
 }
 
-impl Drop for ServiceStopSignal {
-    fn drop(&mut self) {
-        // Release the blocking waiter even when the child stops normally or
-        // startup fails before the service loop consumes a stop request.
-        unsafe {
-            windows_sys::Win32::System::Threading::SetEvent(self.requested.as_raw_handle());
-            windows_sys::Win32::System::Threading::SetEvent(self.accepted.as_raw_handle());
-        }
-    }
-}
-
-/// Acknowledge quiesced restart admission BEFORE draining/forcing down the core.
-/// Missing events mean an older or non-service host: existing teardown still owns it.
-pub fn stop_service_restarts(socket: &str) -> io::Result<()> {
-    use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
-    const SYNCHRONIZE_ACCESS: u32 = 0x00100000;
-    let open = |kind, access| {
-        let name = service_event_name(socket, kind);
-        let handle = unsafe { OpenEventW(access, 0, name.as_ptr()) };
-        if handle.is_null() {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
-        }
-    };
-    let request = match open("stop", EVENT_MODIFY_STATE) {
-        Ok(handle) => handle,
-        Err(e) if e.raw_os_error() == Some(2) => return Ok(()),
+pub async fn stop_service_restarts(socket: &str) -> io::Result<Option<ServiceStopLease>> {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::windows::named_pipe::ClientOptions;
+    let mut pipe = match ClientOptions::new().open(service_pipe_name(socket)) {
+        Ok(pipe) => pipe,
+        // Legacy service hosts do not expose the protocol.
+        Err(e) if e.raw_os_error() == Some(2) => return Ok(None),
+        // A concurrent stop owns exclusion: refuse, never drain without it.
         Err(e) => return Err(e),
     };
-    let ack = open("accepted", SYNCHRONIZE_ACCESS)?;
-    if unsafe { SetEvent(request.as_raw_handle()) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    match unsafe { WaitForSingleObject(ack.as_raw_handle(), 5_000) } {
-        WAIT_OBJECT_0 => Ok(()),
-        WAIT_TIMEOUT => Err(io::Error::new(
+    match tokio::time::timeout(std::time::Duration::from_secs(5), pipe.read_u8()).await {
+        Ok(Ok(1)) => Ok(Some(ServiceStopLease(pipe))),
+        Ok(Ok(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid service stop acknowledgement",
+        )),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "service host did not acknowledge stop; core not drained",
         )),
-        _ => Err(io::Error::last_os_error()),
     }
 }
 #[cfg(test)]
