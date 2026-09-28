@@ -302,7 +302,12 @@ fn lane_class(idle: std::time::Duration, model: Option<&str>) -> crate::inferenc
 fn work_window(idle: std::time::Duration, prefill_tps: Option<f64>) -> std::time::Duration {
     prefill_tps
         .filter(|r| r.is_finite() && *r > 0.0)
-        .map(|r| std::time::Duration::from_secs_f64(2.0 * f64::from(crate::inference::lane_args::UBATCH_TOKENS) / r))
+        // try_: a vanishing rate would overflow Duration and panic (Codex on #4506); anything
+        // past the ceiling is the ceiling, which `waits_on` bounds the wait by anyway
+        .map(|r| {
+            std::time::Duration::try_from_secs_f64(2.0 * f64::from(crate::inference::lane_args::UBATCH_TOKENS) / r)
+                .map_or(STARVED_WAIT_CEILING, |d| d.min(STARVED_WAIT_CEILING))
+        })
         .map_or(idle, |chunk| idle.max(chunk))
 }
 
@@ -860,5 +865,6 @@ mod tests {
         assert!(slow < Duration::from_secs(360), "two chunks, not an open wait: {slow:?}");
         assert_eq!(work_window(idle, Some(2_000.0)), idle, "a fast lane keeps the idle bound");
         assert_eq!(work_window(idle, None), idle, "no rate measured keeps the idle bound");
+        assert_eq!(work_window(idle, Some(1e-300)), STARVED_WAIT_CEILING, "a vanishing rate is capped, never a Duration overflow panic");
     }
 }
