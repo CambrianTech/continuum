@@ -38,14 +38,13 @@ crate::action_command! {
     params: GithubPrCommentParams,
     output: GithubPrCommentResult,
     run(this, ctx, p) => {
-        super::require_operator(ctx, "code/github/pr-comment")?;
         if p.body.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/pr-comment: 'body' is required".into()));
         }
         let root = workspace_root_for(&this.state, ctx).await?;
         let args = vec![
             "pr".to_string(), "comment".to_string(), p.number.to_string(),
-            "--body".to_string(), p.body,
+            "--body".to_string(), super::attributed(p.body, ctx),
         ];
         let url = run_gh(root, args).await?;
         Ok(GithubPrCommentResult { url })

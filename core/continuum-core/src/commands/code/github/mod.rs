@@ -33,24 +33,22 @@ pub mod pr_create;
 
 use issue_create::CodeGithubIssueCreate;
 
-/// GitHub verbs act on an EXTERNAL service under the OPERATOR's `gh` identity.
-/// A citizen (an airc caller) may not file issues, open PRs, or comment as the
-/// operator: 114 "placeholder" issues landed on the repo on 2026-09-03 because
-/// the verbs were offered to every turn and looping citizens used them to
-/// "avoid an unused tool". Until a room recipe can GRANT a citizen GitHub
-/// authorship in her own name, the verbs refuse airc callers loudly — the
-/// refusal names the rule, so a citizen learns the boundary instead of a 500.
-pub(crate) fn require_operator(ctx: &crate::sdk_codegen::Ctx, verb: &str) -> Result<(), CommandError> {
+/// Attribution for GitHub text a CITIZEN writes. Every push and API call goes out under the
+/// operator's `gh` account (GitHub has no notion of an agent acting inside one account), so a
+/// citizen-authored PR, comment or issue carries a footer naming her by peer id. Citizens
+/// hold these verbs exactly as Claude or Codex do (Joel, 2026-09-28: the point is a system
+/// that replaces them); attribution is what keeps authorship legible, never a gate.
+pub(crate) fn attributed(body: String, ctx: &crate::sdk_codegen::Ctx) -> String {
     use crate::routing::auth_policy::CallerSource;
-    match ctx.caller.as_ref().map(|c| &c.source) {
-        Some(CallerSource::Airc) => Err(CommandError::Invalid(format!(
-            "{verb}: GitHub verbs act under the operator's identity and are not available to \
-             citizens in this room. Do the work in your checkout (code/read, code/edit, \
-             code/shell, git) and report in the room; an offered tool is never a must-use."
-        ))),
-        _ => Ok(()),
+    match ctx.caller.as_ref() {
+        Some(c) if matches!(c.source, CallerSource::Airc) => format!(
+            "{body}\n\n---\nAuthored by Continuum citizen `{}` (posted through the operator's GitHub account).",
+            c.peer_id
+        ),
+        _ => body,
     }
 }
+
 use pr_comment::CodeGithubPrComment;
 use pr_create::CodeGithubPrCreate;
 
@@ -122,18 +120,20 @@ mod tests {
         assert!(!pr_comment::CodeGithubPrComment::NATIVE);
     }
 
-    // what this catches: a citizen (airc caller) is refused with the rule named; the
-    // operator (local caller, or no caller — the CLI) passes.
+    // what this catches (Joel, 2026-09-28): citizens once lost GitHub hands entirely because
+    // their authorship could not be told apart from the operator's. They hold the verbs now;
+    // what they write names them, and the operator's own text is untouched.
     #[test]
-    fn github_verbs_refuse_citizens_and_admit_the_operator() {
+    fn a_citizens_github_text_names_her_and_the_operators_does_not() {
         use super::*;
         use crate::routing::CallerIdentity;
         let mut ctx = crate::sdk_codegen::Ctx::default();
-        assert!(require_operator(&ctx, "code/github/issue-create").is_ok());
+        assert_eq!(attributed("body".into(), &ctx), "body");
+        let citizen = crate::identity::PeerId::new();
+        ctx.caller = Some(CallerIdentity::airc(citizen));
+        let text = attributed("body".into(), &ctx);
+        assert!(text.starts_with("body") && text.contains(&citizen.to_string()), "{text}");
         ctx.caller = Some(CallerIdentity::local(crate::identity::PeerId::new()));
-        assert!(require_operator(&ctx, "code/github/issue-create").is_ok());
-        ctx.caller = Some(CallerIdentity::airc(crate::identity::PeerId::new()));
-        let err = require_operator(&ctx, "code/github/issue-create").unwrap_err();
-        assert!(err.to_string().contains("not available to citizens"), "{err}");
+        assert_eq!(attributed("body".into(), &ctx), "body");
     }
 }
