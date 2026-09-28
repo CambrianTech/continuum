@@ -49,6 +49,8 @@ pub struct SlotCount {
     pub prompt: u64,
     pub processed: u64,
     pub processing: bool,
+    /// Tokens this task has decoded so far (`next_token[0].n_decoded`).
+    pub decoded: u64,
 }
 
 impl SlotCount {
@@ -74,9 +76,41 @@ pub fn slot_counts_of(slots: &serde_json::Value) -> Option<Vec<SlotCount>> {
                 prompt: n(&s["n_prompt_tokens"]),
                 processed: n(&s["n_prompt_tokens_processed"]),
                 processing: s["is_processing"].as_bool() == Some(true),
+                decoded: n(&s["next_token"][0]["n_decoded"]),
             })
             .collect(),
     )
+}
+
+/// PURE: the CLEAN per-stream decode rate between two reads, with how many streams were in
+/// flight (card df58b8b8, Cormac on #4489). A generation's own timings count its stalls behind
+/// neighbours' prefill as decode time, and its in-flight count is read at its end, so a
+/// curve built from them reads a 27B that decodes 27 t/s alone as 6.7. An interval is clean
+/// when the same slots serve the same tasks at both reads and none had prompt left at the
+/// first: nothing but decode can have run between them. `None` otherwise, or when nothing
+/// decoded.
+pub fn clean_decode(before: &[SlotCount], now: &[SlotCount], elapsed_ms: u64) -> Option<(u32, f64)> {
+    if elapsed_ms == 0 || elapsed_ms > MAX_READ_GAP_MS {
+        return None;
+    }
+    let busy: Vec<&SlotCount> = before.iter().filter(|s| s.processing).collect();
+    let still: Vec<&SlotCount> = now.iter().filter(|s| s.processing).collect();
+    if busy.is_empty() || busy.len() != still.len() || busy.iter().any(|s| s.prefilling()) {
+        return None;
+    }
+    let mut decoded = 0u64;
+    for b in &busy {
+        let n = still.iter().find(|s| s.id == b.id && s.task == b.task)?;
+        if n.prefilling() {
+            return None;
+        }
+        decoded += n.decoded.saturating_sub(b.decoded);
+    }
+    if decoded == 0 {
+        return None;
+    }
+    let streams = busy.len() as u32;
+    Some((streams, decoded as f64 * 1000.0 / elapsed_ms as f64 / f64::from(streams)))
 }
 
 /// Tokens prefilled between two reads, summed over slots. A slot on the same task counts
@@ -168,6 +202,19 @@ pub fn prefill_lanes(rate_tps: f64, per_turn: u32, ttft: std::time::Duration) ->
 }
 
 static WINDOW: LazyLock<parking_lot::Mutex<PrefillWindow>> = LazyLock::new(Default::default);
+/// The previous `/slots` read, for [`clean_decode`], with the engine it was read from. Two
+/// reads pair only on the SAME engine: a relaunch or a model switch restarts task ids from 0,
+/// so an old slot and a new one could share a task id and file a bogus clean rate under the
+/// new model, just when the rule compares models (Cormac on #4489).
+static LAST_READ: LazyLock<parking_lot::Mutex<Option<(EngineRead, Vec<SlotCount>, u64)>>> = LazyLock::new(Default::default);
+
+/// Which engine a read came from: the model it serves and the engine process's pid, which
+/// changes on every launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineRead {
+    pub model: String,
+    pub pid: u32,
+}
 static TURNS: LazyLock<parking_lot::Mutex<TurnPrefill>> = LazyLock::new(Default::default);
 
 /// The generation seam: one turn's cache split (fed beside `citizen_health::note_generation`).
@@ -181,9 +228,23 @@ pub fn note_turn(cached: u32, prefilled: u32) {
 
 /// Feed one `/slots` read; when a window completes, publish the bound these inputs would
 /// set beside the lanes served. Observe-only: nothing reads this to size a lane.
-pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize) {
+pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize, engine: Option<EngineRead>) {
     let Some(counts) = slot_counts_of(slots) else { return };
+    let previous = match &engine {
+        Some(e) => LAST_READ.lock().replace((e.clone(), counts.clone(), now_ms)),
+        None => LAST_READ.lock().take(),
+    };
+    if let (Some(e), Some((was, before, at))) = (&engine, previous) {
+        if was == *e {
+            if let Some((streams, tps)) = clean_decode(&before, &counts, now_ms.saturating_sub(at)) {
+                crate::inference::serving_rates::observe_decode(&e.model, streams, tps, now_ms);
+            }
+        }
+    }
     let Some(rate) = WINDOW.lock().observe(counts, now_ms) else { return };
+    if let Some(e) = &engine {
+        crate::inference::serving_rates::observe_prefill(&e.model, rate, now_ms);
+    }
     let turns = TURNS.lock();
     let median = turns.median();
     let ttft = crate::inference::prefill_rate::UNATTENDED_TTFT;
@@ -207,7 +268,7 @@ mod tests {
     use super::*;
 
     fn slot(id: u64, task: i64, prompt: u64, processed: u64) -> SlotCount {
-        SlotCount { id, task, prompt, processed, processing: processed < prompt }
+        SlotCount { id, task, prompt, processed, processing: processed < prompt, decoded: 0 }
     }
 
     // what this catches: a rate that swings with the ubatch step, or reads an idle server
@@ -266,7 +327,7 @@ mod tests {
     // slot 3, 2048 / 0, at 07:08Z); it must add no busy time, or the rate drifts to zero.
     #[test]
     fn an_idle_slot_with_stale_partial_counters_is_not_prefilling() {
-        let stale = SlotCount { id: 3, task: 40, prompt: 2_048, processed: 0, processing: false };
+        let stale = SlotCount { id: 3, task: 40, prompt: 2_048, processed: 0, processing: false, decoded: 0 };
         let mut w = PrefillWindow::default();
         for i in 0..40u64 {
             assert_eq!(w.observe(vec![stale], i * 15_000), None);
@@ -277,6 +338,31 @@ mod tests {
         ]))
         .expect("test: slots");
         assert_eq!(parsed, vec![stale]);
+    }
+
+    // what this catches (Cormac on #4489): a decode rate that counts prefill stalls. Only an
+    // interval where the same tasks decode at both reads and none had prompt left is clean;
+    // a slot still prefilling, a slot that changed task, or a stream that joined or left
+    // leaves the interval unmeasured rather than slow.
+    #[test]
+    fn only_an_interval_of_pure_decode_measures_the_decode_rate() {
+        let dec = |id: u64, task: i64, decoded: u64| SlotCount { id, task, prompt: 100, processed: 100, processing: true, decoded };
+        let two = [dec(0, 7, 100), dec(1, 8, 300)];
+        let later = [dec(0, 7, 1_300), dec(1, 8, 1_500)];
+        let (streams, tps) = clean_decode(&two, &later, 60_000).expect("pure decode");
+        assert_eq!(streams, 2);
+        assert!((tps - 20.0).abs() < 1e-9, "2,400 tokens over 60 s across 2 streams: {tps}");
+        let prefilling = [dec(0, 7, 100), SlotCount { processed: 40, ..dec(1, 8, 0) }];
+        assert_eq!(clean_decode(&prefilling, &later, 60_000), None, "a neighbour still prefilling");
+        assert_eq!(clean_decode(&two, &[dec(0, 7, 1_300), dec(1, 9, 50)], 60_000), None, "a slot took a new task");
+        assert_eq!(clean_decode(&two, &[dec(0, 7, 1_300)], 60_000), None, "a stream left");
+        assert_eq!(clean_decode(&two, &later, MAX_READ_GAP_MS + 1), None, "a gap is not an interval");
+        let parsed = slot_counts_of(&serde_json::json!([
+            {"id": 0, "id_task": 7, "n_prompt_tokens": 100, "n_prompt_tokens_processed": 100, "is_processing": true,
+             "next_token": [{"n_decoded": 28}]}
+        ]))
+        .expect("test: slots");
+        assert_eq!(parsed[0].decoded, 28);
     }
 
     // what this catches: the bound's arithmetic and its edges. 45 tok/s over a 180 s budget

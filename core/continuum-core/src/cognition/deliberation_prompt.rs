@@ -122,9 +122,15 @@ pub(super) enum PromptChurn {
     /// what the media plane perceived. Changes when someone joins or the recipe changes
     /// — hours.
     Standing,
-    /// The board: the wall's card ledgers, her held card, the kanban. Changes when ANY
-    /// teammate claims, settles or writes a ledger — minutes.
+    /// The board: the wall's card ledgers, her held card, who is seated in the room.
+    /// Changes when a teammate writes a ledger or a resident rests or wakes — minutes.
     Board,
+    /// The kanban's claim column. Changes whenever ANY teammate claims or settles a card.
+    /// Measured on the M5 2026-09-27 (card 5b09111e, 217 consecutive same-room requests):
+    /// the kanban changed on 30% of turns against 3% (held card), 6% (roster) and 9%
+    /// (wall), yet sorted ahead of the roster and the 4.6k-char wall, so each claim
+    /// anywhere forfeited them. Its own class puts it after every board block.
+    Claims,
     /// This turn's material: recall, engrams, the transcript page, working memory.
     /// Changes every turn or every act.
     Turn,
@@ -148,9 +154,13 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
         | media_perception_source::SOURCE_ID
         | mission_source::SOURCE_ID
         | workspace_map_source::SOURCE_ID => PromptChurn::Standing,
-        wall_source::SOURCE_ID | active_work_source::SOURCE_ID | room_board_source::SOURCE_ID => {
-            PromptChurn::Board
-        }
+        // The live roster renders under its view-state kind, not `room-roster` (the
+        // replaced reader's id), and fell to Unknown. Board, not Standing: resting and
+        // waking change it within the hour, and Standing would put it in the system prefix.
+        continuum_positron::RosterViewState::KIND
+        | wall_source::SOURCE_ID
+        | active_work_source::SOURCE_ID => PromptChurn::Board,
+        room_board_source::SOURCE_ID => PromptChurn::Claims,
         engram_source::SOURCE_ID | airc_source::SOURCE_ID | WM_FACULTY_ID => PromptChurn::Turn,
         _ if faculty == FacultyId::Recall.as_str() => PromptChurn::Turn,
         _ => PromptChurn::Unknown,
@@ -892,13 +902,18 @@ mod tests {
                 "room-roster",
                 "workspace-map",
                 "active-work",
-                "room-kanban",
                 "room-wall",
+                "room-kanban",
                 "recall",
                 "zz-new-source",
             ],
-            "standing < board < turn < unknown, by name within"
+            "standing < board < claims < turn < unknown, by name within"
         );
+        // The live roster id is board churn (by name among the board), and the kanban
+        // follows every board block.
+        let mut live = vec!["room-kanban", "room-wall", "roster", "active-work"];
+        live.sort_by(|a, b| stable_prefix_order(a, b));
+        assert_eq!(live, ["active-work", "room-wall", "roster", "room-kanban"]);
         assert_eq!(churn_of("working-memory"), PromptChurn::Turn);
         assert_eq!(churn_of("engrams"), PromptChurn::Turn);
         assert_eq!(churn_of("media-perception"), PromptChurn::Standing);

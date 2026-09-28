@@ -446,7 +446,7 @@ impl GenomeTeach {
         })?;
         let conn = Connection::new(InProcessTransport::new(executor, ctx.caller.clone()));
         let service = Arc::new(DatasetService::new(
-            crate::modules::dataset::default_datasets_root(),
+            crate::modules::dataset::default_datasets_root()?,
         ));
         let generate_params = p.clone();
         let generation_service = service.clone();

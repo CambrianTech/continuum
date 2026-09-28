@@ -34,7 +34,7 @@ use continuum_client::{ClientError, Connection};
 use continuum_core::runtime::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use continuum_core::runtime::deploy_provenance::{
-    cli_self_build, cli_staleness_note, deploy_verdict, CliSelfBuild,
+    cli_self_build, cli_staleness_note, deploy_verdict, sha_matches, CliSelfBuild,
 };
 use serde_json::Value;
 
@@ -116,6 +116,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "install"
                 | "verify"
                 | "checkpoint"
+                | "engine"
                 | "service-host"
         ) && args
             .iter()
@@ -140,6 +141,16 @@ async fn run() -> Result<(), CliError> {
         );
         return Ok(());
     }
+    // The SHA this CLI was built from, alone on stdout — the same contract as the core's
+    // `--build-sha`, so `install` can pair the slot's CLI with its core (#4382 asked the CLI
+    // and no CLI ever answered: every install on an already-converged core failed there).
+    if first == "--build-sha" {
+        if !rest.is_empty() {
+            return Err(CliError::Command("usage: continuum --build-sha".into()));
+        }
+        println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
+        return Ok(());
+    }
     // Lifecycle verbs bypass remote command dispatch. Handle their help before
     // any checkout registration, process inspection, stop, build, or launch.
     if local_help_requested(&first, &rest) {
@@ -151,6 +162,22 @@ async fn run() -> Result<(), CliError> {
     // not mutate the checkout registry as a side effect.
     if first == "checkpoint" {
         return checkpoint(CheckpointCommand::parse(args)?).map_err(CliError::from);
+    }
+    // Engine slots (card 2c5d0ec0): offline, like checkpoint. The installers call these
+    // with the deploy lock held; exit 3 means no slot is idle and the engine build is skipped.
+    if first == "engine" {
+        use continuum_core::inference::engine_slots::{run_verb, VerbError};
+        match run_verb(&args.collect::<Vec<_>>()) {
+            Ok(out) => {
+                println!("{out}");
+                return Ok(());
+            }
+            Err(VerbError::NoIdleSlot) => {
+                eprintln!("{}", VerbError::NoIdleSlot);
+                std::process::exit(3);
+            }
+            Err(e) => return Err(CliError::Command(e.to_string())),
+        }
     }
     if first == "service-host" {
         let code = service_host(args.collect()).await?;
@@ -1134,10 +1161,10 @@ impl PrebuiltCore {
     }
 }
 
-/// Free memory a warm build needs beside a serving core: rustc's codegen wants ~7 GiB
-/// (BigMama, 2026-09-05: test builds killed at 2.59 GiB free beside a 39 GiB server) —
-/// twelve leaves the server, the citizens and the build their room.
-const WARM_BUILD_MIN_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+/// The floor below which a warm build refuses: one rustc job plus the reserve kept for the
+/// citizens and the core. Between it and plenty the build takes fewer jobs
+/// ([`continuum_core::inference::llama_server::warm_build_jobs_for_memory`]).
+const WARM_BUILD_MIN_FREE_BYTES: u64 = continuum_core::inference::llama_server::WARM_BUILD_MIN_FREE_BYTES;
 
 /// The scheduler owns this foreground host and its core as one process tree.
 /// Runtime DLL/config resolution is the same as every other native CLI launch.
@@ -1155,12 +1182,35 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command);
+        // The engine the core runs is the slot `current` names, never an injected
+        // `LLAMA_SERVER_BIN` (the core reads that as an operator's pin and never converges it,
+        // card 2c5d0ec0). `current` is the one truth on every OS (card d5584dfc): the registered
+        // release only BOOTSTRAPS it when none is recorded, so an unattended deploy's promote and
+        // an automatic rollback survive this restart. An operator's own `LLAMA_SERVER_BIN` in the
+        // environment still passes through untouched.
         if command_env(&command, "LLAMA_SERVER_BIN").is_none_or(|value| value.is_empty()) {
             let engine = Path::new(&args[2]);
-            if !engine.is_file() {
-                return Err(format!("service-host engine missing: {}", engine.display()));
+            // A standing `current` is the engine, whatever the release still names: the release's
+            // own binary may be gone (its slot rebuilt or reclaimed) and the core must still start
+            // on the engine `current` names (Codex on #4509, card 6de412bb). Only with nothing
+            // standing does the release's engine matter, and then it must exist.
+            match continuum_core::inference::engine_slots::bootstrap_service_engine(engine) {
+                Ok(true) => eprintln!("service-host: {} is now the current engine", engine.display()),
+                Ok(false) => {}
+                // A refused bootstrap must never keep the core down (Fable on #4497): on a
+                // first-and-only machine that is a dark node. The registered engine is the one the
+                // installer verified, so it is launched as before, pinned, and the refusal is said.
+                Err(why) if !engine.is_file() => {
+                    return Err(format!("service-host engine missing and no engine is current: {} ({why})", engine.display()));
+                }
+                Err(why) => {
+                    eprintln!(
+                        "service-host: ENGINE NOT REGISTERED ({why}); launching {} pinned as LLAMA_SERVER_BIN so the core does not stay down. It will not converge until this is fixed.",
+                        engine.display()
+                    );
+                    command.env("LLAMA_SERVER_BIN", engine);
+                }
             }
-            command.env("LLAMA_SERVER_BIN", engine);
         }
         command.env("CONTINUUM_CORE_SOCKET", &args[1]);
         command.stdin(Stdio::null()).creation_flags(0x0800_0000);
@@ -1306,9 +1356,15 @@ impl PreparedCoreService {
         let task = Self::query().await?;
         let description: CoreServiceDescription = serde_json::from_str(&task.description)
             .map_err(|e| format!("installed service descriptor: {e}"))?;
-        let directory = Path::new(&description.engine)
-            .parent()
-            .ok_or("installed engine has no directory")?;
+        // The engine the core RUNS: the slot `current` names (card d5584dfc), else, before any
+        // slot is recorded, the one the release registered.
+        let directory = match continuum_core::inference::engine_slots::active_engine_dir() {
+            Some(dir) => dir,
+            None => Path::new(&description.engine)
+                .parent()
+                .ok_or("installed engine has no directory")?
+                .to_path_buf(),
+        };
         let repo = repo.to_string_lossy().replace('\'', "''");
         Self::powershell(&format!(
             "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}')",
@@ -1330,6 +1386,14 @@ impl PreparedCoreService {
             original.replace('\'', "''"), receipt.0.to_string_lossy().replace('\'', "''")
         );
         Self::run_installer_script(&script)?;
+        // Every engine slot is busy (lanes still relaunching onto the last engine): the core
+        // deploys on the engine it has and the next deploy builds this one (card 3f8f5754, the
+        // bash installer's exit 3). An explicit line, never an empty receipt, so a script that
+        // wrote nothing is still a failure.
+        if let Some(reason) = receipt.skipped()? {
+            println!("▶ engine handoff skipped this deploy: {reason}");
+            return Ok(None);
+        }
         Ok(Some((original, receipt.artifact()?)))
     }
 
@@ -1472,7 +1536,19 @@ impl PreparedCoreService {
             };
             move_aside_and_copy(&built.path, &slot_core)?;
             if built_cli.is_file() {
-                move_aside_and_copy(&built_cli, &slot_cli)?;
+                // The CLI beside the artifact is only this build's when it says so: a skipped
+                // CLI build leaves an OLDER one there, and staging it rolled every PATH copy
+                // back (install's CLI arm follows the slot).
+                match binary_build_sha(&built_cli).await {
+                    Ok(sha) if sha_matches(&sha, &built.build_sha) => {
+                        move_aside_and_copy(&built_cli, &slot_cli)?;
+                    }
+                    Ok(sha) => println!(
+                        "⚠ the CLI beside the warm artifact is build {sha}, not {} — not staged; the slot's CLI stays as it was",
+                        built.build_sha
+                    ),
+                    Err(e) => println!("⚠ the CLI beside the warm artifact cannot state its build ({e}) — not staged; the slot's CLI stays as it was"),
+                }
             } else {
                 println!(
                     "⚠ no CLI beside the warm artifact ({}) — the slot's CLI stays as it was",
@@ -1661,7 +1737,7 @@ fn warm_build_allowed(free_bytes: u64, script: Option<PathBuf>) -> Result<PathBu
 /// so "every reader" shares one answer. This function was not one of those readers.
 ///
 /// The cost was the whole warm-build path on every Mac. `warm_build_allowed` compares
-/// this against `WARM_BUILD_MIN_FREE_BYTES` (12 GiB), so a permanent 0 meant the gate
+/// this against `WARM_BUILD_MIN_FREE_BYTES` (then 12 GiB), so a permanent 0 meant the gate
 /// could never open: every deploy stopped the core first and built afterwards, and every
 /// stop cut whatever was mid-turn. Measured on the M5 2026-09-21, two consecutive
 /// deploys 35 minutes apart printed `no warm build: 0.0 GiB free` and reported
@@ -1691,6 +1767,14 @@ impl WarmBuildReceipt {
             .open(&path)
             .map_err(|e| format!("cannot create warm-build receipt: {e}"))?;
         Ok(Self(path))
+    }
+
+    /// `Some(reason)` when the script recorded a deliberate skip (`SKIP: <reason>`) instead of an
+    /// artifact path.
+    #[cfg(windows)]
+    fn skipped(&self) -> Result<Option<String>, String> {
+        let report = std::fs::read_to_string(&self.0).map_err(|e| format!("cannot read warm-build receipt: {e}"))?;
+        Ok(report.strip_prefix("SKIP: ").map(|reason| reason.trim().to_string()))
     }
 
     fn artifact(&self) -> Result<PathBuf, String> {
@@ -1724,7 +1808,26 @@ impl Drop for WarmBuildReceipt {
 /// its CPU-served lane: 34 of 34 generations in an hour failed their prefill bound and the
 /// citizens took no turn (Cormac's read of the captures). Background priority costs the
 /// build nothing on an idle machine and hands the cores to serving on a busy one.
+///
+/// Priority alone did not protect a CPU-served lane (card 682a5abf): nice reorders the run
+/// queue but frees no core, and cargo's default jobs (one per logical CPU) took the cores the
+/// lane decodes on. Beside a CPU-served engine the build also takes ONE job
+/// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
+/// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
+/// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
 fn yield_to_serving(cmd: &mut std::process::Command) {
+    // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
+    // the memory the serving node has left (a lane that fills memory must not stop deploys).
+    let backend = continuum_core::inference::llama_server::installed_engine_backend();
+    let cores = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref());
+    let memory = continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes());
+    let jobs = match (cores, memory) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    if let Some(jobs) = jobs {
+        cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
+    }
     #[cfg(unix)]
     // SAFETY: the closure runs in the forked child before exec and calls only
     // setpriority, which is async-signal-safe; it touches no memory of the parent.
@@ -1733,6 +1836,9 @@ fn yield_to_serving(cmd: &mut std::process::Command) {
         cmd.pre_exec(|| {
             // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            // The background band, also on the child itself and inherited.
+            #[cfg(target_os = "macos")]
+            libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
             Ok(())
         });
     }
@@ -1969,6 +2075,22 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         .map(|p| p.build_sha.clone())
         .or_else(git_head_short_sha);
     let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
+    // UNATTENDED Windows deploy (card d5584dfc, option (b)): build the pinned engine into the idle
+    // slot and promote `current`, the same unprivileged sequence the bash installer runs, while
+    // the old core still serves. It never re-registers the scheduled task (an elevation nobody is
+    // there to answer), and an engine that does not build never fails the core deploy: the lanes
+    // keep the engine they have. `install` takes the attended path below.
+    #[cfg(windows)]
+    if options.service && !options.require_engine_receipt {
+        match std::env::current_dir() {
+            Ok(repo) => match PreparedCoreService::prepare_engine(&repo).await {
+                Ok(Some(_)) => println!("▶ engine built into its idle slot and promoted; the next core converges its lanes onto it"),
+                Ok(None) => {}
+                Err(e) => println!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has"),
+            },
+            Err(e) => println!("⚠ engine not updated this deploy (no working directory: {e})"),
+        }
+    }
     #[cfg(windows)]
     let prepared_engine = if options.require_engine_receipt {
         Some(std::env::current_dir().map_err(|e| e.to_string())?)
@@ -1992,7 +2114,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 cmd.arg(&script);
                 apply_core_runtime_env(&mut cmd);
                 if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
-                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
                 }
                 println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
                 prebuilt = Some(prepare_warm_build(cmd).await?);
@@ -2036,14 +2158,14 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 "installed release changed during preparation; running Core preserved".into(),
             );
         }
-        let repo = repo.to_string_lossy().replace('\'', "''");
+        let repo_arg = repo.to_string_lossy().replace('\'', "''");
         let directory = engine
             .parent()
             .ok_or("prepared engine has no directory")?
             .to_string_lossy()
             .replace('\'', "''");
         let drift = PreparedCoreService::powershell(&format!(
-            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}')"
+            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo_arg}')"
         )).await?;
         if !drift.is_empty() {
             return Err(format!("prepared engine changed before stop: {drift}"));
@@ -2052,6 +2174,11 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             .as_ref()
             .ok_or("engine handoff requires a verified Core artifact")?;
         PrebuiltCore::prepare(&candidate.path).await?;
+        // Registration can fail even after Task Scheduler accepted the new engine
+        // (Windows install, 2026-09-28). Do it while the old core is still alive:
+        // Register-CoreServiceRelease validates and registers, but never launches.
+        // An error here must not strand the node after a successful teardown.
+        PreparedCoreService::register_engine(repo, original, engine).await?;
     }
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
     // running core, and refusing to continue would leave the node down over a module that
@@ -2071,8 +2198,10 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         }
     }
     #[cfg(windows)]
-    if let Some((repo, (original, engine))) = &prepared_engine {
-        PreparedCoreService::register_engine(repo, original, engine).await?;
+    if prepared_engine.is_some() {
+        // A source build is still a Cargo artifact until the staging above. Do
+        // not mark the service prepared before that copy, or it would skip
+        // staging and compare the registered slot against the Cargo path.
         let candidate = prebuilt
             .as_ref()
             .ok_or("engine handoff requires a verified Core artifact")?;
@@ -2592,6 +2721,13 @@ fn home_dir() -> Result<String, String> {
         })
 }
 
+/// The image this CLI runs from, for `CONTINUUM_SKIP_SELF_BUILD`: the build script skips
+/// the CLI only when this IS the file it would write (a locked running image). "1" when the
+/// OS cannot say — the script's unconditional skip, never a build over a running image.
+fn running_cli_image() -> std::ffi::OsString {
+    std::env::current_exe().map_or_else(|_| "1".into(), PathBuf::into_os_string)
+}
+
 /// Ask an on-disk `continuum-core-server` artifact for its embedded build SHA
 /// (`--build-sha`, exits before any socket/side-effect). Loud on any failure — an artifact
 /// that cannot state its provenance cannot anchor a deploy receipt.
@@ -2838,6 +2974,75 @@ fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Whether any running `git` might be working on `repo`, judged conservatively: a git whose
+/// cwd is inside the tree, whose command line names the tree (`--git-dir` / `--work-tree`
+/// given from elsewhere), or whose cwd cannot be read at all. Only a git positively seen
+/// working elsewhere is ruled out: an unreadable cwd (permissions, a platform without cwd
+/// inspection) is not evidence of absence (Codex on #4477).
+fn git_running_in(repo: &Path) -> bool {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cwd(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
+    );
+    let canonical = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf()); // unwrap_or_else: an uncanonicalizable root still compares as given
+    let spellings = [repo.to_string_lossy().into_owned(), canonical.to_string_lossy().into_owned()];
+    sys.processes().values().any(|p| {
+        let name = p.name().to_string_lossy();
+        if name != "git" && name != "git.exe" {
+            return false;
+        }
+        let names_repo = p
+            .cmd()
+            .iter()
+            .any(|a| spellings.iter().any(|r| a.to_string_lossy().contains(r.as_str())));
+        match p.cwd() {
+            Some(cwd) => names_repo || cwd.starts_with(&canonical) || cwd.starts_with(repo),
+            None => true, // unreadable: it may be working here
+        }
+    })
+}
+
+/// The deploy tree's `index.lock`, judged and (when stale) removed. `Ok(true)` = the tree
+/// may be deployed; `Ok(false)` = a lock that may be live stands, named in the deploy log,
+/// retried next tick without spending one of the tip's attempts.
+fn settle_index_lock(repo: &Path) -> Result<bool, String> {
+    use continuum_core::runtime::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
+    let rel = git_in(repo, &["rev-parse", "--git-path", "index.lock"])?;
+    let lock = repo.join(rel);
+    let age = std::fs::metadata(&lock)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| t.elapsed().unwrap_or_default()); // unwrap_or_default: an mtime in the future reads as brand new, never as stale
+    match index_lock_verdict(age, age.is_some() && git_running_in(repo)) {
+        IndexLock::Absent => Ok(true),
+        IndexLock::Held => {
+            deploy_note(&format!(
+                "deploy-consume: {} is locked ({} s old, a git operation may hold it) — not deploying this tick; \
+                 it is removed once it is {} s old with no git running in the tree",
+                lock.display(),
+                age.unwrap_or_default().as_secs(), // unwrap_or_default: Held always carries an age
+                STALE_INDEX_LOCK.as_secs()
+            ));
+            Ok(false)
+        }
+        IndexLock::Stale => {
+            std::fs::remove_file(&lock)
+                .map_err(|e| format!("deploy-consume: cannot remove stale {}: {e}", lock.display()))?;
+            deploy_note(&format!(
+                "deploy.tree.stale_lock_cleared: removed {} ({} s old, no git running in the tree) — a git process died mid-write",
+                lock.display(),
+                age.unwrap_or_default().as_secs() // unwrap_or_default: Stale always carries an age
+            ));
+            Ok(true)
+        }
+    }
+}
+
 async fn running_build_sha() -> Option<String> {
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -3054,11 +3259,22 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         let task = PreparedCoreService::query().await?;
         let release: CoreServiceDescription =
             serde_json::from_str(&task.description).map_err(|e| e.to_string())?;
-        let cli_sha = binary_build_sha(Path::new(&release.cli)).await?;
-        if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) {
-            return Err(format!("installed CLI reports {cli_sha}, tracked HEAD is {head}; refusing to reuse an unmatched release pair"));
+        // Reuse the installed core only when the slot's CLI is from the same commit. A CLI
+        // that is older, or cannot say what it is, is not a reason to stop: it is drift the
+        // build path below converges (it rebuilds the CLI and stages the pair together).
+        match binary_build_sha(Path::new(&release.cli)).await {
+            Ok(cli_sha) if continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) => {
+                Some(PathBuf::from(release.artifact))
+            }
+            Ok(cli_sha) => {
+                println!("  core: the slot's CLI is build {cli_sha}, HEAD is {head} — rebuilding the pair");
+                None
+            }
+            Err(e) => {
+                println!("  core: the slot's CLI cannot state its build ({e}) — rebuilding the pair");
+                None
+            }
         }
-        Some(PathBuf::from(release.artifact))
     } else {
         None
     };
@@ -3472,6 +3688,12 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         )),
         ConsumeVerdict::Deploy => {
             let tip = tip.unwrap_or_default(); // unwrap_or_default: Deploy is only returned with a tip present
+            // A lock left by a git that died mid-write refused every checkout for hours and
+            // spent the tip's attempts (card 677437fa). Judge it before the attempt: a stale
+            // one is cleared with a receipt, a possibly-live one is named and waited on.
+            if !settle_index_lock(&repo)? {
+                return Ok(());
+            }
             let attempt = async {
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
@@ -4587,7 +4809,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
             // Say it out loud. A skipped build that looks like a completed one is how
             // stale binaries survive a "successful" deploy — #194, one tier up.
             eprintln!("▶ {reason}");
-            cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+            cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
         }
     }
     cmd.env("CONTINUUM_CORE_SOCKET", &socket);
@@ -5653,7 +5875,10 @@ fn usage() -> String {
      \n\
      Legacy checkpoint recovery (local; no running core required):\n  \
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
-       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n\
+       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n  \
+       continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
+       continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
+       continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
      \n\
      Desktop (the core serves it; no port to remember):\n  \
        continuum desktop               open the desktop in your browser (alias: uu desktop)\n\

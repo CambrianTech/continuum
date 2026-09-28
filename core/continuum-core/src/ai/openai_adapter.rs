@@ -721,7 +721,18 @@ impl OpenAICompatibleAdapter {
                 return Some(*id);
             }
         }
-        // 2. substring on path or name
+        // 2. a gene staged into the engine's --train-dir for a runtime load (charter S1):
+        //    the catalog carries the staged file, named from the genome path
+        if !path.is_empty() {
+            if let Some(stage) = crate::inference::llama_server::gene_stage_name(std::path::Path::new(path)) {
+                if let Some((id, _)) = catalog.iter().find(|(_, p)| {
+                    std::path::Path::new(p).file_name().and_then(|n| n.to_str()) == Some(stage.as_str())
+                }) {
+                    return Some(*id);
+                }
+            }
+        }
+        // 3. substring on path or name
         catalog
             .iter()
             .find(|(_, p)| {
@@ -984,29 +995,58 @@ impl OpenAICompatibleAdapter {
 ///    answer. Returns empty text so the caller refuses to post, never leaking raw
 ///    reasoning.
 ///
+/// And across all three: a BARE `</think>` in `content` (no `<think>` before it) closes
+/// reasoning that began before `content` did, so everything up to the LAST one is
+/// reasoning. Two shapes produce it. The Qwen3.x templates open `<think>` inside the PROMPT,
+/// so an unparsed completion starts mid-thought. And a mind that QUOTES the close tag while
+/// thinking (Kimi, 2026-09-28, reasoning about this very split) emits the special token, the
+/// server's parser ends `reasoning_content` at the quote, and the rest of her thinking, her
+/// real `</think>` and her answer all arrive as `content`: two fragments of her reasoning
+/// were published to the room as speech. The recovered reasoning is APPENDED to the
+/// reasoning, never dropped: thinking is what the learning genome trains on (Joel,
+/// 2026-09-28: "think is quintessential to learning genome").
+///
 /// Returns `(clean_text, reasoning)`. Pure + synchronous → unit-tested in isolation.
 pub(crate) fn extract_reasoning(
     content: &str,
     reasoning_content: Option<&str>,
 ) -> (String, Option<String>) {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    // A bare close: reasoning that began before `content` ends at its LAST STANDALONE
+    // `</think>` (alone on its line, as the model's own close is: `\n</think>\n\n`). A close
+    // written inline is a quote, in her thinking or in an answer, and closes nothing (Cormac
+    // on #4493: an answer that says "a bare `</think>`" must keep its head).
+    let (content, carried) = match last_standalone(content, CLOSE) {
+        Some(close) if !content[..close].contains(OPEN) => {
+            (&content[close + CLOSE.len()..], Some(content[..close].trim()))
+        }
+        _ => (content, None),
+    };
+    // Joined where the parser cut it: at the close tag she quoted (or the prompt's open).
+    let joined = |before: Option<&str>| -> Option<String> {
+        let parts: Vec<&str> = [before, carried].into_iter().flatten().map(str::trim).filter(|p| !p.is_empty()).collect();
+        (!parts.is_empty()).then(|| parts.join(&format!("\n{CLOSE}\n")))
+    };
+
     // (1) Server already split it out — trust that; content is the clean answer.
     if let Some(rc) = reasoning_content {
         let rc = rc.trim();
         if !rc.is_empty() {
-            return (content.trim().to_string(), Some(rc.to_string()));
+            return (content.trim().to_string(), joined(Some(rc)));
         }
     }
 
-    const OPEN: &str = "<think>";
-    const CLOSE: &str = "</think>";
     let Some(open_idx) = content.find(OPEN) else {
-        // (no think) plain content.
-        return (content.trim().to_string(), None);
+        // (no think) plain content, less any reasoning a bare close carried.
+        return (content.trim().to_string(), joined(None));
     };
     let before = content[..open_idx].trim();
     let after_open = &content[open_idx + OPEN.len()..];
 
-    match after_open.find(CLOSE) {
+    // The last STANDALONE close, else the first close: a close she quoted inline mid-thought
+    // is not the end of her thinking, and a compact `<think>x</think>answer` still splits.
+    match last_standalone(after_open, CLOSE).or_else(|| after_open.find(CLOSE)) {
         // (2) Well-formed <think>…</think>: answer is whatever sits OUTSIDE the block.
         Some(close_rel) => {
             let reasoning = after_open[..close_rel].trim();
@@ -1031,6 +1071,19 @@ pub(crate) fn extract_reasoning(
             )
         }
     }
+}
+
+/// PURE: the byte index of the last `tag` that stands alone on its line (only whitespace
+/// between it and the line's start and end), or `None`.
+fn last_standalone(text: &str, tag: &str) -> Option<usize> {
+    text.match_indices(tag)
+        .map(|(i, _)| i)
+        .filter(|&i| {
+            let before = text[..i].rsplit('\n').next().unwrap_or(""); // unwrap_or: rsplit always yields a piece
+            let after = text[i + tag.len()..].split('\n').next().unwrap_or(""); // unwrap_or: as above
+            before.trim().is_empty() && after.trim().is_empty()
+        })
+        .last()
 }
 
 // `apply_no_think_switch` / `close_trailing_assistant` live in `crate::inference::request_body` (S3b decompose).
@@ -3141,6 +3194,43 @@ mod tests {
         assert_eq!(reasoning.as_deref(), Some("I recall France's capital."));
     }
 
+    // what this catches (Kimi, 2026-09-28): her thinking published as speech. She QUOTED
+    // `</think>` while reasoning, the server ended `reasoning_content` there, and the rest of
+    // her thinking, her real close and her answer came as `content`. Everything up to the
+    // last bare close is reasoning, joined back where it was cut and never dropped (the
+    // genome trains on it); a template that opened `<think>` in the prompt, with no server
+    // split, is the same shape.
+    #[test]
+    fn a_quoted_close_tag_never_publishes_her_thinking() {
+        let (text, reasoning) = extract_reasoning(
+            "` with no opening tag, so the split fails. I should say so.\n</think>\n\nThe split needs a bare-close case.",
+            Some("Fable said extract_reasoning has no case for a bare"),
+        );
+        assert_eq!(text, "The split needs a bare-close case.");
+        let reasoning = reasoning.expect("her thinking is kept");
+        assert!(reasoning.starts_with("Fable said") && reasoning.contains("I should say so."), "{reasoning}");
+
+        let (text, reasoning) = extract_reasoning("Two is even, so yes.\n</think>\n\nyes", None);
+        assert_eq!(text, "yes");
+        assert_eq!(reasoning.as_deref(), Some("Two is even, so yes."));
+
+        let (text, reasoning) = extract_reasoning("yes", Some("Two is even."));
+        assert_eq!((text.as_str(), reasoning.as_deref()), ("yes", Some("Two is even.")), "a clean split is untouched");
+
+        let (text, reasoning) = extract_reasoning("<think>no case for a bare </think> yet, so\n</think>\n\nFixed.", None);
+        assert_eq!(text, "Fixed.", "an inline block ends at its standalone close, not the quoted one");
+        assert!(reasoning.expect("kept").contains("no case for a bare"));
+
+        // Cormac on #4493: an ANSWER that quotes the tag inline keeps its head, in both shapes.
+        let answer = "The split has no case for a bare `</think>` with no opening tag.";
+        let (text, reasoning) = extract_reasoning(answer, Some("She is asking about the split."));
+        assert_eq!((text.as_str(), reasoning.as_deref()), (answer, Some("She is asking about the split.")));
+        let (text, _) = extract_reasoning(&format!("<think>\nshort\n</think>\n\n{answer}"), None);
+        assert_eq!(text, answer);
+        let (text, _) = extract_reasoning("<think>x</think>compact answer", None);
+        assert_eq!(text, "compact answer", "a compact block with no standalone close still splits");
+    }
+
     // what this catches: a plain answer with no reasoning passes through untouched,
     // and an empty `<think></think>` (the JSON-path shape) yields no reasoning.
     #[test]
@@ -3384,6 +3474,19 @@ mod tests {
         fn unregistered_adapter_is_a_miss() {
             let id = OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
             assert_eq!(id, None);
+        }
+
+        // what this catches (charter S1): a gene loaded at runtime is listed under its
+        // staged --train-dir name, not its genome path; without this arm the request
+        // for it misses and fails loud although the engine holds it.
+        #[test]
+        fn a_runtime_loaded_gene_resolves_by_its_staged_name() {
+            let gene = "/genome/kimi-coursework/adapter.gguf";
+            let stage = crate::inference::llama_server::gene_stage_name(std::path::Path::new(gene))
+                .expect("stageable");
+            let mut loaded = catalog();
+            loaded.push((2, format!("/home/x/.continuum/cache/engine-train/{stage}")));
+            assert_eq!(OpenAICompatibleAdapter::match_lora_index(&loaded, "kimi", gene), Some(2));
         }
 
         // what this catches: an empty catalog (server loaded no adapters at

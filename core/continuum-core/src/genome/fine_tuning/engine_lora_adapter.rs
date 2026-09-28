@@ -47,6 +47,99 @@ pub const PROVIDER_ID: &str = "engine-local";
 // derived-or-floor: a floor — far below an epoch, far above a spin.
 const POLL: Duration = Duration::from_secs(2);
 
+/// Holds on in-engine training, by reason. While any hold stands, every in-engine run on
+/// this node is paused at its next training or evaluation window and keeps its context,
+/// optimizer, adapter and dataset position on the same resident base (fork #28); when the
+/// last hold drops, it resumes where it stopped. This is how a continual mind trains and
+/// thinks on one set of weights: learning yields to her turns without being thrown away.
+/// One entry per live hold, keyed by a token unique to that hold (Codex on #4485: two holds
+/// with the same reason are two holds; dropping one must not release the other). The value
+/// is (scope, reason): the scope is a lane's root, or [`EVERY_LANE`]. The node has one set
+/// ([`TrainingHolds::node`]); a tuner is handed the set it obeys, so a test owns its own
+/// (Cormac on #4485: a process-global set made the tests order-dependent).
+#[derive(Clone)]
+struct TrainingHolds(Arc<watch::Sender<BTreeMap<u64, (String, String)>>>);
+
+static NODE_HOLDS: std::sync::LazyLock<TrainingHolds> = std::sync::LazyLock::new(TrainingHolds::new);
+static NEXT_HOLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The scope of a hold on every in-engine run of this node.
+const EVERY_LANE: &str = "*";
+
+/// A lane's root as a hold scope: one lane, one key, however its url was spelled (Cormac on
+/// #4485: a trailing slash made a hold that held nothing).
+fn lane_scope(lane: &str) -> String {
+    lane.trim_end_matches('/').to_string()
+}
+
+impl TrainingHolds {
+    fn new() -> Self {
+        Self(Arc::new(watch::Sender::new(BTreeMap::new())))
+    }
+
+    /// This node's holds: the set every production tuner obeys.
+    fn node() -> &'static TrainingHolds {
+        &NODE_HOLDS
+    }
+
+    /// Pause every in-engine run under this set until the hold drops; every call is its own hold.
+    fn hold(&self, reason: &str) -> TrainingHold {
+        self.insert(EVERY_LANE.to_string(), reason)
+    }
+
+    /// Pause the in-engine run on one lane (its root url) until the hold drops.
+    fn hold_on(&self, lane: &str, reason: &str) -> TrainingHold {
+        self.insert(lane_scope(lane), reason)
+    }
+
+    fn insert(&self, scope: String, reason: &str) -> TrainingHold {
+        let token = NEXT_HOLD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.0.send_modify(|holds| {
+            holds.insert(token, (scope, reason.to_string()));
+        });
+        TrainingHold { holds: self.clone(), token }
+    }
+
+    fn subscribe(&self) -> watch::Receiver<BTreeMap<u64, (String, String)>> {
+        self.0.subscribe()
+    }
+}
+
+/// A standing hold on in-engine training; dropping it releases this hold and no other.
+pub struct TrainingHold {
+    holds: TrainingHolds,
+    token: u64,
+}
+
+impl Drop for TrainingHold {
+    fn drop(&mut self) {
+        self.holds.0.send_modify(|holds| {
+            holds.remove(&self.token);
+        });
+    }
+}
+
+/// Pause every in-engine training run on this node until the returned hold is dropped. The
+/// reason names the hold in probes; every call is its own hold.
+pub fn hold_training(reason: &str) -> TrainingHold {
+    TrainingHolds::node().hold(reason)
+}
+
+/// Pause the in-engine run on one lane of this node (its root url) until the hold is dropped.
+pub fn hold_training_on(lane: &str, reason: &str) -> TrainingHold {
+    TrainingHolds::node().hold_on(lane, reason)
+}
+
+/// The reasons holding the run on `lane`: every node-wide hold and every hold on that lane.
+fn holds_on(holds: &BTreeMap<u64, (String, String)>, lane: &str) -> Vec<String> {
+    let lane = lane_scope(lane);
+    holds
+        .values()
+        .filter(|(scope, _)| scope == EVERY_LANE || *scope == lane)
+        .map(|(_, reason)| reason.clone())
+        .collect()
+}
+
 /// How long the lane may stay unreachable before the run is taken to have ended with it. The
 /// run lives INSIDE the engine process: a lane that answers nothing for this long has gone
 /// (crashed, relaunched), and its training with it. Shorter silences are retried, never read as
@@ -93,11 +186,40 @@ struct Shape {
     window: u32,
     rank: u32,
     targets: String,
+    /// The blocks adapted when fewer than all (`top_layers`, fork #27); `None` = every block.
+    /// Depth drives the graph (~linear), so a reduced-depth run is its own shape.
+    #[serde(default)]
+    depth: Option<u32>,
 }
 
 impl Shape {
+    /// Full depth keeps the key every row before depth existed was written under (those
+    /// rows were all full-depth runs); a reduced depth adds `|dK`, so a reduced-depth lookup
+    /// can never land on a full-depth row, nor a full-depth lookup on a reduced one.
     fn key(&self) -> String {
-        format!("{}|w{}|r{}|{}", self.model, self.window, self.rank, self.targets)
+        let base = format!("{}|w{}|r{}|{}", self.model, self.window, self.rank, self.targets);
+        match self.depth {
+            Some(k) => format!("{base}|d{k}"),
+            None => base,
+        }
+    }
+}
+
+/// The window a run trains at: the engine's training context is n_ctx, which rounds up to a
+/// multiple of 256, and a window that is not one reached opt_init's assert and took the
+/// serving process down (fork #27 now refuses it). Rounded DOWN, so the lease never grows past
+/// what was asked; at least one 256-token context.
+fn train_window(sequence_length: u32) -> u32 {
+    (sequence_length / 256).max(1) * 256
+}
+
+/// The depth a finished run actually adapted, as the shape it is recorded under: the engine's
+/// own `layers_adapted` against its `n_layer`. An engine that reports neither predates
+/// `top_layers` and adapted every block, whatever was asked.
+fn effective_depth(layers_adapted: Option<u32>, n_layer: Option<u32>) -> Option<u32> {
+    match (layers_adapted, n_layer) {
+        (Some(k), Some(n)) if k < n => Some(k),
+        _ => None,
     }
 }
 
@@ -165,10 +287,18 @@ struct TrainRequest {
     lr: f64,
     val_split: f32,
     seed: u32,
+    /// adapt only the last K blocks (fork #27); omitted = every block
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_layers: Option<u32>,
     /// what training may add on the GPU: the job's governed lease, which the engine enforces
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_budget_mib: Option<u64>,
+    /// "middle" (fork #29): at the served window a lived example trains whole; only a
+    /// conversation longer than serving's own window drops its OLDEST history exchanges, and
+    /// always keeps the system and tool head and her reply, the context serving always has
+    /// (Cormac on #29). An engine before #29 ignores it.
+    fit: &'static str,
 }
 
 /// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
@@ -226,16 +356,42 @@ struct TrainStatus {
     /// the training graph the engine measured before allocating it: this shape's footprint
     #[serde(default)]
     graph_mib: Option<f64>,
+    /// fork #28: a pause asked for, and one the worker has reached (a pause is real only when
+    /// both are true); waiting on serving slots is a separate, automatic yield
+    #[serde(default)]
+    pause_requested: bool,
+    #[serde(default)]
+    paused: bool,
+    #[serde(default)]
+    waiting_for_serving: bool,
+    /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
+    /// that predates `top_layers`, which adapts every block
+    #[serde(default)]
+    n_layer: Option<u32>,
+    #[serde(default)]
+    layers_adapted: Option<u32>,
+    /// examples kept, cut from the front to fit the window, and skipped because her last
+    /// reply alone did not fit (fork #29); absent on an engine before it
+    #[serde(default)]
+    examples: Option<u64>,
+    #[serde(default)]
+    examples_truncated: Option<u64>,
+    #[serde(default)]
+    examples_skipped: Option<u64>,
     #[serde(default)]
     error: Option<String>,
 }
 
 /// Where the lane serving `base` answers, if one does on this node.
-type LaneResolver = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// The live lane serving a base: its url and the per-slot window it was launched with (0 =
+/// a record from before that field, which is unknown). One lookup decides both, so the
+/// training window can never come from a second source that disagrees with the lane
+/// (Cormac on #4498).
+type LaneResolver = Box<dyn Fn(&str) -> Option<(String, u32)> + Send + Sync>;
 
-fn live_lane_for(base: &str) -> Option<String> {
+fn live_lane_for(base: &str) -> Option<(String, u32)> {
     let rec = crate::inference::lane_registry::live_lane()?;
-    (rec.model == base).then(|| format!("http://127.0.0.1:{}", rec.port))
+    (rec.model == base).then(|| (format!("http://127.0.0.1:{}", rec.port), rec.context_window))
 }
 
 /// Admission: the governed lease a run holds for its life. `Governed` in production;
@@ -254,6 +410,8 @@ pub struct EngineLoraFineTuner {
     train_dir: Option<PathBuf>,
     footprints: Footprints,
     admission: Admission,
+    /// the holds this tuner's runs obey (the node's, or a test's own)
+    holds: TrainingHolds,
 }
 
 impl Default for EngineLoraFineTuner {
@@ -274,6 +432,7 @@ impl EngineLoraFineTuner {
             train_dir: crate::inference::llama_server::engine_train_dir(),
             footprints: Footprints { path: footprints },
             admission: Admission::Governed,
+            holds: TrainingHolds::node().clone(),
         }
     }
 
@@ -282,10 +441,12 @@ impl EngineLoraFineTuner {
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
-            lane: Box::new(move |_| Some(lane_url.clone())),
+            // a lane launched at 256 per slot: the window every existing test asserts
+            lane: Box::new(move |_| Some((lane_url.clone(), 256))),
             train_dir: Some(train_dir),
             footprints: Footprints { path: footprints },
             admission: Admission::Ungoverned,
+            holds: TrainingHolds::new(),
         }
     }
 }
@@ -300,6 +461,7 @@ struct EngineRun {
     epochs: u32,
     /// The run's last status as the engine reported it (finish reads its losses and footprint).
     last: Arc<Mutex<Option<TrainStatus>>>,
+    holds: TrainingHolds,
     /// The governed lease, held for exactly as long as the engine may be running this job's
     /// training: `run` returns only once it has ended there, and the lease drops with `self`.
     _lease: Option<crate::resources::LeaseGuard>,
@@ -368,6 +530,24 @@ impl EngineRun {
     fn ours(&self, s: &TrainStatus) -> bool {
         s.out.as_deref() == Some(self.body.out.as_str())
     }
+
+    /// Steer the engine's pause toward `want` (fork #28's contract): ask when the status says
+    /// otherwise, and let the next status tell whether it took. A refused or lost request is
+    /// asked again next tick; uncertainty is never turned into a cancel. An engine without the
+    /// routes (404) cannot pause: the run keeps its automatic serving yield.
+    async fn steer_pause(&self, s: &TrainStatus, want: bool) {
+        if s.pause_requested == want {
+            return;
+        }
+        let verb = if want { "pause" } else { "resume" };
+        let _ = self
+            .http
+            .post(format!("{}/train/{verb}", self.lane))
+            .json(&json!({ "out": self.body.out }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await; // the status decides whether it took; a failure is retried on the next tick
+    }
 }
 
 /// Percent done and the current epoch from an engine status: completed epochs plus the current
@@ -408,6 +588,8 @@ impl InPlaceRun for EngineRun {
         let mut tick = tokio::time::interval(POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut cancelling = false;
+        let mut holds = self.holds.subscribe();
+        let mut was_paused = false;
         loop {
             tokio::select! {
                 changed = cancel.changed(), if !cancelling => {
@@ -415,6 +597,7 @@ impl InPlaceRun for EngineRun {
                         cancelling = true;
                     }
                 }
+                _ = holds.changed() => {}
                 _ = tick.tick() => {}
             }
             if cancelling {
@@ -439,6 +622,25 @@ impl InPlaceRun for EngineRun {
                 TrainState::Starting | TrainState::Running => {
                     let (pct, epoch) = progress_of(&s, self.epochs);
                     progress.running(pct, epoch);
+                    // held: pause at the next window, keeping everything; released: resume. The
+                    // lease stays held throughout, since the paused run keeps its allocation.
+                    let reasons = holds_on(&holds.borrow(), &self.lane);
+                    self.steer_pause(&s, !reasons.is_empty()).await;
+                    // the worker's own state: paused while it waits at a boundary, whatever was
+                    // asked (a resume request clears pause_requested before the worker wakes)
+                    let now_paused = s.paused;
+                    if now_paused != was_paused {
+                        crate::probe!(
+                            class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
+                            out = self.body.out.as_str(),
+                            holds = reasons.join(",").as_str(),
+                            // a pause with no hold is the engine yielding its slots to serving
+                            yielding_to_serving = s.waiting_for_serving,
+                            pct = pct as f64,
+                            "an in-engine run reached a pause at a window boundary, or left one, with its optimizer and adapter kept"
+                        );
+                        was_paused = now_paused;
+                    }
                 }
                 TrainState::Done => return InPlaceEnd::Finished,
                 TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
@@ -491,7 +693,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         if request.dataset.examples.is_empty()
             || schedule.epochs == 0
             || schedule.epochs > 100
-            || !(16..=8192).contains(&schedule.sequence_length)
+            || schedule.sequence_length < 16
             || !schedule.learning_rate.is_finite()
             || schedule.learning_rate <= 0.0
             || schedule.learning_rate > 1.0
@@ -499,11 +701,11 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             || lora.alpha == 0
         {
             return Err(FineTuningError::InvalidRequest(
-                "invalid engine training data/schedule/LoRA geometry (epochs 1-100, sequence_length 16-8192, lr (0,1], rank 1-256)".into(),
+                "invalid engine training data/schedule/LoRA geometry (epochs 1-100, sequence_length >= 16, lr (0,1], rank 1-256)".into(),
             ));
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
-        let lane = (self.lane)(&request.base_model).ok_or_else(|| {
+        let (lane, served_window) = (self.lane)(&request.base_model).ok_or_else(|| {
             FineTuningError::InvalidRequest(format!(
                 "no live lane serves {} on this node: in-engine training runs on the resident weights",
                 request.base_model
@@ -515,11 +717,45 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
         let id = Uuid::new_v4();
         let out = format!("{id}.gguf");
+        // LEARNING SEES WHAT SERVING SEES (Joel, 2026-09-28: "stupidly low token sizes are
+        // idiotic ... the same as inference"; "you're not supposed to make learning so different
+        // from reality"). The window is the per-slot window the matched lane was LAUNCHED with,
+        // from the same record that chose the lane: her turns run in it, so a lived example
+        // trains whole with its system and tool head. No request sets it (§9.1): a record that
+        // predates the field is refused, never trained at a guessed window (Cormac on #4498:
+        // a fallback to the request's length is attempt #1 again). The engine measures the
+        // training graph at this window before allocating and refuses past the lease: a window
+        // that does not fit is an engineering problem, never a smaller window.
+        if served_window == 0 {
+            return Err(FineTuningError::InvalidRequest(format!(
+                "the live lane serving {} has no recorded served window (a record from before the field): not training at a guessed window",
+                request.base_model
+            )));
+        }
+        // the engine's context granularity is 256; rounding a smaller served window UP would
+        // train on more context than serving holds (Codex on #4498)
+        if served_window < 256 {
+            return Err(FineTuningError::InvalidRequest(format!(
+                "the live lane serving {} holds {served_window} tokens a slot, under the engine's 256-token training granularity: not training past what serving holds",
+                request.base_model
+            )));
+        }
+        let window = train_window(served_window);
+        crate::probe!(
+            class = "training.job.window",
+            requested = schedule.sequence_length as u64,
+            served = u64::from(served_window),
+            sent = window as u64,
+            "the training window: the matched lane's served per-slot window, rounded to the engine's 256 granularity; the request's length never decides it"
+        );
+        // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
+        let depth = lora.top_layers.filter(|&k| k > 0);
         let shape = Shape {
             model: request.base_model.clone(),
-            window: schedule.sequence_length,
+            window,
             rank: lora.rank,
             targets: targets.clone(),
+            depth,
         };
         let val = request.dataset.validation_split.clamp(0.0, 0.5);
         let mut body = TrainRequest {
@@ -528,16 +764,19 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             rank: lora.rank,
             alpha: lora.alpha,
             targets: targets.clone(),
-            window: schedule.sequence_length,
+            window,
             epochs: schedule.epochs,
             lr: schedule.learning_rate,
             val_split: val,
             seed: 42,
+            top_layers: depth,
             memory_budget_mib: None,
+            fit: "middle",
         };
         let measured = self.footprints.get(&shape);
         let footprints_path = self.footprints.path.clone();
         let http = self.http.clone();
+        let holds = self.holds.clone();
         let governed = matches!(self.admission, Admission::Governed);
         let job_dir = job_dir_for(&request, id);
         let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
@@ -563,6 +802,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     job = %id,
                     base = shape.model.as_str(),
                     window = shape.window as u64,
+                    depth = shape.depth.map_or(0, u64::from), // probe field: 0 = every block
                     measured = measured.is_some(),
                     memory_bytes = bytes,
                     "engine training: the measured footprint for this shape, or (unmeasured) all governed \
@@ -593,6 +833,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 adapter_path: train_dir.join(&out),
                 epochs,
                 last: last.clone(),
+                holds,
                 _lease: reservation,
             };
             Ok(PreparedJob {
@@ -615,9 +856,38 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     // the footprint this shape needs: the training graph the engine measured before
                     // allocating it (exact, where a VRAM sample could miss the peak)
                     let grown = status.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
+                    // recorded under the depth the engine ACTUALLY adapted: an engine that
+                    // ignored top_layers measured a full-depth graph, and that number must never
+                    // be leased for a reduced-depth run (Codex on #27)
+                    crate::probe!(
+                        class = "training.job.examples_fit",
+                        job = %id,
+                        kept = status.examples.unwrap_or(0), // probe field: 0 = an engine that does not report it
+                        truncated = status.examples_truncated.unwrap_or(0), // probe field: as above
+                        skipped = status.examples_skipped.unwrap_or(0), // probe field: as above
+                        "how her examples met the window: kept whole, fitted by dropping their oldest history, or skipped"
+                    );
+                    let adapted = effective_depth(status.layers_adapted, status.n_layer);
+                    if adapted != shape.depth {
+                        crate::probe!(
+                            class = "training.job.depth_differs",
+                            job = %id,
+                            asked = shape.depth.map_or(0, u64::from), // probe field: 0 = every block
+                            adapted = adapted.map_or(0, u64::from), // probe field: 0 = every block
+                            "the engine adapted a different depth than was asked (an engine without top_layers adapts every block)"
+                        );
+                    }
+                    let measured_shape = Shape { depth: adapted, ..shape.clone() };
+                    // A depth equal to the model's block count IS full depth (fork #27 refuses one
+                    // past it): filed under the asked key too, or that request would calibrate on
+                    // every run (Cormac on #4472).
+                    let asked_full = matches!((shape.depth, status.n_layer), (Some(k), Some(n)) if k >= n);
                     if grown > 0 {
                         let store = Footprints { path: footprints_path };
-                        if let Err(e) = store.record(&shape, grown, id) {
+                        if asked_full {
+                            let _ = store.record(&shape, grown, id); // best effort: the full-depth row below is the one that matters
+                        }
+                        if let Err(e) = store.record(&measured_shape, grown, id) {
                             crate::probe!(
                                 class = "training.job.footprint_unrecorded",
                                 job = %id,
@@ -636,6 +906,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                             final_loss,
                             final_validation_loss,
                             wall_clock_ms,
+                            layers_adapted: status.layers_adapted.or(status.n_layer),
                             ..Default::default()
                         },
                     })
@@ -724,7 +995,7 @@ mod tests {
                 validation_split: 0.0,
             },
             eval_set: None,
-            lora: Some(LoRAHyperparams { rank: 8, alpha: 16, dropout: 0.0, target_modules: vec!["q_proj".into(), "v_proj".into()] }),
+            lora: Some(LoRAHyperparams { rank: 8, alpha: 16, dropout: 0.0, target_modules: vec!["q_proj".into(), "v_proj".into()], top_layers: None }),
             schedule: Some(ScheduleParams { epochs: 2, batch_size: 1, sequence_length: 256, learning_rate: 1e-5 }),
             local_artifact_dir: None,
             resume_from: None,
@@ -741,10 +1012,13 @@ mod tests {
             polls: u32,
             cancelled: bool,
             body: Option<Value>,
+            pause_requested: bool,
+            pauses_seen: u32,
         }
         let lane = Arc::new(Mutex::new(Lane::default()));
         let seen = Arc::new(Mutex::new(None));
         let (l1, l2, l3, seen1) = (lane.clone(), lane.clone(), lane.clone(), seen.clone());
+        let (l4, l5, l6) = (lane.clone(), lane.clone(), lane.clone());
         let app = axum::Router::new()
             .route("/train", post(move |axum::Json(b): axum::Json<Value>| {
                 let lane = l1.clone();
@@ -773,12 +1047,25 @@ mod tests {
                     if mode == "unknown" {
                         return axum::Json(json!({"state": "paused", "out": out}));
                     }
+                    // fork #28: a paused run reports it and does not advance
+                    if l.pause_requested {
+                        l.polls -= 1;
+                        return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": [],
+                            "pause_requested": true, "paused": true}));
+                    }
                     if mode == "cancel_only" || l.polls < 3 {
                         return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
                     }
                     std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
-                    axum::Json(json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out,
-                        "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]}))
+                    let mut done = json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out, "graph_mib": 5.0,
+                        "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]});
+                    // an engine with fork #27 reports the depth it adapted; one without says nothing
+                    if mode == "depth" {
+                        let asked = l.body.as_ref().and_then(|b| b.get("top_layers")).and_then(Value::as_u64).unwrap_or(64);
+                        done["n_layer"] = json!(64);
+                        done["layers_adapted"] = json!(asked.min(64));
+                    }
+                    axum::Json(done)
                 }
             }))
             .route("/train/cancel", post(move || {
@@ -786,6 +1073,33 @@ mod tests {
                 async move {
                     lane.lock().unwrap().cancelled = true;
                     axum::Json(json!({"ok": true}))
+                }
+            }))
+            .route("/train/pause", post(move |axum::Json(b): axum::Json<Value>| {
+                let lane = l4.clone();
+                async move {
+                    let mut l = lane.lock().unwrap();
+                    assert_eq!(b["out"].as_str(), l.out.as_deref(), "pause names this job");
+                    l.pause_requested = true;
+                    l.pauses_seen += 1;
+                    axum::Json(json!({"ok": true, "pause_requested": true, "paused": false}))
+                }
+            }))
+            .route("/test/pause", get(move || {
+                // the test's view of the pause, without advancing the run as GET /train does
+                let lane = l6.clone();
+                async move {
+                    let l = lane.lock().unwrap();
+                    axum::Json(json!({"pause_requested": l.pause_requested, "pauses_seen": l.pauses_seen}))
+                }
+            }))
+            .route("/train/resume", post(move |axum::Json(b): axum::Json<Value>| {
+                let lane = l5.clone();
+                async move {
+                    let mut l = lane.lock().unwrap();
+                    assert_eq!(b["out"].as_str(), l.out.as_deref(), "resume names this job");
+                    l.pause_requested = false;
+                    axum::Json(json!({"ok": true, "pause_requested": false, "paused": true}))
                 }
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
@@ -899,8 +1213,38 @@ mod tests {
         assert_eq!(serde_json::to_value(engine_example(&plain)).expect("test: wire"), json!({"prompt": "p", "completion": "c"}));
     }
 
+    // what this catches (Joel, 2026-09-28; Cormac on #4498): a training window set by the
+    // REQUEST instead of the lane. Her lane serves 61,696 tokens a slot; the request carries a
+    // plan's 1024; the run trains at 61,696, from the same record that chose the lane. A lane
+    // record with no served window is refused, never trained at a guessed one.
+    #[tokio::test]
+    async fn the_training_window_is_the_lanes_served_window_never_the_requests() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let served = url.clone();
+        t.lane = Box::new(move |_| Some((served.clone(), 61_696)));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        r.schedule.as_mut().expect("test: schedule").sequence_length = 1024;
+        let h = t.create_job(r).await.expect("test: create");
+        let _ = wait_terminal(&t, &h).await;
+        let body = seen.lock().unwrap().clone().expect("test: /train was posted");
+        assert_eq!(body["window"].as_u64(), Some(61_696), "the lane's served window, not the request's 1024");
+
+        for (served, why) in [(0, "an unknown served window is refused, never guessed"), (200, "a window under 256 is refused, never rounded up past serving")] {
+            let lane_url = url.clone();
+            t.lane = Box::new(move |_| Some((lane_url.clone(), served)));
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            assert!(t.create_job(r).await.is_err(), "{why}");
+        }
+        server.abort();
+    }
+
     // what this catches: the dispatch end to end against an engine-shaped lane — the request
-    // reaches /train as examples with GGUF targets and the request's window/epochs/rank; the
+    // reaches /train as examples with GGUF targets and the lane's window, the request's epochs/rank; the
     // finished adapter LEAVES the lanes' train dir for the job dir before the job is terminal
     // (Fable's invariant: the engine-train sweep deletes files of jobs that are not live); the
     // artifact is a GgufLora with the engine's losses and trainable-token count.
@@ -920,6 +1264,9 @@ mod tests {
         assert_eq!(body["targets"], "attn_q,attn_v");
         assert_eq!((body["window"].as_u64(), body["epochs"].as_u64(), body["rank"].as_u64()), (Some(256), Some(2), Some(8)));
         assert_eq!(body["examples"][0]["completion"], "c");
+        // what this catches (Kimi's first dream, 2026-09-28): a lived example longer than the
+        // window refused the whole run; the engine is asked to keep each example's tail
+        assert_eq!(body["fit"], "middle", "a conversation longer than the served window drops its oldest history, never its head");
         assert!(body.get("text").is_none(), "examples, never a text corpus (the engine masks the prompts)");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
@@ -927,6 +1274,93 @@ mod tests {
         assert_eq!(std::fs::read_dir(train.path()).unwrap().count(), 0, "nothing left in engine-train");
         assert_eq!(artifact.metrics.final_loss, Some(2.1));
         assert_eq!(artifact.metrics.trained_tokens, 80);
+        server.abort();
+    }
+
+    // what this catches (Codex on #4472): the finish path filing a measured graph under the
+    // depth that was ASKED rather than the depth the engine ADAPTED. An engine without
+    // top_layers ignores it and measures a full-depth graph; filed under |d8, that number
+    // would later be leased for a K=8 run as if it were one. And the gene must carry the
+    // depth the engine reported, never the request's.
+    #[tokio::test]
+    async fn a_finished_run_files_its_graph_and_its_gene_under_the_depth_the_engine_adapted() {
+        for (mode, filed, gene) in [("normal", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v", None), ("depth", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|d8", Some(8))] {
+            let train = tempfile::tempdir().expect("test: dir");
+            let jobs = tempfile::tempdir().expect("test: dir");
+            let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
+            let footprints = jobs.path().join("footprints.json");
+            let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), footprints.clone());
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            r.lora.as_mut().unwrap().top_layers = Some(8);
+            let h = t.create_job(r).await.expect("test: create");
+            let TrainingStatus::Completed { artifact } = wait_terminal(&t, &h).await else {
+                panic!("test: {mode}: not completed");
+            };
+            let body = seen.lock().unwrap().clone().expect("test: /train was posted");
+            assert_eq!(body["top_layers"], 8, "{mode}: the asked depth reaches /train");
+            let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: footprint filed")).unwrap();
+            let keys: Vec<&String> = rows.as_object().unwrap().keys().collect();
+            assert_eq!(keys, vec![filed], "{mode}: filed under the depth the engine adapted");
+            assert_eq!(artifact.metrics.layers_adapted, gene, "{mode}: the gene's depth is the engine's report");
+            server.abort();
+        }
+    }
+
+    // what this catches (Codex on #4485): two holds sharing a reason collapsing into one, so
+    // dropping either resumed training while the other still stood; and a hold on one lane
+    // reaching another; and (Cormac) a lane spelled with a trailing slash holding nothing.
+    // Each hold is its own; the run stays held until the last one drops.
+    #[test]
+    fn each_hold_is_its_own_and_the_run_stays_held_until_the_last_drops() {
+        let set = TrainingHolds::new();
+        let lane = "http://127.0.0.1:9001";
+        let on = |l: &str| holds_on(&set.subscribe().borrow(), l).len();
+        let a = set.hold_on(lane, "a directed turn is waiting");
+        let b = set.hold_on(lane, "a directed turn is waiting");
+        let c = set.hold_on(&format!("{lane}/"), "a lifecycle drain");
+        assert_eq!(on(lane), 3, "same reason twice is two holds; a trailing slash is the same lane");
+        assert_eq!(on("http://127.0.0.1:9002"), 0, "another lane is not held");
+        drop(a);
+        assert_eq!(on(&lane), 2, "the same-reason hold still stands");
+        drop(c);
+        assert_eq!(on(&lane), 1);
+        drop(b);
+        assert_eq!(on(&lane), 0, "released only when the last hold drops");
+    }
+
+    // what this catches (fork #28, Joel: necessary for continual minds): a training hold that
+    // does not pause the engine's run, a paused run the job gives up on (the lease must stay
+    // held and the run must survive), or a resume that never reaches the engine. Held: the
+    // engine is asked to pause and reports it, and the job stays running; released: it
+    // resumes and finishes with its adapter.
+    #[tokio::test]
+    async fn a_held_run_pauses_in_the_engine_and_finishes_after_the_hold_drops() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let hold = t.holds.hold_on(&url, "test: a directed turn is waiting");
+        let h = t.create_job(r).await.expect("test: create");
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let engine: Value = reqwest::get(format!("{url}/test/pause")).await.unwrap().json().await.unwrap();
+                if engine["pause_requested"] == true {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("test: the engine never paused under the hold");
+        assert!(matches!(t.poll(&h).await.unwrap(), TrainingStatus::Running { .. }), "a paused run is still running");
+        drop(hold);
+        let TrainingStatus::Completed { artifact } = wait_terminal(&t, &h).await else {
+            panic!("test: the run did not finish after the hold dropped");
+        };
+        assert!(artifact.local_path.expect("test: path").is_file(), "resumed and finished with its adapter");
         server.abort();
     }
 
@@ -989,12 +1423,45 @@ mod tests {
     fn a_footprint_keeps_the_largest_observation() {
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints { path: dir.path().join("f.json") };
-        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into() };
+        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None };
         f.record(&s, 900, Uuid::nil()).unwrap();
         f.record(&s, 700, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
         f.record(&s, 1200, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(1200));
+    }
+
+    // what this catches (fork #27, Codex's cases): a footprint leased at the wrong depth. The
+    // graph is ~linear in the blocks adapted, so a K=8 number leased for a full-depth run
+    // under-reserves (the engine then refuses or the node overcommits), and a full-depth number
+    // leased for K=8 locks out a run that fits. A persisted reduced-depth row and a legacy
+    // depthless (full-depth) row must each answer only their own depth, across a reload.
+    #[test]
+    fn a_footprint_answers_only_the_depth_it_was_measured_at() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let path = dir.path().join("f.json");
+        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None };
+        let top8 = Shape { depth: Some(8), ..full.clone() };
+        // a row written before depth existed: the key full depth still reads
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({ "m|w1536|r8|attn_q": { "bytes": 41_500, "measuredAtMs": 0, "job": "legacy" } })).unwrap(),
+        )
+        .unwrap();
+        let f = Footprints { path: path.clone() };
+        assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
+        assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
+        f.record(&top8, 5_200, Uuid::nil()).unwrap();
+        let reloaded = Footprints { path };
+        assert_eq!(reloaded.get(&top8), Some(5_200));
+        assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");
+        // what the engine reported decides the recorded depth: an engine that says nothing
+        // (it predates top_layers) adapted every block, and K = n_layer is every block too
+        assert_eq!(effective_depth(Some(8), Some(64)), Some(8));
+        assert_eq!(effective_depth(Some(64), Some(64)), None);
+        assert_eq!(effective_depth(None, None), None);
+        // the window is a multiple of 256, rounded down, never under one context
+        assert_eq!((train_window(1536), train_window(1600), train_window(100), train_window(61_696)), (1536, 1536, 256, 61_696), "no fixed ceiling: the served window is the window");
     }
 
     // what this catches: a request the engine cannot run is refused before any job exists:

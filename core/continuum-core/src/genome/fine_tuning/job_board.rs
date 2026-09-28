@@ -103,7 +103,9 @@ pub struct WatchedJob {
     pub persona_id: Uuid,
     /// The persona's display name — log/observability context only.
     pub persona_name: String,
-    /// The base model the layer was forged against — log/observability context.
+    /// The base model the layer was forged against: the continuum id the serving daemon
+    /// filters the adapter manifest by, so a trained gene is registered (and trialled)
+    /// under the base that serves it. In-engine training trains on exactly this served id.
     pub base_model: String,
     /// The domain bucket (`DomainClassifier` output) this layer specializes — used
     /// as the gene NAME on page-in and the eval gene label.

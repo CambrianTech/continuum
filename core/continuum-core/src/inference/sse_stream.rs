@@ -264,6 +264,60 @@ pub(crate) struct StreamOutcome {
 }
 
 /// Consume `response`'s SSE stream to completion (or a watchdog failure).
+/// The longest a stalled stream waits on a lane that is working for others: the act's own
+/// ceiling (the act bound's floor times its checkpoint extensions, 25 min x 3), so a caller
+/// without an act bound above it (a probe, an eval) still ends. Every hold is bounded.
+// derived-or-floor: a ceiling — the act bound's own 3x ceiling (card 6f3218ed); it only ENDS a wait.
+const STARVED_WAIT_CEILING: std::time::Duration =
+    std::time::Duration::from_secs(crate::cognition::act_observe::TICK_DEADLINE.as_secs() * 3);
+
+/// Whether a stream that has been silent (or stalled) for `idle` sits on a lane that did real
+/// work, prefill or decode, for ANYONE within that window, and has been open less than the
+/// ceiling. Busy, not dead: the bound becomes a checkpoint (card 115f9a14).
+fn lane_class(idle: std::time::Duration, model: Option<&str>) -> crate::inference::llama_server::NeverStartedClass {
+    // The SERVER-TOTAL prefill rate (#4489's serving_rates, measured over busy windows) is the
+    // steady input; the per-request rate reads as low as 1.4 tok/s under contention, which
+    // would stretch the window toward the ceiling (Cormac on #4506). It is the fallback only.
+    let rate = model.and_then(|m| {
+        crate::inference::serving_rates::rates_for(m)
+            .prefill_tps
+            .or_else(|| crate::inference::prefill_rate::measured_rate_for(m).tps)
+    });
+    let window = work_window(idle, rate);
+    crate::inference::llama_server::classify_never_started_timeout(
+        crate::inference::llama_server::ms_since_real_work(),
+        window.as_millis() as u64,
+    )
+}
+
+/// PURE: how far back the lane's last real work may be and still prove it working. Its
+/// `/slots` prefill counters advance a whole ubatch at a time, so a lane prefilling one chunk
+/// every ~176 s (the IntelMac at 11.6 tok/s) shows no work for most of a 90 s window while it
+/// is plainly busy (Codex on #4506). The window is the idle bound or TWO ubatches at the lane's
+/// measured prefill rate, whichever is longer: one chunk's time is the mean, and the IntelMac's
+/// measured chunk gaps ran 124 / 168 / 214 / 171 s at 11-13 tok/s (Cormac), so one chunk alone
+/// would miss the slow ones. With no rate measured it is the idle bound.
+/// The per-request rate reads low under contention, which only widens the window, and the
+/// ceiling still bounds the wait.
+fn work_window(idle: std::time::Duration, prefill_tps: Option<f64>) -> std::time::Duration {
+    prefill_tps
+        .filter(|r| r.is_finite() && *r > 0.0)
+        // try_: a vanishing rate would overflow Duration and panic (Codex on #4506); anything
+        // past the ceiling is the ceiling, which `waits_on` bounds the wait by anyway
+        .map(|r| {
+            std::time::Duration::try_from_secs_f64(2.0 * f64::from(crate::inference::lane_args::UBATCH_TOKENS) / r)
+                .map_or(STARVED_WAIT_CEILING, |d| d.min(STARVED_WAIT_CEILING))
+        })
+        .map_or(idle, |chunk| idle.max(chunk))
+}
+
+/// PURE: whether a stalled stream waits on, from the ONE classification of the lane taken at
+/// this checkpoint (Cormac on #4506: two reads could disagree and strike a working lane) and
+/// how long the stream has been open.
+fn waits_on(class: crate::inference::llama_server::NeverStartedClass, open: std::time::Duration) -> bool {
+    open < STARVED_WAIT_CEILING && class == crate::inference::llama_server::NeverStartedClass::Starved
+}
+
 pub(crate) async fn consume_sse_stream(
     cfg: &OpenAICompatibleConfig,
     request: &crate::ai::types::TextGenerationRequest,
@@ -369,9 +423,35 @@ pub(crate) async fn consume_sse_stream(
             queue_budget,
             live_budget,
         );
-        let next = tokio::time::timeout(idle, byte_stream.next())
-            .await
-            .map_err(|_| {
+        let next = match tokio::time::timeout(idle, byte_stream.next()).await {
+            Ok(next) => next,
+            Err(_) => {
+                // BUSY IS NOT DEAD (card 115f9a14). A lane that did real work for ANYONE
+                // within the window is working, and our silence is its batch serving another
+                // slot (IntelMac 2026-09-28 05:07Z: a turn at 96% prefill dropped at 90 s while
+                // slot 4 prefilled a 2,048-token chunk every ~176 s). The bound becomes a
+                // checkpoint and the stream waits on; the act bound above it still ends a
+                // request whose own slot stops moving (#4455).
+                // ONE read of the lane's work and ONE classification decide both whether we
+                // wait and, if not, how the failure is recorded.
+                let class = lane_class(idle, request.model.as_deref());
+                if local_lane && waits_on(class, stream_opened.elapsed()) {
+                    crate::probe!(
+                        class = "inference.stream.busy_not_dead",
+                        provider = cfg.name.as_str(),
+                        stalled = "no_bytes",
+                        started = phase.has_started(),
+                        idle_secs = idle.as_secs(),
+                        persona = probe_persona.as_str(),
+                        purpose = probe_purpose.as_str(),
+                        phase = ?phase,
+                        ms_since_lane_work = crate::inference::llama_server::ms_since_real_work().unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
+                        "no bytes for the idle bound, but the lane did real work for others meanwhile: busy, not dead; waiting on"
+                    );
+                    last_progress = Instant::now();
+                    continue;
+                }
+                let msg: String = {
                 let started = phase.has_started();
                 if idle == queue_budget {
                     // The bulk bound tripped (queued or prefilling with no progress
@@ -409,10 +489,7 @@ pub(crate) async fn consume_sse_stream(
                         // every 2 minutes (bench-hard-rs, 2026-08-15) and killed the
                         // in-flight generations that proved it healthy.
                         use crate::inference::llama_server::NeverStartedClass;
-                        match crate::inference::llama_server::classify_never_started_timeout(
-                            crate::inference::llama_server::ms_since_real_work(),
-                            idle.as_millis() as u64,
-                        ) {
+                        match class {
                             NeverStartedClass::WedgeEvidence => {
                                 crate::probe!(
                                     class = "inference.decode.failed",
@@ -453,8 +530,31 @@ pub(crate) async fn consume_sse_stream(
                          or the queue is oversubscribed far beyond this budget"
                     }
                 )
-            })?;
+                };
+                return Err(msg);
+            }
+        };
         if last_progress.elapsed() >= idle {
+            // ONE read, ONE classification for this checkpoint (Cormac on #4506).
+            let class = lane_class(idle, request.model.as_deref());
+            if local_lane && waits_on(class, stream_opened.elapsed()) {
+                // BUSY IS NOT DEAD (card 115f9a14): our counters stalled because the batch
+                // served another slot; the lane is working, so the bound is a checkpoint,
+                // with no failure probe and no relaunch strike.
+                crate::probe!(
+                    class = "inference.stream.busy_not_dead",
+                    provider = cfg.name.as_str(),
+                    stalled = "progress",
+                    started = phase.has_started(),
+                    idle_secs = idle.as_secs(),
+                    persona = probe_persona.as_str(),
+                    purpose = probe_purpose.as_str(),
+                    phase = ?phase,
+                    ms_since_lane_work = crate::inference::llama_server::ms_since_real_work().unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
+                    "our stream's progress stalled for the idle bound while the lane did real work for others: busy, not dead; waiting on"
+                );
+                last_progress = Instant::now();
+            } else {
             if idle == queue_budget {
                 crate::inference::turn_bound::probe_tripped(
                     "stream_queue",
@@ -465,22 +565,69 @@ pub(crate) async fn consume_sse_stream(
                 );
             }
             if local_lane {
-                crate::probe!(
-                    class = "inference.decode.failed",
-                    kind = "keepalive_masked_no_progress",
-                    name = %cfg.name,
-                    idle_secs = idle.as_secs(),
-                    "stream carried bytes but neither prefill nor decode advanced — counted toward relaunch"
-                );
-                crate::inference::llama_server::note_real_decode_failure();
+                // The same question the never-started path asks (card 2caa0de5): did the lane
+                // deliver real work to ANYONE while this request stalled? With 6 CPU slots, one
+                // request's prefill can sit behind the others' for the whole idle window while
+                // the engine is plainly working. That is starvation, and stamping it as wedge
+                // evidence relaunched a fresh, delivering lane on the IntelMac (2026-09-27
+                // 21:23Z: two stamps, `real_turn_failures`, while health read ok via real_work
+                // and slot_progress seconds earlier). The turn still fails either way; only a
+                // lane that delivered nothing to anyone in the window counts toward relaunch.
+                use crate::inference::llama_server::NeverStartedClass;
+                // WHICH request, HOW FAR it got, and whether the lane was working for anyone
+                // else meanwhile (card 18d306f8): a reader must tell "starved behind a
+                // neighbour's prefill chunk" from "wedged" off this one row, without
+                // cross-reading the engine log (IntelMac 2026-09-28 05:07Z: a turn dropped
+                // at 96% of its prefill while slot 4 ingested a 25k prompt at 11 tok/s).
+                // A probe value only: the decision is the one `class` read above.
+                let since_work = crate::inference::llama_server::ms_since_real_work();
+                let (prefill_processed, prefill_total) = match phase {
+                    crate::inference::stream_liveness::StreamPhase::Prefilling { processed, total } => (processed, total),
+                    _ => (0, 0),
+                };
+                match class {
+                    NeverStartedClass::WedgeEvidence => {
+                        crate::probe!(
+                            class = "inference.decode.failed",
+                            kind = "keepalive_masked_no_progress",
+                            name = %cfg.name,
+                            idle_secs = idle.as_secs(),
+                            persona = probe_persona.as_str(),
+                            purpose = probe_purpose.as_str(),
+                            phase = ?phase,
+                            prefill_processed,
+                            prefill_total,
+                            ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
+                            "stream carried bytes but neither prefill nor decode advanced, and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
+                        );
+                        crate::inference::llama_server::note_real_decode_failure();
+                    }
+                    NeverStartedClass::Starved => {
+                        crate::probe!(
+                            class = "inference.queue_starved",
+                            provider = cfg.name.as_str(),
+                            waited_s = idle.as_secs(),
+                            stalled = "progress",
+                            persona = probe_persona.as_str(),
+                            purpose = probe_purpose.as_str(),
+                            phase = ?phase,
+                            prefill_processed,
+                            prefill_total,
+                            ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
+                            "this request's progress stalled on a lane that delivered real work within the wait — oversubscription, not wedge evidence; no real-turn failure stamped",
+                        );
+                    }
+                }
             }
             return Err(format!(
                 "{}: no PROGRESS for {}s despite the stream carrying bytes — \
-                 keepalive-masked wedge (neither prefill nor decode advanced); \
+                 keepalive-masked wedge (neither prefill nor decode advanced; stalled in {:?}); \
                  refusing to wait on a stream that is alive but not working (#385)",
                 cfg.name,
-                idle.as_secs()
+                idle.as_secs(),
+                phase
             ));
+            }
         }
         let Some(chunk) = next else {
             break; // server closed the stream (EOF) — generation complete
@@ -682,4 +829,42 @@ pub(crate) async fn consume_sse_stream(
         resp_model,
         probe_persona,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // what this catches (card 115f9a14; the IntelMac, 2026-09-28 05:07Z): a turn at 96% prefill
+    // failed at the 90 s idle bound while slot 4 prefilled for the whole window. A lane that did
+    // real work for anyone within the window is busy, not dead, so the stream waits on; a lane
+    // that did nothing is wedge evidence and the stream ends; past the act's own ceiling the
+    // stream ends whatever the lane is doing, so every hold stays bounded.
+    #[test]
+    fn a_stalled_stream_waits_on_a_working_lane_and_only_there() {
+        use crate::inference::llama_server::{classify_never_started_timeout, NeverStartedClass};
+        let open = Duration::from_secs(400);
+        let working = classify_never_started_timeout(Some(5_000), 90_000);
+        assert_eq!(working, NeverStartedClass::Starved, "work 5 s ago inside a 90 s window is a working lane");
+        assert!(waits_on(working, open), "a working lane: the stream waits on");
+        assert!(!waits_on(classify_never_started_timeout(Some(200_000), 90_000), open), "nothing for anyone in the window: ends");
+        assert!(!waits_on(classify_never_started_timeout(None, 90_000), open), "never any work observed: ends");
+        assert!(!waits_on(working, STARVED_WAIT_CEILING), "past the ceiling: ends, bounded");
+    }
+
+    // what this catches (Codex and Cormac on #4506): a lane that prefills one 2,048-token chunk
+    // every ~176 s, with measured gaps up to 214 s, shows no counter move for most of a 90 s
+    // window while it is busy. The window stretches to TWO ubatches at the measured rate; a
+    // fast lane keeps the idle bound; no rate measured keeps the idle bound.
+    #[test]
+    fn the_work_window_is_two_ubatches_at_the_measured_prefill_rate() {
+        let idle = Duration::from_secs(90);
+        let slow = work_window(idle, Some(11.6));
+        assert!(slow > Duration::from_secs(214), "covers the slowest measured chunk gap (214 s): {slow:?}");
+        assert!(slow < Duration::from_secs(360), "two chunks, not an open wait: {slow:?}");
+        assert_eq!(work_window(idle, Some(2_000.0)), idle, "a fast lane keeps the idle bound");
+        assert_eq!(work_window(idle, None), idle, "no rate measured keeps the idle bound");
+        assert_eq!(work_window(idle, Some(1e-300)), STARVED_WAIT_CEILING, "a vanishing rate is capped, never a Duration overflow panic");
+    }
 }

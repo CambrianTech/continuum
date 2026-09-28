@@ -40,6 +40,13 @@
 //! the reason and invites the reversion. They are copied verbatim from
 //! `llama_server.rs`, not paraphrased.
 
+/// The physical micro-batch a lane prefills in (`--ubatch-size`): the unit its `/slots`
+/// prefill counters advance by, so also how long a starved stream must be willing to see no
+/// counter move (`inference::sse_stream`). One number, set once here.
+// derived-or-floor: measured 2026-08-21 on the M5 (llama-bench, production gguf): 2048 nearly doubles prefill over 1024, and 4096 failed to allocate beside a serving lane.
+// context-budget-exempt: the engine's physical prefill micro-batch (--ubatch-size), a compute-pass size, never a context or prompt budget.
+pub(crate) const UBATCH_TOKENS: u32 = 2048;
+
 use std::path::Path;
 
 /// One conversion for anything that can be a CLI argument.
@@ -350,7 +357,7 @@ pub fn base_invocation(
             // lane, and production always runs beside one. The live receipt to watch
             // stays `inference.prefill.complete`'s ingest_tok_per_s.
             arg("--ubatch-size"),
-            arg("2048"),
+            arg(&UBATCH_TOKENS.to_string()),
             // Overflow must FAIL, never silently amputate. With context shift on
             // (the llama.cpp default), a prompt larger than the slot's window has
             // its MIDDLE evicted and generation proceeds on the mutilated prompt —

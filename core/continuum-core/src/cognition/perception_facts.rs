@@ -181,6 +181,47 @@ impl PerceptionFact for ContextBounds {
 /// parked fabricated receipts in the disclosed blind spot within minutes).
 struct StepsLedger;
 
+/// The banner every steps-ledger rendering opens with: how the prompt builder finds it
+/// to place it after the append-only blocks (card 5b09111e).
+pub(crate) const STEPS_LEDGER_BANNER: &str = "[steps taken this session]";
+
+/// Whether a rendered fact is the steps ledger.
+pub(crate) fn is_steps_ledger(fact: &str) -> bool {
+    fact.starts_with(STEPS_LEDGER_BANNER)
+}
+
+/// When the ledger cannot show every step, its oldest shown step is rounded UP to a
+/// multiple of this, so its head moves once per this many acts instead of every act; in
+/// between it only grows at its tail (card 5b09111e: the head slid one action per act).
+// derived-or-floor: a floor — large enough that most acts leave the head alone, small enough that at most 7 steps hide behind the fold line.
+pub(crate) const LEDGER_HEAD_STEP: u64 = 8;
+
+/// The action number a ledger line names (`[action #1828] ...`).
+fn action_number(line: &str) -> Option<u64> {
+    line.strip_prefix("[action #")?.split(']').next()?.parse().ok()
+}
+
+/// PURE: when the fit could not hold every in-scope step (`truncated`), drop the oldest
+/// shown lines until the first names a multiple of [`LEDGER_HEAD_STEP`]. Never drops more
+/// than half of what the budget allowed (a tight ledger keeps its steps and slides, rather
+/// than showing one), and leaves a list with unnumbered lines as it is.
+fn align_head<'a>(fit: Vec<&'a str>, truncated: bool) -> Vec<&'a str> {
+    if !truncated || fit.len() < 2 {
+        return fit;
+    }
+    let Some(first) = fit.first().and_then(|l| action_number(l)) else {
+        return fit;
+    };
+    let boundary = first.div_ceil(LEDGER_HEAD_STEP) * LEDGER_HEAD_STEP;
+    let Some(keep_from) = fit.iter().position(|l| action_number(l).is_some_and(|n| n >= boundary)) else {
+        return fit; // no shown step reaches the boundary: batching would hide them all
+    };
+    if keep_from * 2 > fit.len() {
+        return fit;
+    }
+    fit[keep_from..].to_vec()
+}
+
 impl PerceptionFact for StepsLedger {
     fn id(&self) -> &'static str {
         "steps_ledger"
@@ -232,6 +273,12 @@ impl PerceptionFact for StepsLedger {
             fit.push(line.as_str());
         }
         fit.reverse();
+        // Batch the head (card 5b09111e): when the budget cut older steps off, round the
+        // oldest shown step up to a multiple of LEDGER_HEAD_STEP, so the head moves once
+        // per LEDGER_HEAD_STEP acts. The fold line below counts what the rounding hid.
+        let in_scope_total = archive.len().saturating_sub(elsewhere);
+        let truncated = fit.len() < in_scope_total;
+        let fit = align_head(fit, truncated);
         // The act counter keeps counting past what the archive holds (and
         // survives reboots that predate the archive). Three states, each
         // honest (glass-boxed 2026-07-13: the old zero-case would have DENIED
@@ -374,6 +421,28 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the ledger's head sliding one action per act (card 5b09111e: the
+    // M5's KV reuse fell to 0% behind it). When the budget truncates, the head rounds up to
+    // a multiple of LEDGER_HEAD_STEP, so consecutive acts keep the same head and only the
+    // tail grows; a ledger that shows every step is left alone.
+    #[test]
+    fn a_truncated_ledger_moves_its_head_in_batches() {
+        let lines = |from: u64, to: u64| -> Vec<String> { (from..=to).map(|n| format!("[action #{n}] code/read")).collect() };
+        // a 20-line budget, cut off at its head on three consecutive acts
+        let a = lines(1827, 1846);
+        let b = lines(1828, 1847);
+        let heads = |v: &Vec<String>| align_head(v.iter().map(String::as_str).collect(), true)[0].to_string();
+        assert_eq!(heads(&a), "[action #1832] code/read");
+        assert_eq!(heads(&b), "[action #1832] code/read", "the next act keeps the same head");
+        let c = lines(1833, 1852);
+        assert_eq!(heads(&c), "[action #1840] code/read", "the head jumps to the next multiple");
+        let all: Vec<&str> = a.iter().map(String::as_str).collect();
+        assert_eq!(align_head(all.clone(), false), all, "a ledger that fits is untouched");
+        let tight = lines(1827, 1830);
+        let tight: Vec<&str> = tight.iter().map(String::as_str).collect();
+        assert_eq!(align_head(tight.clone(), true), tight, "never more than half hidden: a tight ledger slides");
+    }
 
     fn turn(author: &str, content: &str, is_self: bool) -> BurstTurn {
         BurstTurn::attributed(is_self, author, content, None)

@@ -114,9 +114,18 @@ crate::action_command! {
         //    on nothing and burn a job slot).
         match (&p.dataset_name, p.request.dataset.examples.is_empty()) {
             (Some(name), true) => {
-                let path = crate::modules::dataset::default_datasets_root()
-                    .join(name)
-                    .join("train.jsonl");
+                let root = match crate::modules::dataset::default_datasets_root() {
+                    Ok(root) => root,
+                    Err(e) => {
+                        return Ok(JobCreateOutcome {
+                            success: false,
+                            result: None,
+                            error: Some(format!("datasetName {name:?}: no datasets root ({e})")),
+                            error_kind: None,
+                        });
+                    }
+                };
+                let path = root.join(name).join("train.jsonl");
                 p.request.dataset = match crate::genome::fine_tuning::TrainingDataset::from_chat_jsonl(
                     &path,
                     crate::genome::fine_tuning::TrainingSource::OperatorCurated,

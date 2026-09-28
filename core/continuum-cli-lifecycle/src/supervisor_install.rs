@@ -497,6 +497,11 @@ pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<St
     let mut command = std::process::Command::new(shell);
     command
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+        // Windows PowerShell 5.1 builds its own module path when this is unset. Inherited from
+        // a pwsh 7 caller it leads with 7's module folders, 5.1 cannot load 7's
+        // Microsoft.PowerShell.Utility, and Get-FileHash is "not recognized" (the 5090 install,
+        // 2026-09-28, card 1b040de5).
+        .env_remove("PSModulePath")
         .stdin(std::process::Stdio::null())
         .creation_flags(0x0800_0000);
     let mut command = tokio::process::Command::from(command);
@@ -526,6 +531,8 @@ pub fn run_installer_script(shell: &std::path::Path, script: &str) -> Result<(),
 
     let output = Command::new(shell)
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        // Preserve native Windows PowerShell module discovery across pwsh callers.
+        .env_remove("PSModulePath")
         .creation_flags(0x0800_0000)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())

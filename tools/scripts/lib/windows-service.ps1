@@ -123,9 +123,58 @@ function Protect-CoreBuildOutput {
     Write-Output 'Preserved the running Cargo image; the build can link its replacement without stopping the core.'
 }
 
-function Select-CoreEngineSlot {
-    param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor)
+function Get-CoreEngineIdleSlot {
+    # The core's own answer (card 2c5d0ec0, #4491): the engine slot that no live lane RECORD
+    # names and `current` does not name. The lane records name the exe each lane launched, so
+    # this needs no process-table read, which a service-session lane defeats (its path is
+    # unreadable from the operator's session). One implementation for bash and PowerShell.
+    # $null when this CLI predates the verb: the one deploy after the verbs land is driven by
+    # the OLD CLI, and the caller keeps the process-table selection for that deploy, saying so.
+    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [switch]$SkipIfBusy)
+    # Native stderr under 'Stop' is a terminating error in Windows PowerShell 5.1; the exit code
+    # is the contract here, so read it rather than the error stream.
+    $ErrorActionPreference = 'Continue'
+    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { return $null }
+    try { $help = (& $Cli --help 2>&1 | Out-String) } catch { return $null }
+    if ($help -notmatch 'continuum engine idle-slot') { return $null }
+    $saved = $env:CONTINUUM_HOME
+    try {
+        $env:CONTINUUM_HOME = $InstallRoot
+        $answer = @(& $Cli engine idle-slot 2>$null)
+        $code = $LASTEXITCODE
+    } finally { $env:CONTINUUM_HOME = $saved }
+    if ($code -eq 3) {
+        # Every slot is current or run by a live lane (a relaunch onto the last engine has not
+        # finished). A deploy skips the engine and still lands the core (card 3f8f5754, the bash
+        # installer's exit 3); a first install, with nothing to keep, refuses.
+        if ($SkipIfBusy) { return 'BUSY' }
+        throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.'
+    }
+    if ($code -ne 0 -or -not $answer.Count) { throw "continuum engine idle-slot failed (exit $code); no slot can be proven idle." }
     $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
+    $slot = ConvertTo-CoreImagePath ([string]$answer[-1]).Trim()
+    if (-not @('engine-a', 'engine-b', 'engine-c' | Where-Object { [string]::Equals($slot, (Join-Path $root $_), [StringComparison]::OrdinalIgnoreCase) }).Count) {
+        throw "continuum engine idle-slot answered $slot, which is not an engine slot under $root."
+    }
+    return $slot
+}
+
+function Select-CoreEngineSlot {
+    param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
+    $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
+    $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy
+    if ($fromCore -eq 'BUSY') { return $null }
+    if ($fromCore) {
+        # Belt and braces: a live engine whose path IS readable must not sit in the answer.
+        $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object { $_.Name -eq 'llama-server.exe' -and $_.ExecutablePath } |
+            ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
+        if (@($readable | Where-Object { $_.StartsWith($fromCore + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            throw "The core named $fromCore idle, but a running engine executes from it; refusing to overwrite it."
+        }
+        return $fromCore
+    }
+    Write-Warning 'This CLI predates engine slots: selecting the engine slot from the process table for this deploy; the next deploy asks the core.'
     # Engines have an independent lifetime: a warm lane can outlive its core.
     # Keep room for that mapped engine, the registered release, and a candidate.
     $engines = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'llama-server.exe' })
@@ -145,8 +194,41 @@ function Select-CoreEngineSlot {
             $engineSlot = $candidate; break
         }
     }
-    if (-not $engineSlot) { throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.' }
+    if (-not $engineSlot) {
+        if ($SkipIfBusy) { return $null }
+        throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.'
+    }
     return $engineSlot
+}
+
+function Invoke-CoreEnginePromote {
+    # `current` is the one truth on every OS (card d5584dfc, option (b)): a drift-verified slot is
+    # promoted by the core's own verb, an unprivileged file write, so neither an unattended deploy
+    # nor install needs the scheduled task re-registered for the engine to change. Returns $false
+    # (and says so) when this CLI predates the verb; then the release registration bootstraps
+    # `current` at the next service start, as before. A refused promote throws.
+    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [Parameter(Mandatory = $true)][string]$Slot)
+    # Native stderr under 'Stop' is terminating in Windows PowerShell 5.1: read exit codes.
+    $ErrorActionPreference = 'Continue'
+    if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) {
+        Write-Warning 'No registered CLI to promote the engine with; the release registration bootstraps it.'
+        return $false
+    }
+    try { $help = (& $Cli --help 2>&1 | Out-String) } catch { $help = '' }
+    if ($help -notmatch 'continuum engine promote') {
+        Write-Warning 'This CLI predates engine slots: the release registration bootstraps the engine this deploy.'
+        return $false
+    }
+    $name = Split-Path -Leaf $Slot
+    $stamp = (Get-Content -LiteralPath (Join-Path $Slot '.llama-server.stamp') -Raw -ErrorAction Stop).Trim()
+    $saved = $env:CONTINUUM_HOME
+    try {
+        $env:CONTINUUM_HOME = $InstallRoot
+        $said = (& $Cli engine promote $name $stamp 2>&1 | Out-String).Trim()
+        $code = $LASTEXITCODE
+    } finally { $env:CONTINUUM_HOME = $saved }
+    if ($code -ne 0) { throw "continuum engine promote refused $name (exit $code): $said" }
+    return $true
 }
 
 function Prepare-CoreServiceEngine {
@@ -158,7 +240,15 @@ function Prepare-CoreServiceEngine {
     if ($task.Description -cne $Description) { throw 'Installed release changed before engine preparation.' }
     $release = $Description | ConvertFrom-Json -ErrorAction Stop
     $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
-    $slot = Select-CoreEngineSlot -Descriptor $release
+    $slot = Select-CoreEngineSlot -Descriptor $release -Cli $release.cli -SkipIfBusy
+    if (-not $slot) {
+        # The core still deploys on the engine it has; the next deploy builds this one. An
+        # explicit receipt line, so the caller never reads an empty receipt as a skip.
+        $why = 'every engine slot is current or run by a live lane'
+        [IO.File]::WriteAllText($ReceiptPath, "SKIP: $why", (New-Object Text.UTF8Encoding $false))
+        Write-Warning "Engine not prepared this deploy: $why."
+        return
+    }
     Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory $slot -RequireReceipt
     $after = Get-CoreEngineRequirement -RepoRoot $RepoRoot
     if ($after.source_revision -cne $requirement.source_revision -or $after.backend -cne $requirement.backend) {
@@ -168,6 +258,9 @@ function Prepare-CoreServiceEngine {
     if ($drift) { throw $drift }
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     if ($task.Description -cne $Description) { throw 'Installed release changed during engine preparation.' }
+    # The verified slot becomes the engine by the core's own verb, for install and unattended
+    # deploy alike (card d5584dfc); install still registers it as the release's bootstrap engine.
+    $null = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
     [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
 }
 
@@ -210,7 +303,8 @@ function New-CoreServiceRelease {
         if ($occupied.Count -eq 0) { $slot = $candidate; break }
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
-    $engineSlot = Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor
+    # The CLI this release installs is the one that knows the lane records' contract.
+    $engineSlot = Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $TargetDirectory 'release\continuum.exe')
     New-Item -ItemType Directory -Force -Path $slot | Out-Null
     foreach ($name in @('continuum.exe', 'continuum-core-server.exe')) {
         $source = Join-Path $TargetDirectory ('release\' + $name)

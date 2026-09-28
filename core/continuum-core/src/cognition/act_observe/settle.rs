@@ -74,7 +74,12 @@ async fn until_act_stalls<F: std::future::Future>(
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
                     None => None,
                 };
-                if extensions >= ACT_EXTENSIONS || !crate::inference::llama_server::slot_advanced(previous, now) {
+                // A condemned engine is never extended on: its relaunch cuts this act anyway,
+                // and holding on keeps that relaunch's drain (and the whole node) waiting.
+                if extensions >= ACT_EXTENSIONS
+                    || crate::inference::llama_server::engine_condemned()
+                    || !crate::inference::llama_server::slot_advanced(previous, now)
+                {
                     return Err(());
                 }
                 extensions += 1;

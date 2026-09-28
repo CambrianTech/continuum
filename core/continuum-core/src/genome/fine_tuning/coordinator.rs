@@ -496,6 +496,7 @@ mod tests {
             alpha: 16,
             dropout: 0.0,
             target_modules: vec![],
+            top_layers: None,
         });
         let err = coord.select(&req, None).err().expect("must reject");
         assert!(matches!(err, CoordinatorError::NoCapableAdapter { .. }));

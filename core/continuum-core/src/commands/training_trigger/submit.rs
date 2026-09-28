@@ -696,6 +696,7 @@ mod tests {
                 alpha: 16,
                 dropout: 0.0,
                 target_modules: vec![],
+                top_layers: None,
             })
             .unwrap(),
         );
@@ -712,6 +713,7 @@ mod tests {
                 alpha: 32,
                 dropout: 0.0,
                 target_modules: vec![],
+                top_layers: None,
             })
             .unwrap(),
         );

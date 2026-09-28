@@ -1647,6 +1647,13 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
         if rows.is_empty() {
             continue;
         }
+        // The room judged this card, so her open gene trials hear it: the card is credited
+        // to the genome that worked it, named by its receipts (genome/gene_trial.rs).
+        let turns: Vec<crate::genome::gene_trial::CardTurn> = rows
+            .iter()
+            .map(|r| crate::genome::gene_trial::CardTurn::from_receipts(r.staged_at_ms, &r.receipts))
+            .collect();
+        crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
         let mut submitted = 0usize;
         let mut rows = rows;
         rows.sort_by_key(|r| r.staged_at_ms);
@@ -2748,6 +2755,7 @@ pub(crate) mod tests {
                 provider_request_id: Some("provider-request-a".into()),
             },
             capture: None,
+            genes: Vec::new(),
         });
         receipts.push(receipt("failed-after-serving"));
         let homogeneous = served_provenance(&receipts).unwrap();
@@ -2761,6 +2769,7 @@ pub(crate) mod tests {
                 provider_request_id: None,
             },
             capture: None,
+            genes: Vec::new(),
         });
         assert!(served_provenance(&receipts).is_none());
         let last = receipts.last_mut().unwrap();
@@ -3203,6 +3212,7 @@ pub(crate) mod tests {
                 provider_request_id: None,
             },
             capture: None,
+            genes: Vec::new(),
         }
     }
 

@@ -1168,6 +1168,7 @@ mod tests {
             context_window: window,
             lanes,
             page_dir: None,
+            engine_bin: None,
         }
     }
 

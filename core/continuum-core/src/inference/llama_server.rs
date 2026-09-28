@@ -285,7 +285,8 @@ pub enum NeverStartedClass {
     WedgeEvidence,
 }
 
-/// Classify a never-started stream timeout using the lane's OWN delivery record —
+/// Classify a stream timeout (never started, or started and then stalled with the stream still
+/// carrying keepalive bytes, card 2caa0de5) using the lane's OWN delivery record —
 /// the same "health is recent delivery, never a synthetic probe" principle as
 /// [`ms_since_real_decode`], applied to the failure side. Pure so the busy-lane
 /// and dead-lane rows are table-testable without a server.
@@ -993,6 +994,69 @@ pub fn engine_train_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("cache").join("engine-train"))
 }
 
+/// PURE: the bare file name a gene is staged under inside the engine's --train-dir, the
+/// only folder `POST /lora-adapters/load` reads (a bare `.gguf` name: no separators, no
+/// "..", no control characters, at most 200 bytes). Keyed by the gene's own file name so the
+/// adapter catalog can be matched back to the genome path; `None` when that name cannot be
+/// made one (the gene then rides a relaunch, as before). The full path's hash rides in the
+/// name, so two genes that share a file name in different folders never collide.
+pub(crate) fn gene_stage_name(gene: &std::path::Path) -> Option<String> {
+    use sha2::Digest;
+    let stem = gene.file_stem()?.to_str()?;
+    let clean: String = stem
+        .chars()
+        .take(120)
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .collect();
+    let digest = sha2::Sha256::digest(gene.as_os_str().as_encoded_bytes());
+    let tag: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    clean
+        .chars()
+        .any(|c| c.is_ascii_alphanumeric())
+        .then(|| format!("gene-{clean}-{tag}.gguf"))
+}
+
+/// One `/lora-adapters/{load,unload}` answer.
+enum LoraPost {
+    Done,
+    /// The engine has no such route: it predates runtime adapter load.
+    NoRoute,
+    /// The adapter is active in a slot that is decoding: retry next tick.
+    Busy,
+}
+
+/// Reading a LoRA's tensors from disk onto the device: seconds for a large one, never the
+/// 5 s probe bound.
+const LORA_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Put `gene` into the engine's --train-dir as `into`: a hard link (no copy, no second
+/// footprint) when both sit on one filesystem, else a copy. Always re-staged: a retrained
+/// gene of the same rank has the same size, so an existing file proves nothing about which
+/// weights it holds (Cormac on #4467).
+fn stage_gene(gene: &std::path::Path, into: &std::path::Path) -> std::io::Result<()> {
+    std::fs::metadata(gene)?; // the gene must exist: fail loud, never stage a stale leftover
+    match std::fs::remove_file(into) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::fs::hard_link(gene, into).or_else(|_| std::fs::copy(gene, into).map(|_| ()))
+}
+
+/// What an in-place genome change came to (card 49b5e806, charter S1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenomeInPlace {
+    /// The running engine now serves the target's adapter set: no relaunch.
+    Adopted,
+    /// This engine cannot load at runtime (no --train-dir, or it predates
+    /// `/lora-adapters/load`), or a gene has no stageable name: relaunch, as before.
+    Unsupported,
+    /// A retiring adapter is active in a turn in flight: the change stopped there, with every
+    /// step before it applied and recorded, and the rest waits a tick (a relaunch here would
+    /// kill that turn).
+    Busy,
+}
+
 /// The root every geometry dir lives under — the ONE path the disk reporter
 /// tracks and the spawn sweep walks.
 pub fn kv_pages_root() -> PathBuf {
@@ -1314,46 +1378,220 @@ pub fn page_dirs_of(
     (dirs, complete)
 }
 
-/// Path to the `llama-server` binary — the inference engine WE OWN, built from
-/// our vendored llama.cpp submodule by `tools/scripts/install-llama-server.sh`
-/// into `~/.continuum/bin`. Resolution order:
-///   1. `LLAMA_SERVER_BIN` launch environment, then config override,
-///   2. our owned install at `~/.continuum/bin/llama-server` (the normal case —
-///      the core knows where its own engine lives; no reliance on a launcher
-///      munging `PATH`, no borrowing `~/.unsloth`'s build),
-///   3. bare `"llama-server"` (let the OS resolve it on `PATH`).
-/// We do NOT silently fall back to a different engine — a missing binary
-/// surfaces loudly when spawn is attempted ([[fallbacks-are-illegal-fail-loud]]).
+/// Path to the `llama-server` binary: the engine WE OWN, built from the vendored llama.cpp
+/// submodule into a slot under `<continuum_home>/bin` ([`engine_slots`]). Resolution:
+///   1. `LLAMA_SERVER_BIN` (launch environment, then config): an operator's own engine,
+///      launched as given and never converged, wherever it points;
+///   2. the slot `current` names;
+///   3. the pre-slot owned install `<continuum_home>/bin/llama-server[.exe]`;
+///   4. bare `"llama-server"` (let the OS resolve it on `PATH`).
+/// We do NOT silently fall back to a different engine: a missing binary surfaces loudly when
+/// spawn is attempted ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// [`engine_slots`]: crate::inference::engine_slots
 fn server_bin() -> String {
-    if let Some(over) = std::env::var("LLAMA_SERVER_BIN")
+    use crate::inference::engine_slots::{self as slots, Resolved};
+    let over = engine_override();
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return over.unwrap_or_else(|| "llama-server".to_string()); // no home: only an override or PATH can name an engine
+    };
+    let root = slots::root(&home);
+    let as_string = |p: PathBuf| p.to_string_lossy().into_owned();
+    match slots::resolve(&root, over.as_deref(), slots::current_slot(&root)) {
+        Resolved::Operator(bin) => bin,
+        Resolved::Slot(slot) => as_string(slots::slot_bin(&root, slot)),
+        Resolved::Legacy(bin) => as_string(bin),
+        Resolved::Path => "llama-server".to_string(),
+    }
+}
+
+/// `LLAMA_SERVER_BIN` (launch environment, then config): an operator's own engine.
+fn engine_override() -> Option<String> {
+    std::env::var("LLAMA_SERVER_BIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| crate::config_env::read("LLAMA_SERVER_BIN"))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-    {
-        return over;
+}
+
+/// A launch failed at spawn or readiness: when it ran from the current engine slot, put the
+/// previous engine back (card 2c5d0ec0, Fable on #4491). Never under an operator override (their
+/// engine, not a slot) and never while a deploy holds the claim (it is mid-promote and owns the
+/// pointers). Returns whether the next launch will take a different engine.
+fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
+    if !matches!(error, LlamaServerError::Spawn(_) | LlamaServerError::NotReady(..)) || engine_override().is_some() {
+        return false;
     }
-    // Windows: `HOME` is usually unset (the home is `USERPROFILE`) and the binary
-    // carries `.exe` — probing only the unix name silently skipped the owned
-    // install and fell through to a bare PATH lookup that spawns nothing (live
-    // repro 2026-07-24, BigMama: planned lane, empty log, no server).
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    if let Some(home) = home {
-        let name = if cfg!(windows) {
-            "llama-server.exe"
-        } else {
-            "llama-server"
-        };
-        let owned = std::path::Path::new(&home)
-            .join(".continuum")
-            .join("bin")
-            .join(name);
-        if owned.is_file() {
-            return owned.to_string_lossy().into_owned();
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return false; // no home: no slots to roll between
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0); // unwrap_or: a clock before the epoch reads as age 0, which keeps a live claim blocking
+    if crate::runtime::deploy_claim::in_flight(&home, now_ms).blocks() {
+        return false;
+    }
+    let root = crate::inference::engine_slots::root(&home);
+    match crate::inference::engine_slots::rollback_after_failed_launch(&root) {
+        Ok(Some((failed, restored))) => {
+            crate::probe!(
+                class = "serving.engine.rolled_back",
+                failed = failed,
+                restored = restored,
+                error = error.to_string().as_str(),
+                "a launch from the current engine slot failed: the previous engine is current again \
+                 and the lane relaunches on it"
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(reason) => {
+            crate::probe!(
+                class = "serving.engine.rollback_refused",
+                reason = reason.as_str(),
+                error = error.to_string().as_str(),
+                "a launch from the current engine slot failed and no intact previous engine can be restored"
+            );
+            false
         }
     }
-    "llama-server".to_string()
+}
+
+/// A launch came up ready: when it ran from an engine slot, that engine has proven itself on this
+/// machine, and a later failure of it is never read as a promotion fault
+/// ([`crate::inference::engine_slots::rollback_after_failed_launch`]). `program` is the binary
+/// the launch actually ran, not a fresh resolution (a promote may have moved `current` since).
+fn mark_engine_proven(program: Option<String>) {
+    let (Some(program), Ok(home)) = (program, crate::commands::benchmark::continuum_home()) else {
+        return; // no launch record or no home: nothing to mark
+    };
+    let root = crate::inference::engine_slots::root(&home);
+    if let Some(slot) = crate::inference::engine_slots::slot_of(&root, Path::new(&program)) {
+        if let Err(reason) = crate::inference::engine_slots::mark_verified(&root, slot) {
+            crate::probe!(
+                class = "serving.engine.verify_mark_failed",
+                slot = slot,
+                reason = reason.as_str(),
+                "an engine came up ready but its proof could not be written: a later failure of it may be rolled back"
+            );
+        }
+    }
+}
+
+/// The engine commit the INSTALLED binary was built from: the stamp install-llama-server.sh
+/// writes beside it (`<commit>:<backend>`, written last, only after the build verified). The
+/// operand a running lane's own `/props` build is compared against (card 7c5f139d). `None`
+/// when the engine is an operator override (`LLAMA_SERVER_BIN`: theirs, not ours to converge)
+/// or no stamp exists: nothing to compare, never a relaunch.
+pub(crate) fn installed_engine_commit() -> Option<String> {
+    let stamp = installed_engine_stamp()?;
+    let commit = stamp.split(':').next()?.trim();
+    (!commit.is_empty()).then(|| commit.to_string())
+}
+
+/// The backend the INSTALLED engine was built for, from the same stamp (`cpu`, `metal`,
+/// `cuda`, ...). `None` for an operator override or a missing stamp.
+pub fn installed_engine_backend() -> Option<String> {
+    let stamp = installed_engine_stamp()?;
+    let backend = stamp.split(':').nth(1)?.trim();
+    (!backend.is_empty()).then(|| backend.to_string())
+}
+
+/// The stamp install-llama-server.sh writes beside the owned engine, trimmed.
+fn installed_engine_stamp() -> Option<String> {
+    let bin = server_bin();
+    let path = std::path::Path::new(&bin);
+    if !path.is_absolute() {
+        return None; // a bare PATH lookup: not the owned install
+    }
+    let stamp = std::fs::read_to_string(path.parent()?.join(".llama-server.stamp")).ok()?;
+    Some(stamp.trim().to_string())
+}
+
+/// PURE: the job budget a warm build gets beside a lane served by `backend` (card 682a5abf).
+/// A CPU-served lane runs llama.cpp's default thread count, one per physical core (the core
+/// passes no `--threads`), so it already holds every core. Nice only reorders the queue, it
+/// frees no core, and a build at cargo's default jobs (one per logical CPU) took them anyway:
+/// the IntelMac (6 cores, 12 threads) went three hours at 0 acts with 7 of 11 generations
+/// dropped while it built (2026-09-27, Fable's health reads). So the build is capped.
+///
+/// TWO jobs, not one (the pre-registered step on #4471): at one job the IntelMac's warm build
+/// of f03812d9e ran past the registered 6 h bound (19:14Z start, still compiling its bins at
+/// 01:14Z), and a build that outlasts canary's pace means the node never deploys. At one job
+/// rustc held ~0.5 of a core while the lane's llama-server held ~3 cores and the core ~2, so
+/// one more job costs the lane little and roughly halves the wall time.
+/// A GPU-served lane prefills on its device, not on these cores: no cap, `None`.
+pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
+    (backend == Some("cpu")).then_some(2)
+}
+
+/// Free memory at which a warm build beside a serving core runs at cargo's own job count:
+/// the measured uncapped peak (8.7 GB, every rustc together, the M5 on 2026-09-27) plus the
+/// reserve, rounded up (Cormac on #4479: at 12 the uncapped build would eat into the
+/// reserve). It coincides with where a second budgeted job would start, so between the
+/// floor and here the build takes one job.
+pub const WARM_BUILD_UNCAPPED_FREE_BYTES: u64 = 13 * 1024 * 1024 * 1024;
+/// Below that, the build takes fewer jobs instead of refusing: each rustc job (and the
+/// codegen threads the jobserver lends it) is budgeted this much, after a reserve kept for
+/// the citizens and the core. Refusing outright at 12 GiB meant a node whose lane fills its
+/// memory NEVER deploys: the M5 serving the 27B at 4 lanes (llama-server 29.5 GB, core
+/// 4.4 GB) sat at 10.4 GiB free, and every tracker pass from 19:33Z on 2026-09-27 was
+/// refused, leaving it on c9ee8b1cc under a day of merges.
+///
+/// MEASURED (the pre-registered check on #4478), the M5's warm build of 4284ebe4f at
+/// 20:14-20:25Z on 2026-09-27, sampled every 10 s: the largest single rustc peaked at
+/// 6.4 GB (continuum_core, one process whatever the job count) and every rustc together
+/// at 8.7 GB. So the budget is not a flat per-job figure: the FIRST job is continuum_core's
+/// front end, each further job a smaller crate beside it.
+pub const WARM_BUILD_FIRST_JOB_BYTES: u64 = 6656 * 1024 * 1024;
+pub const WARM_BUILD_JOB_BYTES: u64 = 2560 * 1024 * 1024;
+pub const WARM_BUILD_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// The floor: the first job plus the reserve. Below it the warm build refuses.
+pub const WARM_BUILD_MIN_FREE_BYTES: u64 = WARM_BUILD_RESERVE_BYTES + WARM_BUILD_FIRST_JOB_BYTES;
+
+/// PURE: the job count a warm build takes with `free_bytes` free beside the serving core.
+/// `None` = cargo's own count (plenty free); otherwise the first job (continuum_core's
+/// front end) plus one per [`WARM_BUILD_JOB_BYTES`] of what is left above the reserve, at
+/// least one. The refusal below [`WARM_BUILD_MIN_FREE_BYTES`] is the CLI's gate.
+pub fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
+    if free_bytes >= WARM_BUILD_UNCAPPED_FREE_BYTES {
+        return None;
+    }
+    let beyond_first = free_bytes
+        .saturating_sub(WARM_BUILD_RESERVE_BYTES)
+        .saturating_sub(WARM_BUILD_FIRST_JOB_BYTES);
+    let jobs = 1 + beyond_first / WARM_BUILD_JOB_BYTES;
+    Some(u32::try_from(jobs).unwrap_or(u32::MAX)) // unwrap_or: a count past u32 is plenty; the cap then does nothing
+}
+
+/// PURE: whether a running lane's `/props` `build_info` (`b10765-965d38a90`) names the
+/// installed engine commit, compared with the ONE SHA rule `deploy_provenance::sha_matches`
+/// (prefix either way, credible hex). A lane is stale only when both commits are credible
+/// SHAs and they disagree; anything unreadable is not evidence (BigMama on 7c5f139d).
+pub(crate) fn lane_runs_installed_engine(build_info: &str, installed: &str) -> bool {
+    use crate::runtime::deploy_provenance::sha_matches;
+    let lane = build_info.rsplit('-').next().unwrap_or(build_info).trim(); // unwrap_or: rsplit always yields one piece
+    let credible = |sha: &str| sha_matches(sha, sha); // a SHA matches itself iff it is credible
+    if !credible(lane) || !credible(installed) {
+        return true;
+    }
+    sha_matches(lane, installed)
+}
+
+/// The stale-engine fact the reconcile last saw (`from -> to`), for the hour's health line
+/// (BigMama on 7c5f139d): "this node cannot dream" is read there, never inferred.
+static ENGINE_STALE: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// The `from->to` engine pair this core already relaunched a lane for: a second sighting is
+/// reported, never relaunched again (Fable on #4464).
+static ENGINE_CONVERGE_TRIED: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// `from->to` while the serving lane runs an older engine than the installed one; `None`
+/// once it has converged, or when that cannot be known.
+pub fn engine_stale() -> Option<String> {
+    ENGINE_STALE.lock().clone()
 }
 
 /// Published serving state. One model, is it ready, on what `/v1` url. The
@@ -2036,9 +2274,29 @@ pub(crate) enum EngineProbe {
     /// The socket refused, reset or closed, or the body was not the `/slots` array:
     /// nothing that is a llama-server answers on this root. The outcome that ends a wait.
     Unreachable,
+    /// The serving daemon is replacing this engine ([`engine_condemned`]). Busy is not
+    /// dead, but a condemned engine is not worth waiting on: its relaunch cuts the work
+    /// anyway, and the relaunch's drain waits for every admitted turn to let go.
+    Condemned,
+}
+
+/// The engine this node serves is being replaced: the serving daemon admitted a lifecycle
+/// transition (a relaunch after failed generations, a quarantine) and flipped its snapshot
+/// not-ready. Everything in flight on it will be cut by that relaunch, and the relaunch's
+/// drain (`transition_if`, a write on the endpoint gate) waits for every admitted turn to
+/// drop its guard, with new admissions barred behind it. So a wait that keeps renewing on a
+/// condemned engine because it is still busy keeps the whole node dark: the IntelMac on
+/// 2026-09-27 went 25 min (15:44-16:09Z) and then 46 min (16:33-17:19Z) with no lane while
+/// header waits rode a prefilling, condemned engine (card 682a5abf's sibling, Cormac).
+/// `false` until the daemon installs its state: nothing is condemned that was never served.
+pub(crate) fn engine_condemned() -> bool {
+    SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
 }
 
 pub(crate) async fn engine_probe(root: &str, client: &reqwest::Client) -> EngineProbe {
+    if engine_condemned() {
+        return EngineProbe::Condemned;
+    }
     engine_probe_within(root, client, PROBE_TIMEOUT).await
 }
 
@@ -2112,7 +2370,7 @@ where
     tokio::pin!(work);
     let mut last = match progress().await {
         EngineProbe::Progress(p) => Some(p.fingerprint),
-        EngineProbe::Busy | EngineProbe::Unreachable => None,
+        EngineProbe::Busy | EngineProbe::Unreachable | EngineProbe::Condemned => None,
     };
     let mut busy_checkpoints: u64 = 0;
     let mut quiet_in_a_row: u32 = 0;
@@ -2122,6 +2380,14 @@ where
             _ = tokio::time::sleep(bound) => {
                 match progress().await {
                     EngineProbe::Unreachable => return None,
+                    EngineProbe::Condemned => {
+                        crate::probe!(
+                            class = "inference.wait.engine_condemned",
+                            busy_checkpoints,
+                            "a wait reached its checkpoint on an engine the daemon is replacing — ending it so the relaunch's drain can finish"
+                        );
+                        return None;
+                    }
                     // Working, and unable to say so: bounded exactly like a quiet engine.
                     EngineProbe::Busy => {
                         if quiet_in_a_row < quiet_checkpoints {
@@ -2646,6 +2912,17 @@ pub trait LlamaServerControl: Send + Sync {
     /// loaded set is per-request scale and never reaches here.
     async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError>;
 
+    /// Converge the running engine's adapter set onto `target`'s WITHOUT a relaunch:
+    /// load each new gene (dormant until a request gives it a scale) and retire each one
+    /// the target dropped (charter S1, card 49b5e806). The default cannot, so the genome
+    /// change rides a relaunch exactly as before.
+    async fn adopt_genome_in_place(
+        &self,
+        _target: &ServingTarget,
+    ) -> Result<GenomeInPlace, LlamaServerError> {
+        Ok(GenomeInPlace::Unsupported)
+    }
+
     /// (Re)spawn llama-server to serve `target` and block until it is ready.
     /// Switching models is a relaunch — there is no load-by-name API. The
     /// target carries the resolved model AND the host-fit served window, so the
@@ -2810,6 +3087,14 @@ pub trait LlamaServerControl: Send + Sync {
     /// means the server named no slot count — nothing to compare, not zero
     /// capacity ([[an-absence-is-an-unfinished-measurement]]).
     async fn served_lanes(&self) -> Result<u32, LlamaServerError>;
+
+    /// The engine build the running server reports (`/props` `build_info`, e.g.
+    /// `b10765-965d38a90`): the fourth adopt-or-relaunch operand, asked of the lane like the
+    /// window and the lanes (card 7c5f139d). `Ok(None)` = the server names none (a fake or
+    /// remote control, or an engine without the field): nothing to compare.
+    async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
+        Ok(None)
+    }
 
     /// The multimodal capabilities the running server ITSELF reports in `/props`
     /// (`modalities.vision` / `modalities.audio`) — the endpoint-side truth of
@@ -3097,7 +3382,45 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
         // EQUAL to the target, short-circuiting to AlreadyServing — the exact silent
         // stale-serve the comment promises never happens. Honor the stated policy.
         let genome_matches = match ctrl.active_adapters().await {
-            Ok(active) => active == desired,
+            Ok(active) if active == desired => true,
+            Ok(active) => {
+                // A KNOWN set that differs: the engine takes the change in place (fork #26:
+                // /lora-adapters/load and /unload) instead of a relaunch that kills every
+                // turn in flight and re-prefills every slot (charter S1, card 49b5e806).
+                // Only an engine that cannot falls through to the relaunch.
+                match ctrl.adopt_genome_in_place(target).await {
+                    Ok(GenomeInPlace::Adopted) => {
+                        crate::probe!(
+                            class = "serving.genome.adopted_in_place",
+                            model = target.model_id(),
+                            from = active.len() as u64,
+                            to = desired.len() as u64,
+                            "the gene set changed and the running engine took it: no relaunch"
+                        );
+                        true
+                    }
+                    Ok(GenomeInPlace::Busy) => {
+                        // The set stands this tick, and the window, lane and engine checks
+                        // below still run: a busy retire must not hide a starved lane.
+                        crate::probe!(
+                            class = "serving.genome.in_place_busy",
+                            model = target.model_id(),
+                            "a retiring gene is active in a turn in flight: the change waits a tick"
+                        );
+                        true
+                    }
+                    Ok(GenomeInPlace::Unsupported) => false,
+                    Err(e) => {
+                        crate::probe!(
+                            class = "serving.genome.in_place_failed",
+                            model = target.model_id(),
+                            error = %e,
+                            "the in-place gene change failed: relaunching onto the target set"
+                        );
+                        false
+                    }
+                }
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -3293,7 +3616,66 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                      re-asked every tick and proceeds once the gate reopens",
                 );
             }
-            if (!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade && !refused_pressure {
+            // THE ENGINE ITSELF — the fourth operand (card 7c5f139d). A deploy installs the
+            // engine the pin names (install-llama-server.sh, stamp-gated, atomic), but every
+            // deploy leaves the lane up for the next core, so an adopted lane keeps running
+            // the binary it was launched from: the M5 and the IntelMac served 965d38a90 (no
+            // /train) for a day while the pin moved to 9733aca6c, and the M5 could not dream.
+            // Asked of the lane like the other three: its `/props` build against the
+            // installed stamp. Unknown on either side (a probe error, no field, an operator
+            // override, no stamp) is "engine OK": never a spurious relaunch. Not a resize, so
+            // neither the trade guard nor the memory gate applies: the relaunch is at the
+            // same size, onto the binary already on disk.
+            let installed_engine = installed_engine_commit();
+            let served_engine = match ctrl.served_engine_build().await {
+                Ok(build) => build,
+                Err(_) => None, // a probe error is "engine OK", as for the window and lanes
+            };
+            let engine_current = match (&served_engine, &installed_engine) {
+                (Some(lane), Some(installed)) => lane_runs_installed_engine(lane, installed),
+                _ => true,
+            };
+            // ONCE PER from->to (Fable on #4464). If the relaunched lane still reports the
+            // old build (its build_info not regenerated, a local merge, a gitdir-file
+            // submodule), relaunching again would put the lane dark on a loop onto the
+            // same binary. The first disagreement relaunches; the same pair seen again only
+            // says so, and the health line keeps `engine_stale` for a human to read.
+            let pair = format!(
+                "{}->{}",
+                served_engine.as_deref().unwrap_or(""), // unwrap_or: only read when !engine_current, where both are known
+                installed_engine.as_deref().unwrap_or("") // unwrap_or: as above
+            );
+            let engine_ok = engine_current || {
+                let mut tried = ENGINE_CONVERGE_TRIED.lock();
+                if tried.as_deref() == Some(pair.as_str()) {
+                    crate::probe!(
+                        class = "serving.engine.converge_failed",
+                        model = target.model_id(),
+                        pair = pair.as_str(),
+                        "the lane still reports an older engine after one relaunch onto the \
+                         installed binary: not relaunching again (a loop would keep it dark); \
+                         engine_stale stays on the health line"
+                    );
+                    true
+                } else {
+                    *tried = Some(pair.clone());
+                    false
+                }
+            };
+            *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
+            if !engine_ok {
+                crate::probe!(
+                    class = "serving.engine.converged",
+                    model = target.model_id(),
+                    from = served_engine.as_deref().unwrap_or(""), // probe field: engine_ok=false implies both are known
+                    to = installed_engine.as_deref().unwrap_or(""), // probe field: as above
+                    "the running lane is on an engine older than the installed one: relaunching \
+                     onto the installed binary (same size; a deploy converges the engine too)"
+                );
+            }
+            if !engine_ok
+                || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade && !refused_pressure)
+            {
                 crate::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
@@ -3383,11 +3765,29 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             // comment on `reset_real_decode_failures` always promised "the freshly
             // relaunched lane starts clean" — this is the site that makes it true.
             reset_real_decode_failures();
+            mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
             EnsureOutcome::Spawned {
                 model: target.model_id().to_string(),
             }
         }
         Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
+        // One relaunch onto the restored engine; the engine is resolved per launch, so this
+        // `serve` takes the slot the rollback made current.
+        Err(reason) if roll_back_engine_after_failed_launch(&reason) => {
+            match ctrl.serve_if_current(target, current).await {
+                Ok(()) => {
+                    reset_real_decode_failures();
+                    mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
+                    EnsureOutcome::Spawned {
+                        model: target.model_id().to_string(),
+                    }
+                }
+                Err(LlamaServerError::Superseded) => EnsureOutcome::Superseded,
+                Err(again) => EnsureOutcome::Degraded {
+                    reason: format!("{reason}; after rolling the engine back: {again}"),
+                },
+            }
+        }
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
         },
@@ -3410,7 +3810,9 @@ struct OwnedEngine {
 pub struct LlamaServerProcess {
     root: String,
     v1_url: String,
-    bin: String,
+    /// A test's fixture engine in place of [`server_bin`]'s per-launch resolution.
+    #[cfg(test)]
+    bin_pin: Option<String>,
     client: reqwest::Client,
     /// The live child, if one is running. `std::sync::Mutex` (not tokio) because
     /// it is held only for the brief swap/kill, never across an await.
@@ -3475,6 +3877,130 @@ impl LlamaServerProcess {
     /// metadata channel: served window, slot count, modalities, and (fork
     /// 3ca60da3c) measured weight residency. A connection error means nothing is
     /// up (normal pre-spawn) → Unreachable.
+    /// The in-place genome change against an engine whose --train-dir is `dir`: retire what
+    /// the target dropped, then stage and load what it added, recording each accepted step.
+    async fn converge_genome(
+        &self,
+        dir: &std::path::Path,
+        target: &ServingTarget,
+    ) -> Result<GenomeInPlace, LlamaServerError> {
+        let active = self.served_adapters.lock().unwrap().clone(); // JUSTIFIED: poison means a prior panic while recording the served set.
+        let desired = target.adapter_paths();
+        let added: Vec<&String> = desired.iter().filter(|p| !active.contains(p)).collect();
+        let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
+        let mut staged = Vec::with_capacity(added.len());
+        for gene in &added {
+            let Some(name) = gene_stage_name(std::path::Path::new(gene.as_str())) else {
+                return Ok(GenomeInPlace::Unsupported);
+            };
+            staged.push((PathBuf::from(gene.as_str()), name));
+        }
+        // Every step the engine accepts is recorded at once, so an early return (a busy
+        // retire, an error) leaves the served set naming exactly what the engine holds;
+        // the next tick converges the rest (Codex on #4467: two retires, the second busy,
+        // left the first advertised although the engine had freed it).
+        let record = |gene: &str, held: bool| {
+            let mut served = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
+            served.retain(|p| p != gene);
+            if held {
+                served.push(gene.to_string());
+                served.sort();
+            }
+        };
+        // Retire first, so a refused retire (a turn holds the gene) stops the change before
+        // any new gene joins.
+        if !removed.is_empty() {
+            let catalog = self.lora_catalog().await?;
+            for gene in &removed {
+                let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
+                let id = catalog.iter().find_map(|(id, path)| {
+                    let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
+                    (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
+                });
+                let Some(id) = id else {
+                    record(gene, false); // not loaded: nothing to retire, and not served
+                    continue;
+                };
+                match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
+                    LoraPost::Done => {
+                        record(gene, false);
+                        if let Some(name) = &stage {
+                            let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
+                        }
+                    }
+                    LoraPost::Busy => return Ok(GenomeInPlace::Busy),
+                    LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
+                }
+            }
+        }
+        for (gene, name) in staged {
+            let into = dir.join(&name);
+            let gene_key = gene.to_string_lossy().into_owned();
+            tokio::task::spawn_blocking(move || stage_gene(&gene, &into))
+                .await
+                .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
+                .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
+            match self.lora_post("load", serde_json::json!({ "name": name })).await? {
+                LoraPost::Done => record(&gene_key, true),
+                LoraPost::Busy => return Ok(GenomeInPlace::Busy),
+                LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
+            }
+        }
+        Ok(GenomeInPlace::Adopted)
+    }
+
+    /// `GET /lora-adapters` as `(id, path)`: the engine's adapter catalog. Retired ids
+    /// are not listed (fork #26).
+    async fn lora_catalog(&self) -> Result<Vec<(i64, String)>, LlamaServerError> {
+        let url = format!("{}/lora-adapters", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!("/lora-adapters status {}", resp.status())));
+        }
+        let body: serde_json::Value =
+            resp.json().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        Ok(body
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|e| {
+                        Some((e.get("id")?.as_i64()?, e.get("path")?.as_str()?.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()) // unwrap_or_default: a non-array body lists nothing loaded
+    }
+
+    /// `POST /lora-adapters/{load,unload}`. 404 = an engine without the route (older than
+    /// fork #26); 503 = the adapter is active in a turn in flight (unload only).
+    async fn lora_post(&self, verb: &str, body: serde_json::Value) -> Result<LoraPost, LlamaServerError> {
+        let url = format!("{}/lora-adapters/{verb}", self.root);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .timeout(LORA_LOAD_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        match resp.status().as_u16() {
+            200..=299 => Ok(LoraPost::Done),
+            404 | 405 => Ok(LoraPost::NoRoute),
+            503 => Ok(LoraPost::Busy),
+            status => {
+                let text = resp.text().await.unwrap_or_default(); // unwrap_or_default: the status alone still names the failure
+                Err(LlamaServerError::Unreachable(format!("/lora-adapters/{verb} status {status}: {text}")))
+            }
+        }
+    }
+
     async fn props_json(&self) -> Result<serde_json::Value, LlamaServerError> {
         let url = format!("{}/props", self.root);
         let resp = self
@@ -3534,7 +4060,8 @@ impl LlamaServerProcess {
         Self {
             root: serving_root(),
             v1_url: serving_v1_url(),
-            bin: server_bin(),
+            #[cfg(test)]
+            bin_pin: None,
             client,
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
@@ -3565,7 +4092,8 @@ impl LlamaServerProcess {
         Self {
             root,
             v1_url,
-            bin: server_bin(),
+            #[cfg(test)]
+            bin_pin: None,
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
@@ -4275,6 +4803,16 @@ impl LlamaServerControl for LlamaServerProcess {
         Ok(self.served_adapters.lock().unwrap().clone())
     }
 
+    async fn adopt_genome_in_place(
+        &self,
+        target: &ServingTarget,
+    ) -> Result<GenomeInPlace, LlamaServerError> {
+        let Some(dir) = engine_train_dir().filter(|_| engine_accepts_train_dir()) else {
+            return Ok(GenomeInPlace::Unsupported);
+        };
+        self.converge_genome(&dir, target).await
+    }
+
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
         // The per-slot window the server actually serves is
         // `default_generation_settings.n_ctx` — the launch `-c / --parallel`
@@ -4295,6 +4833,11 @@ impl LlamaServerControl for LlamaServerProcess {
                         .to_string(),
                 )
             })
+    }
+
+    async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
+        let body = self.props_json().await?;
+        Ok(body.get("build_info").and_then(|v| v.as_str()).map(str::to_string))
     }
 
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
@@ -4601,7 +5144,7 @@ impl LlamaServerControl for LlamaServerProcess {
             .prepared
             .as_ref()
             .ok_or_else(|| LlamaServerError::Spawn("original launch was not captured".into()))?;
-        prepared.validate_restoration(&self.root, &self.bin).await
+        prepared.validate_restoration(&self.root, &prepared.engine_program).await
     }
 
     async fn restore_owned_launch(
@@ -4710,10 +5253,23 @@ impl LlamaServerControl for LlamaServerProcess {
 }
 
 impl LlamaServerProcess {
+    /// The engine this launch runs: [`server_bin`], resolved now (see `prepare_local_launch`).
+    fn engine_bin(&self) -> String {
+        #[cfg(test)]
+        if let Some(pin) = &self.bin_pin {
+            return pin.clone();
+        }
+        server_bin()
+    }
+
     async fn prepare_local_launch(
         &self,
         target: &ServingTarget,
     ) -> Result<PreparedLocalLaunch, LlamaServerError> {
+        // The engine is resolved per launch, never cached on the process: after a promote the
+        // next launch must take the slot `current` now names (card 2c5d0ec0), or #4464's
+        // convergence relaunches onto the binary it is trying to leave.
+        let bin = self.engine_bin();
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
@@ -4736,13 +5292,13 @@ impl LlamaServerProcess {
         // Cold application hashing stays off runtime workers and before any
         // endpoint mutation. Legacy launches keep their existing loader behavior.
         let engine_install =
-            crate::inference::engine_install::EngineInstallReceipt::prepare(self.bin.clone())
+            crate::inference::engine_install::EngineInstallReceipt::prepare(bin.clone())
                 .await
                 .map_err(LlamaServerError::Spawn)?;
         let engine_command = || -> Result<tokio::process::Command, LlamaServerError> {
             match &engine_install {
                 Some(receipt) => receipt.command().map_err(LlamaServerError::Spawn),
-                None => Ok(tokio::process::Command::new(&self.bin)),
+                None => Ok(tokio::process::Command::new(&bin)),
             }
         };
 
@@ -4835,7 +5391,7 @@ impl LlamaServerProcess {
         // Ask the ENGINE what KV cache types its build accepts, before deciding. Once
         // per process, bounded, with a named outcome — every probe on a launch path
         // gets both ([[every-probe-on-a-boot-or-launch-path-gets-a-bound-and-a-named-outcome]]).
-        ensure_engine_kv_support_recorded(&self.bin, engine_command()?).await;
+        ensure_engine_kv_support_recorded(&bin, engine_command()?).await;
         // THE KV CACHE TYPE IS A DECISION, NOT A VARIABLE A HUMAN ONCE EXPORTED
         // (2026-09-20). This used to be two raw `config_env` reads: unset →
         // no `--cache-type-k/v` flag at all (the engine's f16 default, 65,536 B/token
@@ -5062,7 +5618,7 @@ impl LlamaServerProcess {
             Err(_) => {
                 crate::probe!(
                     class = "serving.version_probe_timeout",
-                    bin = %self.bin,
+                    bin = %bin,
                     "`--version` did not answer in 10 s — neither verified nor refused; launching anyway"
                 );
                 String::new()
@@ -5070,20 +5626,20 @@ impl LlamaServerProcess {
         };
         crate::probe!(
             class = "serving.server_version",
-            bin = %self.bin,
+            bin = %bin,
             version = %version.lines().next().unwrap_or("").trim(), // unwrap_or: no output = empty receipt, spawn reports the real failure
             "the serving binary named its build"
         );
         if is_debug_build(&version) {
             crate::probe!(
                 class = "serving.debug_build_refused",
-                bin = %self.bin,
+                bin = %bin,
                 "refused to serve from a DEBUG build — build for speed"
             );
             return Err(LlamaServerError::Spawn(format!(
                 "{} is a DEBUG build (asserts enabled; its speed is not valid). Rebuild llama-server in \
                  release from the canary pin and relaunch — a debug server never hosts a lane.",
-                self.bin
+                bin
             )));
         }
         // BACKEND RECEIPT (card c0bc4027): what does this binary actually LOAD?
@@ -5109,7 +5665,7 @@ impl LlamaServerProcess {
             Ok(Err(e)) => {
                 crate::probe!(
                     class = "serving.backend_probe_failed",
-                    bin = %self.bin,
+                    bin = %bin,
                     error = %e,
                     "`--list-devices` could not run — the spawn below reports the real failure"
                 );
@@ -5118,7 +5674,7 @@ impl LlamaServerProcess {
             Err(_) => {
                 crate::probe!(
                     class = "serving.backend_probe_timeout",
-                    bin = %self.bin,
+                    bin = %bin,
                     "`--list-devices` did not answer in 10 s — backend initialisation hangs on \
                      this host; the lane serves on the CPU and says so"
                 );
@@ -5127,13 +5683,13 @@ impl LlamaServerProcess {
         };
         let cpu_by_plan = target.placement == LanePlacement::Cpu;
         let verdict = crate::inference::backend_receipt::backend_verdict(
-            &self.bin,
+            &bin,
             receipt.as_ref(),
             cpu_by_plan,
         );
         crate::probe!(
             class = "serving.backend_receipt",
-            bin = %self.bin,
+            bin = %bin,
             backend = verdict.backend_label(),
             device = %match &verdict {
                 crate::inference::backend_receipt::BackendVerdict::Gpu { device } => device.as_str(),
@@ -5146,7 +5702,7 @@ impl LlamaServerProcess {
             crate::inference::backend_receipt::BackendVerdict::Refused { reason } => {
                 crate::probe!(
                     class = "serving.backend_refused",
-                    bin = %self.bin,
+                    bin = %bin,
                     reason = %reason,
                     "refused to serve from a binary that loads no GPU backend on a GPU host"
                 );
@@ -5219,7 +5775,7 @@ impl LlamaServerProcess {
         };
         Ok(PreparedLocalLaunch {
             target: target.clone(),
-            engine_program: self.bin.clone(),
+            engine_program: bin.clone(),
             endpoint: self.root.clone(),
             invocation,
             engine_install,
@@ -5240,7 +5796,7 @@ impl LlamaServerProcess {
         restore_session: Option<&OwnedRestoreSession>,
         mut reservation: Option<crate::resources::LeaseGuard>,
     ) -> Result<(), LlamaServerError> {
-        if prepared.engine_program != self.bin || prepared.endpoint != self.root {
+        if prepared.endpoint != self.root {
             return Err(LlamaServerError::Spawn(
                 "prepared launch belongs to another endpoint".into(),
             ));
@@ -5248,7 +5804,7 @@ impl LlamaServerProcess {
         let restore_generation = restore_session.map(|session| session.expected.lock().clone());
         let restoring = restore_generation.is_some();
         if restoring {
-            prepared.validate_restoration(&self.root, &self.bin).await?;
+            prepared.validate_restoration(&self.root, &prepared.engine_program).await?;
         }
         let target = &prepared.target;
         let gguf = prepared.gguf.clone();
@@ -5474,7 +6030,7 @@ impl LlamaServerProcess {
             Ok(child) => child,
             Err(error) => {
                 generation.observed_exit(); // No child was created for this generation.
-                return Err(LlamaServerError::Spawn(format!("{}: {error}", self.bin)));
+                return Err(LlamaServerError::Spawn(format!("{}: {error}", prepared.engine_program)));
             }
         };
         let child_pid = child.id();
@@ -5489,7 +6045,7 @@ impl LlamaServerProcess {
             class = "serving.prompt_cache.launch",
             model = target.model.id.as_str(),
             artifact = %gguf.display(),
-            engine = %self.bin,
+            engine = %prepared.engine_program,
             pid = ?child_pid,
             port = port,
             requested_mib = target.host_prompt_cache_mib as u64,
@@ -5598,6 +6154,7 @@ impl LlamaServerProcess {
                 context_window: target.context_window,
                 lanes: target.lanes,
                 page_dir: Some(slot_save_dir.clone()),
+                engine_bin: Some(PathBuf::from(&prepared.engine_program)),
             };
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
@@ -5629,13 +6186,13 @@ impl LlamaServerProcess {
             }
             crate::probe!(
                 class = "serving.debug_build_refused",
-                bin = %self.bin,
+                bin = %prepared.engine_program,
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
             );
             return Err(LlamaServerError::Spawn(format!(
                 "{} announced itself a DEBUG build on startup (asserts enabled; its speed is not valid). \
                  Rebuild llama-server in release from the canary pin and relaunch.",
-                self.bin
+                prepared.engine_program
             )));
         }
         // READY AND ACCEPTED: this lane owns its page dir. Sweep sibling generations
@@ -5742,7 +6299,7 @@ impl LlamaServerProcess {
                      than serve every citizen from system RAM behind a green /health. Check the \
                      backend build (a DL-backend build can list CUDA0 from a shell and still fail \
                      to load it under the core) — last stderr:\n{}",
-                    self.bin,
+                    prepared.engine_program,
                     self.stderr_log_tail()
                 )));
             }
@@ -5807,7 +6364,7 @@ impl LlamaServerProcess {
         // not carry saved eligibility across engines. Never probe to rediscover it.
         let revisions = std::iter::once(gguf.clone())
             .chain(target.adapters.iter().map(|adapter| adapter.path.clone()))
-            .chain(std::iter::once(PathBuf::from(&self.bin)))
+            .chain(std::iter::once(PathBuf::from(&prepared.engine_program)))
             .map(|path| {
                 let metadata = std::fs::metadata(&path).ok()?;
                 Some((path, metadata.len(), metadata.modified().ok()?))
@@ -5825,7 +6382,7 @@ impl LlamaServerProcess {
                     context,
                     slots,
                     cache_type: kv_cache_type,
-                    engine: self.bin.clone(),
+                    engine: prepared.engine_program.clone(),
                     revisions,
                 },
             )
@@ -5835,6 +6392,7 @@ impl LlamaServerProcess {
             target,
             invocation,
             Some(prepared.clone()),
+            &prepared.engine_program,
             context,
             slots,
         );
@@ -5847,6 +6405,7 @@ impl LlamaServerProcess {
         target: &ServingTarget,
         invocation: &crate::inference::lane_args::LaneInvocation,
         prepared: Option<Arc<PreparedLocalLaunch>>,
+        engine_program: &str,
         context: u32,
         lanes: u32,
     ) {
@@ -5867,7 +6426,7 @@ impl LlamaServerProcess {
                     generation: generation.clone(),
                 },
                 target: target.clone(),
-                engine_program: self.bin.clone(),
+                engine_program: engine_program.to_string(),
                 invocation: invocation.clone(),
                 observed_context_window: context,
                 observed_lanes: lanes,
@@ -6015,6 +6574,69 @@ mod tests {
         let started = tokio::time::Instant::now();
         assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, stuck, |_| {}).await, None);
         assert!(started.elapsed() <= bound, "processing with nothing moving is stuck at the first checkpoint");
+
+        // A CONDEMNED engine ends the wait at its checkpoint even while it keeps moving: the
+        // daemon is replacing it, and its relaunch's drain waits on this very turn (IntelMac
+        // 2026-09-27: 25 and then 46 min dark while header waits rode a prefilling engine).
+        let mut calls = 0u64;
+        let condemned_later = || {
+            calls += 1;
+            let c = calls;
+            async move {
+                if c == 1 {
+                    EngineProbe::Progress(EngineProgress { fingerprint: c, any_processing: true })
+                } else {
+                    EngineProbe::Condemned
+                }
+            }
+        };
+        let started = tokio::time::Instant::now();
+        assert_eq!(wait_while_engine_progresses(std::future::pending::<&str>(), bound, 1, condemned_later, |_| {}).await, None);
+        assert!(started.elapsed() <= bound, "condemned at the first checkpoint ends it there: {:?}", started.elapsed());
+    }
+
+    // what this catches (2026-09-27, the M5 at 10.4 GiB free beside the 27B): a node whose
+    // lane fills its memory refused every deploy. Between the floor and plenty the build takes
+    // fewer jobs; with plenty, cargo's own count; the floor itself is one job plus the reserve.
+    // In the lib so CI runs it (the CLI's own tests run only by name).
+    #[test]
+    fn a_warm_build_takes_the_jobs_its_free_memory_holds() {
+        let gib = 1024 * 1024 * 1024;
+        // measured: continuum_core's front end alone peaked at 6.4 GB, so one job needs it
+        // plus the reserve; a second job only past another 2.5 GiB
+        assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 4 * gib + 6656 * 1024 * 1024);
+        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
+        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024 - 1), Some(1));
+        assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), None, "where a second job would start, the build is already uncapped");
+        assert_eq!(warm_build_jobs_for_memory(12 * gib), Some(1), "under the measured uncapped need");
+        assert_eq!(warm_build_jobs_for_memory(13 * gib), None);
+        assert!(WARM_BUILD_UNCAPPED_FREE_BYTES >= WARM_BUILD_RESERVE_BYTES + 8_700_000_000, "uncapped covers its measured peak plus the reserve");
+    }
+
+    // what this catches (card 682a5abf): a warm build beside a CPU-served lane at cargo's
+    // default jobs, taking the cores the lane decodes on (the IntelMac: 3 hours at 0 acts).
+    // A GPU-served or unknown engine keeps the uncapped build.
+    #[test]
+    fn a_warm_build_beside_a_cpu_lane_gets_a_capped_job_count() {
+        assert_eq!(warm_build_jobs(Some("cpu")), Some(2));
+        assert_eq!(warm_build_jobs(Some("metal")), None);
+        assert_eq!(warm_build_jobs(Some("cuda")), None);
+        assert_eq!(warm_build_jobs(None), None, "no stamp: nothing known, no cap");
+    }
+
+    // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine
+    // forever — the M5 and IntelMac served b10765-965d38a90 (no /train) while the stamp
+    // moved on. A lane whose /props build names another commit than the installed stamp is
+    // stale; the same commit in short or full form is current; an unknown on either side
+    // is never a relaunch.
+    #[test]
+    fn a_lane_on_an_older_engine_than_the_installed_one_is_stale() {
+        assert!(!lane_runs_installed_engine("b10765-965d38a90", "9733aca6c"), "older engine: relaunch");
+        assert!(lane_runs_installed_engine("b10765-965d38a90", "965d38a90"), "same commit");
+        assert!(lane_runs_installed_engine("b10765-965d38a90", "965d38a900bc82e28900683f9e30f7333cbf3936"), "short vs full SHA");
+        assert!(lane_runs_installed_engine("", "9733aca6c"), "a lane naming no build is not stale");
+        assert!(lane_runs_installed_engine("b10765-965d38a90", ""), "no stamp: nothing to compare");
+        assert!(lane_runs_installed_engine("b10765-unknown", "9733aca6c"), "a non-SHA build is not evidence");
     }
 
     // what this catches: an engine older than --train-dir being handed the flag (it refuses to
@@ -6072,6 +6694,62 @@ mod tests {
         assert!(matches!(probe, EngineProbe::Progress(p) if p.any_processing && p.fingerprint == 112), "{probe:?}");
         server.abort();
     }
+    // what this catches (Codex on #4467): two retires where the engine frees the first and
+    // refuses the second (a turn holds it) left the core advertising BOTH, though the engine
+    // had freed one. The served set must name exactly what the engine holds after a busy
+    // stop, and the new gene must not have been loaded ahead of the refused retire.
+    #[tokio::test]
+    async fn a_busy_second_retire_leaves_the_served_set_naming_what_the_engine_holds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let loads = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&loads);
+        let app = axum::Router::new()
+            .route(
+                "/lora-adapters",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!([
+                        {"id": 0, "path": "/genes/a.gguf"},
+                        {"id": 1, "path": "/genes/b.gguf"}
+                    ]))
+                }),
+            )
+            .route(
+                "/lora-adapters/unload",
+                axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    if body["id"] == 0 {
+                        axum::http::StatusCode::OK
+                    } else {
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }),
+            )
+            .route(
+                "/lora-adapters/load",
+                axum::routing::post(move || {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    async { axum::http::StatusCode::OK }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let process = LlamaServerProcess::with_root(root);
+        *process.served_adapters.lock().unwrap() = vec!["/genes/a.gguf".into(), "/genes/b.gguf".into()]; // JUSTIFIED: test-owned lock, never poisoned
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let got = process
+            .converge_genome(dir.path(), &target_with_adapters("coder-14b", &["/genes/c.gguf"]))
+            .await
+            .expect("test: the engine answered");
+        assert_eq!(got, GenomeInPlace::Busy);
+        assert_eq!(
+            *process.served_adapters.lock().unwrap(), // JUSTIFIED: test-owned lock, never poisoned
+            vec!["/genes/b.gguf".to_string()],
+            "A was freed and B still held: the record says exactly that"
+        );
+        assert_eq!(loads.load(Ordering::SeqCst), 0, "no new gene joins ahead of a refused retire");
+        server.abort();
+    }
+
     // The service-host's verified engine must win over any older default install.
     // A child process isolates the launch environment from parallel tests.
     #[test]
@@ -6209,7 +6887,7 @@ mod tests {
                 path: PathBuf::from(relative_root.path().file_name().unwrap()).join("adapter.gguf"),
             });
             let original =
-                std::mem::replace(&mut process.bin, program.to_string_lossy().into_owned());
+                process.bin_pin.replace(program.to_string_lossy().into_owned());
             let admitted = std::sync::atomic::AtomicBool::new(false);
             std::fs::write(engine.join("engine-install.pending"), b"interrupted copy").unwrap();
             let incomplete = process
@@ -6244,7 +6922,7 @@ mod tests {
             .await
             .unwrap();
             let engine_install = crate::inference::engine_install::EngineInstallReceipt::prepare(
-                process.bin.clone(),
+                process.engine_bin(),
             )
             .await
             .unwrap();
@@ -6260,7 +6938,7 @@ mod tests {
             );
             let prepared = Arc::new(PreparedLocalLaunch {
                 target: requested.clone(),
-                engine_program: process.bin.clone(),
+                engine_program: process.engine_bin(),
                 endpoint: process.root.clone(),
                 invocation: invocation.clone(),
                 engine_install: engine_install.clone(),
@@ -6278,6 +6956,7 @@ mod tests {
                 &requested,
                 &invocation,
                 Some(prepared),
+                &process.engine_bin(),
                 11008,
                 4,
             );
@@ -6329,7 +7008,7 @@ mod tests {
                 .as_mut()
                 .unwrap()
                 .verified_target = None;
-            process.bin = original;
+            process.bin_pin = original;
             assert!(!admitted.load(std::sync::atomic::Ordering::SeqCst));
             assert!(!generation.has_exited());
             assert!(process
@@ -6366,7 +7045,7 @@ mod tests {
         );
         invocation.constrain_to_cpu();
         let launched = invocation.clone();
-        process.record_verified_target(&generation, &launch_target, &invocation, None, 11008, 4);
+        process.record_verified_target(&generation, &launch_target, &invocation, None, &process.engine_bin(), 11008, 4);
         // A later resolved choice cannot mutate the already verified generation.
         invocation.args.push("--different-future-policy".into());
         let recorded = process
@@ -6375,7 +7054,7 @@ mod tests {
         assert_eq!(recorded.target.context_window, launch_target.context_window);
         assert_eq!(recorded.observed_context_window, 11008);
         assert_eq!(recorded.observed_lanes, 4);
-        assert_eq!(recorded.engine_program, process.bin);
+        assert_eq!(recorded.engine_program, process.engine_bin());
         assert_eq!(recorded.invocation, launched);
         let restore_admitted = std::sync::atomic::AtomicBool::new(false);
         let no_original = process
@@ -6428,7 +7107,7 @@ mod tests {
             kept.invocation, launched,
             "AlreadyServing keeps original resolved invocation"
         );
-        assert_eq!(kept.engine_program, process.bin);
+        assert_eq!(kept.engine_program, process.engine_bin());
         assert!(matches!(
             process.idle_if_current(&|| false).await,
             Err(LlamaServerError::Superseded)
@@ -6770,7 +7449,7 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             let mut process = LlamaServerProcess::with_root(format!("http://127.0.0.1:{port}"));
-            process.bin = program.to_string_lossy().into_owned();
+            process.bin_pin = Some(program.to_string_lossy().into_owned());
             let mut requested = target("prepared-launch-fixture");
             requested.model.gguf_local_path = Some(weights);
             requested.placement = LanePlacement::Cpu;
@@ -6848,6 +7527,7 @@ mod tests {
                 &prepared.target,
                 &prepared.invocation,
                 Some(prepared.clone()),
+                &process.engine_bin(),
                 11008,
                 4,
             );
@@ -6984,6 +7664,7 @@ mod tests {
                 &prepared.target,
                 &prepared.invocation,
                 Some(prepared.clone()),
+                &process.engine_bin(),
                 11008,
                 4,
             );
@@ -7000,7 +7681,7 @@ mod tests {
                         context: 11008,
                         slots: 4,
                         cache_type: Some("q8_0".into()),
-                        engine: process.bin.clone(),
+                        engine: process.engine_bin(),
                         revisions: Some(vec![]),
                     },
                 )
@@ -7536,6 +8217,9 @@ mod tests {
         /// target > served + tolerance) is a no-op for the model/adapter/decode
         /// tests; a grow-relaunch test sets it BELOW the target explicitly.
         served_window: u32,
+        /// What an in-place genome change comes to. Defaults to `Unsupported`, the
+        /// engine every pre-S1 test modelled: a genome change relaunches.
+        in_place: GenomeInPlace,
     }
 
     impl FakeControl {
@@ -7552,7 +8236,12 @@ mod tests {
                 owns: false,
                 served_lanes: 0,
                 served_window: 32768,
+                in_place: GenomeInPlace::Unsupported,
             }
+        }
+        fn with_in_place(mut self, outcome: GenomeInPlace) -> Self {
+            self.in_place = outcome;
+            self
         }
         /// Model a lane whose live per-slot window is SMALLER than the plan target —
         /// the starved boot-floor case the window-grow relaunch must catch.
@@ -7618,6 +8307,12 @@ mod tests {
         }
         async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
             Ok(self.active_adapters.clone())
+        }
+        async fn adopt_genome_in_place(
+            &self,
+            _target: &ServingTarget,
+        ) -> Result<GenomeInPlace, LlamaServerError> {
+            Ok(self.in_place)
         }
         async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
@@ -8139,6 +8834,34 @@ mod tests {
         );
     }
 
+    // what this catches (charter S1, card 49b5e806): a new gene on an engine that loads at
+    // runtime relaunching anyway, killing every turn in flight; and a retire refused
+    // because a turn holds the gene turning into that same relaunch instead of a wait
+    // (the set stands this tick; the checks after it still run).
+    #[tokio::test]
+    async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
+        for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
+            let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+                .with_active_adapters(vec!["/genes/a.gguf".into()])
+                .with_in_place(outcome);
+            let got = ensure_model_serving(
+                &ctrl,
+                &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]),
+                false,
+            )
+            .await;
+            assert_eq!(got, EnsureOutcome::AlreadyServing, "{outcome:?}");
+            assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{outcome:?}: no relaunch");
+        }
+        // The staged name: a bare .gguf the engine's confinement accepts, and two genes
+        // sharing a file name in different folders never collide.
+        let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")).expect("stageable");
+        let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf")).expect("stageable");
+        assert_ne!(a, b);
+        assert!(a.starts_with("gene-adapter-") && a.ends_with(".gguf"));
+        assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
+    }
+
     // what this catches: nothing running (Unreachable) is NOT an error — it's
     // the normal pre-spawn state, so we serve, not degrade.
     #[tokio::test]
@@ -8574,6 +9297,7 @@ mod tests {
             context_window: 32768,
             lanes: 1,
             page_dir: Some(b_dir.clone()),
+            engine_bin: None,
         };
         let (before_tx, before_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
@@ -8661,6 +9385,7 @@ mod tests {
             context_window: 4096,
             lanes: 1,
             page_dir: page_dir.map(PathBuf::from),
+            engine_bin: None,
         };
         let alive = |pid: u32| pid != 3;
         let (dirs, complete) = page_dirs_of(vec![rec(1, Some("/p/a")), rec(2, Some("/p/b")), rec(3, None)], alive);

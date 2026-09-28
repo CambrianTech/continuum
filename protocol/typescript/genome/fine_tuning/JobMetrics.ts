@@ -18,4 +18,10 @@ finalLoss?: number, finalValidationLoss?: number, wallClockMs: number,
  * ([[forge-alloy-secures-commodity-zero-trust-plus-reputation]])
  * pick the cheapest viable provider per request.
  */
-costUsd?: number, };
+costUsd?: number, 
+/**
+ * The transformer blocks this adapter actually trained, as the engine reported it after
+ * the run (not what was asked: an engine without `top_layers` adapts every block). `None`
+ * = the provider does not say. The promotion gate compares a reduced-depth gene knowing it.
+ */
+layersAdapted?: number, };

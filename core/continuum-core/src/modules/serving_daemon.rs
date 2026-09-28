@@ -793,6 +793,8 @@ pub struct ServingDaemonModule {
     /// `DECODE_SMOKE_TIMEOUT` under load, longer than one [`TICK`]); a tick that finds one
     /// running skips, exactly like `reconciling`.
     health_probing: Arc<AtomicBool>,
+    /// A prefill-knee `/slots` read is in flight ([`Self::spawn_prefill_knee_read`]).
+    prefill_knee_reading: Arc<AtomicBool>,
     /// Set by the liveness heartbeat when it declares the live lane WEDGED, read+cleared by
     /// the next [`Self::reconcile_to_plan`]. It forces `ensure_model_serving`'s decode probe
     /// even on a child we own — otherwise the "trusted thereafter" short-circuit would
@@ -1166,6 +1168,7 @@ impl ServingDaemonModule {
             plan_none_said_ms: Arc::new(AtomicU64::new(0)),
             health_fails: Arc::new(AtomicU8::new(0)),
             health_probing: Arc::new(AtomicBool::new(false)),
+            prefill_knee_reading: Arc::new(AtomicBool::new(false)),
             force_relaunch: Arc::new(AtomicBool::new(false)),
             bus: OnceLock::new(),
             // Production resolver: the global registry. `try_global` (not the
@@ -4121,6 +4124,46 @@ impl ServingDaemonModule {
     /// never stalls the 5s tick; returns the handle so tests can await it. `None` when it
     /// isn't a heartbeat tick, nothing ready is believed live, or a reconcile/probe is
     /// already in flight (never race the reconcile's own kill/swap).
+    /// The prefill knee's server-total rate, observe-only (card e370a673): one bounded
+    /// control-plane read of `/slots` per health tick, on its own task. It must read a BUSY
+    /// lane: the rate only counts intervals with prompt left to prefill, and a lane proven
+    /// alive by real work skips the smoke probe below. Read inside that probe, it ran only
+    /// on idle lanes and never published (the M5, 2026-09-27: zero `would_clamp` rows over
+    /// a saturated afternoon). Not started while a reconcile is in flight, and never stacked.
+    /// A reconcile that begins after the read started can replace the engine under it; the
+    /// window discards that interval itself (a task counter going backwards, or a read gap
+    /// past `MAX_READ_GAP_MS`), so a sample never spans an engine replacement.
+    fn spawn_prefill_knee_read(&self) -> Option<JoinHandle<()>> {
+        if self.reconciling.load(Ordering::Acquire) || self.prefill_knee_reading.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let server = self.server.clone();
+        let reading = self.prefill_knee_reading.clone();
+        // the model the rates are measured FOR; with the engine's pid (read on the task), two
+        // reads pair only on the same engine process
+        let model = self.serving_tx.borrow().active_model.clone();
+        Some(tokio::spawn(async move {
+            // released however the read ends, so a failed read cannot stop the next one
+            struct ReadDone(Arc<AtomicBool>);
+            impl Drop for ReadDone {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            let _done = ReadDone(reading);
+            let engine = model.zip(crate::inference::lane_pidfile::read())
+                .map(|(model, pid)| crate::inference::prefill_knee::EngineRead { model, pid });
+            if let Some(slots) = server.slots_body().await {
+                crate::inference::prefill_knee::observe_slots(
+                    &slots,
+                    crate::persona::trace::now_ms(),
+                    crate::cognition::resource_admission::served_lane_count(),
+                    engine,
+                );
+            }
+        }))
+    }
+
     fn spawn_health_heartbeat_if_due(&self) -> Option<JoinHandle<()>> {
         // Slow-cadence gate: only every Nth tick runs a probe.
         if self.health_ticks.fetch_add(1, Ordering::Relaxed) % HEALTH_PROBE_EVERY_TICKS != 0 {
@@ -4137,6 +4180,7 @@ impl ServingDaemonModule {
             self.health_fails.store(0, Ordering::Relaxed);
             return None;
         }
+        let _ = self.spawn_prefill_knee_read();
         // #363: SUSTAINED REAL-TURN FAILURE OUTRANKS EVERY TRUST PATH BELOW. The
         // 2026-08-07 blackout (25 min, every citizen turn dead, serving/status
         // ready:true throughout) was a wedge class neither trust path can see:
@@ -4215,15 +4259,6 @@ impl ServingDaemonModule {
             // distinguishes a healthy lane from an OOM-poisoned one (control-plane reads
             // stay 200 on a wedged backend). `decode_smoke_ok` is already bounded by
             // `DECODE_SMOKE_TIMEOUT`, so a wedged compute path resolves to `false` fast.
-            // The prefill knee's server-total rate, observe-only (card e370a673): one more
-            // bounded control-plane read per health tick.
-            if let Some(slots) = server.slots_body().await {
-                crate::inference::prefill_knee::observe_slots(
-                    &slots,
-                    crate::persona::trace::now_ms(),
-                    crate::cognition::resource_admission::served_lane_count(),
-                );
-            }
             let ok = server.decode_smoke_ok().await;
             if ok {
                 health_fails.store(0, Ordering::Relaxed);
@@ -8604,6 +8639,8 @@ pub(crate) mod tests {
         active: Option<String>,
         serve_started: Option<Arc<tokio::sync::Notify>>,
         probe_started: Option<Arc<tokio::sync::Notify>>,
+        /// `/slots` reads served ([`LlamaServerControl::slots_body`]): the prefill knee's.
+        slots_reads: Arc<AtomicUsize>,
     }
 
     impl FakeServer {
@@ -8622,6 +8659,7 @@ pub(crate) mod tests {
                 active: None,
                 serve_started: None,
                 probe_started: None,
+                slots_reads: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -8694,6 +8732,11 @@ pub(crate) mod tests {
             // true (a healthy fake decodes).
             self.smoke_ok.load(Ordering::Relaxed)
         }
+        async fn slots_body(&self) -> Option<serde_json::Value> {
+            self.slots_reads.fetch_add(1, Ordering::SeqCst);
+            Some(serde_json::json!([]))
+        }
+
         async fn slots_activity_fingerprint(&self) -> Option<u64> {
             match self.slots_fp.load(Ordering::Relaxed) {
                 0 => None,
@@ -9610,6 +9653,7 @@ pub(crate) mod tests {
             context_window: 25_075,
             lanes: 4,
             page_dir: None,
+            engine_bin: None,
         }
     }
 
@@ -10414,8 +10458,10 @@ pub(crate) mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
 
         // Fresh decode INSIDE the window → trusted, no probe.
+        let slots_reads = Arc::new(AtomicUsize::new(0));
         let mut busy = daemon_with(Arc::new(FakeServer {
             smoke_ok: Arc::new(AtomicBool::new(false)),
+            slots_reads: slots_reads.clone(),
             ..FakeServer::healthy(serves.clone(), true)
         }));
         busy.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
@@ -10427,6 +10473,16 @@ pub(crate) mod tests {
         );
         // And the trust RESETS the streak: evidence of life is evidence, not a skipped verdict.
         assert_eq!(busy.health_fails.load(Ordering::Relaxed), 0);
+        // The busy lane is exactly the one the prefill knee must read (card e370a673): its
+        // `/slots` read runs on its own task whether or not the smoke probe is skipped. Read
+        // inside the probe, it never saw a busy lane and never published on the M5.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while slots_reads.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a busy lane's /slots is read for the prefill knee even when the smoke probe is skipped");
 
         // Stale decode OUTSIDE the window → no live evidence, probe as usual.
         let mut quiet = daemon_with(Arc::new(FakeServer {

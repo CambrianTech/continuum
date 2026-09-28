@@ -67,9 +67,18 @@ chmod +x "$scratch/forbidden"
 for tool in taskkill tasklist pkill pgrep airc llama-server curl powershell.exe; do
   cp "$scratch/forbidden" "$fixture_home/.cargo/bin/$tool"
 done
-for tool in install-llama-server.sh track-canary.sh; do
-  cp "$scratch/forbidden" "$scratch/repo/tools/scripts/$tool"
-done
+cp "$scratch/forbidden" "$scratch/repo/tools/scripts/track-canary.sh"
+# The engine install is the one sibling a warm build RUNS, on macOS and Linux only
+# (card 7c5f139d): it is stamp-gated and installs atomically beside a live lane, so
+# a deploy moves the engine with the pin. It is recorded, not forbidden, and its
+# failure must never fail the deploy.
+cat > "$scratch/repo/tools/scripts/install-llama-server.sh" <<'SH'
+#!/usr/bin/env bash
+echo "ENGINE $*" >> "$FIXTURE_TRACE"
+[ "${FAIL_ENGINE_BUILD:-0}" = 1 ] && exit 3
+exit 0
+SH
+chmod +x "$scratch/repo/tools/scripts/install-llama-server.sh"
 # Builtin kill cannot be shadowed with a PATH entry.
 kill() { echo "FORBIDDEN kill $*" >> "$FIXTURE_TRACE"; return 99; }
 export -f kill
@@ -90,6 +99,15 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
       cat "$FIXTURE_TRACE" >&2; exit 1
     fi
     grep -q -- '--bin continuum-core-server' "$FIXTURE_TRACE"
+    # The engine rides a SUCCESSFUL warm build on macOS/Linux, once; never on
+    # Windows (a DLL copy beside a live lane fails there, #4382), and never after
+    # a failed core build, which exits before it.
+    engine_lines="$(grep -c '^ENGINE' "$FIXTURE_TRACE" || true)"
+    if [ "$failure" = 0 ] && [ "$platform" != MINGW64_NT-10.0 ]; then
+      [ "$engine_lines" = 1 ]
+    else
+      [ "$engine_lines" = 0 ]
+    fi
     if [ "$failure" = 0 ]; then
       [ "$status" = 0 ]
       grep -q 'warm build complete' "$scratch/output"
@@ -118,6 +136,18 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     echo "PASS $platform build-only (core build failure=$failure)"
   done
 done
+
+# A failed engine build leaves the deploy green: the core still ships, the lanes
+# keep the engine they run, and the warm pass says so.
+printf '#!/usr/bin/env bash\necho Darwin\n' > "$fixture_home/.cargo/bin/uname"
+: > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
+HOME="$fixture_home" FIXTURE_PLATFORM=Darwin FAIL_CORE_BUILD=0 FAIL_ENGINE_BUILD=1 \
+  bash "$scratch/repo/tools/scripts/start-server.sh" > "$scratch/output" 2>&1
+if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
+grep -q 'engine build failed in the warm pass' "$scratch/output"
+grep -q 'warm build complete' "$scratch/output"
+[ -s "$CONTINUUM_BUILD_RECEIPT" ]
+echo "PASS a failed engine build does not fail the deploy"
 
 # ── A deploy compiles the library once (card 9174fc83) ───────────────────────
 # Static: the launcher spells `cargo build` against the crate manifest ONCE, inside
