@@ -217,35 +217,40 @@ Each failure that night came from the separateness. §8.1 already said what lear
 - **The weights and lifecycle:** the dream runs on the same resident weights, under the same pause-for-turns lifecycle (#4485).
 - **What never exists on this path:** a window parameter, a dataset, or a launch.
 
-### 9.2 Engine (fork), one dream session per mind
+### 9.2 The pieces, and the existing primitive each one is
 
-| Route | Does |
-|---|---|
-| `POST /dream/open {persona, rank, alpha, targets, top_layers, from?}` | Opens her standing session: a training context on the resident model at the served per-slot window. It holds her **shadow** adapter, initialised from `from` (her stable gene's file) or fresh, and her optimizer state. It measures the graph at open and refuses past `memory_budget_mib`. It is idempotent per persona. |
-| `POST /dream/example {persona, messages, tools}` | Arrival: the served turn, as the lived examples already carry it (`train:false` on history). Rendered once and queued. A conversation longer than the window is fit by dropping the oldest history (fit `middle`, fork #29); a head plus reply that still overflows is skipped and counted. |
-| *(no route)* the step | In the server loop, between decode batches, when the governor grants budget: one micro-step on the shadow from the arrival queue plus a replay draw. The per-step probe is `engine.dream.step {persona, step, loss, ms}`. A busy slot defers it at a window boundary; this is the #28 pause, generalized. |
-| `POST /dream/snapshot {persona, out}` | Writes the shadow as a GGUF-lora into `--train-dir`: the candidate gene. The session keeps stepping. |
-| `GET /dream` | Every session: persona, steps, queued, fitted/skipped, last loss, graph_mib, paused. |
-| `POST /dream/close {persona}` | Frees the session and its optimizer state (a lease release). |
+This revision follows Codex's and Cormac's reviews of the first draft (#4500): durability, grid ownership, and state separated from context. It uses existing primitives, with the fewest new routes.
 
-It builds on what exists: the trainer's context-on-the-same-model, the example renderer, `before_window` yielding, and pause/resume (#28). **Anustart** (pause to disk) becomes session persistence: the shadow and optimizer state are written at snapshot and at a deploy seam, and `open` resumes from them.
+| Piece | What it is | Built on |
+|---|---|---|
+| **Owner** | Exactly one node holds a mind's learning for a `(persona, base)`: a claim that names the node. A non-owner never opens; arrivals route to the owner over airc. | grid claims / leases (the seat claim shape) |
+| **Session state** (per mind, small) | shadow adapter, optimizer moments and accumulator, RNG, step count, arrival and replay cursors. Bound to `(base revision + quant, stable adapter identity, rank/alpha/targets/top_layers)`: an `open` with different bindings refuses, or runs an explicit transition that starts from her stable gene. It never silently reuses state. | the job-dir layout, versioned |
+| **Step context** (per lane, large) | ONE training context per lane at the lane's served per-slot window, measured once and leased once (graph plus KV plus workspace). Each mind's state is swapped in for its step, the way a slot's KV is. N learning minds do not mean N graphs. | the resource ledger lease; `engine-footprints.json` keyed by the served window |
+| **Arrival** | The served turn as served (messages, tools, `train:false` history), with a **durable experience id** and provenance (room, card, scenario/branch). It is accepted into the existing training-trigger acceptance journal: the ack is the journal cursor, so a retry after a lost response never trains twice. | the trigger journal (kept, never replaced by a volatile queue) |
+| **Step** | In the server loop, under the governor's budget: one micro-step for one mind, arrivals plus a recency-weighted replay draw. The window is the served window, and the COMPUTE is scheduled separately: a step is split into chunks whose measured worst-case non-preemptible time fits the latency line, with yields between chunks. No experience is dropped to meet the budget. The probe is `engine.dream.step {persona, step, loss, ms, max_chunk_ms, arrival_sources}`. | #28 pause/resume, holds (`hold_training_on`) |
+| **Snapshot** | At an optimizer boundary, an **immutable** GGUF-lora of the shadow, while the live shadow keeps stepping. A candidate gene is not a checkpoint. Its manifest records the arrival ids and source counts it consumed. | `adapter_manifest::register`, then `GeneTrials::open` (#4473-4476) |
+| **Checkpoint** | The full session state (above), written at snapshots and at deploy seams, and resumed by the next core. A versioned format: an engine that cannot read it opens from her stable gene and says so. She loses momentum, never the gene. | anustart |
+| **Stores** | The replay pool and the session checkpoints each get a `TrackedDir` row and an eviction owner: the last K checkpoints per mind, and a replay pool bounded by bytes. | `disk_reporters` / `disk_eviction` |
 
-### 9.3 Core, the only caller
+Engine surface (fork): load or save a mind's session state into the lane's step context, accept arrivals by id, take steps within the budget, write a snapshot, and report sessions. Whether that is one route with verbs or several is an implementation detail. What matters is the contracts above.
 
-- **Open:** once per learning mind whose base this lane serves, when the governor grants a lease. The lease is the dream's measured graph at the served window (`engine-footprints.json`, keyed by the served window).
-- **Arrival:** the lifter's admit (a passing grade or a verdict, never raw drafting) posts `/dream/example` instead of filling a bucket for a later job.
-- **Snapshot:** at a `DreamTrigger` boundary (idle, a card boundary, the N examples or T minutes of §8.1). The snapshot goes to `adapter_manifest::register` and `GeneTrials::open`, the integrated gate (#4473-4476) exactly as today. Her real work judges it, and promotion or retirement follows the Beta-posterior checkpoints.
-- **Pausing:** holds (`hold_training_on`) pause the session like a run, and the next slice gives them triggers.
+### 9.3 Invariants, each with a test
+
+- One owner per `(persona, base)` on the grid: a second `open` elsewhere refuses.
+- An arrival id trains at most once, across a lost ack or a retry.
+- A card that judges snapshot *k* was never consumed by snapshot *k*. Trials draw her next cards, and replay must not break that.
+- Held-out and coursework provenance survive into the snapshot manifest (Kimi's disjointness is checkable after the fact).
+- A step never exceeds its measured chunk budget while a slot is busy, and a directed turn's wait stays on the latency line.
 
 ### 9.4 What retires
 
-- `genome/job-create` with `engine-local` becomes the fallback for a lane without `/dream` (an external provider, an old engine).
-- The training-trigger bucket's dispatch threshold becomes the accumulation window of §8.1, not a job launch.
+- `genome/job-create` with `engine-local` becomes the fallback for a lane without the dream stage. Its job records become receipts, not a separate persona lifecycle.
+- The trigger bucket's dispatch threshold becomes the accumulation window of §8.1.
 - No window or sequence-length setting reaches the dream path.
 
 ### 9.5 Gates (in order)
 
-1. On the 5090, a session opens at the served window (~61k) on Qwen3.8-27B with top_layers 8, and its measured graph fits the lease. If it does not, the answer is depth or activation recompute, never a smaller window.
-2. While 2 residents keep turning, arrivals step and the health line's directed wait stays flat.
+1. On the 5090, the lane's step context opens at the served window (~61k) on Qwen3.8-27B with top_layers 8, its measured graph plus KV plus workspace fits the lease, and the worst chunk is measured. If it does not fit, the answer is depth, recompute, or smaller chunks, never a smaller window.
+2. Two minds' states swap through the one context while residents keep turning, and the directed wait stays flat.
 3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
-4. A deploy seam: the session is written, the next core `open`s it, and it resumes at its step count.
+4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
