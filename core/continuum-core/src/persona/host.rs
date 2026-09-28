@@ -112,7 +112,17 @@ pub async fn spawn_persona_service(
                 .catch_unwind()
                 .await;
         match outcome {
-            Ok(r) => r,
+            Ok(Err(reason)) => {
+                crate::probe!(
+                    class = "persona.service_loop.failed",
+                    persona = %persona_name,
+                    persona_id = %persona_id,
+                    reason = %reason,
+                    "persona foreground loop exited with an error"
+                );
+                Err(reason)
+            }
+            Ok(Ok(outcome)) => Ok(outcome),
             Err(panic) => {
                 let panic_msg = if let Some(s) = panic.downcast_ref::<&'static str>() {
                     (*s).to_string()

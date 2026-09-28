@@ -395,6 +395,8 @@ pub struct AircPersonaConversation {
     /// The rejoin replay's dedupe watermark: only events strictly newer are ever
     /// replayed, so a reopen can never re-feed history as fresh perception.
     last_lamport: u64,
+    /// Immutable attach cutoff; None means readiness has not completed.
+    initial_watermark: Option<u64>,
     /// Per room: the lamport FLOOR adopted at first sight (nothing older is ever
     /// replayed) and the ring of lamports actually SEEN since. A newest-seen mark
     /// cannot stand in for this: live `event` frames keep arriving after the
@@ -429,6 +431,7 @@ impl AircPersonaConversation {
             seen: std::sync::Arc::new(std::sync::Mutex::new(SeenRooms::default())),
             membership_epoch,
             last_lamport: 0,
+            initial_watermark: None,
             next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
             rejoin_backlog: std::collections::VecDeque::new(),
         }
@@ -944,26 +947,35 @@ impl PersonaConversation for AircPersonaConversation {
     /// has identical semantics — it's not a degraded path, it's a
     /// later-binding path.
     async fn prime(&mut self) -> Result<(), String> {
-        if self.rooms.is_some() {
+        if self.initial_watermark.is_some() {
             return Ok(());
         }
-        if !self.refresh_membership().await? {
-            return Ok(());
-        }
-        // #146 diagnostic: confirm the CHAT subscribe stream actually opened for
-        // this persona. Post-reboot the personas were room-deaf (0 perceptual
-        // decodes) while the core-positron raw-attach path received fine — this
-        // pins whether prime() even ran per persona.
+        let active = self.refresh_membership().await?;
+        // Resolve readiness once, before the host reports an attached mind.
+        // Never replace an unreadable cutoff with zero or leave a pump behind.
+        let cutoff = match self.high_water_mark(64).await {
+            Ok(cutoff) => cutoff,
+            Err(error) => {
+                self.stop_stream();
+                self.rooms = None;
+                return Err(format!("initial conversation watermark failed: {error}"));
+            }
+        };
+        self.last_lamport = cutoff;
+        self.initial_watermark = Some(cutoff);
         crate::probe!(
-            class = "persona.inbound.subscribe_opened",
+            class = "persona.inbound.primed",
             persona = %self.own_peer_id,
-            "persona chat subscribe stream opened (#146)"
+            subscribed = active,
+            watermark = cutoff,
+            "persona conversation primed with a verified attach cutoff"
         );
-        // Seed the rejoin-replay watermark at the CURRENT transcript head, so the
-        // first runtime room-join can never replay pre-subscribe history as fresh
-        // perception (the #131 "room starts at join" rule, preserved under replay).
-        self.last_lamport = self.high_water_mark(64).await.unwrap_or(0); // unwrap_or: an unreadable watermark = 0 (never read), the documented floor
         Ok(())
+    }
+
+    async fn initial_water_mark(&self, _limit: usize) -> Result<u64, String> {
+        self.initial_watermark.ok_or_else(||
+            "conversation initial watermark requested before successful prime()".to_string())
     }
 
     async fn high_water_mark(&self, limit: usize) -> Result<u64, String> {
@@ -1180,6 +1192,32 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("lagged 7"), "{error}");
         conversation.stop_stream();
+    }
+
+    // Regression: priming establishes readiness once; the live loop must not
+    // make a second fallible history RPC after the host reports attachment.
+    #[tokio::test]
+    async fn initial_cutoff_is_established_by_prime_and_remains_stable() {
+        use crate::persona::identity_provider::PersonaIdentitySource;
+        use crate::persona::PersonaAircRuntime;
+        let home = tempfile::tempdir().unwrap();
+        let airc = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await.unwrap());
+        let room = airc.join("readiness-test").await.unwrap().channel;
+        let runtime = Arc::new(PersonaAircRuntime::from_attached(
+            airc.peer_id().as_uuid(), "readiness-test", home.path().to_path_buf(),
+            airc.clone(), room, PersonaIdentitySource::FreshlyMinted,
+        ));
+        runtime.say_in(room.as_uuid(), "before priming").await.unwrap();
+        let mut conversation = AircPersonaConversation::new(runtime.clone());
+        assert!(conversation.initial_water_mark(64).await.is_err());
+        conversation.prime().await.unwrap();
+        let cutoff = conversation.initial_water_mark(64).await.unwrap();
+        assert!(cutoff > 0);
+        runtime.say_in(room.as_uuid(), "after priming").await.unwrap();
+        assert!(conversation.high_water_mark(64).await.unwrap() > cutoff);
+        conversation.prime().await.unwrap();
+        assert_eq!(conversation.initial_water_mark(1).await.unwrap(), cutoff);
     }
 
     // what this catches: c5910be2 — ready intake must use the real decoder, keep
