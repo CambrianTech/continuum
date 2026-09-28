@@ -202,8 +202,19 @@ pub fn prefill_lanes(rate_tps: f64, per_turn: u32, ttft: std::time::Duration) ->
 }
 
 static WINDOW: LazyLock<parking_lot::Mutex<PrefillWindow>> = LazyLock::new(Default::default);
-/// The previous `/slots` read, for [`clean_decode`].
-static LAST_READ: LazyLock<parking_lot::Mutex<Option<(Vec<SlotCount>, u64)>>> = LazyLock::new(Default::default);
+/// The previous `/slots` read, for [`clean_decode`], with the engine it was read from. Two
+/// reads pair only on the SAME engine: a relaunch or a model switch restarts task ids from 0,
+/// so an old slot and a new one could share a task id and file a bogus clean rate under the
+/// new model, just when the rule compares models (Cormac on #4489).
+static LAST_READ: LazyLock<parking_lot::Mutex<Option<(EngineRead, Vec<SlotCount>, u64)>>> = LazyLock::new(Default::default);
+
+/// Which engine a read came from: the model it serves and the moment that lane was verified
+/// ready, which changes on every launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineRead {
+    pub model: String,
+    pub launched_ms: u64,
+}
 static TURNS: LazyLock<parking_lot::Mutex<TurnPrefill>> = LazyLock::new(Default::default);
 
 /// The generation seam: one turn's cache split (fed beside `citizen_health::note_generation`).
@@ -217,17 +228,22 @@ pub fn note_turn(cached: u32, prefilled: u32) {
 
 /// Feed one `/slots` read; when a window completes, publish the bound these inputs would
 /// set beside the lanes served. Observe-only: nothing reads this to size a lane.
-pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize, model: Option<&str>) {
+pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize, engine: Option<EngineRead>) {
     let Some(counts) = slot_counts_of(slots) else { return };
-    let previous = LAST_READ.lock().replace((counts.clone(), now_ms));
-    if let (Some(model), Some((before, at))) = (model, previous) {
-        if let Some((streams, tps)) = clean_decode(&before, &counts, now_ms.saturating_sub(at)) {
-            crate::inference::serving_rates::observe_decode(model, streams, tps, now_ms);
+    let previous = match &engine {
+        Some(e) => LAST_READ.lock().replace((e.clone(), counts.clone(), now_ms)),
+        None => LAST_READ.lock().take(),
+    };
+    if let (Some(e), Some((was, before, at))) = (&engine, previous) {
+        if was == *e {
+            if let Some((streams, tps)) = clean_decode(&before, &counts, now_ms.saturating_sub(at)) {
+                crate::inference::serving_rates::observe_decode(&e.model, streams, tps, now_ms);
+            }
         }
     }
     let Some(rate) = WINDOW.lock().observe(counts, now_ms) else { return };
-    if let Some(model) = model {
-        crate::inference::serving_rates::observe_prefill(model, rate, now_ms);
+    if let Some(e) = &engine {
+        crate::inference::serving_rates::observe_prefill(&e.model, rate, now_ms);
     }
     let turns = TURNS.lock();
     let median = turns.median();

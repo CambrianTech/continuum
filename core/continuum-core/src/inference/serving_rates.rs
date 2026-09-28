@@ -50,15 +50,21 @@ static RATES: LazyLock<parking_lot::Mutex<BTreeMap<String, ServingRates>>> =
 
 /// A server-total prefill rate measured over one busy window for `model`.
 pub fn observe_prefill(model: &str, tps: f64, now_ms: u64) {
-    let mut rates = RATES.lock();
-    rates.entry(model.to_string()).or_default().prefill.observe(tps, now_ms);
-    save_all(&rates);
+    let snapshot = {
+        let mut rates = RATES.lock();
+        rates.entry(model.to_string()).or_default().prefill.observe(tps, now_ms);
+        rates.clone()
+    };
+    save_all(&snapshot);
 }
 
 /// A clean per-stream decode rate for `model` with `streams` in flight.
 pub fn observe_decode(model: &str, streams: u32, tps: f64, now_ms: u64) {
-    let mut rates = RATES.lock();
-    rates.entry(model.to_string()).or_default().decode.observe(streams, tps, now_ms);
+    let snapshot = {
+        let mut rates = RATES.lock();
+        rates.entry(model.to_string()).or_default().decode.observe(streams, tps, now_ms);
+        rates.clone()
+    };
     crate::probe!(
         class = "serving.rates.clean_decode",
         model = model,
@@ -66,7 +72,9 @@ pub fn observe_decode(model: &str, streams: u32, tps: f64, now_ms: u64) {
         tps,
         "a clean decode interval: the same tasks decoding at both reads, none prefilling"
     );
-    save_all(&rates);
+    // written outside the lock (Cormac on #4489); reads are serialized by the knee's
+    // in-flight flag, so one writer at a time
+    save_all(&snapshot);
 }
 
 /// The measured rates of `model` on this node; empty (every verdict unmeasured) when none.
