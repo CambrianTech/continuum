@@ -14,6 +14,14 @@ pub fn focus_card<'a>(held: impl IntoIterator<Item = &'a WorkCard>) -> Option<&'
     })
 }
 
+/// The card THIS turn's activity is about. Focus is per activity (Joel, 2026-09-28): among
+/// the cards held on the board of `room`, use the usual choice. No matching card means no
+/// card binding for this room. An unrelated or unknown room cannot authorize a checkout:
+/// the caller must resolve an explicit activity binding instead of borrowing another task.
+pub fn focus_card_for_room(held: &[(Option<uuid::Uuid>, WorkCard)], room: uuid::Uuid) -> Option<&WorkCard> {
+    focus_card(held.iter().filter(|(r, _)| *r == Some(room)).map(|(_, card)| card))
+}
+
 /// Shared intent ordering for turn focus and surplus-claim reconciliation.
 /// Missing/unknown history never becomes an inferred explicit choice.
 pub(crate) fn explicit_choice_key(
@@ -115,5 +123,30 @@ mod tests {
         assert!(recovery_preferred_over_live(&held[1], [&held[0]]));
         assert!(!recovery_preferred_over_live(&held[0], [&held[1]]));
         assert!(recovery_preferred_over_live(&held[0], std::iter::empty()));
+    }
+
+    // what this catches (Joel, 2026-09-28: focus is per activity): a turn in one activity
+    // rooting her hands at another activity's card because that card is the freshest
+    // whole-mind choice. An unrelated room and an unscoped legacy claim must not select
+    // another activity's checkout. Explicit choice ordering still applies within the room.
+    #[test]
+    fn a_turn_focuses_the_card_of_its_own_room_before_the_freshest_elsewhere() {
+        let (project, benchmark, lounge) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let here = card(Some(100), 100);
+        let elsewhere_fresher = card(Some(9_000), 9_000);
+        let held = vec![(Some(project), here.clone()), (Some(benchmark), elsewhere_fresher.clone()), (None, card(Some(50), 50))];
+        assert_eq!(focus_card_for_room(&held, project).map(|c| c.card_id), Some(here.card_id), "her project turn works the project card");
+        assert_eq!(focus_card_for_room(&held, benchmark).map(|c| c.card_id), Some(elsewhere_fresher.card_id));
+        assert_eq!(
+            focus_card_for_room(&held, lounge).map(|c| c.card_id),
+            None,
+            "a room with no card must not borrow another activity's checkout"
+        );
+        assert!(focus_card_for_room(&[(None, elsewhere_fresher.clone())], project).is_none(),
+            "unknown claim scope is not a binding for this activity");
+        let same_room = vec![(Some(project), here), (Some(project), elsewhere_fresher.clone())];
+        assert_eq!(focus_card_for_room(&same_room, project).map(|c| c.card_id), Some(elsewhere_fresher.card_id),
+            "existing explicit choice ordering is preserved within the activity");
+        assert!(focus_card_for_room(&[], project).is_none());
     }
 }

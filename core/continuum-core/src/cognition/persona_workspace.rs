@@ -902,6 +902,7 @@ pub(crate) fn claim_gone_verdict(
 pub(crate) async fn root_at_held_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
+    turn_room: uuid::Uuid,
     conversation: &dyn crate::persona::service_loop::PersonaConversation,
 ) -> HeldCardTurn {
     // The card is UNKNOWN on each of these: there is no citizen, her claims could not be
@@ -910,9 +911,10 @@ pub(crate) async fn root_at_held_card(
     let Some(citizen) = conversation.stream_citizen() else {
         return HeldCardTurn::unheld();
     };
-    let Ok(held) = citizen.active_claims().await else {
+    let Ok(held_by_room) = citizen.active_claims_by_room().await else {
         return HeldCardTurn::unheld();
     };
+    let held: Vec<airc_lib::WorkCard> = held_by_room.iter().map(|(_, card)| card.clone()).collect();
     // THE WAKE'S FIRST READ OF THE BOARD answers what the checkpoint believed (card
     // c8303c32, Kimi 2026-09-21): her hands were rooted at a card when the snapshot was
     // written; if the board no longer lists it among her holds, she is told NOW — in her
@@ -969,7 +971,10 @@ pub(crate) async fn root_at_held_card(
     // was ambiguous for a two-card holder, so her message turns kept her hands
     // at home while her work turns rooted (`persona.work.staged_ambiguous` ×2
     // after the focus cut, 2026-09-04).
-    let Some(focus) = crate::persona::work_focus::focus_card(held.iter()) else {
+    // …and that card is the one of THIS turn's activity when she holds one there (focus is
+    // per activity, Joel 2026-09-28), so a turn in her project room never roots at a
+    // benchmark card just because that claim is fresher.
+    let Some(focus) = crate::persona::work_focus::focus_card_for_room(&held_by_room, turn_room) else {
         return HeldCardTurn::unheld();
     };
     // Stamped for the seam as the turn roots: the handoff record carries this card WHOLE

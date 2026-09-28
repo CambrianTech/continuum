@@ -1338,6 +1338,7 @@ async fn serve_persona_loop_inner(
                 let held_card = crate::cognition::persona_workspace::root_at_held_card(
                     &cycle,
                     ctx.identity.peer_id.as_uuid(),
+                    turn_room,
                     conversation,
                 )
                 .await;

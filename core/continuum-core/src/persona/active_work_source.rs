@@ -41,6 +41,14 @@ pub trait AircWorkReader: Send + Sync {
     /// it holds none (or no daemon, in tests).
     async fn active_claims(&self) -> Result<Vec<WorkCard>, AircError>;
 
+    /// The cards she holds, each beside the ROOM whose board carries it, so a turn roots at
+    /// the card of ITS OWN activity (focus is per activity, Joel 2026-09-28). Default: every
+    /// card with its room unknown. Such a claim is visible as work but cannot implicitly
+    /// select a checkout for a particular activity.
+    async fn active_claims_by_room(&self) -> Result<Vec<(Option<uuid::Uuid>, WorkCard)>, AircError> {
+        Ok(self.active_claims().await?.into_iter().map(|card| (None, card)).collect())
+    }
+
     /// ONE card as the board carries it now, whoever holds it — the read a wake needs
     /// to tell a citizen what became of a card she believed she held (card c8303c32).
     /// `None` when no subscribed board has it (or no daemon, in tests). Default `None`
