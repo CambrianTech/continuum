@@ -234,15 +234,6 @@ fn priority_str(p: Priority) -> &'static str {
     }
 }
 
-fn parse_priority(s: &str) -> Priority {
-    match s.to_ascii_lowercase().as_str() {
-        "p0" => Priority::P0,
-        "p1" => Priority::P1,
-        "p3" => Priority::P3,
-        _ => Priority::P2,
-    }
-}
-
 /// Resolve a card id THE WAY THE BOARD TEACHES IT. The board projection renders
 /// cards with 8-char short ids (`card 08ece9e8 [Open]`); the lifecycle verbs
 /// demanded the full 32-char UUID, so a persona quoting the id she was SHOWN
@@ -1720,12 +1711,9 @@ pub struct WorkCreate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkCreateParams {
-    /// The activity room whose board receives the card — its id or its name.
-    /// Omitted = the caller's current room (the lobby on a fresh node, which is
-    /// how project cards ended up in #general). Name the room.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub room: Option<String>,
+    /// The room whose board gets the card (id or name).
+    // Required: a "current room" default put project cards in #general.
+    pub room: String,
     /// Repository key, e.g. `CambrianTech/continuum`.
     pub repo: String,
     /// Human-readable card title.
@@ -1733,9 +1721,31 @@ pub struct WorkCreateParams {
     /// Optional card body / description.
     #[serde(default)]
     pub body: Option<String>,
-    /// Priority: one of p0, p1, p2, p3. Defaults to p2.
+    /// p0 (urgent) to p3 (whenever). Defaults to p2.
     #[serde(default)]
-    pub priority: Option<String>,
+    pub priority: Option<CardPriority>,
+}
+
+// A card's priority on the wire: a closed set serde refuses anything outside, never a
+// string read loosely into a default. (`//`, not `///`: a doc comment ships in her tool schema.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CardPriority {
+    P0,
+    P1,
+    P2,
+    P3,
+}
+
+impl From<CardPriority> for Priority {
+    fn from(priority: CardPriority) -> Self {
+        match priority {
+            CardPriority::P0 => Priority::P0,
+            CardPriority::P1 => Priority::P1,
+            CardPriority::P2 => Priority::P2,
+            CardPriority::P3 => Priority::P3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1746,24 +1756,42 @@ pub struct WorkCreateResult {
 #[async_trait]
 impl ActionCommand for WorkCreate {
     const NAME: &'static str = "work/create";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    // Making cards toward an activity's goals is every participant's work (Joel,
+    // 2026-09-28): a citizen who could claim and move cards but not create them could not
+    // break a project into slices. The card is created under HER airc identity.
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Create a work card on the shared airc board (repo + title + optional body/priority). \
-         Returns the new card_id.";
+        "Create a card on a room's board for known work (a slice, follow-up, review).";
     type Params = WorkCreateParams;
     type Output = WorkCreateResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
+        Self::create(&airc, p).await
+    }
+}
+
+impl WorkCreate {
+    /// The card lands on the NAMED room's board under the caller's own airc identity.
+    async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
         let repo = RepoId::new(p.repo)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
         let mut req = CreateWorkCard::new(
             repo,
             p.title,
-            parse_priority(p.priority.as_deref().unwrap_or("p2")),
+            Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
         );
         req.body = p.body;
-        let room = crate::modules::room_resolve::resolve_room(&airc, p.room.as_deref()).await?;
+        // A blank room would reach resolve_room as "unnamed" and land in the current room,
+        // the very default this field exists to refuse (Codex on #4550).
+        if p.room.trim().is_empty() {
+            return Err(CommandError::Invalid(
+                "work/create: room is required: name the activity room whose board gets the card"
+                    .into(),
+            ));
+        }
+        let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
         let card_id = airc
             .create_work_card_in(&room, req)
             .await
@@ -3972,6 +4000,60 @@ mod tests {
             assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
     }
+    /// what this catches: a citizen's card landing somewhere other than the room she
+    /// named (the old "current room" default put project cards in #general), or under
+    /// an identity that is not hers — work/create is how an activity's participants
+    /// break its goals into slices, so both the board and the author must be right.
+    #[tokio::test]
+    async fn a_citizens_card_lands_in_the_named_room_created_by_her() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let project = airc.join("career-wrangler").await.expect("join the project room");
+        let lobby = airc.join("general").await.expect("join the lobby; focus moves here");
+
+        let made = WorkCreate::create(
+            &airc,
+            WorkCreateParams {
+                room: "career-wrangler".to_string(),
+                repo: "github.com/CambrianTech/career-wrangler".to_string(),
+                title: "job list page".to_string(),
+                body: None,
+                priority: Some(CardPriority::P1),
+            },
+        )
+        .await
+        .expect("card created");
+
+        let id = WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid"));
+        let horizon = board_horizon(&airc).await.expect("subscribed boards");
+        let (room, card) = horizon
+            .boards
+            .iter()
+            .find_map(|(r, b)| b.card(id).map(|c| (r, c)))
+            .expect("the created card is on a subscribed board");
+        assert_eq!(room.channel, project.channel, "the named room, not the focused lobby");
+        assert_ne!(room.channel, lobby.channel);
+        assert_eq!(card.created_by, airc.peer_id(), "authored under her own identity");
+        assert_eq!(card.priority, Priority::P1);
+
+        // A blank room is refused, never read as "the current room".
+        let blank = WorkCreate::create(
+            &airc,
+            WorkCreateParams {
+                room: "  ".to_string(),
+                repo: "github.com/CambrianTech/career-wrangler".to_string(),
+                title: "should not land".to_string(),
+                body: None,
+                priority: None,
+            },
+        )
+        .await;
+        assert!(matches!(blank, Err(CommandError::Invalid(_))), "{blank:?}");
+    }
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
     /// Exercise the actual read path after subscribing without moving focus, and
@@ -3989,7 +4071,7 @@ mod tests {
         let mut request = CreateWorkCard::new(
             repo.clone(),
             "serve-time pin match gap",
-            parse_priority("p1"),
+            Priority::P1,
         );
         request.body = Some("Review the serving match against the actual source.".to_string());
         let card = airc
@@ -4001,7 +4083,7 @@ mod tests {
             .create_work_card(CreateWorkCard::new(
                 repo,
                 "local task",
-                parse_priority("p2"),
+                Priority::P2,
             ))
             .await
             .expect("card created on the current board");

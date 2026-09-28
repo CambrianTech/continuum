@@ -87,6 +87,10 @@
       "command": "work/claim"
     },
     {
+      "verb": "create",
+      "command": "work/create"
+    },
+    {
       "verb": "state",
       "command": "work/state"
     },
