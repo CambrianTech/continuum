@@ -197,3 +197,105 @@ Because data is the bottleneck, the work that improves us most is the work that 
 4. Coursework (S2, S5).
 
 Compute is ahead of the data at every step of this list; the list is ordered by how much learning signal each step adds per day.
+
+## 9. The DREAM stage, as an interface (S4, drafted 2026-09-28)
+
+> Joel, 2026-09-28, after the first 27B dream was refused for a 14,519-token example against a 1,025-token window: "Stupidly low token sizes are idiotic … the same as inference. Gotta be huge." "Why is training following a totally different workflow." "You're not supposed to make learning so different from reality." "You guys keep screwing up academy."
+
+**What went wrong.** The batch job was the S3 interim, and we shipped it and tuned it as if it were the design:
+- `/train` running a job in a second context;
+- its own window (1024), its own caps (8192 in both the core and the fork);
+- its own dataset, request parameters and launch.
+
+Each failure that night came from the separateness. §8.1 already said what learning is. This section is that, made concrete.
+
+### 9.1 The rule
+
+**Learning sees what serving sees.**
+- **The context:** the dream context has the lane's served per-slot window. No request, plan or constant sets it.
+- **The examples:** each example is a served turn, rendered from the same messages and tools through the same template the slot used. So the tokens are the tokens she was served, whole, system and tool head included.
+- **The weights and lifecycle:** the dream runs on the same resident weights, under the same pause-for-turns lifecycle (#4485).
+- **What never exists on this path:** a window parameter, a dataset, or a launch.
+
+### 9.2 The pieces, and the existing primitive each one is
+
+This revision follows Codex's and Cormac's reviews of the first draft (#4500): durability, grid ownership, and state separated from context. It uses existing primitives, with the fewest new routes.
+
+| Piece | What it is | Built on |
+|---|---|---|
+| **Owner** | Exactly one node holds a mind's learning for a `(persona, base)`: a claim that names the node. A non-owner never opens; arrivals route to the owner over airc. | grid claims / leases (the seat claim shape) |
+| **Session state** (per mind, small) | shadow adapter, optimizer moments and accumulator, RNG, step count, arrival and replay cursors. Bound to `(base revision + quant, stable adapter identity, rank/alpha/targets/top_layers)`: an `open` with different bindings refuses, or runs an explicit transition that starts from her stable gene. It never silently reuses state. | the job-dir layout, versioned |
+| **Step context** (per lane, large) | ONE training context per lane at the lane's served per-slot window, measured once and leased once (graph plus KV plus workspace). Each mind's state is swapped in for its step, the way a slot's KV is. N learning minds do not mean N graphs. | the resource ledger lease; `engine-footprints.json` keyed by the served window |
+| **Arrival** | The served turn as served (messages, tools, `train:false` history), with a **durable experience id** and provenance (room, card, scenario/branch). It is accepted into the existing training-trigger acceptance journal: the ack is the journal cursor, so a retry after a lost response never trains twice. | the trigger journal (kept, never replaced by a volatile queue) |
+| **Step** | In the server loop, under the governor's budget: one micro-step for one mind, arrivals plus a recency-weighted replay draw. The window is the served window, and the COMPUTE is scheduled separately: a step is split into chunks whose measured worst-case non-preemptible time fits the latency line, with yields between chunks. No experience is dropped to meet the budget. The probe is `engine.dream.step {persona, step, loss, ms, max_chunk_ms, arrival_sources}`. | #28 pause/resume, holds (`hold_training_on`) |
+| **Snapshot** | At an optimizer boundary, an **immutable** GGUF-lora of the shadow, while the live shadow keeps stepping. A candidate gene is not a checkpoint. Its manifest records the arrival ids and source counts it consumed. | `adapter_manifest::register`, then `GeneTrials::open` (#4473-4476) |
+| **Checkpoint** | The full session state (above), written at snapshots and at deploy seams, and resumed by the next core. A versioned format: an engine that cannot read it opens from her stable gene and says so. She loses momentum, never the gene. | anustart |
+| **Stores** | The replay pool and the session checkpoints each get a `TrackedDir` row and an eviction owner: the last K checkpoints per mind, and a replay pool bounded by bytes. | `disk_reporters` / `disk_eviction` |
+
+Engine surface (fork): load or save a mind's session state into the lane's step context, accept arrivals by id, take steps within the budget, write a snapshot, and report sessions. Whether that is one route with verbs or several is an implementation detail. What matters is the contracts above.
+
+### 9.3 Invariants, each with a test
+
+- One owner per `(persona, base)` on the grid: a second `open` elsewhere refuses.
+- An arrival id trains at most once, across a lost ack or a retry.
+- A card that judges snapshot *k* was never consumed by snapshot *k*. Trials draw her next cards, and replay must not break that.
+- Held-out and coursework provenance survive into the snapshot manifest (Kimi's disjointness is checkable after the fact).
+- A step never exceeds its measured chunk budget while a slot is busy, and a directed turn's wait stays on the latency line.
+
+### 9.4 What retires
+
+- `genome/job-create` with `engine-local` becomes the fallback for a lane without the dream stage. Its job records become receipts, not a separate persona lifecycle.
+- The trigger bucket's dispatch threshold becomes the accumulation window of §8.1.
+- No window or sequence-length setting reaches the dream path.
+
+### 9.5 Gates (in order)
+
+1. On the 5090, the lane's step context opens at the served window (~61k) on Qwen3.8-27B with top_layers 8, its measured graph plus KV plus workspace fits the lease, and the worst chunk is measured. If it does not fit, the answer is depth, recompute, or smaller chunks, never a smaller window.
+2. Two minds' states swap through the one context while residents keep turning, and the directed wait stays flat.
+3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
+4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
+
+## 10. Coursework is a room, not a runner (mapped 2026-09-28)
+
+Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learning follow the same runtime and room state, with as few differences from inference as possible.
+
+### 10.1 What exists today (source-read)
+
+| Path | What it builds | Where it leaves the normal turn |
+|---|---|---|
+| **Normal turn** | `serve_persona_loop` / `ask_the_act_question` → `drive_to_settle_with_credit` → `settle_step`. The faculty's `build_request_within` carries the system prompt, the authorized tools, `active_adapters` from her genome, `room_id`, `persona_id` and the purpose. The lane governor admits it, the prefill throttle gates it, the slot is pinned per activity, and her gene provenance and prompt capture are recorded. | (reference) |
+| `genome/teach` `teacher_generate` (teach.rs ~473) | A raw request: `TEACHER_SYSTEM` plus the task prompt, no tools, no adapters, no room, no persona. Purpose `genome/teach` puts it in the Probe slot class. | It calls the adapter directly: no faculty, no governor, no capture, no provenance, no warm slot. `test_grade` grades it, and it writes to `datasets/`. |
+| `synthesize_remediation*` + `academy_batch` | Teacher trajectories on `share_teacher_lane`, `PrivateTeacherLane`, or an owned restore of the incumbent. | A parallel lane world, and the teacher is not a seated mind. |
+| `teach/bridge` | Candidate datasets, held-out disjointness, `submit_training`. | A second entry into training beside the bucket or credit path. |
+| `cognition/eval` `run_eval` | Forks her REAL cycle (`fork_eval_cycle*`: her faculties, tools and prompt) and runs `drive_to_settle`. | Detached, `room_id` optional, and the progress ledger is separate. The one academy path already on the canonical turn. |
+| `benchmark_standing` | `activity/spawn` with `recipe: benchmark/round` (base `academy`): a room, imported cards, a seated team, residents pulling cards through `act_question`, and settle credit. | None. **This is the shape coursework takes.** |
+
+### 10.2 The target
+
+- **A coursework round is an activity:** `activity/spawn` with a `coursework/round` recipe, the benchmark-round pattern. Standing dispatch opens it the way `benchmark_standing` does.
+- **Lessons are cards:** a grader-backed card source replaces `select_teach_tasks`. Each card carries its task and its test oracle, and the test is the card's verdict (`Verdict` → `OutcomeStamp` → settle), not a side grader.
+- **The doctor is a seated mind:** a teacher persona on the same base (the doctor role, with its own slot affinity, S2), taking normal turns in the room. A lesson is the doctor demonstrating on the card, and then the patient attempting it. An exam is the patient alone.
+- **Every turn is canonical:** the room, persona, tools, genome, governor, slot and capture are identical to work, and only the declared fields differ (scenario provenance, grade, training).
+- **Learning flows through one path:**
+  - The patient's passing turns go through `stage_credit` → `settle_card_credit`, and arrive in her dream session (§9) with provenance `coursework`.
+  - The doctor's demonstration arrives as a shared lesson, at the lower weight of §8.3.
+  - Coursework verdicts are their OWN evidence stream: what she was taught, not whether it transfers. **The promotion gate judges real work only** (Cormac on #4500). Lessons repeat by design, so a snapshot trained on task T would otherwise be judged on T again in the next round. The §9 judge invariant is keyed by **task identity** (the coursework task id, or a content hash of the prompt and oracle), not by card instance, wherever coursework evidence is read.
+- **Held-out stays held-out:** the manifest provenance of §9.3 keeps her disjoint held-out defects checkable, and coursework never counts as new-work gain.
+- **Contained, using existing primitives** (Cormac on #4500). Real tools mean real effects, so a round is a branch of her state, not her state:
+  - The round's cards check out a **scenario workspace**: the per-card checkout that `work_pull` already makes, with no promotion path to her real branch.
+  - Memory writes and noteworthy flags from a coursework turn carry `provenance: coursework`, so recall can weight or exclude them.
+  - Room posts stay in the round's room.
+  - **Acceptance:** a coursework round leaves her real workspace, memory and rooms unchanged, except for the declared learning arrivals. Run a round, then diff.
+- **Priority:** coursework never outranks a real card for a slot or a turn. It is standing dispatch beside real work on the same lanes, under the one governor rule, so a round can never eat the node's residents.
+
+### 10.3 What retires
+
+`teacher_generate`'s raw request, `synthesize_remediation*`, the `academy_batch` lane dance, `PrivateTeacherLane` when the teacher shares her base, `teach/bridge`'s separate `submit_training` entry, and `datasets/` as a training input. `cognition/eval` stays for held-out evaluation, with a room and provenance always set.
+
+### 10.4 Build order
+
+1. The `coursework/round` recipe plus the grader-backed card source (test = verdict).
+2. The doctor seated as a persona on the same base (S2 slot affinity), with the demonstration turn.
+3. The credit path (the patient's passing turns and the doctor's lessons as arrivals with provenance), feeding §9's session.
+4. The containment test: a round runs, and the diff of her real workspace, memory and rooms shows only the declared learning arrivals.
+5. Retire the listed code once the round runs a lesson end to end. Acceptance, per Codex: the same scenario through the normal path and through coursework has the same canonical turn inputs except the declared fields.
