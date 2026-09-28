@@ -142,8 +142,12 @@ pub(crate) fn stage_reuse(persona: uuid::Uuid, request_id: &str, req: &TextGener
 /// `None` for a failure or a provider without timings. Probes the split, then commits this
 /// request as the one the next is compared with, only when the engine answered with timings.
 pub(crate) fn settle_reuse(persona: uuid::Uuid, request_id: &str, timing: Option<(u32, u32)>) {
-    let Some((_, (staged_id, now))) = PENDING.remove(&persona) else { return };
-    let Some((cached, prefill)) = timing.filter(|_| staged_id == request_id) else {
+    // Only THIS request's staging is taken: a late completion of an older request must not
+    // erase a newer one staged since (Codex on #4487).
+    let Some((_, (_, now))) = PENDING.remove_if(&persona, |_, (staged_id, _)| staged_id == request_id) else {
+        return;
+    };
+    let Some((cached, prefill)) = timing else {
         COMMITTED.remove(&persona);
         return;
     };
@@ -253,6 +257,8 @@ mod tests {
         stage_reuse(persona, "c", &req("three"));
         stage_reuse(persona, "d", &req("four"));
         assert!(!COMMITTED.contains_key(&persona), "a request that never settled leaves nothing to compare");
+        settle_reuse(persona, "c", Some((0, 10)));
+        assert!(PENDING.contains_key(&persona), "a late completion of c must not erase d, staged since");
     }
 
     // what this catches (Fable on #4487): a tool-surface change read as a kept prompt. The
