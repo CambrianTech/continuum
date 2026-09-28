@@ -138,12 +138,8 @@ pub(super) fn summarize_args_for_recency(
             .iter()
             .map(|(k, v)| match v {
                 serde_json::Value::String(s) if s.chars().count() > fold_at => {
-                    // The digest keeps this collapse INJECTIVE, which the dedup guard
-                    // depends on: `all_calls_already_satisfied` matches this exact rendering
-                    // against the receipt trail, so two DIFFERENT big values must never
-                    // collapse to the same text. Without it, a corrected re-write whose
-                    // length happened to match the refused one would be silently skipped as
-                    // "already satisfied" — losing the very edit she just fixed.
+                    // Distinguish large argument values in the human-readable receipt.
+                    // This rendering is not a cache key or execution-admission signal.
                     use std::hash::{Hash, Hasher};
                     let mut h = std::collections::hash_map::DefaultHasher::new();
                     s.hash(&mut h);

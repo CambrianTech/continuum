@@ -10,7 +10,6 @@ use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
 use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
-use super::perception::{all_calls_already_satisfied, is_redundant_orientation};
 use super::settle::now_ms;
 
 /// Recall salience for an action-observation receipt (#166). Below the neutral
@@ -48,34 +47,6 @@ fn is_long_running(command: &str) -> bool {
             | "cognition/full-evaluate"
             | "forge/train"
     )
-}
-
-/// Build one typed [`Observation`] per demoted call for a short-circuit path
-/// (already-satisfied / redundant-orientation): NO tool executed, so the OUTPUT
-/// carries the nudge as its result (the perception the mind gets back instead of
-/// a re-execution) and the STATUS names why it was demoted. `verb`/`paths` are
-/// still precomputed from the call. Non-empty ⇒ `produced_an_act()` stays true,
-/// so the settle loop treats this exactly as the old `Some(nudge)` return did.
-fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec<Observation> {
-    calls
-        .iter()
-        .map(|c| Observation {
-            call: c.clone(),
-            output: ToolOutput {
-                result: ToolResult {
-                    tool_use_id: c.id.clone(),
-                    content: nudge.to_string(),
-                    spill_handle: None,
-                    is_error: None,
-                },
-                verb: ToolVerb::classify(&c.name),
-                paths: extract_paths(&c.input),
-                // No tool ran, so no command spoke. Unprojected is the truth.
-                verdict: Default::default(),
-            },
-            status: status.clone(),
-        })
-        .collect()
 }
 
 /// One settle chain's causal thread — owned by the DRIVER of the chain
@@ -136,69 +107,9 @@ pub async fn apply_act(
         return ActOutcome::NoHands;
     };
 
-    // Repeat-perception (proprioception, content-driven — NOT an agentic counter).
-    // If this exact batch was ALREADY carried out this settle, its result is already
-    // in working memory. Re-running it burns a tool round-trip + a redundant (content-
-    // deduped, so no-op) engram and returns byte-identical perception — off which a
-    // greedy instruct model re-emits the identical `Act` forever. The `[action #n]`
-    // stamp shift was supposed to break this and does not (see
-    // `all_calls_already_satisfied`). So do NOT re-execute: record an EXPLICIT
-    // "already satisfied" trace so the redundancy is PERCEIVED rather than merely
-    // present, and let the caller re-perceive. The trace states ONLY the fact — it
-    // must not privilege answering over a DIFFERENT act (the first mined exam showed
-    // the earlier "I should ANSWER the question now" phrasing being obeyed literally:
-    // she settled with a diagnosis instead of trying the repair edit). Context
-    // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]].
-    // ESCALATING loop-awareness for the SHORT-CIRCUIT paths, mirroring the executed
-    // path's `max_repeat` warning (line ~546). A satisfied/redundant call is demoted
-    // (never re-executed) and previously recorded a byte-IDENTICAL static nudge every
-    // tick. `record_fact` doesn't dedup but the recency window is capacity-bounded, so
-    // identical-nudge spam EVICTS the useful result receipt and leaves a window of clones
-    // — and off unchanged perception a greedy (temp-0) model re-emits the identical call
-    // FOREVER (#206, glass-boxed: `commands/help(code/write)` ×54, the "already ran" nudge
-    // fired 104× and never broke the loop). Bumping the DURABLE fingerprint counter here
-    // and embedding the count makes each demotion DISTINCT and monotonically climbing — the
-    // perception genuinely shifts every tick, which is what lets cognition move on. Only the
-    // short-circuit branches (which early-return, never reaching line ~546) call this, so
-    // the executed path's own bump is never double-counted. Honest proprioception, never a
-    // steer toward a specific next act ([[no-hardcoded-heuristics-to-steer-cognition]],
-    // [[repetition-brick-fires-but-does-not-break-the-loop]]).
-    let bump_repeat = || {
-        calls
-            .iter()
-            .map(|c| {
-                let fp = c.loop_fingerprint();
-                body.working_memory.note_action_fingerprint(&fp)
-            })
-            .max()
-            .unwrap_or(0)
-    };
-
-    /// The ORIENTATION counter, keyed by CLASS rather than by `name|args`.
-    ///
-    /// `is_redundant_orientation` is deliberately class-based — its own doc says demoting
-    /// "by CLASS + prior-receipt (ignoring args entirely) is immune to that jitter". The
-    /// DETECTOR learned that lesson; the COUNTER did not. `bump_repeat` fingerprints
-    /// `name|args`, so every jittered variant is a fresh key returning 1.
-    ///
-    /// Measured on sympy-21379, all 8 orientation calls of one run:
-    ///   commands/list({"filter":"code"}) ×2, commands/list({}), commands/list({"filter":"sympy"}),
-    ///   code/tree({"path":"."}), code/tree({include_hidden,max_depth,path:"sympy"}),
-    ///   commands/help({"name":"code/read"}), commands/help({"name":"code/edit"})
-    /// Nearly all distinct → the nudge read "I have now run orientation 1 times this
-    /// concern" EVERY time. Byte-identical perception off a greedy decoder is a fixed
-    /// point, which is exactly the #206 failure the escalation was built to break —
-    /// reintroduced through the argument axis.
-    ///
-    /// One stable key makes the count climb across variants, so each demotion genuinely
-    /// shifts perception. Still a FACT about her own history, never a steer
-    /// ([[repetition-brick-fires-but-does-not-break-the-loop]], [[discovery-loop-broken-by-escalating-short-circuit-nudge]]).
-    const ORIENTATION_FINGERPRINT: &str = "orientation|<class>";
-    let bump_orientation_repeat = || {
-        body.working_memory
-            .note_action_fingerprint(ORIENTATION_FINGERPRINT)
-    };
-
+    // Call history is not a cache-validity proof. Reads can change, failures can
+    // recover, and earlier results may no longer fit the prompt. Execute through
+    // the owning command; authorization and operation-specific idempotency stay there.
     // EVERY re-injection bound in this act comes from her LIVE served window, never a
     // constant — an unknown window folds NOTHING rather than inventing a number
     // ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
@@ -212,79 +123,6 @@ pub async fn apply_act(
     if let Some((_, w)) = cycle.model_loadout() {
         body.working_memory.set_served_window(w);
     }
-    let fold = Some(budget.echoed_arg_chars());
-    let recent = body.working_memory.recent();
-    if all_calls_already_satisfied(&recent, calls, fold) {
-        let names = calls
-            .iter()
-            .map(|c| {
-                let args = serde_json::to_string(&c.input).unwrap_or_else(|_| "{}".to_string());
-                format!("{}({})", c.name, args)
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let n = bump_repeat();
-        // Sense, not steer (2026-09-01): the fact is the repeat count and
-        // where the result lives; the old "whatever I do next must be
-        // something DIFFERENT" tail was workflow steering. The short-circuit
-        // above is what actually protects the substrate.
-        let nudge = format!(
-            "I have now issued {names} {n} {}",
-            crate::cognition::framing_echo::REPEAT_CALL_TAIL
-        );
-        body.working_memory.record_fact(&nudge);
-        crate::probe!(
-            class = "persona.act.repeat_short_circuited",
-            persona = %body.persona_name,
-            room_id = %room_id,
-            calls = calls.len(),
-            "identical act already satisfied this turn — recorded already-satisfied proprioception, skipped re-execution"
-        );
-        // Each demoted call becomes a typed act whose OUTPUT is the nudge (the
-        // perception the mind gets back instead of a re-execution) and whose
-        // STATUS names the short-circuit. produced_an_act() stays true, so the
-        // settle loop treats this exactly as the old `Some(nudge)` did.
-        let acts = short_circuit_acts(calls, &nudge, ActStatus::AlreadySatisfied { repeat: n });
-        return ActOutcome::Acted { acts };
-    }
-
-    // Redundant-orientation demotion (Joel-approved "demote discovery at the seam",
-    // 2026-07-16). `commands/help`/`commands/list` only RE-LIST the tool surface the
-    // mind already carries; they never touch the workspace. The FIRST orientation per
-    // concern is honest — once a discovery receipt is already in the concern, another
-    // is the act-pressure filler the glass box exposed (1855/3288 live tool calls were
-    // this; nine straight `commands/help` turns while the answer sat ready in prose).
-    // Demote it exactly as the repeat guard above does: do NOT execute (no catalog
-    // re-dump, no room receipt), record the redundancy as proprioception, and let the
-    // mind re-perceive with the fact present. A CLASS distinction (orientation is not
-    // settlement), never a steer toward a specific next act — the nudge offers BOTH a
-    // real action and an answer, privileging neither ([[no-hardcoded-heuristics-to-steer-cognition]]).
-    if is_redundant_orientation(&recent, calls) {
-        let names = calls
-            .iter()
-            .map(|c| c.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let n = bump_orientation_repeat();
-        let nudge = format!(
-            "I have now run orientation ({names}) {n} times this concern — my tool menu and \
-             the workspace map are already in my working memory above, and running it again \
-             returns the same survey and changes nothing. My next move must be something \
-             DIFFERENT: read a SPECIFIC file, make an edit, run something, or answer from \
-             what I have."
-        );
-        body.working_memory.record_fact(&nudge);
-        crate::probe!(
-            class = "persona.act.redundant_orientation",
-            persona = %body.persona_name,
-            room_id = %room_id,
-            calls = calls.len(),
-            "orientation call with a discovery receipt already in the concern — recorded redundant-orientation proprioception, skipped re-execution"
-        );
-        let acts = short_circuit_acts(calls, &nudge, ActStatus::RedundantOrientation { repeat: n });
-        return ActOutcome::Acted { acts };
-    }
-
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
         persona_name: body.persona_name.clone(),
@@ -706,17 +544,12 @@ pub async fn apply_act(
     let mut observation = observation.trim().to_string();
     let recall_observation = recall_observation.trim().to_string();
 
-    // If the mind just re-issued an IDENTICAL call, make that redundancy a VIVID perception —
-    // not just the implicit `#seq` window-shift that smaller models don't interpret. A true
-    // fact about her OWN hands: she perceives she is looping and moves on organically. It never
-    // says what to do instead (that would be steering). Glass-boxed: a 14B re-ran the exact
-    // `code/search` 18× with the found file already in memory — structure the experience so the
-    // loop is felt. [[write-cognition-as-a-parent-above-lowered-expectations]]
+    // Count requests without claiming their results are identical or still retained.
+    // The actual result below is authoritative, including errors and changed state.
     if max_repeat >= 2 {
         observation = format!(
-            "⚠ I have now issued this EXACT tool call {max_repeat} times; its result has not \
-             changed and is already in my working memory above. Repeating it tells me nothing \
-             new — I already have what this call can give me.\n\n{observation}"
+            "[repetition] A call in this batch has been requested {max_repeat} times. \
+             This execution's result follows.\n\n{observation}"
         );
     }
 
