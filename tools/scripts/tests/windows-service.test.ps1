@@ -585,6 +585,59 @@ exit 64
     } finally { $env:FAKE_PROMOTE_RC = $null }
     Write-Output 'PASS: a verified engine slot is promoted by the core verb with its own stamp'
 
+    # card 6d5bacab (Codex on #4512): Prepare-CoreServiceEngine promotes a non-current slot that
+    # ALREADY holds the pinned engine, with no idle-slot question and no build; a drifting slot,
+    # a promote that cannot run, and a release that changes mid-way each take their own road.
+    # Isolated scope: every collaborator is mocked, so this proves the decision, not the build.
+    & {
+        $profileRoot = Join-Path $scratch 'already-built-profile'
+        $bin = Join-Path $profileRoot '.continuum\bin'
+        foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $bin $name) | Out-Null
+            Set-Content -LiteralPath (Join-Path $bin "$name\llama-server.exe") -Value 'engine'
+        }
+        $script:releaseJson = (@{ cli = (Join-Path $scratch 'fake-cli.exe') } | ConvertTo-Json -Compress)
+        $script:matching = 'engine-c'
+        $script:promoteResult = $true
+        $script:selected = $false
+        $script:changeTaskAfter = $false
+        $script:taskReads = 0
+        function Get-ScheduledTask {
+            $script:taskReads++
+            if ($script:changeTaskAfter -and $script:taskReads -gt 1) { return [pscustomobject]@{ Description = '{"changed":true}' } }
+            [pscustomobject]@{ Description = $script:releaseJson }
+        }
+        function Get-CoreEngineRequirement { [pscustomobject]@{ source_revision = ('a' * 40); backend = 'cuda' } }
+        function Get-CoreEngineDrift { param($Directory, $Requirement) if ((Split-Path -Leaf $Directory) -eq $script:matching) { '' } else { 'drift' } }
+        function Invoke-CoreEnginePromote { param($Cli, $InstallRoot, $Slot) $script:promoted = Split-Path -Leaf $Slot; $script:promoteResult }
+        function Select-CoreEngineSlot { $script:selected = $true; $null }
+        function Mod-LlamaServer { throw 'fixture: the already-built path must not build' }
+        $savedProfile = $env:USERPROFILE
+        $receipt = Join-Path $scratch 'already-built-receipt'
+        try {
+            $env:USERPROFILE = $profileRoot
+            # (1) engine-c already at the pin: promoted, no idle-slot question, no build
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
+            if ($script:promoted -ne 'engine-c' -or $script:selected) { throw 'A slot already at the pin was not promoted directly' }
+            if ([IO.File]::ReadAllText($receipt) -ne (Join-Path $bin 'engine-c\llama-server.exe')) { throw 'The receipt does not name the promoted slot' }
+            # (2) no slot at the pin: falls through to idle-slot selection (a busy set skips)
+            $script:matching = 'none'; $script:selected = $false; $script:promoted = $null
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
+            if (-not $script:selected -or $script:promoted) { throw 'A drifting slot was promoted instead of falling through' }
+            if (-not ([IO.File]::ReadAllText($receipt)).StartsWith('SKIP: ')) { throw 'The fall-through did not reach the idle-slot path' }
+            # (3) at the pin but the promote cannot run (a CLI without the verb): falls through
+            $script:matching = 'engine-c'; $script:promoteResult = $false; $script:selected = $false
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
+            if (-not $script:selected) { throw 'A promote that could not run did not fall through' }
+            # (4) the release changes during preparation: refused, nothing handed off
+            $script:promoteResult = $true; $script:changeTaskAfter = $true; $script:taskReads = 0
+            $refused = $false
+            try { Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt } catch { $refused = $_ -match 'changed during engine preparation' }
+            if (-not $refused) { throw 'A release changed mid-preparation was handed off' }
+        } finally { $env:USERPROFILE = $savedProfile }
+    }
+    Write-Output 'PASS: a slot already at the pin is promoted without a build, and every other case takes its own road'
+
     # Compile a tiny native child: arguments containing spaces must
     # arrive unchanged and a nonzero exit must reach Task Scheduler.
     $child = Join-Path $scratch 'child with spaces.exe'

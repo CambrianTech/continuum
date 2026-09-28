@@ -177,6 +177,23 @@ case "$(uname -s)" in
         echo "$INSTALL_DIR/$current_slot/llama-server"
         exit 0
       fi
+      # A slot that ALREADY holds this pin is promoted as is, before any build (card 6d5bacab):
+      # a build whose promotion never happened. Promotion overwrites nothing, so it needs no
+      # proof the slot is idle; with every slot populated and a lane that predates engine
+      # records, idle-slot would skip every deploy and that engine would never be used.
+      if [ "$FORCE" -eq 0 ]; then
+        for built in engine-a engine-b engine-c; do
+          [ "$built" = "$current_slot" ] && continue
+          if [ -x "$INSTALL_DIR/$built/llama-server" ] \
+             && [ "$(cat "$INSTALL_DIR/$built/.llama-server.stamp" 2>/dev/null)" = "$STAMP_WANT" ]; then
+            SLOT="$built"
+            echo "→ engine slot: $built already holds $STAMP_WANT, promoting it without a build" >&2
+            promote_slot
+            echo "$INSTALL_DIR/$built/llama-server"
+            exit 0
+          fi
+        done
+      fi
       set +e
       slot_dir="$(engine_cli idle-slot)"
       rc=$?

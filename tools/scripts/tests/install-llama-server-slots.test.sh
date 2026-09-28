@@ -87,6 +87,15 @@ IDLE_RC=0 IDLE_SLOT=engine-a run || fail "current: exit $?"
 [ "$(cat "$scratch/out")" = "$CONTINUUM_HOME/bin/engine-b/llama-server" ] || fail "current: $(cat "$scratch/out")"
 [ ! -s "$scratch/log" ] || fail "current: queried or promoted: $(cat "$scratch/log")"
 
+# already built: a non-current slot holding the pin is promoted with no build and no idle-slot
+# question, even when every slot is busy (card 6d5bacab: the 5090's cancelled install).
+fresh_home; engine_at "$CONTINUUM_HOME/bin/engine-b" "old000:$backend"; echo engine-b > "$CONTINUUM_HOME/bin/current"
+engine_at "$CONTINUUM_HOME/bin/engine-c" "$want"
+IDLE_RC=3 IDLE_SLOT= run || fail "already built: exit $?"
+[ "$(cat "$scratch/out")" = "$CONTINUUM_HOME/bin/engine-c/llama-server" ] || fail "already built: $(cat "$scratch/out")"
+grep -qx "promote engine-c $want" "$scratch/log" || fail "already built: not promoted"
+! grep -q "idle-slot" "$scratch/log" || fail "already built: asked for an idle slot it did not need"
+
 # none idle: exit 3 skips the build this deploy, exits 0, promotes nothing.
 fresh_home; engine_at "$CONTINUUM_HOME/bin/engine-b" "old000:$backend"; echo engine-b > "$CONTINUUM_HOME/bin/current"
 IDLE_RC=3 IDLE_SLOT= run || fail "none idle: exit $?"
@@ -99,4 +108,4 @@ if IDLE_RC=1 IDLE_SLOT= run; then fail "refused: exited 0"; fi
 grep -q "no slot can be proven idle" "$scratch/err" || fail "refused: the cause is not named"
 ! grep -q promote "$scratch/log" || fail "refused: promoted"
 
-echo "install-llama-server slots: 5 cases pass"
+echo "install-llama-server slots: 6 cases pass"
