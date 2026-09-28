@@ -240,6 +240,25 @@ function Prepare-CoreServiceEngine {
     if ($task.Description -cne $Description) { throw 'Installed release changed before engine preparation.' }
     $release = $Description | ConvertFrom-Json -ErrorAction Stop
     $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+    # A slot that ALREADY holds the pinned engine is promoted as is (card 6d5bacab): a build whose
+    # promotion never happened (the 5090's cancelled install left engine-c built and verified while
+    # current stayed engine-b). Promotion overwrites nothing, so it needs no proof that the slot is
+    # idle, and with every slot populated and a lane that predates engine records, idle-slot would
+    # SKIP every deploy and that engine would never be used. This runs only when the current
+    # engine drifts from the pin, so a matching slot is never the current one.
+    $installRoot = Join-Path $env:USERPROFILE '.continuum'
+    $slotRoot = ConvertTo-CoreImagePath (Join-Path $installRoot 'bin')
+    foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
+        $built = Join-Path $slotRoot $name
+        if (-not (Test-Path -LiteralPath (Join-Path $built 'llama-server.exe'))) { continue }
+        if (Get-CoreEngineDrift -Directory $built -Requirement $requirement) { continue }
+        if (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot $installRoot -Slot $built) {
+            $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+            if ($task.Description -cne $Description) { throw 'Installed release changed during engine preparation.' }
+            [IO.File]::WriteAllText($ReceiptPath, (Join-Path $built 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
+            return
+        }
+    }
     $slot = Select-CoreEngineSlot -Descriptor $release -Cli $release.cli -SkipIfBusy
     if (-not $slot) {
         # The core still deploys on the engine it has; the next deploy builds this one. An
