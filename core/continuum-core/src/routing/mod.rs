@@ -23,6 +23,7 @@
 //! `probe!`/`time!`/`stack!` macros, and the env registry +
 //! `Context::environment()` accessor.
 
+pub mod access_decision;
 pub mod airc_command_protocol;
 pub mod airc_event_adapters;
 pub mod airc_event_protocol;

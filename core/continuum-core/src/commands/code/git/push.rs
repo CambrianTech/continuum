@@ -45,6 +45,7 @@ crate::action_command! {
     pub struct CodeGitPush { state: Arc<CodeState> }
     name: "code/git/push",
     access: Privileged,
+    native: true, // a capable citizen's working set (Joel, 2026-09-28: offered, like Claude's)
     aliases: &["git_push"],
     params: GitPushParams,
     output: GitPushResult,

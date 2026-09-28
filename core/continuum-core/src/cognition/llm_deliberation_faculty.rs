@@ -623,10 +623,21 @@ impl LlmDeliberationFaculty {
         // [[budget-at-assembly-never-clamp-the-prompt]]
         let raw = persona_tools::native_tool_specs();
         self.native_command_names = raw.iter().map(|s| s.name.clone()).collect();
-        self.hands_specs = hands_surface(&raw)
-            .into_iter()
-            .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
-            .collect();
+        // A capable citizen's EXTENDED hands (the web, push and PR verbs) go on the wire when
+        // the served window's tool share holds them; on a window that cannot, she keeps the
+        // core working set and the rest stay one `commands/list` away. The window decides
+        // what fits, never who is capable: an 8k window spending its whole share on tools
+        // leaves her newest line nowhere to go (card dec1a7ff's survival check).
+        let to_wire = |specs: Vec<NativeToolSpec>| -> Vec<NativeToolSpec> {
+            specs.into_iter().map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style)).collect()
+        };
+        let full_hands = to_wire(hands_surface(&raw));
+        let share = super::context_budget::ContextBudget::from_window(self.binding.load().context_window).tool_surface_tokens();
+        self.hands_specs = if Self::tool_surface_tokens_of(&full_hands) <= share {
+            full_hands
+        } else {
+            to_wire(core_hands(&raw))
+        };
         self.native_specs = raw
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
@@ -5293,7 +5304,23 @@ fn metrics_from(
 /// Her HANDS: the file / work / git / cargo / tool verbs plus the discovery pair,
 /// selected on the COMMAND names (`code/read`, `work/state`, …) before the wire
 /// dialect renames them (`edit_file`, `list_recipes`, …).
+/// The verbs a capable citizen's hands add over the core working set: the web, and the
+/// push and PR verbs that make a change land without an operator (#4532). Offered only when
+/// the served window's tool share holds them (see `rebuild_tool_surface`).
+fn is_extended_hand(name: &str) -> bool {
+    name.starts_with("web/")
+        || matches!(name, "code/shell-poll" | "code/git/add" | "code/git/push" | "code/github/pr-create" | "code/github/pr-comment")
+}
+
+/// Her hands without the extended verbs: what a window too small for the full set carries.
+fn core_hands(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
+    hands_surface(raw).into_iter().filter(|s| !is_extended_hand(&s.name)).collect()
+}
+
 fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
+    let policy = crate::routing::access_decision::policy();
+    let capable = crate::routing::access_decision::local_cognitive_rank()
+        .map_or(true, |rank| rank >= policy.full_access_min_rank); // an unknown level gets more, not less
     raw.iter()
         .filter(|s| {
             let n = s.name.as_str();
@@ -5315,12 +5342,18 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // 9/16 (#4102), the night the landings stopped. A reviewer who holds a
             // review card, or a citizen reading receipts, reaches them through
             // `commands/list`; the holder's own hands are `work/get` and `work/submit`.
+            // HER HANDS FOLLOW HER COGNITIVE LEVEL (Joel, 2026-09-28: the citizens were
+            // hand-crippled; the point is a team that replaces Claude or Codex). A capable
+            // model also gets the web (search and fetch), like Claude; a model below the
+            // policy's threshold keeps the focused working set. Not every verb: a full dump
+            // blows the prompt budget and has muted personas before (persona_tools bound).
             n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
                 || n.starts_with("cargo/")
                 || n.starts_with("tool/")
                 || n.starts_with("commands/")
+                || (capable && n.starts_with("web/"))
         })
         .cloned()
         .collect()
@@ -5506,6 +5539,7 @@ mod tests {
             "work/submission",
             "work/review",
             "work/submit",
+            "web/fetch",
         ]
         .iter()
         .map(|n| NativeToolSpec {
@@ -5520,6 +5554,9 @@ mod tests {
         })
         .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
+        // A capable citizen (an unknown level counts as capable: more, not less) also gets
+        // the web, like Claude (Joel, 2026-09-28); chat and room verbs are not hands, and
+        // the misread reviewer verbs stay out of her hands.
         assert_eq!(
             hands,
             [
@@ -5527,10 +5564,15 @@ mod tests {
                 "work/state",
                 "commands/list",
                 "code/git/status",
-                "work/submit"
+                "work/submit",
+                "web/fetch"
             ],
             "git/apply, work/submission and work/review are reviewer verbs, not hands; work/submit is the holder's"
         );
+        // what this also catches: a window too small for the extended verbs keeps her CORE
+        // hands (never nothing), with the web and the push/PR verbs one commands/list away.
+        let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
+        assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
     }
 
     // what this catches: the live registry's command names drifting away from the
@@ -8085,12 +8127,19 @@ mod tests {
             // First cut cost +117 guard tokens and tripped this ceiling AND the 8192
             // survival check below by TWO tokens; the docs were made terse instead of
             // moving either number. The surface is within the ceiling as it stood.
-            const AGENTIC_SURFACE_CEILING: u32 = 12100;
+            // 12100 -> 13200, stated plainly (#4532, Joel 2026-09-28: "give them more not
+            // less"): a capable citizen's work turn now carries the hands a Claude or Codex
+            // session has — code/shell-poll, code/git/add, code/git/push,
+            // code/github/pr-create, code/github/pr-comment — as natives. Measured 13145
+            // on the full catalog (+1045 over the 12100 surface as merged). The citizen's
+            // own terminal-level hands are the point of the change, not framing growth;
+            // per-turn selection and whole-request window accounting stay intact.
+            const AGENTIC_SURFACE_CEILING: u32 = 13200;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
                 surface <= AGENTIC_SURFACE_CEILING,
-                "the agentic surface is now {surface} tokens (schema projection 11974, ceiling \
+                "the agentic surface is now {surface} tokens (ceiling \
                  {AGENTIC_SURFACE_CEILING}) — framing/tools grew. Shrink the surface (#333) \
                  or state plainly what was added and re-pin the ceiling"
             );

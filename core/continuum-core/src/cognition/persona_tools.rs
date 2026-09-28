@@ -816,8 +816,11 @@ mod tests {
         // < 40 → < 42, stated plainly (2026-09-01): activity/recipes + activity/invite
         // joined the native set (the spawn→invite→brief flow — see the agentic-surface
         // ceiling note in llm_deliberation_faculty for the full rationale + token cost).
+        // < 42 → < 47, stated plainly (2026-09-28, Joel: citizens get Claude's hands):
+        // code/shell-poll (follow a long install, build or server), code/git/add,
+        // code/git/push, code/github/pr-create and code/github/pr-comment joined.
         assert!(
-            names.len() < 42,
+            names.len() < 47,
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );

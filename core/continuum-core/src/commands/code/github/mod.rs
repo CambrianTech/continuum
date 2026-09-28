@@ -115,9 +115,11 @@ mod tests {
         assert_eq!(pr_create::CodeGithubPrCreate::NAME, "code/github/pr-create");
         assert_eq!(pr_comment::CodeGithubPrComment::NAME, "code/github/pr-comment");
         assert_eq!(issue_create::CodeGithubIssueCreate::NAME, "code/github/issue-create");
-        assert!(!pr_create::CodeGithubPrCreate::NATIVE);
+        // pr-create and pr-comment are a capable citizen's working set, offered natively
+        // (Joel, 2026-09-28); issue-create stays one call away (the 9/03 spam was issues)
+        assert!(pr_create::CodeGithubPrCreate::NATIVE);
+        assert!(pr_comment::CodeGithubPrComment::NATIVE);
         assert!(!issue_create::CodeGithubIssueCreate::NATIVE);
-        assert!(!pr_comment::CodeGithubPrComment::NATIVE);
     }
 
     // what this catches (Joel, 2026-09-28): citizens once lost GitHub hands entirely because

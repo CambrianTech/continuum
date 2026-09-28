@@ -46,7 +46,7 @@ crate::action_command! {
     pub struct CodeGithubPrCreate { state: Arc<CodeState> }
     name: "code/github/pr-create",
     access: AiSafe,
-    native: false, // reachable BY NAME; never pushed into every turn (placeholder-issue spam, 2026-09-03)
+    native: true, // offered like Claude's (Joel, 2026-09-28); the 9/03 spam cause, must-use pressure, was fixed in #3684
     params: GithubPrCreateParams,
     output: GithubPrCreateResult,
     run(this, ctx, p) => {

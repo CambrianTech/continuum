@@ -38,6 +38,7 @@ crate::action_command! {
     pub struct CodeGitAdd { state: Arc<CodeState> }
     name: "code/git/add",
     access: AiSafe,
+    native: true, // a capable citizen's working set (Joel, 2026-09-28: offered, like Claude's)
     aliases: &["git_add"],
     params: GitAddParams,
     output: GitAddResult,
