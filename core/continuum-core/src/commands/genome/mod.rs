@@ -42,6 +42,7 @@ use crate::sdk_codegen::DynCommand;
 pub mod curriculum;
 pub mod job_cancel;
 pub mod job_create;
+pub mod job_pause;
 pub mod job_status;
 pub mod teach;
 
@@ -97,6 +98,7 @@ pub fn command_objects(
             #[cfg(test)]
             test_job_board,
         }),
+        Arc::new(job_pause::GenomeJobPause { registry: registry.clone() }),
         Arc::new(job_cancel::GenomeJobCancel { registry }),
     ]
 }
@@ -234,6 +236,6 @@ mod tests {
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 3);
+        assert_eq!(objs.len(), 4);
     }
 }

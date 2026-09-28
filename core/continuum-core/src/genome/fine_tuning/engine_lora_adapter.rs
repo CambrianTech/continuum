@@ -416,6 +416,9 @@ pub struct EngineLoraFineTuner {
     admission: Admission,
     /// the holds this tuner's runs obey (the node's, or a test's own)
     holds: TrainingHolds,
+    /// Where `genome/job-pause` records a job's pause, so it outlives the core (`None`: no
+    /// home, so no persisted pauses; the in-memory holds still apply).
+    hold_store: Option<PathBuf>,
 }
 
 impl Default for EngineLoraFineTuner {
@@ -437,6 +440,9 @@ impl EngineLoraFineTuner {
             footprints: Footprints { path: footprints },
             admission: Admission::Governed,
             holds: TrainingHolds::node().clone(),
+            hold_store: crate::commands::benchmark::continuum_home()
+                .ok()
+                .map(|home| super::training_hold_store::store_path(&home)),
         }
     }
 
@@ -451,6 +457,7 @@ impl EngineLoraFineTuner {
             footprints: Footprints { path: footprints },
             admission: Admission::Ungoverned,
             holds: TrainingHolds::new(),
+            hold_store: None,
         }
     }
 }
@@ -466,6 +473,9 @@ struct EngineRun {
     /// The run's last status as the engine reported it (finish reads its losses and footprint).
     last: Arc<Mutex<Option<TrainStatus>>>,
     holds: TrainingHolds,
+    /// This job's id (its handle's `local_id`) and the store its persisted pauses live in.
+    job: Uuid,
+    hold_store: Option<PathBuf>,
     /// The governed lease, held for exactly as long as the engine may be running this job's
     /// training: `run` returns only once it has ended there, and the lease drops with `self`.
     _lease: Option<crate::resources::LeaseGuard>,
@@ -571,7 +581,31 @@ impl InPlaceRun for EngineRun {
         self.lane.clone()
     }
 
-    async fn run(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
+    async fn run(self: Box<Self>, cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
+        let (store, job) = (self.hold_store.clone(), self.job);
+        let end = self.run_steered(cancel, progress).await;
+        // The job ended (finished, failed or cancelled), and its pauses end with it. A dropped
+        // future (a core shutting down) never reaches this line, so a run the next core adopts
+        // keeps its pauses.
+        if let Some(store) = store {
+            let released = tokio::task::spawn_blocking(move || {
+                super::training_hold_store::release_job(&store, job, super::training_hold_store::now_ms())
+            })
+            .await;
+            if !matches!(released, Ok(Ok(_))) {
+                crate::probe!(
+                    class = "training.hold.release_failed",
+                    job = %job,
+                    "a finished job's persisted pauses could not be released; they expire on their TTL"
+                );
+            }
+        }
+        end
+    }
+}
+
+impl EngineRun {
+    async fn run_steered(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
         match self
             .http
             .post(format!("{}/train", self.lane))
@@ -628,7 +662,13 @@ impl InPlaceRun for EngineRun {
                     progress.running(pct, epoch);
                     // held: pause at the next window, keeping everything; released: resume. The
                     // lease stays held throughout, since the paused run keeps its allocation.
-                    let reasons = holds_on(&holds.borrow(), &self.lane);
+                    let mut reasons = holds_on(&holds.borrow(), &self.lane);
+                    // a pause asked through genome/job-pause, read every tick: it outlives the core
+                    if let Some(store) = &self.hold_store {
+                        let now = super::training_hold_store::now_ms();
+                        let persisted = super::training_hold_store::live_on(store, self.job, now).await;
+                        reasons.extend(persisted.into_iter().map(|h| h.reason));
+                    }
                     self.steer_pause(&s, !reasons.is_empty()).await;
                     // the worker's own state: paused while it waits at a boundary, whatever was
                     // asked (a resume request clears pause_requested before the worker wakes)
@@ -781,6 +821,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let footprints_path = self.footprints.path.clone();
         let http = self.http.clone();
         let holds = self.holds.clone();
+        let hold_store = self.hold_store.clone();
         let governed = matches!(self.admission, Admission::Governed);
         let job_dir = job_dir_for(&request, id);
         let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
@@ -838,6 +879,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 epochs,
                 last: last.clone(),
                 holds,
+                job: id,
+                hold_store,
                 _lease: reservation,
             };
             Ok(PreparedJob {
@@ -1411,6 +1454,59 @@ mod tests {
         };
         assert!(artifact.local_path.expect("test: path").is_file(), "resumed and finished with its adapter");
         server.abort();
+    }
+
+    // what this catches (Joel's continual minds; Codex and Cormac on the hold design): a pause
+    // asked through genome/job-pause that does not reach the engine, a release that leaves the
+    // run paused, or a pause that outlives its job. The pause is a persisted fact keyed by the
+    // job, so a relaunched core reads it; the run steers to it every tick; releasing resumes and
+    // the run finishes; and a job that ends (here cancelled while paused) takes its pauses with
+    // it, while another job's pause stands.
+    #[tokio::test]
+    async fn a_persisted_pause_steers_its_job_and_ends_with_it() {
+        use super::super::training_hold_store as store;
+        let paused = |url: String| async move {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let engine: Value = reqwest::get(format!("{url}/test/pause")).await.unwrap().json().await.unwrap();
+                    if engine["pause_requested"] == true {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("test: the engine never paused under the persisted hold");
+        };
+        let state = tempfile::tempdir().expect("test: dir");
+        let holds = store::store_path(state.path());
+        let bystander = store::add(&holds, Uuid::from_u128(9), "another job's pause", 60_000, store::now_ms()).expect("test: add");
+        for mode in ["release", "cancel"] {
+            let train = tempfile::tempdir().expect("test: dir");
+            let jobs = tempfile::tempdir().expect("test: dir");
+            let (url, server, _) = fake_lane(train.path().to_path_buf(), if mode == "cancel" { "cancel_only" } else { "normal" }).await;
+            let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+            t.hold_store = Some(holds.clone());
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            let h = t.create_job(r).await.expect("test: create");
+            store::add(&holds, h.local_id, "test: an operator paused it", 60_000, store::now_ms()).expect("test: add");
+            paused(url.clone()).await;
+            assert!(matches!(t.poll(&h).await.unwrap(), TrainingStatus::Running { .. }), "{mode}: a paused run is still running");
+            if mode == "release" {
+                assert_eq!(store::release_job(&holds, h.local_id, store::now_ms()).unwrap(), 1);
+                let TrainingStatus::Completed { .. } = wait_terminal(&t, &h).await else {
+                    panic!("test: the run did not finish after its pause was released");
+                };
+            } else {
+                t.cancel(&h).await.expect("test: cancel");
+                assert!(matches!(wait_terminal(&t, &h).await, TrainingStatus::Cancelled));
+                assert!(store::live_on(&holds, h.local_id, store::now_ms()).await.is_empty(), "the job's end took its pause with it");
+            }
+            server.abort();
+        }
+        let left = store::live_on(&holds, bystander.job, store::now_ms()).await;
+        assert_eq!(left.len(), 1, "another job's pause stands");
     }
 
     // what this catches: a cancel that reports Cancelled while the engine is still training
