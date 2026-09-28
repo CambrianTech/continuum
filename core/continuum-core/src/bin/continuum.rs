@@ -2678,12 +2678,11 @@ impl DeployClaimGuard {
                         // One System for the renewer's life: each refresh's cpu_usage is the
                         // average since the previous one, i.e. over the whole renewal interval.
                         let mut sys = sysinfo::System::new();
-                        let _ = deploy_tree_cpu(&mut sys, pid); // the baseline refresh
+                        let _ = deploy_working(&mut sys, pid); // the baseline refresh
                         loop {
                             match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    let cpu = deploy_tree_cpu(&mut sys, pid);
-                                    let working = cpu >= deploy_claim::WORKING_CPU_PERCENT;
+                                    let working = deploy_working(&mut sys, pid);
                                     if !deploy_claim::renew(&renew_root, pid, now_ms(), working) {
                                         return; // no longer ours (or unwritable): stop renewing
                                     }
@@ -2707,10 +2706,12 @@ impl DeployClaimGuard {
     }
 }
 
-/// The deploy's process tree's CPU (percent of one core) since the previous refresh of `sys`:
-/// the owner plus every descendant, so the rustc under cargo under this reboot counts as its
-/// work (card 80ead731).
-fn deploy_tree_cpu(sys: &mut sysinfo::System, pid: i32) -> f32 {
+/// Was the deploy working since the previous refresh of `sys`? Its process tree's CPU (the
+/// owner plus every descendant, so the rustc under cargo under this reboot counts), or a
+/// compiler busy anywhere on the host (an owner blocked on the shared cargo lock is waiting on
+/// progress). Card 80ead731.
+fn deploy_working(sys: &mut sysinfo::System, pid: i32) -> bool {
+    use continuum_core::runtime::deploy_claim;
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cpu());
     let procs: Vec<(i32, Option<i32>, f32)> = sys
@@ -2718,7 +2719,13 @@ fn deploy_tree_cpu(sys: &mut sysinfo::System, pid: i32) -> f32 {
         .values()
         .map(|p| (p.pid().as_u32() as i32, p.parent().map(|par| par.as_u32() as i32), p.cpu_usage()))
         .collect();
-    continuum_core::runtime::deploy_claim::tree_cpu_percent(pid, &procs)
+    let host_compilers: f32 = sys
+        .processes()
+        .values()
+        .filter(|p| deploy_claim::is_compiler(&p.name().to_string_lossy()))
+        .map(|p| p.cpu_usage())
+        .sum();
+    deploy_claim::deploy_working(deploy_claim::tree_cpu_percent(pid, &procs), host_compilers)
 }
 
 impl Drop for DeployClaimGuard {

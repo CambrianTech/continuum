@@ -265,6 +265,23 @@ pub fn renew(root: &Path, pid: i32, now_ms: u64, working: bool) -> bool {
     }
 }
 
+/// Whether a process name is a Rust compiler or build driver (`rustc`, `cargo`, with or
+/// without `.exe`).
+pub fn is_compiler(name: &str) -> bool {
+    let stem = name.strip_suffix(".exe").unwrap_or(name); // unwrap_or: a name without .exe is its own stem
+    stem == "rustc" || stem == "cargo"
+}
+
+/// Is the deploy WORKING over the last interval? Its own tree's CPU, OR a compiler burning CPU
+/// anywhere on the host. The second covers an owner blocked on the shared target dir's cargo
+/// lock (Cormac on #4524: 7240 at ~0% for 3 h+ behind another build). It is waiting on a
+/// build that progresses, which is not hung; hung is no compile making progress on the
+/// machine at all. `tree_cpu` is [`tree_cpu_percent`]; `host_compiler_cpu` sums
+/// [`is_compiler`] processes.
+pub fn deploy_working(tree_cpu: f32, host_compiler_cpu: f32) -> bool {
+    tree_cpu >= WORKING_CPU_PERCENT || host_compiler_cpu >= WORKING_CPU_PERCENT
+}
+
 /// The CPU of `root` and every descendant, summed: `procs` is (pid, parent, cpu percent) for
 /// every process. Pure, so the renewer's sampling stays a thin sysinfo read.
 pub fn tree_cpu_percent(root: i32, procs: &[(i32, Option<i32>, f32)]) -> f32 {
@@ -481,6 +498,11 @@ mod tests {
         let procs = [(7240, Some(1), 0.2), (25000, Some(7240), 0.1), (34000, Some(25000), 96.0), (99, Some(1), 80.0)];
         assert!(tree_cpu_percent(7240, &procs) >= WORKING_CPU_PERCENT, "the rustc under cargo is the owner's work");
         assert!(tree_cpu_percent(25000, &procs[..2]) < WORKING_CPU_PERCENT, "an idle cargo is not working");
+        // Cormac on #4524: an owner blocked on the cargo lock behind ANOTHER build is waiting on
+        // progress, not hung; with no compiler busy anywhere on the host, it is hung.
+        assert!(deploy_working(0.1, 97.0), "lock-blocked behind a compiling build: working");
+        assert!(!deploy_working(0.1, 0.4), "nothing compiling anywhere: hung");
+        assert!(is_compiler("rustc") && is_compiler("cargo.exe") && !is_compiler("rustfmt"));
     }
 
     // what this catches: the renewer overwriting a claim another deploy took after this
