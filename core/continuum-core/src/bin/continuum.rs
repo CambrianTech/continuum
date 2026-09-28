@@ -1391,6 +1391,14 @@ impl PreparedCoreService {
             original.replace('\'', "''"), receipt.0.to_string_lossy().replace('\'', "''")
         );
         Self::run_installer_script(&script)?;
+        // Every engine slot is busy (lanes still relaunching onto the last engine): the core
+        // deploys on the engine it has and the next deploy builds this one (card 3f8f5754, the
+        // bash installer's exit 3). An explicit line, never an empty receipt, so a script that
+        // wrote nothing is still a failure.
+        if let Some(reason) = receipt.skipped()? {
+            println!("▶ engine handoff skipped this deploy: {reason}");
+            return Ok(None);
+        }
         Ok(Some((original, receipt.artifact()?)))
     }
 
@@ -1764,6 +1772,14 @@ impl WarmBuildReceipt {
             .open(&path)
             .map_err(|e| format!("cannot create warm-build receipt: {e}"))?;
         Ok(Self(path))
+    }
+
+    /// `Some(reason)` when the script recorded a deliberate skip (`SKIP: <reason>`) instead of an
+    /// artifact path.
+    #[cfg(windows)]
+    fn skipped(&self) -> Result<Option<String>, String> {
+        let report = std::fs::read_to_string(&self.0).map_err(|e| format!("cannot read warm-build receipt: {e}"))?;
+        Ok(report.strip_prefix("SKIP: ").map(|reason| reason.trim().to_string()))
     }
 
     fn artifact(&self) -> Result<PathBuf, String> {

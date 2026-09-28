@@ -536,6 +536,10 @@ exit 64
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
         if (-not $refused) { throw 'No idle slot (exit 3) was not refused' }
+        # card 3f8f5754: a DEPLOY that meets every slot busy skips the engine, as bash does.
+        if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli -SkipIfBusy)) {
+            throw 'A deploy with every slot busy did not skip the engine'
+        }
         $env:FAKE_IDLE_RC = $null; $env:FAKE_IDLE_SLOT = 'service-a'
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'not an engine slot' }
@@ -546,6 +550,15 @@ exit 64
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'running engine executes from it' }
         if (-not $refused) { throw 'A readable live engine inside the core answer was overwritten' }
     } finally { $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null; $script:liveProcesses = @() }
+    # The pre-verb path skips a busy deploy too: every slot live by the process table.
+    $script:liveProcesses = @('engine-a', 'engine-b', 'engine-c' | ForEach-Object {
+        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed "bin\$_\llama-server.exe") } })
+    try {
+        if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -SkipIfBusy)) { throw 'The pre-verb path did not skip a busy deploy' }
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
+        if (-not $refused) { throw 'A first install with every slot live was not refused' }
+    } finally { $script:liveProcesses = @() }
     Write-Output 'PASS: the engine slot is the core answer from its lane records when the CLI knows the verb'
 
     # Compile a tiny native child: arguments containing spaces must
