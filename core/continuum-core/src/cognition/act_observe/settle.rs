@@ -10,7 +10,6 @@
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::ai::types::ToolCall;
 use crate::cognition::workspace::{
     Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle,
 };
