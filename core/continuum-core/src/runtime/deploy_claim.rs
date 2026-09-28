@@ -171,8 +171,14 @@ pub enum AbandonReason {
     /// The deploying process is gone (crashed, killed, or simply finished without
     /// clearing — the RAII release should prevent the last one, but never assume it).
     OwnerDead,
-    /// Older than [`CLAIM_MAX_AGE_MS`]. Covers a hung build and a recycled pid.
-    Expired,
+    /// No renewal proves the owner is still ours: a renewing claim silent for
+    /// [`CLAIM_STALE_MS`], or a non-renewing claim past [`CLAIM_MAX_AGE_MS`]. The pid may be
+    /// dead or recycled (owner_alive is pid-only), so the claim releases.
+    Silent,
+    /// Still renewing (so the owner IS this deploy, alive) but hung: no work for
+    /// [`CLAIM_STALLED_MS`], or, for a writer without progress reporting, past
+    /// [`CLAIM_HARD_CAP_MS`]. It excludes the next deploy until it dies (card 634f644d).
+    Stalled,
 }
 
 impl DeployGate {
@@ -188,8 +194,12 @@ impl DeployGate {
     /// owner's checkout is its own however the guess falls, so the next consumer never
     /// changes the deploy tree under it. The IntelMac, 2026-09-28: 43925 checked out 93499d5d6
     /// under 7240's live build. Only a dead owner releases the deploy tree.
+    ///
+    /// Only a STALLED claim excludes: its renewals prove the owner is this deploy. A SILENT one
+    /// cannot prove it, since the pid may be recycled (Cormac on #4524), so it releases, or a
+    /// recycled pid would exclude deploys forever.
     pub fn excludes_deploy(&self) -> bool {
-        matches!(self, DeployGate::InProgress { .. } | DeployGate::Abandoned { why: AbandonReason::Expired, .. })
+        matches!(self, DeployGate::InProgress { .. } | DeployGate::Abandoned { why: AbandonReason::Stalled, .. })
     }
 }
 
@@ -210,25 +220,22 @@ pub fn decide(claim: Option<&DeployClaim>, owner_alive: bool, now_ms: u64) -> De
         };
     }
     let expired = if claim.renewed_ms == 0 {
-        // A non-renewing writer: the old age rule.
-        age_ms >= CLAIM_MAX_AGE_MS
+        // A non-renewing writer: the old age rule, and nothing proves the pid is still ours.
+        (age_ms >= CLAIM_MAX_AGE_MS).then_some(AbandonReason::Silent)
+    } else if now_ms.saturating_sub(claim.renewed_ms) >= CLAIM_STALE_MS {
+        Some(AbandonReason::Silent)
     } else {
-        let silent = now_ms.saturating_sub(claim.renewed_ms) >= CLAIM_STALE_MS;
+        // Renewing: the owner is this deploy. Hung is judged by progress, or by age for a
+        // writer that does not report progress.
         let hung = if claim.progress_ms == 0 {
-            // A writer that does not report progress: age is its only hung-build bound.
             age_ms >= CLAIM_HARD_CAP_MS
         } else {
-            // A progress-reporting writer: hung is no work for CLAIM_STALLED_MS, never age.
             now_ms.saturating_sub(claim.progress_ms) >= CLAIM_STALLED_MS
         };
-        silent || hung
+        hung.then_some(AbandonReason::Stalled)
     };
-    if expired {
-        return DeployGate::Abandoned {
-            pid: claim.pid,
-            age_ms,
-            why: AbandonReason::Expired,
-        };
+    if let Some(why) = expired {
+        return DeployGate::Abandoned { pid: claim.pid, age_ms, why };
     }
     DeployGate::InProgress {
         pid: claim.pid,
@@ -407,7 +414,7 @@ mod tests {
         assert!(!old.blocks(), "an expired claim must not block: {old:?}");
         assert!(matches!(
             old,
-            DeployGate::Abandoned { why: AbandonReason::Expired, .. }
+            DeployGate::Abandoned { why: AbandonReason::Silent, .. }
         ));
 
         // One millisecond under the cap still blocks — the boundary is not off by one.
@@ -458,9 +465,9 @@ mod tests {
         // 275 min into the build, renewed a minute ago: still in progress.
         let now = 275 * min;
         assert!(decide(Some(&renewing(0, now - min)), true, now).blocks(), "a slow live build must keep the gate");
-        // The same claim silent for CLAIM_STALE_MS: abandoned, and said as Expired.
+        // The same claim silent for CLAIM_STALE_MS: abandoned, and said as Silent.
         let g = decide(Some(&renewing(0, now - CLAIM_STALE_MS)), true, now);
-        assert!(matches!(g, DeployGate::Abandoned { why: AbandonReason::Expired, .. }), "{g:?}");
+        assert!(matches!(g, DeployGate::Abandoned { why: AbandonReason::Silent, .. }), "{g:?}");
         // Renewing, but past the hard cap: a hung build yields.
         let hung = CLAIM_HARD_CAP_MS + min;
         assert!(!decide(Some(&renewing(0, hung - min)), true, hung).blocks(), "a hung build must not block forever");
@@ -493,7 +500,7 @@ mod tests {
         let now = 15 * 60 * min; // 15 h into the build, past the old 12 h cap
         assert!(decide(Some(&at(0, now - min, now - min)), true, now).blocks(), "compiling at 15 h: still in flight");
         let hung = decide(Some(&at(0, now - min, now - CLAIM_STALLED_MS)), true, now);
-        assert!(matches!(hung, DeployGate::Abandoned { why: AbandonReason::Expired, .. }), "renewing but workless for an hour: {hung:?}");
+        assert!(matches!(hung, DeployGate::Abandoned { why: AbandonReason::Stalled, .. }), "renewing but workless for an hour: {hung:?}");
         assert!(!decide(Some(&at(0, now - CLAIM_STALE_MS, now - min)), true, now).blocks(), "silence still expires");
 
         let root = std::env::temp_dir().join(format!("deploy-claim-progress-{}", std::process::id()));
@@ -518,6 +525,10 @@ mod tests {
         // never releases the deploy tree), while a launch is not wedged by it; only a dead
         // owner frees both.
         assert!(hung.excludes_deploy() && !hung.blocks(), "hung and alive: no new deploy, but cores may launch");
+        // Cormac on #4524: a SILENT claim may be a recycled pid, so it must release, or a
+        // stranger's process would exclude deploys forever.
+        let silent = decide(Some(&at(0, now - CLAIM_STALE_MS, now - CLAIM_STALE_MS)), true, now);
+        assert!(matches!(silent, DeployGate::Abandoned { why: AbandonReason::Silent, .. }) && !silent.excludes_deploy());
         let dead = decide(Some(&at(0, now - min, now - min)), false, now);
         assert!(!dead.excludes_deploy() && !dead.blocks(), "a dead owner releases the deploy tree");
     }
