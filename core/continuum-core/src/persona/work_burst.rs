@@ -12,17 +12,6 @@ use uuid::Uuid;
 /// followed from it).
 // context-budget-exempt: an act count, not a window or token budget
 pub(crate) const WRITE_OR_RELEASE_AFTER_ACTS: usize = 6;
-/// The substrate's own exit from "write or release": at twice the gate, the card
-/// is released FOR her, with a receipt. Measured 2026-09-07 11:30–12:20Z on
-/// 66ab948fc: the gate fired eight times across five holders, 78 acts, 0 writes,
-/// 0 releases — the sentence was read and not acted on. A governor acts.
-pub(crate) const GOVERNOR_RELEASE_AFTER_ACTS: usize = 2 * WRITE_OR_RELEASE_AFTER_ACTS;
-
-/// Whether the substrate releases the card this turn. Pure.
-pub(crate) fn governor_releases(acts_without_write: usize) -> bool {
-    acts_without_write >= GOVERNOR_RELEASE_AFTER_ACTS
-}
-
 /// Her acts since her last file change, counted from her own ⚙ receipts in the
 /// room (oldest → newest). A `code/edit` / `git_apply` / `edit_file` receipt resets
 /// the count; a card with no edit ever counts every act. Pure.
@@ -258,9 +247,7 @@ pub(crate) fn held_work_burst_gated(
              work/note naming the file:line and what you found there (a note is progress \
              and resets this count); or conclude 'PASS: blocked — <one line why>' and \
              release the card so a peer can take it. No more reading, running, or status \
-             checks before one of those — at {governor} acts the substrate releases the \
-             card for you.",
-            governor = GOVERNOR_RELEASE_AFTER_ACTS
+             checks before one of those."
         );
     }
     s
@@ -437,17 +424,3 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    // what this catches: the governor firing under the gate (a nag becoming a release
-    // at six acts) or never (the sentence read and ignored forever). It releases at
-    // exactly twice the gate.
-    #[test]
-    fn the_governor_releases_at_twice_the_gate_and_not_before() {
-        assert!(!governor_releases(WRITE_OR_RELEASE_AFTER_ACTS));
-        assert!(!governor_releases(GOVERNOR_RELEASE_AFTER_ACTS - 1));
-        assert!(governor_releases(GOVERNOR_RELEASE_AFTER_ACTS));
-        assert!(governor_releases(GOVERNOR_RELEASE_AFTER_ACTS + 30));
-    }
-}
