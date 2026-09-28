@@ -101,6 +101,19 @@ pub struct LaneRecord {
     /// sessions). `None` for lanes recorded before this field existed.
     #[serde(default)]
     pub engine_bin: Option<PathBuf>,
+    /// The process's OS start time (seconds since the epoch), stamped at spawn. With `pid` it
+    /// names ONE engine incarnation: a successor core compares both, so a recycled pid is
+    /// never mistaken for this engine (SHARED-RESIDENT-LIFECYCLE.md step 1). `0` for lanes
+    /// recorded before this field existed, which never match a live process.
+    #[serde(default)]
+    pub started_s: u64,
+}
+
+impl LaneRecord {
+    /// This lane's engine incarnation.
+    pub fn incarnation(&self) -> super::engine_residency::EngineIncarnation {
+        super::engine_residency::EngineIncarnation { pid: self.pid, started_s: self.started_s, port: self.port }
+    }
 }
 
 /// The LIVE-role lane left behind by a previous generation of this core, if one
@@ -452,6 +465,7 @@ mod tests {
             lanes: 1,
             page_dir: None,
             engine_bin: None,
+            started_s: 0,
         };
         record_in(dir.path(), &good).expect("write");
         assert_eq!(records_checked_in(dir.path()).expect("clean registry").len(), 1);
@@ -484,6 +498,7 @@ mod tests {
             lanes: 4,
             page_dir: None,
             engine_bin: None,
+            started_s: 0,
         }
     }
 
@@ -711,6 +726,7 @@ mod tests {
                         lanes: 1,
                         page_dir: None,
                         engine_bin: None,
+                        started_s: 0,
                     },
                 )
                 .expect("record");
@@ -754,6 +770,7 @@ mod tests {
                     lanes: 1,
                     page_dir: None,
                     engine_bin: None,
+                    started_s: 0,
                 },
             )
             .expect("record");

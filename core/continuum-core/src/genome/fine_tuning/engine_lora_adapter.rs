@@ -397,11 +397,32 @@ struct TrainStatus {
 /// a record from before that field, which is unknown). One lookup decides both, so the
 /// training window can never come from a second source that disagrees with the lane
 /// (Cormac on #4498).
-type LaneResolver = Box<dyn Fn(&str) -> Option<(String, u32)> + Send + Sync>;
+type LaneResolver = Box<dyn Fn(&str) -> Option<LaneChoice> + Send + Sync>;
 
-fn live_lane_for(base: &str) -> Option<(String, u32)> {
+/// The lane a run will train in, as the ONE live-lane record names it.
+#[derive(Debug, Clone)]
+struct LaneChoice {
+    url: String,
+    /// The per-slot window it was launched with (0 = unknown, refused).
+    window: u32,
+    /// The engine process hosting it (pid plus OS start time), the identity a run binds to at
+    /// admission (SHARED-RESIDENT-LIFECYCLE.md step 1). `None` only in tests with no engine.
+    engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+}
+
+/// A lane record's incarnation. A record from before `started_s` names the live process by
+/// its pid and the start time the table reports now.
+fn incarnation_of(rec: &crate::inference::lane_registry::LaneRecord) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+    if rec.started_s != 0 {
+        Some(rec.incarnation())
+    } else {
+        crate::inference::engine_residency::EngineIncarnation::of(rec.pid, rec.port)
+    }
+}
+
+fn live_lane_for(base: &str) -> Option<LaneChoice> {
     let rec = crate::inference::lane_registry::live_lane()?;
-    (rec.model == base).then(|| (format!("http://127.0.0.1:{}", rec.port), rec.context_window))
+    (rec.model == base).then(|| LaneChoice { url: rec.root_url(), window: rec.context_window, engine: incarnation_of(&rec) })
 }
 
 /// Admission: the governed lease a run holds for its life. `Governed` in production;
@@ -425,6 +446,9 @@ pub struct EngineLoraFineTuner {
     /// Where `genome/job-pause` records a job's pause, so it outlives the core (`None`: no
     /// home, so no persisted pauses; the in-memory holds still apply).
     hold_store: Option<PathBuf>,
+    /// Where a run's binding to its engine incarnation is recorded (`None`: no home, or a
+    /// test with no engine; an ungoverned run binds nothing).
+    residency_store: Option<PathBuf>,
 }
 
 impl Default for EngineLoraFineTuner {
@@ -449,6 +473,9 @@ impl EngineLoraFineTuner {
             hold_store: crate::commands::benchmark::continuum_home()
                 .ok()
                 .map(|home| super::training_hold_store::store_path(&home)),
+            residency_store: crate::commands::benchmark::continuum_home()
+                .ok()
+                .map(|home| crate::inference::engine_residency::store_path(&home)),
         }
     }
 
@@ -458,12 +485,13 @@ impl EngineLoraFineTuner {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
             // a lane launched at 256 per slot: the window every existing test asserts
-            lane: Box::new(move |_| Some((lane_url.clone(), 256))),
+            lane: Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None })),
             train_dir: Some(train_dir),
             footprints: Footprints { path: footprints },
             admission: Admission::Ungoverned,
             holds: TrainingHolds::new(),
             hold_store: None,
+            residency_store: None,
         }
     }
 }
@@ -482,9 +510,49 @@ struct EngineRun {
     /// This job's id (its handle's `local_id`) and the store its persisted pauses live in.
     job: Uuid,
     hold_store: Option<PathBuf>,
+    /// Where this run's binding to its engine incarnation is recorded, and that incarnation,
+    /// when admission bound it (`None`: an ungoverned test run). Released only when the run's
+    /// end is SETTLED: see [`EngineProbe::settled`].
+    residency: Option<(PathBuf, crate::inference::engine_residency::EngineIncarnation)>,
     /// The governed lease, held for exactly as long as the engine may be running this job's
     /// training: `run` returns only once it has ended there, and the lease drops with `self`.
     _lease: Option<crate::resources::LeaseGuard>,
+}
+
+/// Just enough of a run to ask the engine, after the run's future has ended, whether this job
+/// is still running there.
+struct EngineProbe {
+    http: reqwest::Client,
+    lane: String,
+    out: String,
+}
+
+impl EngineProbe {
+    /// Is this run's end settled? Yes when the incarnation is verifiably gone, or when the
+    /// engine answers and its run is not this job running. No when the engine is alive and
+    /// does not answer, or answers that this job is still running.
+    async fn settled(&self, engine: &crate::inference::engine_residency::EngineIncarnation) -> bool {
+        use crate::inference::engine_residency::Liveness;
+        let alive = {
+            let engine = *engine;
+            tokio::task::spawn_blocking(move || engine.liveness()).await
+        };
+        match alive {
+            Ok(Liveness::Dead) => return true,
+            Ok(Liveness::Alive) => {}
+            Err(_) => return false, // the liveness read itself failed: unknown, so held
+        }
+        let status = self
+            .http
+            .get(format!("{}/train", self.lane))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await;
+        let Ok(r) = status else { return false };
+        let Ok(s) = r.json::<TrainStatus>().await else { return false };
+        let ours = s.out.as_deref() == Some(self.out.as_str());
+        !(ours && !matches!(s.state, TrainState::Done | TrainState::Cancelled | TrainState::Error | TrainState::Idle))
+    }
 }
 
 impl EngineRun {
@@ -599,7 +667,39 @@ impl InPlaceRun for EngineRun {
 
     async fn run(self: Box<Self>, cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
         let (store, job) = (self.hold_store.clone(), self.job);
-        let end = self.run_steered(cancel, progress).await;
+        let residency = self.residency.clone();
+        let probe_run = EngineProbe { http: self.http.clone(), lane: self.lane.clone(), out: self.body.out.clone() };
+        let mut end = self.run_steered(cancel, progress).await;
+        // serving replaced the engine under this run anyway (an emergency): the failure says why
+        if let (InPlaceEnd::Failed(why), Some((path, _))) = (&end, &residency) {
+            if let Some(reason) = crate::inference::engine_residency::interruption_of(path, job) {
+                end = InPlaceEnd::Failed(format!("{why}; serving replaced the engine under this run: {reason}"));
+            }
+        }
+        // THE ENGINE IS RELEASED ONLY WHEN THE END IS SETTLED (SHARED-RESIDENT-LIFECYCLE.md):
+        // the engine answered that this job is not running, or its incarnation is verifiably
+        // gone. A lane that is alive but unreachable keeps the record: the run may still be
+        // training in it, so serving must not replace it on a guess (the explicit recovery act
+        // resolves that case, never a timeout).
+        if let Some((path, engine)) = residency {
+            if probe_run.settled(&engine).await {
+                let released = tokio::task::spawn_blocking(move || crate::inference::engine_residency::release(&path, job)).await;
+                if !matches!(released, Ok(Ok(_))) {
+                    crate::probe!(
+                        class = "training.residency.release_failed",
+                        job = %job,
+                        "a settled run's engine binding could not be released; serving stays held on it until it can be"
+                    );
+                }
+            } else {
+                crate::probe!(
+                    class = "training.residency.kept_uncertain",
+                    job = %job,
+                    pid = engine.pid as u64,
+                    "the run ended here but its engine is alive and did not answer: the binding stays, serving stays off the engine"
+                );
+            }
+        }
         // The job ended (finished, failed or cancelled), and its pauses end with it. A dropped
         // future (a core shutting down) never reaches this line, so its intent stays on disk for
         // the re-attach path that does not exist yet (see training_hold_store).
@@ -768,7 +868,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             ));
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
-        let (lane, served_window) = (self.lane)(&request.base_model).ok_or_else(|| {
+        let LaneChoice { url: lane, window: served_window, engine } = (self.lane)(&request.base_model).ok_or_else(|| {
             FineTuningError::InvalidRequest(format!(
                 "no live lane serves {} on this node: in-engine training runs on the resident weights",
                 request.base_model
@@ -841,12 +941,15 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let http = self.http.clone();
         let holds = self.holds.clone();
         let hold_store = self.hold_store.clone();
+        let residency_store = self.residency_store.clone();
+        let base_model = request.base_model.clone();
         let governed = matches!(self.admission, Admission::Governed);
         let job_dir = job_dir_for(&request, id);
         let model_id = format!("{PROVIDER_ID}:{}:{id}", request.trait_kind);
         let epochs = schedule.epochs;
         Ok(self.jobs.prepare(id, move |progress| async move {
             let consumer = format!("genome-train:{id}");
+            let mut residency = None;
             let reservation = if governed {
                 let daemon = crate::resources::ResourceDaemon::global()
                     .ok_or_else(|| failure("engine training requires the resource governor"))?;
@@ -874,15 +977,48 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 );
                 let gate = crate::modules::serving_daemon::LifecycleGate::global()
                     .ok_or_else(|| failure("engine training requires the serving lifecycle gate"))?;
-                let reservation = crate::forge::training_admission::wait_for_training_memory(
+                // THE RUN BINDS TO ITS ENGINE INSIDE THE ADMISSION HOLD (SHARED-RESIDENT-LIFECYCLE.md
+                // step 1): the lane chosen above must still be the live engine (the same pid and
+                // start time), or a relaunch replaced it while this job waited and admission is
+                // refused; then the binding is recorded before any relaunch can take the gate.
+                let store = residency_store
+                    .clone()
+                    .ok_or_else(|| failure("engine training requires a home for its engine binding"))?;
+                let chosen = engine.ok_or_else(|| failure("the chosen lane has no engine incarnation to bind to"))?;
+                let (bind_store, bind_out, bind_base) = (store.clone(), out.clone(), base_model.clone());
+                let bind = move || -> Result<(), String> {
+                    let now = crate::inference::lane_registry::live_lane()
+                        .and_then(|rec| incarnation_of(&rec))
+                        .ok_or("no live engine at admission: the lane went away while this job waited")?;
+                    if now != chosen {
+                        return Err(format!(
+                            "the lane was replaced while this job waited (pid {} started {} is now pid {} started {}); not training on a different engine",
+                            chosen.pid, chosen.started_s, now.pid, now.started_s
+                        ));
+                    }
+                    crate::inference::engine_residency::record(
+                        &bind_store,
+                        crate::inference::engine_residency::ResidentWork {
+                            job: id,
+                            out: bind_out,
+                            engine: chosen,
+                            base_model: bind_base,
+                            created_ms: crate::persona::trace::now_ms(),
+                            interrupted: None,
+                        },
+                    )
+                };
+                let reservation = crate::forge::training_admission::wait_for_training_memory_bound(
                     daemon.clone(),
                     &gate,
                     &consumer,
                     bytes,
                     |available| progress.waiting_for_capacity(bytes, available),
+                    bind,
                 )
                 .await
                 .map_err(FineTuningError::Transient)?;
+                residency = Some((store, chosen));
                 // the engine refuses a graph over the lease before allocating it
                 body.memory_budget_mib = Some(bytes / (1024 * 1024));
                 Some(reservation)
@@ -900,6 +1036,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 holds,
                 job: id,
                 hold_store,
+                residency,
                 _lease: reservation,
             };
             Ok(PreparedJob {

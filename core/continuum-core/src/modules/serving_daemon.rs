@@ -2333,6 +2333,21 @@ impl ServingDaemonModule {
         self.spawn_baseline_vram.fetch_min(now, Ordering::Relaxed);
     }
 
+    /// THE QUESTION (SHARED-RESIDENT-LIFECYCLE.md step 1): may serving replace or measure the
+    /// live engine right now? Live work bound to this very engine incarnation (a training run
+    /// admitted onto it) holds it; an unreadable record holds it too, because ownership that
+    /// cannot be read is not absence. No live engine is nothing to disturb.
+    fn engine_occupancy(&self) -> crate::inference::engine_residency::Occupancy {
+        use crate::inference::engine_residency::{occupancy, store_path, Occupancy};
+        let Some(rec) = (self.inherited_lane)() else {
+            return Occupancy::Free;
+        };
+        match crate::commands::benchmark::continuum_home() {
+            Ok(home) => occupancy(&store_path(&home), rec.port),
+            Err(e) => Occupancy::Unknown(format!("no home to read the engine's residency from: {e}")),
+        }
+    }
+
     async fn sample_lane_footprint(&self) {
         let now = crate::persona::trace::now_ms();
         if !crate::inference::lane_footprint::sample_due(now) {
@@ -2965,6 +2980,55 @@ impl ServingDaemonModule {
                     Some("KV paging completion unverified; replacing owned engine".into());
                 Self::emit_serving(self.bus.get(), &live);
                 let _ = self.serving_tx.send_replace(live);
+            }
+        }
+        // AN ENGINE THAT HOSTS LIVE WORK IS NOT RECONCILED (SHARED-RESIDENT-LIFECYCLE.md step 1;
+        // Kimi's attempt 2, 5090, 2026-09-28 12:29Z: the plan downshifted the 27B under a live
+        // /train, the swap killed the engine, and the run with it). Every path below can end
+        // the engine: a model swap, a window re-home, a genome page-in, an empty-plan
+        // retirement (idle_if_current). None runs while work is bound to it, and the streaks
+        // those paths earn restart from zero, so a plan formed under the work's memory cannot
+        // commit the instant it releases. The one exception is the emergency this owner may not
+        // wait out, an engine whose KV paging is unverified: that replacement proceeds, and the
+        // work is TOLD why before it commits.
+        let occupancy = self.engine_occupancy();
+        if occupancy.holds() {
+            let port = (self.inherited_lane)().map(|r| r.port);
+            if self.server.paging_recovery_required() {
+                let told = match (port, crate::commands::benchmark::continuum_home()) {
+                    (Some(port), Ok(home)) => crate::inference::engine_residency::interrupt(
+                        &crate::inference::engine_residency::store_path(&home),
+                        port,
+                        "an emergency replacement: the engine's KV paging completion is unverified",
+                    )
+                    .map(|jobs| jobs.len())
+                    .map_err(|e| e.to_string()),
+                    _ => Err("no live lane record or home to record the interruption in".to_string()),
+                };
+                crate::probe!(
+                    class = "serving.reconcile.resident_engine_replaced",
+                    occupancy = %format!("{occupancy:?}"),
+                    told = %format!("{told:?}"),
+                    "an emergency replaces an engine that hosts live work; the work was told why first"
+                );
+            } else {
+                self.model_change_streak.store(0, Ordering::Relaxed);
+                self.rehome_streak.store(0, Ordering::Relaxed);
+                self.downshift_streak.store(0, Ordering::Relaxed);
+                *self.pending_model_change.lock().unwrap_or_else(|p| p.into_inner()) = None; // unwrap_or_else: a poisoned streak cell is still cleared
+                static LAST_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let now = crate::persona::trace::now_ms();
+                // one row a minute while held, not one a tick
+                if now.saturating_sub(LAST_HELD.load(Ordering::Relaxed)) >= 60_000 {
+                    LAST_HELD.store(now, Ordering::Relaxed);
+                    crate::probe!(
+                        class = "serving.reconcile.held_for_resident_work",
+                        occupancy = %format!("{occupancy:?}"),
+                        plan_model = planned.plan.as_ref().map(|p| p.base_model.model_id.as_str()).unwrap_or("<none>"), // unwrap_or: probe label for an empty plan
+                        "the engine hosts live work: no swap, re-home, page-in or retirement until it is released"
+                    );
+                }
+                return None;
             }
         }
         // Pull the desired model id, the host-fit PER-LANE served window, AND
@@ -9654,6 +9718,7 @@ pub(crate) mod tests {
             lanes: 4,
             page_dir: None,
             engine_bin: None,
+            started_s: 0,
         }
     }
 
@@ -9754,6 +9819,37 @@ pub(crate) mod tests {
         );
         // …and a true cold boot still has no incumbent at all.
         assert_eq!(incumbent_for_plan(None, None), None);
+    }
+
+    // what this catches: Kimi's attempt 2 (5090, 2026-09-28 12:29Z). The plan wanted a different
+    // model while a training run was bound to the live engine, the reconcile replaced the
+    // engine, and the run died with it. With the run's binding recorded against THIS engine
+    // incarnation (here, this test process: same pid, same start time), the same plan that
+    // would otherwise serve launches nothing; once the binding is released it proceeds.
+    #[tokio::test]
+    async fn an_engine_bound_to_live_work_is_never_replaced_under_it() {
+        use crate::inference::engine_residency::{record, release, store_path, EngineIncarnation, ResidentWork};
+        let serves = Arc::new(AtomicUsize::new(0));
+        let mut daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
+        let pid = std::process::id();
+        let engine = EngineIncarnation::of(pid, 61347).expect("test: this process has a start time");
+        let lane = LaneRecord { pid, port: 61347, started_s: engine.started_s, ..inherited_27b() };
+        daemon.set_inherited_lane(Arc::new(move || Some(lane.clone())));
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+        daemon.publish_plan(budget, &candidates, &candidates);
+
+        let store = store_path(&crate::commands::benchmark::continuum_home().expect("test: a test home"));
+        let job = uuid::Uuid::from_u128(0xef9d_f13b);
+        record(&store, ResidentWork { job, out: "run.gguf".into(), engine, base_model: "qwen3-27b".into(), created_ms: 1, interrupted: None })
+            .expect("test: record");
+        assert!(daemon.reconcile_to_plan().is_none(), "an engine bound to live work is not reconciled");
+        assert_eq!(serves.load(Ordering::SeqCst), 0, "nothing was launched over the run");
+
+        release(&store, job).expect("test: release");
+        let handle = daemon.reconcile_to_plan().expect("released: the plan proceeds");
+        handle.await.unwrap();
+        assert_eq!(serves.load(Ordering::SeqCst), 1);
     }
 
     // what this catches: a published plan drives a reconcile that brings the

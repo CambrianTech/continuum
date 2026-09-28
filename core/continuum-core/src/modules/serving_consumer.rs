@@ -1169,6 +1169,7 @@ mod tests {
             lanes,
             page_dir: None,
             engine_bin: None,
+            started_s: 0,
         }
     }
 

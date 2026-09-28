@@ -73,6 +73,13 @@ impl ServingDaemonModule {
             self.reconcile_step.clone(),
         )
             .ok_or_else(|| failure("serving lifecycle is busy; teacher batch deferred"))?;
+        // a teacher window borrows the engine; never one that hosts live work (step 1)
+        let occupancy = self.engine_occupancy();
+        if occupancy.holds() {
+            return Err(failure(format!(
+                "the serving engine hosts live work ({occupancy:?}); teacher batch deferred"
+            )));
+        }
         operation.step(ReconcileStep::AcademyBatch);
         let (response, receiver) = oneshot::channel();
         let (cancellation, cancel_rx) = watch::channel(false);
