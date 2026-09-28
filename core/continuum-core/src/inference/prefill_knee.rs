@@ -208,12 +208,12 @@ static WINDOW: LazyLock<parking_lot::Mutex<PrefillWindow>> = LazyLock::new(Defau
 /// new model, just when the rule compares models (Cormac on #4489).
 static LAST_READ: LazyLock<parking_lot::Mutex<Option<(EngineRead, Vec<SlotCount>, u64)>>> = LazyLock::new(Default::default);
 
-/// Which engine a read came from: the model it serves and the moment that lane was verified
-/// ready, which changes on every launch.
+/// Which engine a read came from: the model it serves and the engine process's pid, which
+/// changes on every launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineRead {
     pub model: String,
-    pub launched_ms: u64,
+    pub pid: u32,
 }
 static TURNS: LazyLock<parking_lot::Mutex<TurnPrefill>> = LazyLock::new(Default::default);
 

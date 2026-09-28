@@ -4139,15 +4139,9 @@ impl ServingDaemonModule {
         }
         let server = self.server.clone();
         let reading = self.prefill_knee_reading.clone();
-        // the engine the rates are measured FOR: its model and launch, so two reads pair only
-        // on the same engine
-        let engine = {
-            let s = self.serving_tx.borrow();
-            s.active_model.clone().map(|model| crate::inference::prefill_knee::EngineRead {
-                model,
-                launched_ms: s.ready_verified_at_ms.unwrap_or(0), // unwrap_or: a lane with no verified-ready moment keys as 0, still per model
-            })
-        };
+        // the model the rates are measured FOR; with the engine's pid (read on the task), two
+        // reads pair only on the same engine process
+        let model = self.serving_tx.borrow().active_model.clone();
         Some(tokio::spawn(async move {
             // released however the read ends, so a failed read cannot stop the next one
             struct ReadDone(Arc<AtomicBool>);
@@ -4157,6 +4151,8 @@ impl ServingDaemonModule {
                 }
             }
             let _done = ReadDone(reading);
+            let engine = model.zip(crate::inference::lane_pidfile::read())
+                .map(|(model, pid)| crate::inference::prefill_knee::EngineRead { model, pid });
             if let Some(slots) = server.slots_body().await {
                 crate::inference::prefill_knee::observe_slots(
                     &slots,
