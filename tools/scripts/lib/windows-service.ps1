@@ -130,7 +130,7 @@ function Get-CoreEngineIdleSlot {
     # unreadable from the operator's session). One implementation for bash and PowerShell.
     # $null when this CLI predates the verb: the one deploy after the verbs land is driven by
     # the OLD CLI, and the caller keeps the process-table selection for that deploy, saying so.
-    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot)
+    param([string]$Cli, [Parameter(Mandatory = $true)][string]$InstallRoot, [switch]$SkipIfBusy)
     # Native stderr under 'Stop' is a terminating error in Windows PowerShell 5.1; the exit code
     # is the contract here, so read it rather than the error stream.
     $ErrorActionPreference = 'Continue'
@@ -143,7 +143,13 @@ function Get-CoreEngineIdleSlot {
         $answer = @(& $Cli engine idle-slot 2>$null)
         $code = $LASTEXITCODE
     } finally { $env:CONTINUUM_HOME = $saved }
-    if ($code -eq 3) { throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.' }
+    if ($code -eq 3) {
+        # Every slot is current or run by a live lane (a relaunch onto the last engine has not
+        # finished). A deploy skips the engine and still lands the core (card 3f8f5754, the bash
+        # installer's exit 3); a first install, with nothing to keep, refuses.
+        if ($SkipIfBusy) { return 'BUSY' }
+        throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.'
+    }
     if ($code -ne 0 -or -not $answer.Count) { throw "continuum engine idle-slot failed (exit $code); no slot can be proven idle." }
     $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
     $slot = ConvertTo-CoreImagePath ([string]$answer[-1]).Trim()
@@ -154,9 +160,10 @@ function Get-CoreEngineIdleSlot {
 }
 
 function Select-CoreEngineSlot {
-    param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli)
+    param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
     $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
-    $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot
+    $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy
+    if ($fromCore -eq 'BUSY') { return $null }
     if ($fromCore) {
         # Belt and braces: a live engine whose path IS readable must not sit in the answer.
         $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -187,7 +194,10 @@ function Select-CoreEngineSlot {
             $engineSlot = $candidate; break
         }
     }
-    if (-not $engineSlot) { throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.' }
+    if (-not $engineSlot) {
+        if ($SkipIfBusy) { return $null }
+        throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.'
+    }
     return $engineSlot
 }
 
@@ -200,7 +210,15 @@ function Prepare-CoreServiceEngine {
     if ($task.Description -cne $Description) { throw 'Installed release changed before engine preparation.' }
     $release = $Description | ConvertFrom-Json -ErrorAction Stop
     $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
-    $slot = Select-CoreEngineSlot -Descriptor $release -Cli $release.cli
+    $slot = Select-CoreEngineSlot -Descriptor $release -Cli $release.cli -SkipIfBusy
+    if (-not $slot) {
+        # The core still deploys on the engine it has; the next deploy builds this one. An
+        # explicit receipt line, so the caller never reads an empty receipt as a skip.
+        $why = 'every engine slot is current or run by a live lane'
+        [IO.File]::WriteAllText($ReceiptPath, "SKIP: $why", (New-Object Text.UTF8Encoding $false))
+        Write-Warning "Engine not prepared this deploy: $why."
+        return
+    }
     Mod-LlamaServer -RepoRoot $RepoRoot -InstallDirectory $slot -RequireReceipt
     $after = Get-CoreEngineRequirement -RepoRoot $RepoRoot
     if ($after.source_revision -cne $requirement.source_revision -or $after.backend -cne $requirement.backend) {
