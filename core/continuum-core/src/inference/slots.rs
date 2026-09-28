@@ -453,15 +453,10 @@ impl KvSlotPool {
         if let Some(lease) = self.pool.get(&key) {
             return Some(lease.slot);
         }
-        // Two rounds: (try allocate) → (make room, try again). load_or_share is
-        // single-flight per key, so concurrent same-activity requests share one
-        // assignment; distinct activities racing for the last index resolve by
-        // one of them evicting (mild over-eviction under a stampede is idle-
-        // activity warmth lost, never correctness).
-        for round in 0..2 {
-            if self.free.lock().is_empty() && round > 0 {
-                return None; // eviction freed nothing — everything pinned
-            }
+        // Allocation races are retryable, not evidence that every lease is pinned.
+        // Only a failed eviction below may return None: admission parks on that
+        // result and needs a real holder to eventually signal its release (#4515).
+        loop {
             if self.free.lock().is_empty() {
                 let evicted = self.pool.evict_at_least(1);
                 if evicted == 0 {
@@ -510,10 +505,14 @@ impl KvSlotPool {
                     );
                     return Some(lease.slot);
                 }
-                Err(_) => continue, // lost the race for the last index — make room
+                Err(_) => {
+                    // Another allocator took the last index. Recheck eviction after
+                    // yielding; exhausting an arbitrary retry count could park a
+                    // caller even though the competing lease is already evictable.
+                    tokio::task::yield_now().await;
+                }
             }
         }
-        None
     }
 
     /// [`Self::lease`] plus the paging ledger: who to SAVE before this turn
