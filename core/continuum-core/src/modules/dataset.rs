@@ -879,16 +879,26 @@ pub struct DatasetModule {
 /// It read `HOME` alone before, and a Windows core started by its scheduled task has no
 /// `HOME`, so `dataset/list` on the 5090 read `/tmp\.continuum\datasets` and found nothing
 /// (Codex, 2026-09-28, preparing Kimi's first dream).
-pub fn default_datasets_root() -> PathBuf {
-    crate::commands::benchmark::continuum_home()
-        .unwrap_or_else(|_| std::env::temp_dir().join(".continuum")) // unwrap_or_else: no home anywhere, the same last resort as before, now the OS temp dir
-        .join("datasets")
+/// With no home at all it fails loud (Cormac on #4496): a dataset written under a temp dir
+/// is a dataset the next boot cannot find.
+pub fn default_datasets_root() -> Result<PathBuf, crate::sdk_codegen::CommandError> {
+    Ok(crate::commands::benchmark::continuum_home()?.join("datasets"))
 }
 
 impl Default for DatasetModule {
     fn default() -> Self {
         Self {
-            service: Arc::new(DatasetService::new(default_datasets_root())),
+            // A module constructor cannot fail; with no home the service is rooted where
+            // nothing persists, and says so once. Every command path resolves the root itself
+            // and fails loud.
+            service: Arc::new(DatasetService::new(default_datasets_root().unwrap_or_else(|e| {
+                crate::probe!(
+                    class = "dataset.root.unresolved",
+                    error = e.to_string().as_str(),
+                    "no continuum home: dataset/* writes land in the temp dir and will not survive a boot"
+                );
+                std::env::temp_dir().join(".continuum").join("datasets")
+            }))),
         }
     }
 }
