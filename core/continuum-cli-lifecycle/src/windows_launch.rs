@@ -332,6 +332,10 @@ mod tests {
 
     const FIXTURE_ENV: &str = "CONTINUUM_DETACHED_LAUNCH_FIXTURE";
     const FIXTURE_TEST: &str = "windows_launch::tests::detached_child_fixture";
+    /// Set in the fresh process the pipe-leak check runs alone in (card 64ca188f).
+    const ISOLATED_ENV: &str = "CONTINUUM_PIPE_LEAK_CHECK_ISOLATED";
+    const ISOLATED_TEST: &str =
+        "windows_launch::tests::detached_child_closes_unrelated_pipe_and_preserves_launch_contract";
     const QUOTED_ARGS: &[&str] = &[
         "space and λ",
         "embedded\"quote",
@@ -410,6 +414,22 @@ mod tests {
     // EOF WHILE alive, and still receive its intended I/O, cwd, args and env.
     #[test]
     fn detached_child_closes_unrelated_pipe_and_preserves_launch_contract() {
+        // RUN ALONE (card 64ca188f). The check makes an INHERITABLE pipe writer on purpose, to
+        // prove the child does not receive it. But std spawns every process with handle
+        // inheritance on, so any sibling test in this binary that spawned a process in that
+        // window inherited the writer and held the pipe open: the check then failed on a
+        // child that was not the one under test (four heads on 2026-09-28, the canary tip
+        // included, where a red tip blocks every deploy). So the check re-runs itself in a
+        // fresh process where it is the only test, and nothing else can spawn meanwhile.
+        if std::env::var_os(ISOLATED_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", ISOLATED_TEST, "--nocapture", "--test-threads=1"])
+                .env(ISOLATED_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "the isolated pipe-leak check failed: {status} (its output is above)");
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("core launch λ");
         std::fs::create_dir(&root).unwrap();
