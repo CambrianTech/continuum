@@ -676,11 +676,14 @@ impl PersonaAircRuntime {
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
-                    let availability = if serving.ready {
+                    // READY needs a lane AND her own loop (card 7524aa5b): a runtime whose
+                    // cognition loop exited used to beacon ready every minute while deaf.
+                    let thinking = crate::persona::cognition_pulse::loop_running(hb_persona);
+                    let availability = if serving.ready && thinking {
                         airc_lib::AgentAvailabilityState::Ready
                     } else {
-                        // Lane not up (cold boot, relaunch, squeeze): she can
-                        // hear but cannot yet think — warming, not online.
+                        // Lane not up (cold boot, relaunch, squeeze), or no cognition loop
+                        // running: she cannot think right now, so she is away, never ready.
                         airc_lib::AgentAvailabilityState::Away
                     };
                     if last != Some(availability) {
@@ -690,7 +693,8 @@ impl PersonaAircRuntime {
                             agent_name = %hb_name,
                             state = ?availability,
                             serving_ready = serving.ready,
-                            "presence availability transitioned (derived from live serving state)"
+                            loop_running = thinking,
+                            "presence availability transitioned (derived from live serving state and her own cognition loop)"
                         );
                         last = Some(availability);
                     }
