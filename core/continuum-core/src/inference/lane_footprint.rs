@@ -122,7 +122,53 @@ pub fn sample_due(now_ms: u64) -> bool {
     }
 }
 
-/// Record one measurement of the live lane. Returns the per-token cost it derived.
+/// The RESIDENCY EPOCH (Codex on #4536): advanced whenever work binds to an engine or leaves
+/// one. A sample takes a [`SampleToken`] BEFORE it checks occupancy, measures (which may
+/// await), and publishes only if the epoch has not moved. The advance and the publication both
+/// hold the records' lock, so a publication is wholly before a residency change or sees it.
+/// Binding happens inside the admission hold before POST /train, so no training byte is
+/// allocated under an epoch a sample could still publish against.
+static RESIDENCY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A sample's claim on the residency it began under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampleToken(pub(crate) u64);
+
+/// Work bound to or left an engine did not publish: residency changed while it was measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResidencyChanged;
+
+/// Take the token a sample publishes against. Taken before the occupancy check.
+pub fn begin_sample() -> SampleToken {
+    SampleToken(RESIDENCY_EPOCH.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// Residency changed: work bound to an engine, or left one. Any sample begun before this
+/// is refused at publication.
+pub fn residency_changed() {
+    let _records = COSTS.lock();
+    RESIDENCY_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Publish a sample against the records IF the residency it began under still stands (`epoch`
+/// is the current residency epoch, read under the records' lock). Pure, on the map it is given.
+/// Returns whether the record moved, as [`apply_sample`].
+pub(crate) fn publish_sample(
+    costs: &mut BTreeMap<String, MeasuredCost>,
+    epoch: u64,
+    token: SampleToken,
+    model: &str,
+    sample: Option<&MeasuredCost>,
+) -> Result<bool, ResidencyChanged> {
+    if epoch != token.0 {
+        return Err(ResidencyChanged);
+    }
+    Ok(apply_sample(costs, model, sample))
+}
+
+/// Record one measurement of the live lane. Returns the per-token cost it derived, or
+/// [`ResidencyChanged`] when work bound to or left the engine since `token` was taken (the
+/// reading may straddle that work, so it is dropped and the record stands).
 ///
 /// The record is REPLACED by each sample (last write wins), never maxed across samples:
 /// "upward only" is a rule about the measurement against the ESTIMATE at apply time
@@ -131,24 +177,25 @@ pub fn sample_due(now_ms: u64) -> bool {
 /// is ignored entirely — the plan falls back to its arithmetic, never to a remembered
 /// maximum.
 pub fn observe(
+    token: SampleToken,
     model: &str,
     lanes: u32,
     window: u32,
     anon_bytes: u64,
     compute_floor_per_lane: u64,
     host_cache_bytes: u64,
-) -> Option<u64> {
+) -> Result<Option<u64>, ResidencyChanged> {
     let now = now_ms();
     let sample = per_token_from(anon_bytes, lanes, window, compute_floor_per_lane, host_cache_bytes)
         .map(|per_token| MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes, last_ms: now });
-    let mut costs = COSTS.lock();
-    let moved = apply_sample(&mut costs, model, sample.as_ref());
     use std::sync::atomic::Ordering;
+    let mut costs = COSTS.lock();
+    let moved = publish_sample(&mut costs, RESIDENCY_EPOCH.load(Ordering::SeqCst), token, model, sample.as_ref())?;
     if moved || now.saturating_sub(LAST_SAVE_MS.load(Ordering::Relaxed)) >= SAVE_EVERY_MS {
         save_all(&costs);
         LAST_SAVE_MS.store(now, Ordering::Relaxed);
     }
-    sample.map(|c| c.per_token_bytes)
+    Ok(sample.map(|c| c.per_token_bytes))
 }
 
 /// One sample against the record: a reading replaces the model's record; NO reading

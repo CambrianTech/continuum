@@ -2359,8 +2359,13 @@ impl ServingDaemonModule {
         // per-lane serving residency; the 27B stopped fitting and the plan replaced the engine
         // the run was in. So while live work is bound to this engine, or its binding cannot be
         // read, the reading is WITHHELD; and for one sample interval after work leaves (the
-        // engine frees asynchronously, the device reports late) it is withheld too. The release
-        // itself retired the model's record, so the next reading after that is clean.
+        // engine frees asynchronously, the device reports late) it is withheld too, as it is for
+        // the first interval of a process (a predecessor's release is unknown to it). The release
+        // retired a record sampled during the work; a reading in flight across a bind or release
+        // is refused when it publishes.
+        // The token is taken BEFORE occupancy is read: work that binds or leaves after this
+        // point refuses the reading at publication (Codex on #4536), however long it awaits.
+        let token = crate::inference::lane_footprint::begin_sample();
         let occupancy = self.engine_occupancy();
         let settling = crate::inference::engine_residency::released_within(now, crate::inference::lane_footprint::SAMPLE_EVERY_MS);
         if occupancy.holds() || settling {
@@ -2490,6 +2495,7 @@ impl ServingDaemonModule {
                     0
                 };
                 let measured = crate::inference::lane_footprint::observe(
+                    token,
                     &active,
                     live.lanes,
                     live.served_context_window,
@@ -2497,6 +2503,18 @@ impl ServingDaemonModule {
                     fp.compute_buffer_per_lane(),
                     host_cache_bytes,
                 );
+                let Ok(measured) = measured else {
+                    crate::probe!(
+                        class = "serving.footprint.unmeasured",
+                        leg = "residency_changed",
+                        model = %active,
+                        pid = pid as u64,
+                        source,
+                        "work bound to or left the engine while this reading was taken: it may \
+                         straddle that work, so it is DROPPED and the record stands"
+                    );
+                    return;
+                };
                 crate::probe!(
                     class = "serving.footprint.measured",
                     model = %active,
