@@ -182,13 +182,14 @@ mod tests {
     #[test]
     fn exposes_training_and_recall_commands() {
         let names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names.len(), 6);
+        assert_eq!(names.len(), 7);
         assert!(names.contains(&"genome/teach"));
         assert!(names.contains(&"genome/recall"));
         assert!(names.contains(&"genome/recall/replay"));
         assert!(names.contains(&"genome/job-create"));
         assert!(names.contains(&"genome/job-status"));
         assert!(names.contains(&"genome/job-cancel"));
+        assert!(names.contains(&"genome/job-pause"));
     }
 
     // what this catches: the legacy string-dispatch path is dead — any call into it

@@ -94,6 +94,7 @@ pub mod mlx_lora_adapter;
 mod native_jobs;
 pub mod cuda_lora_adapter;
 pub mod engine_lora_adapter;
+pub mod training_hold_store;
 pub mod openai_adapter;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod recording_adapter;
