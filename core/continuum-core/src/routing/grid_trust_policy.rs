@@ -349,7 +349,7 @@ mod tests {
         // visibility. The mutating tier is what stays out of reach: gpu/budget
         // (`access: Privileged` → Trusted) must be denied a Provisional caller.
         assert_eq!(
-            policy.gate(&decision("gpu/budget"), Some(&airc)),
+            policy.gate(&decision("code/shell"), Some(&airc)),
             Verdict::Allowed,
             "a citizen's working surface (Privileged) is not withheld by transport"
         );

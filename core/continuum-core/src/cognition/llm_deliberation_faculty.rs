@@ -5320,14 +5320,16 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // `commands/list`; the holder's own hands are `work/get` and `work/submit`.
             // HER HANDS FOLLOW HER COGNITIVE LEVEL (Joel, 2026-09-28: the citizens were
             // hand-crippled; the point is a team that replaces Claude or Codex). A capable
-            // model gets every offered verb, web and vision included, like Claude; only a
-            // model below the policy's threshold keeps the focused working set.
-            capable || n.starts_with("code/")
+            // model also gets the web (search and fetch), like Claude; a model below the
+            // policy's threshold keeps the focused working set. Not every verb: a full dump
+            // blows the prompt budget and has muted personas before (persona_tools bound).
+            n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
                 || n.starts_with("cargo/")
                 || n.starts_with("tool/")
                 || n.starts_with("commands/")
+                || (capable && n.starts_with("web/"))
         })
         .cloned()
         .collect()
@@ -5513,6 +5515,7 @@ mod tests {
             "work/submission",
             "work/review",
             "work/submit",
+            "web/fetch",
         ]
         .iter()
         .map(|n| NativeToolSpec {
@@ -5527,19 +5530,18 @@ mod tests {
         })
         .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-        // A capable citizen (an unknown level counts as capable: more, not less) is offered
-        // every verb, like Claude (Joel, 2026-09-28); only the misread reviewer verbs stay
-        // out of her hands.
+        // A capable citizen (an unknown level counts as capable: more, not less) also gets
+        // the web, like Claude (Joel, 2026-09-28); chat and room verbs are not hands, and
+        // the misread reviewer verbs stay out of her hands.
         assert_eq!(
             hands,
             [
                 "code/read",
                 "work/state",
-                "chat/send",
                 "commands/list",
-                "room/join",
                 "code/git/status",
-                "work/submit"
+                "work/submit",
+                "web/fetch"
             ],
             "git/apply, work/submission and work/review are reviewer verbs, not hands; work/submit is the holder's"
         );

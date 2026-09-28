@@ -36,7 +36,7 @@ crate::action_command! {
     pub struct CodeGithubIssueCreate { state: Arc<CodeState> }
     name: "code/github/issue-create",
     access: AiSafe,
-    native: true, // offered like Claude's (Joel, 2026-09-28); the 9/03 spam cause, must-use pressure, was fixed in #3684
+    native: false, // reachable BY NAME; the 9/03 placeholder-issue spam was issues, so issues stay one call away
     params: GithubIssueCreateParams,
     output: GithubIssueCreateResult,
     run(this, ctx, p) => {
