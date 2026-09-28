@@ -1,20 +1,23 @@
 //! `forge::hf_publisher` — HuggingFace `Publisher` adapter (#99 L4, outlier A).
 //!
 //! The public-market impl of [`Publisher`](super::publisher::Publisher): renders a
-//! Continuum model card + uploads the gguf-lora to a HF repo via the `hf` CLI
-//! (which owns auth, repo creation, and large-file transfer — we don't
-//! re-implement any of that). This is one adapter behind the trait; a
-//! `GridPublisher` (outlier B) satisfies the SAME trait for peer-to-peer, so the
-//! `forge/publish` command never learns HF specifics.
+//! Continuum model card and uploads a staged [`GeneBundle`](super::gene_bundle::GeneBundle)
+//! to a HF repo via the `hf` CLI (which owns auth, repo creation, and large-file
+//! transfer; we don't re-implement any of that). This is one adapter behind the trait;
+//! `GhPublisher` (outlier B, GitHub release assets) satisfies the SAME trait with the SAME
+//! bundle bytes, so neither publishing caller learns HF specifics.
 //!
 //! Testability at the ML boundary: the two things that decide WHAT reaches the
 //! world — the model card and the upload command — are pure, tested functions.
 //! The network spawn itself is integration (needs `hf` + an `HF_TOKEN`) and fails
 //! LOUD via [`PublishError::Transport`] ([[fallbacks-are-illegal-fail-loud]]).
 
+use std::path::Path;
+
 use async_trait::async_trait;
 
-use super::publish_request::{PublishError, PublishRequest};
+use super::gene_bundle::{self, GeneBundle};
+use super::publish_request::{PublishError, PublishRequest, RepoId};
 use super::publisher::{PublicationReceipt, Publisher};
 
 /// Renders the Continuum HuggingFace model card (README.md) for a validated
@@ -99,7 +102,7 @@ pub fn render_model_card(req: &PublishRequest) -> String {
 /// The argv (after the `hf` program) for uploading a staged folder to a repo —
 /// factored out so it's assertable without spawning anything. Uploads the whole
 /// staging dir (the gguf-lora + the rendered README) to the repo root.
-fn upload_args(repo_id: &str, staging_dir: &str) -> Vec<String> {
+fn upload_args(repo_id: &str, staging_dir: &str, digest: &str) -> Vec<String> {
     vec![
         "upload".to_string(),
         repo_id.to_string(),
@@ -107,17 +110,48 @@ fn upload_args(repo_id: &str, staging_dir: &str) -> Vec<String> {
         ".".to_string(),
         "--repo-type".to_string(),
         "model".to_string(),
+        "--commit-message".to_string(),
+        format!("gene bundle {digest}"),
     ]
 }
 
-/// HuggingFace publisher. Stateless; the `hf` CLI carries the credential
-/// (`HF_TOKEN`), so this holds no secret.
+/// `hf download <repo> <files…> --local-dir <dir>`: only the named files, never the whole repo.
+fn download_args(repo_id: &str, files: &[String], dir: &str) -> Vec<String> {
+    let mut args = vec!["download".to_string(), repo_id.to_string()];
+    args.extend(files.iter().cloned());
+    args.extend(["--local-dir".to_string(), dir.to_string(), "--repo-type".to_string(), "model".to_string()]);
+    args
+}
+
+/// Publishes to a Hugging Face model repo through the `hf` CLI (auth: HF_TOKEN).
 #[derive(Debug, Default)]
 pub struct HfPublisher;
 
 impl HfPublisher {
     pub fn new() -> Self {
         Self
+    }
+
+    fn fail(&self, detail: String) -> PublishError {
+        PublishError::Transport { transport: self.name().to_string(), detail }
+    }
+
+    async fn hf(&self, args: &[String]) -> Result<(), PublishError> {
+        let out = tokio::process::Command::new("hf").args(args).output().await.map_err(|e| {
+            self.fail(format!("`hf` CLI not runnable ({e}); install huggingface_hub and authenticate (HF_TOKEN)"))
+        })?;
+        if !out.status.success() {
+            return Err(self.fail(format!("hf {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(())
+    }
+
+    fn receipt(&self, dest: &RepoId, digest: &str) -> PublicationReceipt {
+        PublicationReceipt {
+            transport: self.name().to_string(),
+            location: format!("https://huggingface.co/{}", dest.as_str()),
+            digest: digest.to_string(),
+        }
     }
 }
 
@@ -127,83 +161,39 @@ impl Publisher for HfPublisher {
         "huggingface"
     }
 
-    async fn publish(&self, req: &PublishRequest) -> Result<PublicationReceipt, PublishError> {
-        // Stage into a unique temp dir; clean it up on EVERY path (success or
-        // failure) so a failed publish never leaks a staging dir.
-        let staging =
-            std::env::temp_dir().join(format!("continuum-publish-{}", uuid::Uuid::new_v4()));
-        let result = self.publish_from_staging(req, &staging).await;
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        result
-    }
-}
-
-impl HfPublisher {
-    /// The staged upload, split out so [`publish`](Publisher::publish) can always
-    /// clean up the staging dir afterwards. Stages the gguf-lora + rendered card
-    /// into `staging`, uploads the folder via the `hf` CLI, returns the receipt.
-    async fn publish_from_staging(
-        &self,
-        req: &PublishRequest,
-        staging: &std::path::Path,
-    ) -> Result<PublicationReceipt, PublishError> {
-        let transport = self.name().to_string();
-        let fail = |detail: String| PublishError::Transport {
-            transport: transport.clone(),
-            detail,
+    async fn find(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<Option<PublicationReceipt>, PublishError> {
+        let dir = std::env::temp_dir().join(format!("continuum-hf-find-{}", uuid::Uuid::new_v4()));
+        let args = download_args(dest.as_str(), &[gene_bundle::MANIFEST.to_string()], &dir.to_string_lossy());
+        // an absent repo or manifest is "not there yet", never an error
+        let served = match self.hf(&args).await {
+            Ok(()) => std::fs::read(dir.join(gene_bundle::MANIFEST)).ok(),
+            Err(_) => None,
         };
+        let _ = std::fs::remove_dir_all(&dir);
+        let same = served.is_some_and(|body| {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(&body).iter().map(|b| format!("{b:02x}")).collect::<String>() == bundle.digest
+        });
+        Ok(same.then(|| self.receipt(dest, &bundle.digest)))
+    }
 
-        tokio::fs::create_dir_all(staging)
+    async fn deliver(&self, dest: &RepoId, bundle: &GeneBundle) -> Result<PublicationReceipt, PublishError> {
+        // HF's card is its README: staged beside the bundle, outside its identity
+        tokio::fs::write(bundle.dir.join(gene_bundle::CARD), &bundle.card)
             .await
-            .map_err(|e| fail(format!("could not create staging dir: {e}")))?;
-        let gguf_name = req
-            .gene_path
-            .file_name()
-            .ok_or_else(|| fail("gene path has no file name".to_string()))?;
-        tokio::fs::copy(&req.gene_path, staging.join(gguf_name))
-            .await
-            .map_err(|e| {
-                fail(format!(
-                    "could not stage gene {}: {e}",
-                    req.gene_path.display()
-                ))
-            })?;
-        tokio::fs::write(staging.join("README.md"), render_model_card(req))
-            .await
-            .map_err(|e| fail(format!("could not write model card: {e}")))?;
-        // The self-describing half of the gene card: a pulling node stamps its
-        // own signature sidecar from this and routes the gene by DISTANCE from
-        // the first minute (GENOME-REPOSITORY-ON-HF.md §2). Absent for
-        // pre-signature genes — the card still publishes.
-        if let Some(sig) = &req.signature_json {
-            tokio::fs::write(staging.join("signature.json"), sig)
-                .await
-                .map_err(|e| fail(format!("could not write signature.json: {e}")))?;
-        }
+            .map_err(|e| self.fail(format!("could not write model card: {e}")))?;
+        self.hf(&upload_args(dest.as_str(), &bundle.dir.to_string_lossy(), &bundle.digest)).await?;
+        Ok(self.receipt(dest, &bundle.digest))
+    }
 
-        // Upload via the `hf` CLI (owns auth + large-file transfer). Loud on any
-        // non-success — a failed publish is never a silent no-op.
-        let args = upload_args(req.repo_id.as_str(), &staging.to_string_lossy());
-        let output = tokio::process::Command::new("hf")
-            .args(&args)
-            .output()
-            .await
-            .map_err(|e| {
-                fail(format!(
-                    "`hf` CLI not runnable ({e}) — install huggingface_hub and authenticate (HF_TOKEN)"
-                ))
-            })?;
-        if !output.status.success() {
-            return Err(fail(format!(
-                "hf upload failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-
-        Ok(PublicationReceipt {
-            transport,
-            location: format!("https://huggingface.co/{}", req.repo_id.as_str()),
-        })
+    async fn fetch(&self, dest: &RepoId, _receipt: &PublicationReceipt, into: &Path) -> Result<(), PublishError> {
+        let dir = into.to_string_lossy().into_owned();
+        self.hf(&download_args(dest.as_str(), &[gene_bundle::MANIFEST.to_string()], &dir)).await?;
+        let body = std::fs::read(into.join(gene_bundle::MANIFEST)).map_err(|e| self.fail(format!("manifest not fetched: {e}")))?;
+        let manifest: gene_bundle::BundleManifest =
+            serde_json::from_slice(&body).map_err(|e| self.fail(format!("served manifest unreadable: {e}")))?;
+        let names: Vec<String> = manifest.files.iter().map(|f| f.name.clone()).collect();
+        self.hf(&download_args(dest.as_str(), &names, &dir)).await
     }
 }
 
@@ -259,20 +249,18 @@ mod tests {
     // what this catches: the upload targets the right repo + repo-type, and uploads
     // the staged folder — the argv the network spawn will run, assertable without a
     // network.
+    // what this catches: the upload targets the right repo and repo type, uploads the staged
+    // bundle folder, and names the bundle digest in the commit; the fetch downloads only the
+    // named files. The argv the network spawn runs, assertable without a network.
     #[test]
-    fn upload_args_target_repo_and_model_type() {
-        let args = upload_args("continuum-ai/qwen3-coder-30b", "/tmp/stage");
+    fn hf_args_target_the_repo_and_name_the_bundle() {
+        let args = upload_args("continuum-ai/qwen3-coder-30b", "/tmp/stage", "abc123");
         assert_eq!(
             args,
-            vec![
-                "upload",
-                "continuum-ai/qwen3-coder-30b",
-                "/tmp/stage",
-                ".",
-                "--repo-type",
-                "model"
-            ]
+            vec!["upload", "continuum-ai/qwen3-coder-30b", "/tmp/stage", ".", "--repo-type", "model", "--commit-message", "gene bundle abc123"]
         );
+        let dl = download_args("continuum-ai/q", &["manifest.json".into(), "a.gguf".into()], "/tmp/x");
+        assert_eq!(dl, vec!["download", "continuum-ai/q", "manifest.json", "a.gguf", "--local-dir", "/tmp/x", "--repo-type", "model"]);
     }
 
     #[test]

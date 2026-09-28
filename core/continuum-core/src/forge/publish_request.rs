@@ -32,7 +32,7 @@ pub enum PublishError {
     /// The layer did not beat its baseline (held-out lift ≤ 0) — refused so a
     /// regressing/overfit layer never enters the catalog peers cosine-search.
     LiftGate { lift_pct: f64 },
-    /// The HF repo id is not a well-formed `namespace/name`.
+    /// The repo id is not a well-formed `namespace/name`.
     InvalidRepoId { repo_id: String, reason: String },
     /// The gguf-lora gene file to upload is missing/empty.
     MissingGene { detail: String },
@@ -43,6 +43,9 @@ pub enum PublishError {
     /// validation refusals: this was a good, gated request that couldn't be
     /// delivered (a caller may retry / try another publisher), not a bad request.
     Transport { transport: String, detail: String },
+    /// A destination served a bundle whose identity differs from the one staged: the
+    /// publication is not proven (read-back is the proof, never an upload's exit status).
+    DigestMismatch { transport: String, staged: String, served: String },
 }
 
 impl std::fmt::Display for PublishError {
@@ -65,18 +68,23 @@ impl std::fmt::Display for PublishError {
             Self::Transport { transport, detail } => {
                 write!(f, "publish via {transport} failed: {detail}")
             }
+            Self::DigestMismatch { transport, staged, served } => write!(
+                f,
+                "publish via {transport} not proven: it serves bundle {served}, but {staged} was staged"
+            ),
         }
     }
 }
 impl std::error::Error for PublishError {}
 
-/// A validated HuggingFace repo id (`namespace/name`) — a newtype so an unchecked
-/// string can never reach the upload transport. Both segments must be non-empty
-/// and use only `[A-Za-z0-9._-]` (HF's allowed set), with no path traversal.
+/// A validated repository id (`namespace/name`): an HF repo or a GitHub `owner/repo`. A
+/// newtype so an unchecked string can never reach a transport. Both segments must be
+/// non-empty and use only `[A-Za-z0-9._-]` (the set both providers allow), with no path
+/// traversal. Provider-neutral: it names WHERE, and each publisher addresses it its own way.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HfRepoId(String);
+pub struct RepoId(String);
 
-impl HfRepoId {
+impl RepoId {
     pub fn parse(raw: &str) -> Result<Self, PublishError> {
         let raw = raw.trim();
         let bad = |reason: &str| PublishError::InvalidRepoId {
@@ -119,7 +127,7 @@ impl HfRepoId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PublishRequest {
     /// Validated target repo (`namespace/name`).
-    pub repo_id: HfRepoId,
+    pub repo_id: RepoId,
     /// Local gguf-lora gene file to upload.
     pub gene_path: PathBuf,
     /// Standardized `continuum:*` + HF tags (the market's facet filter).
@@ -212,7 +220,7 @@ impl PublishRequest {
             });
         }
         // 3. Repo id.
-        let repo_id = HfRepoId::parse(&inputs.repo_id)?;
+        let repo_id = RepoId::parse(&inputs.repo_id)?;
         // 4. Gene present.
         if inputs.gene_path.as_os_str().is_empty() {
             return Err(PublishError::MissingGene {
@@ -324,7 +332,7 @@ mod tests {
             );
         }
         // a normal one parses.
-        assert!(HfRepoId::parse("continuum-ai/qwen3-coder-30b").is_ok());
+        assert!(RepoId::parse("continuum-ai/qwen3-coder-30b").is_ok());
     }
 
     // what this catches: never publish a phantom — the gene file must exist.
