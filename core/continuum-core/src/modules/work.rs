@@ -1783,6 +1783,14 @@ impl WorkCreate {
             Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
         );
         req.body = p.body;
+        // A blank room would reach resolve_room as "unnamed" and land in the current room,
+        // the very default this field exists to refuse (Codex on #4550).
+        if p.room.trim().is_empty() {
+            return Err(CommandError::Invalid(
+                "work/create: room is required: name the activity room whose board gets the card"
+                    .into(),
+            ));
+        }
         let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
         let card_id = airc
             .create_work_card_in(&room, req)
@@ -4031,6 +4039,20 @@ mod tests {
         assert_ne!(room.channel, lobby.channel);
         assert_eq!(card.created_by, airc.peer_id(), "authored under her own identity");
         assert_eq!(card.priority, Priority::P1);
+
+        // A blank room is refused, never read as "the current room".
+        let blank = WorkCreate::create(
+            &airc,
+            WorkCreateParams {
+                room: "  ".to_string(),
+                repo: "github.com/CambrianTech/career-wrangler".to_string(),
+                title: "should not land".to_string(),
+                body: None,
+                priority: None,
+            },
+        )
+        .await;
+        assert!(matches!(blank, Err(CommandError::Invalid(_))), "{blank:?}");
     }
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
