@@ -210,7 +210,7 @@ impl Shape {
 /// serving process down (fork #27 now refuses it). Rounded DOWN, so the lease never grows past
 /// what was asked; at least one 256-token context.
 fn train_window(sequence_length: u32) -> u32 {
-    ((sequence_length / 256).max(1) * 256).min(8192)
+    (sequence_length / 256).max(1) * 256
 }
 
 /// The depth a finished run actually adapted, as the shape it is recorded under: the engine's
@@ -688,7 +688,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         if request.dataset.examples.is_empty()
             || schedule.epochs == 0
             || schedule.epochs > 100
-            || !(16..=8192).contains(&schedule.sequence_length)
+            || schedule.sequence_length < 16
             || !schedule.learning_rate.is_finite()
             || schedule.learning_rate <= 0.0
             || schedule.learning_rate > 1.0
@@ -696,7 +696,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             || lora.alpha == 0
         {
             return Err(FineTuningError::InvalidRequest(
-                "invalid engine training data/schedule/LoRA geometry (epochs 1-100, sequence_length 16-8192, lr (0,1], rank 1-256)".into(),
+                "invalid engine training data/schedule/LoRA geometry (epochs 1-100, sequence_length >= 16, lr (0,1], rank 1-256)".into(),
             ));
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
@@ -712,15 +712,27 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
         let id = Uuid::new_v4();
         let out = format!("{id}.gguf");
-        let window = train_window(schedule.sequence_length);
-        if window != schedule.sequence_length {
-            crate::probe!(
-                class = "training.job.window_rounded",
-                asked = schedule.sequence_length as u64,
-                sent = window as u64,
-                "the training window rounded down to a multiple of 256 (the engine's context granularity)"
-            );
-        }
+        // LEARNING SEES WHAT SERVING SEES (Joel, 2026-09-28: "stupidly low token sizes are
+        // idiotic ... the same as inference"; "you're not supposed to make learning so different
+        // from reality"). The window is the lane's SERVED per-slot window, the context her turns
+        // actually run in, so a lived example trains whole with its system and tool head. A
+        // request's own length is used only when this node is not serving that base. The engine
+        // measures the training graph at this window before allocating it and refuses past the
+        // lease: a window that does not fit is an engineering problem, never a smaller window.
+        let served = {
+            let s = crate::inference::llama_server::current_serving();
+            (s.active_model.as_deref() == Some(request.base_model.as_str()) && s.served_context_window > 0)
+                .then_some(s.served_context_window)
+        };
+        let asked = served.unwrap_or(schedule.sequence_length);
+        let window = train_window(asked);
+        crate::probe!(
+            class = "training.job.window",
+            requested = schedule.sequence_length as u64,
+            served = served.map_or(0, u64::from), // probe field: 0 = this node is not serving that base
+            sent = window as u64,
+            "the training window: the lane's served per-slot window (what serving sees), else the request's; rounded to the engine's 256 granularity"
+        );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
         let shape = Shape {
@@ -1404,7 +1416,7 @@ mod tests {
         assert_eq!(effective_depth(Some(64), Some(64)), None);
         assert_eq!(effective_depth(None, None), None);
         // the window is a multiple of 256, rounded down, never under one context
-        assert_eq!((train_window(1536), train_window(1600), train_window(100), train_window(9000)), (1536, 1536, 256, 8192));
+        assert_eq!((train_window(1536), train_window(1600), train_window(100), train_window(61_696)), (1536, 1536, 256, 61_696), "no fixed ceiling: the served window is the window");
     }
 
     // what this catches: a request the engine cannot run is refused before any job exists:
