@@ -159,14 +159,14 @@ impl ActionCommand for GenomeRecall {
         };
 
         // alias↔id map + which genes are signed, BEFORE the source consumes them.
-        let id_of = |alias: &str| crate::genome::candidate_source_store::stable_local_id(alias);
+        let id_of = crate::genome::candidate_source_store::manifest_local_id;
         let signed_paths: std::collections::HashSet<String> =
             signatures.by_path.keys().cloned().collect();
         let alias_by_id: std::collections::HashMap<_, _> = manifest
             .iter()
             .map(|a| {
                 (
-                    id_of(&a.alias),
+                    id_of(a),
                     (
                         a.alias.clone(),
                         signed_paths.contains(&a.path.display().to_string()),
