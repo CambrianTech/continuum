@@ -2116,7 +2116,6 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         // Register-CoreServiceRelease validates and registers, but never launches.
         // An error here must not strand the node after a successful teardown.
         PreparedCoreService::register_engine(repo, original, engine).await?;
-        service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
     }
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
     // running core, and refusing to continue would leave the node down over a module that
@@ -2134,6 +2133,16 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
             prebuilt = Some(staged);
         }
+    }
+    #[cfg(windows)]
+    if prepared_engine.is_some() {
+        // A source build is still a Cargo artifact until the staging above. Do
+        // not mark the service prepared before that copy, or it would skip
+        // staging and compare the registered slot against the Cargo path.
+        let candidate = prebuilt
+            .as_ref()
+            .ok_or("engine handoff requires a verified Core artifact")?;
+        service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
     }
     // Keep the launcher's wait as the honesty check that teardown actually took.
     let source = prebuilt
