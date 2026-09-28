@@ -112,6 +112,7 @@ pub mod response_validator;
 pub mod self_repeat;
 pub mod kv_cache_plan;
 pub mod serving_plan;
+pub mod service_rate;
 pub mod window_allocator;
 pub mod shared_analysis;
 pub mod should_respond;
