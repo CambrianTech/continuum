@@ -82,6 +82,15 @@ impl GeneFitnessIndex {
         let mut index = Self::fold_alias_rows(rows.iter().copied(), now_ms);
         let mut by_base: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
         for row in rows {
+            // Operational failures are not gene performance. Neither their scores nor
+            // their trial counts may affect qualified fitness or exploration bonuses.
+            if row.get("cancelled").and_then(|v| v.as_bool()) == Some(true)
+                || row.get("failed").and_then(|v| v.as_bool()) == Some(true)
+                || row.get("infraUnavailable").is_some_and(|v| !v.is_null())
+                || row.get("lift").and_then(|v| v.as_f64()).is_none()
+            {
+                continue;
+            }
             let (Some(base), Some(path)) = (
                 row.get("baseModelId").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
                 row.get("adapterPath").and_then(|v| v.as_str()).filter(|s| !s.is_empty()),
@@ -210,6 +219,21 @@ mod tests {
         assert!(index.qualified_outcome_factor("a", Path::new("/two")) < 0.5);
         assert!(index.qualified_outcome_factor("b", Path::new("/one")) < 0.5);
         assert_eq!(index.qualified_outcome_factor("c", Path::new("/one")), 0.5);
+
+        // Regression for #4504: void runs cannot change lift OR UCB trial counts.
+        let mut with_void = rows.clone();
+        for flag in [json!({"cancelled":true}), json!({"failed":true}),
+                     json!({"infraUnavailable":{"reason":"lane died"}}), json!({"lift":null})] {
+            let mut invalid = rows[0].clone();
+            invalid["lift"] = json!(-1.0);
+            for (key, value) in flag.as_object().expect("object fixture") {
+                invalid[key] = value.clone();
+            }
+            with_void.push(invalid);
+        }
+        let filtered = GeneFitnessIndex::fold_rows(with_void.iter(), 100);
+        assert_eq!(filtered.qualified, index.qualified);
+
     }
 
 
