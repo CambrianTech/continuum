@@ -1452,7 +1452,7 @@ mod tests {
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
         let served = url.clone();
-        t.lane = Box::new(move |_| Some((served.clone(), 61_696)));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: served.clone(), window: 61_696, engine: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         r.schedule.as_mut().expect("test: schedule").sequence_length = 1024;
@@ -1463,7 +1463,7 @@ mod tests {
 
         for (served, why) in [(0, "an unknown served window is refused, never guessed"), (200, "a window under 256 is refused, never rounded up past serving")] {
             let lane_url = url.clone();
-            t.lane = Box::new(move |_| Some((lane_url.clone(), served)));
+            t.lane = Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: served, engine: None }));
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             assert!(t.create_job(r).await.is_err(), "{why}");
@@ -1482,7 +1482,7 @@ mod tests {
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "sized").await;
         let footprints = jobs.path().join("footprints.json");
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), footprints.clone());
-        t.lane = Box::new(move |_| Some((url.clone(), 61_696)));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r).await.expect("test: create");
