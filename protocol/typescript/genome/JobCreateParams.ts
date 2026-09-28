@@ -61,18 +61,13 @@ traitKind: string,
  */
 dataset: TrainingDataset, 
 /**
- * The gym that MEASURES this trait — a JSONL eval-set path (the
- * `cognition/eval` `eval_set`). The dataset and this gym are two
- * projections of the same recipe: train on the data, measure on
- * the gym. The automatic adoption path
- * ([`crate::modules::training_completion_sentinel`]) passes this
- * verbatim to `cognition/eval`; when `None` the sentinel REFUSES to
- * adopt rather than measuring against an arbitrary default gym —
- * a gene the substrate can't fairly measure is never paged into a
- * live persona ([[fallbacks-are-illegal-fail-loud]]). The
- * `cognition/eval` command keeps its own coder-eval default for
- * manual spot-checks; that default is a command affordance, not an
- * adoption gate.
+ * A JSONL eval-set path (the `cognition/eval` `eval_set`) for a MANUAL
+ * spot-check of this trait. It decides nothing: the automatic adoption
+ * path ([`crate::modules::training_completion_sentinel`]) no longer runs
+ * an eval copy of her mind (Joel, 2026-09-27: integrated, not parallel).
+ * It registers the gene dormant and opens an in-room
+ * [`GeneTrial`](crate::genome::gene_trial::GeneTrial), whose card
+ * outcomes promote or retire it, whether or not this is set.
  */
 evalSet?: string, 
 /**
