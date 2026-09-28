@@ -1189,19 +1189,23 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         // moves `current` to it and keeps the replaced slot as the rollback. An operator's own
         // `LLAMA_SERVER_BIN` in the environment still passes through untouched.
         if command_env(&command, "LLAMA_SERVER_BIN").is_none_or(|value| value.is_empty()) {
-            use continuum_core::inference::engine_slots;
             let engine = Path::new(&args[2]);
             if !engine.is_file() {
                 return Err(format!("service-host engine missing: {}", engine.display()));
             }
-            let root = engine
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| format!("service-host engine has no slot root: {}", engine.display()))?;
-            let slot = engine_slots::slot_of(root, engine)
-                .ok_or_else(|| format!("service-host engine is not in an engine slot: {}", engine.display()))?;
-            if engine_slots::register(root, slot)? {
-                eprintln!("service-host: {slot} is now the current engine");
+            // A refused registration must never keep the core down (Fable on #4497): on a
+            // first-and-only machine that is a dark node. The registered engine is the one the
+            // installer verified, so it is launched as before, pinned, and the refusal is said.
+            match continuum_core::inference::engine_slots::register_service_engine(engine) {
+                Ok(true) => eprintln!("service-host: {} is now the current engine", engine.display()),
+                Ok(false) => {}
+                Err(why) => {
+                    eprintln!(
+                        "service-host: ENGINE NOT REGISTERED ({why}); launching {} pinned as LLAMA_SERVER_BIN so the core does not stay down. It will not converge until this is fixed.",
+                        engine.display()
+                    );
+                    command.env("LLAMA_SERVER_BIN", engine);
+                }
             }
         }
         command.env("CONTINUUM_CORE_SOCKET", &args[1]);

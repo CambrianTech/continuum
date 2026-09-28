@@ -84,10 +84,15 @@ fn named_slot(root: &Path, file: &str) -> Option<&'static str> {
 /// INSIDE a slot (what the Windows service-host set before `current` existed) is read as the
 /// slot it names rather than as an operator's own engine.
 pub fn slot_of(root: &Path, bin: &Path) -> Option<&'static str> {
-    // The service-host's descriptor carries Windows verbatim paths (`\\?\C:\...`), which
-    // `starts_with` never matches against a plain root.
-    let text = bin.to_string_lossy();
-    let bin = Path::new(text.strip_prefix(r"\\?\").unwrap_or(&text)); // unwrap_or: a path with no verbatim prefix is already plain
+    // Windows verbatim paths (`\\?\C:\...`) never `starts_with` a plain one. BOTH sides are
+    // normalized: the service-host derives `root` from the descriptor's own engine path, so a
+    // verbatim descriptor gives a verbatim root, and stripping only `bin` refused the slot and
+    // kept the core from starting.
+    let plain = |p: &Path| {
+        let text = p.to_string_lossy().into_owned();
+        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)) // unwrap_or: a path with no verbatim prefix is already plain
+    };
+    let (root, bin) = (plain(root), plain(bin));
     SLOTS.into_iter().find(|slot| bin.starts_with(root.join(slot)))
 }
 
@@ -358,6 +363,18 @@ pub fn register(root: &Path, slot: &str) -> Result<bool, String> {
     write_pointer(root, CURRENT_FILE, slot).map(|()| true)
 }
 
+/// The Windows service-host's registration of the engine its release names: the slot root is
+/// derived from the engine path itself (`<root>/<slot>/llama-server.exe`), then [`register`].
+/// An Err is a refusal the caller must degrade from, never a reason to keep the core down.
+pub fn register_service_engine(engine: &Path) -> Result<bool, String> {
+    let root = engine
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| format!("{} has no slot root", engine.display()))?;
+    let slot = slot_of(root, engine).ok_or_else(|| format!("{} is not in an engine slot", engine.display()))?;
+    register(root, slot)
+}
+
 fn known(slot: &str) -> Result<&'static str, String> {
     SLOTS
         .into_iter()
@@ -463,6 +480,12 @@ mod tests {
         assert_eq!((current_slot(root), previous_slot(root)), (Some("engine-b"), Some("engine-a")));
         assert_eq!(resolve(root, None, Some("engine-c")), Resolved::Slot("engine-c"), "an empty current slot fails loud at spawn, never the legacy engine");
         assert_eq!(slot_of(root, Path::new(&format!(r"\\?\{a}"))), Some("engine-a"), "a verbatim-prefixed path is the same slot");
+        let verbatim_root = PathBuf::from(format!(r"\\?\{}", root.display()));
+        assert_eq!(
+            slot_of(&verbatim_root, Path::new(&format!(r"\\?\{a}"))),
+            Some("engine-a"),
+            "a verbatim descriptor gives a verbatim root: the service-host's own derivation"
+        );
     }
 
     // what this catches (Fable on #4491): a promoted engine that verifies and then fails at
@@ -504,5 +527,28 @@ mod tests {
         promote(root, "engine-c", "nxt000:cuda").unwrap();
         assert!(!is_verified(root, "engine-c"), "a freshly promoted engine has proven nothing");
         assert!(is_verified(root, "engine-b"), "the replaced engine keeps its proof");
+    }
+
+    // what this catches (#4497): the service-host's own derivation of the slot from the
+    // registered engine path. A slot engine registers (idempotently); an engine outside the
+    // slots or without a stamp is REFUSED, which the service-host degrades from rather than
+    // keeping the core down.
+    #[test]
+    fn a_service_engine_registers_from_its_own_path_and_a_foreign_one_is_refused() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let root = dir.path();
+        engine(root, "engine-b", "bbb000:cuda");
+        let b = slot_bin(root, "engine-b");
+        assert_eq!(register_service_engine(&b), Ok(true));
+        assert_eq!(register_service_engine(&b), Ok(false), "each service start re-registers: idempotent");
+        assert_eq!(current_slot(root), Some("engine-b"));
+        let foreign = root.join("elsewhere").join(exe_name());
+        std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        std::fs::write(&foreign, b"x").unwrap();
+        assert!(register_service_engine(&foreign).is_err(), "outside the slots: refused, never registered");
+        std::fs::create_dir_all(root.join("engine-c")).unwrap();
+        std::fs::write(slot_bin(root, "engine-c"), b"x").unwrap();
+        assert!(register_service_engine(&slot_bin(root, "engine-c")).is_err(), "no stamp: refused");
+        assert_eq!(current_slot(root), Some("engine-b"), "a refusal moves nothing");
     }
 }
