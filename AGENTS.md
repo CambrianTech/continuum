@@ -29,11 +29,23 @@ single source of truth and this file must not drift from it.
 
 ## Machine-level conventions you cannot infer from the code
 
-**Cargo target dir — always export it first.**
+**Cargo target dir — preserve the configured cache; set the default only if unset.**
 
 ```bash
-export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
 ```
+
+In PowerShell:
+
+```powershell
+if (-not $env:CARGO_TARGET_DIR) {
+    $env:CARGO_TARGET_DIR = Join-Path $HOME '.continuum/cache/cargo-target'
+}
+```
+
+The configured path may be on another volume. Do not override it with the home
+default: that creates a second cache and recompiles the dependency graph instead
+of reusing the deployment's artifacts. Read the effective environment before a build.
 
 Without it cargo writes a ghost `target/` per invocation. A `cargo test` of
 continuum-core is ~10 GB of artifacts; this project has hit a day of disk runway from
