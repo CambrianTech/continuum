@@ -251,7 +251,7 @@ pub(crate) fn held_work_burst_gated(
     if acts_without_write >= WRITE_OR_RELEASE_AFTER_ACTS {
         s.push_str(
             "\n[progress checkpoint] Reading, planning, verification and review can be \
-             useful work. When useful for resuming or collaborating, record what changed in your \
+             useful work. When useful for resuming or collaborating, use work/note to record what changed in your \
              understanding, the next step, or a specific blocker and who can help. \
              Continue the appropriate investigation or action. If you choose a handoff, identify the remaining \
              work and any uncommitted changes explicitly."
