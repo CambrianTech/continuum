@@ -52,6 +52,11 @@ try {
         $script:refuseBrowserRegistration = $false
         Update-CoreBrowserRelease -RepoRoot $repo
         if (Get-CoreBrowserReleaseDrift -RepoRoot $repo) { throw 'Migration did not converge.' }
+        # Rust tracked paths and PowerShell fresh-install paths can spell the
+        # same Windows directory differently; that must not cause redeploys.
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo.ToUpperInvariant()) {
+            throw 'Path casing caused perpetual browser migration drift.'
+        }
         $script:browserTask.Actions[0].Arguments = 'legacy'
         if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo)) { throw 'Missing action argument falsely converged.' }
         Update-CoreBrowserRelease -RepoRoot $repo

@@ -291,9 +291,11 @@ function Get-CoreBrowserReleaseDrift {
         $Release = $task.Description | ConvertFrom-Json -ErrorAction Stop
     }
     $root = [IO.Path]::GetFullPath($RepoRoot)
-    if ($Release.eyeRoot -cne $root) { return 'browser asset root is not registered' }
+    if (-not [string]::Equals($Release.eyeRoot, $root, [StringComparison]::OrdinalIgnoreCase)) {
+        return 'browser asset root is not registered'
+    }
     if ($task -and (@($task.Actions).Count -ne 1 -or
-        -not $task.Actions[0].Arguments.Contains((' -EyeRoot "{0}"' -f $root)))) {
+        $task.Actions[0].Arguments.IndexOf((' -EyeRoot "{0}"' -f $root), [StringComparison]::OrdinalIgnoreCase) -lt 0)) {
         return 'startup action does not pass the browser asset root'
     }
     $source = Join-Path $root 'tools\scripts\run-service-hidden.ps1'
