@@ -184,6 +184,8 @@ pub enum SweepMode {
 /// loggable and a new state can't be silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SweepOutcome {
+    /// Termination was requested, but exit is not observed; retain the record for retry.
+    ExitUnconfirmed { pid: u32, port: u16 },
     /// Killed a live ephemeral orphan and removed its record.
     ReapedEphemeral { pid: u32, port: u16 },
     /// Killed the LIVE lane and removed its record. [`SweepMode::Shutdown`] only —
@@ -381,6 +383,19 @@ fn records_in(dir: &Path) -> Vec<LaneRecord> {
         .collect()
 }
 
+// A successful signal request is not exit evidence (notably taskkill access
+// denial on Windows). Preserve ownership until the process is actually gone.
+fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
+    if lane_process::is_alive(rec.pid) {
+        return SweepOutcome::ExitUnconfirmed { pid: rec.pid, port: rec.port };
+    }
+    let _ = std::fs::remove_file(path);
+    match rec.role {
+        LaneRole::Live => SweepOutcome::ReapedLive { pid: rec.pid, port: rec.port },
+        LaneRole::Ephemeral => SweepOutcome::ReapedEphemeral { pid: rec.pid, port: rec.port },
+    }
+}
+
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
 fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
     let mut outcomes = Vec::new();
@@ -430,17 +445,7 @@ fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
         }
         if lane_process::is_llama_server(rec.pid) {
             lane_process::kill9(rec.pid);
-            let _ = std::fs::remove_file(&path);
-            outcomes.push(match rec.role {
-                LaneRole::Live => SweepOutcome::ReapedLive {
-                    pid: rec.pid,
-                    port: rec.port,
-                },
-                LaneRole::Ephemeral => SweepOutcome::ReapedEphemeral {
-                    pid: rec.pid,
-                    port: rec.port,
-                },
-            });
+            outcomes.push(finish_reap(&path, &rec));
         } else {
             // Alive but not one of ours — a reused pid. Drop the stale
             // record; never signal an unrelated process.
@@ -506,6 +511,27 @@ mod tests {
             engine_bin: None,
             started_s: 0,
         }
+    }
+
+    // what this catches: failed/asynchronous termination must not erase the
+    // registry or claim success; a later observed exit permits cleanup.
+    #[test]
+    fn reap_retains_record_until_exit_is_observed() {
+        let dir = tempfile::tempdir().expect("temporary registry");
+        let live = rec(std::process::id(), 58200, LaneRole::Live);
+        record_in(dir.path(), &live).expect("record");
+        let path = record_path(dir.path(), live.pid);
+        assert_eq!(finish_reap(&path, &live), SweepOutcome::ExitUnconfirmed { pid: live.pid, port: live.port });
+        assert!(path.exists(), "survivor ownership must remain recoverable");
+        // A second Live registration deliberately supersedes the first. Use
+        // an independent ephemeral record to test cleanup isolation.
+        let dead = rec(u32::MAX, 58201, LaneRole::Ephemeral);
+        record_in(dir.path(), &dead).expect("dead record");
+        let dead_path = record_path(dir.path(), dead.pid);
+        assert!(!lane_process::is_alive(dead.pid));
+        assert_eq!(finish_reap(&dead_path, &dead), SweepOutcome::ReapedEphemeral { pid: dead.pid, port: dead.port });
+        assert!(!dead_path.exists());
+        assert!(path.exists(), "cleaning a dead lane must preserve the survivor");
     }
 
     // what this catches: record_in → the file exists and round-trips through JSON;

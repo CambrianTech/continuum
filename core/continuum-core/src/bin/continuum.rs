@@ -5909,9 +5909,11 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
         return Ok(graceful);
     }
+    let mut unconfirmed_lanes = Vec::new();
     for outcome in continuum_core::inference::lane_registry::sweep_all() {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
+            S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(pid),
             S::ReapedLive { pid, port } => {
                 println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
             }
@@ -5932,6 +5934,9 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
         }
     }
 
+    if !unconfirmed_lanes.is_empty() {
+        return Err(format!("serving lane exit not confirmed for {unconfirmed_lanes:?}; ownership records retained, retry stop after resolving termination authority"));
+    }
     let _ = std::fs::remove_file(&socket);
     Ok(graceful)
 }
