@@ -25,10 +25,11 @@ function Assert-CorePreparedRelease {
     param($Release, [string]$InstallRoot)
     $fields = @('artifact', 'cli', 'launcher', 'engine', 'socket', 'logDirectory')
     $names = @($Release.PSObject.Properties.Name)
-    if ($names.Count -ne $fields.Count -or @($names | Where-Object { $_ -notin $fields }).Count) {
+    $allowed = $fields + @('eyeRoot')
+    if (@($fields | Where-Object { $_ -notin $names }).Count -or @($names | Where-Object { $_ -notin $allowed }).Count) {
         throw 'Prepared release descriptor has unexpected or missing fields.'
     }
-    foreach ($name in $fields) {
+    foreach ($name in $names) {
         $value = $Release.$name
         if ($value -isnot [string] -or -not $value -or
             $value.IndexOfAny([char[]]@('"', "`r", "`n", [char]0)) -ge 0 -or $value.EndsWith('\')) {
@@ -47,6 +48,11 @@ function Assert-CorePreparedRelease {
     Assert-CorePreparedPath -Path $Release.engine -Expected (Join-Path $InstallRoot "bin\$engineSlot\llama-server.exe") -File
     Assert-CorePreparedPath -Path $Release.logDirectory -Expected (Join-Path $InstallRoot 'logs')
     if ($Release.socket -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)') { throw 'Prepared release socket must be absolute.' }
+    # Old installed releases have no browser root. New releases carry an explicit
+    # source asset root; it is not an installed binary slot or an inferred cwd.
+    if ('eyeRoot' -in $names -and $Release.eyeRoot -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)') {
+        throw 'Prepared release eyeRoot must be absolute.'
+    }
 }
 
 function Save-CorePreparedRelease {

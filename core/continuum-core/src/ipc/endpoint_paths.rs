@@ -33,7 +33,7 @@ pub fn core_tcp_port() -> u16 {
     tcp_port_from(std::env::var("CONTINUUM_CORE_TCP").ok().as_deref())
 }
 
-fn tcp_port_from(value: Option<&str>) -> u16 {
+pub fn tcp_port_from(value: Option<&str>) -> u16 {
     value
         .and_then(|s| s.parse::<u16>().ok())
         .filter(|p| *p > 0)
