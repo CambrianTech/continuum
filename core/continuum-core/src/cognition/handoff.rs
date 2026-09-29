@@ -357,6 +357,31 @@ fn git_bounded(
     }
 }
 
+/// PURE: a lease edge as she reads it, relative to now (card 5d447195: twice on 2026-09-28
+/// and again on 09-29 Kimi converted the raw Unix ms in this line to wall time by hand).
+fn lease_phrase(expires_at_ms: u64, now_ms: u64) -> String {
+    if expires_at_ms > now_ms {
+        let mins = (expires_at_ms - now_ms) / 60_000;
+        if mins == 0 {
+            "has under a minute left".to_string()
+        } else {
+            format!("has ~{mins} min left")
+        }
+    } else {
+        format!("lapsed {}", ago_phrase(expires_at_ms, now_ms))
+    }
+}
+
+/// PURE: how long before `now_ms` something happened, in words.
+fn ago_phrase(at_ms: u64, now_ms: u64) -> String {
+    let mins = now_ms.saturating_sub(at_ms) / 60_000;
+    match mins {
+        0 => "under a minute ago".to_string(),
+        m if m < 120 => format!("~{m} min ago"),
+        m => format!("~{} h ago", m / 60),
+    }
+}
+
 /// The `[handoff]` fact pinned FIRST on wake — before `[resumed]` and `[rebuilt]`, because it
 /// is the one that names what she was doing. `current_build` is the sha that actually booted.
 pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
@@ -397,9 +422,9 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
             let id8: String = card.card_id.as_uuid().simple().to_string().chars().take(8).collect();
             let claim = match (card.claim_id, card.claim_expires_at_ms) {
                 (Some(c), Some(exp)) => format!(
-                    "claim {} with lease to {} Unix ms — holding is UNVERIFIED until the board answers",
+                    "claim {} whose lease {} — holding is UNVERIFIED until the board answers",
                     c.as_uuid().simple().to_string().chars().take(8).collect::<String>(),
-                    exp
+                    lease_phrase(exp, now_ms)
                 ),
                 (Some(c), None) => format!(
                     "claim {} with no lease edge recorded",
@@ -414,9 +439,9 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
             ));
             if let Some(sub) = card.submissions.last() {
                 out.push_str(&format!(
-                    "\n  Latest submission on it: {} at {} Unix ms (re-fetch by id; do not re-make it).",
+                    "\n  Latest submission on it: {}, made {} (re-fetch by id; do not re-make it).",
                     sub.submission_id.as_uuid(),
-                    sub.submitted_at_ms
+                    ago_phrase(sub.submitted_at_ms, now_ms)
                 ));
             }
         }
@@ -448,8 +473,8 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
         Some(l) => {
             let next = l.next_test.trim();
             out.push_str(&format!(
-                "\n  Your ledger ({} Unix ms): next test was \"{}\"{}.",
-                l.at_ms,
+                "\n  Your ledger (written {}): next test was \"{}\"{}.",
+                ago_phrase(l.at_ms, now_ms),
                 if next.is_empty() { "(none)" } else { next },
                 if h.acts_after_ledger {
                     " — acts ran AFTER this note, so it may be stale"
@@ -630,7 +655,11 @@ mod tests {
         assert_eq!(held.claim_expires_at_ms, Some(2_000));
         let line = render_on_wake(&h, "abc", 2_000);
         assert!(line.contains("claim 00000000"), "{line}");
-        assert!(line.contains("lease to 2000 Unix ms"), "{line}");
+        // The lease edge reads as time relative to now, never raw Unix ms (card 5d447195).
+        assert!(line.contains("lapsed under a minute ago"), "{line}");
+        assert!(!line.contains("Unix ms"), "{line}");
+        assert_eq!(super::lease_phrase(2_000 + 5 * 60_000, 2_000), "has ~5 min left");
+        assert_eq!(super::ago_phrase(0, 3 * 60 * 60_000), "~3 h ago");
         assert!(line.contains("holding is UNVERIFIED until the board answers"), "{line}");
     }
 
