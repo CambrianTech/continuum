@@ -236,7 +236,7 @@ pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'st
         if let Some(attachment) = &event.attachment {
             let kind = attachment.media_type.as_deref()
                 .and_then(|mime| mime.split_once('/').map(|(kind, _)| kind))
-                .unwrap_or("file");
+                .unwrap_or("file"); // Unknown MIME is displayed as a generic file, never a supported visual capability.
             let media = crate::persona::channel_items::MediaItemRequest {
                 kind: kind.to_owned(), mime_type: attachment.media_type.clone(),
                 blob_hash: Some(attachment.content_hash.0.clone()),
@@ -272,7 +272,7 @@ fn chat_transcript_content(envelope: &AircRealtimeEnvelope, fallback_peer: uuid:
         .and_then(serde_json::Value::as_str)
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
         .unwrap_or(fallback_peer);
-    let media = inline.get("media").map(|value| serde_json::from_value(value.clone())).transpose().ok()?.unwrap_or_default();
+    let media = inline.get("media").map(|value| serde_json::from_value(value.clone())).transpose().ok()?.unwrap_or_default(); // boundary: AIRC transcript JSON decodes typed references; omitted media is the legacy text-only wire contract.
     Some(RoomTurn { sender, text: text.to_string(), media })
 }
 

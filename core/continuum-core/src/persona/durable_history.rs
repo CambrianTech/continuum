@@ -86,7 +86,7 @@ pub async fn room_rows(room: Uuid, limit: usize) -> Result<Vec<RoomRow>, String>
     // message or invent a text-only version of an image-bearing turn.
     for message in messages {
         if let Some(media) = message.get("content").and_then(|c| c.get("media")) {
-            serde_json::from_value::<Vec<super::channel_items::MediaItemRequest>>(media.clone())
+            serde_json::from_value::<Vec<super::channel_items::MediaItemRequest>>(media.clone()) // boundary: validate media from the durable chat storage JSON format.
                 .map_err(|error| format!("durable_history: invalid media references: {error}"))?;
         }
     }
@@ -102,8 +102,8 @@ pub async fn room_rows(room: Uuid, limit: usize) -> Result<Vec<RoomRow>, String>
                 .max(0) as u64;
             let text = m.get("content")?.get("text")?.as_str()?.to_string();
             let media = m.get("content")?.get("media")
-                .map(|value| serde_json::from_value(value.clone()))
-                .transpose().ok()?.unwrap_or_default();
+                .map(|value| serde_json::from_value(value.clone())) // boundary: decode durable chat storage JSON into typed room history.
+                .transpose().ok()?.unwrap_or_default(); // Absent media denotes a legacy text-only stored row; malformed present media was rejected above.
             Some(RoomRow { id, sender, occurred_at_ms, text, media })
         })
         .collect())
