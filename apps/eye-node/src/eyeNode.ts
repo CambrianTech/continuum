@@ -69,10 +69,10 @@ export class EyeNode {
 
   /** Disconnect — the core unregisters this node's provider and observe then
    *  fails loud until an eye-node reconnects. */
-  stop(): void {
+  async stop(): Promise<void> {
     this.transport.close();
     // release every live browser; a stopping eye-node must not orphan them
-    void this.sessions.closeAll();
+    await this.sessions.closeAll();
   }
 }
 
