@@ -162,18 +162,29 @@ fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {
     }
 }
 
-/// PURE: the id of an earlier submission on this card by this publisher of this exact
-/// artifact, if one exists. Keys: (submission, publisher, artifact hash); the claim is
-/// deliberately not one, since a renewed or re-taken claim has a new id.
-fn same_submission(
-    earlier: impl IntoIterator<Item = (Uuid, Uuid, String)>,
+/// What makes two submissions on one card the same work. The claim is deliberately not
+/// part of it: a renewed or re-taken claim has a new id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubmissionKey {
+    id: Uuid,
     publisher: Uuid,
-    artifact_hash: &str,
-) -> Option<Uuid> {
+    artifact_hash: String,
+    base_sha: String,
+    instance: String,
+}
+
+/// PURE: the id of an earlier submission that is the same work as `this` (same publisher,
+/// patch, base and instance), if one exists.
+fn same_submission(earlier: impl IntoIterator<Item = SubmissionKey>, this: &SubmissionKey) -> Option<Uuid> {
     earlier
         .into_iter()
-        .find(|(_, by, hash)| *by == publisher && hash == artifact_hash)
-        .map(|(id, ..)| id)
+        .find(|k| {
+            k.publisher == this.publisher
+                && k.artifact_hash == this.artifact_hash
+                && k.base_sha == this.base_sha
+                && k.instance == this.instance
+        })
+        .map(|k| k.id)
 }
 
 /// Expand an id the citizen was SHOWN into its canonical [`Uuid`].
@@ -561,6 +572,8 @@ impl ActionCommand for WorkSubmit {
             "the submission as it goes to the board"
         );
         let artifact = artifact_ref.into_artifact()?;
+        let base_sha = airc_work::GitObjectId::new(base_sha_text)
+            .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
         // THE SAME PATCH, SUBMITTED AGAIN, is refused by name (Kimi, 2026-09-28: her
         // handoff said "do not re-make it", she resubmitted, and two identical
         // submissions sat on the card with credit ambiguous between them). Only when she
@@ -569,14 +582,24 @@ impl ActionCommand for WorkSubmit {
             let artifact_hash = artifact.hash.to_string();
             // Not keyed on the claim (Cormac on #4580): a claim renewed or re-taken across a
             // rebuild mints a new id, which is exactly how her duplicate happened.
-            let earlier = card.submissions.iter().map(|s| {
-                (
-                    s.submission_id.as_uuid(),
-                    s.publisher.as_uuid(),
-                    s.artifact.hash.to_string(),
-                )
+            // Keyed on what makes it the same work: who, which patch, applied to which base,
+            // for which instance (Codex on #4580: an identical diff on a new base is a
+            // legitimate rebase, never a duplicate).
+            let earlier = card.submissions.iter().map(|s| SubmissionKey {
+                id: s.submission_id.as_uuid(),
+                publisher: s.publisher.as_uuid(),
+                artifact_hash: s.artifact.hash.to_string(),
+                base_sha: s.base_sha.to_string(),
+                instance: s.instance.clone(),
             });
-            if let Some(existing) = same_submission(earlier, airc.peer_id().as_uuid(), &artifact_hash) {
+            let this = SubmissionKey {
+                id: Uuid::nil(),
+                publisher: airc.peer_id().as_uuid(),
+                artifact_hash,
+                base_sha: base_sha.to_string(),
+                instance: instance.clone(),
+            };
+            if let Some(existing) = same_submission(earlier, &this) {
                 return Err(CommandError::Invalid(format!(
                     "card {} already has your submission {} of this exact patch, \
                      so nothing was submitted. Read it with work/submission (submission_id {}); \
@@ -587,8 +610,6 @@ impl ActionCommand for WorkSubmit {
                 )));
             }
         }
-        let base_sha = airc_work::GitObjectId::new(base_sha_text)
-            .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
         let submission_id = p.submission_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
         let candidate = airc_work::WorkSubmission {
             submission_id: airc_work::SubmissionId::from_uuid(submission_id),
@@ -1145,11 +1166,19 @@ mod tests {
     // patch or another citizen is a new submission.
     #[test]
     fn the_same_patch_on_the_same_card_is_an_existing_submission() {
-        let (first, kimi, other) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(4));
-        let earlier = || vec![(first, kimi, "dc597e".to_string())];
-        assert_eq!(super::same_submission(earlier(), kimi, "dc597e"), Some(first), "even on a new claim");
-        assert_eq!(super::same_submission(earlier(), kimi, "ffff00"), None, "a changed patch");
-        assert_eq!(super::same_submission(earlier(), other, "dc597e"), None, "another citizen");
+        let key = |id: u128, by: u128, hash: &str, base: &str| super::SubmissionKey {
+            id: uuid::Uuid::from_u128(id),
+            publisher: uuid::Uuid::from_u128(by),
+            artifact_hash: hash.into(),
+            base_sha: base.into(),
+            instance: "matplotlib-26011".into(),
+        };
+        let earlier = || vec![key(1, 2, "dc597e", "b4se")];
+        let first = Some(uuid::Uuid::from_u128(1));
+        assert_eq!(super::same_submission(earlier(), &key(0, 2, "dc597e", "b4se")), first, "even on a new claim");
+        assert_eq!(super::same_submission(earlier(), &key(0, 2, "ffff00", "b4se")), None, "a changed patch");
+        assert_eq!(super::same_submission(earlier(), &key(0, 4, "dc597e", "b4se")), None, "another citizen");
+        assert_eq!(super::same_submission(earlier(), &key(0, 2, "dc597e", "n3wb")), None, "same diff on a new base");
     }
     use std::path::Path;
 
