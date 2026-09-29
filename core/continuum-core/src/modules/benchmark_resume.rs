@@ -558,9 +558,15 @@ async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegi
     for persona_id in registry.live_personas() {
         let Some(runtime) = registry.get(persona_id) else { continue };
         let Ok(held) = runtime.active_claims().await else { continue };
+        // BENCHMARK CARDS ONLY (2026-09-28). The one-card rule is the benchmark round's
+        // declared policy (four coders on four rounds' cards starved the deck). Applied to
+        // every card, it released Kimi's career-wrangler project card the moment she
+        // claimed a slice of that project: responsibility is durable until an explicit
+        // handoff (Joel, 2026-09-28), so a project card leaves her only by her own release,
+        // an explicit reassignment, or an activity's declared policy, never this pass.
         let work: Vec<HeldWorkClaim> = held
             .iter()
-            .filter(|c| crate::commands::benchmark::parse_review_title(&c.title).is_none())
+            .filter(|c| is_one_card_rule_card(&c.title))
             .map(|c| HeldWorkClaim {
                 card_id: c.card_id.as_uuid(),
                 updated_at_ms: c.updated_at_ms,
@@ -595,6 +601,13 @@ async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegi
             }
         }
     }
+}
+
+/// PURE: whether the one-card reconciler may act on a held card: a benchmark work card,
+/// never a review card (they ride beside it) and never an ordinary project card.
+fn is_one_card_rule_card(title: &str) -> bool {
+    crate::commands::benchmark::parse_review_title(title).is_none()
+        && crate::commands::benchmark::parse_card_title(title).is_some()
 }
 
 /// A view of the current accepted claim; provenance comes from the durable board.
@@ -755,6 +768,22 @@ async fn reseat_working_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (2026-09-28): the benchmark one-card rule releasing a PROJECT card.
+    // Kimi claimed a slice of career-wrangler and the reconciler released her umbrella
+    // card. Only benchmark work cards are subject to it; review and project cards never.
+    #[test]
+    fn only_benchmark_work_cards_are_subject_to_the_one_card_rule() {
+        assert!(is_one_card_rule_card("[bench swe-bench] pytest-dev__pytest-10081: fix it"));
+        assert!(!is_one_card_rule_card("career-wrangler: a real product always"));
+        assert!(!is_one_card_rule_card("career-wrangler slice 1: transactional outbox"));
+        let review = crate::commands::benchmark::review_card_title(
+            uuid::Uuid::from_u128(1),
+            "pytest-dev__pytest-10081",
+            "kimi",
+        );
+        assert!(!is_one_card_rule_card(&review), "{review}");
+    }
 
     // what this catches: the reconciler taking the card she is working on instead of
     // the surplus, or "fixing" a citizen who is already at one card (2026-09-12: one
