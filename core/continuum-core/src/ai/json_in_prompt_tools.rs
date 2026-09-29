@@ -1499,6 +1499,17 @@ impl ToolCallFormat for BareFormat {
             if call.name.trim().is_empty() {
                 return None;
             }
+            // Bare JSON has no explicit call intent. Schema/data objects can
+            // contain name + params/input too, including nested objects scanned
+            // after their parent is rejected. Require the same command shape
+            // for every bare lift; explicit envelopes and native calls retain
+            // their own handling, including unknown-command feedback.
+            let name = call.name.trim();
+            let tool_shaped = name.contains('/')
+                || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
+            if !tool_shaped {
+                return None;
+            }
             // A name that could ONLY have come from the `command` key is held to
             // the tool-shaped bar even when an args key is present, because
             // `command` is `code/shell`'s own argument name: the inner object of
@@ -1511,12 +1522,6 @@ impl ToolCallFormat for BareFormat {
                 .iter()
                 .any(|k| fields.contains_key(*k));
             if command_keyed {
-                let name = call.name.trim();
-                let tool_shaped = name.contains('/')
-                    || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
-                if !tool_shaped {
-                    return None;
-                }
                 // A tool-shaped `command` with NO args is a complete no-arg call —
                 // the documented `{"tool_call": {"name": "ping"}}` form. Observed
                 // live from a second persona minutes after the first:
@@ -1531,11 +1536,8 @@ impl ToolCallFormat for BareFormat {
                 // Sibling-args lift (#293): precision-first. The name must be
                 // tool-shaped and at least one real sibling must have survived
                 // (metadata-only objects and bare `{"name": …}` stay speech).
-                let name = call.name.trim();
-                let tool_shaped = name.contains('/')
-                    || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
                 let has_sibling_args = call.arguments.as_object().is_some_and(|o| !o.is_empty());
-                if !tool_shaped || !has_sibling_args {
+                if !has_sibling_args {
                     return None;
                 }
             }
@@ -2512,6 +2514,8 @@ relevant code.";
         assert!(BareFormat.parse(r#"{"name":"owner_id","schema":{"input":"string"}}"#).is_empty());
         assert!(BareFormat.parse(r#"{"command":"echo hello","schema":{"name":"field","input":"string"}}"#).is_empty());
         assert_eq!(BareFormat.parse(r#"{"name":"code/read","input":{"path":"schema.json"}}"#).len(), 1);
+        assert!(BareFormat.parse(r#"{"name":"owner_id","params":{}}"#).is_empty());
+        assert_eq!(BareFormat.parse(r#"{"name":"read_file","params":{"path":"schema.json"}}"#).len(), 1);
     }
 
     // what this catches: #293 starvation, layer 1 — a lane mis-declared
