@@ -636,14 +636,18 @@ mod tests {
     #[tokio::test]
     async fn wall_delivery_projects_ledger_versions_before_budgeting() {
         let card = Uuid::from_u128(7);
-        let ledger = |step: &str| post(
-            crate::experience::ledger::LEDGER_WALL_CATEGORY,
-            &serde_json::to_string(&crate::experience::ledger::CardLedger {
+        let ledger = |step: &str| {
+            let mut record = post(
+                crate::experience::ledger::LEDGER_WALL_CATEGORY,
+                &serde_json::to_string(&crate::experience::ledger::CardLedger {
                 card_id: card,
                 next_test: step.into(),
                 ..Default::default()
             }).unwrap(),
-        );
+            );
+            record.room_id = airc_core::RoomId::from_uuid(Uuid::from_u128(9));
+            record
+        };
         let source = WallSource::new(persona(), Arc::new(StubReader::new(vec![
             ledger("obsolete step"),
             post("plan", "shared activity plan"),
