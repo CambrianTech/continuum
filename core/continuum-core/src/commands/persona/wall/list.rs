@@ -46,18 +46,20 @@ pub struct PersonaWallListParams {
 )]
 pub struct PersonaWallPost {
     /// This version's id; pass it as `supersedes` to persona/wall/pin to edit it.
-    pub post_id: String,
+    #[ts(type = "string")]
+    pub post_id: uuid::Uuid,
     /// The post's category label (plan, rules, agenda, ...).
     pub category: String,
     /// The peer that published this version.
-    pub author: String,
+    #[ts(type = "string")]
+    pub author: uuid::Uuid,
     /// When this version was published (epoch ms).
     #[ts(type = "number")]
     pub published_at_ms: u64,
     /// The post this version replaced, if it is an edit.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub supersedes: Option<String>,
+    #[ts(optional, type = "string")]
+    pub supersedes: Option<uuid::Uuid>,
     /// The post body, verbatim.
     pub body: String,
 }
@@ -70,7 +72,8 @@ pub struct PersonaWallPost {
 )]
 pub struct PersonaWallListResult {
     /// The room whose wall this is.
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: uuid::Uuid,
     /// Currently-pinned posts on the wall now, all pages. The wall can change
     /// between calls, so totals from different calls need not agree.
     #[ts(type = "number")]
@@ -86,11 +89,11 @@ pub struct PersonaWallListResult {
 impl From<&airc_core::doctrine::WallPostPublished> for PersonaWallPost {
     fn from(post: &airc_core::doctrine::WallPostPublished) -> Self {
         Self {
-            post_id: post.post_id.to_string(),
+            post_id: post.post_id,
             category: post.category.clone(),
-            author: post.published_by.as_uuid().to_string(),
+            author: post.published_by.as_uuid(),
             published_at_ms: post.published_at_ms,
-            supersedes: post.supersedes.map(|u| u.to_string()),
+            supersedes: post.supersedes,
             body: post.body.clone(),
         }
     }
@@ -194,7 +197,7 @@ crate::action_command! {
         let after = p.after.as_deref().map(str::parse::<WallCursor>).transpose()?;
         let page = page(&posts, after, p.limit)?;
         Ok(PersonaWallListResult {
-            room_id: room.channel.as_uuid().to_string(),
+            room_id: room.channel.as_uuid(),
             total: posts.len() as u32,
             posts: page.posts,
             next: page.next.map(|c| c.to_string()),
@@ -226,9 +229,9 @@ mod tests {
         let wall: Vec<_> = (1..=7).map(post).collect();
         let first = page(&wall, None, None).expect("first page");
         assert_eq!(first.posts.len(), DEFAULT_LIMIT);
-        assert_eq!(first.posts[1].supersedes.as_deref(), Some(uuid::Uuid::from_u128(1).to_string().as_str()));
+        assert_eq!(first.posts[1].supersedes, Some(uuid::Uuid::from_u128(1)));
         assert_eq!(first.posts[0].published_at_ms, 1001);
-        assert_eq!(first.posts[0].author, uuid::Uuid::from_u128(7).to_string());
+        assert_eq!(first.posts[0].author, uuid::Uuid::from_u128(7));
         let cursor = first.next.expect("more posts");
         let parsed: WallCursor = cursor.to_string().parse().expect("round trip");
         assert_eq!(parsed, cursor);
@@ -263,7 +266,7 @@ mod tests {
         let wall = vec![post(1)];
         let p = page(&wall, None, None).expect("page");
         let json = serde_json::to_value(PersonaWallListResult {
-            room_id: "r".into(),
+            room_id: uuid::Uuid::nil(),
             total: 1,
             posts: p.posts,
             next: p.next.map(|c| c.to_string()),
