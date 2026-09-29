@@ -703,8 +703,8 @@ pub fn resolve_params(
                 serde_json::Value::String(_) => "\"...\"",
                 serde_json::Value::Number(_) => "1",
                 serde_json::Value::Bool(_) => "true",
-                serde_json::Value::Array(_) => "[...]",
-                serde_json::Value::Object(_) => "{...}",
+                serde_json::Value::Array(_) => "[\"...\"]",
+                serde_json::Value::Object(_) => "{}",
                 serde_json::Value::Null => "null",
             };
             return Err(CommandError::Invalid(format!(
