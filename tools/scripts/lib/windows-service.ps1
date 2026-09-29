@@ -126,14 +126,9 @@ function Protect-CoreBuildOutput {
     $TargetDirectory = ConvertTo-CoreImagePath $TargetDirectory
     $artifact = Join-Path $TargetDirectory 'release\continuum-core-server.exe'
     if (-not (Test-Path -LiteralPath $artifact)) { return }
-    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-        Where-Object { $_.Name -eq 'continuum-core-server.exe' })
-    if (@($processes | Where-Object { -not $_.ExecutablePath }).Count) {
-        throw 'Cannot inspect running core image paths before building.'
-    }
-    if (-not @($processes | Where-Object { (ConvertTo-CoreImagePath $_.ExecutablePath) -eq $artifact }).Count) { return }
-    # CIM keeps the original image path after a rename. A later retry may see
-    # that stale path while the newly linked output is already writable.
+    # Probe the actual output first. A service-session process may hide its
+    # image path, but an exclusive writable handle proves this file is not
+    # mapped. No process inspection or privilege is needed for that case.
     try {
         $probe = [IO.File]::Open($artifact, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $probe.Dispose()
@@ -141,6 +136,12 @@ function Protect-CoreBuildOutput {
     } catch [IO.IOException] {
         # The mapped output still needs preservation below.
     }
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+        Where-Object { $_.Name -eq 'continuum-core-server.exe' })
+    if (@($processes | Where-Object { -not $_.ExecutablePath }).Count) {
+        throw 'Cannot inspect running core image paths before building.'
+    }
+    if (-not @($processes | Where-Object { (ConvertTo-CoreImagePath $_.ExecutablePath) -eq $artifact }).Count) { return }
     # Older starts ran straight from Cargo output. Windows allows a mapped
     # executable to be renamed, but the linker cannot overwrite it. Keep that
     # image alive under a bounded sibling name while Cargo writes its replacement.
