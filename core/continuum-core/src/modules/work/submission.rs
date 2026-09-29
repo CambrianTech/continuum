@@ -162,17 +162,17 @@ fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {
     }
 }
 
-/// PURE: the id of an earlier submission by this publisher, on this claim, of this exact
-/// artifact, if one exists. Keys: (submission, publisher, claim, artifact hash).
+/// PURE: the id of an earlier submission on this card by this publisher of this exact
+/// artifact, if one exists. Keys: (submission, publisher, artifact hash); the claim is
+/// deliberately not one, since a renewed or re-taken claim has a new id.
 fn same_submission(
-    earlier: impl IntoIterator<Item = (Uuid, Uuid, Uuid, String)>,
+    earlier: impl IntoIterator<Item = (Uuid, Uuid, String)>,
     publisher: Uuid,
-    claim: Uuid,
     artifact_hash: &str,
 ) -> Option<Uuid> {
     earlier
         .into_iter()
-        .find(|(_, by, on, hash)| *by == publisher && *on == claim && hash == artifact_hash)
+        .find(|(_, by, hash)| *by == publisher && hash == artifact_hash)
         .map(|(id, ..)| id)
 }
 
@@ -567,22 +567,18 @@ impl ActionCommand for WorkSubmit {
         // named no submission id: an explicit id is a deliberate call.
         if p.submission_id.is_none() {
             let artifact_hash = artifact.hash.to_string();
+            // Not keyed on the claim (Cormac on #4580): a claim renewed or re-taken across a
+            // rebuild mints a new id, which is exactly how her duplicate happened.
             let earlier = card.submissions.iter().map(|s| {
                 (
                     s.submission_id.as_uuid(),
                     s.publisher.as_uuid(),
-                    s.claim_id.as_uuid(),
                     s.artifact.hash.to_string(),
                 )
             });
-            if let Some(existing) = same_submission(
-                earlier,
-                airc.peer_id().as_uuid(),
-                claim_id.as_uuid(),
-                &artifact_hash,
-            ) {
+            if let Some(existing) = same_submission(earlier, airc.peer_id().as_uuid(), &artifact_hash) {
                 return Err(CommandError::Invalid(format!(
-                    "card {} already has your submission {} of this exact patch on this claim, \
+                    "card {} already has your submission {} of this exact patch, \
                      so nothing was submitted. Read it with work/submission (submission_id {}); \
                      submit again only after the patch changes.",
                     short8(card_uuid),
@@ -1143,18 +1139,17 @@ mod tests {
     // named refusal, never a diff against HEAD.
     use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
 
-    // what this catches (Kimi, 2026-09-28): the same patch resubmitted on the same claim
-    // minting a second submission. It is found only for the same publisher, claim and
-    // artifact; a changed patch, another claim, or another citizen is a new submission.
+    // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
+    // second submission, including across a re-taken claim (her a0bc9421 then 5656d7eb
+    // straddled a rebuild). Same publisher and artifact is the existing one; a changed
+    // patch or another citizen is a new submission.
     #[test]
-    fn the_same_patch_on_the_same_claim_is_an_existing_submission() {
-        let (first, kimi, claim, other) =
-            (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3), uuid::Uuid::from_u128(4));
-        let earlier = || vec![(first, kimi, claim, "dc597e".to_string())];
-        assert_eq!(super::same_submission(earlier(), kimi, claim, "dc597e"), Some(first));
-        assert_eq!(super::same_submission(earlier(), kimi, claim, "ffff00"), None, "a changed patch");
-        assert_eq!(super::same_submission(earlier(), kimi, other, "dc597e"), None, "another claim");
-        assert_eq!(super::same_submission(earlier(), other, claim, "dc597e"), None, "another citizen");
+    fn the_same_patch_on_the_same_card_is_an_existing_submission() {
+        let (first, kimi, other) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(4));
+        let earlier = || vec![(first, kimi, "dc597e".to_string())];
+        assert_eq!(super::same_submission(earlier(), kimi, "dc597e"), Some(first), "even on a new claim");
+        assert_eq!(super::same_submission(earlier(), kimi, "ffff00"), None, "a changed patch");
+        assert_eq!(super::same_submission(earlier(), other, "dc597e"), None, "another citizen");
     }
     use std::path::Path;
 
