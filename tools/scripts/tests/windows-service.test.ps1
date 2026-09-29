@@ -652,6 +652,15 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Both installed core service slots' }
     if (-not $refused) { throw 'Two live slots were not protected' }
     $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum.exe'; ExecutablePath = $null })
+    $unreadable = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
+    if ($unreadable.artifact -ne $second.artifact) { throw 'Hidden image lost registered-slot protection' }
+    $busy = [IO.File]::Open($second.artifact, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $refused = $false
+        try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Both installed core service slots' }
+        if (-not $refused) { throw 'Unreadable busy candidate was overwritten' }
+    } finally { $busy.Dispose() }
+    $script:registeredTask = $null
     $refused = $false
     try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Cannot inspect all live' }
     if (-not $refused) { throw 'Inaccessible image path was treated as an empty slot' }
