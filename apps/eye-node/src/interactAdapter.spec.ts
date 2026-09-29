@@ -25,6 +25,27 @@ function fakeOpen(log: { opened: string[]; closed: number; acted: unknown[][] },
 }
 
 describe('perception/interact sessions', () => {
+  // A stuck open must not hold shutdown forever or publish a late browser.
+  it('bounds draining and closes an open that finishes after the deadline', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    let release!: () => void;
+    let entered!: () => void;
+    const opening = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sessions = new InteractSessions(async (url, viewport) => {
+      entered();
+      await gate;
+      return fakeOpen(log)(url, viewport);
+    }, Date.now, 1);
+    const call = sessions.interact({ target: 'https://example.test/', actions: [] });
+    await opening;
+    await sessions.closeAll();
+    release();
+    expect((await call).success).toBe(false);
+    expect(log.closed).toBe(1);
+    expect(sessions.size).toBe(0);
+  });
+
   // Shutdown must include a browser whose asynchronous open finishes after stop.
   it('drains an accepted open before closing and refuses new work during stop', async () => {
     const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };

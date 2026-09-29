@@ -44,6 +44,7 @@ import { mapNode, perceptToImage } from './observeAdapter';
 export const IDLE_MS = 10 * 60 * 1000;
 /** The most sessions (browsers) one eye-node holds at once. */
 export const MAX_SESSIONS = 8;
+export const SHUTDOWN_DRAIN_MS = 10_000;
 
 type WebSession = Awaited<ReturnType<typeof PerceptionSession.openWeb>>;
 
@@ -97,11 +98,13 @@ export class InteractSessions {
   private readonly sweeper: ReturnType<typeof setInterval>;
   private readonly active = new Set<Promise<InteractResult>>();
   private stopping = false;
+  private drainExpired = false;
   private stopped?: Promise<void>;
 
   constructor(
     private readonly openWeb: OpenWeb = (url, viewport) => PerceptionSession.openWeb({ url, viewport }),
     private readonly now: () => number = Date.now,
+    private readonly shutdownDrainMs: number = SHUTDOWN_DRAIN_MS,
   ) {
     this.sweeper = setInterval(() => void this.sweep(), 60_000);
     this.sweeper.unref?.();
@@ -138,6 +141,10 @@ export class InteractSessions {
         }
         const viewport = params.viewport ? { width: params.viewport.width, height: params.viewport.height } : undefined;
         const session = await this.openWeb(params.target, viewport);
+        if (this.drainExpired) {
+          await session.close();
+          return failure('eye-node shutdown interrupted session opening');
+        }
         handle = randomUUID();
         held = { session, owner: caller, lastUsedMs: this.now() };
         this.held.set(handle, held);
@@ -196,7 +203,21 @@ export class InteractSessions {
     this.stopped = (async () => {
       // An openWeb already in flight can publish a session after stop begins.
       // Drain accepted calls before taking the final set of browsers to close.
-      await Promise.allSettled([...this.active]);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...this.active]),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              this.drainExpired = true;
+              console.warn('eye-node: shutdown drain deadline reached; interrupting active sessions');
+              resolve();
+            }, this.shutdownDrainMs);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
       const all = [...this.held.values()];
       this.held.clear();
       await Promise.all(all.map((h) => h.session.close().catch(() => undefined)));
