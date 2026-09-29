@@ -323,7 +323,11 @@ function Update-CoreBrowserRelease {
     if ((Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description -cne $task.Description) {
         throw 'Installed release changed during browser migration; core handoff refused.'
     }
-    try { Register-CoreServiceRelease -Release $release -RepoRoot $root }
+    # This operation preserves the installed binaries and only migrates browser
+    # metadata. Validate that installed release from its slot, as prepared resume
+    # does; comparing it with the newer checkout prevents every version upgrade.
+    $workingDirectory = Split-Path -Parent $release.artifact
+    try { Register-CoreServiceRelease -Release $release -RepoRoot $root -WorkingDirectory $workingDirectory }
     finally { Clear-Elevation }
     if (Get-CoreBrowserReleaseDrift -RepoRoot $root) {
         throw 'Registered browser release did not converge; core handoff refused.'

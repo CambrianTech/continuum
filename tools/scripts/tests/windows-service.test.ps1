@@ -29,15 +29,19 @@ try {
     & {
         # Exercise the migration itself through the existing scheduler seam;
         # no live registration or serving process is touched by this fixture.
-        $legacy = [pscustomobject]@{ launcher = $browserLauncher; artifact = 'kept-core'; engine = 'kept-engine'; cli = 'kept-cli' }
+        $keptCore = Join-Path $scratch 'kept-core.exe'
+        $legacy = [pscustomobject]@{ launcher = $browserLauncher; artifact = $keptCore; engine = 'kept-engine'; cli = 'kept-cli' }
         $script:browserTask = [pscustomobject]@{ Description = ($legacy | ConvertTo-Json -Compress); Actions = @([pscustomobject]@{Arguments = 'legacy'}) }
         $script:refuseBrowserRegistration = $true
         function Get-ScheduledTask { $script:browserTask }
         function Clear-Elevation { }
         function Register-CoreServiceRelease {
-            param($Release, $RepoRoot)
+            param($Release, $RepoRoot, $WorkingDirectory)
+            # A real installed core can precede checkout HEAD. Metadata migration
+            # must validate that release in its own slot, not demand the new SHA.
+            if ($WorkingDirectory -ne $scratch) { throw 'Browser migration compared installed release with checkout HEAD.' }
             if ($script:refuseBrowserRegistration) { throw 'fixture registration refused' }
-            if ($Release.artifact -ne 'kept-core' -or $Release.engine -ne 'kept-engine' -or $Release.cli -ne 'kept-cli') {
+            if ($Release.artifact -ne $keptCore -or $Release.engine -ne 'kept-engine' -or $Release.cli -ne 'kept-cli') {
                 throw 'Migration replaced binary or engine identity.'
             }
             $script:browserTask = [pscustomobject]@{
