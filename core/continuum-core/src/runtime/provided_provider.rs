@@ -66,6 +66,25 @@ pub fn provided_command_names() -> &'static HashSet<&'static str> {
     })
 }
 
+/// The reserved field an adapter reads the VERIFIED caller from. The core stamps it after
+/// removing any value the client supplied, so an adapter can bind state to a citizen (a
+/// `perception/interact` browser session holds her job-site logins: Fable on #4551) and no
+/// caller can claim another's identity. Absent for a local operator call (no caller).
+pub const CALLER_PEER_FIELD: &str = "_callerPeerId";
+
+/// PURE: `params` with [`CALLER_PEER_FIELD`] set from the verified caller, never from the
+/// request. A non-object `params` is forwarded unchanged: there is nowhere to stamp it, and
+/// an adapter that needs the caller refuses a call without one.
+pub(crate) fn with_verified_caller(mut params: Value, caller: Option<&crate::routing::CallerIdentity>) -> Value {
+    if let Some(map) = params.as_object_mut() {
+        map.remove(CALLER_PEER_FIELD);
+        if let Some(caller) = caller {
+            map.insert(CALLER_PEER_FIELD.to_string(), Value::String(caller.peer_id.to_string()));
+        }
+    }
+    params
+}
+
 /// Whether `name` is a `Provided` command (fulfilled by a connected client
 /// adapter, never a substrate `ServiceModule`). See [`provided_command_names`].
 pub fn is_provided_command(name: &str) -> bool {
@@ -88,10 +107,12 @@ pub async fn route_provided(
     registry: &ProviderRegistry,
     command: &str,
     params: Value,
+    caller: Option<&crate::routing::CallerIdentity>,
 ) -> Option<Result<Value, String>> {
     if !is_provided_command(command) {
         return None;
     }
+    let params = with_verified_caller(params, caller);
     Some(match registry.provider_for(command) {
         Some(provider) => provider.fulfill(command, params).await.map_err(|e| {
             format!(
@@ -211,14 +232,14 @@ impl CommandInterceptor for ProvidedCommandInterceptor {
         &self,
         command: &str,
         params: &Value,
-        _caller: Option<&crate::routing::CallerIdentity>,
+        caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<InterceptorOutcome, String> {
         // Delegate to the ONE Provided-routing decision (shared with the socket
         // route in `Runtime::route_command`): None ⇒ not Provided, decline so the
         // chain falls through to local Rust dispatch unchanged; Some(Ok) ⇒ the
         // connected eye-node's bare result; Some(Err) ⇒ fail loud (no provider, or
         // the adapter itself failed).
-        match route_provided(&self.registry, command, params.clone()).await {
+        match route_provided(&self.registry, command, params.clone(), caller).await {
             None => Ok(InterceptorOutcome::Decline),
             Some(Ok(value)) => Ok(InterceptorOutcome::Handled(CommandResult::Json(value))),
             Some(Err(e)) => Err(e),
@@ -233,6 +254,20 @@ impl CommandInterceptor for ProvidedCommandInterceptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Fable on #4551): an adapter binding state to a citizen (a browser
+    // session holding her logins) trusting a caller id the REQUEST supplied, so any caller could
+    // claim another's session; and an operator call inheriting a stale id.
+    #[test]
+    fn the_forwarded_caller_is_the_verified_one_never_the_requests() {
+        let kimi = crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(7));
+        let spoofed = serde_json::json!({ "session": "s", CALLER_PEER_FIELD: "someone-else" });
+        let stamped = with_verified_caller(spoofed.clone(), Some(&crate::routing::CallerIdentity::airc(kimi)));
+        assert_eq!(stamped[CALLER_PEER_FIELD], serde_json::json!(kimi.to_string()));
+        assert_eq!(stamped["session"], serde_json::json!("s"));
+        let operator = with_verified_caller(spoofed, None);
+        assert!(operator.get(CALLER_PEER_FIELD).is_none(), "no caller: nothing claimed");
+    }
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

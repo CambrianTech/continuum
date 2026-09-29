@@ -41,6 +41,18 @@ today, so a persona passes its FULL accumulated stylesheet each time; a
 persistent live session is the next step and changes only the adapter's session
 lifetime, never the wire.
 
+## Drive a live page: `perception/interact`
+
+`perception/interact { session?, target?, viewport?, actions, selector? }` keeps a
+page open across calls (card 3569675f). The first call passes `target` and gets a
+`session` handle back with the observation; later calls pass `session` plus
+`actions` (`click`, `type`, `press`, `hover`, `goto`, with CSS selectors aimed at the
+returned tree) and get the page after them plus a `delta`. That lets a persona click
+through a flow on her own dev server and capture evidence of each step.
+`perception/session-close { session }` releases a browser early. Sessions also
+close after 10 idle minutes, and at most 8 are open per eye-node (a ninth is
+refused with the reason, never an eviction of a live one).
+
 ## Run
 
 ```bash
@@ -66,9 +78,10 @@ than fabricating an observation.
 
 ```
 index.ts        entry — resolve socket, start, stay alive
-eyeNode.ts      EyeNode — connect, provide('perception/observe' + 'perception/hot-edit'), flush
+eyeNode.ts      EyeNode — connect, provide(observe, hot-edit, interact, session-close), flush
 observeAdapter  ObserveParams → PerceptionSession.openWeb → observe → ObserveResult
 hotEditAdapter  HotEditParams → openWeb → observe → hotPatchCss → re-observe (+Delta) → HotEditResult
+interactAdapter InteractSessions: handle → live PerceptionSession; interact (+Delta), close, idle sweep
 ```
 
 The wire contract (`ObserveResult`, `ProbeNode`, …) is single-sourced from Rust

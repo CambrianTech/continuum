@@ -496,6 +496,7 @@ impl Runtime {
                 &self.provider_registry,
                 command,
                 params,
+                caller.as_ref(),
             )
             .await
             .map(|result| result.map(CommandResult::Json));
