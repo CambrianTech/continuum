@@ -1761,7 +1761,9 @@ const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 /// ceiling on a being's own hands, contradicting the written doctrine on the
 /// same page (an "acts-forever" persona is a fitness gap to TRAIN, never a
 /// substrate cap — ACTING-ORGANISM §4). The perception kit ([repetition],
-/// repeat-guard fact) is how a looping mind notices itself; the ONLY external
+/// actual-result fixed-point guard) is how a looping mind notices itself. Three
+/// consecutive repeats of both request and result yield the turn without declaring
+/// its work complete; changed results reset that streak. The external
 /// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
 /// clock, held by the observer, never wired into life.
 pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;

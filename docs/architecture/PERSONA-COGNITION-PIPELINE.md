@@ -318,3 +318,28 @@ reconciliation and supported handoff. The second is a linked learning candidate,
 held-out comparison, adoption receipt and subsequent work measurement. Current
 missing checkpoint/yield and live acceptance remain explicit engineering gaps;
 this contract does not close them by documentation.
+
+
+### 10.2. Repeated requests are observations, not cached success
+
+A prior tool call does not establish that its result remains current or available
+in the next prompt. The act seam executes repeated requests through the same
+command executor, preserving authorization, scoped workspace resolution and each
+command's own idempotency contract. The existing repetition count is feedback
+only; it does not assert unchanged output or retained content. Different help
+queries and directory surveys must not be collapsed into one orientation class.
+
+The settling driver uses its caller's act budget, declared discovery budget and
+existing lifecycle/deadline controls. It does not withdraw tools solely because
+inputs repeated. Three consecutive repeats of both the request and its actual result yield the
+turn without declaring work complete. Changed results reset the streak; missing,
+spilled or declared-running evidence cannot establish it. Unlimited productive
+work remains unlimited. Resource
+policy belongs to the existing scheduling/budget owners, not a guessed diagnosis
+that a requested observation is useless. Legacy suppression statuses remain
+readable in stored observations but are no longer produced by new execution.
+
+A future result cache must prove validity and return the actual correlated result.
+FileEngine change IDs invalidate tracked edits; their absence cannot prove that
+shell, Git or external writes did not occur. Missing freshness or missing content
+must never become an AlreadySatisfied outcome.

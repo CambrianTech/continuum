@@ -105,7 +105,7 @@ impl ToolVerb {
 
     /// Surveys what the mind already carries — replaces the `is_redundant_orientation`
     /// prefix scan. `code/search` is NOT orientation (it reads specific content), so it
-    /// is excluded here exactly as `is_orientation_call` excludes it.
+    /// is excluded from this semantic class.
     pub fn is_orientation(&self) -> bool {
         matches!(
             self,
@@ -156,11 +156,11 @@ pub enum ActStatus {
     Errored {
         message: String,
     },
-    /// The already-satisfied short-circuit.
+    /// Legacy checkpoint status. New calls execute; history does not prove satisfaction.
     AlreadySatisfied {
         repeat: usize,
     },
-    /// The redundant-orientation short-circuit.
+    /// Legacy checkpoint status retained for decoding historical observations.
     RedundantOrientation {
         repeat: usize,
     },
@@ -360,7 +360,7 @@ mod tests {
         assert!(ToolVerb::classify("commands/help").is_orientation());
         assert!(ToolVerb::classify("code/tree").is_orientation());
         // code/search reads specific content — NOT a survey, exactly as
-        // is_orientation_call excludes it.
+        // it reads specific content.
         assert!(!ToolVerb::classify("code/search").is_orientation());
         assert_eq!(ToolVerb::classify("code/search"), ToolVerb::Search);
         assert_eq!(ToolVerb::classify("work/list"), ToolVerb::Other);
