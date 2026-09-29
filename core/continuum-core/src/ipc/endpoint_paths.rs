@@ -28,6 +28,27 @@ pub fn core_socket_path() -> String {
     std::env::var("CONTINUUM_CORE_SOCKET").unwrap_or_else(|_| default_core_socket())
 }
 
+/// Windows' primary listener and local providers must select the same TCP port.
+pub fn core_tcp_port() -> u16 {
+    tcp_port_from(std::env::var("CONTINUUM_CORE_TCP").ok().as_deref())
+}
+
+fn tcp_port_from(value: Option<&str>) -> u16 {
+    value
+        .and_then(|s| s.parse::<u16>().ok())
+        .filter(|p| *p > 0)
+        .unwrap_or(9100)
+}
+
+/// A dialable endpoint for providers, rather than the Windows socket-path placeholder.
+pub fn core_provider_endpoint() -> String {
+    if cfg!(windows) {
+        format!("tcp://127.0.0.1:{}", core_tcp_port())
+    } else {
+        core_socket_path()
+    }
+}
+
 fn endpoint_path(name: &str) -> String {
     if cfg!(windows) {
         // std::env::temp_dir() is already the established pattern in this crate (airc endpoints,
@@ -44,6 +65,22 @@ fn endpoint_path(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Catches a launcher selecting a different port from the Windows listener,
+    // including its existing invalid/zero-port fallback.
+    #[test]
+    fn provider_port_obeys_the_listener_contract() {
+        for value in [None, Some(""), Some("invalid"), Some("0"), Some("65536")] {
+            assert_eq!(tcp_port_from(value), 9100);
+        }
+        assert_eq!(tcp_port_from(Some("19234")), 19234);
+        if cfg!(windows) {
+            assert_eq!(
+                core_provider_endpoint(),
+                format!("tcp://127.0.0.1:{}", core_tcp_port())
+            );
+        }
+    }
 
     // what this catches: the Windows regression this module exists for -- a path that is not
     // absolute resolves against the current drive, so two processes with different working

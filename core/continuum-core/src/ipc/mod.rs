@@ -4429,11 +4429,7 @@ pub fn start_server(
     {
         let bind_host =
             std::env::var("CONTINUUM_CORE_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let port: u16 = std::env::var("CONTINUUM_CORE_TCP")
-            .ok()
-            .and_then(|s| s.parse::<u16>().ok())
-            .filter(|p| *p > 0)
-            .unwrap_or(9100);
+        let port = endpoint_paths::core_tcp_port();
         let bind_addr = format!("{bind_host}:{port}");
         // The same two phase rows the Unix path emits around ITS bind. They were
         // `#[cfg(unix)]`-gated with the Unix bind (the windows-msvc fix on #3714),
