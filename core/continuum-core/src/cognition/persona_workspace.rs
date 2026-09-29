@@ -1031,6 +1031,35 @@ pub(crate) async fn root_at_held_card(
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
         Ok(()) => {
             note_acting_card(hands.persona_id, focus.card_id.as_uuid());
+            // SAY WHERE SHE NOW STANDS when it is not where she was last told (card
+            // 822c4253): staging a card's checkout moved Kimi from the career-wrangler/
+            // tree she had built at home into a per-card worktree on a card branch, and
+            // her next code/read of career-wrangler/docs/... failed with no word of why.
+            // Recorded as told only AFTER the line is pinned (Cormac on #4555): marking
+            // first would leave a body-less turn "told" and silent at this checkout forever.
+            if !already_told(hands.persona_id, &ws) {
+                let branch = crate::modules::card_staging::card_branch(focus);
+                let Some(body) = cycle.acting() else {
+                    return HeldCardTurn {
+                        credit: Some(credit),
+                        hands: Some(hands),
+                    };
+                };
+                body.working_memory.pin_fact_for_turns(
+                    "rooted",
+                    &rooted_notice(&focus.repo.to_string(), &ws, &branch),
+                    3,
+                );
+                mark_told(hands.persona_id, &ws);
+                crate::probe!(
+                    class = "persona.work.root_moved",
+                    peer = %peer_id,
+                    card = %focus.card_id.as_uuid(),
+                    root = %ws.display(),
+                    branch = %branch,
+                    "her hands stand in a checkout she was not last told about; she is told now"
+                );
+            }
             HeldCardTurn {
                 credit: Some(credit),
                 hands: Some(hands),
@@ -1043,6 +1072,45 @@ pub(crate) async fn root_at_held_card(
             HeldCardTurn::unrooted(credit)
         }
     }
+}
+
+/// The checkout each citizen was last TOLD her hands stand in (card 822c4253). Process
+/// memory: after a restart she is told once more, which costs one pinned line.
+static ANNOUNCED_ROOTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Whether `root` is the checkout she was last told about. A per-turn rooting at the
+/// same checkout says nothing.
+fn already_told(persona_id: uuid::Uuid, root: &std::path::Path) -> bool {
+    ANNOUNCED_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .get(&persona_id)
+        .is_some_and(|r| r == root)
+}
+
+/// Record `root` as told, once the line naming it is pinned in her window.
+fn mark_told(persona_id: uuid::Uuid, root: &std::path::Path) {
+    ANNOUNCED_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .insert(persona_id, root.to_path_buf());
+}
+
+/// PURE: the line that tells her where her hands now stand and what did not move. The
+/// branch is the card's EXPECTED branch (derived from the card), never asserted as the
+/// checked-out HEAD, which an existing tree may have moved (Codex on #4555).
+fn rooted_notice(repo: &str, root: &std::path::Path, branch: &str) -> String {
+    format!(
+        "[workspace] For your held card on {repo}, your hands now stand in its own checkout: \
+         {root}. The card's branch is {branch}; git status shows what is actually checked \
+         out. Paths in code/* are relative to it (docs/x.md, not <repo>/docs/x.md). Your \
+         home workspace is unchanged: a copy of this repo you keep there is a SEPARATE tree, \
+         and anything not pushed from it lives only there. Commits here stay on the checked \
+         out branch until you push them where the project wants them.",
+        root = root.display()
+    )
 }
 
 /// What a turn knows about the card being worked, kept SEPARATE from whether her hands
@@ -1865,6 +1933,27 @@ mod tests {
 
     use tokio::sync::{watch, Notify};
     use tokio::time::timeout;
+
+    // what this catches (card 822c4253): her hands moving to a card's own checkout with no
+    // word (Kimi's code/read of career-wrangler/docs/... failing in a per-card worktree),
+    // or the notice repeating every turn at the same checkout. Told on a new root, silent
+    // on the same one, told again when it moves; the notice names root, branch and the
+    // home tree that did not move.
+    #[test]
+    fn she_is_told_when_her_hands_move_and_only_then() {
+        let kimi = Uuid::new_v4();
+        let card = std::path::Path::new("/w/worktrees/af4e2cea");
+        assert!(!already_told(kimi, card), "first rooting is news");
+        assert!(!already_told(kimi, card), "checking does not record: only a pinned line does");
+        mark_told(kimi, card);
+        assert!(already_told(kimi, card), "the same checkout next turn is not news");
+        assert!(!already_told(kimi, std::path::Path::new("/w/worktrees/b0b0b0b0")));
+        assert!(!already_told(Uuid::new_v4(), card), "per citizen, never shared");
+        let line = rooted_notice("CambrianTech/career-wrangler", card, "af4e2cea/a-real-product");
+        for want in ["/w/worktrees/af4e2cea", "af4e2cea/a-real-product", "docs/x.md", "home workspace is unchanged"] {
+            assert!(line.contains(want), "{want}: {line}");
+        }
+    }
 
     // what this catches (Astra's block on #4315): the wake's verdict must come from the
     // board's holder projection, never from `owner` read as authority. An EXPIRED claim
