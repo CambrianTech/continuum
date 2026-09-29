@@ -17,32 +17,35 @@ jobs:
       rust: ${{ steps.select.outputs.rust }}
       installer: ${{ steps.select.outputs.installer }}
     steps:
+      - uses: actions/checkout@v4
+      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs
       - uses: actions/github-script@v7
         id: select
         with:
           script: |
-            // Keep required jobs reporting on every PR; unknown/mixed changes run everything.
-            let rust = true, installer = true;
-            if (context.eventName === 'pull_request') {
-              try {
-                const files = await github.paginate(github.rest.pulls.listFiles, {
+            const { selectChecks } = require('./tools/scripts/ci-change-scope.cjs');
+            let selection = { rust: true, installer: true };
+            try {
+              let files;
+              if (context.eventName === 'pull_request') {
+                files = await github.paginate(github.rest.pulls.listFiles, {
                   ...context.repo, pull_number: context.issue.number, per_page: 100
                 });
-                // Include rename sources: moving Rust into docs still changes Rust.
-                const paths = files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
-                if (files.length > 0 && files.length < 3000 &&
-                    files.length === context.payload.pull_request.changed_files) {
-                  const docs = p => (p.startsWith('docs/') || p.endsWith('.md')) && !p.startsWith('docs/genome/');
-                  const windows = p => /^(install\.ps1|tools\/scripts\/(lib\/windows-(service|prepared)\.ps1|tests\/windows-service\.test\.ps1|register-core-service\.ps1|run-service-hidden\.ps1))$/.test(p);
-                  rust = paths.some(p => !docs(p) && !windows(p));
-                  installer = rust || paths.some(windows);
-                }
-              } catch (error) {
-                core.warning(`Cannot classify changes; running all checks: ${error.message}`);
+                if (files.length !== context.payload.pull_request.changed_files || files.length >= 3000) files = null;
+              } else if (context.eventName === 'push' && !/^0+$/.test(context.payload.before)) {
+                const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo, basehead: `${context.payload.before}...${context.sha}`
+                });
+                // GitHub caps comparison files at 300. A capped or non-forward
+                // comparison cannot establish the complete affected surface.
+                if (data.status === 'ahead' && data.files?.length < 300) files = data.files;
               }
+              selection = selectChecks(files);
+            } catch (error) {
+              core.warning(`Cannot classify changes; running all checks: ${error.message}`);
             }
-            core.setOutput('rust', String(rust));
-            core.setOutput('installer', String(installer));
+            core.setOutput('rust', String(selection.rust));
+            core.setOutput('installer', String(selection.installer));
 
   cargo-test-continuum-core:
     name: cargo test -p continuum-core --lib
