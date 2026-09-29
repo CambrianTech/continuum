@@ -77,6 +77,25 @@ impl OwnedProcessTree {
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
     }
+
+    /// Observe the kernel's process-exit event without a liveness polling loop.
+    /// The observer owns only a process handle, never the job's lifetime. If the
+    /// caller cancels this future and drops the tree, job cleanup wakes the wait.
+    pub async fn wait(&self) -> io::Result<ExitStatus> {
+        let process = self.child.process.try_clone()?;
+        tokio::task::spawn_blocking(move || {
+            if unsafe { WaitForSingleObject(process.as_raw_handle(), u32::MAX) } != WAIT_OBJECT_0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut code = 0;
+            if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(ExitStatus::from_raw(code))
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
 }
 
 /// Assign the worker to its owner before its first instruction. An after-spawn
@@ -543,6 +562,20 @@ mod tests {
             unsafe { WaitForSingleObject(descendant.as_raw_handle(), 0) },
             WAIT_TIMEOUT
         );
+        // An unexpected worker exit must wake the service observer even while
+        // descendants survive. Observing it must not surrender tree ownership.
+        assert_ne!(unsafe { TerminateProcess(worker.as_raw_handle(), 23) }, 0);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let status = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), tree.wait())
+                .await
+                .expect("worker exit observer did not wake")
+                .unwrap()
+        });
+        assert_eq!(status.code(), Some(23));
         drop(tree);
         for handle in [&worker, &descendant] {
             assert_eq!(

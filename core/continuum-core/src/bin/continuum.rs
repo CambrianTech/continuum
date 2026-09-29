@@ -1241,7 +1241,7 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         if args.len() == 3 {
             eprintln!("service-host: browser unavailable: no eyeRoot registered; reinstall to register browser assets");
         }
-        let _eye = args.get(3).and_then(|root| {
+        let eye = args.get(3).and_then(|root| {
             match continuum_core::boot_plan::start_service_eye(Path::new(root), &endpoint) {
                 Ok(eye) => {
                     eprintln!("service-host: browser worker {} spawned for {endpoint}; registration pending", eye.id());
@@ -1253,9 +1253,24 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
                 }
             }
         });
-        let status = child
-            .wait()
-            .await
+        let status = if let Some(eye) = eye {
+            tokio::select! {
+                // Core shutdown owns the tree's lifetime, including descendants.
+                status = child.wait() => status,
+                status = eye.wait() => {
+                    match status {
+                        Ok(status) => eprintln!("service-host: browser unavailable: worker exited ({status}); core remains serving"),
+                        Err(error) => eprintln!("service-host: browser unavailable: worker exit observation failed ({error}); core remains serving"),
+                    }
+                    // Remove any surviving descendants before considering a later
+                    // recovery. Never leave a browser orphan or kill the core.
+                    drop(eye);
+                    child.wait().await
+                }
+            }
+        } else {
+            child.wait().await
+        }
             .map_err(|e| format!("service-host cannot wait for core: {e}"))?;
         Ok(status.code().unwrap_or(1))
     }
