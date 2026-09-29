@@ -5933,6 +5933,7 @@ mod tests {
             let updates: Vec<_> = (0..40)
                 .map(|i| {
                     Arc::new(crate::persona::service_loop::IncomingMessage {
+                        media: Vec::new(),
                         event_id: Uuid::new_v4(),
                         lamport: i as u64 + 1,
                         peer_id: Uuid::new_v4(),
@@ -6089,6 +6090,7 @@ mod tests {
                             input: serde_json::json!({"attempt": step}),
                         },
                         output: ToolOutput {
+                            image: None,
                             result: ToolResult {
                                 tool_use_id: call_id,
                                 content: (*report).into(),
@@ -9905,6 +9907,7 @@ mod tests {
                     .into_boxed_str(),
                 );
                 let update = Arc::new(crate::persona::service_loop::IncomingMessage {
+                    media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
                     peer_id: Uuid::new_v4(),
@@ -10389,6 +10392,7 @@ mod tests {
                     let mut ws = Workspace::new("original task stays required");
                     ws.room_updates = Arc::new(vec![Arc::new(
                         crate::persona::service_loop::IncomingMessage {
+                            media: Vec::new(),
                             event_id: Uuid::new_v4(),
                             lamport: 1,
                             peer_id: Uuid::new_v4(),

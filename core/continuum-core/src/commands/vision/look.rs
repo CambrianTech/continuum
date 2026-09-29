@@ -45,14 +45,20 @@ fn mime_for(path: &std::path::Path) -> Option<&'static str> {
 
 /// Images larger than this are refused rather than shipped to the describer —
 /// a screenshot is hundreds of KB; tens of MB is a mistake, not a picture.
-const MAX_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
+const MAX_IMAGE_BYTES: u64 = crate::media::artifact::MAX_ENCODED_BYTES;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/vision/VisionLookParams.ts")]
 pub struct VisionLookParams {
     /// Path to the image file to look at (png/jpg/gif/webp/bmp), as you would
     /// pass it to code/read.
+    #[serde(default)]
     pub file_path: String,
+    /// A retained capture reference, usable after its pixels leave the transcript.
+    /// Supply this OR file_path. Reads verify digest and byte length.
+    #[serde(default)]
+    #[ts(optional)]
+    pub artifact: Option<crate::media::artifact::ImageArtifact>,
     /// Optional: what to focus on ("count the shapes", "read the chart title").
     /// Omit for a general description.
     #[serde(default)]
@@ -67,6 +73,9 @@ pub struct VisionLookResult {
     pub description: String,
     /// Which vision model looked (attribution for the receipt).
     pub model: String,
+    /// Original image retained independently of the description and prompt.
+    #[ts(optional)]
+    pub artifact: Option<crate::media::artifact::ImageArtifact>,
 }
 
 crate::action_command! {
@@ -81,6 +90,13 @@ crate::action_command! {
     params: VisionLookParams,
     output: VisionLookResult,
     run(this, _ctx, p) => {
+        if p.artifact.is_some() && !p.file_path.is_empty() {
+            return Err(CommandError::Invalid("provide artifact OR file_path, not both".into()));
+        }
+        let (bytes, mime) = if let Some(artifact) = &p.artifact {
+            let store = crate::media::artifact::store().map_err(CommandError::Internal)?;
+            (artifact.read(&store).map_err(CommandError::Internal)?, artifact.mime.clone())
+        } else {
         let path = std::path::Path::new(&p.file_path);
         let Some(mime) = mime_for(path) else {
             return Err(CommandError::Invalid(format!(
@@ -103,6 +119,11 @@ crate::action_command! {
         let bytes = std::fs::read(path).map_err(|e| {
             CommandError::Invalid(format!("vision/look: cannot read '{}': {e}", p.file_path))
         })?;
+        (bytes, mime.to_string())
+        };
+        let artifact = crate::media::artifact::ImageArtifact::retain(
+            &crate::media::artifact::store().map_err(CommandError::Internal)?, &bytes,
+        ).map_err(CommandError::Internal)?;
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes); // boundary: vision model API takes base64 image payloads on the wire
 
@@ -112,7 +133,7 @@ crate::action_command! {
             .map_err(CommandError::Internal)?;
         let req = VisionDescribeRequest {
             base64_data: b64,
-            mime_type: mime.to_string(),
+            mime_type: mime,
             options: VisionDescribeOptions {
                 prompt: p.focus.map(|f| {
                     format!(
@@ -139,6 +160,7 @@ crate::action_command! {
         Ok(VisionLookResult {
             description: d.description,
             model: d.model_id,
+            artifact: Some(artifact),
         })
     }
 }

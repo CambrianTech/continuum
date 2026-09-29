@@ -576,6 +576,7 @@ mod tests {
                 verdicts: calls
                     .iter()
                     .map(|c| CallVerdict {
+                        image: None,
                         tool_use_id: c.id.clone(),
                         verdict: crate::sdk_codegen::ActVerdict::Declared(
                             crate::sdk_codegen::ToolVerdict::Running,
@@ -1516,6 +1517,7 @@ mod tests {
             let colleague = Uuid::new_v4();
             let messages = vec![
                 IncomingMessage {
+                    media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
                     peer_id: colleague,
@@ -1524,6 +1526,7 @@ mod tests {
                     room_id: room,
                 },
                 IncomingMessage {
+                    media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
                     peer_id: colleague,
@@ -1533,6 +1536,7 @@ mod tests {
                 },
             ];
             let later_message = IncomingMessage {
+                media: Vec::new(),
                 event_id: Uuid::new_v4(),
                 lamport: 2,
                 peer_id: colleague,

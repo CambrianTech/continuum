@@ -25,6 +25,7 @@
 //! `MediaFrame` that caches derivatives on `SharedCompute` (compute-once, shared).
 
 pub mod frame;
+pub mod artifact;
 pub mod image_ops;
 pub mod perception_buffer;
 pub mod perception_ingest;

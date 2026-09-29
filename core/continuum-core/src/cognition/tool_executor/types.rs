@@ -188,6 +188,9 @@ pub struct NativeBatchOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallVerdict {
+    /// Durable visual evidence produced by this exact call, never inline pixels.
+    #[serde(default)]
+    pub image: Option<crate::media::artifact::ImageArtifact>,
     pub tool_use_id: String,
     pub verdict: ActVerdict,
     pub dispatch_handle: Option<Uuid>,

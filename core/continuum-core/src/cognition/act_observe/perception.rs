@@ -219,6 +219,7 @@ mod tests {
                 input: input.clone(),
             },
             output: ToolOutput {
+                image: None,
                 result: ToolResult {
                     tool_use_id: "c".into(),
                     content: "ok".into(),
