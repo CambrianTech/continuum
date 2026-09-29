@@ -3,17 +3,22 @@
  * and stays alive fulfilling `perception/observe` until interrupted.
  *
  * Config (env):
- *   CONTINUUM_CORE_SOCKET  core IPC socket path or `tcp://host:port`
- *                          (default `/tmp/continuum-core.sock`, matching `uu`)
+ *   CONTINUUM_CORE_SOCKET  core IPC socket path or `tcp://host:port`. Required: the
+ *                          launcher passes it from the core's endpoint resolver, and
+ *                          the eye-node never guesses one (see coreEndpoint.ts).
  *   EYE_NODE_LABEL         provider label shown in core logs
  */
 
+import { coreEndpoint } from './coreEndpoint';
 import { EyeNode } from './eyeNode';
 
-const DEFAULT_CORE_SOCKET = '/tmp/continuum-core.sock';
-
 async function main(): Promise<void> {
-  const socketPath = process.env.CONTINUUM_CORE_SOCKET ?? DEFAULT_CORE_SOCKET;
+  const resolved = coreEndpoint(process.env);
+  if (!resolved.ok) {
+    console.error(`eye-node: ${resolved.reason}`);
+    process.exit(2);
+  }
+  const socketPath = resolved.endpoint;
   const label = process.env.EYE_NODE_LABEL;
 
   const eye = new EyeNode({ socketPath, label });
