@@ -4109,6 +4109,36 @@ mod tests {
             matches!(&unnamed, Err(CommandError::Invalid(m)) if m.contains("name the repo")),
             "{unnamed:?}"
         );
+
+        // The default path (Cormac on #4571): holding a card and naming no repo files the new
+        // card against the HELD card's repo, never some other project's.
+        let held = WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid"));
+        airc.claim_work_card_with_origin(
+            ClaimWorkCard { card_id: held, ttl_ms: 600_000 },
+            airc_work::ClaimOrigin::Explicit,
+        )
+        .await
+        .expect("she claims the slice card");
+        let slice = WorkCreate::create(
+            &airc,
+            WorkCreateParams {
+                room: "career-wrangler".to_string(),
+                repo: None,
+                title: "slice 2".to_string(),
+                body: None,
+                priority: None,
+            },
+        )
+        .await
+        .expect("a held card supplies the repo");
+        let slice_id = WorkCardId::from_uuid(Uuid::parse_str(&slice.card_id).expect("uuid"));
+        let horizon = board_horizon(&airc).await.expect("boards");
+        let filed = horizon
+            .boards
+            .iter()
+            .find_map(|(_, b)| b.card(slice_id))
+            .expect("the new card is on a board");
+        assert_eq!(filed.repo.to_string(), card.repo.to_string(), "the held card's repo, not another project's");
     }
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
