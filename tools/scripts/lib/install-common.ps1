@@ -155,7 +155,19 @@ function Ensure-Elevated {
 # finally so a cached admin session never outlives the installer.
 function Clear-Elevation {
     if ($script:ElevationWarmed -and -not (Test-IsAdmin)) {
-        & gsudo cache off 2>&1 | Out-Null
+        # PS5 turns informational native stderr into ErrorRecords under Stop.
+        # Judge cleanup by its exit code, just like cache acquisition above.
+        $savedErrorPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $PSNativeCommandUseErrorActionPreference = $false
+            $diagnostic = @(& gsudo cache off 2>&1)
+            $code = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $savedErrorPreference }
+        if ($code -ne 0) {
+            throw "Elevation cache cleanup failed (exit $code): $($diagnostic -join [Environment]::NewLine)"
+        }
+        $script:ElevationWarmed = $false
     }
 }
 

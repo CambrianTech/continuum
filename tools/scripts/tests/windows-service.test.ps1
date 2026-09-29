@@ -29,15 +29,19 @@ try {
     & {
         # Exercise the migration itself through the existing scheduler seam;
         # no live registration or serving process is touched by this fixture.
-        $legacy = [pscustomobject]@{ launcher = $browserLauncher; artifact = 'kept-core'; engine = 'kept-engine'; cli = 'kept-cli' }
+        $keptCore = Join-Path $scratch 'kept-core.exe'
+        $legacy = [pscustomobject]@{ launcher = $browserLauncher; artifact = $keptCore; engine = 'kept-engine'; cli = 'kept-cli' }
         $script:browserTask = [pscustomobject]@{ Description = ($legacy | ConvertTo-Json -Compress); Actions = @([pscustomobject]@{Arguments = 'legacy'}) }
         $script:refuseBrowserRegistration = $true
         function Get-ScheduledTask { $script:browserTask }
         function Clear-Elevation { }
         function Register-CoreServiceRelease {
-            param($Release, $RepoRoot)
+            param($Release, $RepoRoot, $WorkingDirectory)
+            # A real installed core can precede checkout HEAD. Metadata migration
+            # must validate that release in its own slot, not demand the new SHA.
+            if ($WorkingDirectory -ne $scratch) { throw 'Browser migration compared installed release with checkout HEAD.' }
             if ($script:refuseBrowserRegistration) { throw 'fixture registration refused' }
-            if ($Release.artifact -ne 'kept-core' -or $Release.engine -ne 'kept-engine' -or $Release.cli -ne 'kept-cli') {
+            if ($Release.artifact -ne $keptCore -or $Release.engine -ne 'kept-engine' -or $Release.cli -ne 'kept-cli') {
                 throw 'Migration replaced binary or engine identity.'
             }
             $script:browserTask = [pscustomobject]@{
@@ -502,6 +506,8 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'exit /b 74'
+            } elseif ($script:elevationMode -eq 'cleanup-info') {
+                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo Info: Cache session closed. 1>&2 & exit /b 0'
             } else { $global:LASTEXITCODE = 0 }
         }
         $reason = 'registering the ContinuumCore startup task (before core handoff)'
@@ -525,6 +531,17 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         Ensure-Elevated -Reason $reason
         Ensure-Elevated -Reason $reason
         if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Successful elevation was not cached exactly once' }
+        # Regression: PS5 must not abort a completed registration on gsudo's
+        # informational stderr when cache teardown actually succeeds.
+        $script:elevationMode = 'cleanup-info'
+        Clear-Elevation
+        if ($script:ElevationWarmed -or $ErrorActionPreference -ne 'Stop') { throw 'Successful cleanup retained cache state or changed error policy' }
+        $script:ElevationWarmed = $true
+        $script:elevationMode = 'failure'
+        $failure = $null
+        try { Clear-Elevation } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'exit 73' -or -not $script:ElevationWarmed) { throw 'Failed cache cleanup was silently accepted' }
+        $script:elevationCalls = 3
         $script:ElevationWarmed = $false
         function Test-IsAdmin { $true }
         Ensure-Elevated -Reason $reason

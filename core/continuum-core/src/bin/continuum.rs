@@ -1046,6 +1046,8 @@ async fn launch_installed_core(
 struct RebootOptions {
     force: bool,
     prebuilt: Option<PathBuf>,
+    /// Install retry: validated Cargo output still needs staging into the service slot.
+    stage_prebuilt: bool,
     service: bool,
     validate_only: bool,
     /// Is a human AT this machine, able to answer one consent prompt?
@@ -2016,7 +2018,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // one, it is prepared right after the warm build below — same check, same
     // ordering, the artifact simply comes from the build instead of a hand.
     let mut service = match (options.service, prebuilt.as_ref()) {
-        (true, Some(candidate)) => Some(PreparedCoreService::prepare(candidate, &socket).await?),
+        (true, Some(candidate)) if !options.stage_prebuilt => Some(PreparedCoreService::prepare(candidate, &socket).await?),
         _ => None,
     };
     // Training guard (task #137, Joel's consent-gate doctrine: the denial names
@@ -3380,7 +3382,15 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     // reason the node in front of us cannot be replaced. Same command every time; the
     // escalation is inside it, never a second verb the user has to discover.
     #[cfg(windows)]
-    let prebuilt = if running
+    let prepared = prepared_install_core(&repo, &head).await?;
+    #[cfg(windows)]
+    let stage_prebuilt = prepared.is_some();
+    #[cfg(not(windows))]
+    let stage_prebuilt = false;
+    #[cfg(windows)]
+    let prebuilt = if prepared.is_some() {
+        prepared
+    } else if running
         .as_deref()
         .is_some_and(|r| continuum_core::runtime::deploy_tracker::same_commit(r, &head))
     {
@@ -3411,6 +3421,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     let options = RebootOptions {
         service: cfg!(windows),
         operator_present: true,
+        stage_prebuilt,
         prebuilt,
         ..Default::default()
     };
@@ -3437,6 +3448,35 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
             "install: the handoff ran but the running core reports {} against HEAD {head}",
             other.unwrap_or("nothing") // unwrap_or: None = no core answering, reported as such — never a sha
         )),
+    }
+}
+
+/// An install retry can reuse the verified pair in the configured Cargo release directory. Never
+/// discover an arbitrary installed binary or silently replace uncommitted work.
+#[cfg(windows)]
+async fn prepared_install_core(repo: &Path, head: &str) -> Result<Option<PathBuf>, String> {
+    if !git_in(repo, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty() {
+        return Ok(None);
+    }
+    let target = match std::env::var("CARGO_TARGET_DIR") {
+        Ok(target) => target,
+        Err(_) => format!("{}/.continuum/cache/cargo-target", home_dir()?),
+    };
+    let cli = Path::new(&target).join("release/continuum.exe");
+    let Ok(cli_sha) = binary_build_sha(&cli).await else { return Ok(None) };
+    if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, head) {
+        return Ok(None);
+    }
+    let Some(dir) = cli.parent() else { return Ok(None) };
+    let artifact = dir.join("continuum-core-server.exe");
+    // A missing/stale candidate falls back to the normal build. The existing
+    // reboot path revalidates the selected artifact and owns claim/staging/drain.
+    match PrebuiltCore::prepare(&artifact).await {
+        Ok(candidate) => {
+            println!("  core: reusing prepared build {} beside {}", candidate.build_sha, cli.display());
+            Ok(Some(candidate.path))
+        }
+        Err(_) => Ok(None),
     }
 }
 
