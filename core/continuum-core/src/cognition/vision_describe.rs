@@ -394,7 +394,7 @@ pub async fn describe_image(
         .await?;
 
     let response_text = generation_text(&response_value, &model_id, &provider_id)?;
-    let parsed = parse_response(response_text);
+    let parsed = parse_response(&response_text);
 
     Ok(Some(VisionDescription {
         description: parsed.description,
@@ -409,7 +409,7 @@ pub async fn describe_image(
 }
 
 /// Keep operational failure metadata without echoing model reasoning or raw responses.
-fn generation_text<'a>(response_value: &'a serde_json::Value, model: &str, provider: &str) -> Result<&'a str, String> {
+fn generation_text<'a>(response_value: &'a serde_json::Value, model: &str, provider: &str) -> Result<std::borrow::Cow<'a, str>, String> {
     // ai/generate's wire format serializes FinishReason via Display
     // (`modules/ai_provider.rs::response_to_json`); the sentinel string
     // matches `crate::ai::types::FinishReason::Error`'s Display impl.
@@ -432,7 +432,15 @@ fn generation_text<'a>(response_value: &'a serde_json::Value, model: &str, provi
             response_text.len()
         ));
     }
-    Ok(response_text)
+    // The frame cache and non-vision projections retain prose, not the provider
+    // envelope. Keep the limitation attached to that prose so every consumer
+    // sees it, while preserving useful partial observations and avoiding a retry.
+    if matches!(finish_reason, Some(crate::ai::types::FinishReason::Length)) {
+        return Ok(std::borrow::Cow::Owned(format!(
+            "[Incomplete vision description: generation reached its token limit. Missing details are unknown.]\n{response_text}"
+        )));
+    }
+    Ok(std::borrow::Cow::Borrowed(response_text))
 }
 
 /// The live [`FrameDescriber`](crate::media::FrameDescriber) — the sensory bridge that
@@ -588,6 +596,14 @@ mod tests {
         }
         let good = serde_json::json!({"finishReason":"stop", "text":"A heading and link."});
         assert_eq!(generation_text(&good, "vision-model", "provider").unwrap(), "A heading and link.");
+        // A nonempty length-limited response must not become a complete cached
+        // observation, and private reasoning must never enter that observation.
+        let partial = serde_json::json!({"finishReason":"length", "text":"A small line", "reasoning":"private"});
+        let marked = generation_text(&partial, "vision-model", "provider").unwrap();
+        let projected = parse_response(&marked).description;
+        assert!(projected.starts_with("[Incomplete vision description:"));
+        assert!(projected.ends_with("A small line"));
+        assert!(!projected.contains("private"));
     }
 
     // ─── select_vision_model 4-branch priority logic ──────────────────────
