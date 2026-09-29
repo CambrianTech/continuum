@@ -171,16 +171,48 @@ fn step_eye_node_beside(repo_root: &std::path::Path) -> Outcome {
     if !eye.exists() {
         return Outcome::Skipped("no eye-node in this tree".into());
     }
-    match std::process::Command::new("npx")
-        .args(["tsx", eye.to_string_lossy().as_ref()])
-        .current_dir(repo_root.join("apps/eye-node"))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(_) => Outcome::Ok("perception provider spawned".into()),
-        Err(e) => Outcome::Skipped(format!("npx unavailable: {e}")),
+    let tsx = repo_root.join("node_modules/tsx/dist/cli.mjs");
+    if !tsx.is_file() {
+        return Outcome::Skipped("eye-node needs the installed workspace dependency tsx".into());
     }
+    let endpoint = crate::ipc::endpoint_paths::core_socket_path();
+    let log_path = std::path::PathBuf::from(crate::ipc::endpoint_paths::core_start_logfile())
+        .with_file_name("continuum-eye-node.log");
+    let log = match std::fs::File::create(&log_path) {
+        Ok(log) => log,
+        Err(e) => return Outcome::Skipped(format!("eye-node log {}: {e}", log_path.display())),
+    };
+    let stdout = match log.try_clone() {
+        Ok(stdout) => stdout,
+        Err(e) => return Outcome::Skipped(format!("eye-node log handle: {e}")),
+    };
+    let mut command = eye_node_command(repo_root, &endpoint);
+    command.stdout(stdout).stderr(log);
+    match command.spawn() {
+        Ok(child) => Outcome::Ok(format!(
+            "eye-node spawned pid {} for {endpoint}; registration pending; log {}",
+            child.id(), log_path.display()
+        )),
+        Err(e) => Outcome::Skipped(format!("eye-node launch for {endpoint} failed: {e}")),
+    }
+}
+
+/// Pass the core's endpoint authority to the worker. Invoke the installed JS entry
+/// through node directly: npx is a .cmd shim on Windows and may fetch packages.
+fn eye_node_command(repo_root: &std::path::Path, endpoint: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(if cfg!(windows) { "node.exe" } else { "node" });
+    command
+        .arg(repo_root.join("node_modules/tsx/dist/cli.mjs"))
+        .arg(repo_root.join("apps/eye-node/src/index.ts"))
+        .current_dir(repo_root.join("apps/eye-node"))
+        .env("CONTINUUM_CORE_SOCKET", endpoint)
+        .stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: background provider.
+    }
+    command
 }
 
 /// Run slice 1 of the typed boot plan. `repo_root` is `Some` in a source tree
@@ -248,5 +280,21 @@ mod tests {
         r.push("x", t, Outcome::Skipped("test".into()));
         assert_eq!(r.steps.len(), 1);
         assert!(matches!(r.steps[0].outcome, Outcome::Skipped(_)));
+    }
+
+    // what this catches: a worker guessing /tmp instead of the selected endpoint,
+    // or going through npx and shell parsing instead of installed dependencies.
+    #[test]
+    fn eye_launch_preserves_endpoint_and_paths_as_arguments() {
+        let root = std::env::temp_dir().join("source tree with spaces");
+        let endpoint = "tcp://127.0.0.1:45678";
+        let command = eye_node_command(&root, endpoint);
+        assert_eq!(command.get_current_dir(), Some(root.join("apps/eye-node").as_path()));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), vec![
+            root.join("node_modules/tsx/dist/cli.mjs").as_os_str(),
+            root.join("apps/eye-node/src/index.ts").as_os_str(),
+        ]);
+        assert!(command.get_envs().any(|(key, value)|
+            key == "CONTINUUM_CORE_SOCKET" && value == Some(std::ffi::OsStr::new(endpoint))));
     }
 }

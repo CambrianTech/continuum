@@ -1180,7 +1180,7 @@ start_eye_node_rail() {
   if ! pgrep -f "eye-node/src/index.ts" >/dev/null 2>&1; then
     local EYE_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$EYE_LOG_DIR"
     echo "▶ eye-node (perception provider) starting"
-    (cd "$EYE_DIR" && nohup npx tsx "$EYE_DIR/src/index.ts" >"$EYE_LOG_DIR/eye-node.log" 2>&1 &)
+    (cd "$EYE_DIR" && CONTINUUM_CORE_SOCKET="$CONTINUUM_SOCKET" nohup npx tsx "$EYE_DIR/src/index.ts" >"$EYE_LOG_DIR/eye-node.log" 2>&1 &)
   fi
 }
 start_eye_node_rail
