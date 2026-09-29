@@ -368,8 +368,7 @@ impl<T: ActionCommand> CommandSpec for T {
     /// Derived AUTOMATICALLY from the params type — the base trait's payoff: every
     /// `ActionCommand` exposes a real param schema to every SDK, no hand-authoring.
     fn params_schema() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(<T as ActionCommand>::Params))
-            .unwrap_or(serde_json::Value::Null)
+        super::input_schema::<<T as ActionCommand>::Params>()
     }
 }
 

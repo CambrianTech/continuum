@@ -67,7 +67,7 @@ pub mod interact;
 
 /// Render size for an observation, in the surface's pixels (CSS px for a UI,
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -87,7 +87,7 @@ pub struct ObserveViewport {
 /// uses). Deliberately narrow: adapter-private knobs (Playwright channel, device
 /// scale, headless flag) are NOT here — a browser tab, a phone, and a render node
 /// can ALL honor this.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -258,12 +258,36 @@ impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = ObserveParams;
     type Result = ObserveResult;
+    fn params_schema() -> serde_json::Value {
+        crate::sdk_codegen::input_schema::<Self::Params>()
+    }
+
 }
 
 crate::register_command!(ObserveCommand);
 
 #[cfg(test)]
 mod tests {
+    // Regression: provided perception tools must expose required fields instead of Null.
+    #[test]
+    fn provided_input_schemas_preserve_routing_and_required_fields() {
+        use crate::sdk_codegen::{command_registry, WireShape};
+        let registry = command_registry();
+        for (name, required) in [
+            ("perception/observe", "target"),
+            ("perception/hot-edit", "css"),
+            ("perception/session-close", "session"),
+        ] {
+            let d = registry.iter().find(|d| d.name == name).unwrap();
+            assert_eq!(d.wire, WireShape::Provided);
+            assert!(d.params_schema["required"].as_array().unwrap().iter().any(|v| v == required));
+        }
+        let d = registry.iter().find(|d| d.name == "perception/interact").unwrap();
+        assert_eq!(d.wire, WireShape::Provided);
+        assert!(d.params_schema["properties"]["actions"].is_object());
+        assert!(d.params_schema.to_string().contains("hotPatchCss"));
+    }
+
     // Regression: browser pixels must survive transcript compaction by reference,
     // without publishing a reference to bytes that failed to persist.
     #[test]

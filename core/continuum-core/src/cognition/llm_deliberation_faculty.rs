@@ -8191,7 +8191,11 @@ mod tests {
             // a citizen's confusion is a tool-feedback defect): #4557 rewrote work/submit's
             // artifact help to lead with "Omit: computed from your checkout. Not a git sha."
             // after Kimi stalled supplying a hash the verb computes. The words are the fix.
-            const AGENTIC_SURFACE_CEILING: u32 = 13624;
+            // 13624 -> 15119 (CI, PR #4603): provided perception commands now expose
+            // typed required inputs and nested action schemas instead of Null. This is
+            // actual tool demand, including target/session recovery descriptions; keep
+            // accounting for it rather than hiding schemas from the persona or budget.
+            const AGENTIC_SURFACE_CEILING: u32 = 15119;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

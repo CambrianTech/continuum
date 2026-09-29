@@ -123,12 +123,21 @@ export class InteractSessions {
   private async performInteract(params: InteractParams): Promise<InteractResult> {
     let handle = params.session;
     const caller = callerOf(params);
+    // Provided calls arrive as JSON; honor the Rust serde default at this boundary.
+    const actions = params.actions ?? [];
     try {
       await this.sweep();
-      const offWeb = [params.target, ...params.actions.map((a) => (a.kind === 'goto' ? a.url : undefined))]
+      const offWeb = [params.target, ...actions.map((a) => (a.kind === 'goto' ? a.url : undefined))]
         .filter((u): u is string => u !== undefined)
         .find((u) => !isWebUrl(u));
       if (offWeb !== undefined) return failure(`'${offWeb}' is not an http(s) URL; a session only opens web pages`);
+      // A missing target continues only this verified citizen's most recently used
+      // live session. Explicit handles still fail if expired; never borrow a page.
+      if (!handle && !params.target && caller) {
+        handle = [...this.held.entries()]
+          .filter(([, entry]) => entry.owner === caller)
+          .sort((a, b) => b[1].lastUsedMs - a[1].lastUsedMs)[0]?.[0];
+      }
       let held: Held | undefined;
       if (handle) {
         held = this.held.get(handle);
@@ -137,7 +146,7 @@ export class InteractSessions {
         }
         if (held.owner !== caller) return failure(`session '${handle}' belongs to another citizen`);
       } else {
-        if (!params.target) return failure('pass target (a URL) to open a session, or session to continue one');
+        if (!params.target) return failure('No current page for this caller. Open with {target: "https://example.com", actions: []}, or pass your session handle');
         if (this.held.size >= MAX_SESSIONS) {
           return failure(`this eye-node already holds ${MAX_SESSIONS} open sessions; close one with perception/session-close`);
         }
@@ -153,11 +162,11 @@ export class InteractSessions {
       }
       held.lastUsedMs = this.now();
       const view = params.selector ? { selector: params.selector } : undefined;
-      if (params.actions.length === 0) {
+      if (actions.length === 0) {
         const observation = await held.session.observe(view);
         return success(observation, handle);
       }
-      const { observation, delta } = await held.session.interact(params.actions.map(toDomAction), view);
+      const { observation, delta } = await held.session.interact(actions.map(toDomAction), view);
       return {
         ...success(observation, handle),
         delta: { pixelsChanged: delta.pixelsChanged, totalPixels: delta.totalPixels, ratio: delta.ratio },

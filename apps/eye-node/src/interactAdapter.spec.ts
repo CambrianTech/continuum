@@ -26,6 +26,29 @@ function fakeOpen(log: { opened: string[]; closed: number; acted: unknown[][] },
 }
 
 describe('perception/interact sessions', () => {
+  // Missing context must never select another citizen's page or an expired handle.
+  it('continues the verified caller last live page without opening another browser', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    let now = 0;
+    const sessions = new InteractSessions(fakeOpen(log), () => ++now);
+    const call = (owner: string, extra: object = {}) =>
+      sessions.interact({ _callerPeerId: owner, actions: [], ...extra } as never);
+    try {
+      const first = await call('kimi', { target: 'https://first.test/' });
+      const last = await call('kimi', { target: 'https://last.test/' });
+      await call('iris', { target: 'https://other.test/' });
+      expect((await call('kimi', { actions: undefined })).session).toBe(last.session);
+      expect((await call('new')).error).toContain('target');
+      expect((await sessions.interact({ actions: [] })).success).toBe(false);
+      expect((await call('kimi', { session: 'expired' })).success).toBe(false);
+      await call('kimi', { session: first.session });
+      expect((await call('kimi')).session).toBe(first.session);
+      expect(log.opened).toHaveLength(3);
+      now += IDLE_MS;
+      expect((await call('kimi')).success).toBe(false);
+    } finally { await sessions.closeAll(); }
+  });
+
   // A stuck open must not hold shutdown forever or publish a late browser.
   it('bounds draining and closes an open that finishes after the deadline', async () => {
     const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
