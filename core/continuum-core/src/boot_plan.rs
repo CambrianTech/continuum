@@ -211,6 +211,32 @@ fn eye_node_command(repo_root: &std::path::Path, endpoint: &str, node: &std::pat
     command
 }
 
+/// The Windows service host holds this value until its core exits. Assets are
+/// explicitly registered by the installer, never inferred from a task's cwd.
+#[cfg(windows)]
+pub fn start_service_eye(
+    root: &std::path::Path,
+    endpoint: &str,
+) -> Result<continuum_cli_lifecycle::windows_launch::OwnedProcessTree, String> {
+    if !root.is_absolute() {
+        return Err("browser asset root must be absolute".into());
+    }
+    for relative in ["apps/eye-node/src/index.ts", "node_modules/tsx/dist/cli.mjs"] {
+        if !root.join(relative).is_file() {
+            return Err(format!("browser asset missing: {}", root.join(relative).display()));
+        }
+    }
+    let node = crate::shell_portable::locate_executable("node")
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .ok_or("browser worker needs Node on the service PATH")?;
+    let log_path = std::path::PathBuf::from(crate::ipc::endpoint_paths::core_start_logfile())
+        .with_file_name("continuum-eye-node.log");
+    let log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
+    let command = eye_node_command(root, endpoint, &node);
+    continuum_cli_lifecycle::windows_launch::spawn_owned_logged(&command, &log, &log, 0x0800_0000)
+        .map_err(|e| format!("browser worker for {endpoint}: {e}"))
+}
+
 fn spawn_eye_logged(command: std::process::Command, log: &std::fs::File) -> std::io::Result<u32> {
     #[cfg(windows)]
     {
