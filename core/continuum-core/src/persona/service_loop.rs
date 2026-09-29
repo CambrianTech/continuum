@@ -3182,7 +3182,7 @@ mod tests {
         assert!(p.ran[1].ends_with('✓'), "{:?}", p.ran);
         let block = held_work_burst_gated(&[], &[], 0, &p);
         assert!(
-            block.contains("[progress] 7 acts so far (1 writes)"),
+            block.contains("[progress] Recent work receipts:"),
             "{block}"
         );
         assert!(
