@@ -8172,7 +8172,12 @@ mod tests {
             // surface (repo, title, body, priority, and a REQUIRED room). Measured 13499 on
             // CI before its docs were trimmed. Before it a citizen could claim and move cards
             // but not create one, so a project stayed one card.
-            const AGENTIC_SURFACE_CEILING: u32 = 13500;
+            // 13500 -> 13610 (measured on CI over work/create), stated plainly (2026-09-28, Joel:
+            // citizens need to drive and screenshot their own sites, as Playwright automation
+            // does): perception/interact
+            // joined the native surface (session, target, viewport, actions, selector), the
+            // DRIVE half of the observe loop (card 3569675f).
+            const AGENTIC_SURFACE_CEILING: u32 = 13610;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

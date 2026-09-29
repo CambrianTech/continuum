@@ -793,6 +793,7 @@ mod tests {
             "interface/screenshot",
             "perception/observe",
             "perception/look",
+            "perception/interact",
             "work/claim",
             // #358: the social sense. Pinned here because #339 proved a correct verb
             // that never declares NATIVE is invisible to every citizen — this list is
@@ -822,8 +823,11 @@ mod tests {
         // < 47 -> < 48, stated plainly (2026-09-28, Joel: every activity's participants make
         // cards toward its goals): work/create joined; a citizen could claim and move cards
         // but not create them, so she could not break a project into slices.
+        // < 48 -> < 49, stated plainly (2026-09-28, Joel: help her screenshot and drive her
+        // own site): perception/interact joined, a persistent browser session she drives
+        // and sees after each step, so a slice's "Accepts" has visual evidence (card 3569675f).
         assert!(
-            names.len() < 48,
+            names.len() < 49,
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );

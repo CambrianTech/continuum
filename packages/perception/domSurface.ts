@@ -61,6 +61,7 @@ export type DomAction =
   | { readonly kind: 'type'; readonly selector: string; readonly text: string }
   | { readonly kind: 'press'; readonly key: string }
   | { readonly kind: 'hover'; readonly selector: string }
+  | { readonly kind: 'goto'; readonly url: string }
   | { readonly kind: 'injectCss'; readonly css: string }
   | { readonly kind: 'hotPatchCss'; readonly css: string };
 
@@ -300,6 +301,11 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
         return;
       case 'hover':
         await this.page.locator(action.selector).first().hover();
+        return;
+      case 'goto':
+        // Navigate the SAME live page (session state such as cookies and storage kept),
+        // settling like the initial open does.
+        await this.page.goto(action.url, { waitUntil: 'networkidle' });
         return;
       case 'injectCss':
         // Hot-swap: retheme/relayout the LIVE page, no redeploy — the fast-iteration seam.

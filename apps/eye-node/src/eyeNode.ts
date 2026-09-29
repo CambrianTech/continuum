@@ -2,7 +2,8 @@
  * EyeNode — a headless, opt-in worker that gives personas EYES.
  *
  * It connects to the continuum core over the IPC socket, registers as the
- * provider of `perception/observe` and `perception/hot-edit`, and fulfils each
+ * provider of `perception/observe`, `perception/hot-edit`, `perception/interact` and
+ * `perception/session-close`, and fulfils each
  * call by driving a real browser (`@continuum/perception`). The core's provider
  * seam (`ipc/provider_bridge.rs`) forwards a persona's call down the socket;
  * this process answers with pixels + structure (and, for hot-edit, the applied
@@ -22,6 +23,7 @@ import os from 'node:os';
 import { NodeSocketTransport, type DuplexSocketLike } from '@continuum/sdk-typescript';
 
 import { hotEdit } from './hotEditAdapter';
+import { InteractSessions } from './interactAdapter';
 import { observe } from './observeAdapter';
 
 export interface EyeNodeOptions {
@@ -34,6 +36,8 @@ export interface EyeNodeOptions {
 export class EyeNode {
   private readonly transport: NodeSocketTransport;
   private readonly label: string;
+  /** Live `perception/interact` sessions: bounded, idle-expired, closed on stop. */
+  private readonly sessions = new InteractSessions();
 
   constructor(opts: EyeNodeOptions) {
     this.label = opts.label ?? `eye-node@${os.hostname()}`;
@@ -53,6 +57,13 @@ export class EyeNode {
     this.transport.provide('perception/hot-edit', {
       handle: async (paramsJson) => JSON.stringify(await hotEdit(JSON.parse(paramsJson))),
     });
+    // A persistent session a persona drives across calls (card 3569675f).
+    this.transport.provide('perception/interact', {
+      handle: async (paramsJson) => JSON.stringify(await this.sessions.interact(JSON.parse(paramsJson))),
+    });
+    this.transport.provide('perception/session-close', {
+      handle: async (paramsJson) => JSON.stringify(await this.sessions.close(JSON.parse(paramsJson))),
+    });
     await this.transport.flush();
   }
 
@@ -60,6 +71,8 @@ export class EyeNode {
    *  fails loud until an eye-node reconnects. */
   stop(): void {
     this.transport.close();
+    // release every live browser; a stopping eye-node must not orphan them
+    void this.sessions.closeAll();
   }
 }
 

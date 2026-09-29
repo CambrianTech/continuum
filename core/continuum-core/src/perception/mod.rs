@@ -61,6 +61,9 @@ pub mod look;
 /// render → observe → hot-edit → re-grade). Same `Provided` shape as observe,
 /// same eye-node adapter family, same [`ObserveResult`] observation coming back.
 pub mod hot_edit;
+/// `perception/interact` + `perception/session-close`: a persistent browser session a persona
+/// drives (click, type, goto) and sees after each step (card 3569675f).
+pub mod interact;
 
 /// Render size for an observation, in the surface's pixels (CSS px for a UI,
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
