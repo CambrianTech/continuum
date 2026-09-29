@@ -499,6 +499,23 @@ select lessons. Novelty alone does not establish usefulness or justify a new gen
 Preserve source episodes, teacher/reviewer attribution and artifact lineage when
 an adapter projects an experience into curriculum.
 
+Reference-solution exposure changes an episode's evaluation status, not its
+ownership or usefulness as a lesson. Record known exposure, unknown exposure and
+verified isolation separately with the existing episode/evaluation provenance.
+An exposed example may become explicitly supervised curriculum, but cannot also
+count as an independent held-out success for that artifact. Preserve the original
+execution receipt and attach the correction; do not erase history or relabel a
+past pass without retaining why its evaluation changed. Reports of exposure and
+the verified tool/event that caused it are distinct evidence.
+
+Benchmark adapters own reference material and hidden graders outside the acting
+citizen's accessible workspace. Merely hiding a path from a tool description,
+fetching it after submission, or deleting it afterward does not establish
+isolation from concurrent citizens running under the same OS identity. Record
+the actual isolation boundary and audit exposure before claiming held-out gain.
+Keep normal project tools available; adapt the benchmark's staging and grading
+boundary instead of restricting general activity to fit an evaluation harness.
+
 Acceptance proceeds through the existing activity workflow:
 
 1. Capture one real interaction, including before/after observations and the
