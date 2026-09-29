@@ -1782,7 +1782,7 @@ async fn held_repo(airc: &Airc) -> Result<Option<RepoId>, CommandError> {
     let held = crate::persona::airc_runtime::board_held_by(airc)
         .await
         .map_err(|e| CommandError::Internal(format!("work/create: could not read the cards you hold: {e}")))?;
-    Ok(crate::persona::work_focus::focus_card(held.iter()).map(|c| c.repo.clone()))
+    Ok(crate::persona::work_focus::focus_actionable_card(held.iter()).map(|c| c.repo.clone()))
 }
 
 impl WorkCreate {
