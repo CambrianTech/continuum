@@ -20,11 +20,16 @@ use windows_sys::Win32::Foundation::{
     WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Globalization::CompareStringOrdinal;
+use windows_sys::Win32::System::JobObjects::{
+    CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
     CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 /// Only the operations the CLI's existing startup observer needs. Dropping this
@@ -56,6 +61,56 @@ impl LaunchedCore {
     }
 }
 
+/// A service-owned worker and its descendants. The non-inherited job handle is
+/// the lifetime authority: closing it (including on host death) ends the tree.
+/// This is deliberately distinct from LaunchedCore's detached semantics.
+pub struct OwnedProcessTree {
+    child: LaunchedCore,
+    _job: OwnedHandle,
+}
+
+impl OwnedProcessTree {
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+}
+
+/// Assign the worker to its owner before its first instruction. An after-spawn
+/// assignment leaves an orphan window if the service host crashes in between.
+/// Existing detached callers keep spawn_logged; they must not acquire this lifetime.
+pub fn spawn_owned_logged(
+    command: &Command,
+    stdout: &File,
+    stderr: &File,
+    flags: u32,
+) -> io::Result<OwnedProcessTree> {
+    let raw_job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+    if raw_job.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            size_of_val(&limits) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let jobs = [job.as_raw_handle()];
+    let child = spawn_logged_in_jobs(command, stdout, stderr, flags, &jobs)?;
+    Ok(OwnedProcessTree { child, _job: job })
+}
+
 /// Spawn this CLI's already-configured core/script command. Its executable is
 /// resolved by the existing locator; arguments are regular `Command::arg`s and
 /// the environment inherits this process plus `env`/`env_remove` assignments.
@@ -66,6 +121,16 @@ pub fn spawn_logged(
     stdout: &File,
     stderr: &File,
     flags: u32,
+) -> io::Result<LaunchedCore> {
+    spawn_logged_in_jobs(command, stdout, stderr, flags, &[])
+}
+
+fn spawn_logged_in_jobs(
+    command: &Command,
+    stdout: &File,
+    stderr: &File,
+    flags: u32,
+    jobs: &[HANDLE],
 ) -> io::Result<LaunchedCore> {
     let executable = std::fs::canonicalize(command.get_program())?;
     let mut application = wide(executable.as_os_str())?;
@@ -94,7 +159,7 @@ pub fn spawn_logged(
         inheritable_duplicate(stderr.as_raw_handle())?,
     ];
     let raw = handles.each_ref().map(AsRawHandle::as_raw_handle);
-    let attributes = HandleAttributes::new(&raw)?;
+    let attributes = HandleAttributes::new(&raw, jobs)?;
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -158,13 +223,15 @@ struct HandleAttributes<'a> {
     storage: Vec<usize>,
     // UpdateProcThreadAttribute borrows this buffer until the spawn completes.
     _handles: &'a [HANDLE],
+    _jobs: &'a [HANDLE],
 }
 
 impl<'a> HandleAttributes<'a> {
-    fn new(handles: &'a [HANDLE]) -> io::Result<Self> {
+    fn new(handles: &'a [HANDLE], jobs: &'a [HANDLE]) -> io::Result<Self> {
+        let count = if jobs.is_empty() { 1 } else { 2 };
         let mut bytes = 0;
         let result =
-            unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut bytes) };
+            unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut bytes) };
         let error = io::Error::last_os_error();
         if result != 0
             || error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
@@ -175,7 +242,7 @@ impl<'a> HandleAttributes<'a> {
         // Pointer-aligned storage for the opaque native list.
         let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
         if unsafe {
-            InitializeProcThreadAttributeList(storage.as_mut_ptr().cast(), 1, 0, &mut bytes)
+            InitializeProcThreadAttributeList(storage.as_mut_ptr().cast(), count, 0, &mut bytes)
         } == 0
         {
             return Err(io::Error::last_os_error());
@@ -183,6 +250,7 @@ impl<'a> HandleAttributes<'a> {
         let attributes = Self {
             storage,
             _handles: handles,
+            _jobs: jobs,
         };
         if unsafe {
             UpdateProcThreadAttribute(
@@ -195,6 +263,21 @@ impl<'a> HandleAttributes<'a> {
                 ptr::null(),
             )
         } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if !jobs.is_empty()
+            && unsafe {
+                UpdateProcThreadAttribute(
+                    attributes.as_ptr(),
+                    0,
+                    PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+                    jobs.as_ptr().cast(),
+                    size_of_val(jobs),
+                    ptr::null_mut(),
+                    ptr::null(),
+                )
+            } == 0
         {
             return Err(io::Error::last_os_error());
         }
@@ -327,11 +410,13 @@ mod tests {
     use windows_sys::Win32::Foundation::ERROR_BROKEN_PIPE;
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     use windows_sys::Win32::System::Threading::{
-        TerminateProcess, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+        OpenProcess, TerminateProcess, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+        PROCESS_SYNCHRONIZE,
     };
 
     const FIXTURE_ENV: &str = "CONTINUUM_DETACHED_LAUNCH_FIXTURE";
     const FIXTURE_TEST: &str = "windows_launch::tests::detached_child_fixture";
+    const TREE_ROLE_ENV: &str = "CONTINUUM_OWNED_TREE_FIXTURE_ROLE";
     /// Set in the fresh process the pipe-leak check runs alone in (card 64ca188f).
     const ISOLATED_ENV: &str = "CONTINUUM_PIPE_LEAK_CHECK_ISOLATED";
     const ISOLATED_TEST: &str =
@@ -351,6 +436,28 @@ mod tests {
             return;
         };
         let root = PathBuf::from(root);
+        if let Ok(role) = std::env::var(TREE_ROLE_ENV) {
+            let _descendant = if role == "parent" {
+                Some(
+                    Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", FIXTURE_TEST, "--nocapture", "--test-threads=1"])
+                        .env(TREE_ROLE_ENV, "descendant")
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let pending = root.join(format!("{role}.pending"));
+            std::fs::write(&pending, std::process::id().to_string()).unwrap();
+            std::fs::rename(pending, root.join(&role)).unwrap();
+            // Bounded fail-safe if the owner under test fails to close its job.
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
         assert_eq!(
             std::env::current_dir().unwrap().canonicalize().unwrap(),
             root
@@ -398,6 +505,53 @@ mod tests {
 
     struct FixtureChild(LaunchedCore);
 
+    // Catches killing only Node while leaving its browser descendants behind.
+    // Uses the existing real-process fixture, with a second generation inheriting
+    // the job; stable process handles prevent PID reuse from satisfying the check.
+    #[test]
+    fn owned_tree_drop_ends_worker_and_descendant() {
+        let root = tempfile::tempdir().unwrap();
+        let log = File::create(root.path().join("tree.log")).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", FIXTURE_TEST, "--nocapture", "--test-threads=1"])
+            .env(FIXTURE_ENV, root.path())
+            .env(TREE_ROLE_ENV, "parent");
+        let mut tree = spawn_owned_logged(&command, &log, &log, CREATE_NO_WINDOW).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !root.path().join("descendant").exists() {
+            assert!(
+                tree.try_wait().unwrap().is_none(),
+                "worker exited before descendant started"
+            );
+            assert!(Instant::now() < deadline, "descendant did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let descendant_pid: u32 = std::fs::read_to_string(root.path().join("descendant"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, descendant_pid) };
+        assert!(
+            !raw.is_null(),
+            "open descendant: {}",
+            io::Error::last_os_error()
+        );
+        let descendant = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let worker = tree.child.process.try_clone().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(descendant.as_raw_handle(), 0) },
+            WAIT_TIMEOUT
+        );
+        drop(tree);
+        for handle in [&worker, &descendant] {
+            assert_eq!(
+                unsafe { WaitForSingleObject(handle.as_raw_handle(), 5_000) },
+                WAIT_OBJECT_0
+            );
+        }
+    }
+
     impl Drop for FixtureChild {
         fn drop(&mut self) {
             // A failed assertion must not leave even a test child behind. This
@@ -427,7 +581,10 @@ mod tests {
                 .env(ISOLATED_ENV, "1")
                 .status()
                 .unwrap();
-            assert!(status.success(), "the isolated pipe-leak check failed: {status} (its output is above)");
+            assert!(
+                status.success(),
+                "the isolated pipe-leak check failed: {status} (its output is above)"
+            );
             return;
         }
         let temp = tempfile::tempdir().unwrap();
