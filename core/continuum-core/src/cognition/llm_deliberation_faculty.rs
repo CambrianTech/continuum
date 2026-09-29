@@ -346,6 +346,20 @@ fn reasoning_answer_split(output_tokens: u32, reasoning_chars: usize, answer_cha
     (reasoning, output_tokens - reasoning)
 }
 
+/// Native tool arguments are generated answer bytes too. `text` is the adapter's
+/// plain-text projection, so counting it alone turns thinking + tools into a
+/// think-only sample. Do not count Text parts again: they mirror that projection.
+fn answer_payload_bytes(text: &str, parts: Option<&[crate::ai::types::ContentPart]>) -> usize {
+    parts.unwrap_or_default().iter().fold(text.len(), |bytes, part| {
+        match part {
+            crate::ai::types::ContentPart::ToolUse { name, input, .. } => {
+                bytes.saturating_add(name.len()).saturating_add(input.to_string().len())
+            }
+            _ => bytes,
+        }
+    })
+}
+
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
@@ -4744,7 +4758,7 @@ impl LlmDeliberationFaculty {
             let (reasoning_tokens, answer_tokens) = reasoning_answer_split(
                 resp.usage.output_tokens,
                 resp.reasoning.as_ref().map_or(0, |r| r.len()),
-                resp.text.len(),
+                answer_payload_bytes(&resp.text, resp.content.as_deref()),
             );
             // WHERE the cap fell decides what the cut measures: inside the answer, the
             // answer channel grows (a write cut mid-payload gets its room); inside the
@@ -6587,6 +6601,25 @@ mod tests {
             assert_eq!(reasoning_answer_split(1_000, 2_730, 910), (750, 250));
             assert_eq!(reasoning_answer_split(500, 0, 0), (0, 500), "no channel text (a native call): all answer");
             assert_eq!(reasoning_answer_split(300, 2_112, 0), (300, 0), "a think-only turn is all reasoning");
+            // what this catches: a thinking model's native file-writing arguments
+            // being counted as zero answer, so an output cut never grows that channel.
+            let parts = vec![
+                crate::ai::types::ContentPart::Text { text: "note".into() },
+                crate::ai::types::ContentPart::ToolUse {
+                    id: "call-1".into(),
+                    name: "write_file".into(),
+                    input: serde_json::json!({"path": "migration.sql", "content": "CREATE TABLE example(id INTEGER);"}),
+                },
+            ];
+            let tool_bytes = answer_payload_bytes("", Some(&parts));
+            assert!(tool_bytes > 0);
+            assert_eq!(answer_payload_bytes("note", Some(&parts)), tool_bytes + 4,
+                "mirrored Text parts are counted once");
+            let (think, answer) = reasoning_answer_split(1000, 2000, tool_bytes);
+            assert_eq!(think + answer, 1000);
+            assert!(answer > 0);
+            assert_eq!(crate::cognition::working_set::EmissionStop::classify(true, answer),
+                crate::cognition::working_set::EmissionStop::CutMidAnswer);
         }
 
         // what this catches: the request carries the derived allowance. An unmeasured
