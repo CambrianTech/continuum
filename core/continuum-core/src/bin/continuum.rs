@@ -3451,25 +3451,19 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     }
 }
 
-/// A retry from a freshly built CLI can reuse its verified sibling core. Never
+/// An install retry can reuse the verified pair in the configured Cargo release directory. Never
 /// discover an arbitrary installed binary or silently replace uncommitted work.
 #[cfg(windows)]
 async fn prepared_install_core(repo: &Path, head: &str) -> Result<Option<PathBuf>, String> {
     if !git_in(repo, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty() {
         return Ok(None);
     }
-    let cli = std::env::current_exe()
-        .and_then(|path| path.canonicalize())
-        .map_err(|e| format!("install: current CLI: {e}"))?;
     let target = match std::env::var("CARGO_TARGET_DIR") {
         Ok(target) => target,
         Err(_) => format!("{}/.continuum/cache/cargo-target", home_dir()?),
     };
-    let expected_cli = Path::new(&target).join("release/continuum.exe");
-    if expected_cli.canonicalize().ok().as_deref() != Some(cli.as_path()) {
-        return Ok(None);
-    }
-    let cli_sha = binary_build_sha(&cli).await?;
+    let cli = Path::new(&target).join("release/continuum.exe");
+    let Ok(cli_sha) = binary_build_sha(&cli).await else { return Ok(None) };
     if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, head) {
         return Ok(None);
     }
