@@ -8177,7 +8177,10 @@ mod tests {
             // does): perception/interact
             // joined the native surface (session, target, viewport, actions, selector), the
             // DRIVE half of the observe loop (card 3569675f).
-            const AGENTIC_SURFACE_CEILING: u32 = 13610;
+            // 13610 -> 13624, measured on canary ac65b92c7 once the batch landed: #4557's
+            // work/submit help ("Omit: computed from your checkout. Not a git sha." and the
+            // 64-hex hash doc) added 14 over #4551's pin, which was measured without it.
+            const AGENTIC_SURFACE_CEILING: u32 = 13624;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
