@@ -113,7 +113,7 @@ pub use registry::ModuleRegistry;
 pub use admission_gate::{AdmissionGate, Permit};
 pub use runtime::{
     await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
-    signal_runtime, DrainOutcome, ModuleStop,
+    signal_runtime, shutdown_receipt, DrainOutcome, ModuleStop,
     ModuleStopOutcome, Runtime, ShutdownReceipt,
 };
 pub use service_module::{

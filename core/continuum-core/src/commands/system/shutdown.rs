@@ -24,6 +24,103 @@ use crate::runtime::ShutdownReceipt;
 
 use super::SystemQuery;
 
+/// A process-instance binding, not a grant: all three handoff verbs are Privileged.
+/// A recycled PID or a replacement listener cannot accept the old core's handoff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/system/ShutdownTarget.ts")]
+pub struct ShutdownTarget {
+    pub pid: u32,
+    pub instance: String,
+}
+
+fn shutdown_target() -> &'static ShutdownTarget {
+    static TARGET: std::sync::OnceLock<ShutdownTarget> = std::sync::OnceLock::new();
+    TARGET.get_or_init(|| ShutdownTarget {
+        pid: std::process::id(),
+        instance: uuid::Uuid::new_v4().to_string(),
+    })
+}
+
+fn validate_target(target: &ShutdownTarget, current: &ShutdownTarget) -> Result<(), crate::sdk_codegen::CommandError> {
+    if target != current {
+        return Err(crate::sdk_codegen::CommandError::Invalid(
+            "shutdown target changed; nothing was drained or committed by this request".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The CLI echoes the receipt it has already received. Commit cannot race ahead of
+/// save/join, or acknowledge a different shutdown operation.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/system/ShutdownCommitParams.ts")]
+pub struct ShutdownCommitParams {
+    pub target: ShutdownTarget,
+    pub receipt_sha256: String,
+}
+
+pub fn shutdown_receipt_digest(receipt: &ShutdownReceipt) -> Result<String, crate::sdk_codegen::CommandError> {
+    use sha2::Digest;
+    let bytes = serde_json::to_vec(receipt).map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?;
+    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
+}
+
+fn validate_commit(params: &ShutdownCommitParams, current: &ShutdownTarget, receipt: Option<&ShutdownReceipt>) -> Result<(), crate::sdk_codegen::CommandError> {
+    validate_target(&params.target, current)?;
+    if receipt.map(shutdown_receipt_digest).transpose()?.as_deref() != Some(params.receipt_sha256.as_str()) {
+        return Err(crate::sdk_codegen::CommandError::Invalid(
+            "shutdown commit requires the completed save receipt from this process".into(),
+        ));
+    }
+    Ok(())
+}
+
+crate::action_command! {
+    /// Discover self-exit support and bind the target before any drain.
+    pub struct SystemShutdownTarget;
+    name: "system/shutdown-target",
+    access: Privileged,
+    params: SystemQuery,
+    output: ShutdownTarget,
+    run(_this, _ctx, _p) => {
+        if crate::runtime::signal_runtime().is_none() {
+            return Err(crate::sdk_codegen::CommandError::Internal("runtime is not installed; shutdown handoff unavailable".into()));
+        }
+        Ok(shutdown_target().clone())
+    }
+}
+
+crate::action_command! {
+    /// Drain the bound process through the existing retained shutdown operation.
+    pub struct SystemShutdownDrain;
+    name: "system/shutdown-drain",
+    access: Privileged,
+    params: ShutdownTarget,
+    output: ShutdownResult,
+    run(_this, ctx, p) => {
+        validate_target(&p, shutdown_target())?;
+        <SystemShutdown as crate::sdk_codegen::ActionCommand>::run(&SystemShutdown, ctx, SystemQuery {}).await
+    }
+}
+
+crate::action_command! {
+    /// Acknowledge a received save receipt and exit THIS core. Successful commit
+    /// closes the connection; the CLI must observe process exit, not expect a reply.
+    /// No timer guesses when the preceding drain response reached the caller.
+    pub struct SystemShutdownCommit;
+    name: "system/shutdown-commit",
+    access: Privileged,
+    params: ShutdownCommitParams,
+    output: SystemQuery,
+    run(_this, _ctx, p) => {
+        validate_commit(&p, shutdown_target(), crate::runtime::shutdown_receipt().as_ref())?;
+        crate::modules::sentinel::shutdown_all_sentinels();
+        // Match the signal path: save/join is already complete, and native static
+        // destructors are deliberately skipped. No await between validation and exit.
+        unsafe { libc::_exit(0) }
+    }
+}
+
 /// How the core answered a stop request. Carries the receipt so the caller can exit
 /// non-zero and NAME what did not save, rather than reporting a success it never
 /// established.
@@ -116,6 +213,59 @@ mod tests {
             SystemShutdown::ACCESS,
             crate::sdk_codegen::AccessLevel::Privileged
         ));
+        for access in [SystemShutdownTarget::ACCESS, SystemShutdownDrain::ACCESS, SystemShutdownCommit::ACCESS] {
+            assert!(matches!(access, crate::sdk_codegen::AccessLevel::Privileged));
+        }
+    }
+
+    // A receipt acknowledgment must never exit a replacement process, or exit
+    // before the existing shutdown owner has finished saving and joining.
+    #[test]
+    fn commit_requires_same_instance_and_completed_received_receipt() {
+        let current = ShutdownTarget { pid: 42, instance: "first".into() };
+        let receipt = ShutdownReceipt { modules: vec![], total_ms: 19 };
+        let mut params = ShutdownCommitParams { target: current.clone(), receipt_sha256: shutdown_receipt_digest(&receipt).unwrap() };
+        assert!(validate_commit(&params, &current, None).is_err());
+        assert!(validate_commit(&params, &current, Some(&receipt)).is_ok());
+        params.target.instance = "previous process with same pid".into();
+        assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+        params.target = current.clone();
+        params.target.pid += 1;
+        assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+        params.target = current.clone();
+        params.receipt_sha256.push('0');
+        assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+    }
+
+    // Exercise the real exit in an isolated test child, never the serving core.
+    // The child must obtain the retained receipt before commit can end it.
+    #[tokio::test]
+    async fn acknowledged_commit_exits_only_after_receipt() {
+        const CHILD: &str = "CONTINUUM_TEST_SHUTDOWN_COMMIT_CHILD";
+        if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
+            crate::runtime::install_signal_shutdown(std::sync::Arc::new(crate::runtime::Runtime::new()));
+            let ctx = Ctx::default();
+            let target = SystemShutdownTarget.run(&ctx, SystemQuery {}).await.unwrap();
+            let stale = ShutdownTarget { pid: target.pid, instance: "old instance".into() };
+            assert!(SystemShutdownDrain.run(&ctx, stale).await.is_err());
+            assert!(crate::runtime::shutdown_receipt().is_none());
+            let result = SystemShutdownDrain.run(&ctx, target.clone()).await.unwrap();
+            let params = ShutdownCommitParams { target, receipt_sha256: shutdown_receipt_digest(&result.receipt).unwrap() };
+            use std::io::Write;
+            println!("received-completed-shutdown-receipt");
+            std::io::stdout().flush().unwrap();
+            SystemShutdownCommit.run(&ctx, params).await.unwrap();
+            panic!("commit returned instead of exiting");
+        }
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "commands::system::shutdown::tests::acknowledged_commit_exits_only_after_receipt", "--nocapture"])
+            .env(CHILD, "1").kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+            .await.expect("shutdown test child must exit within its deadline").unwrap();
+        assert!(output.status.success(), "child failed: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("received-completed-shutdown-receipt"));
     }
 
     // what this catches: a core with no runtime answering "stopped cleanly". The caller
