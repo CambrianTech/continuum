@@ -285,11 +285,17 @@ function Prepare-CoreServiceEngine {
 
 function Get-CoreBrowserReleaseDrift {
     param([Parameter(Mandatory = $true)][string]$RepoRoot, $Release)
+    $task = $null
     if (-not $Release) {
-        $Release = (Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description | ConvertFrom-Json
+        $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+        $Release = $task.Description | ConvertFrom-Json -ErrorAction Stop
     }
     $root = [IO.Path]::GetFullPath($RepoRoot)
     if ($Release.eyeRoot -cne $root) { return 'browser asset root is not registered' }
+    if ($task -and (@($task.Actions).Count -ne 1 -or
+        -not $task.Actions[0].Arguments.Contains((' -EyeRoot "{0}"' -f $root)))) {
+        return 'startup action does not pass the browser asset root'
+    }
     $source = Join-Path $root 'tools\scripts\run-service-hidden.ps1'
     if (-not (Test-Path -LiteralPath $Release.launcher -PathType Leaf) -or
         (Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $Release.launcher).Hash) {
@@ -302,7 +308,7 @@ function Update-CoreBrowserRelease {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     $release = $task.Description | ConvertFrom-Json -ErrorAction Stop
-    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $RepoRoot -Release $release)) { return }
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $RepoRoot)) { return }
     # The install lease is held by the caller. This launcher remains compatible
     # with the old argument list while the old supervisor continues serving.
     $root = [IO.Path]::GetFullPath($RepoRoot)
@@ -317,6 +323,9 @@ function Update-CoreBrowserRelease {
     }
     try { Register-CoreServiceRelease -Release $release -RepoRoot $root }
     finally { Clear-Elevation }
+    if (Get-CoreBrowserReleaseDrift -RepoRoot $root) {
+        throw 'Registered browser release did not converge; core handoff refused.'
+    }
 }
 
 function New-CoreServiceRelease {

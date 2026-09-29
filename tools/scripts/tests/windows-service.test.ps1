@@ -26,6 +26,39 @@ try {
         throw 'Verified launcher and root did not converge.'
     }
     Write-Output 'PASS: browser release drift includes descriptor and launcher bytes'
+    & {
+        # Exercise the migration itself through the existing scheduler seam;
+        # no live registration or serving process is touched by this fixture.
+        $legacy = [pscustomobject]@{ launcher = $browserLauncher; artifact = 'kept-core'; engine = 'kept-engine'; cli = 'kept-cli' }
+        $script:browserTask = [pscustomobject]@{ Description = ($legacy | ConvertTo-Json -Compress); Actions = @([pscustomobject]@{Arguments = 'legacy'}) }
+        $script:refuseBrowserRegistration = $true
+        function Get-ScheduledTask { $script:browserTask }
+        function Clear-Elevation { }
+        function Register-CoreServiceRelease {
+            param($Release, $RepoRoot)
+            if ($script:refuseBrowserRegistration) { throw 'fixture registration refused' }
+            if ($Release.artifact -ne 'kept-core' -or $Release.engine -ne 'kept-engine' -or $Release.cli -ne 'kept-cli') {
+                throw 'Migration replaced binary or engine identity.'
+            }
+            $script:browserTask = [pscustomobject]@{
+                Description = ($Release | ConvertTo-Json -Compress)
+                Actions = @([pscustomobject]@{Arguments = ('launcher -EyeRoot "{0}"' -f $RepoRoot)})
+            }
+        }
+        $original = $script:browserTask.Description
+        $refused = $false
+        try { Update-CoreBrowserRelease -RepoRoot $repo } catch { $refused = $_ -match 'fixture registration refused' }
+        if (-not $refused -or $script:browserTask.Description -cne $original) { throw 'Registration refusal did not preserve the release.' }
+        $script:refuseBrowserRegistration = $false
+        Update-CoreBrowserRelease -RepoRoot $repo
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo) { throw 'Migration did not converge.' }
+        $script:browserTask.Actions[0].Arguments = 'legacy'
+        if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo)) { throw 'Missing action argument falsely converged.' }
+        Update-CoreBrowserRelease -RepoRoot $repo
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo) { throw 'Action-only drift was not repaired.' }
+        Remove-Variable browserTask,refuseBrowserRegistration -Scope Script
+    }
+    Write-Output 'PASS: browser migration preserves identities, propagates refusal and repairs action drift'
     # Engine application receipts reject changed candidate sets and bytes using
     # real temporary files, without building/installing/spawning an engine.
     $engineFixture = Join-Path $scratch 'receipt engine'
