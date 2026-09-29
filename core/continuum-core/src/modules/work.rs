@@ -1774,15 +1774,15 @@ impl ActionCommand for WorkCreate {
     }
 }
 
-/// The repo of the card she is focused on, the same focus rule every turn uses.
-async fn held_repo(airc: &Airc) -> Option<RepoId> {
-    let status = airc
-        .work_roster_status(airc_lib::WorkRosterQuery::default())
+/// The repo of the card she is focused on, read from the board (the holds authority
+/// her turns use; the roster can be empty after a reboot while the board holds work)
+/// and chosen by the same focus rule. A failed read is a read failure, never "you hold
+/// no card" (Codex on #4571).
+async fn held_repo(airc: &Airc) -> Result<Option<RepoId>, CommandError> {
+    let held = crate::persona::airc_runtime::board_held_by(airc)
         .await
-        .ok()?;
-    let me = airc.peer_id();
-    let row = status.rows.into_iter().find(|r| r.peer == me)?;
-    crate::persona::work_focus::focus_card(row.active_claims.iter()).map(|c| c.repo.clone())
+        .map_err(|e| CommandError::Internal(format!("work/create: could not read the cards you hold: {e}")))?;
+    Ok(crate::persona::work_focus::focus_card(held.iter()).map(|c| c.repo.clone()))
 }
 
 impl WorkCreate {
@@ -1791,10 +1791,18 @@ impl WorkCreate {
         // A named repo wins; otherwise the card she holds says what she is working on
         // (Kimi, 2026-09-28: the doc's example named this repo, so her first
         // career-wrangler slice card was filed against continuum).
-        let repo = match p.repo.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        // A blank repo is a mistake to name, not a request to infer (Codex on #4571).
+        let repo = match p.repo.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(CommandError::Invalid(
+                    "work/create: repo is blank: name it (owner/name) or omit it to use the \
+                     card you hold"
+                        .into(),
+                ))
+            }
             Some(named) => RepoId::new(named.to_string())
                 .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
-            None => held_repo(airc).await.ok_or_else(|| {
+            None => held_repo(airc).await?.ok_or_else(|| {
                 CommandError::Invalid(
                     "work/create: name the repo (owner/name); you hold no card to take it from"
                         .into(),
@@ -4092,6 +4100,23 @@ mod tests {
         )
         .await;
         assert!(matches!(blank, Err(CommandError::Invalid(_))), "{blank:?}");
+
+        // A blank repo is refused, never inferred.
+        let blank_repo = WorkCreate::create(
+            &airc,
+            WorkCreateParams {
+                room: "career-wrangler".to_string(),
+                repo: Some("  ".to_string()),
+                title: "blank".to_string(),
+                body: None,
+                priority: None,
+            },
+        )
+        .await;
+        assert!(
+            matches!(&blank_repo, Err(CommandError::Invalid(m)) if m.contains("repo is blank")),
+            "{blank_repo:?}"
+        );
 
         // No repo named and no card held: refused with the fix, never a default repo.
         let unnamed = WorkCreate::create(
