@@ -72,31 +72,41 @@ impl CodeState {
         {
             return;
         }
-        let mut parked = self.parked_shells.entry(who.to_string()).or_default();
-        let destination = parked
-            .iter()
-            .position(|s| same(s.workspace_root(), new_root))
-            .map(|i| parked.remove(i));
-        if let Some((_, current)) = self.shell_sessions.remove(who) {
-            parked.push(current);
-        }
+        // LOCK ORDER (Cormac on #4586): never hold a `parked_shells` guard while touching
+        // `shell_sessions`. `with_execution` takes shell_sessions then parked_shells; holding
+        // them the other way round here could deadlock two callers on shared shards. So each
+        // map is touched in its own statement: take the current out, work the parked set, put
+        // the destination in.
+        let current = self.shell_sessions.remove(who).map(|(_, s)| s);
+        let destination = {
+            let mut parked = self.parked_shells.entry(who.to_string()).or_default();
+            let destination = parked
+                .iter()
+                .position(|s| same(s.workspace_root(), new_root))
+                .map(|i| parked.remove(i));
+            if let Some(current) = current {
+                parked.push(current);
+            }
+            while parked.len() > PARKED_SHELLS_PER_CALLER {
+                let Some(idle) = parked.iter().position(|s| !s.has_running()) else {
+                    break; // every parked session has live work: keep them all
+                };
+                let dropped = parked.remove(idle);
+                crate::probe!(
+                    class = "code.shell.parked_session_dropped",
+                    caller = %who,
+                    root = %dropped.workspace_root().display(),
+                    "an idle set-aside shell session was dropped; only finished executions went with it"
+                );
+            }
+            destination
+        };
         if let Some(back) = destination {
             self.shell_sessions.insert(who.to_string(), back);
         }
-        while parked.len() > PARKED_SHELLS_PER_CALLER {
-            let Some(idle) = parked.iter().position(|s| !s.has_running()) else {
-                break; // every parked session has live work: keep them all
-            };
-            let dropped = parked.remove(idle);
-            crate::probe!(
-                class = "code.shell.parked_session_dropped",
-                caller = %who,
-                root = %dropped.workspace_root().display(),
-                "an idle set-aside shell session was dropped; only finished executions went with it"
-            );
-        }
     }
 
+    /// Holds `shell_sessions` then `parked_shells`, the one order used anywhere both are held.
     /// Apply `f` to the session holding `handle` (a full execution id or a prefix), resolved
     /// ONCE across all of `who`'s sessions, current and parked. A prefix matching executions in
     /// two sessions is refused as ambiguous, never resolved to whichever is searched first, so
