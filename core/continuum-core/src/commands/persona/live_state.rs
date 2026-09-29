@@ -279,7 +279,9 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
                 if row.fields.get("wrote").is_some_and(|w| w.as_bool() == Some(true) || w.as_str() == Some("true")) {
                     acts.wrote += 1;
                 }
-                if let Some(t) = text(row.fields.get("tools")) {
+                // The producer records `tools` as the batch size and `verbs`
+                // as command names. Counts are not tool identities.
+                if let Some(t) = text(row.fields.get("verbs")) {
                     for tool in t.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|s| !s.is_empty()) {
                         *tools.entry(tool.to_string()).or_insert(0) += 1;
                     }
@@ -431,12 +433,13 @@ mod tests {
         let rows = vec![
             row(1, "persona.turn.input_perceived", json!({"persona": "k", "input_room": "cb2e21a1-999a-5a03-a184-df06e4ee7097", "active_room": "5dee0000-0000-4000-8000-000000000001"})),
             row(2, "persona.turn.start", json!({"persona": "Kimi", "lamport": "10", "room_id": "5dee0000-0000-4000-8000-000000000001"})),
-            row(3, "persona.act.observed", json!({"persona": "Kimi", "tools": "code/shell,code/read", "wrote": false})),
+            row(3, "persona.act.observed", json!({"persona": "Kimi", "tools": "2", "verbs": "code/shell,code/read", "wrote": false})),
             row(4, "persona.turn.silent", json!({"persona": "Kimi", "lamport": "10", "gated": false, "pass_reason": "my private reasoning"})),
             row(5, "persona.turn.start", json!({"persona": "Kimi", "lamport": "11", "room_id": "5dee0000-0000-4000-8000-000000000001"})),
             row(6, "persona.turn.silent", json!({"persona": "Kimi", "lamport": "11", "gated": true, "pass_reason": "gate-refused/not_speech:bare_call: echo"})),
             row(7, "persona.turn.start", json!({"persona": "Kimi", "lamport": "12", "room_id": "5dee0000-0000-4000-8000-000000000001"})),
-            row(8, "persona.act.observed", json!({"persona": "Kimi", "tools": "code/shell", "wrote": true})),
+            row(8, "persona.act.observed", json!({"persona": "Kimi", "tools": 1, "verbs": "code/shell", "wrote": true})),
+            row(9, "persona.act.observed", json!({"persona": "Kimi", "tools": "4", "wrote": false})),
         ];
         let (current, recent, perceived, acts) = project(&rows, 10);
         assert_eq!(current.as_ref().map(|t| t.lamport.as_str()), Some("12"), "the turn in flight");
@@ -451,9 +454,10 @@ mod tests {
         );
         let ask_room = RoomId::from_uuid(uuid::Uuid::parse_str("cb2e21a1-999a-5a03-a184-df06e4ee7097").expect("room uuid"));
         assert_eq!(perceived, vec![PersonaPerceivedRoom { room_id: Some(ask_room), count: 1, last_ms: 1 }], "the ask's room, perceived");
-        assert_eq!(acts.count, 2);
+        assert_eq!(acts.count, 3);
         assert_eq!(acts.wrote, 1);
         assert_eq!(acts.tools.first(), Some(&("code/shell".to_string(), 2)));
+        assert_eq!(acts.tools.len(), 2, "missing verbs must not fabricate numeric tool names");
         let wire = serde_json::to_string(&(current, recent)).expect("serialize");
         assert!(!wire.contains("private reasoning"), "her own words never leave: {wire}");
     }
