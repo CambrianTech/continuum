@@ -8,7 +8,7 @@ import { IDLE_MS, InteractSessions, MAX_SESSIONS, toDomAction, type OpenWeb } fr
 function fakeOpen(log: { opened: string[]; closed: number; acted: unknown[][] }, failOn?: string): OpenWeb {
   return async (url) => {
     log.opened.push(url);
-    const percept = { width: 2, height: 2, rgba: new Uint8Array(16) };
+    const percept = { kind: 'image' as const, mime: 'image/png' as const, width: 2, height: 2, bytes: new Uint8Array(16) };
     const observation = { percept, structure: { url, title: 'Tracker', tree: { role: 'document', name: '', children: [] } } };
     return {
       observe: async () => observation,
