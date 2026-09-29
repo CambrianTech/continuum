@@ -489,6 +489,16 @@ impl ShellSession {
         }
     }
 
+    /// Every execution handle this session holds (running or finished, not yet GC'd).
+    pub fn execution_ids(&self) -> impl Iterator<Item = &str> {
+        self.executions.keys().map(String::as_str)
+    }
+
+    /// Whether any execution in this session is still running.
+    pub fn has_running(&self) -> bool {
+        self.info().active_executions > 0
+    }
+
     /// Resolve a full execution ID or unique hex prefix in this session only.
     /// Used to await completion without holding the DashMap lock.
     pub fn get_execution_state(&self, execution_id: &str) -> Result<Arc<Mutex<ExecutionState>>, String> {

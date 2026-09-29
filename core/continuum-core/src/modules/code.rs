@@ -54,10 +54,12 @@ impl CodeState {
         }
     }
 
-    /// Move `who`'s shell to `new_root`: a no-op at the same root; otherwise the current
-    /// session is set aside (not dropped) and a session she parked at `new_root` before is
-    /// reinstated, so every execution handle she was given stays reachable. With none to
-    /// reinstate, the next command lazily opens a session at the new root, as before.
+    /// Move `who`'s shell to `new_root`. A no-op at the same root. Otherwise: first take back
+    /// a session she parked at `new_root` (so returning is never lost to eviction), then set
+    /// the current one aside, then trim the parked set, dropping only IDLE sessions, oldest
+    /// first. A session with a running execution is never dropped, however many roots she
+    /// works across (Codex on #4586). With nothing to reinstate, the next command opens a
+    /// session at the new root, as before.
     pub fn re_root_shell(&self, who: &str, new_root: &std::path::Path) {
         let same = |a: &std::path::Path, b: &std::path::Path| {
             let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()); // unwrap_or_else: an uncanonicalizable path compares as written
@@ -71,43 +73,75 @@ impl CodeState {
             return;
         }
         let mut parked = self.parked_shells.entry(who.to_string()).or_default();
+        let destination = parked
+            .iter()
+            .position(|s| same(s.workspace_root(), new_root))
+            .map(|i| parked.remove(i));
         if let Some((_, current)) = self.shell_sessions.remove(who) {
             parked.push(current);
-            if parked.len() > PARKED_SHELLS_PER_CALLER {
-                let dropped = parked.remove(0);
-                crate::probe!(
-                    class = "code.shell.parked_session_dropped",
-                    caller = %who,
-                    root = %dropped.workspace_root().display(),
-                    "oldest set-aside shell session dropped; its execution handles are gone"
-                );
-            }
         }
-        if let Some(i) = parked.iter().position(|s| same(s.workspace_root(), new_root)) {
-            let back = parked.remove(i);
+        if let Some(back) = destination {
             self.shell_sessions.insert(who.to_string(), back);
+        }
+        while parked.len() > PARKED_SHELLS_PER_CALLER {
+            let Some(idle) = parked.iter().position(|s| !s.has_running()) else {
+                break; // every parked session has live work: keep them all
+            };
+            let dropped = parked.remove(idle);
+            crate::probe!(
+                class = "code.shell.parked_session_dropped",
+                caller = %who,
+                root = %dropped.workspace_root().display(),
+                "an idle set-aside shell session was dropped; only finished executions went with it"
+            );
         }
     }
 
-    /// Apply `f` (a lookup by execution handle) to `who`'s sessions, the current one first
-    /// and then any she set aside, returning the first success. When none succeeds, the
-    /// current session's error is returned (or `None` when she has no session at all), so
-    /// the refusal still names the handle.
-    pub fn in_sessions_of<T>(
+    /// Apply `f` to the session holding `handle` (a full execution id or a prefix), resolved
+    /// ONCE across all of `who`'s sessions, current and parked. A prefix matching executions in
+    /// two sessions is refused as ambiguous, never resolved to whichever is searched first, so
+    /// a kill never lands on the wrong command (Codex on #4586).
+    pub fn with_execution<T>(
         &self,
         who: &str,
-        f: impl Fn(&ShellSession) -> Result<T, String>,
-    ) -> Option<Result<T, String>> {
-        let current = self.shell_sessions.get(who).map(|s| f(&s));
-        if let Some(Ok(v)) = current {
-            return Some(Ok(v));
+        handle: &str,
+        f: impl FnOnce(&ShellSession, &str) -> Result<T, String>,
+    ) -> Result<T, ExecutionLookup> {
+        let current = self.shell_sessions.get(who);
+        let parked = self.parked_shells.get(who);
+        let sessions: Vec<&ShellSession> = current
+            .iter()
+            .map(|s| &**s)
+            .chain(parked.iter().flat_map(|p| p.iter()))
+            .collect();
+        if sessions.is_empty() {
+            return Err(ExecutionLookup::NoSession);
         }
-        let from_parked = self
-            .parked_shells
-            .get(who)
-            .and_then(|parked| parked.iter().rev().map(&f).find(Result::is_ok));
-        from_parked.or(current)
+        let ids: Vec<uuid::Uuid> = sessions
+            .iter()
+            .flat_map(|s| s.execution_ids())
+            .filter_map(|id| uuid::Uuid::parse_str(id).ok())
+            .collect();
+        let id = crate::id_resolve::resolve_handle(handle, &ids, "shell execution")
+            .map_err(ExecutionLookup::Unresolved)?
+            .to_string();
+        let holder = sessions
+            .into_iter()
+            .find(|s| s.execution_ids().any(|e| e == id))
+            .ok_or_else(|| ExecutionLookup::Unresolved(format!("shell execution {id} vanished")))?;
+        f(holder, &id).map_err(ExecutionLookup::Failed)
     }
+}
+
+/// Why a handle lookup across a caller's sessions did not reach a command.
+#[derive(Debug)]
+pub enum ExecutionLookup {
+    /// She has no shell session at all, current or set aside.
+    NoSession,
+    /// She has sessions, but the handle names none (unknown, expired, or ambiguous).
+    Unresolved(String),
+    /// The handle resolved, and the operation on it failed.
+    Failed(String),
 }
 
 pub struct CodeModule {
@@ -187,31 +221,46 @@ mod tests {
     use super::*;
     use crate::runtime::ServiceModule;
 
-    // what this catches (Kimi, 2026-09-29): re-rooting her hands dropping the shell
-    // session, and with it every execution handle, so a command started on one turn could
-    // not be polled on the next. Moving away sets the session aside, a lookup by handle
-    // still finds it, and returning to that root reinstates the same session.
+    // what this catches (Kimi, 2026-09-29; Codex's review of #4586): re-rooting her hands
+    // dropping the shell session and with it every execution handle, so a command started
+    // on one turn could not be polled on the next. A REAL running command survives a
+    // re-root and is reachable by its handle (and a prefix of it); another caller cannot
+    // reach it; returning reinstates the same session; and working across more roots than
+    // the cap never drops a session whose command is still running.
     #[tokio::test]
-    async fn re_rooting_sets_the_shell_aside_and_returning_brings_it_back() {
-        let (card, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), tokio::runtime::Handle::current());
-        let session = ShellSession::new("s1", "kimi", card.path()).expect("session at the card");
-        let card_root = session.workspace_root().to_path_buf();
-        state.shell_sessions.insert("kimi".into(), session);
-        let at_card = |s: &ShellSession| {
-            if s.workspace_root() == card_root { Ok(()) } else { Err("not here".to_string()) }
-        };
+    async fn a_running_command_survives_re_rooting_and_is_never_evicted() {
+        let rt = tokio::runtime::Handle::current();
+        let roots: Vec<_> = (0..6).map(|_| tempfile::tempdir().unwrap()).collect();
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
 
-        state.re_root_shell("kimi", card.path());
+        let mut first = ShellSession::new("s0", "kimi", roots[0].path()).expect("session");
+        let exec = first.execute("sleep 30", Some(60_000), &rt).expect("a long command starts");
+        state.shell_sessions.insert("kimi".into(), first);
+
+        state.re_root_shell("kimi", roots[0].path());
         assert!(state.shell_sessions.contains_key("kimi"), "the same root keeps the session");
 
-        state.re_root_shell("kimi", home.path());
-        assert!(!state.shell_sessions.contains_key("kimi"), "a new root opens lazily");
-        assert!(matches!(state.in_sessions_of("kimi", at_card), Some(Ok(()))), "the set-aside session is still reachable");
+        // Work across five more roots, each with its own (idle) session, past the cap of 4.
+        for (i, root) in roots.iter().enumerate().skip(1) {
+            state.re_root_shell("kimi", root.path());
+            let idle = ShellSession::new(&format!("s{i}"), "kimi", root.path()).expect("session");
+            state.shell_sessions.insert("kimi".into(), idle);
+        }
 
-        state.re_root_shell("kimi", card.path());
+        let running = |s: &ShellSession, id: &str| s.get_execution_state(id);
+        let by_full = state.with_execution("kimi", &exec, running).expect("still reachable after 5 re-roots");
+        assert_eq!(by_full.lock().unwrap().status, crate::code::shell_types::ShellExecutionStatus::Running);
+        let prefix = &exec[..8];
+        assert!(state.with_execution("kimi", prefix, running).is_ok(), "a unique prefix resolves across sessions");
+        assert!(
+            matches!(state.with_execution("mara", &exec, running), Err(ExecutionLookup::NoSession)),
+            "another caller never reaches her command"
+        );
+
+        state.re_root_shell("kimi", roots[0].path());
         let back = state.shell_sessions.get("kimi").expect("returning reinstates it");
-        assert_eq!(back.id(), "s1", "the very same session, with its handles");
+        assert_eq!(back.id(), "s0", "the very same session, with its handles");
+        back.kill(&exec).expect("clean up the test command");
     }
 
     fn module() -> CodeModule {

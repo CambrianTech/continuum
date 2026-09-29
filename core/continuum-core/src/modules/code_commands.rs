@@ -1460,13 +1460,28 @@ impl ActionCommand for CodeShellPoll {
         let who = caller_id(ctx);
         let state_arc = self
             .state
-            .in_sessions_of(&who, |s| s.get_execution_state(&p.execution_id))
-            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?
-            .map_err(CommandError::Invalid)?;
+            .with_execution(&who, &p.execution_id, |s, id| s.get_execution_state(id))
+            .map_err(execution_lookup_error)?;
         let s = state_arc
             .lock()
             .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
         Ok(shell_response(&s))
+    }
+}
+
+/// The refusal for a handle that did not reach a command. "No shell session" only when she
+/// truly has none (Cormac on #4586); otherwise the handle is named as unknown or ambiguous.
+fn execution_lookup_error(e: crate::modules::code::ExecutionLookup) -> CommandError {
+    use crate::modules::code::ExecutionLookup;
+    match e {
+        ExecutionLookup::NoSession => CommandError::NotFound(
+            "no shell session for caller: start a command with code/shell first".into(),
+        ),
+        ExecutionLookup::Unresolved(why) => CommandError::Invalid(format!(
+            "{why}. The handle may belong to a finished-and-collected command or be ambiguous; \
+             use the full execution_id from code/shell"
+        )),
+        ExecutionLookup::Failed(why) => CommandError::Internal(why),
     }
 }
 
@@ -1504,9 +1519,8 @@ impl ActionCommand for CodeShellKill {
     ) -> Result<CodeShellKillResult, CommandError> {
         let who = caller_id(ctx);
         self.state
-            .in_sessions_of(&who, |s| s.kill(&p.execution_id))
-            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?
-            .map_err(CommandError::Internal)?;
+            .with_execution(&who, &p.execution_id, |s, id| s.kill(id))
+            .map_err(execution_lookup_error)?;
         Ok(CodeShellKillResult { killed: true })
     }
 }
