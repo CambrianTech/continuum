@@ -234,11 +234,11 @@ async fn run() -> Result<(), CliError> {
                     "boot plan: core launch/verify failed".into(),
                 ));
             }
-            // Repo root (dev tree) = two up from the start script; installed
+            // Resolve tools/scripts/start-server.sh through the shared layout; installed
             // users have no script and the Beside rails skip with a reason.
             let repo_root = locate_start_script()
                 .ok()
-                .and_then(|s| s.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+                .and_then(|s| continuum_core::boot_plan::repo_root_from_start_script(&s));
             continuum_core::boot_plan::run_beside_phase(&mut receipt, repo_root.as_deref());
             println!("boot complete — {} steps receipted", receipt.steps.len());
             Ok(())

@@ -253,6 +253,17 @@ pub fn run_before_phase() -> BootReceipt {
     receipt
 }
 
+/// The start-script locator returns <repo>/tools/scripts/start-server.sh.
+/// Keep that layout conversion shared: two parents select tools, not the repo.
+pub fn repo_root_from_start_script(script: &std::path::Path) -> Option<std::path::PathBuf> {
+    let scripts = script.parent()?;
+    let tools = scripts.parent()?;
+    if scripts.file_name()? != "scripts" || tools.file_name()? != "tools" {
+        return None;
+    }
+    tools.parent().map(std::path::Path::to_path_buf)
+}
+
 /// The Beside phase — call AFTER the core process is launched (never awaited).
 pub fn run_beside_phase(receipt: &mut BootReceipt, repo_root: Option<&std::path::Path>) {
     match repo_root {
@@ -299,6 +310,13 @@ mod tests {
     #[test]
     fn eye_launch_preserves_endpoint_and_paths_as_arguments() {
         let root = std::env::temp_dir().join("source tree with spaces");
+        // The actual boot caller must select the repo, not <repo>/tools, or
+        // every beside rail silently skips its assets before reaching spawn.
+        assert_eq!(
+            repo_root_from_start_script(&root.join("tools/scripts/start-server.sh")),
+            Some(root.clone())
+        );
+        assert!(repo_root_from_start_script(&root.join("custom/start.sh")).is_none());
         let endpoint = "tcp://127.0.0.1:45678";
         let node = root.join("node executable");
         let command = eye_node_command(&root, endpoint, &node);
