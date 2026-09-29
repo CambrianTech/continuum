@@ -507,7 +507,8 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:aclTask | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
         $script:aclTask | Add-Member ScriptMethod SetSecurityDescriptor { param($value, $flags) if ($this.Save) { $this.Sddl = $value } }
         $folder = [pscustomobject]@{}
-        $folder | Add-Member ScriptMethod GetTask { param($name) $script:aclTask }
+        $script:aclDeployTask = $null
+        $folder | Add-Member ScriptMethod GetTask { param($name) if ($name -eq 'ContinuumDeploy' -and $script:aclDeployTask) { $script:aclDeployTask } else { $script:aclTask } }
         $script:aclScheduler = [pscustomobject]@{ Folder = $folder }
         $script:aclScheduler | Add-Member ScriptMethod Connect { }
         $script:aclScheduler | Add-Member ScriptMethod GetFolder { param($path) $this.Folder }
@@ -540,6 +541,14 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         try { . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath }
         catch { $refused = $_ -match 'Unsupported startup task ACL' }
         if (-not $refused -or $script:aclRegistrations -ne $writes) { throw 'Registrar changed task before refusing existing deny policy' }
+        $script:aclDeployTask = [pscustomobject]@{ Sddl = $script:aclTask.Sddl }
+        $script:aclDeployTask | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
+        $script:aclTask.Sddl = $acl
+        $refused = $false
+        try { . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath }
+        catch { $refused = $_ -match 'Unsupported startup task ACL' }
+        if (-not $refused -or $script:aclRegistrations -ne $writes) { throw 'Registrar changed Core before refusing Deploy deny policy' }
+
     }
     Write-Output 'PASS: registrar rereads saved access and refuses unsupported policy before task writes'
 

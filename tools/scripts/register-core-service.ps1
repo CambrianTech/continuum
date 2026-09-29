@@ -7,10 +7,12 @@ if (-not $plan.userSid -or -not $plan.shell -or -not $plan.arguments -or -not $p
 }
 $scheduler = New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
-if (Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue) {
-    # Refuse unsupported existing policy before updating the task action.
-    Get-CoreServiceSecurityDescriptor -Sddl (
-        $scheduler.GetFolder('\').GetTask('ContinuumCore').GetSecurityDescriptor(4)) | Out-Null
+foreach ($taskName in @('ContinuumCore', 'ContinuumDeploy')) {
+    if (Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue) {
+        # Refuse unsupported policy on either task before modifying either one.
+        Get-CoreServiceSecurityDescriptor -Sddl (
+            $scheduler.GetFolder('\').GetTask($taskName).GetSecurityDescriptor(4)) | Out-Null
+    }
 }
 $action = New-ScheduledTaskAction -Execute $plan.shell -Argument $plan.arguments
 # THE SUPERVISOR OUTLIVES THE LOGON SESSION. S4U = run as the user whether or not

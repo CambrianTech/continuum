@@ -112,7 +112,9 @@ function Update-CoreServiceTaskAction {
     if ($Description) { $definition.RegistrationInfo.Description = $Description }
     $null = $Folder.RegisterTaskDefinition($Name, $definition, 20, $UserSid, $null, 2, $null)
     $saved = $Folder.GetTask($Name).Definition
-    if ($saved.Actions.Count -ne 1 -or $saved.Actions.Item(1).Path -ne $Executable -or
+    if (-not (Test-CoreTaskUser -UserId $saved.Principal.UserId -ExpectedSid $UserSid) -or
+        $saved.Principal.LogonType -ne 2 -or $saved.Principal.RunLevel -ne 0 -or
+        $saved.Actions.Count -ne 1 -or $saved.Actions.Item(1).Path -ne $Executable -or
         $saved.Actions.Item(1).Arguments -ne $Arguments -or
         ($Description -and $saved.RegistrationInfo.Description -cne $Description)) {
         throw "Task $Name did not retain the prepared release action."
