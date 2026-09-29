@@ -446,6 +446,59 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         }
     }
     Write-Output 'PASS: noncanonical task ACL is repaired minimally; denied/conditional/object policy stays untouched'
+    # Repeated release updates require write, but never Delete/WriteDAC/WriteOwner.
+    $updateAcl = Grant-CoreServiceCallerAccess -Sddl $repaired -UserSid $callerSid -Update
+    if ((Test-CoreServiceCallerAccess -Sddl $repaired -UserSid $callerSid -Update) -or
+        -not (Test-CoreServiceCallerAccess -Sddl $updateAcl -UserSid $callerSid -Update)) {
+        throw 'Read/execute must not masquerade as update authority'
+    }
+    $updateAce = ([Security.AccessControl.RawSecurityDescriptor]::new($updateAcl)).DiscretionaryAcl[3]
+    if (($updateAce.AccessMask -band 0xD0000) -ne 0) { throw 'Update grant acquired delete or ACL/owner privileges' }
+    & {
+        $actions = [pscustomobject]@{ Count = 1; Entry = [pscustomobject]@{ Path = 'old'; Arguments = 'old' } }
+        $actions | Add-Member ScriptMethod Clear { $this.Count = 0 }
+        $actions | Add-Member ScriptMethod Create { param($kind) if ($kind -ne 0) { throw 'Expected exec action' }; $this.Count = 1; $this.Entry }
+        $actions | Add-Member ScriptMethod Item { param($index) $this.Entry }
+        $definition = [pscustomobject]@{
+            Actions = $actions
+            Principal = [pscustomobject]@{ UserId = $callerSid; LogonType = 2; RunLevel = 0 }
+            RegistrationInfo = [pscustomobject]@{ Description = 'old' }
+            Triggers = 'existing boot trigger'; Settings = 'existing policy'
+        }
+        $task = [pscustomobject]@{ Definition = $definition; Sddl = $updateAcl }
+        $task | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
+        $folder = [pscustomobject]@{ Task = $task; Writes = 0; Save = $true }
+        $folder | Add-Member ScriptMethod GetTask { param($name) $this.Task }
+        $folder | Add-Member ScriptMethod RegisterTaskDefinition {
+            param($name,$value,$flags,$sid,$password,$logon,$sddl)
+            if ($flags -ne 20 -or $password -or $sddl -or $logon -ne 2 -or
+                $sid -ne $this.Task.Definition.Principal.UserId) { throw 'Update changed security boundary' }
+            $this.Writes++
+            if (-not $this.Save) { $value.Actions.Entry.Path = 'provider ignored update' }
+        }
+        Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'new-cli' -Arguments 'new args' -Description 'new receipt'
+        if ($folder.Writes -ne 1 -or $definition.Triggers -ne 'existing boot trigger' -or
+            $definition.Settings -ne 'existing policy' -or $task.Sddl -cne $updateAcl) { throw 'Release update altered task policy' }
+        $task.Sddl = $repaired
+        $refused = $false
+        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'no' -Arguments 'no' }
+        catch { $refused = $_ -match 'not an updateable' }
+        if (-not $refused -or $folder.Writes -ne 1) { throw 'Read-only task was written' }
+        $task.Sddl = $updateAcl
+        $definition.Principal.RunLevel = 1
+        $refused = $false
+        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'no' -Arguments 'no' }
+        catch { $refused = $_ -match 'not an updateable' }
+        if (-not $refused -or $folder.Writes -ne 1) { throw 'Elevated task was written' }
+        $definition.Principal.RunLevel = 0
+        $folder.Save = $false
+        $refused = $false
+        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'new' -Arguments 'new' }
+        catch { $refused = $_ -match 'did not retain' }
+        if (-not $refused) { throw 'Lost update was reported successful' }
+    }
+    Write-Output 'PASS: repeated task update preserves policy/ACL, rejects insufficient rights/elevated principal, and verifies saved action'
+
 
     # Run the real registrar with only scheduler boundaries replaced. A provider
     # that ignores SetSecurityDescriptor must fail its reread, never claim success.
