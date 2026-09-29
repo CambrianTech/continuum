@@ -1033,6 +1033,15 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
     // (realtime_wire) — shared with the digest element and the positron
     // projection. This wrapper only adds the transcript's lamport.
     let turn = crate::airc::realtime_wire::room_content_from_event(event)?;
+    // Work presence remains in the room's durable state/RAG projection. It is
+    // not a new utterance to append after every action: doing that bypassed
+    // AircRagSource's existing presence folding and filled active turns with
+    // other residents' work broadcasts. Media-bearing messages remain input.
+    if turn.media.is_empty()
+        && crate::persona::presence_glyph::is_presence_line(&turn.text)
+    {
+        return Err("work_presence");
+    }
     Ok(IncomingMessage {
         media: turn.media,
         event_id: event.event_id.as_uuid(),
@@ -1098,6 +1107,11 @@ mod tests {
         control.body = None;
         let control = Arc::new(control);
         frames.push(Ok(Arc::clone(&control)));
+        // Regression #4592: completed work broadcasts are durable presence,
+        // not fresh conversational requests, even when they arrive mid-action.
+        let presence = event("⚙ code/read fixture.rs ✓");
+        assert!(matches!(perceptual_from_event(&presence), Err("work_presence")));
+        frames.push(Ok(Arc::new(presence)));
         let mut directed = event("@citizen Shared Cargo owner: please wait");
         directed.target = airc_core::MentionTarget::Peer(airc_core::PeerId::from_uuid(own));
         let directed = Arc::new(directed);
@@ -1117,8 +1131,8 @@ mod tests {
         let inbox = conversation.inbox.as_mut().unwrap();
         assert_eq!(
             inbox.len(),
-            2,
-            "only control and completed message are queued"
+            3,
+            "control, durable presence and completed message reach intake"
         );
         let forwarded_control = inbox.try_recv().unwrap().unwrap();
         assert!(Arc::ptr_eq(&forwarded_control, &control));
