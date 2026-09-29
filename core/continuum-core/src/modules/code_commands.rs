@@ -405,7 +405,12 @@ pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), Co
             .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
         if last.get(who).cloned().flatten() != card_root {
             state.file_engines.remove(&who.to_string());
-            state.shell_sessions.remove(&who.to_string());
+            // Set aside, never drop: the same handle-keeping move as create-workspace.
+            let new_root = card_root
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_default(); // unwrap_or_default: an unreadable cwd parks the old session and opens fresh
+            state.re_root_shell(who, &new_root);
             crate::probe!(
                 class = "code.hands.rerooted",
                 who = who,
@@ -1453,18 +1458,30 @@ impl ActionCommand for CodeShellPoll {
         p: CodeShellPollParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
-        let shell = self
+        let state_arc = self
             .state
-            .shell_sessions
-            .get(&who)
-            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
-        let state_arc = shell
-            .get_execution_state(&p.execution_id)
-            .map_err(CommandError::Invalid)?;
+            .with_execution(&who, &p.execution_id, |s, id| s.get_execution_state(id))
+            .map_err(execution_lookup_error)?;
         let s = state_arc
             .lock()
             .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
         Ok(shell_response(&s))
+    }
+}
+
+/// The refusal for a handle that did not reach a command. "No shell session" only when she
+/// truly has none (Cormac on #4586); otherwise the handle is named as unknown or ambiguous.
+fn execution_lookup_error(e: crate::modules::code::ExecutionLookup) -> CommandError {
+    use crate::modules::code::ExecutionLookup;
+    match e {
+        ExecutionLookup::NoSession => CommandError::NotFound(
+            "no shell session for caller: start a command with code/shell first".into(),
+        ),
+        ExecutionLookup::Unresolved(why) => CommandError::Invalid(format!(
+            "{why}. The handle may belong to a finished-and-collected command or be ambiguous; \
+             use the full execution_id from code/shell"
+        )),
+        ExecutionLookup::Failed(why) => CommandError::Internal(why),
     }
 }
 
@@ -1501,14 +1518,9 @@ impl ActionCommand for CodeShellKill {
         p: CodeShellKillParams,
     ) -> Result<CodeShellKillResult, CommandError> {
         let who = caller_id(ctx);
-        let shell = self
-            .state
-            .shell_sessions
-            .get(&who)
-            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
-        shell
-            .kill(&p.execution_id)
-            .map_err(CommandError::Internal)?;
+        self.state
+            .with_execution(&who, &p.execution_id, |s, id| s.kill(id))
+            .map_err(execution_lookup_error)?;
         Ok(CodeShellKillResult { killed: true })
     }
 }
@@ -1770,11 +1782,13 @@ impl ActionCommand for CodeCreateWorkspace {
             who.clone(),
             FileEngine::new(&who, security).with_write_policy(policy),
         );
-        // DROP the caller's shell session so it is re-created at the NEW root.
-        // `ensure_shell` early-returns when a session exists, so without this a
-        // re-root moved her FILE engine and left her SHELL in the old directory —
-        // the two halves of her hands pointing at different workspaces.
-        self.state.shell_sessions.remove(&who);
+        // Move the caller's shell to the NEW root. `ensure_shell` early-returns when a session
+        // exists, so without this a re-root moved her FILE engine and left her SHELL in the old
+        // directory. The old session is SET ASIDE, not dropped: a work turn roots at the card
+        // and restores home every turn, and dropping lost every execution handle she had been
+        // given (Kimi, 2026-09-29).
+        self.state
+            .re_root_shell(&who, std::path::Path::new(&p.workspace_root));
         if !p.path_prepend.is_empty() {
             ensure_shell(&self.state, &who).await?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
