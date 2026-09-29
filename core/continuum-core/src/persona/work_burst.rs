@@ -76,6 +76,8 @@ pub(crate) struct CardProgress {
     /// Distinct objects of her read-shaped acts (code/read, code/list) — paths —
     /// newest last, capped.
     pub read: Vec<String>,
+    /// Successful write receipts, including the verb so a work note is not a file edit.
+    pub wrote: Vec<String>,
     /// Distinct code/search terms, newest last, capped (review on #3793: a search
     /// term is not something she "already read").
     pub searched: Vec<String>,
@@ -112,6 +114,9 @@ pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], m
                 p.writes += 1;
             }
             let obj: String = object.chars().take(72).collect();
+            if ok && is_write_verb(verb) {
+                push_distinct(&mut p.wrote, format!("{verb} {obj}"));
+            }
             if verb.starts_with("code/read") || verb.starts_with("code/list") {
                 push_distinct(&mut p.read, obj);
             } else if verb.starts_with("code/search") {
@@ -150,6 +155,11 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
     if !p.read.is_empty() {
         s.push_str(" Already read: ");
         s.push_str(&p.read.join(", "));
+        s.push('.');
+    }
+    if !p.wrote.is_empty() {
+        s.push_str(" Successful write receipts: ");
+        s.push_str(&p.wrote.join("; "));
         s.push('.');
     }
     if !p.searched.is_empty() {
