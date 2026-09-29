@@ -155,14 +155,27 @@ mod tests {
     // (which also carries .git) is not. A fresh peer id keeps the test home unshared.
     #[test]
     fn the_roster_lists_staged_checkouts_and_never_an_in_flight_clone() {
+        // Never write under an operator's configured home: this test only runs against the
+        // per-process test home (Codex on #4581).
+        if std::env::var_os("CONTINUUM_HOME").is_some() {
+            return;
+        }
+        /// Removes this test's peer directory however the test exits.
+        struct PeerDir(std::path::PathBuf);
+        impl Drop for PeerDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0); // cleanup of a unique test-only tree
+            }
+        }
         let peer = uuid::Uuid::new_v4();
-        let swe = crate::commands::benchmark::continuum_home()
-            .expect("test home")
-            .join("citizens")
-            .join("peers")
-            .join(peer.to_string())
-            .join("workspace")
-            .join("swe");
+        let peer_dir = PeerDir(
+            crate::commands::benchmark::continuum_home()
+                .expect("test home")
+                .join("citizens")
+                .join("peers")
+                .join(peer.to_string()),
+        );
+        let swe = peer_dir.0.join("workspace").join("swe");
         for name in ["scikit-learn__scikit-learn-25747", "sympy__sympy-18057.cloning-3988-34"] {
             std::fs::create_dir_all(swe.join(name).join(".git")).expect("fixture tree");
         }
