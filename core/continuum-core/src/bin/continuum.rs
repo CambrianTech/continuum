@@ -223,7 +223,7 @@ async fn run() -> Result<(), CliError> {
             #[cfg(windows)]
             let out = match start(false).await {
                 Ok(()) => match verify_deployed_build(false).await {
-                    Ok(()) => Outcome::Ok("installed start path verified; service owns browser worker".into()),
+                    Ok(()) => Outcome::Ok("installed start path verified".into()),
                     Err(e) => Outcome::Failed(format!("verify: {e}")),
                 },
                 Err(e) => Outcome::Failed(e),
