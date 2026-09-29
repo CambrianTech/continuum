@@ -99,6 +99,7 @@ crate::action_command! {
             sender_id,
             text: p.text.clone(),
             reply_to_id: p.reply_to_id,
+            media: Vec::new(),
         };
         let wire = if runtime.is_some() {
             crate::modules::chat::WireLeg::CallerSpeaks
@@ -118,11 +119,7 @@ crate::action_command! {
         // — and the miss is named in `warning`, never silent.
         match runtime {
             Some(rt) => {
-                let mut publish_err = crate::persona::airc_citizen::publish_text_in_room(
-                    rt.airc(),
-                    p.room_id,
-                    &p.text,
-                )
+                let mut publish_err = publish_as_sender(rt.airc(), result.message_id, &params)
                 .await
                 .err();
                 let is_self_peer = crate::persona::operator_peer::operator_runtime()
@@ -144,11 +141,7 @@ crate::action_command! {
                                 "self-peer subscribed on send — its scope had no membership \
                                  for a room it deliberately addressed; retrying the say",
                             );
-                            publish_err = crate::persona::airc_citizen::publish_text_in_room(
-                                rt.airc(),
-                                p.room_id,
-                                &p.text,
-                            )
+                            publish_err = publish_as_sender(rt.airc(), result.message_id, &params)
                             .await
                             .err();
                         }
@@ -185,6 +178,30 @@ crate::action_command! {
         }
         Ok(result)
     }
+}
+
+/// Use the sender's own durable transport for references as well as text.
+/// The existing envelope codec preserves attribution and all media metadata;
+/// no blob is fetched, copied, or interpreted on this path.
+async fn publish_as_sender(
+    airc: &airc_lib::Airc,
+    message_id: Uuid,
+    params: &ChatSendParams,
+) -> Result<(), String> {
+    if params.media.is_empty() {
+        return crate::persona::airc_citizen::publish_text_in_room(
+            airc, params.room_id, &params.text,
+        ).await.map(|_| ()).map_err(|e| e.to_string());
+    }
+    let envelope: crate::airc::AircRealtimeEnvelope = serde_json::from_value(
+        ChatModule::transcript_envelope(message_id, params, crate::modules::chat::now_ms()),
+    ).map_err(|e| format!("chat transcript envelope invalid: {e}"))?;
+    airc.publish(
+        crate::persona::airc_citizen::publish_target_for(params.room_id),
+        airc_protocol::FrameKind::Message,
+        crate::airc::realtime_wire::body_for_envelope(&envelope)?,
+        crate::airc::realtime_wire::headers_for_envelope(&envelope),
+    ).await.map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

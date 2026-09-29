@@ -165,30 +165,7 @@ fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
     }
 }
 
-/// A durable chat row as the transcript event the inbound seam admits: kind
-/// Message, a text body, wall time, the row id as the event id. Lamport is 0 —
-/// the loop head judges staleness by event id, never by this clock.
-fn event_from_row(room: Uuid, row: crate::persona::durable_history::RoomRow) -> TranscriptEvent {
-    use airc_core::{
-        Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,
-    };
-    let room_id = RoomId::from_uuid(room);
-    TranscriptEvent {
-        event_id: EventId::from_uuid(row.id),
-        room_id,
-        peer_id: PeerId::from_uuid(row.sender),
-        client_id: ClientId::new(),
-        kind: TranscriptKind::Message,
-        occurred_at_ms: row.occurred_at_ms,
-        lamport: 0,
-        target: MentionTarget::Room(room_id),
-        headers: Headers::default(),
-        body: Some(Body::text(&row.text)),
-        attachment: None,
-        receipt: None,
-        metadata: serde_json::Value::Null,
-    }
-}
+use super::durable_history::event_from_row;
 
 async fn catch_up_from_store(
     runtime: &dyn AircCitizen,
@@ -1055,12 +1032,13 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
     // all three named skip reasons live in the ONE decoder `room_turn_from_event`
     // (realtime_wire) — shared with the digest element and the positron
     // projection. This wrapper only adds the transcript's lamport.
-    let (peer_id, text) = crate::airc::realtime_wire::room_turn_from_event(event)?;
+    let turn = crate::airc::realtime_wire::room_content_from_event(event)?;
     Ok(IncomingMessage {
+        media: turn.media,
         event_id: event.event_id.as_uuid(),
         lamport: event.lamport,
-        peer_id,
-        text,
+        peer_id: turn.sender,
+        text: turn.text,
         // The transport room is the turn's context (A.6) — without it the
         // service loop bound operator/CLI turns to a nil room and every
         // room-scoped source abstained.
@@ -1091,6 +1069,7 @@ mod tests {
                     id: Uuid::new_v4(),
                     sender: peer,
                     occurred_at_ms: 1,
+                    media: Vec::new(),
                     text: text.into(),
                 },
             )
@@ -1247,6 +1226,7 @@ mod tests {
                     id,
                     sender: peer,
                     occurred_at_ms: index as u64,
+                    media: Vec::new(),
                     text: format!("colleague input {index}"),
                 },
             );
@@ -1598,12 +1578,52 @@ mod tests {
             id: Uuid::new_v4(),
             sender: Uuid::new_v4(),
             occurred_at_ms: 1_788_513_127_000,
+            media: Vec::new(),
             text: "Joel here — which card do you hold?".to_string(),
         };
+        let mut with_media = row.clone();
+        with_media.media.push(super::super::channel_items::MediaItemRequest {
+            kind: "image".into(), mime_type: Some("image/png".into()),
+            blob_hash: Some("sha256:1234".into()), url: None, description: None,
+        });
+        let media_event = event_from_row(room, with_media);
+        let envelope = crate::airc::realtime_wire::envelope_from_event(&media_event)
+            .expect("valid hydrated envelope").expect("media envelope present");
+        let encoded = serde_json::to_value(envelope).expect("encode");
+        assert_eq!(encoded["payload"]["payload"]["inline"]["media"][0]["blobHash"], "sha256:1234");
+        assert_eq!(media_event.event_id.as_uuid(), row.id);
+        let incoming = perceptual_from_event(&media_event).expect("caption turn");
+        assert_eq!(incoming.text, row.text);
+        assert_eq!(incoming.media.len(), 1);
+        assert!(incoming.render_room_update().contains("contents not loaded"));
+        let restored: IncomingMessage = serde_json::from_value(serde_json::to_value(&incoming).unwrap()).unwrap();
+        assert_eq!(restored.media, incoming.media);
         let (id, sender) = (row.id, row.sender);
         let msg = perceptual_from_event(&event_from_row(room, row)).expect("a text row is a turn");
         assert_eq!((msg.event_id, msg.peer_id, msg.room_id), (id, sender, room));
         assert_eq!(msg.text, "Joel here — which card do you hold?");
+
+        // Native AIRC attachment-only turns must reach the same typed projection,
+        // without turning another machine's filesystem path into a local read.
+        let mut native = media_event.clone();
+        native.kind = airc_core::TranscriptKind::Attachment;
+        native.body = None;
+        native.headers = airc_core::Headers::default();
+        native.attachment = Some(airc_core::AttachmentManifest {
+            file_id: airc_core::FileId::new(), name: "site.png".into(),
+            media_type: Some("image/png".into()), size_bytes: 42,
+            content_hash: airc_core::ContentHash(format!("sha256:{}", "a".repeat(64))),
+            local_path: Some("C:/private/site.png".into()),
+            remote_ref: Some("https://example.invalid/site.png".into()),
+        });
+        let perceived = perceptual_from_event(&native).expect("native attachment is a room turn");
+        assert_eq!(perceived.media.len(), 1);
+        assert_eq!(perceived.media[0].kind, "image");
+        assert!(perceived.text.is_empty());
+        assert!(perceived.media[0].url.is_none());
+        assert!(!perceived.render_room_update().contains("private"));
+        native.headers.insert(airc_lib::HEADER_STREAM_ID.into(), "stream".into());
+        assert!(perceptual_from_event(&native).is_err(), "attachments must not bypass stream filtering");
     }
 
     // what this catches: the same line under two ids (the sender's message id

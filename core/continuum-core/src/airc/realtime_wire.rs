@@ -171,7 +171,36 @@ pub fn is_command_frame(event: &TranscriptEvent) -> bool {
     event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID).is_some()
 }
 
+/// Typed room content; attachment bytes remain outside transcript and prompt.
+#[derive(Debug, Clone)]
+pub struct RoomTurn {
+    pub sender: uuid::Uuid,
+    pub text: String,
+    pub media: Vec<crate::persona::channel_items::MediaItemRequest>,
+}
+
 pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, String), &'static str> {
+    let turn = room_content_from_event(event)?;
+    Ok((turn.sender, render_room_content(&turn.text, &turn.media)))
+}
+
+/// A bounded notice, not a claim that the model has inspected the attachment.
+/// The event retains the full references for explicit inspection/replay.
+pub(crate) fn render_room_content(text: &str, media: &[crate::persona::channel_items::MediaItemRequest]) -> String {
+    if media.is_empty() { return text.to_owned(); }
+    let mut rendered = format!("{text}\n[{} media attachment(s); contents not loaded", media.len());
+    for item in media.iter().take(8) {
+        let kind: String = item.kind.chars().filter(|c| !c.is_control()).take(24).collect();
+        rendered.push_str(&format!("; {kind}"));
+        if let Some(hash) = item.blob_hash.as_deref().filter(|h| h.starts_with("sha256:") && h.len() == 71 && h[7..].bytes().all(|b| b.is_ascii_hexdigit())) {
+            rendered.push_str(&format!(" {hash}"));
+        }
+    }
+    rendered.push(']');
+    rendered
+}
+
+pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'static str> {
     if is_command_frame(event) {
         return Err("command_frame");
     }
@@ -190,22 +219,46 @@ pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, Stri
     if is_stream_chunk(event) {
         return Err("stream_chunk");
     }
-    if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
-        return Ok((event.peer_id.as_uuid(), text.to_string()));
-    }
-    match envelope_from_event(event) {
-        Err(_) => Err("envelope_decode_error"),
-        Ok(None) => Err("no_continuum_body_hint"),
-        Ok(Some(envelope)) => {
-            chat_transcript_message(&envelope, event.peer_id.as_uuid()).ok_or("non_chat_schema")
+    let mut turn = if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
+        RoomTurn { sender: event.peer_id.as_uuid(), text: text.to_string(), media: Vec::new() }
+    } else if event.body.is_none() && event.kind == airc_core::TranscriptKind::Attachment && event.attachment.is_some() {
+        RoomTurn { sender: event.peer_id.as_uuid(), text: String::new(), media: Vec::new() }
+    } else {
+        match envelope_from_event(event) {
+            Err(_) => return Err("envelope_decode_error"),
+            Ok(None) => return Err("no_continuum_body_hint"),
+            Ok(Some(envelope)) => chat_transcript_content(&envelope, event.peer_id.as_uuid()).ok_or("non_chat_schema")?,
+        }
+    };
+    // Native AIRC attachments are first-class room input too. Preserve the
+    // envelope's logical sender/caption; never treat a peer's path as a local read.
+    if matches!(event.kind, airc_core::TranscriptKind::Message | airc_core::TranscriptKind::Attachment) {
+        if let Some(attachment) = &event.attachment {
+            let kind = attachment.media_type.as_deref()
+                .and_then(|mime| mime.split_once('/').map(|(kind, _)| kind))
+                .unwrap_or("file");
+            let media = crate::persona::channel_items::MediaItemRequest {
+                kind: kind.to_owned(), mime_type: attachment.media_type.clone(),
+                blob_hash: Some(attachment.content_hash.0.clone()),
+                url: None, description: None,
+            };
+            if !turn.media.contains(&media) {
+                turn.media.push(media);
+            }
         }
     }
+    Ok(turn)
 }
 
 pub fn chat_transcript_message(
     envelope: &AircRealtimeEnvelope,
     fallback_peer: uuid::Uuid,
 ) -> Option<(uuid::Uuid, String)> {
+    let turn = chat_transcript_content(envelope, fallback_peer)?;
+    Some((turn.sender, render_room_content(&turn.text, &turn.media)))
+}
+
+fn chat_transcript_content(envelope: &AircRealtimeEnvelope, fallback_peer: uuid::Uuid) -> Option<RoomTurn> {
     let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload else {
         return None;
     };
@@ -219,7 +272,8 @@ pub fn chat_transcript_message(
         .and_then(serde_json::Value::as_str)
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
         .unwrap_or(fallback_peer);
-    Some((sender, text.to_string()))
+    let media = inline.get("media").map(|value| serde_json::from_value(value.clone())).transpose().ok()?.unwrap_or_default();
+    Some(RoomTurn { sender, text: text.to_string(), media })
 }
 
 #[cfg(test)]
@@ -267,6 +321,23 @@ mod tests {
             "logical sender, not the relay"
         );
         assert_eq!(text, "is anyone there?");
+    }
+
+    // what this catches: media awareness must not embed URL/base64 or generated descriptions in every turn.
+    #[test]
+    fn media_notice_is_bounded_and_does_not_load_content() {
+        let item = crate::persona::channel_items::MediaItemRequest {
+            kind: "image".into(), mime_type: Some("image/png".into()),
+            blob_hash: Some(format!("sha256:{}", "a".repeat(64))),
+            url: Some(format!("data:image/png;base64,{}", "x".repeat(100_000))),
+            description: Some("unverified visual claim".into()),
+        };
+        let rendered = render_room_content("caption", &vec![item; 100]);
+        assert!(rendered.contains("100 media attachment(s)"));
+        assert!(rendered.contains("contents not loaded"));
+        assert!(!rendered.contains("base64"));
+        assert!(!rendered.contains("unverified visual claim"));
+        assert!(rendered.len() < 1000);
     }
 
     // what this catches: attribution recovery, not fabrication. When the

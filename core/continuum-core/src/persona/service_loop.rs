@@ -67,11 +67,11 @@ pub struct IncomingMessage {
     /// against the hosting persona's own peer_id to skip self-loop
     /// echoes.
     pub peer_id: Uuid,
-    /// The message text. The loop only forwards textual messages;
-    /// non-text events (binary attachments, control envelopes) are
-    /// filtered upstream of this projection — they should arrive as
-    /// `None` from the conversation's stream.
+    /// Caption/text of the room message.
     pub text: String,
+    /// Durable references only; decoding a message never fetches attachment bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<super::channel_items::MediaItemRequest>,
     /// The room the event ARRIVED in — the transport's `TranscriptEvent.room_id`,
     /// which is authoritative for the turn's context (A.6, the missing context
     /// axis). Nil means the source predates room stamping (scripted/test
@@ -84,12 +84,16 @@ pub struct IncomingMessage {
 }
 
 impl IncomingMessage {
+    pub(crate) fn render_content(&self) -> String {
+        crate::airc::realtime_wire::render_room_content(&self.text, &self.media)
+    }
+
     /// The same source-labelled input at inference, replay and teaching boundaries.
     /// This is rendering, not a replacement for the typed event/room identity.
     pub(crate) fn render_room_update(&self) -> String {
         format!(
             "[Room message received during this turn; room {}; peer {}; event {}]\n{}",
-            self.room_id, self.peer_id, self.event_id, self.text
+            self.room_id, self.peer_id, self.event_id, self.render_content()
         )
     }
 }
@@ -799,7 +803,9 @@ async fn serve_persona_loop_inner(
         // floor) — see `loop_dedup::defer_as_loop_filler` for the two-condition
         // trigger. Scheduling hygiene, not an output gate
         // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-        if crate::persona::loop_dedup::defer_as_loop_filler(
+        // This heuristic compares text only. Equal captions do not establish
+        // that two media-bearing messages are repeated input.
+        if msg.media.is_empty() && crate::persona::loop_dedup::defer_as_loop_filler(
             &msg.text,
             recent_inbound.make_contiguous(),
         ) {
@@ -813,7 +819,7 @@ async fn serve_persona_loop_inner(
                     .cloned()
                     .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
                 sender_type: crate::persona::types::SenderType::Persona,
-                content: msg.text.clone(),
+                content: msg.render_content(),
                 timestamp: now_ms,
                 priority: 0.5,
                 source_modality: None,
@@ -942,7 +948,7 @@ async fn serve_persona_loop_inner(
                 .cloned()
                 .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
             sender_type: crate::persona::types::SenderType::Persona,
-            content: msg.text.clone(),
+            content: msg.render_content(),
             timestamp: now_ms,
             priority: 0.5,
             source_modality: None,
@@ -1084,7 +1090,7 @@ async fn serve_persona_loop_inner(
             // time; the turn's `now_ms` must not be passed off as the event's time.
             Some(TriggerTurn {
                 peer_id: &msg.peer_id.to_string(),
-                content: &msg.text,
+                content: &msg.render_content(),
                 occurred_at_ms: 0,
             }),
         );
@@ -1355,7 +1361,7 @@ async fn serve_persona_loop_inner(
                     crate::persona::training_producer::TurnCreditCapture::for_turn(
                         ctx.identity.peer_id.as_uuid(),
                         &ctx.identity.agent_name,
-                        &msg.text,
+                        &msg.render_content(),
                         held_card.credit.as_ref(),
                     );
                 let turn_act_count;
@@ -1663,7 +1669,7 @@ async fn serve_persona_loop_inner(
             crate::persona::training_producer::produce(
                 ctx.identity.peer_id.as_uuid(),
                 ctx.identity.agent_name.clone(),
-                msg.text.clone(),
+                msg.render_content(),
                 response_text.clone(),
                 // Captured in the cycle arm above, at selection. `None` is an ordinary
                 // conversation: it leaves a `training.example.unverified` probe and is NOT
@@ -3058,6 +3064,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender: me,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let long = format!(
@@ -3090,6 +3097,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender: me,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let looping = vec![
@@ -3159,6 +3167,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender: me,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let rows = vec![
@@ -3233,6 +3242,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let rows = vec![
@@ -4550,6 +4560,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
@@ -4643,6 +4654,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
@@ -4957,6 +4969,7 @@ mod tests {
         // UnprimedConversation per [[test-fixtures-are-system-primitives]].
         let mut conversation = ScriptedConversation::new()
             .with_events(vec![Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
@@ -4996,6 +5009,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: persona_peer, // SELF
@@ -5038,6 +5052,7 @@ mod tests {
             .with_high_water(100) // pre-attach history was up to lamport=100
             .with_events(vec![
                 Ok(Some(IncomingMessage {
+                    media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 50, // BEFORE attach
                     peer_id: other_peer,
@@ -5045,6 +5060,7 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 100, // exactly at the mark — also skipped
                     peer_id: other_peer,
@@ -5052,6 +5068,7 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 101, // FRESH
                     peer_id: other_peer,
@@ -5100,6 +5117,7 @@ mod tests {
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Err("stream lag".to_string()),
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,

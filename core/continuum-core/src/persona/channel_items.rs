@@ -34,7 +34,7 @@ fn now_ms() -> u64 {
 /// disk via `blob_hash` on the way back into the model. Sending base64 through
 /// the inbox round-trip would balloon the IPC payload for no win — the disk
 /// fetch is already on the critical path for the cache-hit case anyway.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
