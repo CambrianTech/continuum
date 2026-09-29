@@ -1725,6 +1725,11 @@ pub fn begin_shutdown() -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>>
     process_shutdown().begin(signal_runtime())
 }
 
+/// Observe the retained terminal receipt without starting a shutdown.
+pub fn shutdown_receipt() -> Option<ShutdownReceipt> {
+    process_shutdown().result.borrow().clone()
+}
+
 /// Wait for the shutdown to finish, up to `budget`.
 ///
 /// `None` means it is still running — NOT that it failed and not that state is durable.

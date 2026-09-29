@@ -529,7 +529,7 @@ impl crate::persona::room_board_source::RoomBoardReader for StubAircCitizen {
         // No daemon in tests → an empty board. Cognition runs through cleanly
         // with no [room-kanban] grounding block.
         Ok(airc_work::BoardSnapshot {
-            cards: room.and_then(|id| self.boards.get(&id)).cloned().unwrap_or_default(),
+            cards: room.and_then(|id| self.boards.get(&id)).cloned().unwrap_or_default(), // This stub models an unseeded room as an empty board.
             lanes: Vec::new(),
             workspaces: Vec::new(),
             repo_tracking: Vec::new(),

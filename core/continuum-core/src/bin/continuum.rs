@@ -5641,8 +5641,60 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
     stop_with_authority(keep_lanes, false).await
 }
 
-/// `stop_with`, plus whether the operator is present to answer one consent prompt when
-/// this caller turns out to have no authority over the core.
+/// Discover receipt-acknowledged exit without beginning shutdown.
+async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::commands::system::shutdown::ShutdownTarget>, String> {
+    use continuum_core::commands::system::shutdown::ShutdownTarget;
+    let conn = connection();
+    let cmds = conn.commands();
+    let reply = tokio::time::timeout(Duration::from_secs(3), cmds.execute_value("system/shutdown-target", serde_json::json!({}))).await;
+    // Capability discovery does not drain. An older/unreachable core still goes
+    // through the existing terminate-authority preflight, never a guessed grant.
+    let Ok(Ok(value)) = reply else { return Ok(None) };
+    let target: ShutdownTarget = serde_json::from_value(value) // Decode the core process identity received over lifecycle IPC.
+        .map_err(|e| format!("invalid shutdown capability: {e}"))?;
+    if target.pid > i32::MAX as u32 || target.instance.is_empty() {
+        return Err("invalid shutdown process identity".into());
+    }
+    Ok((pids == [target.pid as i32]).then_some(target))
+}
+
+async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget) -> Result<GracefulStop, String> {
+    use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
+    let conn = connection();
+    let cmds = conn.commands();
+    let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
+        cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
+        .await.map_err(|_| "bound shutdown is still running; no exit acknowledgment sent".to_string())?
+        .map_err(|e| format!("bound shutdown failed; no exit acknowledgment sent: {e}"))?;
+    let result: ShutdownResult = serde_json::from_value(drain) // Decode the completed save receipt returned over lifecycle IPC.
+        .map_err(|e| format!("invalid shutdown receipt; no exit acknowledgment sent: {e}"))?;
+    // We HAVE the receipt before sending commit. A successful commit has no RPC
+    // reply: the core closes its own process, and OS exit is the completion proof.
+    let graceful = if result.receipt.state_is_durable() {
+        GracefulStop::Durable(result.receipt.summary())
+    } else {
+        GracefulStop::Incomplete(result.receipt.summary())
+    };
+    let pid = target.pid as i32;
+    let commit = ShutdownCommitParams {
+        target,
+        receipt_sha256: continuum_core::commands::system::shutdown::shutdown_receipt_digest(&result.receipt)
+            .map_err(|e| e.to_string())?,
+    };
+    let reply = tokio::time::timeout(TEARDOWN_EXIT_DEADLINE,
+        cmds.execute_value("system/shutdown-commit", serde_json::to_value(commit).map_err(|e| e.to_string())?)).await; // Encode the receipt acknowledgment for lifecycle IPC.
+    exited_within(pid, TEARDOWN_EXIT_DEADLINE).await.map_err(|why| {
+        format!("acknowledged shutdown did not exit: {why}; commit result: {reply:?}")
+    })?;
+    let evidence = core_process_evidence()
+        .map_err(|e| format!("cannot verify processes after acknowledged exit: {e}"))?;
+    if !evidence.core_pids.is_empty() {
+        return Err("another core is present after acknowledged exit; refusing replacement teardown".into());
+    }
+    Ok(graceful)
+}
+
+/// `stop_with`, plus whether the operator can answer a required consent prompt.
 async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
@@ -5653,38 +5705,48 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     // PREFLIGHT THE TEARDOWN AUTHORITY BEFORE THE DRAIN (Astra, 2026-09-22): the
     // drain is one-way, so a caller that cannot end the process must refuse here
     // rather than leave a drained core answering ping.
-    // A refusal here is only final when nobody can answer for it. With an operator
-    // present the missing privilege is BORROWED after the drain rather than the stop
-    // being abandoned before it — the difference between a clearer error and a node that
-    // comes back.
-    let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
-    // BORROW THE PRIVILEGE BEFORE ANYTHING IS DRAINED, not after. `operator_present` is
-    // INTENT; a consent can still be declined, time out, or land on a token that does not
-    // hold the privilege either — and a drain already spent by then leaves exactly the
-    // stranded core this preflight exists to prevent (Astra, 2026-09-22). The consented
-    // child therefore owns both halves for its target: it holds a TERMINATE handle open
-    // ACROSS its own drain, so every acquisition failure lands BEFORE the drain. The
-    // terminate itself can still fail and is still reported — a held handle narrows the
-    // window, it does not abolish it. When this returns Ok the core is already down and
-    // the request below finds nothing listening, which is the correct reading of that.
-    if let Some(pid) = may_drain.borrow_authority_for {
-        #[cfg(windows)]
-        {
-            let install_dir = installed_core_dir().await?;
-            elevated_teardown::request_elevated_teardown(pid, &install_dir).await?;
-            // Gone is proven the same way every other teardown proves it: the bounded
-            // deadline, never a probe on the next line (Astra, 2026-09-22).
-            exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
+    // For older cores, any missing privilege must be obtained BEFORE the drain.
+    // New Windows cores can exit after the CLI receives their save receipt.
+    // Older builds and multi-core recovery keep the OS-capability/UAC path.
+    let pids = cores_to_tear_down();
+    let target = if cfg!(windows) && keep_lanes {
+        probe_shutdown_target(&pids).await?
+    } else {
+        None
+    };
+    let self_exited = target.as_ref().map(|target| target.pid as i32);
+    let graceful = if let Some(target) = target {
+        commit_graceful_shutdown(target).await?
+    } else {
+        let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
+        // BORROW THE PRIVILEGE BEFORE ANYTHING IS DRAINED, not after. `operator_present` is
+        // INTENT; a consent can still be declined, time out, or land on a token that does not
+        // hold the privilege either — and a drain already spent by then leaves exactly the
+        // stranded core this preflight exists to prevent (Astra, 2026-09-22). The consented
+        // child therefore owns both halves for its target: it holds a TERMINATE handle open
+        // ACROSS its own drain, so every acquisition failure lands BEFORE the drain. The
+        // terminate itself can still fail and is still reported — a held handle narrows the
+        // window, it does not abolish it. When this returns Ok the core is already down and
+        // the request below finds nothing listening, which is the correct reading of that.
+        if let Some(pid) = may_drain.borrow_authority_for {
+            #[cfg(windows)]
+            {
+                let install_dir = installed_core_dir().await?;
+                elevated_teardown::request_elevated_teardown(pid, &install_dir).await?;
+                // Gone is proven the same way every other teardown proves it: the bounded
+                // deadline, never a probe on the next line (Astra, 2026-09-22).
+                exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
+            }
+            #[cfg(not(windows))]
+            {
+                return Err(format!(
+                    "install: no teardown authority over pid {pid}, and this platform has no \
+                     consent boundary to borrow one through — the core runs as another user"
+                ));
+            }
         }
-        #[cfg(not(windows))]
-        {
-            return Err(format!(
-                "install: no teardown authority over pid {pid}, and this platform has no \
-                 consent boundary to borrow one through — the core runs as another user"
-            ));
-        }
-    }
-    let graceful = request_graceful_stop(&may_drain).await;
+        request_graceful_stop(&may_drain).await
+    };
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
     // and passed `keep_lanes` because today the two callers are exactly reboot(true)/stop(false).
@@ -5725,7 +5787,13 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
         match contents.trim().parse::<i32>() {
             Ok(pid) => {
-                kill_pid_trees_preserving(&[pid], &keep);
+                if let Some(exited) = self_exited {
+                    if pid != exited {
+                        return Err("core PID changed after acknowledged exit; refusing to kill the replacement".into());
+                    }
+                } else {
+                    kill_pid_trees_preserving(&[pid], &keep);
+                }
                 println!("stopping core (pid {pid})");
                 // A PIDFILE IS A CLAIM THAT A PROCESS EXISTS. Removing it while the
                 // process exists is what makes every later reader wrong: the sweep
@@ -5779,6 +5847,9 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
         .filter(|pid| Some(*pid) != pidfile_core)
         .filter(|pid| pid_alive(*pid))
         .collect();
+    if self_exited.is_some() && !survivors.is_empty() {
+        return Err("a core appeared after acknowledged exit; refusing replacement teardown".into());
+    }
     if survivors.is_empty() {
         if !stopped {
             println!("no running core found");

@@ -45,7 +45,7 @@ function Get-CoreServiceSecurityDescriptor {
         }
         # Include generic rights: their mapped masks can overlap FRFX.
         if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessDenied -and
-            (([long]$ace.AccessMask -band (4026531840L -bor 0x1200a9)) -ne 0)) {
+            (([long]$ace.AccessMask -band (4026531840L -bor 0x1201bf)) -ne 0)) {
             throw 'Unsupported startup task ACL: deny ACE overlaps caller read/execute; no ACL changes made.'
         }
     }
@@ -54,28 +54,30 @@ function Get-CoreServiceSecurityDescriptor {
 
 function Test-CoreServiceCallerAccess {
     param([Parameter(Mandatory = $true)][string]$Sddl,
-        [Parameter(Mandatory = $true)][string]$UserSid)
+        [Parameter(Mandatory = $true)][string]$UserSid, [switch]$Update)
+    $rights = if ($Update) { 0x1201bf } else { 0x1200a9 }
     $security = Get-CoreServiceSecurityDescriptor -Sddl $Sddl
     return @($security.DiscretionaryAcl | Where-Object {
         $_.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
         ([int]$_.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -eq 0 -and
-        $_.SecurityIdentifier.Value -eq $UserSid -and ($_.AccessMask -band 0x1200a9) -eq 0x1200a9
+        $_.SecurityIdentifier.Value -eq $UserSid -and ($_.AccessMask -band $rights) -eq $rights
     }).Count -gt 0
 }
 
 function Grant-CoreServiceCallerAccess {
     param([Parameter(Mandatory = $true)][string]$Sddl,
-        [Parameter(Mandatory = $true)][string]$UserSid)
+        [Parameter(Mandatory = $true)][string]$UserSid, [switch]$Update)
+    $rights = if ($Update) { 0x1201bf } else { 0x1200a9 }
     $security = Get-CoreServiceSecurityDescriptor -Sddl $Sddl
     $caller = [Security.Principal.SecurityIdentifier]::new($UserSid)
-    if (-not (Test-CoreServiceCallerAccess -Sddl $Sddl -UserSid $UserSid)) {
+    if (-not (Test-CoreServiceCallerAccess -Sddl $Sddl -UserSid $UserSid -Update:$Update)) {
         $found = $false
         for ($i = 0; $i -lt $security.DiscretionaryAcl.Count; $i++) {
             $ace = $security.DiscretionaryAcl[$i]
             if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
                 $ace.AceFlags -eq [Security.AccessControl.AceFlags]::None -and
                 $ace.SecurityIdentifier -eq $caller) {
-                $ace.AccessMask = $ace.AccessMask -bor 0x1200a9
+                $ace.AccessMask = $ace.AccessMask -bor $rights
                 $security.DiscretionaryAcl[$i] = $ace
                 $found = $true
                 break
@@ -84,10 +86,39 @@ function Grant-CoreServiceCallerAccess {
         if (-not $found) {
             $security.DiscretionaryAcl.InsertAce($security.DiscretionaryAcl.Count,
                 [Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::None,
-                    [Security.AccessControl.AceQualifier]::AccessAllowed, 0x1200a9, $caller, $false, $null))
+                    [Security.AccessControl.AceQualifier]::AccessAllowed, $rights, $caller, $false, $null))
         }
     }
     return $security.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
+}
+
+# Update an existing task only; never change its principal, trigger, policy or ACL.
+# TASK_UPDATE | TASK_DONT_ADD_PRINCIPAL_ACE avoids implicit DACL changes that
+# would require WriteDAC. The caller's file-write grant is enough for this path.
+function Update-CoreServiceTaskAction {
+    param($Folder, [string]$Name, [string]$UserSid, [string]$Executable,
+        [string]$Arguments, [string]$Description)
+    $task = $Folder.GetTask($Name)
+    $definition = $task.Definition
+    if (-not (Test-CoreTaskUser -UserId $definition.Principal.UserId -ExpectedSid $UserSid) -or
+        $definition.Principal.LogonType -ne 2 -or $definition.Principal.RunLevel -ne 0 -or
+        -not (Test-CoreServiceCallerAccess -Sddl $task.GetSecurityDescriptor(4) -UserSid $UserSid -Update)) {
+        throw "Task $Name is not an updateable Limited/S4U task for this caller."
+    }
+    $definition.Actions.Clear()
+    $action = $definition.Actions.Create(0)
+    $action.Path = $Executable
+    $action.Arguments = $Arguments
+    if ($Description) { $definition.RegistrationInfo.Description = $Description }
+    $null = $Folder.RegisterTaskDefinition($Name, $definition, 20, $UserSid, $null, 2, $null)
+    $saved = $Folder.GetTask($Name).Definition
+    if (-not (Test-CoreTaskUser -UserId $saved.Principal.UserId -ExpectedSid $UserSid) -or
+        $saved.Principal.LogonType -ne 2 -or $saved.Principal.RunLevel -ne 0 -or
+        $saved.Actions.Count -ne 1 -or $saved.Actions.Item(1).Path -ne $Executable -or
+        $saved.Actions.Item(1).Arguments -ne $Arguments -or
+        ($Description -and $saved.RegistrationInfo.Description -cne $Description)) {
+        throw "Task $Name did not retain the prepared release action."
+    }
 }
 
 function Protect-CoreBuildOutput {
@@ -431,17 +462,28 @@ function Register-CoreServiceRelease {
         $canRun = Test-CoreServiceCallerAccess -UserSid $userSid -Sddl (
             $scheduler.GetFolder('\').GetTask('ContinuumCore').GetSecurityDescriptor(4))
     }
-    if ($task -and $canRun -and $task.Description -eq $description -and $task.Actions.Count -eq 1 -and
-        $task.Actions[0].Execute -eq $shell -and $task.Actions[0].Arguments -eq $arguments -and
+    $compatibleTask = $task -and $canRun -and $task.Actions.Count -eq 1 -and
+        $task.Actions[0].Execute -eq $shell -and
         (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid $userSid) -and $task.Principal.LogonType -eq 'S4U' -and
         $task.Principal.RunLevel -eq 'Limited' -and $task.Settings.Enabled -and
         $task.Settings.RestartCount -eq 999 -and $task.Settings.RestartInterval -eq 'PT1M' -and
         $task.Settings.ExecutionTimeLimit -eq 'PT0S' -and $task.Settings.MultipleInstances -eq 'IgnoreNew' -and
         $task.Settings.StartWhenAvailable -and -not $task.Settings.DisallowStartIfOnBatteries -and
         -not $task.Settings.StopIfGoingOnBatteries -and @($task.Triggers).Count -eq 1 -and
-        $task.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' -and $task.Triggers[0].Enabled) {
+        $task.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' -and $task.Triggers[0].Enabled
+    if ($compatibleTask -and $task.Description -eq $description -and $task.Actions[0].Arguments -eq $arguments) {
         Module-Skip 'service' 'prepared startup task already matches this release'
         return
+    }
+    $canUpdate = $false
+    if ($compatibleTask) {
+        $folder = $scheduler.GetFolder('\')
+        $deploy = Get-ScheduledTask -TaskName ContinuumDeploy -TaskPath '\' -ErrorAction SilentlyContinue
+        $canUpdate = $deploy -and
+            (Test-CoreTaskUser -UserId $deploy.Principal.UserId -ExpectedSid $userSid) -and
+            $deploy.Principal.LogonType -eq 'S4U' -and $deploy.Principal.RunLevel -eq 'Limited' -and
+            (Test-CoreServiceCallerAccess -Sddl ($folder.GetTask('ContinuumCore').GetSecurityDescriptor(4)) -UserSid $userSid -Update) -and
+            (Test-CoreServiceCallerAccess -Sddl ($folder.GetTask('ContinuumDeploy').GetSecurityDescriptor(4)) -UserSid $userSid -Update)
     }
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null
     $planPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-' + [guid]::NewGuid().ToString('N') + '.json')
@@ -450,9 +492,14 @@ function Register-CoreServiceRelease {
             ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
         # Elevate registration only, with the caller's SID explicit. The core and
         # build stay unelevated. Registration deliberately does not start a core.
-        Invoke-Elevated -Reason 'registering the ContinuumCore startup task (before core handoff)' -CommandLine @($shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
-            (Join-Path $RepoRoot 'tools\scripts\register-core-service.ps1'), '-PlanPath', $planPath)
-        if ($LASTEXITCODE -ne 0) { throw 'Startup registration failed; the running core has not been stopped.' }
+        if ($canUpdate) {
+            Update-CoreServiceTaskAction -Folder $folder -Name ContinuumDeploy -UserSid $userSid -Executable $Release.cli -Arguments 'deploy-consume'
+            Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $userSid -Executable $shell -Arguments $arguments -Description $description
+        } else {
+            Invoke-Elevated -Reason 'registering the ContinuumCore startup task (before core handoff)' -CommandLine @($shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
+                (Join-Path $RepoRoot 'tools\scripts\register-core-service.ps1'), '-PlanPath', $planPath)
+            if ($LASTEXITCODE -ne 0) { throw 'Startup registration failed; the running core has not been stopped.' }
+        }
     } finally {
         Remove-Item -LiteralPath $planPath -ErrorAction SilentlyContinue
     }
