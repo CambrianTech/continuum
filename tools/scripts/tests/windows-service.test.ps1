@@ -9,6 +9,61 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: binary-only updates left a legacy launcher/descriptor
+    # behind even when the running core SHA matched HEAD (5090, 2026-09-29).
+    $browserLauncher = Join-Path $scratch 'run-service-hidden.ps1'
+    [IO.File]::WriteAllText($browserLauncher, 'legacy launcher')
+    $browserRelease = [pscustomobject]@{ launcher = $browserLauncher }
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease)) {
+        throw 'Legacy descriptor falsely converged.'
+    }
+    $browserRelease | Add-Member -NotePropertyName eyeRoot -NotePropertyValue $repo
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease)) {
+        throw 'Legacy launcher falsely converged with the new root.'
+    }
+    Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination $browserLauncher
+    if (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease) {
+        throw 'Verified launcher and root did not converge.'
+    }
+    Write-Output 'PASS: browser release drift includes descriptor and launcher bytes'
+    & {
+        # Exercise the migration itself through the existing scheduler seam;
+        # no live registration or serving process is touched by this fixture.
+        $legacy = [pscustomobject]@{ launcher = $browserLauncher; artifact = 'kept-core'; engine = 'kept-engine'; cli = 'kept-cli' }
+        $script:browserTask = [pscustomobject]@{ Description = ($legacy | ConvertTo-Json -Compress); Actions = @([pscustomobject]@{Arguments = 'legacy'}) }
+        $script:refuseBrowserRegistration = $true
+        function Get-ScheduledTask { $script:browserTask }
+        function Clear-Elevation { }
+        function Register-CoreServiceRelease {
+            param($Release, $RepoRoot)
+            if ($script:refuseBrowserRegistration) { throw 'fixture registration refused' }
+            if ($Release.artifact -ne 'kept-core' -or $Release.engine -ne 'kept-engine' -or $Release.cli -ne 'kept-cli') {
+                throw 'Migration replaced binary or engine identity.'
+            }
+            $script:browserTask = [pscustomobject]@{
+                Description = ($Release | ConvertTo-Json -Compress)
+                Actions = @([pscustomobject]@{Arguments = ('launcher -EyeRoot "{0}"' -f $RepoRoot)})
+            }
+        }
+        $original = $script:browserTask.Description
+        $refused = $false
+        try { Update-CoreBrowserRelease -RepoRoot $repo } catch { $refused = $_ -match 'fixture registration refused' }
+        if (-not $refused -or $script:browserTask.Description -cne $original) { throw 'Registration refusal did not preserve the release.' }
+        $script:refuseBrowserRegistration = $false
+        Update-CoreBrowserRelease -RepoRoot $repo
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo) { throw 'Migration did not converge.' }
+        # Rust tracked paths and PowerShell fresh-install paths can spell the
+        # same Windows directory differently; that must not cause redeploys.
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo.ToUpperInvariant()) {
+            throw 'Path casing caused perpetual browser migration drift.'
+        }
+        $script:browserTask.Actions[0].Arguments = 'legacy'
+        if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo)) { throw 'Missing action argument falsely converged.' }
+        Update-CoreBrowserRelease -RepoRoot $repo
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo) { throw 'Action-only drift was not repaired.' }
+        Remove-Variable browserTask,refuseBrowserRegistration -Scope Script
+    }
+    Write-Output 'PASS: browser migration preserves identities, propagates refusal and repairs action drift'
     # Engine application receipts reject changed candidate sets and bytes using
     # real temporary files, without building/installing/spawning an engine.
     $engineFixture = Join-Path $scratch 'receipt engine'

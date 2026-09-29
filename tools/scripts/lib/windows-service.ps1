@@ -283,6 +283,53 @@ function Prepare-CoreServiceEngine {
     [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
 }
 
+function Get-CoreBrowserReleaseDrift {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot, $Release)
+    $task = $null
+    if (-not $Release) {
+        $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+        $Release = $task.Description | ConvertFrom-Json -ErrorAction Stop
+    }
+    $root = [IO.Path]::GetFullPath($RepoRoot)
+    if (-not [string]::Equals($Release.eyeRoot, $root, [StringComparison]::OrdinalIgnoreCase)) {
+        return 'browser asset root is not registered'
+    }
+    if ($task -and (@($task.Actions).Count -ne 1 -or
+        $task.Actions[0].Arguments.IndexOf((' -EyeRoot "{0}"' -f $root), [StringComparison]::OrdinalIgnoreCase) -lt 0)) {
+        return 'startup action does not pass the browser asset root'
+    }
+    $source = Join-Path $root 'tools\scripts\run-service-hidden.ps1'
+    if (-not (Test-Path -LiteralPath $Release.launcher -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $Release.launcher).Hash) {
+        return 'installed launcher differs from the release launcher'
+    }
+    return ''
+}
+
+function Update-CoreBrowserRelease {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+    $release = $task.Description | ConvertFrom-Json -ErrorAction Stop
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $RepoRoot)) { return }
+    # The install lease is held by the caller. This launcher remains compatible
+    # with the old argument list while the old supervisor continues serving.
+    $root = [IO.Path]::GetFullPath($RepoRoot)
+    $source = Join-Path $root 'tools\scripts\run-service-hidden.ps1'
+    Copy-Item -LiteralPath $source -Destination $release.launcher -Force -ErrorAction Stop
+    $release | Add-Member -NotePropertyName eyeRoot -NotePropertyValue $root -Force
+    if ((Get-CoreBrowserReleaseDrift -RepoRoot $root -Release $release)) {
+        throw 'Browser launcher copy did not verify; core handoff refused.'
+    }
+    if ((Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description -cne $task.Description) {
+        throw 'Installed release changed during browser migration; core handoff refused.'
+    }
+    try { Register-CoreServiceRelease -Release $release -RepoRoot $root }
+    finally { Clear-Elevation }
+    if (Get-CoreBrowserReleaseDrift -RepoRoot $root) {
+        throw 'Registered browser release did not converge; core handoff refused.'
+    }
+}
+
 function New-CoreServiceRelease {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
