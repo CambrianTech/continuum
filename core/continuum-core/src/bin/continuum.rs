@@ -5650,7 +5650,7 @@ async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::co
     // Capability discovery does not drain. An older/unreachable core still goes
     // through the existing terminate-authority preflight, never a guessed grant.
     let Ok(Ok(value)) = reply else { return Ok(None) };
-    let target: ShutdownTarget = serde_json::from_value(value)
+    let target: ShutdownTarget = serde_json::from_value(value) // Decode the core process identity received over lifecycle IPC.
         .map_err(|e| format!("invalid shutdown capability: {e}"))?;
     if target.pid > i32::MAX as u32 || target.instance.is_empty() {
         return Err("invalid shutdown process identity".into());
@@ -5663,10 +5663,10 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
     let conn = connection();
     let cmds = conn.commands();
     let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
-        cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?))
+        cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
         .await.map_err(|_| "bound shutdown is still running; no exit acknowledgment sent".to_string())?
         .map_err(|e| format!("bound shutdown failed; no exit acknowledgment sent: {e}"))?;
-    let result: ShutdownResult = serde_json::from_value(drain)
+    let result: ShutdownResult = serde_json::from_value(drain) // Decode the completed save receipt returned over lifecycle IPC.
         .map_err(|e| format!("invalid shutdown receipt; no exit acknowledgment sent: {e}"))?;
     // We HAVE the receipt before sending commit. A successful commit has no RPC
     // reply: the core closes its own process, and OS exit is the completion proof.
@@ -5682,7 +5682,7 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
             .map_err(|e| e.to_string())?,
     };
     let reply = tokio::time::timeout(TEARDOWN_EXIT_DEADLINE,
-        cmds.execute_value("system/shutdown-commit", serde_json::to_value(commit).map_err(|e| e.to_string())?)).await;
+        cmds.execute_value("system/shutdown-commit", serde_json::to_value(commit).map_err(|e| e.to_string())?)).await; // Encode the receipt acknowledgment for lifecycle IPC.
     exited_within(pid, TEARDOWN_EXIT_DEADLINE).await.map_err(|why| {
         format!("acknowledged shutdown did not exit: {why}; commit result: {reply:?}")
     })?;

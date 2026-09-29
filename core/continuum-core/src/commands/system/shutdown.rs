@@ -61,7 +61,7 @@ pub struct ShutdownCommitParams {
 
 pub fn shutdown_receipt_digest(receipt: &ShutdownReceipt) -> Result<String, crate::sdk_codegen::CommandError> {
     use sha2::Digest;
-    let bytes = serde_json::to_vec(receipt).map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?;
+    let bytes = serde_json::to_vec(receipt).map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?; // Canonical receipt bytes hashed by both sides of lifecycle IPC.
     Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
 }
 
