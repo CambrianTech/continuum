@@ -42,6 +42,10 @@ const MAX_OUTPUT_LINES_PER_EXECUTION: usize = 10_000;
 /// Maximum completed execution history entries per session.
 const MAX_HISTORY_ENTRIES: usize = 500;
 
+/// Completed output retained between commands, per session. Active executions
+/// keep their existing streaming limits; this is not a process memory ceiling.
+const MAX_COMPLETED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
 // ============================================================================
 // Execution State (shared between tokio task and IPC handler)
 // ============================================================================
@@ -489,9 +493,14 @@ impl ShellSession {
         }
     }
 
-    /// Every execution handle this session holds (running or finished, not yet GC'd).
+    /// Owned handles, including retained terminal metadata after output eviction.
+    /// This lets cross-workspace lookup report eviction rather than an unknown ID.
     pub fn execution_ids(&self) -> impl Iterator<Item = &str> {
-        self.executions.keys().map(String::as_str)
+        self.executions.keys().map(String::as_str).chain(
+            self.history.iter()
+                .filter(|entry| !self.executions.contains_key(&entry.execution_id))
+                .map(|entry| entry.execution_id.as_str()),
+        )
     }
 
     /// Whether any execution in this session is still running.
@@ -504,6 +513,9 @@ impl ShellSession {
     pub fn get_execution_state(&self, execution_id: &str) -> Result<Arc<Mutex<ExecutionState>>, String> {
         if let Some(state) = self.executions.get(execution_id) {
             return Ok(state.clone());
+        }
+        if self.history.iter().any(|entry| entry.execution_id == execution_id) {
+            return Err(format!("Output for completed shell execution '{execution_id}' was evicted by the session retention limit; exit/timing metadata remains in shell history"));
         }
         let candidates: Vec<Uuid> = self.executions.keys()
             .map(|id| Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}")))
@@ -581,40 +593,55 @@ impl ShellSession {
         &self.history
     }
 
-    /// Garbage-collect completed executions, moving them to history.
-    /// Called automatically before each new execution.
+    /// Index completed executions once and retain their output for the bounded history
+    /// lifetime. Running executions are never evicted; restart/destruction ends retention.
     pub fn gc(&mut self) {
-        let completed_ids: Vec<String> = self
-            .executions
-            .iter()
-            .filter_map(|(id, state)| {
-                let s = state.lock().ok()?;
-                if s.status != ShellExecutionStatus::Running {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        self.retain_completed(MAX_HISTORY_ENTRIES, MAX_COMPLETED_OUTPUT_BYTES);
+    }
 
-        for id in completed_ids {
-            if let Some(state_arc) = self.executions.remove(&id) {
-                if let Ok(state) = state_arc.lock() {
-                    self.history.push(ShellHistoryEntry {
-                        execution_id: state.id.clone(),
-                        command: state.command.clone(),
-                        exit_code: state.exit_code,
-                        started_at: state.started_at,
-                        finished_at: state.finished_at,
-                    });
-                }
+    fn retain_completed(&mut self, max_entries: usize, max_output_bytes: usize) {
+        let indexed: std::collections::HashSet<&str> = self.history.iter()
+            .map(|entry| entry.execution_id.as_str()).collect();
+        let completed: Vec<ShellHistoryEntry> = self.executions.iter()
+            .filter_map(|(id, state)| {
+                if indexed.contains(id.as_str()) { return None; }
+                let state = state.lock().ok()?;
+                if state.status == ShellExecutionStatus::Running { return None; }
+                Some(ShellHistoryEntry {
+                    execution_id: state.id.clone(), command: state.command.clone(),
+                    exit_code: state.exit_code, started_at: state.started_at,
+                    finished_at: state.finished_at,
+                })
+            }).collect();
+        // HashMap order must not choose which completed receipt is oldest.
+        self.history.extend(completed);
+        self.history.sort_by(|a, b| (a.finished_at, &a.execution_id).cmp(&(b.finished_at, &b.execution_id)));
+        if self.history.len() > max_entries {
+            let drain_count = self.history.len() - max_entries;
+            for entry in self.history.drain(..drain_count) {
+                self.executions.remove(&entry.execution_id);
             }
         }
-
-        // Cap history to prevent unbounded growth
-        if self.history.len() > MAX_HISTORY_ENTRIES {
-            let drain_count = self.history.len() - MAX_HISTORY_ENTRIES;
-            self.history.drain(..drain_count);
+        // Keep newest receipts within the byte allowance. Count allocations,
+        // not just line count: a single output line can be arbitrarily large.
+        // Eviction preserves history metadata and never selects active work.
+        let mut retained_bytes = 0usize;
+        let mut exhausted = false;
+        for entry in self.history.iter().rev() {
+            let Some(state) = self.executions.get(&entry.execution_id) else { continue; };
+            let Ok(state) = state.lock() else { continue; };
+            if state.status == ShellExecutionStatus::Running { continue; }
+            let bytes = state.stdout_lines.iter().chain(&state.stderr_lines)
+                .fold(0usize, |sum, line| sum.saturating_add(line.capacity()))
+                .saturating_add((state.stdout_lines.capacity() + state.stderr_lines.capacity())
+                    .saturating_mul(std::mem::size_of::<String>()));
+            drop(state);
+            if exhausted || bytes > max_output_bytes.saturating_sub(retained_bytes) {
+                exhausted = true;
+                self.executions.remove(&entry.execution_id);
+            } else {
+                retained_bytes += bytes;
+            }
         }
     }
 
@@ -1504,7 +1531,7 @@ mod tests {
         let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
 
         // Run a command to completion
-        let _result = session.execute_and_wait("echo done", Some(5000), rt.handle());
+        let result = session.execute_and_wait("echo done", Some(5000), rt.handle()).unwrap();
 
         assert!(session.history().is_empty());
 
@@ -1514,6 +1541,35 @@ mod tests {
         assert_eq!(session.history().len(), 1);
         assert_eq!(session.history()[0].command, "echo done");
         assert_eq!(session.history()[0].exit_code, Some(0));
+        // Regression: starting another command must not erase the first output.
+        // Explicit ordering avoids millisecond timestamp ties in fast shells.
+        session.history[0].finished_at = Some(1);
+        session.execute_and_wait("echo next", Some(5000), rt.handle()).unwrap();
+        session.gc();
+        session.gc();
+        assert_eq!(session.history().len(), 2, "index each receipt only once");
+        let receipt = session.get_execution_state(&result.execution_id).unwrap();
+        assert!(receipt.lock().unwrap().stdout_lines.join("\n").contains("done"));
+        assert_eq!(receipt.lock().unwrap().exit_code, Some(0));
+
+        // Count eviction keeps only the newest terminal receipt, not running work.
+        let running = session.execute("sleep 60", None, rt.handle()).unwrap();
+        session.retain_completed(1, usize::MAX);
+        assert_eq!(session.history().len(), 1);
+        assert!(session.get_execution_state(&result.execution_id).is_err());
+        assert!(session.get_execution_state(&running).is_ok());
+        let retained_id = session.history()[0].execution_id.clone();
+        assert!(session.get_execution_state(&retained_id).is_ok());
+
+        // Byte eviction catches a huge single line and retains exit metadata.
+        session.get_execution_state(&retained_id).unwrap().lock().unwrap()
+            .stderr_lines.push("x".repeat(4096));
+        session.retain_completed(1, 1024);
+        assert!(session.get_execution_state(&retained_id).unwrap_err().contains("evicted"));
+        assert_eq!(session.history()[0].exit_code, Some(0));
+        assert_eq!(session.execution_ids().filter(|id| *id == retained_id).count(), 1);
+        assert!(session.get_execution_state(&running).is_ok());
+        session.destroy();
     }
 
     #[test]
