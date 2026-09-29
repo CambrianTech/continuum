@@ -25,6 +25,31 @@ function fakeOpen(log: { opened: string[]; closed: number; acted: unknown[][] },
 }
 
 describe('perception/interact sessions', () => {
+  // Shutdown must include a browser whose asynchronous open finishes after stop.
+  it('drains an accepted open before closing and refuses new work during stop', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    let release!: () => void;
+    let entered!: () => void;
+    const opening = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sessions = new InteractSessions(async (url, viewport) => {
+      entered();
+      await gate;
+      return fakeOpen(log)(url, viewport);
+    });
+    const call = sessions.interact({ target: 'https://example.test/', actions: [] });
+    await opening;
+    const stopped = sessions.closeAll();
+    expect(sessions.closeAll()).toBe(stopped);
+    expect((await sessions.interact({ target: 'https://example.test/new', actions: [] })).success).toBe(false);
+    release();
+    await call;
+    await stopped;
+    expect(log.opened).toHaveLength(1);
+    expect(log.closed).toBe(1);
+    expect(sessions.size).toBe(0);
+  });
+
   // what this catches: a session that does not persist (every call reopening the page, so a
   // multi-step flow is impossible), actions not reaching the driver, or the delta not coming back.
   it('opens once, continues on the same page, and returns the delta', async () => {

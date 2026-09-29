@@ -95,6 +95,9 @@ export type OpenWeb = (url: string, viewport?: { width: number; height: number }
 export class InteractSessions {
   private readonly held = new Map<string, Held>();
   private readonly sweeper: ReturnType<typeof setInterval>;
+  private readonly active = new Set<Promise<InteractResult>>();
+  private stopping = false;
+  private stopped?: Promise<void>;
 
   constructor(
     private readonly openWeb: OpenWeb = (url, viewport) => PerceptionSession.openWeb({ url, viewport }),
@@ -105,7 +108,14 @@ export class InteractSessions {
   }
 
   /** Continue `params.session`, or open one at `params.target`; take the actions; observe. */
-  async interact(params: InteractParams): Promise<InteractResult> {
+  interact(params: InteractParams): Promise<InteractResult> {
+    if (this.stopping) return Promise.resolve(failure('eye-node is stopping; session unavailable'));
+    const pending = this.performInteract(params).finally(() => this.active.delete(pending));
+    this.active.add(pending);
+    return pending;
+  }
+
+  private async performInteract(params: InteractParams): Promise<InteractResult> {
     let handle = params.session;
     const caller = callerOf(params);
     try {
@@ -179,11 +189,19 @@ export class InteractSessions {
   }
 
   /** Close everything (the eye-node is stopping). */
-  async closeAll(): Promise<void> {
+  closeAll(): Promise<void> {
+    if (this.stopped) return this.stopped;
+    this.stopping = true;
     clearInterval(this.sweeper);
-    const all = [...this.held.values()];
-    this.held.clear();
-    await Promise.all(all.map((h) => h.session.close().catch(() => undefined)));
+    this.stopped = (async () => {
+      // An openWeb already in flight can publish a session after stop begins.
+      // Drain accepted calls before taking the final set of browsers to close.
+      await Promise.allSettled([...this.active]);
+      const all = [...this.held.values()];
+      this.held.clear();
+      await Promise.all(all.map((h) => h.session.close().catch(() => undefined)));
+    })();
+    return this.stopped;
   }
 }
 
