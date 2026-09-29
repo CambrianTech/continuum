@@ -104,7 +104,8 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: continuum-rust-1.95
+          shared-key: continuum-rust-1.95-workspace-v2
+          cache-workspace-crates: true
           cache-on-failure: true
 
       - name: cargo test -p continuum-core --lib
@@ -270,7 +271,8 @@ jobs:
           # SAME shared-key as the lib job: this job compiles the same crate with the
           # same profile, so it reads the warm cache the lib job already populates
           # rather than paying a cold build for the privilege of being parallel.
-          shared-key: continuum-rust-1.95
+          shared-key: continuum-rust-1.95-workspace-v2
+          cache-workspace-crates: true
           cache-on-failure: true
 
       # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
@@ -308,7 +310,8 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: continuum-rust-windows-1.95
+          shared-key: continuum-rust-windows-1.95-workspace-v2
+          cache-workspace-crates: true
           cache-on-failure: true
       - name: cargo check (lib + test harness, incl. test-fixtures targets)
         if: needs.changes.outputs.rust != 'false'
