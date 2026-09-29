@@ -1411,9 +1411,17 @@ impl PreparedCoreService {
     async fn browser_release(repo: &Path, check: bool) -> Result<String, String> {
         let repo = repo.to_string_lossy().replace('\'', "''");
         let action = if check { "Get-CoreBrowserReleaseDrift" } else { "Update-CoreBrowserRelease" };
-        Self::powershell(&format!(
+        let script = format!(
             "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; {action} -RepoRoot '{repo}'"
-        )).await
+        );
+        if check {
+            Self::powershell(&script).await
+        } else {
+            // Registration/consent is a foreground install operation, not a
+            // 30-second scheduler probe. Hold the install lease until it ends.
+            Self::run_installer_script(&script)?;
+            Ok(String::new())
+        }
     }
 
     #[cfg(windows)]
@@ -2259,6 +2267,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // converges the launcher contract even when the binary SHA is already current.
     #[cfg(windows)]
     if options.require_engine_receipt {
+        // Only install_core sets this flag, after entering the tracked checkout.
         let repo = std::env::current_dir().map_err(|e| e.to_string())?;
         PreparedCoreService::browser_release(&repo, false).await?;
         if service.is_some() {
