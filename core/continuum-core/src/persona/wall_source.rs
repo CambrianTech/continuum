@@ -462,6 +462,9 @@ impl RagSource for WallSource {
             return empty(resolution);
         }
 
+        // Ledger updates are durable wall records, not separate current guidance.
+        // Fold them through their existing owner before spending the context budget.
+        let posts = crate::experience::ledger::current_wall_records(posts);
         let (items, used, next) = Self::pack(&posts, 0, budget);
         if items.is_empty() {
             // Budget too small to carry even a truncated first post.
@@ -528,7 +531,9 @@ impl RagSource for WallSource {
         // Re-read the wall: the projection is cheap (a transcript window) and
         // re-reading keeps the cursor honest against a wall edited between
         // turns, rather than caching a snapshot that can drift.
-        let posts = self.reader.wall_posts(effective_room).await.ok()?;
+        let posts = crate::experience::ledger::current_wall_records(
+            self.reader.wall_posts(effective_room).await.ok()?,
+        );
         if start >= posts.len() {
             return None;
         }
@@ -626,6 +631,47 @@ mod tests {
             SOURCE_ID, "room-kanban",
             "and it must never collide with the work board's id -- two sources under              one header would make the grounding block ambiguous to the citizen"
         );
+    }
+
+    // what this catches: fixing ledger lookup while generic wall delivery still
+    // spends its context budget on obsolete revisions of the same card.
+    #[tokio::test]
+    async fn wall_delivery_projects_ledger_versions_before_budgeting() {
+        let card = Uuid::from_u128(7);
+        let ledger = |step: &str| {
+            let mut record = post(
+                crate::experience::ledger::LEDGER_WALL_CATEGORY,
+                &serde_json::to_string(&crate::experience::ledger::CardLedger {
+                    card_id: card,
+                    next_test: step.into(),
+                    ..Default::default()
+                })
+                .unwrap(),
+            );
+            record.room_id = airc_core::RoomId::from_uuid(Uuid::from_u128(9));
+            record
+        };
+        let source = WallSource::new(
+            persona(),
+            Arc::new(StubReader::new(vec![
+                ledger("obsolete step"),
+                post("plan", "shared activity plan"),
+                ledger("current step"),
+            ])),
+        );
+        let delivery = source
+            .deliver(&ctx(), 10_000, ResolutionPreference::Raw)
+            .await;
+        assert_eq!(delivery.items.len(), 2);
+        let text = delivery
+            .items
+            .iter()
+            .map(|i| i.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("shared activity plan"));
+        assert!(text.contains("current step"));
+        assert!(!text.contains("obsolete step"));
     }
 
     /// what this catches (#3883): the wall reading the room it was BOUND to instead
