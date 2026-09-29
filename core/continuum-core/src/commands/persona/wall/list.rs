@@ -154,8 +154,9 @@ fn page(
             Some(i) => i + 1,
             None => {
                 return Err(CommandError::Invalid(format!(
-                    "the wall changed since your last page: post {} (the cursor) was superseded. \
-                     Call again without `after` to read it from the start.",
+                    "post {} (the cursor) is not on this wall now: it was superseded since \
+                     your last page, or the cursor came from another room. Call again without \
+                     `after` to read the wall from the start.",
                     c.post_id
                 )))
             }
