@@ -956,10 +956,19 @@ function Mod-LlamaServer {
             if ($held.HasExited -or [DateTime]::UtcNow -ge $until) { throw 'Held child did not initialize' }
             Start-Sleep -Milliseconds 50
         }
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $null })
+        $refused = $false
+        try { Protect-CoreBuildOutput -TargetDirectory $target } catch { $refused = $_ -match 'Cannot inspect running core image paths' }
+        if (-not $refused -or $held.HasExited -or -not (Test-Path $output)) { throw 'Unknown busy image was not preserved' }
         $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = ('\\?\' + $output) })
         Protect-CoreBuildOutput -TargetDirectory $target
         if ($held.HasExited -or (Test-Path $output)) { throw 'Busy output was not preserved live under its previous name' }
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $null })
         Copy-Item -LiteralPath $child -Destination $output
+        # A free Cargo output is safe even when the service hides its image path.
+        Protect-CoreBuildOutput -TargetDirectory $target
+        if (-not (Test-Path $output) -or $held.HasExited) { throw 'Hidden service path blocked writable output or disturbed live core' }
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = ('\\?\' + $output) })
         # CIM retains the old path after rename: a retry must recognize that
         # the new output is writable instead of deleting the mapped old file.
         Protect-CoreBuildOutput -TargetDirectory $target
