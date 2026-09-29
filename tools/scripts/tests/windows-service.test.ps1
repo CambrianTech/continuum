@@ -9,6 +9,23 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: binary-only updates left a legacy launcher/descriptor
+    # behind even when the running core SHA matched HEAD (5090, 2026-09-29).
+    $browserLauncher = Join-Path $scratch 'run-service-hidden.ps1'
+    [IO.File]::WriteAllText($browserLauncher, 'legacy launcher')
+    $browserRelease = [pscustomobject]@{ launcher = $browserLauncher }
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease)) {
+        throw 'Legacy descriptor falsely converged.'
+    }
+    $browserRelease | Add-Member -NotePropertyName eyeRoot -NotePropertyValue $repo
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease)) {
+        throw 'Legacy launcher falsely converged with the new root.'
+    }
+    Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination $browserLauncher
+    if (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease) {
+        throw 'Verified launcher and root did not converge.'
+    }
+    Write-Output 'PASS: browser release drift includes descriptor and launcher bytes'
     # Engine application receipts reject changed candidate sets and bytes using
     # real temporary files, without building/installing/spawning an engine.
     $engineFixture = Join-Path $scratch 'receipt engine'

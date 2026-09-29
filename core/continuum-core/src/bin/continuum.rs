@@ -1408,6 +1408,15 @@ struct PreparedCoreService {
 
 impl PreparedCoreService {
     #[cfg(windows)]
+    async fn browser_release(repo: &Path, check: bool) -> Result<String, String> {
+        let repo = repo.to_string_lossy().replace('\'', "''");
+        let action = if check { "Get-CoreBrowserReleaseDrift" } else { "Update-CoreBrowserRelease" };
+        Self::powershell(&format!(
+            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; {action} -RepoRoot '{repo}'"
+        )).await
+    }
+
+    #[cfg(windows)]
     fn run_installer_script(script: &str) -> Result<(), String> {
         supervisor_install::run_installer_script(&Self::shell()?, script)
     }
@@ -2245,6 +2254,18 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // running core, and refusing to continue would leave the node down over a module that
     // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
     // exit code carries it.
+    // Registration may require consent and must succeed before draining the core.
+    // The unattended consumer cannot manufacture that consent; attended install
+    // converges the launcher contract even when the binary SHA is already current.
+    #[cfg(windows)]
+    if options.require_engine_receipt {
+        let repo = std::env::current_dir().map_err(|e| e.to_string())?;
+        PreparedCoreService::browser_release(&repo, false).await?;
+        if service.is_some() {
+            let candidate = prebuilt.as_ref().ok_or("release migration requires a verified core")?;
+            service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
+        }
+    }
     let _ = stop_with_authority(true, options.operator_present).await?;
     // NOW the slot is free. Staging writes the artifact the supervisor is bound to and
     // prepares the handoff; the validation that decides whether the core should have been
@@ -3320,10 +3341,17 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     if !engine_drift.is_empty() {
         println!("  engine: {engine_drift}");
     }
+    #[cfg(windows)]
+    let browser_drift = PreparedCoreService::browser_release(&repo, true).await?;
+    #[cfg(not(windows))]
+    let browser_drift = String::new();
+    if !browser_drift.is_empty() {
+        println!("  browser release: {browser_drift}");
+    }
     match running.as_deref() {
         Some(r)
             if continuum_core::runtime::deploy_tracker::same_commit(r, &head)
-                && engine_drift.is_empty() =>
+                && engine_drift.is_empty() && browser_drift.is_empty() =>
         {
             println!("✓ core: converged — running build {r} is HEAD");
             return Ok(ArmReport::converged());
