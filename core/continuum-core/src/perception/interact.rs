@@ -32,7 +32,7 @@ use super::{ObserveResult, ObserveViewport};
 /// `DomSurface` driver (Playwright), and a surface that cannot perform one refuses it
 /// loudly rather than skipping it. Selectors are CSS selectors, aimed at the element tree an
 /// observation returns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/perception/PerceptionAction.ts")]
 pub enum PerceptionAction {
@@ -52,17 +52,17 @@ pub enum PerceptionAction {
 
 /// What `perception/interact` takes: a new session (`target`) or an existing one
 /// (`session`), then the steps to take.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/perception/InteractParams.ts")]
 pub struct InteractParams {
     /// The session to continue, from an earlier call's result. Omit to open a new one at
-    /// `target`.
+    /// `target`. With neither, a verified caller continues their last live session.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub session: Option<String>,
     /// The URL to open a NEW session at (e.g. your dev server at http://localhost:31004).
-    /// Required when `session` is omitted; ignored otherwise (use a `goto` action).
+    /// Required if this caller has no live session; ignored with an explicit session (use `goto`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub target: Option<String>,
@@ -104,7 +104,7 @@ pub struct InteractResult {
 }
 
 /// What `perception/session-close` takes.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/perception/SessionCloseParams.ts")]
 pub struct SessionCloseParams {
@@ -141,10 +141,14 @@ impl crate::sdk_codegen::CommandSpec for InteractCommand {
          `session` for later `actions`: click, type, press, hover, goto, hotPatchCss. \
          Selectors are CSS. Each call returns the image, element tree and pixel-change `delta`. \
          hotPatchCss replaces the CSS patch while preserving page state; empty css clears it. \
-         Use this to test flows and iterate visually.";
+         Omit target/session to continue your last live page. Omit actions to observe it.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = InteractParams;
     type Result = InteractResult;
+    fn params_schema() -> serde_json::Value {
+        crate::sdk_codegen::input_schema::<Self::Params>()
+    }
+
 }
 
 crate::register_command!(InteractCommand);
@@ -162,6 +166,10 @@ impl crate::sdk_codegen::CommandSpec for SessionCloseCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = SessionCloseParams;
     type Result = SessionCloseResult;
+    fn params_schema() -> serde_json::Value {
+        crate::sdk_codegen::input_schema::<Self::Params>()
+    }
+
 }
 
 crate::register_command!(SessionCloseCommand);

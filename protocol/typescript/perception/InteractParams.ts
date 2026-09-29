@@ -9,12 +9,12 @@ import type { PerceptionAction } from "./PerceptionAction";
 export type InteractParams = { 
 /**
  * The session to continue, from an earlier call's result. Omit to open a new one at
- * `target`.
+ * `target`. With neither, a verified caller continues their last live session.
  */
 session?: string, 
 /**
  * The URL to open a NEW session at (e.g. your dev server at http://localhost:31004).
- * Required when `session` is omitted; ignored otherwise (use a `goto` action).
+ * Required if this caller has no live session; ignored with an explicit session (use `goto`).
  */
 target?: string, 
 /**

@@ -38,7 +38,7 @@ use super::{ObserveResult, ObserveViewport};
 /// `target` keeps observe's reinterpret-per-adapter contract (a URL for a web
 /// adapter; other surfaces map it — or refuse loudly when they have no style
 /// system to patch).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -135,6 +135,10 @@ impl crate::sdk_codegen::CommandSpec for HotEditCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = HotEditParams;
     type Result = HotEditResult;
+    fn params_schema() -> serde_json::Value {
+        crate::sdk_codegen::input_schema::<Self::Params>()
+    }
+
 }
 
 crate::register_command!(HotEditCommand);

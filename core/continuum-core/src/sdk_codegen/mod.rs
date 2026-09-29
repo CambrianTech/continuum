@@ -215,6 +215,13 @@ pub trait CommandSpec {
     }
 }
 
+/// Reflect a typed input contract for any command wire shape, including external
+/// adapters. Keep schema generation identical for native and provided commands.
+pub fn input_schema<P: schemars::JsonSchema>() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(P))
+        .expect("typed command schema must serialize")
+}
+
 /// A TS type the generated surface references: its TS name + the module it's
 /// imported from (the ts-rs output path, extension dropped). The single-source
 /// wire type lives at that module; the map only references it.
