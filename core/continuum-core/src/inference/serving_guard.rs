@@ -106,7 +106,7 @@ pub(crate) fn unguaranteed_model_refusal(
 /// unambiguous overflow that (with context-shift off) 500s AND poisons the slot for
 /// every later request, so the caller must refuse to send rather than take the shared
 /// lane down. `served_window == 0` (window unknown, e.g. mid-relaunch) → `None` (never
-/// block on an unknown budget). Estimate is chars/4 — the same conservative heuristic as
+/// block on an unknown budget). Text uses the deliberation budget's estimate — the same heuristic as
 /// the `serving.ctx_overshoot` alarm; we only trip on prompt-alone-overflows so a
 /// legitimately-budgeted request (which always leaves reply headroom) is never blocked.
 pub(crate) fn prompt_alone_overflows_served(
@@ -119,18 +119,34 @@ pub(crate) fn prompt_alone_overflows_served(
     (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
 }
 
-/// The ONE chars/4 estimate of a chat body's prompt — the overflow guard above, the
+/// The text estimate of a chat body's prompt — the overflow guard above, the
 /// `serving.ctx_overshoot` alarm, and the tripped-bound prefill measurement
 /// (`prefill_rate::observe_bound`) all size the same prompt; they must size it the same
-/// way. Conservative on purpose: 4 chars/token over-counts English and under-counts
-/// nothing that matters here. Missing/odd bodies estimate 0 (a guard never invents work).
+/// way, using the same text unit as deliberation. Multipart content must not make
+/// its text disappear. This is a text lower bound for media-bearing requests;
+/// encoded image bytes are NOT text tokens and require model-specific pricing.
 pub(crate) fn approx_prompt_tokens(body: &serde_json::Value) -> usize {
+    use crate::cognition::deliberation_budget::est_tokens;
     body.get("messages")
         .and_then(|m| m.as_array())
         .map(|msgs| {
             msgs.iter()
-                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                .map(|c| c.len() / 4)
+                .filter_map(|m| m.get("content"))
+                .map(|content| {
+                    if let Some(text) = content.as_str() {
+                        return est_tokens(text);
+                    }
+                    content.as_array().map(|parts| {
+                        // Sum bytes before converting units: splitting a text
+                        // into many short parts must not round its cost to zero.
+                        let bytes = parts.iter()
+                            .filter(|part| part.get("type").and_then(|t| t.as_str()) == Some("text"))
+                            .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
+                            .map(str::len)
+                            .sum::<usize>();
+                        bytes / crate::cognition::deliberation_budget::GUARD_CHARS_PER_TOKEN
+                    }).unwrap_or(0) // unwrap_or: absent/non-text content has no text cost; media pricing is separate.
+                })
                 .sum::<usize>()
         })
         .unwrap_or(0) // unwrap_or: no messages array = nothing to prefill; 0 is the honest estimate
@@ -266,13 +282,13 @@ mod tests {
     #[test]
     fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
         let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
-        // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
+        // Same estimate as deliberation: 48000 bytes / 3 vs an 8000-token slot.
         assert_eq!(
             prompt_alone_overflows_served(approx_prompt_tokens(&body(48_000)), 8_000),
-            Some(12_000),
+            Some(16_000),
             "prompt alone over the window must be refused"
         );
-        // ~4000 tokens vs an 8000 slot → fits (room for the prompt + a reply) → allow.
+        // ~5333 tokens vs an 8000 slot → fits (room for the prompt + a reply).
         assert_eq!(
             prompt_alone_overflows_served(approx_prompt_tokens(&body(16_000)), 8_000),
             None
@@ -287,5 +303,14 @@ mod tests {
             prompt_alone_overflows_served(approx_prompt_tokens(&serde_json::json!({})), 8_000),
             None
         );
+        // Regression #4592: adding image_url parts cannot erase accompanying
+        // instructions from the guard; base64 size must not be priced as text.
+        let multipart = serde_json::json!({"messages":[{"role":"user","content":[
+            {"type":"text","text":"x".repeat(24_001)},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}},
+            {"type":"text","text":"x".repeat(23_999)}
+        ]}]});
+        assert_eq!(approx_prompt_tokens(&multipart), approx_prompt_tokens(&body(48_000)));
+        assert_eq!(prompt_alone_overflows_served(approx_prompt_tokens(&multipart), 8_000), Some(16_000));
     }
 }
