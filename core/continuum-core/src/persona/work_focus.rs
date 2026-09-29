@@ -14,6 +14,19 @@ pub fn focus_card<'a>(held: impl IntoIterator<Item = &'a WorkCard>) -> Option<&'
     })
 }
 
+/// Work eligible to execute, from the already ownership/lease-filtered claim set.
+/// Review retains a claim but is not a new implementation turn.
+pub fn actionable(card: &WorkCard) -> bool {
+    matches!(card.state, airc_work::CardState::Claimed | airc_work::CardState::InProgress)
+}
+
+/// One selection for room hands, follow-on work, and tool provisioning.
+pub fn focus_actionable_card<'a>(
+    held: impl IntoIterator<Item = &'a WorkCard>,
+) -> Option<&'a WorkCard> {
+    focus_card(held.into_iter().filter(|card| actionable(card)))
+}
+
 /// Shared intent ordering for turn focus and surplus-claim reconciliation.
 /// Missing/unknown history never becomes an inferred explicit choice.
 pub(crate) fn explicit_choice_key(
@@ -115,5 +128,12 @@ mod tests {
         assert!(recovery_preferred_over_live(&held[1], [&held[0]]));
         assert!(!recovery_preferred_over_live(&held[0], [&held[1]]));
         assert!(recovery_preferred_over_live(&held[0], std::iter::empty()));
+        // A newer retained review claim must not move tools away from the
+        // implementation card selected by the follow-on work gate.
+        held[1].state = airc_work::CardState::Review;
+        assert_eq!(focus_actionable_card(held.iter()).map(|c| c.card_id), Some(held[0].card_id));
+        held[0].state = airc_work::CardState::Closed;
+        assert!(focus_actionable_card(held.iter()).is_none());
+
     }
 }

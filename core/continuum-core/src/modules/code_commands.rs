@@ -485,7 +485,7 @@ async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
     let peer = uuid::Uuid::parse_str(who).ok()?;
     let rt = crate::persona::operator_peer::local_runtime_of(peer)?;
     let held = rt.active_claims().await.ok()?;
-    let card = crate::persona::work_focus::focus_card(held.iter())?;
+    let card = crate::persona::work_focus::focus_actionable_card(held.iter())?;
     crate::modules::card_staging::checkout_path_for(&peer, card)
 }
 

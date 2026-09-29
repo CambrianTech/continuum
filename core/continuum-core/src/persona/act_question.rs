@@ -56,7 +56,7 @@ const WORK_GATE_PAGE_ROWS: usize = 400;
 /// claimed but not yet started is held: beginning must not be the precondition for
 /// beginning).
 pub fn card_is_held(c: &airc_lib::WorkCard) -> bool {
-    matches!(c.state, airc_work::CardState::InProgress | airc_work::CardState::Claimed)
+    crate::persona::work_focus::actionable(c)
 }
 
 pub(crate) async fn ask_the_act_question(
@@ -130,13 +130,12 @@ pub(crate) async fn ask_the_act_question(
             let claims_result = citizen.active_claims().await;
             let claims_err = claims_result.as_ref().err().map(|e| e.to_string());
             let claims = claims_result.unwrap_or_default();
-            let held: Vec<&airc_lib::WorkCard> = claims.iter().filter(|c| card_is_held(c)).collect();
             // ONE card per work turn — her freshest live claim (the FOCUS rule,
             // `bench_round::room_for_card`): with two held cards the staging
             // resolution was ambiguous, her hands stayed at home, and every act
             // landed in her own repo copy (Lorcan, 2026-09-04). The other card
             // stays held; its turn comes when it is the freshest.
-            let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_card(held)
+            let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_actionable_card(claims.iter())
                 .into_iter()
                 .collect();
             crate::probe!(
