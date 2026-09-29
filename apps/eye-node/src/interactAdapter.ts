@@ -80,6 +80,8 @@ export function toDomAction(action: PerceptionAction): DomAction {
       return { kind: 'hover', selector: action.selector };
     case 'goto':
       return { kind: 'goto', url: action.url };
+    case 'hotPatchCss':
+      return { kind: 'hotPatchCss', css: action.css };
   }
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Percept } from '@continuum/perception';
 
 import { IDLE_MS, InteractSessions, MAX_SESSIONS, toDomAction, type OpenWeb } from './interactAdapter';
 
@@ -8,7 +9,7 @@ import { IDLE_MS, InteractSessions, MAX_SESSIONS, toDomAction, type OpenWeb } fr
 function fakeOpen(log: { opened: string[]; closed: number; acted: unknown[][] }, failOn?: string): OpenWeb {
   return async (url) => {
     log.opened.push(url);
-    const percept = { width: 2, height: 2, rgba: new Uint8Array(16) };
+    const percept: Percept = { kind: 'image', mime: 'image/png', width: 2, height: 2, bytes: new Uint8Array(16) };
     const observation = { percept, structure: { url, title: 'Tracker', tree: { role: 'document', name: '', children: [] } } };
     return {
       observe: async () => observation,
@@ -90,6 +91,21 @@ describe('perception/interact sessions', () => {
       { kind: 'click', selector: '#approve' },
       { kind: 'goto', url: 'http://localhost:31004/gates' },
     ]);
+    // CSS iteration must retain the navigated page and return image feedback,
+    // rather than opening hot-edit's separate, freshly loaded page.
+    for (const css of ['body{background:purple}', '']) {
+      const patched = await sessions.interact({
+        session: first.session,
+        actions: [{ kind: 'hotPatchCss', css }],
+      });
+      expect(patched.success).toBe(true);
+      expect(patched.session).toBe(first.session);
+      expect(patched.image).toBeDefined();
+      expect(patched.delta?.ratio).toBe(0.25);
+      expect(log.acted.at(-1)).toEqual([{ kind: 'hotPatchCss', css }]);
+    }
+    expect(log.opened).toHaveLength(1);
+    expect(log.closed).toBe(0);
     await sessions.closeAll();
   });
 

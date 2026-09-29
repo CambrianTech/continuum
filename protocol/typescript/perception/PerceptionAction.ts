@@ -6,4 +6,4 @@
  * loudly rather than skipping it. Selectors are CSS selectors, aimed at the element tree an
  * observation returns.
  */
-export type PerceptionAction = { "kind": "click", selector: string, } | { "kind": "type", selector: string, text: string, } | { "kind": "press", key: string, } | { "kind": "hover", selector: string, } | { "kind": "goto", url: string, };
+export type PerceptionAction = { "kind": "click", selector: string, } | { "kind": "type", selector: string, text: string, } | { "kind": "press", key: string, } | { "kind": "hover", selector: string, } | { "kind": "goto", url: string, } | { "kind": "hotPatchCss", css: string, };

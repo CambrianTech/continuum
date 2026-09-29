@@ -46,6 +46,8 @@ pub enum PerceptionAction {
     Hover { selector: String },
     // Navigate the session's page to `url`.
     Goto { url: String },
+    /// Replace the session's CSS patch without reopening the page; empty CSS clears it.
+    HotPatchCss { css: String },
 }
 
 /// What `perception/interact` takes: a new session (`target`) or an existing one
@@ -138,9 +140,10 @@ impl crate::sdk_codegen::CommandSpec for InteractCommand {
         "Drive a live web page in a persistent browser session and see the result. First call: \
          pass `target` (a URL, e.g. your dev server) to open a session; you get back a \
          `session` handle plus the page's image and element tree. Later calls: pass `session` \
-         and `actions` (click, type, press, hover, goto; selectors are CSS, aimed at the tree) \
+         and `actions` (click, type, press, hover, goto, hotPatchCss; selectors are CSS) \
          and you get the page after them plus `delta`, the fraction of pixels they changed. \
-         Use it to check a flow works and to capture evidence of it.";
+         hotPatchCss replaces the live page's CSS patch without losing page state; \
+         pass empty css to clear it. Use this to check flows and iterate visually.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = InteractParams;
     type Result = InteractResult;
@@ -182,10 +185,11 @@ mod tests {
             PerceptionAction::Press { key: "Enter".into() },
             PerceptionAction::Hover { selector: "nav".into() },
             PerceptionAction::Goto { url: "http://localhost:31004/gates".into() },
+            PerceptionAction::HotPatchCss { css: "body{background:purple}".into() },
         ];
         let json = serde_json::to_value(&actions).expect("actions serialize");
         let kinds: Vec<&str> = json.as_array().expect("array").iter().map(|a| a["kind"].as_str().expect("kind")).collect();
-        assert_eq!(kinds, ["click", "type", "press", "hover", "goto"]);
+        assert_eq!(kinds, ["click", "type", "press", "hover", "goto", "hotPatchCss"]);
         assert_eq!(json[1]["text"], serde_json::json!("rust"));
         let back: Vec<PerceptionAction> = serde_json::from_value(json).expect("actions round-trip");
         assert_eq!(back, actions);
