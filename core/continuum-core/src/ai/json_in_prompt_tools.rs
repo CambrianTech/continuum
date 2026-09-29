@@ -1484,15 +1484,17 @@ impl ToolCallFormat for BareFormat {
     }
     fn parse(&self, text: &str) -> Vec<ToolCall> {
         scan_objects(text, |obj| {
-            let has_name = ["\"name\"", "\"function\"", "\"tool\"", "\"command\""]
+            let value: serde_json::Value = serde_json::from_str(obj).ok()?;
+            let fields = value.as_object()?;
+            let has_name = ["name", "function", "tool", "command"]
                 .iter()
-                .any(|k| obj.contains(k));
+                .any(|k| fields.contains_key(*k));
             if !has_name {
                 return None; // not a tool call — avoid false positives
             }
-            let has_args = ["\"arguments\"", "\"parameters\"", "\"params\"", "\"input\""]
+            let has_args = ["arguments", "parameters", "params", "input"]
                 .iter()
-                .any(|k| obj.contains(k));
+                .any(|k| fields.contains_key(*k));
             let call = serde_json::from_str::<ToolCallJson>(obj).ok()?;
             if call.name.trim().is_empty() {
                 return None;
@@ -1505,9 +1507,9 @@ impl ToolCallFormat for BareFormat {
             // a tool literally called "cargo test". Same discriminator the
             // sibling-args lift uses below — does the name RESOLVE, not does the
             // key exist.
-            let command_keyed = !["\"name\"", "\"function\"", "\"tool\""]
+            let command_keyed = !["name", "function", "tool"]
                 .iter()
-                .any(|k| obj.contains(k));
+                .any(|k| fields.contains_key(*k));
             if command_keyed {
                 let name = call.name.trim();
                 let tool_shaped = name.contains('/')
@@ -2504,6 +2506,12 @@ relevant code.";
     fn prose_with_a_name_field_is_not_a_tool_call() {
         assert!(parse_tool_calls(r#"I think {"name": "Asha"} is a nice handle."#).is_empty());
         assert!(parse_tool_call("just answering normally, no tools today").is_none());
+        // Nested schema keys are data, not the outer object's call envelope.
+        // Substring scanning used to let nested `input` bypass the name guard,
+        // or nested `name` bypass the shell-command discriminator.
+        assert!(BareFormat.parse(r#"{"name":"owner_id","schema":{"input":"string"}}"#).is_empty());
+        assert!(BareFormat.parse(r#"{"command":"echo hello","schema":{"name":"field","input":"string"}}"#).is_empty());
+        assert_eq!(BareFormat.parse(r#"{"name":"code/read","input":{"path":"schema.json"}}"#).len(), 1);
     }
 
     // what this catches: #293 starvation, layer 1 — a lane mis-declared
