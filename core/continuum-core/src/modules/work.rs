@@ -1714,8 +1714,10 @@ pub struct WorkCreateParams {
     /// The room whose board gets the card (id or name).
     // Required: a "current room" default put project cards in #general.
     pub room: String,
-    /// Repository key, e.g. `CambrianTech/continuum`.
-    pub repo: String,
+    /// The repository (owner/name). Omit to use the repo of the card you hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repo: Option<String>,
     /// Human-readable card title.
     pub title: String,
     /// Optional card body / description.
@@ -1772,11 +1774,33 @@ impl ActionCommand for WorkCreate {
     }
 }
 
+/// The repo of the card she is focused on, the same focus rule every turn uses.
+async fn held_repo(airc: &Airc) -> Option<RepoId> {
+    let status = airc
+        .work_roster_status(airc_lib::WorkRosterQuery::default())
+        .await
+        .ok()?;
+    let me = airc.peer_id();
+    let row = status.rows.into_iter().find(|r| r.peer == me)?;
+    crate::persona::work_focus::focus_card(row.active_claims.iter()).map(|c| c.repo.clone())
+}
+
 impl WorkCreate {
     /// The card lands on the NAMED room's board under the caller's own airc identity.
     async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
-        let repo = RepoId::new(p.repo)
-            .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
+        // A named repo wins; otherwise the card she holds says what she is working on
+        // (Kimi, 2026-09-28: the doc's example named this repo, so her first
+        // career-wrangler slice card was filed against continuum).
+        let repo = match p.repo.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+            Some(named) => RepoId::new(named.to_string())
+                .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
+            None => held_repo(airc).await.ok_or_else(|| {
+                CommandError::Invalid(
+                    "work/create: name the repo (owner/name); you hold no card to take it from"
+                        .into(),
+                )
+            })?,
+        };
         let mut req = CreateWorkCard::new(
             repo,
             p.title,
@@ -4034,7 +4058,7 @@ mod tests {
             &airc,
             WorkCreateParams {
                 room: "career-wrangler".to_string(),
-                repo: "github.com/CambrianTech/career-wrangler".to_string(),
+                repo: Some("github.com/CambrianTech/career-wrangler".to_string()),
                 title: "job list page".to_string(),
                 body: None,
                 priority: Some(CardPriority::P1),
@@ -4060,7 +4084,7 @@ mod tests {
             &airc,
             WorkCreateParams {
                 room: "  ".to_string(),
-                repo: "github.com/CambrianTech/career-wrangler".to_string(),
+                repo: Some("github.com/CambrianTech/career-wrangler".to_string()),
                 title: "should not land".to_string(),
                 body: None,
                 priority: None,
@@ -4068,6 +4092,23 @@ mod tests {
         )
         .await;
         assert!(matches!(blank, Err(CommandError::Invalid(_))), "{blank:?}");
+
+        // No repo named and no card held: refused with the fix, never a default repo.
+        let unnamed = WorkCreate::create(
+            &airc,
+            WorkCreateParams {
+                room: "career-wrangler".to_string(),
+                repo: None,
+                title: "orphan".to_string(),
+                body: None,
+                priority: None,
+            },
+        )
+        .await;
+        assert!(
+            matches!(&unnamed, Err(CommandError::Invalid(m)) if m.contains("name the repo")),
+            "{unnamed:?}"
+        );
     }
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
