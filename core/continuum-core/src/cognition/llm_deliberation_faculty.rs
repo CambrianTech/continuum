@@ -8177,7 +8177,11 @@ mod tests {
             // does): perception/interact
             // joined the native surface (session, target, viewport, actions, selector), the
             // DRIVE half of the observe loop (card 3569675f).
-            const AGENTIC_SURFACE_CEILING: u32 = 13610;
+            // 13610 -> 13624 (measured on canary ac65b92c7), stated plainly (2026-09-28, Joel:
+            // a citizen's confusion is a tool-feedback defect): #4557 rewrote work/submit's
+            // artifact help to lead with "Omit: computed from your checkout. Not a git sha."
+            // after Kimi stalled supplying a hash the verb computes. The words are the fix.
+            const AGENTIC_SURFACE_CEILING: u32 = 13624;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
