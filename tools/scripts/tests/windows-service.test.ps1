@@ -251,6 +251,15 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $refused = $false
         try { Assert-CorePreparedRelease -Release $bad -InstallRoot $resumeRoot } catch { $refused = $_ -match 'unexpected or missing fields' }
         if (-not $refused) { throw 'Unknown descriptor field was accepted' }
+        # Browser-root evolution must work through the prepared-release path,
+        # while old descriptors above remain valid and unsafe roots are refused.
+        $withEye = $release | ConvertTo-Json | ConvertFrom-Json
+        $withEye | Add-Member NoteProperty eyeRoot $repo
+        Assert-CorePreparedRelease -Release $withEye -InstallRoot $resumeRoot
+        $withEye.eyeRoot = 'relative/assets'
+        $refused = $false
+        try { Assert-CorePreparedRelease -Release $withEye -InstallRoot $resumeRoot } catch { $refused = $_ -match 'eyeRoot must be absolute' }
+        if (-not $refused) { throw 'Relative browser root was accepted' }
         $redirect = Join-Path $resumeRoot 'bin\service-b'
         New-Item -ItemType Junction -Path $redirect -Target $serviceSlot | Out-Null
         try {

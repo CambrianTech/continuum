@@ -220,6 +220,15 @@ async fn run() -> Result<(), CliError> {
                 ));
             }
             let t = std::time::Instant::now();
+            #[cfg(windows)]
+            let out = match start(false).await {
+                Ok(()) => match verify_deployed_build(false).await {
+                    Ok(()) => Outcome::Ok("installed start path verified".into()),
+                    Err(e) => Outcome::Failed(format!("verify: {e}")),
+                },
+                Err(e) => Outcome::Failed(e),
+            };
+            #[cfg(not(windows))]
             let out = match launch_core(&[], LaunchSource::Installed).await {
                 Ok(pid) => match verify_deployed_build(false).await {
                     Ok(()) => Outcome::Ok(format!("pid {pid}, #194 verified")),
@@ -1177,8 +1186,8 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        if args.len() != 3 || args.iter().any(|arg| arg.is_empty()) {
-            return Err("service-host requires <core-path> <socket> <engine-path>".to_string());
+        if !(3..=4).contains(&args.len()) || args.iter().any(|arg| arg.is_empty()) {
+            return Err("service-host requires <core-path> <socket> <engine-path> [eye-root]".to_string());
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command);
@@ -1213,6 +1222,11 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
             }
         }
         command.env("CONTINUUM_CORE_SOCKET", &args[1]);
+        // Use the effective CHILD environment, including config.env, exactly as
+        // the core listener will. Task-host environment can differ from it.
+        let tcp = command_env(&command, "CONTINUUM_CORE_TCP");
+        let endpoint = format!("tcp://127.0.0.1:{}",
+            continuum_core::ipc::endpoint_paths::tcp_port_from(tcp.as_deref().and_then(|s| s.to_str())));
         command.stdin(Stdio::null()).creation_flags(0x0800_0000);
         let mut command = tokio::process::Command::from(command);
         command.kill_on_drop(true);
@@ -1224,9 +1238,48 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
             .ok_or("service-host core exited before PID registration")?;
         std::fs::write(pidfile_for(&args[1]), pid.to_string())
             .map_err(|e| format!("service-host cannot record core PID: {e}"))?;
-        let status = child
-            .wait()
-            .await
+        if args.len() == 3 {
+            eprintln!("service-host: browser unavailable: no eyeRoot registered; reinstall to register browser assets");
+        }
+        let eye = args.get(3).and_then(|root| {
+            match continuum_core::boot_plan::start_service_eye(Path::new(root), &endpoint) {
+                Ok(eye) => {
+                    eprintln!("service-host: browser worker {} spawned for {endpoint}; registration pending", eye.id());
+                    Some(eye)
+                }
+                Err(why) => {
+                    eprintln!("service-host: browser unavailable: {why}; core remains serving");
+                    None
+                }
+            }
+        });
+        let status = if let Some(mut eye) = eye {
+            tokio::select! {
+                // Core shutdown owns the tree's lifetime, including descendants.
+                status = child.wait() => {
+                    eye.request_stop();
+                    const EYE_STOP_GRACE: Duration = Duration::from_secs(15);
+                    match tokio::time::timeout(EYE_STOP_GRACE, eye.wait()).await {
+                        Ok(Ok(_)) => {},
+                        Ok(Err(error)) => eprintln!("service-host: browser shutdown observation failed ({error}); closing owned tree"),
+                        Err(_) => eprintln!("service-host: browser shutdown grace expired; closing owned tree"),
+                    }
+                    status
+                },
+                status = eye.wait() => {
+                    match status {
+                        Ok(status) => eprintln!("service-host: browser unavailable: worker exited ({status}); core remains serving"),
+                        Err(error) => eprintln!("service-host: browser unavailable: worker exit observation failed ({error}); core remains serving"),
+                    }
+                    // Remove any surviving descendants before considering a later
+                    // recovery. Never leave a browser orphan or kill the core.
+                    drop(eye);
+                    child.wait().await
+                }
+            }
+        } else {
+            child.wait().await
+        }
             .map_err(|e| format!("service-host cannot wait for core: {e}"))?;
         Ok(status.code().unwrap_or(1))
     }
@@ -1242,6 +1295,8 @@ struct CoreServiceDescription {
     cli: String,
     engine: String,
     log_directory: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eye_root: Option<String>,
 }
 
 #[cfg(any(windows, test))]
@@ -1325,11 +1380,17 @@ impl CoreServiceTask {
                 );
             }
         }
-        let expected = format!(
+        let mut expected = format!(
             "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File \"{}\" -ExecutablePath \"{}\" -CorePath \"{}\" -SocketPath \"{}\" -EnginePath \"{}\" -LogDirectory \"{}\"",
             description.launcher, description.cli, description.artifact,
             description.socket, description.engine, description.log_directory,
         );
+        if let Some(root) = &description.eye_root {
+            if !Path::new(root).is_absolute() || root.contains(['"', '\r', '\n']) || root.ends_with('\\') {
+                return Err("ContinuumCore eyeRoot must be an absolute, quotable asset directory".into());
+            }
+            expected.push_str(&format!(" -EyeRoot \"{root}\""));
+        }
         if self.arguments != expected {
             return Err("ContinuumCore action differs from its artifact descriptor; rerun the installer before reboot".to_string());
         }
@@ -6426,6 +6487,19 @@ mod tests {
             build_sha: "123456789".to_string(),
         };
         task.validate(&candidate, &socket, &shell).unwrap();
+        // A worker root is part of the registered release, not the scheduler's
+        // cwd. Legacy releases omit it; new releases must pass it in the action.
+        let mut with_eye = description.clone();
+        with_eye["eyeRoot"] = serde_json::json!(directory);
+        task.description = with_eye.to_string();
+        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        task.arguments = format!("{arguments} -EyeRoot \"{}\"", directory.display());
+        task.validate(&candidate, &socket, &shell).unwrap();
+        with_eye["eyeRoot"] = serde_json::json!("relative/assets");
+        task.description = with_eye.to_string();
+        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        task.description = description.to_string();
+        task.arguments = arguments.clone();
         // Engine-only migration can change the selected release without
         // changing its Core artifact; the transfer binds the full descriptor.
         {

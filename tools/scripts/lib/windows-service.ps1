@@ -344,6 +344,7 @@ function New-CoreServiceRelease {
         cli = (Join-Path $slot 'continuum.exe')
         engine = (Join-Path $engineSlot 'llama-server.exe')
         logDirectory = (Join-Path $InstallRoot 'logs')
+        eyeRoot = [IO.Path]::GetFullPath($RepoRoot)
     }
 }
 
@@ -368,6 +369,7 @@ function Register-CoreServiceRelease {
     if ($PrepareOnly) { return }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "{0}" -ExecutablePath "{1}" -CorePath "{2}" -SocketPath "{3}" -EnginePath "{4}" -LogDirectory "{5}"' -f $Release.launcher, $Release.cli, $Release.artifact, $Release.socket, $Release.engine, $Release.logDirectory
+    if ($Release.eyeRoot) { $arguments += ' -EyeRoot "{0}"' -f $Release.eyeRoot }
     $description = $Release | ConvertTo-Json -Compress
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue

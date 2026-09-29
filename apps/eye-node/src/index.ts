@@ -23,19 +23,34 @@ async function main(): Promise<void> {
 
   const eye = new EyeNode({ socketPath, label });
 
-  const shutdown = (signal: string) => {
+  let stopping = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
     console.log(`eye-node: ${signal} — disconnecting`);
-    eye.stop();
+    await eye.stop();
     process.exit(0);
   };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  const onSignal = (signal: string): void => {
+    void shutdown(signal).catch((error) => {
+      console.error('eye-node: shutdown failed', error);
+      process.exit(1);
+    });
+  };
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  // Only a service-owned worker has this pipe. Detached/interactive launches
+  // keep their existing signal lifecycle; null stdin must not stop them.
+  if (process.env.CONTINUUM_EYE_STDIN_LIFELINE === '1') {
+    process.stdin.once('end', () => onSignal('service host closed lifeline'));
+    process.stdin.resume();
+  }
 
   console.log(`eye-node: connecting to core at ${socketPath} …`);
   // The start path spawns the eye-node BEFORE exec'ing the core, so the socket
   // may not exist yet — keep dialing until the core binds. After first bind,
   // the transport's serve-side self-healing owns reconnection across reboots.
-  for (let attempt = 1; ; attempt++) {
+  for (let attempt = 1; !stopping; attempt++) {
     try {
       await eye.start();
       break;

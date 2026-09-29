@@ -8,13 +8,15 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Native')][string]$CorePath,
     [Parameter(Mandatory = $true, ParameterSetName = 'Native')][string]$SocketPath,
     [Parameter(Mandatory = $true, ParameterSetName = 'Native')][string]$EnginePath,
-    [Parameter(Mandatory = $true)][string]$LogDirectory
+    [Parameter(Mandatory = $true)][string]$LogDirectory,
+    [Parameter(ParameterSetName = 'Native')][string]$EyeRoot
 )
 $ErrorActionPreference = 'Stop'
 try {
     if ($PSCmdlet.ParameterSetName -eq 'Native') {
         $program = $ExecutablePath
         $childArguments = @('service-host', ('"' + $CorePath + '"'), ('"' + $SocketPath + '"'), ('"' + $EnginePath + '"'))
+        if ($EyeRoot) { $childArguments += ('"' + $EyeRoot + '"') }
     } else {
         $program = $BashPath
         $childArguments = @('--', ('"' + $WrapperPath + '"'))
