@@ -5,11 +5,9 @@
 
 use uuid::Uuid;
 
-/// Acts on a held card without a file change before the work turn stops narrating
-/// and GATES: edit now, or release with a reason. Six is two turns of "let me read
-/// one more thing" — the shape every glass box found tonight (Atlas: 850+ acts, no
-/// deliverable; the substrate said "no act of mine has changed a file" and nothing
-/// followed from it).
+/// Diagnostic interval for an advisory progress checkpoint. This never grants an
+/// action allowance or requires an edit or release. The count stays in telemetry;
+/// the citizen sees concrete receipts and a reminder to preserve useful context.
 // context-budget-exempt: an act count, not a window or token budget
 pub(crate) const WRITE_OR_RELEASE_AFTER_ACTS: usize = 6;
 /// Her acts since her last file change, counted from her own ⚙ receipts in the
@@ -251,15 +249,11 @@ pub(crate) fn held_work_burst_gated(
          to the room. Being blocked is not a request to hand off responsibility.",
     );
     if acts_without_write >= WRITE_OR_RELEASE_AFTER_ACTS {
-        let _ = write!(
-            s,
-            "\n[progress checkpoint] The receipt projection counts {acts_without_write} \
-             acts since the last recognized write or hold boundary. This is not a \
-             verdict on progress: reading, planning, verification and review can be \
-             useful work. Consider a work/note recording what changed in your \
+        s.push_str(
+            "\n[progress checkpoint] Reading, planning, verification and review can be \
+             useful work. When useful for resuming or collaborating, use work/note to record what changed in your \
              understanding, the next step, or a specific blocker and who can help. \
-             Continue the appropriate investigation or action; do not make an edit \
-             just to reset a counter. If you choose a handoff, identify the remaining \
+             Continue the appropriate investigation or action. If you choose a handoff, identify the remaining \
              work and any uncommitted changes explicitly."
         );
     }
@@ -453,6 +447,8 @@ mod tests {
             assert!(!burst.contains("release the card"));
             assert!(!burst.contains("No more reading"));
             assert!(!burst.contains("substrate releases"));
+            assert!(!burst.contains("acts since"));
+            assert!(!burst.contains("counter"));
         }
     }
 }
