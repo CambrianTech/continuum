@@ -5322,8 +5322,11 @@ fn metrics_from(
 /// push and PR verbs that make a change land without an operator (#4532). Offered only when
 /// the served window's tool share holds them (see `rebuild_tool_surface`).
 fn is_extended_hand(name: &str) -> bool {
+    // `code/shell-poll` is NOT extended: it is the second half of `code/shell`, whose own
+    // description says to poll a running execution with it. Idris (2026-09-29) started a
+    // long command on a core-hands window and had no verb to see it finish.
     name.starts_with("web/")
-        || matches!(name, "code/shell-poll" | "code/git/add" | "code/git/push" | "code/github/pr-create" | "code/github/pr-comment")
+        || matches!(name, "code/git/add" | "code/git/push" | "code/github/pr-create" | "code/github/pr-comment")
 }
 
 /// Her hands without the extended verbs: what a window too small for the full set carries.
@@ -5587,6 +5590,11 @@ mod tests {
         // hands (never nothing), with the web and the push/PR verbs one commands/list away.
         let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
         assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
+        // regression (Idris, 2026-09-29): a verb and the verb that finishes it travel
+        // together. code/shell tells her to poll a running execution with code/shell-poll,
+        // so a window that carries shell carries shell-poll.
+        assert!(!is_extended_hand("code/shell-poll"));
+        assert!(!is_extended_hand("code/shell"));
     }
 
     // what this catches: the live registry's command names drifting away from the
