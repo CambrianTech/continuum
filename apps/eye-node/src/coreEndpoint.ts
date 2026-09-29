@@ -1,9 +1,9 @@
 /**
  * Where the eye-node dials the core. The core's endpoint resolver is the ONE authority
- * for its socket (it differs by platform: Windows uses the system temp dir, not /tmp), and
- * the launcher passes it as `CONTINUUM_CORE_SOCKET`. The eye-node never guesses a path:
- * a hardcoded `/tmp/continuum-core.sock` default made it dial nothing on Windows while
- * the core listened elsewhere (card 4e8b1a92, 2026-09-28).
+ * (it differs by platform: a Unix socket path, or on Windows a local TCP listener,
+ * `tcp://127.0.0.1:<port>`), and the launcher passes it as `CONTINUUM_CORE_SOCKET`. The
+ * eye-node never guesses: a hardcoded `/tmp/continuum-core.sock` default made it dial
+ * nothing on Windows while the core listened on TCP (card 4e8b1a92, 2026-09-28).
  */
 
 /** The env var the launcher sets from the core's endpoint resolver. */

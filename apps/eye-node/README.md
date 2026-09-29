@@ -65,8 +65,9 @@ cd apps/eye-node && CONTINUUM_CORE_SOCKET=/tmp/continuum-core.sock npx tsx src/i
 Env:
 
 - `CONTINUUM_CORE_SOCKET` — core IPC socket path or `tcp://host:port`. Required, with no
-  default: the path differs by platform (Windows uses the system temp dir), so the launcher
-  passes the one the core's endpoint resolver reports. Without it the eye-node exits and
+  default: the endpoint differs by platform (a Unix socket path, or on Windows a local TCP
+  listener, `tcp://127.0.0.1:<port>`), so the launcher passes the one the core's endpoint
+  resolver reports. Without it the eye-node exits and
   names the variable.
 - `EYE_NODE_LABEL` — provider label shown in the core's logs.
 
