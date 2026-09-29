@@ -133,6 +133,35 @@ pub struct WorkSubmitParams {
     pub staged_revision_id: Option<Uuid>,
 }
 
+/// Where the card she named actually is, when it is not on the room she passed
+/// (Kimi, 2026-09-28: she passed her turn's room, the card lived on #cambriantech, and
+/// the refusal said only "no card matches ... among 176"). Reads her subscribed boards
+/// and names the one that holds the card; `None` when no other board does.
+async fn card_elsewhere(airc: &std::sync::Arc<airc_lib::Airc>, raw: &str, asked: Uuid) -> Option<String> {
+    let horizon = super::board_horizon(airc).await.ok()?;
+    let id = super::resolve_card_id_in_boards(&horizon, raw).ok()?;
+    horizon
+        .boards
+        .iter()
+        .find(|(r, b)| r.channel.as_uuid() != asked && b.card(id).is_some())
+        .map(|(r, _)| {
+            format!(
+                "That card is on the board of room {}: call again with room '{}'",
+                room_label(&r.name, r.channel.as_uuid()),
+                r.name
+            )
+        })
+}
+
+/// PURE: `e` with the where-it-is hint appended, keeping its error class.
+fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {
+    match (e, hint) {
+        (CommandError::Invalid(m), Some(h)) => CommandError::Invalid(format!("{m}. {h}")),
+        (CommandError::NotFound(m), Some(h)) => CommandError::NotFound(format!("{m}. {h}")),
+        (e, _) => e,
+    }
+}
+
 /// Expand an id the citizen was SHOWN into its canonical [`Uuid`].
 ///
 /// These two verbs typed their id params as `Uuid`, so a short handle was refused by
@@ -422,22 +451,28 @@ impl ActionCommand for WorkSubmit {
         // THE BOARD IS READ FIRST so the handle resolves against THIS room's cards and
         // nothing wider. A full UUID passes straight through and never consults the set.
         let snapshot = board.snapshot();
-        let card_uuid = resolve_shown(
+        let card_uuid = match resolve_shown(
             &p.card_id,
             &snapshot.cards.iter().map(|c| c.card_id.as_uuid()).collect::<Vec<_>>(),
             "card",
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                let hint = card_elsewhere(airc, &p.card_id, room.channel.as_uuid()).await;
+                return Err(with_hint(e, hint));
+            }
+        };
         let card_id = WorkCardId::from_uuid(card_uuid);
-        let card = board.card(card_id).ok_or_else(|| {
-            CommandError::NotFound(format!(
-                "card {} is absent from the board of room {} — you asked for '{}'. If that \
-                 is not the room you meant, the card is on another board and this submit \
-                 went to the wrong one",
+        let Some(card) = board.card(card_id) else {
+            let absent = CommandError::NotFound(format!(
+                "card {} is absent from the board of room {}: you asked for '{}'",
                 card_uuid,
                 room_label(&room.name, room.channel.as_uuid()),
                 p.room
-            ))
-        })?;
+            ));
+            let hint = card_elsewhere(airc, &p.card_id, room.channel.as_uuid()).await;
+            return Err(with_hint(absent, hint));
+        };
         // The claim is HERS on THIS card, read off the board — a typed id she would
         // otherwise have to remember from a claim receipt three turns ago.
         let claim_id = match p.claim_id.as_deref() {
@@ -1064,6 +1099,39 @@ mod tests {
     // named refusal, never a diff against HEAD.
     use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
     use std::path::Path;
+
+    // what this catches (Kimi, 2026-09-28): a submit naming the wrong room refused with only
+    // "no card matches ... among 176" while the card sat on another board she belongs to.
+    // The refusal names the room that holds it; a card on no other board adds nothing.
+    #[tokio::test]
+    async fn a_submit_to_the_wrong_room_names_the_room_that_holds_the_card() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = std::sync::Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let project = airc.join("cambriantech").await.expect("join the card's room");
+        let repo = airc_lib::RepoId::new("github.com/CambrianTech/career-wrangler").expect("repo");
+        let card = airc
+            .create_work_card(airc_lib::CreateWorkCard::new(repo, "umbrella", airc_lib::Priority::P1))
+            .await
+            .expect("card");
+        let turn_room = airc.join("academy").await.expect("join her turn's room");
+        let short = card.as_uuid().simple().to_string()[..8].to_string();
+        let hint = super::card_elsewhere(&airc, &short, turn_room.channel.as_uuid())
+            .await
+            .expect("the card is on another board");
+        assert!(hint.contains("'cambriantech'"), "{hint}");
+        assert_eq!(
+            super::card_elsewhere(&airc, &short, project.channel.as_uuid()).await,
+            None,
+            "asking the right room has nothing to add"
+        );
+        use crate::sdk_codegen::CommandError;
+        let e = super::with_hint(CommandError::Invalid("no card".into()), Some(hint));
+        assert!(matches!(e, CommandError::Invalid(ref m) if m.contains("'cambriantech'")), "{e:?}");
+    }
 
     // what this catches (Kimi, 2026-09-28): a citizen with a pushed commit in hand passes its
     // git sha as the artifact hash and gets a bare parse error. A git sha is named as one and
