@@ -232,7 +232,8 @@ pub fn start_service_eye(
     let log_path = std::path::PathBuf::from(crate::ipc::endpoint_paths::core_start_logfile())
         .with_file_name("continuum-eye-node.log");
     let log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
-    let command = eye_node_command(root, endpoint, &node);
+    let mut command = eye_node_command(root, endpoint, &node);
+    command.env("CONTINUUM_EYE_STDIN_LIFELINE", "1");
     continuum_cli_lifecycle::windows_launch::spawn_owned_logged(&command, &log, &log, 0x0800_0000)
         .map_err(|e| format!("browser worker for {endpoint}: {e}"))
 }

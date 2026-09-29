@@ -67,9 +67,15 @@ impl LaunchedCore {
 pub struct OwnedProcessTree {
     child: LaunchedCore,
     _job: OwnedHandle,
+    stop_input: Option<File>,
 }
 
 impl OwnedProcessTree {
+    /// Close the service-owned lifeline. Workers opting into this contract
+    /// observe stdin EOF and finish their cleanup before the job is dropped.
+    pub fn request_stop(&mut self) {
+        self.stop_input.take();
+    }
     pub fn id(&self) -> u32 {
         self.child.id()
     }
@@ -126,8 +132,17 @@ pub fn spawn_owned_logged(
         return Err(io::Error::last_os_error());
     }
     let jobs = [job.as_raw_handle()];
-    let child = spawn_logged_in_jobs(command, stdout, stderr, flags, &jobs)?;
-    Ok(OwnedProcessTree { child, _job: job })
+    let mut reader = ptr::null_mut();
+    let mut writer = ptr::null_mut();
+    if unsafe { windows_sys::Win32::System::Pipes::CreatePipe(&mut reader, &mut writer, ptr::null(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Originals are not inheritable; only the explicit stdin duplicate crosses
+    // CreateProcess. No child can retain the host's write end and mask EOF.
+    let input = unsafe { File::from_raw_handle(reader) };
+    let stop_input = unsafe { File::from_raw_handle(writer) };
+    let child = spawn_logged_in_jobs(command, stdout, stderr, flags, &jobs, Some(&input))?;
+    Ok(OwnedProcessTree { child, _job: job, stop_input: Some(stop_input) })
 }
 
 /// Spawn this CLI's already-configured core/script command. Its executable is
@@ -141,7 +156,7 @@ pub fn spawn_logged(
     stderr: &File,
     flags: u32,
 ) -> io::Result<LaunchedCore> {
-    spawn_logged_in_jobs(command, stdout, stderr, flags, &[])
+    spawn_logged_in_jobs(command, stdout, stderr, flags, &[], None)
 }
 
 fn spawn_logged_in_jobs(
@@ -150,6 +165,7 @@ fn spawn_logged_in_jobs(
     stderr: &File,
     flags: u32,
     jobs: &[HANDLE],
+    stdin: Option<&File>,
 ) -> io::Result<LaunchedCore> {
     let executable = std::fs::canonicalize(command.get_program())?;
     let mut application = wide(executable.as_os_str())?;
@@ -171,7 +187,11 @@ fn spawn_logged_in_jobs(
         })
         .transpose()?;
 
-    let input = File::open("NUL")?;
+    let null_input;
+    let input = match stdin {
+        Some(input) => input,
+        None => { null_input = File::open("NUL")?; &null_input }
+    };
     let handles = [
         inheritable_duplicate(input.as_raw_handle())?,
         inheritable_duplicate(stdout.as_raw_handle())?,
@@ -473,6 +493,11 @@ mod tests {
             let pending = root.join(format!("{role}.pending"));
             std::fs::write(&pending, std::process::id().to_string()).unwrap();
             std::fs::rename(pending, root.join(&role)).unwrap();
+            if role == "lifeline" {
+                let mut bytes = Vec::new();
+                std::io::stdin().read_to_end(&mut bytes).unwrap();
+                return;
+            }
             // Bounded fail-safe if the owner under test fails to close its job.
             std::thread::sleep(Duration::from_secs(30));
             return;
@@ -583,6 +608,15 @@ mod tests {
                 WAIT_OBJECT_0
             );
         }
+        // EOF must reach a cooperating worker while its job is still owned,
+        // proving that no inherited writer masks the graceful stop request.
+        command.env(TREE_ROLE_ENV, "lifeline");
+        let mut graceful = spawn_owned_logged(&command, &log, &log, CREATE_NO_WINDOW).unwrap();
+        graceful.request_stop();
+        let status = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), graceful.wait()).await.unwrap().unwrap()
+        });
+        assert!(status.success());
     }
 
     impl Drop for FixtureChild {

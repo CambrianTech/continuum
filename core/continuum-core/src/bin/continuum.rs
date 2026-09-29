@@ -1253,10 +1253,19 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
                 }
             }
         });
-        let status = if let Some(eye) = eye {
+        let status = if let Some(mut eye) = eye {
             tokio::select! {
                 // Core shutdown owns the tree's lifetime, including descendants.
-                status = child.wait() => status,
+                status = child.wait() => {
+                    eye.request_stop();
+                    const EYE_STOP_GRACE: Duration = Duration::from_secs(15);
+                    match tokio::time::timeout(EYE_STOP_GRACE, eye.wait()).await {
+                        Ok(Ok(_)) => {},
+                        Ok(Err(error)) => eprintln!("service-host: browser shutdown observation failed ({error}); closing owned tree"),
+                        Err(_) => eprintln!("service-host: browser shutdown grace expired; closing owned tree"),
+                    }
+                    status
+                },
                 status = eye.wait() => {
                     match status {
                         Ok(status) => eprintln!("service-host: browser unavailable: worker exited ({status}); core remains serving"),

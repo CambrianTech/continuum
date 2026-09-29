@@ -39,6 +39,12 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => onSignal('SIGINT'));
   process.on('SIGTERM', () => onSignal('SIGTERM'));
+  // Only a service-owned worker has this pipe. Detached/interactive launches
+  // keep their existing signal lifecycle; null stdin must not stop them.
+  if (process.env.CONTINUUM_EYE_STDIN_LIFELINE === '1') {
+    process.stdin.once('end', () => onSignal('service host closed lifeline'));
+    process.stdin.resume();
+  }
 
   console.log(`eye-node: connecting to core at ${socketPath} …`);
   // The start path spawns the eye-node BEFORE exec'ing the core, so the socket
