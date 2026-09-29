@@ -325,10 +325,8 @@ fn parse_response(text: &str) -> ParsedResponse {
 /// Top-level entry — describe an image via the best available
 /// vision-capable model.
 ///
-/// Returns `Ok(None)` when no vision model is registered or generation
-/// fails (matching the prior TS `Promise<VisionDescription | null>`
-/// contract). Returns `Err` on caller errors (malformed params,
-/// `runtime::execute_json` failure, etc.).
+/// Returns `Ok(None)` only when no vision model is available. A selected
+/// model's failed or empty generation is an error, not model unavailability.
 pub async fn describe_image(
     req: VisionDescribeRequest,
     executor: &std::sync::Arc<crate::runtime::CommandExecutor>,
@@ -395,6 +393,23 @@ pub async fn describe_image(
         .execute_json("ai/generate", generate_params)
         .await?;
 
+    let response_text = generation_text(&response_value, &model_id, &provider_id)?;
+    let parsed = parse_response(response_text);
+
+    Ok(Some(VisionDescription {
+        description: parsed.description,
+        model_id,
+        provider: provider_id,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        objects: parsed.objects,
+        colors: parsed.colors,
+        text: parsed.text,
+        response_time_ms: start.elapsed().as_millis() as u64,
+    }))
+}
+
+/// Keep operational failure metadata without echoing model reasoning or raw responses.
+fn generation_text<'a>(response_value: &'a serde_json::Value, model: &str, provider: &str) -> Result<&'a str, String> {
     // ai/generate's wire format serializes FinishReason via Display
     // (`modules/ai_provider.rs::response_to_json`); the sentinel string
     // matches `crate::ai::types::FinishReason::Error`'s Display impl.
@@ -410,23 +425,14 @@ pub async fn describe_image(
         .unwrap_or("");
 
     if matches!(finish_reason, Some(crate::ai::types::FinishReason::Error))
-        || response_text.is_empty()
+        || response_text.trim().is_empty()
     {
-        return Ok(None);
+        return Err(format!(
+            "vision-describe: selected model {model} (provider {provider}) returned no usable description; finish_reason={finish_reason:?}, text_bytes={}. Model selection succeeded; inspect generation before retrying",
+            response_text.len()
+        ));
     }
-
-    let parsed = parse_response(response_text);
-
-    Ok(Some(VisionDescription {
-        description: parsed.description,
-        model_id,
-        provider: provider_id,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        objects: parsed.objects,
-        colors: parsed.colors,
-        text: parsed.text,
-        response_time_ms: start.elapsed().as_millis() as u64,
-    }))
+    Ok(response_text)
 }
 
 /// The live [`FrameDescriber`](crate::media::FrameDescriber) — the sensory bridge that
@@ -564,6 +570,24 @@ mod tests {
         assert!(parsed.objects.is_none());
         assert!(parsed.colors.is_none());
         assert!(parsed.text.is_none());
+    }
+
+    // Regression: failed/empty inference was reported as unavailable vision,
+    // hiding a working model selection and encouraging pointless retries.
+    #[test]
+    fn selected_generation_failure_is_not_model_unavailability() {
+        for payload in [
+            serde_json::json!({"finishReason":"error", "text":"partial output"}),
+            serde_json::json!({"finishReason":"length", "text":"", "reasoning":"private"}),
+            serde_json::json!({"finishReason":"stop", "text":"  "}),
+        ] {
+            let error = generation_text(&payload, "vision-model", "provider").expect_err("generation failed");
+            assert!(error.contains("Model selection succeeded"));
+            assert!(!error.contains("private"));
+            assert!(!error.contains("partial output"));
+        }
+        let good = serde_json::json!({"finishReason":"stop", "text":"A heading and link."});
+        assert_eq!(generation_text(&good, "vision-model", "provider").unwrap(), "A heading and link.");
     }
 
     // ─── select_vision_model 4-branch priority logic ──────────────────────
