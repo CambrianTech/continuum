@@ -98,47 +98,34 @@ pub struct ActivitySpawn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct ActivitySpawnParams {
-    /// The room's name — what people will call this instance of the activity.
-    ///
-    /// Name it for the ACTIVITY, not for a subsystem. A subsystem never finishes,
-    /// so a room named after one reads as a permanent place and quietly becomes
-    /// the room everyone reuses forever.
+    /// What people will call this activity: name it for the activity, not a subsystem.
+    // A subsystem never finishes, so a room named after one reads as a permanent place and
+    // quietly becomes the room everyone reuses forever.
     pub name: String,
 
-    /// Which recipe to build from — the EXACT `purpose` key of an authored recipe.
-    ///
-    /// Exact, because [`crate::experience::RecipeExperienceSource`] keys on the
-    /// literal string and an unknown purpose resolves to `None`. Family names do
-    /// not work: the authored benchmark recipe's purpose is `benchmark/hard-rs`,
-    /// so `benchmark` matches nothing and the room falls through to rendering as
-    /// plain chat. This doc used to list `chat, benchmark, video-chat, profile`
-    /// and that middle one was never real.
-    ///
-    /// Not enumerated here on purpose: recipes are DATA, overlaid from disk by
-    /// `builtins_with_overlay`, so any list in this comment is stale the moment
-    /// someone authors a new one. Read the catalogue instead.
-    ///
-    /// The recipe decides the room's regions, verbs and layout; this command only
-    /// decides that a room exists and which recipe it follows.
+    /// The recipe's exact `purpose` (activity/recipes lists them), e.g. `project`.
+    // Exact, because RecipeExperienceSource keys on the literal string and an unknown
+    // purpose resolves to None (a family name like `benchmark` matches nothing and the
+    // room renders as plain chat). Not enumerated here: recipes are data, overlaid from
+    // disk, so a list in this comment goes stale. The recipe decides the room's regions,
+    // verbs and layout; this command only decides that a room exists and which recipe.
+    // (Doc comments ship in every citizen's tool schema, so the rationale lives in `//`.)
     pub recipe: String,
 
-    /// Optional parent activity — activities spawn activities, and the graph is
-    /// POINTERS (parent id here, child ids on the parent), never nested blobs.
-    /// A `RoomId`, because that is what a parent activity IS. `schemars(with =
-    /// "String")` describes the WIRE (a uuid string, per `#[serde(transparent)]`) to
-    /// the tool schema while Rust keeps the type — the caller sends text, the command
-    /// receives a parsed id, and an unparseable one is rejected at the boundary
-    /// instead of flowing inward as a plausible-looking String.
+    /// Parent activity's room id, if this one belongs under another.
+    // A RoomId: the graph is pointers (parent id here, child ids on the parent). schemars
+    // describes the wire (a uuid string) while Rust keeps the type, so an unparseable id
+    // is refused at the boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub parent: Option<RoomId>,
 
-    /// Parameter overrides for the recipe's declared knobs (#433). Omit
-    /// entirely (or leave empty) for the recipe's defaults — a zero-arg spawn
-    /// always works. An unknown name or a value whose JSON type differs from
-    /// the declared default is refused, naming the declared set.
+    /// Values for the recipe's parameters, e.g. {"repo": "owner/name"}; omit for defaults.
+    // #433. Values, never schemas: Kimi (2026-09-28) passed {"enum": [...], "type":
+    // "string"} for repo from the old "declared knobs" wording. An unknown name or a value
+    // whose JSON type differs from the declared default is refused, naming the declared set.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[ts(type = "Record<string, unknown>")]
     pub params: std::collections::BTreeMap<String, serde_json::Value>,
