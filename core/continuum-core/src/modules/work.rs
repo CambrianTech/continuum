@@ -3209,6 +3209,11 @@ pub struct WorkGetResult {
     pub lease: Option<String>,
     pub observed_at_ms: u64,
     pub claim_expires_at_ms: Option<u64>,
+    /// Seconds until the claim lapses, read at `observed_at_ms`; absent when there is
+    /// no claim or it has already lapsed. So nobody converts epoch ms by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub lease_remaining_secs: Option<u64>,
     pub last_heartbeat_at_ms: Option<u64>,
     pub title: String,
     /// The card's full body — the task's requirements/spec, when authored.
@@ -3221,6 +3226,15 @@ pub struct WorkGetResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ledger: Option<crate::experience::ledger::CardLedger>,
+}
+
+/// PURE: whole seconds until a claim expiring at `expires_at_ms` lapses, seen at `now_ms`;
+/// `None` with no claim or once it has lapsed (card 5d447195: Kimi converted
+/// `claim_expires_at_ms` to wall time in her reasoning, twice in one day).
+fn lease_remaining_secs(expires_at_ms: Option<u64>, now_ms: u64) -> Option<u64> {
+    expires_at_ms
+        .filter(|&expires| expires > now_ms)
+        .map(|expires| (expires - now_ms) / 1000)
 }
 
 impl WorkGet {
@@ -3278,6 +3292,7 @@ impl WorkGet {
             lease: holder.lease_word().map(str::to_string),
             observed_at_ms: now_ms,
             claim_expires_at_ms: card.claim_expires_at_ms,
+            lease_remaining_secs: lease_remaining_secs(card.claim_expires_at_ms, now_ms),
             last_heartbeat_at_ms: card.last_heartbeat_at_ms,
             title: card.title.clone(),
             body: card.body.clone(),
@@ -4159,6 +4174,12 @@ mod tests {
         claimed.last_heartbeat_at_ms = Some(50);
         let held = WorkGet::receipt(room, &claimed, None, 99, Uuid::nil());
         assert!(!held.claimable);
+        // regression for card 5d447195: the lease reaches her as time left, not only as
+        // an epoch she converts by hand; a lapsed or absent claim has none.
+        assert_eq!(held.lease_remaining_secs, Some(0), "1 ms left rounds down, still held");
+        assert_eq!(lease_remaining_secs(Some(1_790_644_494_881), 1_790_644_404_881), Some(90));
+        assert_eq!(lease_remaining_secs(Some(100), 100), None, "lapsed at the edge");
+        assert_eq!(lease_remaining_secs(None, 5), None);
         assert_eq!(held.lease.as_deref(), Some("held"));
         let lapsed = WorkGet::receipt(room, &claimed, None, 100, Uuid::nil());
         assert!(lapsed.claimable);
