@@ -288,6 +288,8 @@ pub(crate) async fn ask_the_act_question(
                     // A REVIEW card roots her hands in the OWNER's checkout (the fix
                     // under review lives there); any other held card resolves to her
                     // own staged instance as before.
+                    // `held` was reduced through work_focus::focus_card above.
+                    // Reuse that same selection for hands, facts, credit and genes.
                     let card_workspace = held.first().and_then(|card| {
                         held_card_workspace(&ctx.identity.peer_id.as_uuid(), card)
                     });
