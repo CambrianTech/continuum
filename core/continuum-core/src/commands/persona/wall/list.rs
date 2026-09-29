@@ -81,10 +81,6 @@ pub struct PersonaWallListResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub next: Option<String>,
-    /// True when the post `after` named is no longer current (superseded since the
-    /// last page): paging resumed after its publish time, so this walk is not a
-    /// snapshot and a post edited meanwhile may appear at its new place.
-    pub stale_cursor: bool,
 }
 
 impl From<&airc_core::doctrine::WallPostPublished> for PersonaWallPost {
@@ -100,9 +96,9 @@ impl From<&airc_core::doctrine::WallPostPublished> for PersonaWallPost {
     }
 }
 
-/// Where a page ended: the last post's publish time and id. A position index would
-/// shift under a supersede between calls and silently skip a current post (Codex on
-/// #4560); a post's own identity does not.
+/// Where a page ended: the last post's id (and time, for the message). A position
+/// index would shift under a supersede between calls and silently skip a current post
+/// (Codex on #4560); a post's own identity does not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WallCursor {
     published_at_ms: u64,
@@ -141,34 +137,36 @@ impl From<&airc_core::doctrine::WallPostPublished> for WallCursor {
 struct Page {
     posts: Vec<PersonaWallPost>,
     next: Option<WallCursor>,
-    stale_cursor: bool,
 }
 
-/// PURE: one page of `posts` (in published-time order) after `after`. The cursor's
-/// post still current: resume right after it. Gone (superseded): resume after its
-/// publish time and say so.
+/// PURE: one page of `posts` (in published-time order) after `after`, which must name
+/// a post that is still current. If it was superseded since the last page, the walk
+/// is refused and restarts: posts can share a publish time, so no guess from the
+/// timestamp can promise nothing current is skipped (Codex on #4560).
 fn page(
     posts: &[airc_core::doctrine::WallPostPublished],
     after: Option<WallCursor>,
     limit: Option<u32>,
-) -> Page {
-    let (start, stale_cursor) = match after {
-        None => (0, false),
+) -> Result<Page, CommandError> {
+    let start = match after {
+        None => 0,
         Some(c) => match posts.iter().position(|p| p.post_id == c.post_id) {
-            Some(i) => (i + 1, false),
-            None => (
-                posts.iter().position(|p| p.published_at_ms > c.published_at_ms).unwrap_or(posts.len()), // unwrap_or: nothing newer = past the end
-                true,
-            ),
+            Some(i) => i + 1,
+            None => {
+                return Err(CommandError::Invalid(format!(
+                    "the wall changed since your last page: post {} (the cursor) was superseded. \
+                     Call again without `after` to read it from the start.",
+                    c.post_id
+                )))
+            }
         },
     };
     let take = limit.map_or(DEFAULT_LIMIT, |l| (l as usize).clamp(1, MAX_LIMIT));
     let end = (start + take).min(posts.len());
-    Page {
+    Ok(Page {
         posts: posts[start..end].iter().map(PersonaWallPost::from).collect(),
         next: (end < posts.len()).then(|| WallCursor::from(&posts[end - 1])),
-        stale_cursor,
-    }
+    })
 }
 
 crate::action_command! {
@@ -193,13 +191,12 @@ crate::action_command! {
             .await
             .map_err(|e| CommandError::Internal(format!("wall read failed: {e}")))?;
         let after = p.after.as_deref().map(str::parse::<WallCursor>).transpose()?;
-        let page = page(&posts, after, p.limit);
+        let page = page(&posts, after, p.limit)?;
         Ok(PersonaWallListResult {
             room_id: room.channel.as_uuid().to_string(),
             total: posts.len() as u32,
             posts: page.posts,
             next: page.next.map(|c| c.to_string()),
-            stale_cursor: page.stale_cursor,
         })
     }
 }
@@ -226,7 +223,7 @@ mod tests {
     #[test]
     fn an_unchanged_wall_is_walked_once_with_provenance() {
         let wall: Vec<_> = (1..=7).map(post).collect();
-        let first = page(&wall, None, None);
+        let first = page(&wall, None, None).expect("first page");
         assert_eq!(first.posts.len(), DEFAULT_LIMIT);
         assert_eq!(first.posts[1].supersedes.as_deref(), Some(uuid::Uuid::from_u128(1).to_string().as_str()));
         assert_eq!(first.posts[0].published_at_ms, 1001);
@@ -234,25 +231,27 @@ mod tests {
         let cursor = first.next.expect("more posts");
         let parsed: WallCursor = cursor.to_string().parse().expect("round trip");
         assert_eq!(parsed, cursor);
-        let rest = page(&wall, Some(cursor), None);
+        let rest = page(&wall, Some(cursor), None).expect("second page");
         assert_eq!(rest.posts.iter().map(|p| p.body.as_str()).collect::<Vec<_>>(), ["post 6", "post 7"]);
         assert_eq!(rest.next, None, "the last page ends the walk");
-        assert!(!rest.stale_cursor);
-        assert_eq!(page(&wall, None, Some(0)).posts.len(), 1, "limit 0 clamps to 1");
+        assert_eq!(page(&wall, None, Some(0)).expect("page").posts.len(), 1, "limit 0 clamps to 1");
         assert!("12".parse::<WallCursor>().is_err(), "an old numeric offset is refused, not misread");
     }
 
-    // what this catches (Codex on #4560): the post a cursor names being superseded between
-    // calls. A position offset would shift and skip a current post; the cursor resumes after
-    // its publish time and says the walk went stale.
+    // what this catches (Codex on #4560): the cursor's post superseded between calls,
+    // including when a still-current post shares its publish time (A and B at 1000, page 1
+    // ends at A, A is edited). Resuming by time would skip B; the walk is refused with a
+    // restart instruction instead, and nothing is silently skipped.
     #[test]
-    fn a_superseded_cursor_resumes_by_time_and_says_so() {
-        let wall: Vec<_> = (1..=7).map(post).collect();
-        let cursor = page(&wall, None, Some(3)).next.expect("more");
+    fn a_superseded_cursor_is_refused_never_guessed_past() {
+        let mut wall: Vec<_> = (1..=3).map(post).collect();
+        wall[1].published_at_ms = wall[0].published_at_ms;
+        let cursor = page(&wall, None, Some(1)).expect("page").next.expect("more");
         let edited: Vec<_> = wall.iter().filter(|p| p.post_id != cursor.post_id).cloned().collect();
-        let resumed = page(&edited, Some(cursor), Some(10));
-        assert!(resumed.stale_cursor);
-        assert_eq!(resumed.posts.first().map(|p| p.body.as_str()), Some("post 4"), "nothing current was skipped");
+        let refused = page(&edited, Some(cursor), Some(10)).expect_err("stale cursor");
+        assert!(refused.to_string().contains("without `after`"), "{refused}");
+        let restarted = page(&edited, None, Some(10)).expect("restart");
+        assert_eq!(restarted.posts.first().map(|p| p.body.as_str()), Some("post 2"), "the tied post is still there");
     }
 
     // what this catches (Cormac on #4560): `next` and `supersedes` serialised as null
@@ -261,13 +260,12 @@ mod tests {
     #[test]
     fn absent_fields_are_omitted_on_the_wire() {
         let wall = vec![post(1)];
-        let p = page(&wall, None, None);
+        let p = page(&wall, None, None).expect("page");
         let json = serde_json::to_value(PersonaWallListResult {
             room_id: "r".into(),
             total: 1,
             posts: p.posts,
             next: p.next.map(|c| c.to_string()),
-            stale_cursor: p.stale_cursor,
         })
         .expect("serialises");
         assert!(json.get("next").is_none(), "{json}");

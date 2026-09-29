@@ -21,10 +21,4 @@ posts: Array<PersonaWallPost>,
 /**
  * Pass as `after` for the next page; absent on the last page.
  */
-next?: string, 
-/**
- * True when the post `after` named is no longer current (superseded since the
- * last page): paging resumed after its publish time, so this walk is not a
- * snapshot and a post edited meanwhile may appear at its new place.
- */
-stale_cursor: boolean, };
+next?: string, };
