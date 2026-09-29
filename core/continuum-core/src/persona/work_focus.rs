@@ -27,6 +27,36 @@ pub fn focus_actionable_card<'a>(
     focus_card(held.into_iter().filter(|card| actionable(card)))
 }
 
+/// Resolve the same actionable choice used by hands against ordinary subscribed
+/// boards. A benchmark registry is not a catalog of a citizen's project work.
+pub(crate) async fn focus_room(
+    citizen: &dyn super::airc_citizen::AircCitizen,
+) -> Result<Option<uuid::Uuid>, airc_lib::AircError> {
+    let held = citizen.active_claims().await?;
+    let Some(card) = focus_actionable_card(&held) else {
+        return Ok(None);
+    };
+    let mut unreadable = None;
+    for room in citizen.subscribed_rooms().await? {
+        let board = match citizen.work_board(Some(room)).await {
+            Ok(board) => board,
+            Err(error) => {
+                unreadable = Some(error);
+                continue;
+            }
+        };
+        if board.cards.iter().any(|c| c.card_id == card.card_id) {
+            return Ok(Some(room));
+        }
+    }
+    if let Some(error) = unreadable {
+        return Err(error);
+    }
+    Err(airc_lib::AircError::NotSubscribed(format!(
+        "selected work card {} has no readable subscribed board", card.card_id
+    )))
+}
+
 /// Shared intent ordering for turn focus and surplus-claim reconciliation.
 /// Missing/unknown history never becomes an inferred explicit choice.
 pub(crate) fn explicit_choice_key(
@@ -86,6 +116,31 @@ mod tests {
             submissions: Vec::new(),
             last_submission_rejection: None,
         }
+    }
+
+    // what this catches: a renewed benchmark lease selecting a different room
+    // from the explicit ordinary project choice used by the hands/work gate.
+    #[tokio::test]
+    async fn self_cycle_uses_project_board_and_explicit_choice() {
+        use super::super::airc_citizen::StubAircCitizen;
+        let project_room = uuid::Uuid::new_v4();
+        let bench_room = uuid::Uuid::new_v4();
+        let mut project = card(Some(10), 10);
+        project.claim_provenance = Some(airc_work::model::ClaimProvenance {
+            origin: airc_work::ClaimOrigin::Explicit,
+            selected_at_ms: 10,
+        });
+        let benchmark = card(Some(999), 999);
+        let citizen = StubAircCitizen::new(uuid::Uuid::new_v4())
+            .with_rooms(vec![bench_room, project_room])
+            .with_claims(vec![benchmark.clone(), project.clone()])
+            .with_board(bench_room, vec![benchmark])
+            .with_board(project_room, vec![project]);
+        assert_eq!(focus_room(&citizen).await.expect("board readable"), Some(project_room));
+        let citizen = citizen.with_rooms(vec![bench_room]);
+        assert!(matches!(focus_room(&citizen).await, Err(airc_lib::AircError::NotSubscribed(_))));
+        let citizen = citizen.with_claims(vec![]);
+        assert_eq!(focus_room(&citizen).await.expect("idle"), None);
     }
 
     // what this catches: the focus drifting to the OLDER card (e.g. by board

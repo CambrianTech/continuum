@@ -2528,32 +2528,22 @@ async fn run_self_cycle(
     // hold lapsed, she looked free and pulled a second card (2026-09-05: 32 pulls
     // and 32 re-stagings for 12 cards in 15 minutes).
     crate::persona::cognition_pulse::touch(ctx.identity.peer_id.as_uuid(), now_ms);
-    // FOCUS (2026-08-22): a self-cycle with no triggering message binds to the
-    // room of her FRESHEST LIVE CLAIM when she holds one, else her home room.
-    // Home-room-always was the self-clobber engine measured tonight: a citizen
-    // holding a claim in a run room alternated home-room self-ticks with
-    // work-room turns, and every swap re-rendered the room-scoped context
-    // (kanban, steps-ledger, room speech) through her ONE pinned slot —
-    // `cached: 0` by her own hand, plus attention spent re-orienting in a room
-    // her work is not in. The institution's version: you sit at your desk
-    // until the job is done; the break room is for between jobs.
-    //
-    // Claim → room resolves through the bench-round registry (a round IS its
-    // room). A claim on an untracked card (human boards) resolves None and
-    // falls back home — never a guess. Freshest = max claim_expires_at_ms,
-    // i.e. the claim most recently taken or heartbeated.
+    // One explicit work choice drives both the room and the working checkout.
+    // Ordinary project cards are on subscribed boards, not in the benchmark
+    // registry. Lease renewal is liveness, not a new focus selection.
     let focus_room = match conversation.stream_citizen() {
-        Some(citizen) => citizen.active_claims().await.ok().and_then(|cards| {
-            let mut live: Vec<_> = cards
-                .iter()
-                .filter_map(|c| {
-                    let room = crate::cognition::bench_round::room_for_card(c.card_id.as_uuid())?;
-                    Some((c.claim_expires_at_ms.unwrap_or(0), room)) // unknown expiry sorts LEAST-fresh: it can never win focus over a known-live lease, and a lone expiry-less claim still focuses (better than home)
-                })
-                .collect();
-            live.sort_by_key(|(exp, _)| *exp);
-            live.pop().map(|(_, room)| room)
-        }),
+        Some(citizen) => match super::work_focus::focus_room(citizen.as_ref()).await {
+            Ok(room) => room,
+            Err(error) => {
+                crate::probe!(
+                    class = "persona.selftick.focus_unavailable",
+                    persona = %ctx.identity.agent_name,
+                    error = %error,
+                    "cannot resolve held work room; preserve work and retry next self-cycle",
+                );
+                return false;
+            }
+        },
         None => None,
     };
     if let Some(room) = focus_room {
