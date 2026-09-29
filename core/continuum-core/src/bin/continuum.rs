@@ -220,6 +220,15 @@ async fn run() -> Result<(), CliError> {
                 ));
             }
             let t = std::time::Instant::now();
+            #[cfg(windows)]
+            let out = match start(false).await {
+                Ok(()) => match verify_deployed_build(false).await {
+                    Ok(()) => Outcome::Ok("installed start path verified; service owns browser worker".into()),
+                    Err(e) => Outcome::Failed(format!("verify: {e}")),
+                },
+                Err(e) => Outcome::Failed(e),
+            };
+            #[cfg(not(windows))]
             let out = match launch_core(&[], LaunchSource::Installed).await {
                 Ok(pid) => match verify_deployed_build(false).await {
                     Ok(()) => Outcome::Ok(format!("pid {pid}, #194 verified")),

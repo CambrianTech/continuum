@@ -297,9 +297,18 @@ pub fn run_beside_phase(receipt: &mut BootReceipt, repo_root: Option<&std::path:
             let t = Instant::now();
             receipt.push("desktop-beside", t, step_desktop_beside(root));
             let t = Instant::now();
-            receipt.push("reap-eyes", t, step_reap_eyes());
-            let t = Instant::now();
-            receipt.push("eye-node-beside", t, step_eye_node_beside(root));
+            if cfg!(windows) {
+                // The installed service owns the Node/browser tree. A second
+                // beside worker would compete for provider registrations and
+                // survive independently of that owner. Never reap its children.
+                receipt.push("eye-node-beside", t, Outcome::Skipped(
+                    "Windows browser worker belongs to service-host; no detached launch".into()
+                ));
+            } else {
+                receipt.push("reap-eyes", t, step_reap_eyes());
+                let t = Instant::now();
+                receipt.push("eye-node-beside", t, step_eye_node_beside(root));
+            }
         }
         None => {
             let t = Instant::now();
