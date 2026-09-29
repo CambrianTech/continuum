@@ -506,6 +506,8 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'exit /b 74'
+            } elseif ($script:elevationMode -eq 'cleanup-info') {
+                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo Info: Cache session closed. 1>&2 & exit /b 0'
             } else { $global:LASTEXITCODE = 0 }
         }
         $reason = 'registering the ContinuumCore startup task (before core handoff)'
@@ -529,6 +531,17 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         Ensure-Elevated -Reason $reason
         Ensure-Elevated -Reason $reason
         if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Successful elevation was not cached exactly once' }
+        # Regression: PS5 must not abort a completed registration on gsudo's
+        # informational stderr when cache teardown actually succeeds.
+        $script:elevationMode = 'cleanup-info'
+        Clear-Elevation
+        if ($script:ElevationWarmed -or $ErrorActionPreference -ne 'Stop') { throw 'Successful cleanup retained cache state or changed error policy' }
+        $script:ElevationWarmed = $true
+        $script:elevationMode = 'failure'
+        $failure = $null
+        try { Clear-Elevation } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'exit 73' -or -not $script:ElevationWarmed) { throw 'Failed cache cleanup was silently accepted' }
+        $script:elevationCalls = 3
         $script:ElevationWarmed = $false
         function Test-IsAdmin { $true }
         Ensure-Elevated -Reason $reason
