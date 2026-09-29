@@ -21,6 +21,40 @@ use ts_rs::TS;
 
 pub const LEDGER_WALL_CATEGORY: &str = "card-ledger";
 
+/// Current ledger records for a mixed room wall. Storage is append-only, but a
+/// context view must not present every revision as simultaneous current state.
+/// Use the same last-record-wins order as `project_ledger`, scoped by room/card.
+/// Other categories and unreadable records remain visible; an unreadable newer
+/// record cannot erase the last valid ledger. This never mutates stored history.
+pub(crate) fn current_wall_records(
+    posts: Vec<airc_core::doctrine::WallPostPublished>,
+) -> Vec<airc_core::doctrine::WallPostPublished> {
+    let mut seen = std::collections::HashSet::new();
+    let mut current = Vec::with_capacity(posts.len());
+    for post in posts.into_iter().rev() {
+        if post.category == LEDGER_WALL_CATEGORY {
+            match serde_json::from_str::<CardLedger>(&post.body) {
+                Ok(ledger) => {
+                    if !seen.insert((post.room_id.as_uuid(), ledger.card_id)) {
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    crate::probe!(
+                        class = "card.ledger.unreadable",
+                        post = %post.post_id,
+                        error = %error,
+                        "unreadable wall ledger retained without replacing valid state"
+                    );
+                }
+            }
+        }
+        current.push(post);
+    }
+    current.reverse();
+    current
+}
+
 /// One competing explanation and the observation that would settle it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -231,6 +265,31 @@ mod tests {
             published_by: PeerId::from_u128(1),
             published_at_ms: 0,
         }
+    }
+
+    #[test]
+    fn current_wall_keeps_latest_per_card_without_rewriting_history_or_documents() {
+        let card = uuid::Uuid::from_u128(7);
+        let make = |card_id, next_test: &str| post(&serde_json::to_string(&CardLedger {
+            card_id,
+            next_test: next_test.into(),
+            ..Default::default()
+        }).unwrap());
+        let old = make(card, "old next step");
+        let mut document = post("a shared plan, not ledger JSON");
+        document.category = "plan".into();
+        let other = make(uuid::Uuid::from_u128(8), "other activity");
+        let latest = make(card, "current next step");
+        let malformed = post("broken record");
+        let mut other_room = make(card, "same card reference in another room");
+        other_room.room_id = RoomId::from_uuid(uuid::Uuid::from_u128(9));
+        let history = vec![old, document.clone(), other.clone(), latest.clone(), malformed.clone(), other_room.clone()];
+        let current = current_wall_records(history.clone());
+        assert_eq!(history.len(), 6);
+        assert_eq!(current.iter().map(|p| p.post_id).collect::<Vec<_>>(),
+            vec![document.post_id, other.post_id, latest.post_id, malformed.post_id, other_room.post_id]);
+        let same_room: Vec<_> = current.into_iter().filter(|p| p.room_id == latest.room_id && p.category == LEDGER_WALL_CATEGORY).collect();
+        assert_eq!(project_ledger(&same_room, card).unwrap().next_test, "current next step");
     }
 
     // what this catches: the newest ledger for THIS card winning over an older one and over
