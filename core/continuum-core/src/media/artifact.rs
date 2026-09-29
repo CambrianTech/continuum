@@ -41,12 +41,7 @@ impl ImageArtifact {
         if bytes.len() as u64 > MAX_ENCODED_BYTES {
             return Err("image exceeds encoded-byte allocation ceiling".into());
         }
-        let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
-        let reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
-        let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
-        if width == 0 || height == 0 {
-            return Err("image has an empty extent".into());
-        }
+        let (format, width, height) = image_header(bytes)?;
         let hash = store.put(bytes).map_err(|e| e.to_string())?;
         Ok(Self {
             hash: hash.to_hex(),
@@ -59,7 +54,7 @@ impl ImageArtifact {
 
     pub fn read(&self, store: &FsStore) -> Result<Vec<u8>, String> {
         let hash = ContentHash::from_hex(&self.hash).ok_or("invalid image content hash")?;
-        store
+        let bytes = store
             .get_verified(
                 &MediaRef {
                     hash,
@@ -68,7 +63,16 @@ impl ImageArtifact {
                 },
                 MAX_ENCODED_BYTES,
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // A digest authenticates the bytes, not the caller's projection metadata.
+        // Dimensions feed visual budgeting; MIME feeds the inference wire.
+        let (format, width, height) = image_header(&bytes)?;
+        if (width, height) != (self.width, self.height)
+            || format.to_mime_type() != self.mime
+        {
+            return Err("image reference metadata does not match stored image header".into());
+        }
+        Ok(bytes)
     }
 
     pub fn from_data_url(store: &FsStore, value: &str) -> Result<Self, String> {
@@ -84,6 +88,16 @@ impl ImageArtifact {
             .map_err(|e| e.to_string())?; // boundary: browser image data URL becomes stored binary bytes.
         Self::retain(store, &bytes)
     }
+}
+
+fn image_header(bytes: &[u8]) -> Result<(image::ImageFormat, u32, u32), String> {
+    let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
+    let reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
+    if width == 0 || height == 0 {
+        return Err("image has an empty extent".into());
+    }
+    Ok((format, width, height))
 }
 
 /// Lift only registered capture-result shapes. Arbitrary shell output containing

@@ -291,6 +291,13 @@ mod tests {
         let mut failed = original.clone();
         assert!(retain_capture_with("perception/observe", &mut failed, || Err("disk unavailable".into())).is_err());
         assert_eq!(failed, original, "failed storage must not erase the only source");
+        // Correct hash/size cannot authenticate a forged geometry or MIME.
+        let mut bad_geometry = restored.clone();
+        bad_geometry.width = 1;
+        assert!(bad_geometry.read(&open().unwrap()).is_err());
+        let mut bad_mime = restored.clone();
+        bad_mime.mime = "image/jpeg".into();
+        assert!(bad_mime.read(&open().unwrap()).is_err());
         let mut bad_size = restored;
         bad_size.size_bytes += 1;
         assert!(bad_size.read(&open().unwrap()).is_err());
