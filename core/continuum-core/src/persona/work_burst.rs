@@ -146,7 +146,9 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
     if p.acts == 0 {
         return String::new();
     }
-    let mut s = format!("[progress] {} acts so far ({} writes).", p.acts, p.writes);
+    // Kimi read act/write totals as an allowance and stopped to seek help.
+    // Keep concrete receipts in her context; totals remain diagnostic data.
+    let mut s = String::from("[progress] Recent work receipts:");
     if !p.read.is_empty() {
         s.push_str(" Already read: ");
         s.push_str(&p.read.join(", "));
