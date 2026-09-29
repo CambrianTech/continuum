@@ -359,27 +359,37 @@ fn git_bounded(
 
 /// PURE: a lease edge as she reads it, relative to now (card 5d447195: twice on 2026-09-28
 /// and again on 09-29 Kimi converted the raw Unix ms in this line to wall time by hand).
+/// The line is PINNED and outlives the moment it was written (Cormac on #4583), so every
+/// relative time carries its absolute anchor: "has ~5 min left (until 14:32Z)".
 fn lease_phrase(expires_at_ms: u64, now_ms: u64) -> String {
+    let until = clock(expires_at_ms);
     if expires_at_ms > now_ms {
         let mins = (expires_at_ms - now_ms) / 60_000;
         if mins == 0 {
-            "has under a minute left".to_string()
+            format!("has under a minute left (until {until})")
         } else {
-            format!("has ~{mins} min left")
+            format!("has ~{mins} min left (until {until})")
         }
     } else {
         format!("lapsed {}", ago_phrase(expires_at_ms, now_ms))
     }
 }
 
-/// PURE: how long before `now_ms` something happened, in words.
+/// PURE: how long before `now_ms` something happened, in words, with its clock time.
 fn ago_phrase(at_ms: u64, now_ms: u64) -> String {
-    let mins = now_ms.saturating_sub(at_ms) / 60_000;
-    match mins {
-        0 => "under a minute ago".to_string(),
-        m if m < 120 => format!("~{m} min ago"),
-        m => format!("~{} h ago", m / 60),
+    let at = clock(at_ms);
+    match now_ms.saturating_sub(at_ms) / 60_000 {
+        0 => format!("under a minute ago (at {at})"),
+        m if m < 120 => format!("~{m} min ago (at {at})"),
+        m => format!("~{} h ago (at {at})", m / 60),
     }
+}
+
+/// PURE: a Unix-ms instant as a UTC clock time, `HH:MMZ` (date added when not today).
+fn clock(at_ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(at_ms as i64)
+        .map(|t| t.format("%Y-%m-%d %H:%MZ").to_string())
+        .unwrap_or_else(|| "an unrepresentable time".to_string()) // unwrap_or_else: only out-of-range ms, never a real clock
 }
 
 /// The `[handoff]` fact pinned FIRST on wake — before `[resumed]` and `[rebuilt]`, because it
@@ -656,10 +666,14 @@ mod tests {
         let line = render_on_wake(&h, "abc", 2_000);
         assert!(line.contains("claim 00000000"), "{line}");
         // The lease edge reads as time relative to now, never raw Unix ms (card 5d447195).
-        assert!(line.contains("lapsed under a minute ago"), "{line}");
+        assert!(line.contains("lapsed under a minute ago (at 1970-01-01 00:00Z)"), "{line}");
         assert!(!line.contains("Unix ms"), "{line}");
-        assert_eq!(super::lease_phrase(2_000 + 5 * 60_000, 2_000), "has ~5 min left");
-        assert_eq!(super::ago_phrase(0, 3 * 60 * 60_000), "~3 h ago");
+        // Pinned lines outlive their moment (Cormac on #4583): each carries its clock anchor.
+        assert_eq!(
+            super::lease_phrase(2_000 + 5 * 60_000, 2_000),
+            "has ~5 min left (until 1970-01-01 00:05Z)"
+        );
+        assert_eq!(super::ago_phrase(0, 3 * 60 * 60_000), "~3 h ago (at 1970-01-01 00:00Z)");
         assert!(line.contains("holding is UNVERIFIED until the board answers"), "{line}");
     }
 
