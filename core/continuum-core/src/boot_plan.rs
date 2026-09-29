@@ -175,7 +175,7 @@ fn step_eye_node_beside(repo_root: &std::path::Path) -> Outcome {
     if !tsx.is_file() {
         return Outcome::Skipped("eye-node needs the installed workspace dependency tsx".into());
     }
-    let endpoint = crate::ipc::endpoint_paths::core_socket_path();
+    let endpoint = crate::ipc::endpoint_paths::core_provider_endpoint();
     let log_path = std::path::PathBuf::from(crate::ipc::endpoint_paths::core_start_logfile())
         .with_file_name("continuum-eye-node.log");
     let log = match std::fs::File::create(&log_path) {
