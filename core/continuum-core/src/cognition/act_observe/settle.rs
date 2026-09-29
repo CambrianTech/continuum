@@ -10,14 +10,13 @@
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::ai::types::ToolCall;
 use crate::cognition::workspace::{
     Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle,
 };
 
 use super::apply::apply_act;
 use super::perception::{
-    any_real_receipt, claimed_file_without_act, collect_touched_paths, mutated_workspace,
+    any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace,
     wrote_without_observation,
 };
 use super::types::{SettleOutcome, SettleStep};
@@ -334,28 +333,12 @@ async fn settle_to_outcome(
     // deliberations and no single one is canonical (card 0d51573a).
     let mut generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> = Vec::new();
 
-    // Signature of a tick's tool batch for loop-detection: `name|args` per call, the random
-    // per-call `id` excluded, sorted so batch order doesn't matter. Two ticks with the same
-    // signature emitted the byte-identical action.
-    fn calls_signature(calls: &[ToolCall]) -> String {
-        let mut parts: Vec<String> = calls.iter().map(|c| c.loop_fingerprint()).collect();
-        parts.sort();
-        parts.join(",")
-    }
-    // BOUNDED STUCK-ACT BACKSTOP (#206). The escalating repeat-proprioception makes a looping
-    // model's perception genuinely shift, but a determined greedy model can still re-emit the
-    // SAME act every tick (glass-boxed: `commands/help` ×54, then after the escalation fix an
-    // identical `code/write` ×8) — each a dedup no-op the short-circuit guard already refuses
-    // to execute, burning the whole act budget on nothing. This bounds that: after
-    // STUCK_LIMIT consecutive byte-identical acts, stop GRANTING acts (`may_act=false`) so she
-    // must settle into a Speak/Pass from what she has. It is NOT a steer — it never says WHAT
-    // to do, exactly like the `max_acts` budget cutoff; it only stops feeding a detected
-    // fixed-point loop, and it's personhood-POSITIVE: it returns her to think→speech instead
-    // of hammering. GENUINE iteration is untouched — a refined write has a DIFFERENT signature,
-    // so the counter resets; only a fixed point (identical batch, over and over) trips it.
-    // [[repetition-brick-fires-but-does-not-break-the-loop]], [[no-hardcoded-heuristics-to-steer-cognition]].
+    // Admission uses the caller's budget and lifecycle deadlines. Identical inputs
+    // do not establish a stuck mind: repeated reads/retries can observe new state.
+    // Bound only a repeated input AND actual result, after executing the retry.
+    // This preserves unlimited productive work while yielding a fixed-point loop.
     const STUCK_LIMIT: usize = 3;
-    let mut prev_sig: Option<String> = None;
+    let mut prior_evidence = None;
     let mut stuck = 0usize;
     // A workspace-deliverable turn re-perceives on a zero-deliverable Speak (see the Spoke
     // arm). This used to be ONE-SHOT, and the glass box showed what that costs: on
@@ -617,8 +600,7 @@ async fn settle_to_outcome(
                 }
             }
         }
-        // may_act gates ACTING (not speaking): past the act budget, once she is provably
-        // stuck re-emitting the identical act, OR once a workspace-deliverable turn has
+        // may_act gates ACTING (not speaking): past the act budget, or once a workspace-deliverable turn has
         // saturated its discovery budget without a single mutation (#390 gate above), a
         // fresh Act is returned un-driven and she must settle into a Speak/Pass.
         // Speaking is never gated.
@@ -758,7 +740,6 @@ async fn settle_to_outcome(
                 act_secs = act_secs as u64,
                 rolling_mean_secs = mean as u64,
                 slow = slow,
-                stuck_streak = stuck,
                 // THE LEDGER SPLIT (restore-economy VDD): model_ms is this act's
                 // generation wall-time (the adapter's own measurement, riding up
                 // through StepMetrics); residue_ms is everything else the act
@@ -805,7 +786,7 @@ async fn settle_to_outcome(
                 // round: each work turn was one act and a spoken plan, the second plan
                 // ended the turn, the next turn re-oriented — 29 acts, 0 writes in 70
                 // minutes on 12 held cards. The fact names the count so pacing stays
-                // hers; the stuck detector still bounds the turn.
+                // hers; the caller budget and lifecycle deadlines still apply.
                 if framing.workspace_deliverable && narrations_since_act < NARRATION_BUDGET {
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries()) {
@@ -899,25 +880,30 @@ async fn settle_to_outcome(
                         }
                     }
                 }
-                // Loop-detection: a byte-identical batch back-to-back is the fixed point the
-                // backstop bounds (the short-circuit guard already refused to re-execute it).
-                // A genuinely different act resets the counter, so real iteration is free.
-                let sig = calls_signature(&calls);
-                if prev_sig.as_deref() == Some(sig.as_str()) {
+                let evidence = cycle.acting().and_then(|body| {
+                    batch_evidence(&calls, &body.working_memory.recent_acts())
+                });
+                if evidence.is_some() && evidence == prior_evidence {
                     stuck += 1;
-                    if stuck >= STUCK_LIMIT {
-                        crate::probe!(
-                            class = "persona.settle.stuck_backstop",
-                            room_id = %room_id,
-                            acts = acts,
-                            stuck = stuck,
-                            "identical act repeated to the stuck limit — withholding further acts so she settles into speech (#206 backstop)"
-                        );
-                    }
                 } else {
                     stuck = 0;
                 }
-                prev_sig = Some(sig);
+                prior_evidence = evidence;
+                if stuck >= STUCK_LIMIT {
+                    crate::probe!(
+                        class = "persona.settle.stuck_backstop",
+                        room_id = %room_id,
+                        acts = acts,
+                        stuck = stuck,
+                        "same calls and actual results repeated; yielding without claiming completion"
+                    );
+                    if let Some(body) = cycle.acting() {
+                        body.working_memory.record_fact(
+                            "[repetition] Consecutive executions returned the same results for \
+                             the same requests. This turn yields; the work is not declared complete."
+                        );
+                    }
+                }
                 // The observation re-enters perception through MEMORY + the volatile
                 // working-memory recency channel — `apply_act` admitted it and
                 // recorded a stamped proprioception trace, and the next `settle_step`

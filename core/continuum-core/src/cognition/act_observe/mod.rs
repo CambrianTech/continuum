@@ -73,7 +73,6 @@ mod tests {
         );
     }
 
-    use super::perception::is_redundant_orientation;
     use super::*;
     use crate::ai::types::ToolCall;
     use crate::cognition::workspace::{Decision, Situation, TurnFraming, WorkspaceCycle};
@@ -1044,36 +1043,52 @@ mod tests {
         );
     }
 
-    // what this catches (#206 backstop): a model stuck re-emitting the IDENTICAL act must be
-    // cut off WELL BEFORE the full act budget — the bounded stuck-act backstop stops granting
-    // acts after STUCK_LIMIT consecutive byte-identical batches, so she settles instead of
-    // burning the whole budget hammering (help ×54 / identical write ×8 live). `AlwaysAct`
-    // emits the same tool_call() every tick — the exact fixed point. With a generous budget
-    // of 20, the backstop must stop her far sooner (at STUCK_LIMIT+1 = 4 acts), returning the
-    // un-driven Act honestly. Genuine iteration (different acts) would reset the counter and is
-    // NOT bounded — only a fixed point trips this.
+    // what this catches: changing results preserve productive iteration, while
+    // identical input AND output yields honestly after three repeated observations.
     #[tokio::test]
-    async fn drive_to_settle_backstops_a_stuck_identical_act_loop_before_the_budget() {
-        let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
-            result_content: "...".into(),
-        });
-        let adm = admission();
-        let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
-            .with_acting(body(exec.clone(), adm.clone()));
+    async fn repeated_calls_respect_the_callers_budget() {
+        for (results, expected_acts) in [
+            (["unchanged"; 6], 4),
+            (["pending 1", "pending 2", "running", "written", "tested", "done"], 6),
+        ] {
+            let exec = Arc::new(ScriptedExecutor::new(results));
+            let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
+                .with_acting(body(exec.clone(), admission()));
+            let outcome = drive_to_settle(&cycle, "go", 6, TurnFraming::ambient()).await;
+            assert_eq!(outcome.acts, expected_acts);
+            assert_eq!(exec.results.lock().unwrap().len(), 6 - expected_acts);
+            assert!(matches!(outcome.decision, Decision::Act { .. }));
+            assert!(outcome.spoken.is_none());
+        }
+    }
 
-        // Budget of 20 acts, but she loops on the identical call — the backstop must fire long
-        // before, at 4 acts (3 consecutive identical repeats + the first).
-        let outcome = drive_to_settle(&cycle, "go", 20, TurnFraming::ambient()).await;
-
-        assert_eq!(
-            outcome.acts, 4,
-            "backstop stops the identical-act loop at STUCK_LIMIT+1, not the full budget"
-        );
-        assert!(
-            matches!(outcome.decision, Decision::Act { .. }) && outcome.spoken.is_none(),
-            "the pathological never-speak faculty returns un-driven — honest 'stuck, did not finish'"
-        );
+    // what this catches: fixed-point evidence ignores correlation IDs but never
+    // treats running or missing full results as a completed unchanged observation.
+    #[tokio::test]
+    async fn fixed_point_requires_available_finished_result_evidence() {
+        use super::perception::batch_evidence;
+        use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+        let exec = Arc::new(ScriptedExecutor::new(["result"]));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec, admission()));
+        let mut call = tool_call();
+        let mut acts = acts_of(apply_act(
+            &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
+        ).await);
+        let original = batch_evidence(&[call.clone()], &acts);
+        assert!(original.is_some());
+        call.id = "new-attempt".into();
+        acts[0].call.id = call.id.clone();
+        acts[0].output.result.tool_use_id = call.id.clone();
+        assert!(original == batch_evidence(&[call.clone()], &acts));
+        acts[0].output.result.content = "changed".into();
+        assert!(original != batch_evidence(&[call.clone()], &acts));
+        acts[0].output.verdict = ActVerdict::Declared(ToolVerdict::Running);
+        assert!(batch_evidence(&[call.clone()], &acts).is_none());
+        acts[0].output.verdict = ActVerdict::Unprojected;
+        acts[0].output.result.spill_handle = Some("full-result".into());
+        assert!(batch_evidence(&[call.clone()], &acts).is_none());
+        assert!(batch_evidence(&[call], &[]).is_none());
     }
 
     // what this catches: the shared step's acting gate. `may_act = false` (how the
@@ -1144,6 +1159,7 @@ mod tests {
         rooms: Mutex<Vec<Uuid>>,
         pending_persona: Mutex<Option<Uuid>>,
         pause_before: Option<(usize, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+        error_at: Option<usize>,
     }
     impl ScriptedExecutor {
         fn new(results: impl IntoIterator<Item = &'static str>) -> Self {
@@ -1153,7 +1169,12 @@ mod tests {
                 rooms: Mutex::new(Vec::new()),
                 pending_persona: Mutex::new(None),
                 pause_before: None,
+                error_at: None,
             }
+        }
+        fn with_error_at(mut self, act: usize) -> Self {
+            self.error_at = Some(act);
+            self
         }
         fn with_incoming(
             self,
@@ -1202,7 +1223,7 @@ mod tests {
                 .map(|c| crate::ai::types::ToolResult {
                     tool_use_id: c.id.clone(),
                     content: content.clone(),
-                    is_error: None,
+                    is_error: (self.error_at == Some(act)).then_some(true),
                     spill_handle: None,
                 })
                 .collect();
@@ -1885,291 +1906,68 @@ mod tests {
         );
     }
 
-    // what this catches: the repeat-perception short-circuit. An IDENTICAL, already-
-    // satisfied call this turn must NOT re-execute — the greedy re-emission that spun
-    // `commands/list` forever in the nil-room eval (proven live 2026-07-02): working
-    // memory already carried the result, yet the model re-issued the byte-identical
-    // call every act and never answered. `apply_act` now detects the satisfied
-    // `(name, args)` in working memory, skips the hand, and records an explicit
-    // "already ran it; answer now" proprioception so the redundancy is PERCEIVED rather
-    // than merely present via a stamp shift the greedy decode ignores. A MIXED batch (a
-    // genuinely new call) still runs — proven by
-    // `the_hands_change_the_mind_across_a_multi_act_investigation` (two DISTINCT calls
-    // both execute). Content-driven, not an iteration counter
-    // ([[persona-tool-loop-act-then-report]], [[no-hardcoded-heuristics-to-steer-cognition]]).
+    // what this catches: a previous call receipt is not permission to suppress the
+    // next read, retry or differently scoped discovery. Exercise the actual act seam.
     #[tokio::test]
-    async fn identical_already_satisfied_act_does_not_re_execute() {
-        // Two queued results: only the FIRST may ever be popped. If the identical
-        // second act reached the hand, the queue would drain by one more — the length
-        // assertion below catches exactly that.
-        let exec = Arc::new(ScriptedExecutor::new(["4\n", "SECOND-MUST-NOT-POP"]));
-        let adm = admission();
-        let wm = Arc::new(WorkingMemory::new(4));
-        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
-            .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
-        let room = Uuid::new_v4();
-
-        // First act genuinely runs; its result lands in working memory.
-        let first = acts_of(
-            apply_act(
-                &cycle,
-                &[tool_call()],
-                "check the math",
-                room,
-                &ActChain::new(),
-            )
-            .await,
-        );
-        assert_eq!(
-            first[0].call.name, "code/run",
-            "first act names the tool it ran"
-        );
-        assert!(
-            matches!(first[0].status, ActStatus::Executed),
-            "the first act really executed"
-        );
-        assert_eq!(
-            exec.results.lock().unwrap().len(),
-            1,
-            "first act popped exactly one result off the hand"
-        );
-
-        // Second, byte-identical act: already satisfied → short-circuit, no re-run.
-        // The typed act's OUTPUT carries the nudge and the STATUS names the demotion.
-        let second = acts_of(
-            apply_act(
-                &cycle,
-                &[tool_call()],
-                "check the math",
-                room,
-                &ActChain::new(),
-            )
-            .await,
-        );
-        assert!(
-            matches!(second[0].status, ActStatus::AlreadySatisfied { .. }),
-            "the second identical act is typed AlreadySatisfied, not Executed"
-        );
-        let second_nudge = second[0].output.result.content.clone();
-        assert!(
-            second_nudge.contains("issued") && second_nudge.contains("times"),
-            "records explicit repeat-count proprioception instead of another result: {second_nudge}"
-        );
-        assert_eq!(
-            exec.results.lock().unwrap().len(),
-            1,
-            "the identical call NEVER reached the hand a second time (queue undrained)"
-        );
-
-        // #206 ESCALATION: a THIRD identical call must produce a DISTINCT, higher count
-        // than the second — the proprioception climbs rather than repeating byte-identical
-        // text. Without this, static-nudge spam evicts the useful receipt from the bounded
-        // recency window and a greedy (temp-0) model re-emits the identical call forever.
-        let third = acts_of(
-            apply_act(
-                &cycle,
-                &[tool_call()],
-                "check the math",
-                room,
-                &ActChain::new(),
-            )
-            .await,
-        );
-        let third_nudge = third[0].output.result.content.clone();
-        assert_ne!(
-            second_nudge, third_nudge,
-            "the repeat proprioception must ESCALATE (distinct text), not repeat verbatim"
-        );
-        assert!(
-            third_nudge.contains("3 times"),
-            "the third identical call perceives itself as the 3rd, breaking the fixed point: {third_nudge}"
-        );
-        assert_eq!(
-            exec.results.lock().unwrap().len(),
-            1,
-            "still never re-executed"
-        );
-    }
-
-    // what this catches: the redundant-orientation predicate — the FIRST discovery
-    // per concern is honest (no receipt yet → false), a SECOND once a `commands/list`
-    // or `commands/help` receipt is in the concern is spin (→ true), a MIXED batch
-    // carrying any real workspace action is NOT demoted (the real call must run), and
-    // an empty batch is never redundant. Guards the "demote discovery at the seam"
-    // fix (Joel 2026-07-16) against demoting a genuine first orientation or a real act.
-    // what this catches: the escalation counter losing to ARG JITTER. The detector
-    // (`is_redundant_orientation`) is class-based on purpose — its doc says demoting by
-    // CLASS "ignoring args entirely" is immune to jitter. The COUNTER was not: it keyed on
-    // `name|args`, so each jittered variant was a fresh key returning 1, and the nudge read
-    // "1 times this concern" forever. Byte-identical perception off a greedy decoder is a
-    // fixed point — the exact #206 failure the escalation exists to break.
-    //
-    // Live on sympy-21379, the run's 8 orientation calls, nearly all distinct args:
-    //   commands/list({"filter":"code"}) ×2, commands/list({}), commands/list({"filter":"sympy"}),
-    //   code/tree({"path":"."}), code/tree({include_hidden,max_depth,path:"sympy"}),
-    //   commands/help({"name":"code/read"}), commands/help({"name":"code/edit"})
-    // Detector fired all 5 demotions; every nudge said "1 times".
-    #[test]
-    fn the_orientation_counter_climbs_across_jittered_args() {
-        let wm = WorkingMemory::new(16);
-        // ONE stable class key — the shape `bump_orientation_repeat` uses.
-        const K: &str = "orientation|<class>";
-        assert_eq!(wm.note_action_fingerprint(K), 1);
-        assert_eq!(wm.note_action_fingerprint(K), 2);
-        assert_eq!(
-            wm.note_action_fingerprint(K),
-            3,
-            "climbs — perception shifts each demotion"
-        );
-
-        // The OLD arg-keyed shape, for contrast: jittered variants never escalate, which is
-        // precisely how a determined model rode past the guard.
-        let wm2 = WorkingMemory::new(16);
-        let jittered = [
-            r#"commands/list|{"filter":"code"}"#,
-            r#"commands/list|{}"#,
-            r#"commands/list|{"filter":"sympy"}"#,
-        ];
-        for fp in jittered {
-            assert_eq!(
-                wm2.note_action_fingerprint(fp),
-                1,
-                "arg-keyed fingerprints stay at 1 under jitter — why the counter had to move to the class"
-            );
-        }
-    }
-
-    #[test]
-    fn redundant_orientation_fires_only_on_a_repeat_all_discovery_batch() {
-        let list = |args: serde_json::Value| ToolCall {
-            id: "c".into(),
-            name: "commands/list".into(),
-            input: args,
-        };
-        let help = ToolCall {
-            id: "c".into(),
-            name: "commands/help".into(),
-            input: serde_json::json!({ "name": "code/write" }),
-        };
-        // First orientation, nothing yet in the concern → honest, not redundant.
-        assert!(!is_redundant_orientation(
-            &[],
-            &[list(serde_json::json!({}))]
-        ));
-        // A discovery receipt is already in the concern → a second orientation is spin.
-        let recent = vec!["commands/list({}) → ok".to_string()];
-        assert!(is_redundant_orientation(&recent, &[help.clone()]));
-        assert!(is_redundant_orientation(
-            &recent,
-            &[list(serde_json::json!({ "filter": "code" }))]
-        ));
-        // A settlement boundary AFTER the receipt closes the concern → fresh start,
-        // orientation is honest again (scope is only the post-[settled] tail).
-        let recent_settled = vec![
-            "commands/list({}) → ok".to_string(),
-            crate::cognition::working_memory::WM_SETTLEMENT_PREFIX.to_string(),
-        ];
-        assert!(!is_redundant_orientation(&recent_settled, &[help.clone()]));
-        // A MIXED batch with a real workspace action is never demoted — the real call
-        // must reach the hand.
-        assert!(!is_redundant_orientation(
-            &recent,
-            &[help.clone(), tool_call()]
-        ));
-        // Empty batch is never redundant.
-        assert!(!is_redundant_orientation(&recent, &[]));
-
-        // WORKSPACE orientation (`code/tree`) — the displaced-spin case (benchmark
-        // 2026-07-16: 156 arg-jittered tree surveys). First tree per concern is honest;
-        // a REPEAT after a tree receipt is spin, regardless of the arg jitter that
-        // evades the exact-repeat guard.
-        let tree = |p: &str| ToolCall {
-            id: "t".into(),
-            name: "code/tree".into(),
-            input: serde_json::json!({ "path": p, "max_depth": 2 }),
-        };
-        assert!(
-            !is_redundant_orientation(&[], &[tree("apps/cli")]),
-            "first survey is honest"
-        );
-        let after_tree = vec!["code/tree(path=apps/cli, max_depth=2) → ok".to_string()];
-        // Jittered repeat (trailing slash, different depth) → still demoted (args ignored).
-        assert!(is_redundant_orientation(&after_tree, &[tree("apps/cli/")]));
-        assert!(is_redundant_orientation(
-            &after_tree,
-            &[ToolCall {
-                id: "t".into(),
-                name: "code/tree".into(),
-                input: serde_json::json!({})
-            }]
-        ));
-        // `code/list` is NOT orientation — a specific-dir listing to get filenames before
-        // an edit is a legitimate narrowing step, so it always runs.
-        let clist = ToolCall {
-            id: "l".into(),
-            name: "code/list".into(),
-            input: serde_json::json!({ "path": "src" }),
-        };
-        assert!(!is_redundant_orientation(&after_tree, &[clist]));
-    }
-
-    // what this catches: the seam-level demotion — a first `commands/list` runs and
-    // lands its receipt; a SECOND orientation call (`commands/help`) this concern is
-    // demoted WITHOUT reaching the hand, recording redundant-orientation proprioception
-    // instead. This is the fix for the glass-boxed act-pressure filler (1855/3288 live
-    // tool calls were `help`/`list_commands`, nine straight `commands/help` turns while
-    // the answer sat ready). Mirrors `identical_already_satisfied_act_does_not_re_execute`
-    // but for the DIFFERENT-args orientation case the exact-repeat guard misses.
-    #[tokio::test]
-    async fn redundant_orientation_is_demoted_and_never_reaches_the_hand() {
-        // Two queued results: only the FIRST orientation may pop. If the second
-        // reached the hand, the queue would drain one more — the length assert catches it.
+    async fn repeated_reads_and_scoped_discovery_reach_the_executor() {
         let exec = Arc::new(ScriptedExecutor::new([
-            "{\"commands\":[]}",
-            "SECOND-MUST-NOT-POP",
-        ]));
-        let adm = admission();
-        let wm = Arc::new(WorkingMemory::new(4));
+            "old", "edited", "new", "missing", "available",
+            "schema one", "schema two", "tree one", "tree two",
+        ]).with_error_at(4));
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
-            .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
+            .with_acting(body(exec.clone(), admission()));
         let room = Uuid::new_v4();
+        let chain = ActChain::new();
+        for (i, (name, input, expected)) in [
+            ("code/read", serde_json::json!({"file_path":"x"}), "old"),
+            ("code/edit", serde_json::json!({"file_path":"x"}), "edited"),
+            ("code/read", serde_json::json!({"file_path":"x"}), "new"),
+            ("code/read", serde_json::json!({"file_path":"y"}), "missing"),
+            ("code/read", serde_json::json!({"file_path":"y"}), "available"),
+            ("commands/help", serde_json::json!({"name":"code/read"}), "schema one"),
+            ("commands/help", serde_json::json!({"name":"code/edit"}), "schema two"),
+            ("code/tree", serde_json::json!({"path":"a"}), "tree one"),
+            ("code/tree", serde_json::json!({"path":"b"}), "tree two"),
+        ].into_iter().enumerate() {
+            let call = ToolCall { id: format!("call-{i}"), name: name.into(), input };
+            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain).await);
+            assert!(matches!(acts[0].status, ActStatus::Executed));
+            assert!(acts[0].output.result.content.contains(expected));
+            assert_eq!(acts[0].output.result.is_error, (i == 3).then_some(true));
+        }
+        assert!(exec.results.lock().unwrap().is_empty());
+    }
 
-        let list = ToolCall {
-            id: "c1".into(),
-            name: "commands/list".into(),
-            input: serde_json::json!({}),
-        };
-        let help = ToolCall {
-            id: "c2".into(),
-            name: "commands/help".into(),
-            input: serde_json::json!({ "name": "code/write" }),
-        };
-
-        // First orientation genuinely runs; its receipt lands in working memory.
-        acts_of(apply_act(&cycle, &[list], "orient", room, &ActChain::new()).await);
-        assert_eq!(
-            exec.results.lock().unwrap().len(),
-            1,
-            "first orientation popped exactly one result off the hand"
-        );
-
-        // Second, DIFFERENT-args orientation this concern → demoted, no re-run.
-        let second =
-            acts_of(apply_act(&cycle, &[help], "orient again", room, &ActChain::new()).await);
-        assert!(
-            matches!(second[0].status, ActStatus::RedundantOrientation { .. }),
-            "the demoted orientation is typed RedundantOrientation, not Executed"
-        );
-        let nudge = second[0].output.result.content.clone();
-        assert!(
-            nudge.contains("orientation") && nudge.contains("times"),
-            "records escalating redundant-orientation proprioception, not another catalog: {nudge}"
-        );
-        assert_eq!(
-            exec.results.lock().unwrap().len(),
-            1,
-            "the redundant orientation NEVER reached the hand (queue undrained)"
-        );
+    // what this catches: identical relative requests in different rooms retain
+    // their current execution scope and call/result correlation, never reuse history.
+    #[tokio::test]
+    async fn repeated_request_keeps_current_room_and_returns_fresh_evidence() {
+        let exec = Arc::new(ScriptedExecutor::new(["room-a content", "room-b content"]));
+        let wm = Arc::new(WorkingMemory::new(3));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body_with_wm(exec.clone(), admission(), wm.clone()));
+        let rooms = [Uuid::new_v4(), Uuid::new_v4()];
+        for (i, room) in rooms.into_iter().enumerate() {
+            let id = format!("read-{i}");
+            let call = ToolCall {
+                id: id.clone(),
+                name: "code/read".into(),
+                input: serde_json::json!({"file_path": "README.md"}),
+            };
+            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new()).await);
+            assert!(matches!(acts[0].status, ActStatus::Executed));
+            assert_eq!(acts[0].output.result.tool_use_id, id);
+            assert!(acts[0].output.result.content.contains(if i == 0 {
+                "room-a content"
+            } else {
+                "room-b content"
+            }));
+        }
+        assert_eq!(*exec.rooms.lock().unwrap(), rooms.to_vec());
+        let feedback = wm.recent().join("\n");
+        assert!(!feedback.contains("already in my working memory"));
+        assert!(!feedback.contains("result has not changed"));
+        assert!(exec.results.lock().unwrap().is_empty());
     }
 
     // what this catches: SETTLE IS A REST, NOT A HALT — the metronome does not
