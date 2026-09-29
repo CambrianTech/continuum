@@ -1714,13 +1714,13 @@ pub struct WorkCreateParams {
     /// The room whose board gets the card (id or name).
     // Required: a "current room" default put project cards in #general.
     pub room: String,
-    /// The repository (owner/name). Omit to use the repo of the card you hold.
+    /// owner/name; omit for your held card's repo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
-    /// Human-readable card title.
+    /// Card title.
     pub title: String,
-    /// Optional card body / description.
+    /// Card body.
     #[serde(default)]
     pub body: Option<String>,
     /// p0 (urgent) to p3 (whenever). Defaults to p2.
@@ -4136,8 +4136,10 @@ mod tests {
         );
 
         // The default path (Cormac on #4571): holding a card and naming no repo files the new
-        // card against the HELD card's repo, never some other project's.
+        // card against the HELD card's repo, never some other project's. A claim is made from
+        // the card's own room.
         let held = WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid"));
+        airc.join("career-wrangler").await.expect("stand in the card's room to claim it");
         airc.claim_work_card_with_origin(
             ClaimWorkCard { card_id: held, ttl_ms: 600_000 },
             airc_work::ClaimOrigin::Explicit,
