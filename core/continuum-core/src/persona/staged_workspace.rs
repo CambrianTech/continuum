@@ -74,9 +74,10 @@ pub fn staged_instances(peer: &uuid::Uuid) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Vec::new();
     };
-    // An in-flight `<instance>.cloning-*` tree also carries a `.git` but is not a checkout:
-    // listing it rooted Sahar in one (2026-09-28, scikit-learn-25747) with no final
-    // sibling, where the next restage's sweep could delete her edit. Named, not listed.
+    // An in-flight `<instance>.cloning-*` tree also carries a `.git` but is not a staged
+    // checkout (2026-09-28: Sahar's scikit-learn-25747 existed only as one, and the roster
+    // advertised it as staged). Named by a probe, not listed. Title resolution matches whole
+    // names, so this changes no card's rooting.
     let mut out: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().join(".git").exists())
