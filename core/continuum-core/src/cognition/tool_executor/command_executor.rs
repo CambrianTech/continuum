@@ -597,7 +597,7 @@ impl ToolExecutor for CommandToolExecutor {
             .into_iter()
             .enumerate()
             .map(|(i, (tool_use_id, outcome))| match outcome {
-                Ok(value) => {
+                Ok(mut value) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
                     // the FULL value. Ordering is the contract, not an accident: the
                     // fold below can spill and truncate the rendered text, and the
@@ -626,24 +626,28 @@ impl ToolExecutor for CommandToolExecutor {
                             "a registered projector could not decode its own command's declared output — schema drift; the payload is preserved and NO outcome is claimed"
                         );
                     }
+                    // The human canvas consumes the original capture once; the
+                    // persona history consumes a durable reference to those bytes.
+                    crate::ipc::positron_canvas_source::maybe_publish_observation(
+                        &ctx.persona_name, &canonical, &value.to_string(),
+                    );
+                    let image = match crate::media::artifact::retain_capture(&canonical, &mut value) {
+                        Ok(image) => image,
+                        Err(error) => {
+                            if let Some(object) = value.as_object_mut() {
+                                object.insert("mediaError".into(), Value::String(error));
+                            }
+                            None
+                        }
+                    };
                     verdicts.push(CallVerdict {
+                        image,
                         tool_use_id: tool_use_id.clone(),
                         verdict,
                         dispatch_handle,
                     });
 
-                    let full = value.to_string(); // owned render once; both the canvas feed and the fold read it
-                    // Canvas feed publishes from the PRE-FOLD content. It used to
-                    // hook the post-fold observation in act_observe/apply, where a
-                    // flood-sized ObserveResult had already been spilled + cut to a
-                    // preview — the JSON parse failed and the desktop went blind on
-                    // exactly the big screenshots worth watching (2026-08-23 audit's
-                    // latent canvas bug). Here the full result still exists.
-                    crate::ipc::positron_canvas_source::maybe_publish_observation(
-                        &ctx.persona_name,
-                        &calls[i].name,
-                        &full,
-                    );
+                    let full = value.to_string(); // boundary: tool-result transcript now contains a durable image reference.
                     {
                         // Spill-then-bound: a flood-sized result is persisted whole
                         // (recoverable via `tool/output`) before the preview is cut;
@@ -676,6 +680,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // say the same thing `is_error` does — a receipt that reads one
                     // field and a glyph that reads the other must never disagree.
                     verdicts.push(CallVerdict {
+                        image: None,
                         tool_use_id: tool_use_id.clone(),
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,

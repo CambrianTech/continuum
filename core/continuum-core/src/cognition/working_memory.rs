@@ -2158,6 +2158,7 @@ mod tests {
                 input: serde_json::json!({ "query": "needle" }),
             },
             output: ToolOutput {
+                image: None,
                 result: ToolResult {
                     tool_use_id: "call-42".into(),
                     content: "match at foo.rs:42".into(),
@@ -2218,6 +2219,7 @@ mod tests {
                 input: serde_json::json!({}),
             },
             output: ToolOutput {
+                image: None,
                 result: ToolResult {
                     tool_use_id: id.into(),
                     content: "same result".into(),

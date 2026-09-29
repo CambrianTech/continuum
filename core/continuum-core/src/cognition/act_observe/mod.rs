@@ -576,6 +576,7 @@ mod tests {
                 verdicts: calls
                     .iter()
                     .map(|c| CallVerdict {
+                        image: None,
                         tool_use_id: c.id.clone(),
                         verdict: crate::sdk_codegen::ActVerdict::Declared(
                             crate::sdk_codegen::ToolVerdict::Running,

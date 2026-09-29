@@ -198,6 +198,7 @@ members = [
 # the ordinary reviewed-credit consumer. All crates share that public revision.
 # The same revision across all AIRC crates preserves one shared wire contract.
 airc-core = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
 airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
 airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
 airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }

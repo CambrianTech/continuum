@@ -1290,9 +1290,11 @@ mod tests {
     #[tokio::test]
     async fn shallow_live_window_tops_up_from_durable_history_as_grounding() {
         let room = RoomId::new();
-        let sender = Uuid::new_v4();
         // ONE live event — the post-reboot shape.
         let live = event_in(room, Some("Hello everyone! I'm Benchy."), 5);
+        // A durable copy has the SAME sender. Equal text from different peers
+        // is a distinct message and must not be silently collapsed.
+        let sender = live.peer_id.to_string();
         let reader = Arc::new(StubReader::new(vec![live]));
         let (source, _buffer) = isolated_source(reader);
         let mut source = source;

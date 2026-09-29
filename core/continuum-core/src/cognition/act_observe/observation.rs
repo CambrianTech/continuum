@@ -124,6 +124,10 @@ impl ToolVerb {
     export_to = "../../../protocol/typescript/cognition/ToolOutput.ts"
 )]
 pub struct ToolOutput {
+    /// Retained source image; persisted history never owns base64 pixel payloads.
+    #[serde(default)]
+    #[ts(optional)]
+    pub image: Option<crate::media::artifact::ImageArtifact>,
     /// Single source of the raw payload; correlated by `tool_use_id == call.id`.
     pub result: ToolResult,
     /// Computed once via `ToolVerb::classify(call.name)`.
@@ -408,6 +412,7 @@ mod tests {
                     input: serde_json::json!({ "command": "cargo test" }),
                 },
                 output: ToolOutput {
+                    image: None,
                     result: ToolResult {
                         tool_use_id: "c1".into(),
                         content: content.into(),

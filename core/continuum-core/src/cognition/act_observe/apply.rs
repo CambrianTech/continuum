@@ -332,6 +332,7 @@ pub async fn apply_act(
         let obs = Observation {
             call: call.clone(),
             output: ToolOutput {
+                image: projected.and_then(|v| v.image.clone()),
                 result: typed_result,
                 verb: ToolVerb::classify(&call.name),
                 paths: extract_paths(&call.input),
@@ -354,6 +355,7 @@ pub async fn apply_act(
             acts.push(Observation {
                 call: call.clone(),
                 output: ToolOutput {
+                    image: None,
                     result: ToolResult {
                         tool_use_id: call.id.clone(),
                         content: "dispatched — running in background".to_string(),

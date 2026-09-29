@@ -6090,6 +6090,7 @@ mod tests {
                             input: serde_json::json!({"attempt": step}),
                         },
                         output: ToolOutput {
+                            image: None,
                             result: ToolResult {
                                 tool_use_id: call_id,
                                 content: (*report).into(),
