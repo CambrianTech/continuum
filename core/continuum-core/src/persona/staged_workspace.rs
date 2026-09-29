@@ -45,6 +45,22 @@ pub fn staging_root(peer: &uuid::Uuid) -> Option<PathBuf> {
     )
 }
 
+/// An in-flight staging tree ([`crate::cognition::swe_bench::is_in_flight_staging_name`]),
+/// probed so work left in one is findable rather than silently skipped. Pure but for
+/// the probe.
+fn in_flight_tree(root: &std::path::Path, name: &str) -> bool {
+    let in_flight = crate::cognition::swe_bench::is_in_flight_staging_name(name);
+    if in_flight {
+        crate::probe!(
+            class = "staging.in_flight_tree_not_a_checkout",
+            root = %root.display(),
+            name = %name,
+            "an in-flight clone tree carries a .git but is not a staged checkout; not listed"
+        );
+    }
+    in_flight
+}
+
 /// Every benchmark instance actually staged in this citizen's workspace, name-sorted.
 ///
 /// Counts only directories that carry a `.git` — a real checkout, not an empty shell left
@@ -58,10 +74,14 @@ pub fn staged_instances(peer: &uuid::Uuid) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Vec::new();
     };
+    // An in-flight `<instance>.cloning-*` tree also carries a `.git` but is not a checkout:
+    // listing it rooted Sahar in one (2026-09-28, scikit-learn-25747) with no final
+    // sibling, where the next restage's sweep could delete her edit. Named, not listed.
     let mut out: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().join(".git").exists())
         .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| !in_flight_tree(&root, name))
         .collect();
     out.sort();
     out
@@ -238,7 +258,7 @@ pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
             continue;
         };
         let path = entry.path().join("workspace").join("swe").join(instance);
-        if !path.join(".git").exists() {
+        if !path.join(".git").exists() || in_flight_tree(&path, instance) {
             continue;
         }
         // WORK HERE IS THE CANDIDATE, NOTHING ELSE (2026-09-16). This reader feeds the

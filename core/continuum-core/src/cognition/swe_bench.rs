@@ -1107,6 +1107,14 @@ fn clone_lock_for(repo_dir: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 /// artifact voided at scoring). The per-destination lock in [`clone_at`] already
 /// serializes callers; the nonce keeps even a future unlocked path collision-free and
 /// keeps a crashed run's leftovers from ever matching a live invocation's name.
+/// Whether a directory name is an in-flight staging tree minted by [`staging_path_for`]
+/// (`<instance>.cloning-<pid>-<nonce>`): a clone before its rename commit-point, never a
+/// usable checkout even when it already carries a `.git`. The one place that knows the
+/// shape, beside the one place that makes it.
+pub(crate) fn is_in_flight_staging_name(name: &str) -> bool {
+    name.contains(".cloning-")
+}
+
 fn staging_path_for(repo_dir: &Path) -> PathBuf {
     static CLONE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     repo_dir.with_extension(format!(
@@ -4293,6 +4301,18 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-28, Sahar's scikit-learn-25747): an in-flight staging
+    // tree read as a staged checkout because it already carries .git. The predicate must
+    // recognize exactly the name staging_path_for mints, and never a real instance name.
+    #[test]
+    fn the_in_flight_predicate_knows_the_name_the_mint_makes() {
+        let minted = super::staging_path_for(std::path::Path::new("/w/swe/scikit-learn__scikit-learn-25747"));
+        let name = minted.file_name().and_then(|n| n.to_str()).expect("utf-8 name");
+        assert!(super::is_in_flight_staging_name(name), "{name}");
+        assert!(!super::is_in_flight_staging_name("scikit-learn__scikit-learn-25747"));
+        assert!(!super::is_in_flight_staging_name("sympy__sympy-18057"));
+    }
+
     // what this catches: grade checkouts retained forever (914k files on the M5,
     // 2026-09-25, fseventsd at 14 GB) — and the opposite failure, a sweep that deletes
     // the tree or staging clone of a grade still in flight.
