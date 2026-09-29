@@ -655,9 +655,28 @@ pub fn resolve_params(
             ))
         })?;
         if json_type(value) != json_type(&decl.default) {
+            // Kimi (2026-09-28) passed {"enum": [...], "type": "string"} for a string: a
+            // description of the value in place of the value. Say so, and show the form.
+            let schema_shaped = value
+                .as_object()
+                .is_some_and(|o| o.contains_key("type") || o.contains_key("enum"));
+            let schema_note = if schema_shaped {
+                " That object describes the value (a schema); pass the value itself."
+            } else {
+                ""
+            };
+            let example = match &decl.default {
+                serde_json::Value::String(_) => "\"...\"",
+                serde_json::Value::Number(_) => "1",
+                serde_json::Value::Bool(_) => "true",
+                serde_json::Value::Array(_) => "[...]",
+                serde_json::Value::Object(_) => "{...}",
+                serde_json::Value::Null => "null",
+            };
             return Err(CommandError::Invalid(format!(
                 "parameter {name:?} expects a {} (the declared default's type), got a \
-                 {} — declared: {}",
+                 {}.{schema_note} Pass it as \"params\": {{\"{name}\": {example}}}. \
+                 Declared: {}",
                 json_type(&decl.default),
                 json_type(value),
                 declared_set()
@@ -1607,6 +1626,24 @@ mod tests {
             let msg = format!("{err}");
             assert!(msg.contains("number"), "names the expected type: {msg}");
             assert!(msg.contains("string"), "names the supplied type: {msg}");
+            assert!(msg.contains(r#""params": {"instances": 1}"#), "shows the form: {msg}");
+        }
+
+        // what this catches (Kimi, 2026-09-28): a schema passed where a value belongs
+        // ({"enum": [...], "type": "string"} for a string) refused as a bare type mismatch.
+        // The refusal says it is a schema and shows the value form.
+        #[test]
+        fn a_schema_passed_as_a_value_is_named_as_one() {
+            let given = BTreeMap::from([(
+                "suite".to_string(),
+                serde_json::json!({"enum": ["swe-lite"], "type": "string"}),
+            )]);
+            let msg = format!(
+                "{}",
+                resolve_params(&recipe_with_params(), &given).expect_err("a schema is not a value")
+            );
+            assert!(msg.contains("pass the value itself"), "{msg}");
+            assert!(msg.contains(r#""params": {"suite": "..."}"#), "{msg}");
         }
 
         // what this catches (#433): a parameterless recipe (every shipped one
