@@ -17,7 +17,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::commands::benchmark::continuum_home;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -92,25 +91,9 @@ pub struct PersonaRoster {
 /// effort: a missing home or unreadable dir yields an empty list, never an error — the
 /// roster read must not fail because one citizen's workspace isn't there yet.
 fn staged_swe_for(peer: &uuid::Uuid) -> Vec<String> {
-    let Ok(home) = continuum_home() else {
-        return Vec::new();
-    };
-    let swe = home
-        .join("citizens")
-        .join("peers")
-        .join(peer.to_string())
-        .join("workspace")
-        .join("swe");
-    let Ok(entries) = std::fs::read_dir(&swe) else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().join(".git").exists())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
-    out.sort();
-    out
+    // One walk, one filter: the roster read the same directory itself and advertised
+    // in-flight `.cloning-*` trees as staged (2026-09-28, Codex on #4581).
+    crate::persona::staged_workspace::staged_instances(peer)
 }
 
 #[async_trait::async_trait]
@@ -165,6 +148,39 @@ crate::register_command!(PersonaRoster);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Codex on #4581, 2026-09-28): the roster walking the staging
+    // directory itself and advertising an in-flight `.cloning-*` tree as a staged instance.
+    // It reads the one shared listing, so a real checkout is listed and the in-flight tree
+    // (which also carries .git) is not. A fresh peer id keeps the test home unshared.
+    #[test]
+    fn the_roster_lists_staged_checkouts_and_never_an_in_flight_clone() {
+        // Never write under an operator's configured home: this test only runs against the
+        // per-process test home (Codex on #4581).
+        if std::env::var_os("CONTINUUM_HOME").is_some() {
+            return;
+        }
+        /// Removes this test's peer directory however the test exits.
+        struct PeerDir(std::path::PathBuf);
+        impl Drop for PeerDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0); // cleanup of a unique test-only tree
+            }
+        }
+        let peer = uuid::Uuid::new_v4();
+        let peer_dir = PeerDir(
+            crate::commands::benchmark::continuum_home()
+                .expect("test home")
+                .join("citizens")
+                .join("peers")
+                .join(peer.to_string()),
+        );
+        let swe = peer_dir.0.join("workspace").join("swe");
+        for name in ["scikit-learn__scikit-learn-25747", "sympy__sympy-18057.cloning-3988-34"] {
+            std::fs::create_dir_all(swe.join(name).join(".git")).expect("fixture tree");
+        }
+        assert_eq!(staged_swe_for(&peer), ["scikit-learn__scikit-learn-25747"]);
+    }
     use airc_core::PeerId;
 
     // what this catches: the roster row shape is what the CLI/SDK read to answer "who is
