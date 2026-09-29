@@ -375,10 +375,8 @@ function New-CoreServiceRelease {
     $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
     $liveProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.Name -in @('continuum.exe', 'continuum-core-server.exe') })
-    if (@($liveProcesses | Where-Object { -not $_.ExecutablePath }).Count) {
-        throw 'Cannot inspect all live Continuum image paths; refusing to overwrite an installed slot.'
-    }
-    $liveImages = @($liveProcesses | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
+    $unknownImages = @($liveProcesses | Where-Object { -not $_.ExecutablePath }).Count -gt 0
+    $liveImages = @($liveProcesses | Where-Object { $_.ExecutablePath } | ForEach-Object { ConvertTo-CoreImagePath $_.ExecutablePath })
     $descriptor = $null
     $registered = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     if ($registered) {
@@ -398,11 +396,29 @@ function New-CoreServiceRelease {
             throw 'Existing ContinuumCore task references a release slot without an artifact descriptor.'
         }
     }
+    if ($unknownImages -and -not $descriptor.artifact) {
+        throw 'Cannot inspect all live Continuum image paths and no registered release protects startup files.'
+    }
     $slot = $null
     foreach ($name in @('service-a', 'service-b')) {
         $candidate = Join-Path $root $name
         $occupied = @($liveImages | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) })
-        if ($occupied.Count -eq 0) { $slot = $candidate; break }
+        if ($occupied.Count -gt 0) { continue }
+        # Service-session images can be unreadable. Preserve the registered slot
+        # above, then verify every destination before touching any candidate file.
+        # Windows denies write access to mapped executables. Copy-Item retains
+        # that protection if a process starts after this non-mutating probe.
+        $writable = $true
+        foreach ($file in @('continuum.exe', 'continuum-core-server.exe', 'run-service-hidden.ps1')) {
+            $destination = Join-Path $candidate $file
+            if (-not (Test-Path -LiteralPath $destination)) { continue }
+            try {
+                $probe = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                $probe.Dispose()
+            } catch [IO.IOException] { $writable = $false; break }
+            catch [UnauthorizedAccessException] { $writable = $false; break }
+        }
+        if ($writable) { $slot = $candidate; break }
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
     # The CLI this release installs is the one that knows the lane records' contract.
