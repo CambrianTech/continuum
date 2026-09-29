@@ -98,47 +98,34 @@ pub struct ActivitySpawn {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct ActivitySpawnParams {
-    /// The room's name — what people will call this instance of the activity.
-    ///
-    /// Name it for the ACTIVITY, not for a subsystem. A subsystem never finishes,
-    /// so a room named after one reads as a permanent place and quietly becomes
-    /// the room everyone reuses forever.
+    /// What people will call this activity: name it for the activity, not a subsystem.
+    // A subsystem never finishes, so a room named after one reads as a permanent place and
+    // quietly becomes the room everyone reuses forever.
     pub name: String,
 
-    /// Which recipe to build from — the EXACT `purpose` key of an authored recipe.
-    ///
-    /// Exact, because [`crate::experience::RecipeExperienceSource`] keys on the
-    /// literal string and an unknown purpose resolves to `None`. Family names do
-    /// not work: the authored benchmark recipe's purpose is `benchmark/hard-rs`,
-    /// so `benchmark` matches nothing and the room falls through to rendering as
-    /// plain chat. This doc used to list `chat, benchmark, video-chat, profile`
-    /// and that middle one was never real.
-    ///
-    /// Not enumerated here on purpose: recipes are DATA, overlaid from disk by
-    /// `builtins_with_overlay`, so any list in this comment is stale the moment
-    /// someone authors a new one. Read the catalogue instead.
-    ///
-    /// The recipe decides the room's regions, verbs and layout; this command only
-    /// decides that a room exists and which recipe it follows.
+    /// The recipe's exact `purpose` (activity/recipes lists them), e.g. `project`.
+    // Exact, because RecipeExperienceSource keys on the literal string and an unknown
+    // purpose resolves to None (a family name like `benchmark` matches nothing and the
+    // room renders as plain chat). Not enumerated here: recipes are data, overlaid from
+    // disk, so a list in this comment goes stale. The recipe decides the room's regions,
+    // verbs and layout; this command only decides that a room exists and which recipe.
+    // (Doc comments ship in every citizen's tool schema, so the rationale lives in `//`.)
     pub recipe: String,
 
-    /// Optional parent activity — activities spawn activities, and the graph is
-    /// POINTERS (parent id here, child ids on the parent), never nested blobs.
-    /// A `RoomId`, because that is what a parent activity IS. `schemars(with =
-    /// "String")` describes the WIRE (a uuid string, per `#[serde(transparent)]`) to
-    /// the tool schema while Rust keeps the type — the caller sends text, the command
-    /// receives a parsed id, and an unparseable one is rejected at the boundary
-    /// instead of flowing inward as a plausible-looking String.
+    /// Parent activity's room id, if this one belongs under another.
+    // A RoomId: the graph is pointers (parent id here, child ids on the parent). schemars
+    // describes the wire (a uuid string) while Rust keeps the type, so an unparseable id
+    // is refused at the boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub parent: Option<RoomId>,
 
-    /// Parameter overrides for the recipe's declared knobs (#433). Omit
-    /// entirely (or leave empty) for the recipe's defaults — a zero-arg spawn
-    /// always works. An unknown name or a value whose JSON type differs from
-    /// the declared default is refused, naming the declared set.
+    /// Values for the recipe's parameters, e.g. {"repo": "owner/name"}; omit for defaults.
+    // #433. Values, never schemas: Kimi (2026-09-28) passed {"enum": [...], "type":
+    // "string"} for repo from the old "declared knobs" wording. An unknown name or a value
+    // whose JSON type differs from the declared default is refused, naming the declared set.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[ts(type = "Record<string, unknown>")]
     pub params: std::collections::BTreeMap<String, serde_json::Value>,
@@ -655,9 +642,28 @@ pub fn resolve_params(
             ))
         })?;
         if json_type(value) != json_type(&decl.default) {
+            // Kimi (2026-09-28) passed {"enum": [...], "type": "string"} for a string: a
+            // description of the value in place of the value. Say so, and show the form.
+            let schema_shaped = value
+                .as_object()
+                .is_some_and(|o| o.contains_key("type") || o.contains_key("enum"));
+            let schema_note = if schema_shaped {
+                " That object describes the value (a schema); pass the value itself."
+            } else {
+                ""
+            };
+            let example = match &decl.default {
+                serde_json::Value::String(_) => "\"...\"",
+                serde_json::Value::Number(_) => "1",
+                serde_json::Value::Bool(_) => "true",
+                serde_json::Value::Array(_) => "[\"...\"]",
+                serde_json::Value::Object(_) => "{}",
+                serde_json::Value::Null => "null",
+            };
             return Err(CommandError::Invalid(format!(
                 "parameter {name:?} expects a {} (the declared default's type), got a \
-                 {} — declared: {}",
+                 {}.{schema_note} Pass it as \"params\": {{\"{name}\": {example}}}. \
+                 Declared: {}",
                 json_type(&decl.default),
                 json_type(value),
                 declared_set()
@@ -1607,6 +1613,24 @@ mod tests {
             let msg = format!("{err}");
             assert!(msg.contains("number"), "names the expected type: {msg}");
             assert!(msg.contains("string"), "names the supplied type: {msg}");
+            assert!(msg.contains(r#""params": {"instances": 1}"#), "shows the form: {msg}");
+        }
+
+        // what this catches (Kimi, 2026-09-28): a schema passed where a value belongs
+        // ({"enum": [...], "type": "string"} for a string) refused as a bare type mismatch.
+        // The refusal says it is a schema and shows the value form.
+        #[test]
+        fn a_schema_passed_as_a_value_is_named_as_one() {
+            let given = BTreeMap::from([(
+                "suite".to_string(),
+                serde_json::json!({"enum": ["swe-lite"], "type": "string"}),
+            )]);
+            let msg = format!(
+                "{}",
+                resolve_params(&recipe_with_params(), &given).expect_err("a schema is not a value")
+            );
+            assert!(msg.contains("pass the value itself"), "{msg}");
+            assert!(msg.contains(r#""params": {"suite": "..."}"#), "{msg}");
         }
 
         // what this catches (#433): a parameterless recipe (every shipped one
