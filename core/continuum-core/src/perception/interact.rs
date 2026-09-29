@@ -137,13 +137,11 @@ impl crate::sdk_codegen::CommandSpec for InteractCommand {
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // the DRIVE half of the loop, offered beside perception/observe
     const DESCRIPTION: &'static str =
-        "Drive a live web page in a persistent browser session and see the result. First call: \
-         pass `target` (a URL, e.g. your dev server) to open a session; you get back a \
-         `session` handle plus the page's image and element tree. Later calls: pass `session` \
-         and `actions` (click, type, press, hover, goto, hotPatchCss; selectors are CSS) \
-         and you get the page after them plus `delta`, the fraction of pixels they changed. \
-         hotPatchCss replaces the live page's CSS patch without losing page state; \
-         pass empty css to clear it. Use this to check flows and iterate visually.";
+        "Drive a live web page and see each result. Open with `target` URL; reuse the returned \
+         `session` for later `actions`: click, type, press, hover, goto, hotPatchCss. \
+         Selectors are CSS. Each call returns the image, element tree and pixel-change `delta`. \
+         hotPatchCss replaces the CSS patch while preserving page state; empty css clears it. \
+         Use this to test flows and iterate visually.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = InteractParams;
     type Result = InteractResult;
