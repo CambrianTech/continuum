@@ -126,6 +126,9 @@ pub fn bind_plan_bytes(
 /// recycled into `notepad.exe` fails the directory; a pid recycled into `llama-server`
 /// (which DOES live in that directory) fails the name. The exact image and its digest
 /// are then reported in the receipt, so what was killed is recorded rather than assumed.
+/// For the A/B service layout, either direct service slot under the same `bin`
+/// is accepted: registration may already name the next release. Other layouts
+/// remain restricted to the exact directory in the plan.
 ///
 /// Pure over what was OBSERVED, so the rule is testable without a process to kill.
 /// Paths compare the way Windows means them — case-insensitively, and `/` spelled `\`
@@ -136,7 +139,23 @@ pub fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(
     let root = norm(&plan.install_dir);
     let root = root.trim_end_matches('\\').to_string();
     let image = norm(observed_image);
-    if !image.starts_with(&format!("{root}\\")) {
+    let image_dir = image.rsplit_once('\\').map(|(dir, _)| dir);
+    // Registration selects the next slot before the previous core exits. Bind
+    // consent to this installation's two known service slots, never arbitrary
+    // siblings or descendants. The elevated caller still observes and terminates
+    // through the same held process handle.
+    let other_slot = root.rsplit_once('\\').and_then(|(bin, slot)| {
+        if bin.rsplit('\\').next() != Some("bin") {
+            return None;
+        }
+        match slot {
+            "service-a" => Some(format!("{bin}\\service-b")),
+            "service-b" => Some(format!("{bin}\\service-a")),
+            _ => None,
+        }
+    });
+    let in_other_slot = other_slot.as_deref().is_some_and(|slot| image_dir == Some(slot));
+    if image_dir != Some(root.as_str()) && !in_other_slot {
         return Err(format!(
             "pid {} is running {observed_image}, which is not under the installation \
              directory {} the consent named — the pid was recycled; refusing to terminate it",
@@ -362,6 +381,31 @@ mod tests {
             .expect("a core that outlived its own deploy runs from the parking space");
         target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.exe")
             .expect("and the ordinary case still passes");
+    }
+
+    // Regression: registration points at the next slot while the previous core
+    // still serves. Consent must accept that core, but no unrelated sibling.
+    #[test]
+    fn registered_and_running_service_slots_can_differ() {
+        for (registered, running) in [("service-a", "service-b"), ("service-b", "service-a")] {
+            let mut p = plan();
+            p.install_dir = format!("C:\\Users\\a\\.continuum\\bin\\{registered}");
+            let bin = "C:\\Users\\a\\.continuum\\bin";
+            target_is_our_core(&p, &format!("{bin}\\{running}\\continuum-core-server.exe"))
+                .expect("previous slot in the same installation");
+            for rejected in [
+                "continuum-core-server.exe".to_string(),
+                format!("{bin}\\service-c\\continuum-core-server.exe"),
+                format!("{bin}\\{running}\\nested\\continuum-core-server.exe"),
+                format!("{bin}\\{running}\\llama-server.exe"),
+                format!("C:\\Users\\other\\.continuum\\bin\\{running}\\continuum-core-server.exe"),
+            ] {
+                assert!(target_is_our_core(&p, &rejected).is_err(), "{rejected}");
+            }
+        }
+        let mut p = plan();
+        p.install_dir = "C:\\unrelated\\service-a".to_string();
+        assert!(target_is_our_core(&p, "C:\\unrelated\\service-b\\core.exe").is_err());
     }
 
     // A capability whose every act is RECORDED, so the sequence can be asserted rather
