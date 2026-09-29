@@ -30,7 +30,7 @@ fn room_label(name: &str, channel: Uuid) -> String {
     export_to = "../../../protocol/typescript/work/WorkArtifactReference.ts"
 )]
 pub struct WorkArtifactReference {
-    /// Artifact SHA-256: 64 hex characters.
+    /// SHA-256 of the patch bytes (64 hex), not a git sha.
     pub hash: String,
     /// Artifact byte length.
     #[ts(type = "number")]
@@ -45,16 +45,36 @@ impl WorkArtifactReference {
     fn into_artifact(self) -> Result<airc_work::SubmissionArtifact, CommandError> {
         // Feed the owned string directly into the protocol's existing hash
         // decoder; no second hash parser or JSON body round-trip.
+        // A git commit sha is the value a citizen HAS in hand, so it is the value she tries
+        // (Kimi, 2026-09-28). Name it and the fix rather than a parse error.
+        if looks_like_git_sha(&self.hash) {
+            return Err(CommandError::Invalid(format!(
+                "artifact hash '{}' looks like a git commit sha, not the patch's SHA-256. Omit artifact: \
+                 work/submit computes it from your card checkout.",
+                self.hash.trim()
+            )));
+        }
         let hash = Deserialize::deserialize(serde::de::value::StringDeserializer::<
             serde::de::value::Error,
         >::new(self.hash))
-        .map_err(|e| CommandError::Invalid(format!("artifact hash: {e}")))?;
+        .map_err(|e| {
+            CommandError::Invalid(format!(
+                "artifact hash: {e}. Omit artifact and work/submit computes it from your checkout."
+            ))
+        })?;
         Ok(airc_work::SubmissionArtifact {
             hash,
             size_bytes: self.size_bytes,
             mime: self.mime,
         })
     }
+}
+
+/// PURE: a git object id as written (40 hex for SHA-1, 7..=39 for an abbreviation), which
+/// is never a 64-hex SHA-256 artifact hash.
+fn looks_like_git_sha(raw: &str) -> bool {
+    let raw = raw.trim();
+    (7..=40).contains(&raw.len()) && raw.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 impl From<&airc_work::SubmissionArtifact> for WorkArtifactReference {
@@ -103,7 +123,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
-    /// Patch hash/size; computed if omitted.
+    /// Omit: computed from your checkout. Not a git sha.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact: Option<WorkArtifactReference>,
@@ -1044,6 +1064,24 @@ mod tests {
     // named refusal, never a diff against HEAD.
     use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
     use std::path::Path;
+
+    // what this catches (Kimi, 2026-09-28): a citizen with a pushed commit in hand passes its
+    // git sha as the artifact hash and gets a bare parse error. A git sha is named as one and
+    // the refusal says to omit the field; a real 64-hex hash is never mistaken for one.
+    #[test]
+    fn a_git_sha_as_the_artifact_hash_is_named_and_told_to_omit() {
+        let git = super::WorkArtifactReference {
+            hash: "fb618e5cdb2848ef530e13c6905df8ced49c624f".into(),
+            size_bytes: 1,
+            mime: None,
+        };
+        let msg = git.into_artifact().expect_err("a git sha is not an artifact hash").to_string();
+        assert!(msg.contains("git commit sha") && msg.contains("Omit artifact"), "{msg}");
+        assert!(super::looks_like_git_sha("fb618e5"), "an abbreviation too");
+        assert!(!super::looks_like_git_sha(&"a".repeat(64)), "a SHA-256 is not a git sha");
+        let real = super::WorkArtifactReference { hash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".into(), size_bytes: 4, mime: None };
+        assert!(real.into_artifact().is_ok());
+    }
 
     // what this catches (Astra, 2026-09-23): these two verbs typed their id params as
     // `Uuid`, so the 8-char handle the board SHOWS her was refused by serde — before the
