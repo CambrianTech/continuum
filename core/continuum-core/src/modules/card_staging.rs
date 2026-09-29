@@ -656,7 +656,17 @@ mod tests {
         );
 
         // THE INVARIANT: the same title on an ORDINARY card must not borrow that checkout.
+        assert_eq!(
+            crate::persona::act_question::held_card_workspace(&peer, &bench).as_deref(),
+            Some(swe.as_path()),
+            "the follow-on work turn keeps benchmark staging"
+        );
         let generic = generic_card(instance);
+        assert_eq!(
+            crate::persona::act_question::held_card_workspace(&peer, &generic),
+            checkout_path_for(&peer, &generic),
+            "room and follow-on work turns must use the same project checkout authority"
+        );
         assert_ne!(
             checkout_path_for(&peer, &generic).as_deref(),
             Some(swe.as_path()),
