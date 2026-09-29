@@ -284,26 +284,12 @@ pub(crate) async fn ask_the_act_question(
                     // caller identity), so the restore below is mandatory on
                     // EVERY exit — #312: after a flask solve, Anwen's live
                     // self was still reading the exam repo hours later.
-                    // Non-bench cards resolve to None and nothing moves.
+                    // Ordinary project cards use the same card-id checkout authority as room turns.
                     // A REVIEW card roots her hands in the OWNER's checkout (the fix
                     // under review lives there); any other held card resolves to her
                     // own staged instance as before.
-                    let review_workspace = held
-                        .iter()
-                        .filter_map(|c| crate::commands::benchmark::parse_review_title(&c.title))
-                        .find_map(|instance| {
-                            let copies = crate::persona::staged_workspace::owners_of(&instance);
-                            copies
-                                .iter()
-                                .find(|c| c.has_work)
-                                .or_else(|| copies.first())
-                                .map(|c| c.path.clone())
-                        });
-                    let card_workspace = review_workspace.or_else(|| {
-                        crate::persona::staged_workspace::workspace_for_held_cards(
-                            &ctx.identity.peer_id.as_uuid(),
-                            held.iter().map(|c| c.title.as_str()),
-                        )
+                    let card_workspace = held.first().and_then(|card| {
+                        held_card_workspace(&ctx.identity.peer_id.as_uuid(), card)
                     });
                     let work_hands = match &card_workspace {
                         Some(ws) => {
@@ -335,34 +321,43 @@ pub(crate) async fn ask_the_act_question(
                                             &format!(
                                                 "[hands] For this turn my files and shell are \
                                                  rooted AT the repo root `{}` — paths are \
-                                                 repo-relative; `ls` lists the repo itself \
-                                                 (there is no `swe/` directory from here).",
+                                                 repo-relative; `ls` lists the repo itself.",
                                                 ws.display()
                                             ),
                                         );
-                                        // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
-                                        // holder ran `pip install --no-build-isolation -e .`
-                                        // twelve times in one checkout (21 acts, 0 edits) —
-                                        // the grader's prepared env for her instance sat
-                                        // beside it, unnamed. Absence is named too, so
-                                        // she never guesses an interpreter.
-                                        body.working_memory.pin_fact(
-                                            "env",
-                                            &crate::persona::instance_env_fact::instance_env_fact(
-                                                &ws,
-                                            ),
-                                        );
-                                        // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
-                                        // tests that grade her are not in the checkout.
-                                        if let Some(instance) =
-                                            ws.file_name().and_then(|n| n.to_str())
-                                        {
+                                        // Prepared environments and hidden grading belong only
+                                        // to benchmark recipes, never to an ordinary project.
+                                        if held.first().is_some_and(|card| {
+                                            crate::commands::benchmark::parse_card_title(&card.title).is_some()
+                                                || crate::commands::benchmark::parse_review_title(&card.title).is_some()
+                                        }) {
+                                            // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
+                                            // holder ran `pip install --no-build-isolation -e .`
+                                            // twelve times in one checkout (21 acts, 0 edits) —
+                                            // the grader's prepared env for her instance sat
+                                            // beside it, unnamed. Absence is named too, so
+                                            // she never guesses an interpreter.
                                             body.working_memory.pin_fact(
-                                                "grading",
-                                                &crate::persona::instance_env_fact::grading_fact(
-                                                    instance,
+                                                "env",
+                                                &crate::persona::instance_env_fact::instance_env_fact(
+                                                    &ws,
                                                 ),
                                             );
+                                            // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
+                                            // tests that grade her are not in the checkout.
+                                            if let Some(instance) =
+                                                ws.file_name().and_then(|n| n.to_str())
+                                            {
+                                                body.working_memory.pin_fact(
+                                                    "grading",
+                                                    &crate::persona::instance_env_fact::grading_fact(
+                                                        instance,
+                                                    ),
+                                                );
+                                            }
+                                        } else {
+                                            body.working_memory.unpin_fact("env");
+                                            body.working_memory.unpin_fact("grading");
                                         }
                                         // THE LEDGER, as the fact her turn opens with: the
                                         // saved state of the thought — hers from the last
@@ -633,4 +628,19 @@ pub(crate) async fn ask_the_act_question(
     // Reached only when she held no work (or no citizen was present) — nothing
     // was driven this call.
     false
+}
+
+/// The work-turn checkout uses the same card-id authority as room turns.
+/// Benchmark review retains its explicit owner-checkout behavior.
+pub(crate) fn held_card_workspace(
+    peer: &uuid::Uuid,
+    card: &airc_lib::WorkCard,
+) -> Option<std::path::PathBuf> {
+    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
+        let copies = crate::persona::staged_workspace::owners_of(&instance);
+        if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
+            return Some(copy.path.clone());
+        }
+    }
+    crate::modules::card_staging::checkout_path_for(peer, card)
 }
