@@ -128,54 +128,7 @@ pub struct ActivitySpawnParams {
     // whose JSON type differs from the declared default is refused, naming the declared set.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[ts(type = "Record<string, unknown>")]
-    #[schemars(schema_with = "spawn_params_schema")]
     pub params: std::collections::BTreeMap<String, serde_json::Value>,
-}
-
-/// The tool schema for spawn `params`: an object whose VALUES are a string, a number, a
-/// boolean or a list of strings. The Rust field stays `serde_json::Value`, checked against
-/// the recipe's declared defaults; this only tells the model what a value looks like. An
-/// untyped map value let it fill values with schema-shaped objects: Kimi emitted
-/// `{"repo": {"type": "string"}}` while intending a string, five times (2026-09-28).
-fn spawn_params_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    use schemars::schema::{
-        ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
-        SubschemaValidation,
-    };
-    let of = |t: InstanceType| {
-        Schema::Object(SchemaObject {
-            instance_type: Some(SingleOrVec::Single(Box::new(t))),
-            ..Default::default()
-        })
-    };
-    let list = Schema::Object(SchemaObject {
-        instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Array))),
-        array: Some(Box::new(ArrayValidation {
-            items: Some(SingleOrVec::Single(Box::new(of(InstanceType::String)))),
-            ..Default::default()
-        })),
-        ..Default::default()
-    });
-    let value = Schema::Object(SchemaObject {
-        subschemas: Some(Box::new(SubschemaValidation {
-            any_of: Some(vec![
-                of(InstanceType::String),
-                of(InstanceType::Number),
-                of(InstanceType::Boolean),
-                list,
-            ]),
-            ..Default::default()
-        })),
-        ..Default::default()
-    });
-    Schema::Object(SchemaObject {
-        instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Object))),
-        object: Some(Box::new(ObjectValidation {
-            additional_properties: Some(Box::new(value)),
-            ..Default::default()
-        })),
-        ..Default::default()
-    })
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1661,23 +1614,6 @@ mod tests {
             assert!(msg.contains("number"), "names the expected type: {msg}");
             assert!(msg.contains("string"), "names the supplied type: {msg}");
             assert!(msg.contains(r#""params": {"instances": 1}"#), "shows the form: {msg}");
-        }
-
-        // what this catches (Kimi, 2026-09-28): the tool schema leaving `params` values
-        // untyped, so the model filled them with schema objects ({"repo": {"type":
-        // "string"}}) while intending a string. The schema names the value shapes.
-        #[test]
-        fn the_params_schema_says_values_are_plain_values() {
-            let schema = serde_json::to_value(schemars::schema_for!(super::super::ActivitySpawnParams))
-                .expect("schema serialises");
-            let any_of = &schema["properties"]["params"]["additionalProperties"]["anyOf"];
-            let types: Vec<&str> = any_of
-                .as_array()
-                .expect("params values are an anyOf")
-                .iter()
-                .filter_map(|s| s["type"].as_str())
-                .collect();
-            assert_eq!(types, ["string", "number", "boolean", "array"], "{schema}");
         }
 
         // what this catches (Kimi, 2026-09-28): a schema passed where a value belongs
