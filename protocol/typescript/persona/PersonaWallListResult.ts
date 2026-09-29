@@ -10,7 +10,8 @@ export type PersonaWallListResult = {
  */
 room_id: string, 
 /**
- * Currently-pinned posts on the wall, all pages.
+ * Currently-pinned posts on the wall now, all pages. The wall can change
+ * between calls, so totals from different calls need not agree.
  */
 total: number, 
 /**
@@ -20,4 +21,10 @@ posts: Array<PersonaWallPost>,
 /**
  * Pass as `after` for the next page; absent on the last page.
  */
-next?: number, };
+next?: string, 
+/**
+ * True when the post `after` named is no longer current (superseded since the
+ * last page): paging resumed after its publish time, so this walk is not a
+ * snapshot and a post edited meanwhile may appear at its new place.
+ */
+stale_cursor: boolean, };

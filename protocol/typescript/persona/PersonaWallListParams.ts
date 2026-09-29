@@ -9,9 +9,9 @@ export type PersonaWallListParams = {
  */
 room: string, 
 /**
- * Posts to skip: pass the previous page's `next`.
+ * Where to resume: pass the previous page's `next`.
  */
-after?: number, 
+after?: string, 
 /**
  * Posts per page (default 5, at most 50).
  */

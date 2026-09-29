@@ -28,10 +28,10 @@ const MAX_LIMIT: usize = 50;
 pub struct PersonaWallListParams {
     /// The room whose wall to read (id or name).
     pub room: String,
-    /// Posts to skip: pass the previous page's `next`.
+    /// Where to resume: pass the previous page's `next`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "number")]
-    pub after: Option<u32>,
+    #[ts(optional)]
+    pub after: Option<String>,
     /// Posts per page (default 5, at most 50).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
@@ -55,6 +55,7 @@ pub struct PersonaWallPost {
     #[ts(type = "number")]
     pub published_at_ms: u64,
     /// The post this version replaced, if it is an edit.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub supersedes: Option<String>,
     /// The post body, verbatim.
@@ -70,14 +71,20 @@ pub struct PersonaWallPost {
 pub struct PersonaWallListResult {
     /// The room whose wall this is.
     pub room_id: String,
-    /// Currently-pinned posts on the wall, all pages.
+    /// Currently-pinned posts on the wall now, all pages. The wall can change
+    /// between calls, so totals from different calls need not agree.
     #[ts(type = "number")]
     pub total: u32,
     /// This page's posts, in published-time order.
     pub posts: Vec<PersonaWallPost>,
     /// Pass as `after` for the next page; absent on the last page.
-    #[ts(optional, type = "number")]
-    pub next: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub next: Option<String>,
+    /// True when the post `after` named is no longer current (superseded since the
+    /// last page): paging resumed after its publish time, so this walk is not a
+    /// snapshot and a post edited meanwhile may appear at its new place.
+    pub stale_cursor: bool,
 }
 
 impl From<&airc_core::doctrine::WallPostPublished> for PersonaWallPost {
@@ -93,17 +100,75 @@ impl From<&airc_core::doctrine::WallPostPublished> for PersonaWallPost {
     }
 }
 
-/// PURE: one page of `posts` (already in published-time order) from `after`.
+/// Where a page ended: the last post's publish time and id. A position index would
+/// shift under a supersede between calls and silently skip a current post (Codex on
+/// #4560); a post's own identity does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WallCursor {
+    published_at_ms: u64,
+    post_id: uuid::Uuid,
+}
+
+impl std::fmt::Display for WallCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.published_at_ms, self.post_id)
+    }
+}
+
+impl std::str::FromStr for WallCursor {
+    type Err = CommandError;
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let bad = || CommandError::Invalid(format!("after '{raw}' is not a wall cursor: pass a page's `next` unchanged"));
+        let (ms, id) = raw.trim().split_once(':').ok_or_else(bad)?;
+        Ok(Self {
+            published_at_ms: ms.parse().map_err(|_| bad())?,
+            post_id: uuid::Uuid::parse_str(id).map_err(|_| bad())?,
+        })
+    }
+}
+
+impl From<&airc_core::doctrine::WallPostPublished> for WallCursor {
+    fn from(post: &airc_core::doctrine::WallPostPublished) -> Self {
+        Self {
+            published_at_ms: post.published_at_ms,
+            post_id: post.post_id,
+        }
+    }
+}
+
+/// One page and where the next begins.
+#[derive(Debug, PartialEq, Eq)]
+struct Page {
+    posts: Vec<PersonaWallPost>,
+    next: Option<WallCursor>,
+    stale_cursor: bool,
+}
+
+/// PURE: one page of `posts` (in published-time order) after `after`. The cursor's
+/// post still current: resume right after it. Gone (superseded): resume after its
+/// publish time and say so.
 fn page(
     posts: &[airc_core::doctrine::WallPostPublished],
-    after: Option<u32>,
+    after: Option<WallCursor>,
     limit: Option<u32>,
-) -> (Vec<PersonaWallPost>, Option<u32>) {
-    let start = (after.unwrap_or(0) as usize).min(posts.len()); // unwrap_or: no cursor = the first page
+) -> Page {
+    let (start, stale_cursor) = match after {
+        None => (0, false),
+        Some(c) => match posts.iter().position(|p| p.post_id == c.post_id) {
+            Some(i) => (i + 1, false),
+            None => (
+                posts.iter().position(|p| p.published_at_ms > c.published_at_ms).unwrap_or(posts.len()), // unwrap_or: nothing newer = past the end
+                true,
+            ),
+        },
+    };
     let take = limit.map_or(DEFAULT_LIMIT, |l| (l as usize).clamp(1, MAX_LIMIT));
     let end = (start + take).min(posts.len());
-    let next = (end < posts.len()).then_some(end as u32);
-    (posts[start..end].iter().map(PersonaWallPost::from).collect(), next)
+    Page {
+        posts: posts[start..end].iter().map(PersonaWallPost::from).collect(),
+        next: (end < posts.len()).then(|| WallCursor::from(&posts[end - 1])),
+        stale_cursor,
+    }
 }
 
 crate::action_command! {
@@ -127,12 +192,14 @@ crate::action_command! {
         let posts = airc_lib::Airc::wall_posts_in(&airc, &room, None)
             .await
             .map_err(|e| CommandError::Internal(format!("wall read failed: {e}")))?;
-        let (page_posts, next) = page(&posts, p.after, p.limit);
+        let after = p.after.as_deref().map(str::parse::<WallCursor>).transpose()?;
+        let page = page(&posts, after, p.limit);
         Ok(PersonaWallListResult {
             room_id: room.channel.as_uuid().to_string(),
             total: posts.len() as u32,
-            posts: page_posts,
-            next,
+            posts: page.posts,
+            next: page.next.map(|c| c.to_string()),
+            stale_cursor: page.stale_cursor,
         })
     }
 }
@@ -153,23 +220,57 @@ mod tests {
         }
     }
 
-    // what this catches (card 61eed2dd): a wall read that drops provenance (the gap in
-    // grounding), or pages that skip, repeat, or never end. Every post carries its id,
-    // author, date and supersede link; pages cover the wall exactly once and the last
-    // page has no `next`; limit is clamped, never zero.
+    // what this catches (card 61eed2dd): a wall read that drops provenance, or pages
+    // that repeat or never end. Every post carries id, author, date and supersede link;
+    // an unchanged wall is walked exactly once and the last page has no `next`.
     #[test]
-    fn pages_cover_the_wall_once_with_provenance() {
+    fn an_unchanged_wall_is_walked_once_with_provenance() {
         let wall: Vec<_> = (1..=7).map(post).collect();
-        let (first, next) = page(&wall, None, None);
-        assert_eq!(first.len(), DEFAULT_LIMIT);
-        assert_eq!(next, Some(5));
-        assert_eq!(first[1].supersedes.as_deref(), Some(uuid::Uuid::from_u128(1).to_string().as_str()));
-        assert_eq!(first[0].published_at_ms, 1001);
-        assert_eq!(first[0].author, uuid::Uuid::from_u128(7).to_string());
-        let (rest, end) = page(&wall, next, None);
-        assert_eq!(rest.iter().map(|p| p.body.as_str()).collect::<Vec<_>>(), ["post 6", "post 7"]);
-        assert_eq!(end, None, "the last page ends the walk");
-        assert_eq!(page(&wall, Some(99), None), (Vec::new(), None), "a stale cursor is empty, not a panic");
-        assert_eq!(page(&wall, None, Some(0)).0.len(), 1, "limit 0 clamps to 1");
+        let first = page(&wall, None, None);
+        assert_eq!(first.posts.len(), DEFAULT_LIMIT);
+        assert_eq!(first.posts[1].supersedes.as_deref(), Some(uuid::Uuid::from_u128(1).to_string().as_str()));
+        assert_eq!(first.posts[0].published_at_ms, 1001);
+        assert_eq!(first.posts[0].author, uuid::Uuid::from_u128(7).to_string());
+        let cursor = first.next.expect("more posts");
+        let parsed: WallCursor = cursor.to_string().parse().expect("round trip");
+        assert_eq!(parsed, cursor);
+        let rest = page(&wall, Some(cursor), None);
+        assert_eq!(rest.posts.iter().map(|p| p.body.as_str()).collect::<Vec<_>>(), ["post 6", "post 7"]);
+        assert_eq!(rest.next, None, "the last page ends the walk");
+        assert!(!rest.stale_cursor);
+        assert_eq!(page(&wall, None, Some(0)).posts.len(), 1, "limit 0 clamps to 1");
+        assert!("12".parse::<WallCursor>().is_err(), "an old numeric offset is refused, not misread");
+    }
+
+    // what this catches (Codex on #4560): the post a cursor names being superseded between
+    // calls. A position offset would shift and skip a current post; the cursor resumes after
+    // its publish time and says the walk went stale.
+    #[test]
+    fn a_superseded_cursor_resumes_by_time_and_says_so() {
+        let wall: Vec<_> = (1..=7).map(post).collect();
+        let cursor = page(&wall, None, Some(3)).next.expect("more");
+        let edited: Vec<_> = wall.iter().filter(|p| p.post_id != cursor.post_id).cloned().collect();
+        let resumed = page(&edited, Some(cursor), Some(10));
+        assert!(resumed.stale_cursor);
+        assert_eq!(resumed.posts.first().map(|p| p.body.as_str()), Some("post 4"), "nothing current was skipped");
+    }
+
+    // what this catches (Cormac on #4560): `next` and `supersedes` serialised as null
+    // while the binding says optional, so a client looping on `next !== undefined` never
+    // stops.
+    #[test]
+    fn absent_fields_are_omitted_on_the_wire() {
+        let wall = vec![post(1)];
+        let p = page(&wall, None, None);
+        let json = serde_json::to_value(PersonaWallListResult {
+            room_id: "r".into(),
+            total: 1,
+            posts: p.posts,
+            next: p.next.map(|c| c.to_string()),
+            stale_cursor: p.stale_cursor,
+        })
+        .expect("serialises");
+        assert!(json.get("next").is_none(), "{json}");
+        assert!(json["posts"][0].get("supersedes").is_none(), "{json}");
     }
 }
