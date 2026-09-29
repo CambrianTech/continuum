@@ -3180,6 +3180,22 @@ mod tests {
             vec!["MultiValueField".to_string()],
             "a search term is not a read"
         );
+        // Successful writes survive as concrete receipts; failed edits and
+        // another citizen's writes must not become her accomplishments.
+        assert_eq!(p.wrote, vec!["code/edit django/forms/fields.py"]);
+        let mut write_rows = rows.clone();
+        write_rows.push(row(5, "⚙ code/write failed.rs ✗"));
+        write_rows.push(row(6, "⚙ code/edit django/forms/fields.py ✓"));
+        write_rows.push(row(7, "⚙ work/note de33e1d6 ✓"));
+        let mut others = row(8, "⚙ code/write someone-elses.rs ✓");
+        others.sender = Uuid::new_v4();
+        write_rows.push(others);
+        let writes = card_progress(&write_rows, me);
+        assert_eq!(writes.wrote, vec!["code/edit django/forms/fields.py", "work/note de33e1d6"]);
+        let receipt = progress_line(&writes);
+        assert!(receipt.contains("Successful write receipts: code/edit django/forms/fields.py; work/note de33e1d6."));
+        assert!(!receipt.contains("failed.rs"));
+        assert!(!receipt.contains("someone-elses.rs"));
         assert_eq!(p.ran.len(), 2);
         assert!(p.ran[1].ends_with('✓'), "{:?}", p.ran);
         let block = held_work_burst_gated(&[], &[], 0, &p);
