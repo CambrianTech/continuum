@@ -349,6 +349,34 @@ pub async fn describe_image(
         }
     }
 
+    let generate_params = build_generate_params(&req, &model_id, &provider_id);
+
+    let response_value = executor
+        .execute_json("ai/generate", generate_params)
+        .await?;
+
+    let response_text = generation_text(&response_value, &model_id, &provider_id)?;
+    let parsed = parse_response(&response_text);
+
+    Ok(Some(VisionDescription {
+        description: parsed.description,
+        model_id,
+        provider: provider_id,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        objects: parsed.objects,
+        colors: parsed.colors,
+        text: parsed.text,
+        response_time_ms: start.elapsed().as_millis() as u64,
+    }))
+}
+
+// Shared by the live dispatch and its regression: preserve the multimodal payload
+// and declare the description's purpose so the gateway reserves answer room.
+fn build_generate_params(
+    req: &VisionDescribeRequest,
+    model_id: &str,
+    provider_id: &str,
+) -> serde_json::Value {
     let prompt = req
         .options
         .prompt
@@ -369,7 +397,7 @@ pub async fn describe_image(
         .map(|len| u32::max(50, len.div_ceil(4)))
         .unwrap_or(500);
 
-    let generate_params = serde_json::json!({
+    serde_json::json!({
         "messages": [{
             "role": "user",
             "content": [
@@ -385,27 +413,10 @@ pub async fn describe_image(
         }],
         "model": model_id,
         "provider": provider_id,
+        "purpose": crate::inference::request_body::VISION_DESCRIPTION_PURPOSE,
         "maxTokens": max_tokens,
         "temperature": 0.3,
-    });
-
-    let response_value = executor
-        .execute_json("ai/generate", generate_params)
-        .await?;
-
-    let response_text = generation_text(&response_value, &model_id, &provider_id)?;
-    let parsed = parse_response(&response_text);
-
-    Ok(Some(VisionDescription {
-        description: parsed.description,
-        model_id,
-        provider: provider_id,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        objects: parsed.objects,
-        colors: parsed.colors,
-        text: parsed.text,
-        response_time_ms: start.elapsed().as_millis() as u64,
-    }))
+    })
 }
 
 /// Keep operational failure metadata without echoing model reasoning or raw responses.
@@ -542,6 +553,34 @@ mod tests {
         assert_eq!(req.mime_type, "image/png");
         assert!(req.options.detect_objects);
         assert_eq!(req.options.max_length, Some(120));
+
+        // Regression: Kimi's 2026-09-30 capture succeeded but vision/look spent
+        // the entire completion allowance without description text. Exercise the
+        // actual dispatch payload through the shared gateway budget policy.
+        for (max_length, allowance) in [(None, 500u64), (Some(120), 50), (Some(4000), 1000)] {
+            let mut request = req.clone();
+            request.options.max_length = max_length;
+            let params = build_generate_params(&request, "vision-model", "provider");
+            assert_eq!(
+                params["messages"][0]["content"][1]["image"]["base64"],
+                "aGVsbG8="
+            );
+            assert_eq!(params["maxTokens"], allowance);
+            let mut body = serde_json::json!({"max_tokens": params["maxTokens"]});
+            let budget = crate::inference::request_body::apply_reasoning_budget(
+                params["purpose"].as_str(),
+                &mut body,
+            )
+            .expect("vision descriptions must reserve answer room");
+            assert_eq!(budget, allowance - allowance / 4);
+            assert_eq!(body["reasoning_budget_tokens"], budget);
+        }
+        let mut unrelated = serde_json::json!({"max_tokens": 500});
+        assert_eq!(
+            crate::inference::request_body::apply_reasoning_budget(None, &mut unrelated),
+            None
+        );
+        assert!(unrelated.get("reasoning_budget_tokens").is_none());
     }
 
     #[test]
