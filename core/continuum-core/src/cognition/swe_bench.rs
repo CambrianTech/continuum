@@ -1126,6 +1126,31 @@ fn staging_path_for(repo_dir: &Path) -> PathBuf {
 
 /// Clone the repo at `base_commit`. The commit is the whole point — a clone left at HEAD is
 /// how eight runs got scored against a tree with the fix already in it.
+fn refuse_unrecovered_checkouts(repo_dir: &Path) -> Result<(), String> {
+    let (Some(parent), Some(name)) = (repo_dir.parent(), repo_dir.file_name()) else {
+        return Ok(());
+    };
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("cannot inspect interrupted staging at {}: {e}", parent.display())),
+    };
+    let prefix = format!("{}.cloning-", name.to_string_lossy());
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot inspect interrupted staging: {e}"))?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let path = entry.path();
+            if path.join(".git").try_exists().map_err(|e| format!("cannot inspect {}: {e}", path.display()))? {
+                return Err(format!(
+                    "interrupted staging checkout {} requires recovery before restaging {}; preserved because it may contain citizen work",
+                    path.display(), repo_dir.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), String> {
     // SERIALIZE PER DESTINATION (2026-08-21, from the 2026-08-18 grade loss). This
     // function both REMOVES `repo_dir` at entry and razes/renames it at the commit
@@ -1140,6 +1165,10 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     // section awaits on git subprocesses throughout.
     let lock = clone_lock_for(repo_dir);
     let _staged = lock.lock().await;
+    // A temporary name does not establish disposability. Citizens have reached
+    // interrupted clones and edited them (Sahar, 2026-09-29). Refuse BEFORE any
+    // destination removal; recovery must preserve those checkouts explicitly.
+    refuse_unrecovered_checkouts(repo_dir)?;
     // A stale tree here is not "probably fine" — it is the tree the score comes from. Removal
     // failing used to be SWALLOWED (`let _ =`), and the clone below then died on git's own
     // "destination path already exists and is not an empty directory", which reads like a
@@ -1210,7 +1239,8 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     // widening the diagnosis. Staging + rename also means a half-fetched tree is never
     // visible at `repo_dir`: the move is the commit point.
     let staging = staging_path_for(repo_dir);
-    // Sweep DEAD staging trees for this destination — any `<name>.cloning-*` sibling.
+    // Sweep incomplete staging remnants only. Git checkouts were refused above;
+    // their temporary names alone cannot prove that no citizen owns work there.
     // Under the per-destination lock nothing live matches, and a crashed run's leftovers
     // (whose nonce-bearing names can never collide with ours) must not accumulate as
     // unswept disk litter (the 2026-07-13 rule: no cache dir without an eviction story).
@@ -1218,7 +1248,9 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         let dead_prefix = format!("{}.cloning-", name.to_string_lossy());
         if let Ok(entries) = std::fs::read_dir(parent) {
             for entry in entries.flatten() {
-                if entry.file_name().to_string_lossy().starts_with(&dead_prefix) {
+                if entry.file_name().to_string_lossy().starts_with(&dead_prefix)
+                    && !entry.path().join(".git").exists()
+                {
                     let _ = std::fs::remove_dir_all(entry.path());
                 }
             }
@@ -4705,6 +4737,19 @@ FAILED testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexErr
             );
             assert_eq!(p.parent(), repo.parent(), "staging must be a sibling of its destination");
         }
+        // A crashed clone with .git may contain real citizen edits. Its nonce
+        // does not authorize deletion, even if another final checkout exists.
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("repo");
+        let interrupted = staging_path_for(&destination);
+        std::fs::create_dir_all(interrupted.join(".git")).unwrap();
+        std::fs::write(interrupted.join("work.txt"), "citizen work").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep.txt"), "final work").unwrap();
+        assert!(refuse_unrecovered_checkouts(&destination).is_err());
+        assert_eq!(std::fs::read_to_string(interrupted.join("work.txt")).unwrap(), "citizen work");
+        assert!(destination.join("keep.txt").exists());
+        assert!(refuse_unrecovered_checkouts(&root.path().join("other")).is_ok());
     }
 
     // what this catches: the serialization half of the same incident. clone_at both
