@@ -84,7 +84,7 @@ pub fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<Cli
 
 #[cfg(windows)]
 fn alias_is_duplicate(primary: &Path, alias: &Path) -> Result<bool, String> {
-    if !primary.is_file() { return Ok(false); }
+    if !primary.is_file() { return Ok(true); }
     same_file::is_same_file(primary, alias)
         .map(|same| !same)
         .map_err(|e| format!("cannot compare CLI alias {} with {}: {e}", alias.display(), primary.display()))
@@ -172,6 +172,16 @@ mod tests {
         #[cfg(windows)]
         hard_link_with_retry(&bin.join(cli_file_name("continuum")), &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap();
         assert!(cli_drift(&slot, &bin, &on_path).unwrap().is_empty(), "converged is silent"); // unwrap: the valid case — an Err here IS the failure
+        #[cfg(windows)]
+        {
+            // Removing only the primary name must repair both entries in one install.
+            let primary = bin.join(cli_file_name("continuum"));
+            std::fs::remove_file(&primary).unwrap();
+            assert_eq!(cli_drift(&slot, &bin, &on_path).unwrap(), vec![CliDrift::Missing("continuum".into()), CliDrift::DuplicateAlias]);
+            copy_with_retry(&slot, &primary, std::time::Duration::from_secs(1)).unwrap();
+            hard_link_with_retry(&primary, &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap();
+            assert!(cli_drift(&slot, &bin, &on_path).unwrap().is_empty());
+        }
         assert!(bin.join("uu.prev").is_file() || !cfg!(windows), "the old copy is moved aside, not deleted under a running process");
 
         let with_slash = format!("{}{}", bin.display(), std::path::MAIN_SEPARATOR);
