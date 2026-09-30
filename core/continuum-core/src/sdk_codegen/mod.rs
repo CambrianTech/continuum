@@ -970,6 +970,15 @@ mod tests {
             "the envelope must NOT wrap the bare inference command"
         );
 
+        // A provided adapter must expose its real input contract to model tools,
+        // not merely have a correct TypeScript name (live regression: PR #4626).
+        let screenshot = registry.iter().find(|d| d.name == "interface/screenshot").unwrap();
+        let properties = screenshot.params_schema["properties"].as_object().expect("capture parameters must be discoverable");
+        for field in ["querySelector", "format", "quality", "width", "height", "scale", "destination", "filename"] {
+            assert!(properties.contains_key(field), "missing screenshot input: {field}");
+        }
+        assert!(screenshot.params_schema["required"].as_array().is_none_or(|fields| fields.is_empty()), "whole-surface capture still accepts no arguments");
+
         // Provided adapter command — bare both sides.
         assert!(
             out.contains(
