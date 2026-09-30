@@ -1814,7 +1814,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     .then_some(crate::inference::lane_send::ImageQuote {
                         client: &self.client,
                         dedicated_lane: self.dedicated_lane,
-                        caller: request.persona_id.as_deref().unwrap_or("non-persona"),
+                        caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
                         patience: crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
                     }),
             },
