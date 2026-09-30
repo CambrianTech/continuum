@@ -1235,6 +1235,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.default_model
     }
 
+    fn model_metadata(&self, model_id: &str) -> Option<ModelInfo> {
+        self.config.models.iter().find(|model| model.id == model_id).cloned()
+    }
+
     async fn initialize(&mut self) -> Result<(), String> {
         // The decode permit tracks the LIVE served slot count (B3): grow adds
         // permits the moment a relaunch serves more slots; shrink retires them
@@ -1816,6 +1820,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
                         patience: crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
+                        reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
                     }),
             },
         )
@@ -2744,6 +2749,7 @@ mod tests {
                         dedicated_lane: true,
                         caller: "fixture",
                         patience: std::time::Duration::from_secs(5),
+                        reply: 0,
                     }),
                 },
             ),
