@@ -8452,7 +8452,11 @@ mod tests {
             // inspected staging UUID expired before publication; this stable
             // causal selector adds 60 measured guard tokens. Account for the
             // real schema; retain whole-request budgeting and this growth guard.
-            const AGENTIC_SURFACE_CEILING: u32 = 15179;
+            // 15179 -> 15731 (CI, PR #4626): screenshot now exposes its existing
+            // selector, encoding, dimensions and delivery parameters instead of
+            // an empty schema. The real typed contract adds 552 measured guard
+            // tokens; this test ceiling is not a runtime context-budget change.
+            const AGENTIC_SURFACE_CEILING: u32 = 15731;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
