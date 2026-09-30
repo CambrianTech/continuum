@@ -7,6 +7,54 @@
 
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
 
+/// Only image-bearing local requests need the projector quote. Text requests
+/// retain their existing estimate; cloud providers do not promise this endpoint.
+pub(crate) fn needs_image_quote(body: &serde_json::Value) -> bool {
+    body.get("messages").and_then(|v| v.as_array()).into_iter().flatten()
+        .filter_map(|message| message.get("content").and_then(|v| v.as_array()))
+        .flatten().any(|part| part.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+}
+
+fn image_quote_request(
+    builder: &reqwest::RequestBuilder,
+    patience: std::time::Duration,
+) -> Result<reqwest::Request, String> {
+    let mut request = builder.try_clone()
+        .ok_or("image token quote requires a replayable request")?
+        .build().map_err(|e| format!("image token quote request: {e}"))?;
+    // Reuse the actual selected endpoint and authorization, including dedicated
+    // vision lanes. Never consult a different lane or load a second projector.
+    let path = format!("{}/input_tokens", request.url().path().trim_end_matches('/'));
+    request.url_mut().set_path(&path);
+    *request.timeout_mut() = Some(patience);
+    Ok(request)
+}
+
+fn quoted_input_tokens(value: &serde_json::Value) -> Result<usize, String> {
+    value.get("input_tokens").and_then(|v| v.as_u64())
+        .and_then(|n| usize::try_from(n).ok()).filter(|n| *n > 0)
+        .ok_or_else(|| "image token quote omitted a positive input_tokens count".to_string())
+}
+
+/// Price the exact finalized wire body with the selected engine's template and
+/// projector. No generation, persistent cache, or guessed per-image allowance.
+/// A failed quote is explicit: a text-only lower bound cannot certify pixels fit.
+pub(crate) async fn quote_image_prompt(
+    client: &reqwest::Client,
+    builder: &reqwest::RequestBuilder,
+    patience: std::time::Duration,
+) -> Result<usize, String> {
+    let request = image_quote_request(builder, patience)?;
+    let response = client.execute(request).await
+        .map_err(|e| format!("image token quote failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("image token quote refused with HTTP {}; image context cost is unknown", response.status()));
+    }
+    let value = response.json::<serde_json::Value>().await
+        .map_err(|e| format!("invalid image token quote: {e}"))?;
+    quoted_input_tokens(&value)
+}
+
 /// Why a generation was refused when the requested model is not guaranteed resident, said
 /// in the words the caller needs to act on. THREE distinct situations reach this point and
 /// only one of them is a fault:
@@ -312,5 +360,26 @@ mod tests {
         ]}]});
         assert_eq!(approx_prompt_tokens(&multipart), approx_prompt_tokens(&body(48_000)));
         assert_eq!(prompt_alone_overflows_served(approx_prompt_tokens(&multipart), 8_000), Some(16_000));
+        assert!(needs_image_quote(&multipart));
+        assert!(!needs_image_quote(&body(48_000)));
+        assert!(!needs_image_quote(&serde_json::json!({"messages":[{"content":"image_url"}]})));
+        // The quote must preserve the final template options, media, and auth,
+        // and target the same lane. It must not mutate the generation builder.
+        let client = reqwest::Client::new();
+        let encoded = serde_json::to_vec(&multipart).unwrap();
+        let builder = client.post("http://127.0.0.1:1234/v1/chat/completions")
+            .header("Authorization", "Bearer test-only").body(encoded.clone());
+        let patience = std::time::Duration::from_secs(7);
+        let quote = image_quote_request(&builder, patience).unwrap();
+        assert_eq!(quote.url().as_str(), "http://127.0.0.1:1234/v1/chat/completions/input_tokens");
+        assert_eq!(quote.headers()["Authorization"], "Bearer test-only");
+        assert_eq!(quote.body().unwrap().as_bytes().unwrap(), encoded);
+        assert_eq!(quote.timeout(), Some(&patience));
+        assert_eq!(builder.build().unwrap().url().path(), "/v1/chat/completions");
+        assert_eq!(quoted_input_tokens(&serde_json::json!({"input_tokens":1319})).unwrap(), 1319);
+        for invalid in [serde_json::json!({}), serde_json::json!({"input_tokens":-1}),
+            serde_json::json!({"input_tokens":0}), serde_json::json!({"input_tokens":"1319"})] {
+            assert!(quoted_input_tokens(&invalid).is_err());
+        }
     }
 }
