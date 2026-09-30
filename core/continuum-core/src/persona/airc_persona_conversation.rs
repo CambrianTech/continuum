@@ -1250,6 +1250,8 @@ mod tests {
             );
             tx.send(Ok(Arc::new(event))).await.unwrap();
         }
+        crate::cognition::directed_pending::signal(own);
+        let batch = crate::cognition::directed_pending::observe(own);
         let snapshot = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             conversation.perceive_ready(),
@@ -1276,6 +1278,30 @@ mod tests {
                 id
             );
         }
+        assert!(conversation.perceive_ready().await.unwrap().is_empty());
+
+        // A directed arrival crosses the actual inbox after the older batch was
+        // consumed, but before its driver acknowledges it. The wake and source
+        // must both survive that stale acknowledgement.
+        let late_id = Uuid::new_v4();
+        let late = event_from_row(rooms[0], crate::persona::durable_history::RoomRow {
+            id: late_id,
+            sender: peer,
+            occurred_at_ms: 3,
+            media: Vec::new(),
+            text: "new steering after the drained batch".into(),
+        });
+        tx.send(Ok(Arc::new(late))).await.unwrap();
+        crate::cognition::directed_pending::signal(own);
+        crate::cognition::directed_pending::acknowledge(own, batch);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            crate::cognition::directed_pending::wait(own),
+        ).await.expect("old batch acknowledgement must preserve the newer wake");
+        let late_batch = crate::cognition::directed_pending::observe(own);
+        assert_eq!(conversation.next_message().await.unwrap().unwrap().event_id, late_id);
+        crate::cognition::directed_pending::acknowledge(own, late_batch);
+        assert!(!crate::cognition::directed_pending::is_pending(own));
         assert!(conversation.perceive_ready().await.unwrap().is_empty());
     }
 
