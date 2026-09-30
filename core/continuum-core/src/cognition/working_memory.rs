@@ -1141,6 +1141,28 @@ impl WorkingMemory {
         (action.0 >= active_from).then_some(action)
     }
 
+    /// Typed results for the exact active batch whose text the caller is rendering.
+    /// Unlike `active_act`, this retains every call (including multiple images)
+    /// and cannot replay evidence from a settled, replaced or different workspace.
+    pub fn active_action_observations(&self, seq: u64) -> Vec<Observation> {
+        if self.last_action.lock().as_ref().map(|(n, _)| *n) != Some(seq)
+            || seq < self.active_from_seq.load(Ordering::Relaxed)
+        {
+            return Vec::new();
+        }
+        let scope = self.scope.lock().clone();
+        self.entries
+            .lock()
+            .iter()
+            .rev()
+            .find(|entry| {
+                matches!(entry.kind, WmKind::Receipt { n } if n == seq)
+                    && entry.scope == scope
+            })
+            .map(|entry| entry.acts.clone())
+            .unwrap_or_default() // No matching scoped receipt means no typed observations are eligible.
+    }
+
     /// Render the complete active payload with its recorded provenance. The
     /// caller retains the same raw bytes for request identity; this introduces
     /// no second payload clone, serialization, or inferred current-room label.
@@ -2203,6 +2225,30 @@ mod tests {
             legacy.active_act().is_none(),
             "a legacy string receipt carries no typed act — the two channels are distinct"
         );
+
+        // Native visual feedback must carry ALL calls of the same active batch,
+        // never the last call alone or an earlier screenshot after settlement.
+        let mut second = obs.clone();
+        second.call.id = "call-43".into();
+        second.output.result.tool_use_id = second.call.id.clone();
+        typed.record_receipt_typed(&[obs.clone(), second], "two results", None);
+        let (seq, _) = typed.active_action_full().unwrap();
+        let batch = typed.active_action_observations(seq);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].call.id, "call-42");
+        assert_eq!(batch[1].call.id, "call-43");
+        assert!(typed.active_action_observations(seq - 1).is_empty());
+        typed.set_scope(Some("another-workspace".into()));
+        assert!(typed.active_action_observations(seq).is_empty());
+        typed.set_scope(None);
+        typed.record_settlement("observed");
+        assert!(typed.active_action_observations(seq).is_empty());
+        typed.record_receipt_typed(&[obs], "new result", None);
+        assert!(typed.active_action_observations(seq).is_empty());
+        let (new_seq, _) = typed.active_action_full().unwrap();
+        assert_eq!(typed.active_action_observations(new_seq).len(), 1);
+        typed.clear();
+        assert!(typed.active_action_observations(new_seq).is_empty());
     }
 
     // e731: identical result text from different activities must retain its

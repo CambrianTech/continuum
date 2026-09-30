@@ -27,12 +27,13 @@ pub struct ImageArtifact {
 }
 
 pub fn store() -> Result<FsStore, String> {
-    FsStore::new(
-        crate::modules::persona_instance_manager::resolve_continuum_root()
-            .join("media")
-            .join("blobs"),
-    )
-    .map_err(|e| e.to_string())
+    FsStore::new(store_path()).map_err(|e| e.to_string())
+}
+
+pub(crate) fn store_path() -> std::path::PathBuf {
+    crate::modules::persona_instance_manager::resolve_continuum_root()
+        .join("media")
+        .join("blobs")
 }
 
 impl ImageArtifact {
