@@ -126,7 +126,7 @@ pub(crate) async fn send_with_lane_retry(
             // same prepared body on EVERY attempt; never reuse its predecessor's
             // template/projector count. A failed quote refuses this attempt.
             super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, 0, quote.caller,
+                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
             ).await?;
             fill.prompt_tokens = super::serving_guard::quote_image_prompt(
                 quote.client,
@@ -134,7 +134,7 @@ pub(crate) async fn send_with_lane_retry(
                 quote.patience.saturating_sub(quote_started.elapsed()),
             ).await?;
             super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, fill.prompt_tokens, quote.caller,
+                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured(fill.prompt_tokens), quote.caller,
             ).await?;
             crate::probe!(
                 class = "inference.prompt.image_quote",

@@ -1794,7 +1794,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             self.dedicated_lane,
             model,
-            prompt_tokens,
+            crate::inference::serving_guard::PromptCount::Estimated(prompt_tokens),
             request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;

@@ -6,6 +6,34 @@
 //! for the concern, never the wire format). Behaviour-identical to the inline block.
 
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
+use crate::ai::inference_error::InferenceError;
+
+/// Only engine measurements may calibrate the persona's next prompt fit.
+#[derive(Clone, Copy)]
+pub(crate) enum PromptCount {
+    Estimated(usize),
+    Measured(usize),
+}
+
+impl PromptCount {
+    fn tokens(self) -> usize {
+        match self { Self::Estimated(n) | Self::Measured(n) => n }
+    }
+
+    fn overflow(self, available: u32, provider: &str, caller: &str) -> InferenceError {
+        match self {
+            Self::Measured(tokens) => match u32::try_from(tokens) {
+                Ok(requested) => InferenceError::ContextExceeded { requested, available },
+                Err(_) => InferenceError::Protocol("measured prompt exceeds the capacity receipt's token range".into()),
+            },
+            Self::Estimated(tokens) => InferenceError::Transient(format!(
+                "{provider}: refusing to generate — prompt ~{tokens} tokens ≥ the served per-slot \
+                 window of {available} (caller: {caller}). Sending it would 500 and POISON the shared \
+                 slot for every later request; fit the prompt to the served window (#175)."
+            )),
+        }
+    }
+}
 
 /// Only image-bearing local requests need the projector quote. Text requests
 /// retain their existing estimate; cloud providers do not promise this endpoint.
@@ -202,14 +230,16 @@ pub(crate) fn approx_prompt_tokens(body: &serde_json::Value) -> usize {
 
 /// The pre-flight guard as one call. `Ok(())` = the lane guarantees `model` (or this
 /// adapter is not a single-resident gateway / runs a dedicated lane); `Err` = the refusal
-/// text the turn surfaces. `caller` names the requester for the overflow refusal.
+/// the turn surfaces. Measured overflow carries capacity fields for
+/// the existing corrective refit; estimates never become calibration evidence.
+/// `caller` names the requester for an estimated overflow refusal.
 pub(crate) async fn guard_resident_model(
     cfg: &OpenAICompatibleConfig,
     dedicated_lane: bool,
     model: &str,
-    prompt_tokens: usize,
+    prompt_count: PromptCount,
     caller: &str,
-) -> Result<(), String> {
+) -> Result<(), InferenceError> {
     // Pre-flight the single-resident gateway: GUARANTEE our model is the one
     // actually serving before we trust a generation. The local gateway
     // (llama-server) serves ONE resident model, fixed at process launch, and
@@ -286,7 +316,7 @@ pub(crate) async fn guard_resident_model(
                 model,
                 &snap,
                 crate::inference::llama_server::has_reconciled(),
-            ));
+            ).into());
         }
         // #175 universal overflow backstop: REFUSE (never send) a prompt that alone
         // exceeds the served per-slot window. With context-shift OFF the server 500s
@@ -304,19 +334,14 @@ pub(crate) async fn guard_resident_model(
         // same conservative estimate the overshoot alarm uses.
         // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
         if let Some(prompt_tokens) =
-            prompt_alone_overflows_served(prompt_tokens, snap.served_context_window)
+            prompt_alone_overflows_served(prompt_count.tokens(), snap.served_context_window)
         {
             // The refused size is demand this seat could not hold; it votes on the next
             // plan's window (the 5090's self-sealed 2048, 2026-09-20).
             crate::cognition::resource_admission::note_refused_prompt(
                 prompt_tokens.min(u32::MAX as usize) as u32,
             );
-            return Err(format!(
-                "{}: refusing to generate — prompt ~{} tokens ≥ the served per-slot \
-                 window of {} (caller: {}). Sending it would 500 and POISON the shared \
-                 slot for every later request; fit the prompt to the served window (#175).",
-                cfg.name, prompt_tokens, snap.served_context_window, caller,
-            ));
+            return Err(prompt_count.overflow(snap.served_context_window, &cfg.name, caller));
         }
     }
 
@@ -329,6 +354,15 @@ mod tests {
 
     #[test]
     fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
+        let measured = PromptCount::Measured(1319).overflow(1024, "fixture", "persona");
+        assert!(matches!(measured, InferenceError::ContextExceeded { requested: 1319, available: 1024 }));
+        assert!(!measured.is_retryable_unchanged(), "measured overflow must refit, not replay");
+        let estimated = PromptCount::Estimated(1319).overflow(1024, "fixture", "persona");
+        assert!(matches!(estimated, InferenceError::Transient(_)), "a text estimate is not a provider measurement");
+        if let Ok(too_large) = usize::try_from(u64::from(u32::MAX) + 1) {
+            assert!(matches!(PromptCount::Measured(too_large).overflow(1024, "fixture", "persona"),
+                InferenceError::Protocol(_)), "unrepresentable counts must not be silently clamped");
+        }
         let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
         // Same estimate as deliberation: 48000 bytes / 3 vs an 8000-token slot.
         assert_eq!(
