@@ -145,13 +145,10 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
 }
 
-/// A registered, AiSafe verb that is deliberately NOT in a persona's hands, with the
-/// hands she has instead. ONE place (card 1daffbaf's sibling on Kimi's plumbing list):
-/// `hands_surface` filters the offered tools by it, and the executor answers a call to
-/// one of these with the same sentence — never with the command's own refusal
-/// ("an explicit activity room is required"), which teaches nothing and reads as
-/// "try again". Measured 2026-09-26 19:0xZ: Kimi called `work/review` five times in one
-/// hour, each an act spent on a refusal, each followed by the same reach.
+/// Registered verbs omitted from the default hands menu, still discoverable and
+/// callable under their command's preconditions. This is presentation policy, NOT
+/// authorization. Share purpose guidance with error feedback without erasing the
+/// real failure or declaring a discoverable command impossible to use.
 pub(crate) struct WithheldVerb {
     pub why: &'static str,
     pub instead: &'static str,
@@ -160,15 +157,15 @@ pub(crate) struct WithheldVerb {
 pub(crate) fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
     match name.replace('_', "/").as_str() {
         "work/review" => Some(WithheldVerb {
-            why: "`work/review` is a reviewer's verdict under a REVIEW claim — a sibling card the board spawned to review someone else's work. It is not in your hands.",
+            why: "`work/review` records a reviewer's verdict under a REVIEW claim for someone else's work. It does not inspect or submit your own implementation card.",
             instead: "For your own card: `work/get` to read it, `work/note` to record progress, `work/submit` to hand it in. To give a review word on a peer's PR, say it in the room: \"APPROVED at <sha>\" or \"CHANGES REQUESTED at <sha>: <why>\".",
         }),
         "work/submission" => Some(WithheldVerb {
-            why: "`work/submission` inspects a SUBMISSION a reviewer holds — it is not \"look at my card\", and it is not in your hands.",
+            why: "`work/submission` inspects a submitted artifact for review; use `work/get` to inspect your own card.",
             instead: "For your own card: `work/get` to read it, `work/submit` to hand it in (that IS the submission).",
         }),
         "code/git/apply" => Some(WithheldVerb {
-            why: "`code/git/apply` applies a PEER's unified diff — it is not \"apply my fix\", and it is not in your hands.",
+            why: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits.",
             instead: "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
         }),
         _ => None,

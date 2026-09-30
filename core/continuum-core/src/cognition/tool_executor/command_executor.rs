@@ -336,14 +336,12 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The dispatched (slash) form is what the registry knows; she may have
     // emitted the underscore form, so normalize before matching/suggesting.
     let normalized = attempted.replace('_', "/");
-    // A verb the registry knows but her hands do not hold: the command's own refusal
-    // is the wrong lesson (it names a missing room or an absent review card, and she
-    // reaches again). Say what the verb is for and which of her verbs do what she
-    // meant — the same predicate that keeps it off her tool surface.
+    // Omission from the default menu is not an authorization failure. These verbs
+    // remain discoverable; preserve the actual refusal (or transport failure) so
+    // a legitimate reviewer can recover, alongside purpose/own-work guidance.
     if let Some(withheld) = crate::cognition::tool_dialect::withheld_from_hands(&normalized) {
         return format!(
-            "`{normalized}` did not run. {}\n{}\nNothing you type will make `{normalized}` \
-             resolve for you; the verbs above are the ones that do.",
+            "`{normalized}` failed: {raw}\n{}\n{}",
             withheld.why, withheld.instead
         );
     }
@@ -811,29 +809,25 @@ mod tests {
         }
     }
 
-    // what this catches: the developer-internal unknown-command paragraph (TS-bridge
-    // fallthrough, "register a ServiceModule") must NEVER reach the persona — she gets
-    // a paradigm-native message pointing at commands/list + commands/help instead.
-    // what this catches (Kimi, 2026-09-26 19:0xZ, five `work/review ✗` in an hour): a
-    // registered verb withheld from her hands answers with what it is for and her own
-    // verbs — never the command's refusal ("an explicit activity room is required"),
-    // which reads as "try again with a room" and costs another act.
+    // A compact-menu omission must not erase actionable failures or falsely
+    // revoke a reviewer's discoverable command. Own-work guidance remains.
     #[test]
-    fn a_verb_withheld_from_her_hands_teaches_her_verbs_instead_of_relaying_the_refusal() {
+    fn a_verb_withheld_from_her_hands_preserves_failure_and_purpose() {
         let out = persona_tool_error(
             "work_review",
             "an explicit activity room is required".to_string(),
         );
-        assert!(out.contains("`work/review` did not run"), "{out}");
+        assert!(out.contains("`work/review` failed"), "{out}");
         assert!(out.contains("`work/get`") && out.contains("`work/submit`"), "{out}");
-        assert!(!out.contains("activity room is required"), "the refusal is not the lesson: {out}");
-        // Her second receipt form the same hour (#6906–#6908): an argument-level hint that
-        // points at a path she cannot take ("pass card_id if you are reviewing out of band").
+        assert!(out.contains("activity room is required"), "{out}");
         let out = persona_tool_error(
             "work/review",
             "[invalid] card d33e928a is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band".to_string(),
         );
-        assert!(!out.contains("pass card_id") && out.contains("`work/get`"), "{out}");
+        assert!(out.contains("not a review card") && out.contains("`work/get`"), "{out}");
+        let transport = persona_tool_error("work/review", "connection closed before response".into());
+        assert!(transport.contains("connection closed before response"), "{transport}");
+        assert!(!transport.contains("Nothing you type") && !transport.contains("did not run"), "{transport}");
         assert!(persona_tool_error("work/submission", "x".into()).contains("`work/submit`"));
         assert!(persona_tool_error("code/git/apply", "x".into()).contains("`code/edit`"));
     }
