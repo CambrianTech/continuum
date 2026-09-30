@@ -504,6 +504,7 @@ async fn serve_persona_loop_inner(
         // lose the next wake to the tick again (random branch choice) — a yield
         // storm (Lorcan: 12 yields in 5 min, measured 2026-09-04) that ended only
         // when the event arm happened to win.
+        let pending_before_wake = crate::cognition::directed_pending::observe(ctx.identity.peer_id.as_uuid());
         let wake = tokio::select! {
             biased;
             ev = next_event(conversation, &mut outcome) => match ev {
@@ -568,7 +569,7 @@ async fn serve_persona_loop_inner(
                 // nothing admissible was queued, so any pending directed flag is
                 // stale (raised for a line that filtered at the door). Clear it,
                 // or every self-work lane wait yields forever.
-                crate::cognition::directed_pending::clear(ctx.identity.peer_id.as_uuid());
+                crate::cognition::directed_pending::acknowledge(ctx.identity.peer_id.as_uuid(), pending_before_wake);
                 // (Quiescence is handled at the top of the loop — a held lease never
                 // reaches here.) Heartbeat slice — the mind gets time with no inbound
                 // activity sets the next beat: if it found something new to work on
@@ -677,6 +678,7 @@ async fn serve_persona_loop_inner(
         // on. Same always-latest coalescing the substrate uses everywhere else
         // (watch channels; positron's resync contract: reconnect RESYNCS state,
         // never replays stale events).
+        let pending_before_drain = crate::cognition::directed_pending::observe(ctx.identity.peer_id.as_uuid());
         let mut backlog: Vec<IncomingMessage> = vec![msg];
         let mut stream_ended = false;
         loop {
@@ -714,8 +716,8 @@ async fn serve_persona_loop_inner(
                 qualifying.push(m);
             }
         }
-        // Whatever was pending is now in hand (the yield signal is consumed here).
-        crate::cognition::directed_pending::clear(self_id);
+        // Acknowledge the pre-drain generation only; a newer input keeps its wake.
+        crate::cognition::directed_pending::acknowledge(self_id, pending_before_drain);
         // Both a literal mention and a human's opportunity to speak receive
         // priority. Only the former can tell the mind "this message names you".
         let priority_line = |m: &IncomingMessage| {
