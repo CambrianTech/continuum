@@ -433,6 +433,7 @@ fn artifact_of_text(text: &str) -> WorkArtifactReference {
 }
 
 /// The artifact reference of a patch: SHA-256 over its bytes, its length, `text/x-patch`.
+#[cfg(test)]
 fn artifact_of_patch(patch: &str) -> WorkArtifactReference {
     use sha2::Digest;
     WorkArtifactReference {
@@ -1310,7 +1311,7 @@ mod tests {
         assert_eq!(a.size_bytes, 4);
         assert_eq!(a.mime.as_deref(), Some("text/x-patch"));
         // Regression: a published hash must still resolve after the checkout changes.
-        use airc_blobs::{ContentAddressedStore, ContentHash, FsStore, MediaRef};
+        use airc_blobs::{ContentHash, FsStore, MediaRef};
         let dir = tempfile::tempdir().unwrap();
         let store = FsStore::new(dir.path()).unwrap();
         let retained = super::retain_patch(&store, "test").unwrap();
