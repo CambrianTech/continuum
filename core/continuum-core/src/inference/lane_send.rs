@@ -85,6 +85,7 @@ pub(crate) struct ImageQuote<'a> {
     pub caller: &'a str,
     pub patience: std::time::Duration,
     pub reply: u32,
+    pub request_id: &'a str,
 }
 
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
@@ -139,6 +140,7 @@ pub(crate) async fn send_with_lane_retry(
             ).await?;
             crate::probe!(
                 class = "inference.prompt.image_quote",
+                request_id = quote.request_id,
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
                 attempt = relaunch_retries,

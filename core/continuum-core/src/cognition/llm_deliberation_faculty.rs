@@ -4491,7 +4491,7 @@ impl LlmDeliberationFaculty {
         let model = binding
             .model
             .as_deref()
-            .unwrap_or_else(|| binding.adapter.default_model());
+            .unwrap_or_else(|| binding.adapter.default_model()); // Omitted model selects the same provider default used by request construction.
         let native = binding
             .adapter
             .model_metadata(model)
@@ -8025,6 +8025,25 @@ mod tests {
             assert_ne!(seen.input_identity, view.input_identity);
             assert!(seen.messages.iter().any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, ContentPart::Image { .. })))));
             assert!(seen.user_text().contains(needle));
+            // Follow the same message through request construction AND the
+            // final provider serializer. A Parts value alone is not wire proof.
+            let request = faculty.build_request_within(
+                &binding, seen.completion_reserve, seen.messages.clone(), None,
+                seen.system.clone(), None, Some(ws.room_id), faculty.turn_kind(&ws),
+            );
+            let wire = crate::inference::request_body::wire_messages(
+                &request.messages, request.system_prompt.as_deref(), true, "llama-server",
+            );
+            let urls: Vec<_> = wire.iter()
+                .filter_map(|m| m["content"].as_array()).flatten()
+                .filter_map(|p| p["image_url"]["url"].as_str()).collect();
+            assert_eq!(urls.len(), 1);
+            let (header, encoded) = urls[0].split_once(',').unwrap();
+            assert_eq!(header, "data:image/png;base64");
+            use sha2::Digest;
+            let wire_bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+            assert_eq!(format!("{:x}", sha2::Sha256::digest(&wire_bytes)), image.hash);
+            assert_eq!(wire_bytes.len() as u64, image.size_bytes);
             let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
                 .await.unwrap().unwrap();
             assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));

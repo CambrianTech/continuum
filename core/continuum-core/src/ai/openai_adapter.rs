@@ -1754,6 +1754,28 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 "could not encode generation request: {error}"
             ))
         })?;
+        // Glass-box the FINAL provider payload, not the pre-projection request.
+        // Hash encoded URLs without logging pixels, prompts, or remote URLs.
+        let wire_image_hashes: Vec<String> = body.get("messages")
+            .and_then(|v| v.as_array()).into_iter().flatten()
+            .filter_map(|m| m.get("content").and_then(|v| v.as_array()))
+            .flatten()
+            .filter_map(|p| p.get("image_url").and_then(|v| v.get("url")).and_then(|v| v.as_str()))
+            .map(|url| {
+                use sha2::Digest;
+                format!("{:x}", sha2::Sha256::digest(url.as_bytes()))
+            }).collect();
+        if !wire_image_hashes.is_empty() {
+            crate::probe!(
+                class = "inference.prompt.media_wire",
+                request_id = %request_id,
+                model = model,
+                image_count = wire_image_hashes.len() as u64,
+                image_url_sha256 = ?wire_image_hashes,
+                body_bytes = body_bytes.len() as u64,
+                "final provider image payload; URL hashes correlate with retained source bytes without exposing content"
+            );
+        }
         clog_info!(
             "POST {} model={} body_bytes={} has_tools={} stream={}",
             url,
@@ -1821,6 +1843,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
                         patience: crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
                         reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
+                        request_id: &request_id,
                     }),
             },
         )
@@ -2750,6 +2773,7 @@ mod tests {
                         caller: "fixture",
                         patience: std::time::Duration::from_secs(5),
                         reply: 0,
+                        request_id: "fixture",
                     }),
                 },
             ),
