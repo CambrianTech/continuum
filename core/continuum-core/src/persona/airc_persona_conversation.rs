@@ -267,10 +267,11 @@ async fn catch_up_from_store(
                 }
                 s.note(room, event.event_id.as_uuid());
             }
-            signal_if_directed(runtime.peer_id(), &event);
-            if tx.send(Ok(std::sync::Arc::new(event))).await.is_err() {
+            let event = Arc::new(event);
+            if tx.send(Ok(Arc::clone(&event))).await.is_err() {
                 return (paged, usize::MAX);
             }
+            signal_if_directed(runtime.peer_id(), &event);
             forwarded += 1;
         }
     }
@@ -554,10 +555,13 @@ impl AircPersonaConversation {
                                     s.note_text(ev.room_id.as_uuid(), SeenRooms::fingerprint(peer, &text));
                                 }
                                 drop(s);
-                                signal_if_directed(persona, ev);
                             }
+                            let delivered = item.as_ref().ok().cloned();
                             if tx.send(item).await.is_err() {
                                 return; // the conversation dropped its inbox — the pump is done
+                            }
+                            if let Some(event) = delivered {
+                                signal_if_directed(persona, &event);
                             }
                         }
                         None => {
