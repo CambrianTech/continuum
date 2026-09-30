@@ -424,10 +424,12 @@ pub trait ServiceModule: Send + Sync + Any {
     /// Called when an artifact this module subscribes to is published.
     /// Default: no-op (matches the empty-subscriptions default).
     ///
-    /// Implementations should be cheap-and-return — the runtime calls
-    /// this from the publisher's task; long work belongs in `tick` or
-    /// in a spawned task. Errors are logged by the dispatcher; the
-    /// publisher is not blocked by a slow subscriber.
+    /// Implementations should be cheap-and-return: this runs inline in the
+    /// publisher's task, so a slow subscriber DOES delay its return. Long work
+    /// belongs to the module's owned operation lifecycle. Broadcast receivers
+    /// observe availability before inline dispatch; receipt does not mean this
+    /// handler completed. Publish a correlated completion event for that fact.
+    /// Errors are logged by the dispatcher.
     async fn on_artifact_available(&self, _key: &ArtifactKey, _value: Value) -> Result<(), String> {
         Ok(())
     }
