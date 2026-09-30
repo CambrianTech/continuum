@@ -72,6 +72,18 @@ fn probe_client() -> &'static reqwest::Client {
 pub(crate) struct FillReceipt<'a> {
     pub model: &'a str,
     pub prompt_tokens: usize,
+    pub image_quote: Option<ImageQuote<'a>>,
+}
+
+/// Request-specific authority for the engine's multimodal counter. The adapter
+/// supplies this only for its managed local engine, not every OpenAI-compatible
+/// provider or every gateway that happens to serve one resident model.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ImageQuote<'a> {
+    pub client: &'a reqwest::Client,
+    pub dedicated_lane: bool,
+    pub caller: &'a str,
+    pub patience: std::time::Duration,
 }
 
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
@@ -87,7 +99,7 @@ pub(crate) async fn send_with_lane_retry(
     request_builder: reqwest::RequestBuilder,
     body: Vec<u8>,
     turn_bound: Option<std::time::Duration>,
-    fill: FillReceipt<'_>,
+    mut fill: FillReceipt<'_>,
 ) -> Result<reqwest::Response, InferenceError> {
     // The header wait in force for THIS turn: the floor, or the request's measured bound
     // above it. Computed once — the relaunch retries below re-arm the same wait.
@@ -107,7 +119,31 @@ pub(crate) async fn send_with_lane_retry(
     // listening yet; 503 = listening but still loading). One counter, so the total
     // time this call can spend waiting on a relaunching lane stays bounded.
     let mut relaunch_retries: u32 = 0;
+    let quote_started = Instant::now();
     let response = loop {
+        if let Some(quote) = fill.image_quote {
+            // A transport retry may reach a replacement engine. Re-count the
+            // same prepared body on EVERY attempt; never reuse its predecessor's
+            // template/projector count. A failed quote refuses this attempt.
+            super::serving_guard::guard_resident_model(
+                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
+            ).await?;
+            fill.prompt_tokens = super::serving_guard::quote_image_prompt(
+                quote.client,
+                &request_builder,
+                quote.patience.saturating_sub(quote_started.elapsed()),
+            ).await?;
+            super::serving_guard::guard_resident_model(
+                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured(fill.prompt_tokens), quote.caller,
+            ).await?;
+            crate::probe!(
+                class = "inference.prompt.image_quote",
+                model = fill.model,
+                input_tokens = fill.prompt_tokens as u64,
+                attempt = relaunch_retries,
+                "selected engine counted the finalized image-bearing prompt"
+            );
+        }
         let send_start = Instant::now();
         let attempt_builder = request_builder
             .try_clone()

@@ -1794,7 +1794,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             self.dedicated_lane,
             model,
-            prompt_tokens,
+            crate::inference::serving_guard::PromptCount::Estimated(prompt_tokens),
             request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;
@@ -1808,6 +1808,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             crate::inference::lane_send::FillReceipt {
                 model,
                 prompt_tokens,
+                image_quote: (self.config.single_resident_model
+                    && self.targets_local_serving_lane()
+                    && crate::inference::serving_guard::needs_image_quote(&body))
+                    .then_some(crate::inference::lane_send::ImageQuote {
+                        client: &self.client,
+                        dedicated_lane: self.dedicated_lane,
+                        caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
+                        patience: crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
+                    }),
             },
         )
         .await?;
@@ -2657,6 +2666,8 @@ mod tests {
 
         let received = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let log = Arc::clone(&received);
+        let quotes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let quote_log = Arc::clone(&quotes);
         let app = Router::new().route("/v1/chat/completions", post(move |body: axum::body::Bytes| {
             let log = Arc::clone(&log);
             async move {
@@ -2671,6 +2682,16 @@ mod tests {
                     (StatusCode::BAD_REQUEST, r#"{"error":{"type":"exceed_context_size_error","message":"no counts may be inferred from this text","n_prompt_tokens":29722,"n_ctx":29440}}"#)
                 }
             }
+        }))
+        .route("/v1/chat/completions/input_tokens", post(move |body: axum::body::Bytes| {
+            let log = Arc::clone(&quote_log);
+            async move {
+                log.lock().expect("quote log").push(body.to_vec());
+                (StatusCode::OK, r#"{"input_tokens":1319}"#)
+            }
+        }))
+        .route("/bad/chat/completions/input_tokens", post(|| async {
+            (StatusCode::OK, r#"{"input_tokens":"unknown"}"#)
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -2718,6 +2739,12 @@ mod tests {
                 crate::inference::lane_send::FillReceipt {
                     model: "fixture",
                     prompt_tokens: 4,
+                    image_quote: Some(crate::inference::lane_send::ImageQuote {
+                        client: &adapter.client,
+                        dedicated_lane: true,
+                        caller: "fixture",
+                        patience: std::time::Duration::from_secs(5),
+                    }),
                 },
             ),
         )
@@ -2730,6 +2757,25 @@ mod tests {
                 available: 29440
             })
         ));
+        assert_eq!(*quotes.lock().expect("actual quotes"), vec![body.clone(), body.clone()],
+            "the 503 transport retry must re-quote the unchanged prepared body");
+        // Use this same transport fixture to verify that quote failures remain
+        // errors, never a zero-cost image estimate or a generation request.
+        for (path, expected) in [
+            ("v1/chat/completions", Ok(1319)),
+            ("bad/chat/completions", Err("positive input_tokens")),
+            ("missing/chat/completions", Err("HTTP 404")),
+        ] {
+            let quoted = crate::inference::serving_guard::quote_image_prompt(
+                &adapter.client,
+                &adapter.client.post(format!("http://{address}/{path}")).body(body.clone()),
+                std::time::Duration::from_secs(5),
+            ).await;
+            match expected {
+                Ok(tokens) => assert_eq!(quoted.unwrap(), tokens),
+                Err(message) => assert!(quoted.unwrap_err().contains(message)),
+            }
+        }
         server.abort();
         let _ = server.await;
         let received = received.lock().expect("actual wire requests");
