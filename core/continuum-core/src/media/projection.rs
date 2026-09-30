@@ -8,7 +8,7 @@
 //! Capability is the GATE, resolution is the KNOB — both threaded IN by reference,
 //! nothing invented here:
 //! - A **non-vision** model can never receive pixels; it gets the bridged text
-//!   description regardless of what resolution was requested. The sensory bridge, so
+//!   description when perception is requested; an explicit handle stays a handle. The sensory bridge, so
 //!   a lesser model still "sees" ([[built-to-teach-lesser-tuned-intelligences-win]]).
 //! - A **vision** model gets exactly the resolution the situation asked for — `Full`
 //!   is genuinely the full source pixels (no standing thumbnail cap, no imposed
@@ -104,9 +104,12 @@ pub async fn project_image(
     describer: &dyn FrameDescriber,
 ) -> ProjectedMedia {
     // Capability is the GATE: a non-vision model NEVER gets pixels — it gets the
-    // bridged description whatever resolution was asked. This is the sensory bridge,
+    // bridged description when perception is requested. This is the sensory bridge,
     // not a clamp: a capable model below still gets exactly its requested resolution.
-    if !caps.contains(&Capability::Vision) {
+    // Handle is an explicit decision to defer perception, independent of model
+    // capability. A text-only consumer must not pay for description inference
+    // merely to retain a retrievable reference.
+    if resolution != MediaResolution::Handle && !caps.contains(&Capability::Vision) {
         return ProjectedMedia::Description(frame.description(compute, describer, mime).await);
     }
     match resolution {
@@ -300,21 +303,23 @@ mod tests {
     async fn handle_projects_a_content_addressed_placeholder() {
         let compute = SharedCompute::new();
         let frame = MediaFrame::from_bytes(png(16, 16));
-        let p = project_image(
-            &frame,
-            &vision(),
-            MediaResolution::Handle,
-            "image/png",
-            &compute,
-            &StubDescriber,
-        )
-        .await;
-        match p {
-            ProjectedMedia::Handle { content_hash, mime } => {
-                assert_eq!(content_hash, frame.content_hash());
-                assert_eq!(mime, "image/png");
+        for caps in [vision(), HashSet::new()] {
+            let p = project_image(
+                &frame,
+                &caps,
+                MediaResolution::Handle,
+                "image/png",
+                &compute,
+                &StubDescriber,
+            )
+            .await;
+            match p {
+                ProjectedMedia::Handle { content_hash, mime } => {
+                    assert_eq!(content_hash, frame.content_hash());
+                    assert_eq!(mime, "image/png");
+                }
+                other => panic!("Handle must project a placeholder, got {other:?}"),
             }
-            other => panic!("Handle must project a placeholder, got {other:?}"),
         }
     }
 
