@@ -248,7 +248,9 @@ impl TrainingJobBoard {
     }
 
     /// Read only a terminal receipt whose complete provider handle matches.
-    /// Old records without typed status never imply successful training.
+    /// Old records without typed status never imply successful training. An
+    /// explicit legacy reboot interruption is recoverable only when its full
+    /// registration handle was verified in the same bounded page.
     pub(crate) fn lookup_terminal(
         &self,
         handle: &JobHandle,
@@ -260,14 +262,31 @@ impl TrainingJobBoard {
             local_id: Option<Uuid>,
             handle: Option<JobHandle>,
             status: Option<TrainingStatus>,
+            provider_id: Option<String>,
+            provider_job_id: Option<String>,
+            reason: Option<String>,
         }
+        let mut registration_matches = false;
         self.scan_journal_page(offset, |line| {
             let entry: TerminalEntry = serde_json::from_slice(line)
                 .map_err(|e| format!("malformed training journal entry: {e}"))?;
+            if entry.event == "registered" && entry.local_id == Some(handle.local_id) {
+                registration_matches = entry.provider_id.as_deref() == Some(handle.provider_id.as_str())
+                    && entry.provider_job_id.as_deref() == Some(handle.provider_job_id.as_str());
+                return Ok(None);
+            }
             if entry.event != "terminal" || entry.local_id != Some(handle.local_id) {
                 return Ok(None);
             }
             let Some(recorded) = entry.handle else {
+                if entry.status.is_none()
+                    && registration_matches
+                    && entry.reason.as_deref() == Some("killed-by-reboot")
+                {
+                    return Ok(Some(TrainingStatus::Failed {
+                        error: "killed-by-reboot (legacy journal receipt)".into(),
+                    }));
+                }
                 return Ok(None);
             };
             if recorded.local_id != handle.local_id
@@ -874,6 +893,28 @@ mod tests {
             .append(true)
             .open(&ledger)
             .unwrap();
+        // Older cores recorded a reboot interruption without a typed status or
+        // handle. Recover the failure only with its exact registration evidence;
+        // a continuation starting at the terminal row alone cannot prove identity.
+        let legacy = Uuid::new_v4();
+        let legacy_handle = watched(legacy, "mlx").handle;
+        next.register(watched(legacy, "mlx"));
+        let terminal_offset = std::fs::metadata(&ledger).unwrap().len();
+        writeln!(file, "{}", serde_json::json!({
+            "event": "terminal", "local_id": legacy, "reason": "killed-by-reboot"
+        })).unwrap();
+        assert!(matches!(next.lookup_terminal(&legacy_handle, 0).unwrap(),
+            JournalLookup::Observed(TrainingStatus::Failed { error })
+                if error == "killed-by-reboot (legacy journal receipt)"));
+        for foreign in [
+            JobHandle { provider_id: "foreign".into(), ..legacy_handle.clone() },
+            JobHandle { provider_job_id: "foreign".into(), ..legacy_handle.clone() },
+        ] {
+            assert!(matches!(next.lookup_terminal(&foreign, 0).unwrap(),
+                JournalLookup::NotObserved));
+        }
+        assert!(matches!(next.lookup_terminal(&legacy_handle, terminal_offset).unwrap(),
+            JournalLookup::NotObserved));
         writeln!(file, "not-json").unwrap();
         let later = Uuid::new_v4();
         let dispatch = Uuid::new_v4();
@@ -883,7 +924,7 @@ mod tests {
         next.register(job);
         next.claim(later, &TrainingStatus::Cancelled).unwrap();
         let reread = TrainingJobBoard::with_ledger(Some(ledger.clone()));
-        for expected in [&handle, &later_handle] {
+        for expected in [&handle, &later_handle, &legacy_handle] {
             assert!(matches!(
                 reread.lookup_terminal(expected, 0).unwrap(),
                 JournalLookup::Corrupt {
