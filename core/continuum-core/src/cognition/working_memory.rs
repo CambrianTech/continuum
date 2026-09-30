@@ -1160,7 +1160,7 @@ impl WorkingMemory {
                     && entry.scope == scope
             })
             .map(|entry| entry.acts.clone())
-            .unwrap_or_default()
+            .unwrap_or_default() // No matching scoped receipt means no typed observations are eligible.
     }
 
     /// Render the complete active payload with its recorded provenance. The
