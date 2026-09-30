@@ -33,4 +33,8 @@ artifact?: WorkArtifactReference,
 /**
  * Revision UUID (not artifact/submission ID); bind before publish or no credit.
  */
-staged_revision_id?: string, };
+staged_revision_id?: string, 
+/**
+ * Stable generation request ID from staged evidence; resolves at publish. Do not combine with staged_revision_id.
+ */
+generation_request_id?: string, };
