@@ -266,45 +266,35 @@ impl From<DiscoveryError> for DiscoveryFailure {
     }
 }
 
-/// Recover a daemon whose socket nobody holds: remove the stale file, start a daemon by
-/// the same path `airc status` uses (it starts one when none answers), and wait — bounded
-/// — for the new socket to answer. Returns `true` when a retry is worth making. A socket
-/// some process still holds is NOT stale (a wedged daemon is a different fault) and is
-/// left alone. Every outcome is a probe: `airc.daemon.recovered`.
+/// Recover through AIRC's own singleton lifecycle. `status` only observes; a read of the
+/// event store attaches through `ensure_daemon_running` without changing subscriptions or
+/// the default room. Never unlink a socket based on a missing platform-specific `lsof`.
+/// Every outcome is a probe: `airc.daemon.recovered`.
 async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
     use tokio::process::Command;
-    let bound = std::time::Duration::from_secs(5);
-    let held = tokio::time::timeout(bound, Command::new("lsof").arg("-t").arg(socket).output())
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false); // JUSTIFIED unwrap_or: lsof absent or hung = cannot prove a holder; treat as unheld and try (the retry is bounded and harmless)
-    if held {
-        crate::probe!(
-            class = "airc.daemon.recovered",
-            socket = %socket.display(),
-            outcome = "held_not_stale",
-            "a process still holds the daemon socket — not a stale file; no recovery attempted"
-        );
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+    let existed = socket.exists();
+    let started = std::time::Instant::now();
+    let mut command = Command::new("airc");
+    command.args(["events", "list", "--limit", "0", "--json"]);
+    // A console-subsystem child started by the boot task must not open Windows Terminal.
+    #[cfg(windows)]
+    command.as_std_mut().creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let start = tokio::time::timeout(std::time::Duration::from_secs(30), command.output()).await;
+    let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
+    if matches!(&start, Ok(Err(_))) {
+        // The CLI itself could not launch; waiting for a daemon it never started
+        // would only conceal the missing executable or failed process creation.
         return false;
     }
-    let existed = socket.exists();
-    if existed {
-        let _ = std::fs::remove_file(socket);
-    }
-    let started = std::time::Instant::now();
-    let start = tokio::time::timeout(std::time::Duration::from_secs(30), Command::new("airc").arg("status").output()).await;
-    let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
-    if start_ok || socket.exists() {
-        // A daemon was started. Whether it answers within THIS function's wait or not,
-        // the patience loop now measures its budget from here — a slow daemon is a
-        // daemon, and the verdict must not be the one its own start time bought.
-        note_daemon_started();
-    }
+    // AIRC can spawn successfully and still return a timeout while its event store
+    // opens. Windows socket metadata is not a reliable readiness signal. Reset the
+    // outer budget once for the actual launch attempt and probe the RPC directly.
+    note_daemon_started();
     let mut answered = false;
-    while started.elapsed() < std::time::Duration::from_secs(25) {
-        if socket.exists() && discover_peer_id(socket).await.is_ok() {
+    while started.elapsed() < std::time::Duration::from_secs(75) {
+        if discover_peer_id(socket).await.is_ok() {
             answered = true;
             break;
         }
@@ -314,9 +304,9 @@ async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
         class = "airc.daemon.recovered",
         socket = %socket.display(),
         outcome = if answered { "recovered" } else if start_ok { "started_not_answering" } else { "start_failed" },
-        stale_file_removed = existed,
+        stale_file_present = existed,
         waited_ms = started.elapsed().as_millis() as u64,
-        "dead airc daemon: stale socket cleared and a daemon started by the core itself"
+        "airc daemon recovery through the canonical attach lifecycle"
     );
     answered
 }
