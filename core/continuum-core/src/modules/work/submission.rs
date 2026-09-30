@@ -399,10 +399,26 @@ async fn derive_submission(
             &base_sha[..base_sha.len().min(9)]
         )));
     }
+    // Retain the exact candidate before publishing its identity: the checkout can
+    // change after this call, so a later git diff is not the submitted artifact.
+    let store = crate::media::artifact::store().map_err(CommandError::Internal)?;
+    let artifact = retain_patch(&store, &patch)?;
     Ok(DerivedSubmission {
         instance,
         base_sha,
-        artifact: artifact_of_patch(&patch),
+        artifact,
+    })
+}
+
+fn retain_patch(store: &airc_blobs::FsStore, patch: &str) -> Result<WorkArtifactReference, CommandError> {
+    use airc_blobs::ContentAddressedStore;
+    let hash = store.put(patch.as_bytes()).map_err(|e| {
+        CommandError::Internal(format!("could not retain submission patch: {e}"))
+    })?;
+    Ok(WorkArtifactReference {
+        hash: hash.to_hex(),
+        size_bytes: patch.len() as u64,
+        mime: Some("text/x-patch".to_string()),
     })
 }
 
@@ -1293,6 +1309,19 @@ mod tests {
         assert_eq!(a.hash, "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08");
         assert_eq!(a.size_bytes, 4);
         assert_eq!(a.mime.as_deref(), Some("text/x-patch"));
+        // Regression: a published hash must still resolve after the checkout changes.
+        use airc_blobs::{ContentAddressedStore, ContentHash, FsStore, MediaRef};
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        let retained = super::retain_patch(&store, "test").unwrap();
+        assert_eq!(retained.hash, a.hash);
+        super::retain_patch(&store, "a later candidate").unwrap();
+        let reference = MediaRef {
+            hash: ContentHash::from_hex(&retained.hash).unwrap(),
+            size_bytes: retained.size_bytes,
+            mime: retained.mime,
+        };
+        assert_eq!(store.get_verified(&reference, 4).unwrap(), b"test");
     }
 
     #[test]
