@@ -2800,6 +2800,7 @@ mod piece_2_pr3_dispatch_tests {
         name: &'static str,
         subscriptions: Vec<ArtifactSelector>,
         received: Arc<Mutex<Vec<(ArtifactKey, serde_json::Value)>>>,
+        event_gate: Option<Arc<tokio::sync::Notify>>,
         /// How many times the runtime asked this module to SAVE. Counting broadcasts
         /// rather than receipt rows is the difference between "the receipt mentions this
         /// module once" and "the module was stopped once" — a second broadcast could stop
@@ -2818,6 +2819,7 @@ mod piece_2_pr3_dispatch_tests {
                 name,
                 subscriptions,
                 received: received.clone(),
+                event_gate: None,
             });
             (module, received)
         }
@@ -2864,11 +2866,46 @@ mod piece_2_pr3_dispatch_tests {
             value: serde_json::Value,
         ) -> Result<(), String> {
             self.received.lock().push((key.clone(), value));
+            if let Some(gate) = &self.event_gate {
+                gate.notified().await;
+            }
             Ok(())
         }
         fn as_any(&self) -> &dyn Any {
             self
         }
+    }
+
+    // What this catches: a blocked inline subscriber must not withhold publication
+    // from independent consumers or prevent an urgent event reaching the same rail.
+    #[tokio::test]
+    async fn publication_reaches_receivers_while_inline_handler_is_blocked() {
+        let runtime = Runtime::new();
+        let key = "test/background.ready";
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (mut module, received) = RecordingModule::new(
+            "blocked-recorder",
+            vec![ArtifactSelector::Exact(ArtifactKey::from(key))],
+        );
+        Arc::get_mut(&mut module).unwrap().event_gate = Some(gate.clone());
+        runtime.register(module);
+        let mut receiver = runtime.bus().receiver();
+        let publication = runtime.bus().publish(key, serde_json::json!({"id": 1}), runtime.registry());
+        tokio::pin!(publication);
+        // Poll the real dispatcher into the blocked handler before checking the rail.
+        tokio::select! {
+            biased;
+            _ = &mut publication => panic!("handler must still be blocked"),
+            event = receiver.recv() => assert_eq!(event.unwrap().name, key),
+            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("subscriber blocked publication"),
+        }
+        assert_eq!(received.lock().len(), 1);
+        runtime.bus().publish_async_only("chat:urgent", serde_json::json!({"id": 2}));
+        assert_eq!(receiver.try_recv().unwrap().name, "chat:urgent");
+        gate.notify_one();
+        publication.await;
+        assert_eq!(received.lock().len(), 1);
+        assert!(matches!(receiver.try_recv(), Err(tokio::sync::broadcast::error::TryRecvError::Empty)));
     }
 
     /// What this catches: ArtifactSelector::Exact translates to a
