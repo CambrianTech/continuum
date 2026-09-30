@@ -329,14 +329,7 @@ impl MessageBus {
     ) {
         self.note_published(event_name);
         let payload = std::sync::Arc::new(payload);
-        let event = BusEvent {
-            name: event_name.to_string(),
-            payload: payload.clone(),
-        };
-        self.record_recent(&event);
-        // Publication is independent of inline subscriber progress. No receivers
-        // is valid; lagged receivers retain the broadcast rail's explicit Lagged error.
-        let _ = self.sender.send(event);
+        self.deliver_to_receivers(event_name, payload.clone());
 
         // Synchronous tier (glob-matched event_subscriptions): collect
         // matching module names, release the DashMap borrow, then
@@ -428,11 +421,20 @@ impl MessageBus {
             self.coalesce_tracker.insert(prefix, now);
         }
 
+        self.deliver_to_receivers(event_name, std::sync::Arc::new(payload));
+    }
+
+    /// The single delivery boundary shared by both publication entry points.
+    /// Archive and receivers see the same envelope and shared payload. Keep
+    /// filtering at admission, before this boundary; inline handlers run after it.
+    fn deliver_to_receivers(&self, event_name: &str, payload: std::sync::Arc<serde_json::Value>) {
         let event = BusEvent {
             name: event_name.to_string(),
-            payload: std::sync::Arc::new(payload),
+            payload,
         };
         self.record_recent(&event);
+        // No receivers is valid. A slow receiver gets the rail's explicit Lagged
+        // error instead of holding publication or allocating an unbounded queue.
         let _ = self.sender.send(event);
     }
 
