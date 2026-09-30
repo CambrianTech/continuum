@@ -1997,7 +1997,18 @@ impl ActionCommand for WorkState {
         // "claimed, owner none = held by nobody" and reopened it while she worked it
         // believing it hers. Idempotent for the holder (the claim verb's already-yours
         // arm), so `in_progress` on a held card costs one re-claim, never a refusal.
-        if matches!(state, CardState::Claimed | CardState::InProgress) {
+        // Revision resumes the owner's existing lease. Re-claiming first refuses
+        // Review as settled, so the owner can never leave that column (Kimi,
+        // 2026-09-30). Only explicit in_progress on her live review may skip the
+        // claim path; it neither grants ownership nor marks review as passed.
+        let resume_review = if state == CardState::InProgress {
+            card_in_subscribed_rooms(&airc, card_id).await.is_some_and(|(_, card)| {
+                resumes_held_review(&card, state, airc.peer_id(), crate::modules::chat::now_ms())
+            })
+        } else {
+            false
+        };
+        if matches!(state, CardState::Claimed | CardState::InProgress) && !resume_review {
             let claim = WorkClaim {
                 registry: self.registry.clone(),
             }
@@ -2617,6 +2628,19 @@ fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<airc_core::Pee
         crate::persona::card_holder::Hold::Lapsed
         | crate::persona::card_holder::Hold::Unclaimed => None,
     }
+}
+
+fn resumes_held_review(
+    card: &airc_work::WorkCard,
+    requested: CardState,
+    caller: airc_core::PeerId,
+    now_ms: u64,
+) -> bool {
+    requested == CardState::InProgress
+        && card.state == CardState::Review
+        && card.owner == Some(caller)
+        && crate::persona::card_holder::hold_of(card, now_ms)
+            == crate::persona::card_holder::Hold::Held
 }
 
 /// What a refused claim MEANS for the citizen who made it.
@@ -3816,6 +3840,12 @@ mod tests {
             let holder = live_holder(&settled, now).map(|p| p.as_uuid());
             assert_eq!(classify_refusal(holder, Some(owner.as_uuid())), ClaimRefusal::Fault);
             assert_eq!(classify_refusal(holder, Some(Uuid::new_v4())), ClaimRefusal::Fault);
+            // Returning a live review to revision preserves its owner's claim;
+            // this exception must never grant another caller or reopen done work.
+            assert_eq!(resumes_held_review(&settled, CardState::InProgress, owner, now), state == CardState::Review);
+            assert!(!resumes_held_review(&settled, CardState::InProgress, PeerId::new(), now));
+            assert!(!resumes_held_review(&settled, CardState::Claimed, owner, now));
+            assert!(!resumes_held_review(&settled, CardState::InProgress, owner, now + 60_000));
         }
     }
 
