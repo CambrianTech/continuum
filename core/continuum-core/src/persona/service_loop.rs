@@ -2411,9 +2411,9 @@ fn burst_fingerprint(
 /// positron/TTS/avatar). ONE place for both the message and self-tick turn paths.
 ///
 /// COALESCED (#170): tokens are batched and flushed at most every `FLUSH_EVERY`
-/// (~50ms) as ONE chunk, not one-per-token — a room of N personas at per-token
-/// rate is a wire storm (the airc Monitor hit "output rate too high"), and
-/// sub-50ms token granularity is imperceptible to a viewer anyway. The buffered
+/// (250ms) as ONE chunk, not one-per-token — a room of N personas at per-token
+/// rate is a wire storm (the airc Monitor hit "output rate too high"). A timer
+/// flushes buffered tokens even when generation pauses. The buffered
 /// remainder + a `text_end` marker flush when the turn closes. Also stamps
 /// `persona.turn.first_token` (the streaming latency floor) on the first token.
 /// `citizen` is `None` for non-airc conversations (tests) → then this is just the
@@ -2440,7 +2440,11 @@ fn spawn_token_forwarder(
         let mut first = true;
         let mut seq: u64 = 0;
         let mut buf = String::new();
-        let mut last_flush = std::time::Instant::now();
+        let mut flush = tokio::time::interval_at(
+            tokio::time::Instant::now() + FLUSH_EVERY,
+            FLUSH_EVERY,
+        );
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Tee one flushed chunk onto the local WS rail (#170) — no-op unless this is a
         // room turn (room+sender Some) AND a browser is subscribed.
         let tee = |seq: u64, token: String, done: bool| {
@@ -2455,66 +2459,61 @@ fn spawn_token_forwarder(
                 });
             }
         };
-        // START BEACON (#254 slice 1): one empty-token frame the moment the turn's
-        // generation is dispatched — BEFORE prefill, which on a cold lane can run
+        // START BEACON (#254 slice 1): one empty-token frame when the turn's
+        // forwarder starts, before admission or prefill, which on a cold lane can run
         // minutes. The client renders an entry with no text yet as "X is
         // responding…" under the last message (Joel 2026-07-30: the interface
         // looked DEAD while four minds were mid-turn). The `done` flush at turn
         // close retires the beacon even if the turn settles without speech.
         tee(seq, String::new(), false);
-        while let Some(chunk) = rx.recv().await {
-            if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
-                if t.is_empty() {
-                    continue;
-                }
-                if first {
-                    first = false;
-                    tracing::info!(
-                        persona = %persona,
-                        first_token_ms = started.elapsed().as_millis() as u64,
-                        "persona.turn.first_token — streaming rail live (latency floor)"
-                    );
-                }
-                buf.push_str(&t);
-                if last_flush.elapsed() >= FLUSH_EVERY && !buf.is_empty() {
-                    let flushed = std::mem::take(&mut buf);
-                    if let Some(c) = &citizen {
-                        let _ = c
-                            .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
-                                stream_id.clone(),
-                                seq,
-                                flushed.clone(),
-                            ))
-                            .await;
+        loop {
+            let closed = tokio::select! {
+                // A continuously ready producer cannot starve the flush deadline.
+                biased;
+                _ = flush.tick(), if !buf.is_empty() => false,
+                chunk = rx.recv() => match chunk {
+                    Some(crate::ai::adapter::GenerationChunk::Token(t)) if !t.is_empty() => {
+                        if first {
+                            first = false;
+                            tracing::info!(
+                                persona = %persona,
+                                first_token_ms = started.elapsed().as_millis() as u64,
+                                "persona.turn.first_token — streaming rail live (latency floor)"
+                            );
+                        }
+                        buf.push_str(&t);
+                        continue;
                     }
-                    tee(seq, flushed, false);
-                    seq += 1;
-                    last_flush = std::time::Instant::now();
+                    Some(_) => continue,
+                    None => true,
+                },
+            };
+            if !buf.is_empty() {
+                let flushed = std::mem::take(&mut buf);
+                // Local subscribers must see this batch before remote publication waits.
+                tee(seq, flushed.clone(), false);
+                if let Some(c) = &citizen {
+                    let _ = c
+                        .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                            stream_id.clone(),
+                            seq,
+                            flushed,
+                        ))
+                        .await;
                 }
+                seq += 1;
+            }
+            if closed {
+                break;
             }
         }
-        if !buf.is_empty() {
-            let flushed = std::mem::take(&mut buf);
-            if let Some(c) = &citizen {
-                let _ = c
-                    .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
-                        stream_id.clone(),
-                        seq,
-                        flushed.clone(),
-                    ))
-                    .await;
-            }
-            tee(seq, flushed, false);
-            seq += 1;
-        }
+        // Retire the local bubble independently of remote end-marker delivery.
+        tee(seq, String::new(), true);
         if let Some(c) = &citizen {
             let _ = c
                 .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id.clone(), seq))
                 .await;
         }
-        // Final marker to the browser rail — retire the typing bubble even if the
-        // durable row is slow to arrive.
-        tee(seq, String::new(), true);
     })
 }
 
@@ -2991,6 +2990,66 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // What this catches: a paused generator must not hold a short answer until
+    // another token arrives; the same live rail must filter reasoning and close in order.
+    #[tokio::test]
+    async fn token_forwarder_flushes_during_pause_and_closes_in_order() {
+        use crate::ai::adapter::GenerationChunk;
+        use crate::ipc::stream_rail;
+        use std::time::Duration;
+
+        async fn next_for_room(
+            rx: &mut tokio::sync::broadcast::Receiver<stream_rail::StreamDelta>,
+            room: &str,
+        ) -> stream_rail::StreamDelta {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let delta = rx.recv().await.expect("live rail remains available");
+                    if delta.room_id == room {
+                        return delta;
+                    }
+                }
+            })
+            .await
+            .expect("buffered output arrives without further input or channel closure")
+        }
+
+        let room = Uuid::new_v4().to_string();
+        let mut output = stream_rail::subscribe();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = spawn_token_forwarder(
+            rx, None, "stream-test".into(), Some(room.clone()), Some("sender".into()),
+        );
+        let start = next_for_room(&mut output, &room).await;
+        assert!(start.token.is_empty() && !start.done);
+        tx.send(GenerationChunk::Reasoning("private fixture".into())).expect("owner alive");
+        tx.send(GenerationChunk::Token("First".into())).expect("owner alive");
+        // Keep tx open and send nothing else: this is the formerly stuck path.
+        let first = next_for_room(&mut output, &room).await;
+        assert_eq!(first.token, "First");
+        assert_eq!(first.seq, 0);
+        assert!(!first.done);
+        tx.send(GenerationChunk::Token("Second".into())).expect("owner alive");
+        tx.send(GenerationChunk::Token("Third".into())).expect("owner alive");
+        drop(tx);
+        owner.await.expect("forwarder closes cleanly");
+        assert_eq!(start.stream_id, first.stream_id);
+        let mut tail = String::new();
+        let mut expected_seq = 1;
+        loop {
+            let delta = next_for_room(&mut output, &room).await;
+            assert_eq!(delta.stream_id, first.stream_id);
+            assert_eq!(delta.seq, expected_seq);
+            if delta.done {
+                assert!(delta.token.is_empty());
+                break;
+            }
+            tail.push_str(&delta.token);
+            expected_seq += 1;
+        }
+        assert_eq!(tail, "SecondThird");
+    }
 
     // What this catches (e731576c): publication, not a later work-turn return,
     // owns the speech ring; failures and other rooms cannot become its history.
