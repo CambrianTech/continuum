@@ -3515,8 +3515,17 @@ async fn install_cli(check: bool) -> Result<supervisor_install::ArmReport, Strin
         match d {
             CliDrift::Missing(name) | CliDrift::Stale(name) => {
                 let to = dir.join(install_cli::cli_file_name(name));
-                install_cli::copy_with_retry(&slot_cli, &to, Duration::from_secs(10))?;
+                if name == "uu" {
+                    install_cli::hard_link_with_retry(&dir.join(install_cli::cli_file_name("continuum")), &to, Duration::from_secs(10))?;
+                } else {
+                    install_cli::copy_with_retry(&slot_cli, &to, Duration::from_secs(10))?;
+                }
                 println!("  cli: refreshed {}", to.display());
+            }
+            CliDrift::DuplicateAlias => {
+                let to = dir.join(install_cli::cli_file_name("uu"));
+                install_cli::hard_link_with_retry(&dir.join(install_cli::cli_file_name("continuum")), &to, Duration::from_secs(10))?;
+                println!("  cli: linked {} to continuum.exe", to.display());
             }
             CliDrift::NotOnPath(dir) => {
                 let script = format!(

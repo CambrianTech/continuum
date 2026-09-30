@@ -31,4 +31,5 @@ uuid = { version = "1", features = ["v4"] }  # test-only: unique temp dirs
 
 [target.'cfg(windows)'.dependencies]
 chrono = "0.4"
+same-file = "1.0" # verify uu.exe and continuum.exe name the same NTFS file
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects"] }

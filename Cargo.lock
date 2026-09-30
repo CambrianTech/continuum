@@ -2808,6 +2808,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "libc",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",
