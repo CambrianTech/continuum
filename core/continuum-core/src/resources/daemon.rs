@@ -306,6 +306,12 @@ impl ResourceDaemon {
         self.governor.lock().available_for(consumer_id, kind)
     }
 
+    /// Bytes of a kind physically resident across everyone, as last scanned. What an engine
+    /// training run's footprint is measured against (peak during the run minus before it).
+    pub fn physical_used(&self, kind: ResourceKind) -> u64 {
+        self.governor.lock().physical_used(kind)
+    }
+
     /// The replace-myself budget: `available_for` plus the caller's OWN resident bytes,
     /// because a consumer choosing its successor releases what it holds as part of the
     /// swap. Without this the incumbent is counted against its own replacement and the

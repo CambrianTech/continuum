@@ -44,7 +44,6 @@ use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
 use crate::persona::profile_builder::{build_profile, ServingParams};
 use crate::persona::role_template::RoleId;
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// One row of the roster: a substrate-resolved persona slot ready for
@@ -110,6 +109,7 @@ pub fn derive_spawn_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::model_registry::types::{
         Arch, AuthKind, Capability, MultiPartyChatStrategy, Provider, ProviderKind,
     };

@@ -480,6 +480,7 @@ mod tests {
             room_id: None,
             purpose: None,
             persona_id: None,
+            turn_bound: None,
         }
     }
 

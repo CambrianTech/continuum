@@ -30,6 +30,182 @@
 
 use candle_core::quantized::gguf_file::{Content, Value};
 
+/// Split metadata is typed by the pinned engine: u16 count/index, i32 tensor
+/// total. Absence of count means an ordinary single-file GGUF.
+pub fn split_count(ct: &Content) -> Result<u16, String> {
+    ct.metadata
+        .get("split.count")
+        .map(|v| v.to_u16().map_err(|e| e.to_string()))
+        .transpose()
+        .map(|n| n.unwrap_or(0))
+}
+
+pub fn split_index(ct: &Content) -> Result<u16, String> {
+    ct.metadata
+        .get("split.no")
+        .ok_or("missing split.no")?
+        .to_u16()
+        .map_err(|e| e.to_string())
+}
+
+pub fn split_tensor_count(ct: &Content) -> Result<u64, String> {
+    let count = ct
+        .metadata
+        .get("split.tensors.count")
+        .ok_or("missing split.tensors.count")?
+        .to_i32()
+        .map_err(|e| e.to_string())?;
+    u64::try_from(count).map_err(|_| "negative split.tensors.count".into())
+}
+
+/// Cold launch verification uses Candle's canonical decoder only after a bounded
+/// header-shape check. Candle allocates strings/arrays from on-disk counts before
+/// a reader can report EOF, so a timeout or `Read::take` alone cannot bound it.
+/// This checks allocation sizes, not model semantics, and never reads tensors.
+pub(crate) fn read_bounded_header(
+    file: &mut std::fs::File,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Content, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    struct Header<'a> {
+        file: &'a mut std::fs::File,
+        bytes: Vec<u8>,
+        allocation: u64,
+        cancelled: &'a dyn Fn() -> bool,
+    }
+    impl Header<'_> {
+        fn charge(&mut self, bytes: u64) -> Result<(), String> {
+            self.allocation = self
+                .allocation
+                .checked_add(bytes)
+                .ok_or("GGUF header allocation overflow")?;
+            if self.allocation > 128 * 1024 * 1024 {
+                return Err("GGUF metadata exceeds launch verification allocation bound".into());
+            }
+            Ok(())
+        }
+        fn take(&mut self, count: usize) -> Result<&[u8], String> {
+            if (self.cancelled)() {
+                return Err("GGUF header verification cancelled".into());
+            }
+            let start = self.bytes.len();
+            let end = start
+                .checked_add(count)
+                .ok_or("GGUF header length overflow")?;
+            if end > 64 * 1024 * 1024 {
+                return Err("GGUF header exceeds launch verification byte bound".into());
+            }
+            self.bytes.resize(end, 0);
+            self.file
+                .read_exact(&mut self.bytes[start..end])
+                .map_err(|e| format!("GGUF header read: {e}"))?;
+            Ok(&self.bytes[start..end])
+        }
+        fn u32(&mut self) -> Result<u32, String> {
+            let b = self.take(4)?;
+            Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        }
+        fn u64(&mut self) -> Result<u64, String> {
+            let b = self.take(8)?;
+            Ok(u64::from_le_bytes([
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            ]))
+        }
+        fn string(&mut self) -> Result<Vec<u8>, String> {
+            let length = self.u64()?;
+            if length > 4 * 1024 * 1024 {
+                return Err("GGUF metadata string exceeds launch verification bound".into());
+            }
+            self.charge(length)?;
+            Ok(self.take(length as usize)?.to_vec())
+        }
+        fn value(&mut self, kind: u32, depth: u8) -> Result<(), String> {
+            if depth > 8 {
+                return Err("GGUF metadata nesting exceeds launch verification bound".into());
+            }
+            match kind {
+                0 | 1 | 7 => {
+                    self.take(1)?;
+                }
+                2 | 3 => {
+                    self.take(2)?;
+                }
+                4..=6 => {
+                    self.take(4)?;
+                }
+                10..=12 => {
+                    self.take(8)?;
+                }
+                8 => {
+                    self.string()?;
+                }
+                9 => {
+                    let element = self.u32()?;
+                    let count = self.u64()?;
+                    self.charge(
+                        count
+                            .checked_mul(64)
+                            .ok_or("GGUF array allocation overflow")?,
+                    )?;
+                    for _ in 0..count {
+                        self.value(element, depth + 1)?;
+                    }
+                }
+                _ => return Err("unsupported GGUF metadata value type".into()),
+            }
+            Ok(())
+        }
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut header = Header {
+        file,
+        bytes: Vec::new(),
+        allocation: 0,
+        cancelled,
+    };
+    if header.u32()? != 0x46554747 || !matches!(header.u32()?, 2 | 3) {
+        return Err("local launch verification requires GGUF v2/v3".into());
+    }
+    let tensors = header.u64()?;
+    let metadata = header.u64()?;
+    header.charge(
+        tensors
+            .checked_mul(256)
+            .ok_or("GGUF tensor count overflow")?,
+    )?;
+    header.charge(
+        metadata
+            .checked_mul(256)
+            .ok_or("GGUF metadata count overflow")?,
+    )?;
+    for _ in 0..metadata {
+        let key = header.string()?;
+        let kind = header.u32()?;
+        // Candle divides by this value at the end of Content::read.
+        if key == b"general.alignment" {
+            if kind != 4 || header.u32()? == 0 {
+                return Err("unsupported GGUF alignment for launch verification".into());
+            }
+        } else {
+            header.value(kind, 0)?;
+        }
+    }
+    for _ in 0..tensors {
+        header.string()?;
+        let dimensions = header.u32()?;
+        if dimensions > 4 {
+            return Err("GGUF tensor dimensions exceed engine contract".into());
+        }
+        header.take(dimensions as usize * 8)?;
+        header.take(12)?; // dtype and weight offset; no tensor data is loaded.
+    }
+    if cancelled() {
+        return Err("GGUF header verification cancelled".into());
+    }
+    Content::read(&mut std::io::Cursor::new(header.bytes))
+        .map_err(|e| format!("local GGUF metadata: {e}"))
+}
+
 /// `general.architecture` — the model's own declared architecture string
 /// (e.g. `"qwen3"`, `"llama"`). Required for correctness by most readers
 /// (it keys every `{arch}.*` dimension), but returned as `Option` so each

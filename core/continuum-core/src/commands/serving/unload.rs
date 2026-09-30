@@ -26,7 +26,7 @@
 //!
 //! `Privileged` — it changes what occupies GPU memory on this node.
 
-use std::collections::HashSet;
+use crate::modules::serving_daemon::ServingIntent;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -86,7 +86,7 @@ crate::action_command! {
     /// inverse of serving/load. Fails loud on an unknown model id. Returns whether
     /// VRAM was reclaimed and what is serving now.
     pub struct ServingUnload {
-        suppress: watch::Sender<Arc<HashSet<String>>>,
+        intent: ServingIntent,
         serving: watch::Receiver<ServingSnapshot>,
         catalog: Arc<ModelCatalog>,
     }
@@ -109,9 +109,7 @@ crate::action_command! {
             this.serving.borrow().active_model.as_deref() == Some(p.model_id.as_str());
 
         // 3. Pin it OFF. Idempotent — re-unloading an already-pinned model is fine.
-        this.suppress.send_modify(|s| {
-            Arc::make_mut(s).insert(p.model_id.clone());
-        });
+        this.intent.set_suppressed(&p.model_id, true, true);
 
         // 4. If it held the lane, wait for the daemon's next reconcile to actually
         //    free it before we claim success.

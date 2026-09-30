@@ -211,6 +211,24 @@ impl ModuleRegistry {
     /// once the count holds at zero") could never ship while a structurally-unroutable
     /// class was counted — and promoting it anyway would have refused boot on a legitimate
     /// Provided command.
+    /// Every registered module's declared edges, for the dataflow-graph audit
+    /// (`runtime::event_graph`). Consumption is the LIVE-delivered artifact
+    /// subscriptions only; bus `event_subscriptions` ride a dispatch path with no
+    /// production caller and are reported separately by the runtime.
+    pub fn event_edges(&self) -> Vec<super::event_graph::ModuleEdges> {
+        let mut edges: Vec<_> = self
+            .modules
+            .iter()
+            .map(|entry| super::event_graph::ModuleEdges {
+                module: *entry.key(),
+                emits: entry.value().emissions(),
+                consumes: entry.value().artifact_subscriptions(),
+            })
+            .collect();
+        edges.sort_by_key(|e| e.module);
+        edges
+    }
+
     pub fn dispatch_orphans(&self) -> Vec<&'static str> {
         crate::sdk_codegen::command_registry()
             .into_iter()

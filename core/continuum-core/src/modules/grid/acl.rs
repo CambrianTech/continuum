@@ -108,6 +108,12 @@ fn default_rules() -> &'static Vec<AccessRule> {
                 prefix: "models/remove",
                 access: CommandAccess::Owner,
             },
+            // Who may do what is the owner's decision (Joel, 2026-09-28): access/set changes
+            // the capability threshold and per-citizen decisions; access/get stays AiSafe.
+            AccessRule {
+                prefix: "access/set",
+                access: CommandAccess::Owner,
+            },
             AccessRule {
                 prefix: "gpu/set-budget",
                 access: CommandAccess::Owner,

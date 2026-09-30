@@ -200,7 +200,7 @@ impl Store {
         value: &impl Serialize,
         mut header: CallHeader,
         terminal: bool,
-    ) -> io::Result<PayloadRef> {
+    ) -> io::Result<CallHeader> {
         let size = self
             .data
             .as_ref()
@@ -265,7 +265,7 @@ impl Store {
             return Err(error);
         }
         self.entries += 1;
-        Ok(reference)
+        Ok(header)
     }
 }
 struct LimitedWriter<'a> {
@@ -746,7 +746,7 @@ mod tests {
             .append(&row(1), header(1), false)
             .expect("next generation");
         let mut terminal = header(0);
-        terminal.request = request;
+        terminal.request = request.request;
         terminal.status = CallStatus::Completed;
         store
             .append(&row(0), terminal, true)

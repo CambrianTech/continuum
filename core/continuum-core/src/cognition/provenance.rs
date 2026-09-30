@@ -42,6 +42,31 @@ pub struct GenerationReceipt {
     pub submitted_request_id: String,
     /// Which way this call went.
     pub outcome: GenerationOutcome,
+    /// The prompt capture's cursor for this call, when a capture sink recorded it:
+    /// the link from a training example back to the exact request she was served and
+    /// the exact response she gave (card ad107e18, Kimi's provenance rule). `None`
+    /// when no capture was installed; rows written before this field read as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<String>,
+    /// The genes this call ran with (each adapter's path, at a non-zero scale), in the
+    /// order they were requested; empty = the base model alone. A gene is judged in her own
+    /// work, not in a separate harness: the outcome the room gives this turn is attributed
+    /// to exactly these genes (the promotion gate reads it). Rows written before this field
+    /// read as empty, which is what those calls ran (no live page-in existed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub genes: Vec<String>,
+}
+
+/// The genes a request actually runs with: every requested adapter at a non-zero scale.
+/// A zero-scale entry reaches no graph (the engine drops it), so it is not a gene this turn
+/// ran on.
+pub fn genes_of(adapters: Option<&[crate::ai::types::ActiveAdapterRequest]>) -> Vec<String> {
+    adapters
+        .into_iter()
+        .flatten()
+        .filter(|a| a.scale != 0.0)
+        .map(|a| if a.path.is_empty() { a.name.clone() } else { a.path.clone() })
+        .collect()
 }
 
 /// Served or faulted — both are outcomes, neither is an absence.
@@ -105,7 +130,21 @@ impl GenerationReceipt {
         Self {
             submitted_request_id,
             outcome,
+            capture: None,
+            genes: Vec::new(),
         }
+    }
+
+    /// Attach the genes the call ran with ([`genes_of`]).
+    pub fn with_genes(mut self, genes: Vec<String>) -> Self {
+        self.genes = genes;
+        self
+    }
+
+    /// Attach the capture cursor the call was recorded under.
+    pub fn with_capture(mut self, cursor: Option<&str>) -> Self {
+        self.capture = cursor.filter(|c| !c.is_empty()).map(str::to_owned);
+        self
     }
 
     /// Build a receipt for a call that failed before any response existed — a
@@ -118,6 +157,8 @@ impl GenerationReceipt {
                 model: None,
                 provider: None,
             },
+            capture: None,
+            genes: Vec::new(),
         }
     }
 
@@ -244,5 +285,31 @@ mod tests {
             ),
             GenerationOutcome::Faulted { .. } => panic!("Stop should be served"),
         }
+    }
+
+    // what this catches: a turn's outcome credited to genes it did not run on. A gene is
+    // judged in her own work, so the receipt must name exactly the genes that reached the
+    // graph: a zero-scale entry reached none, and a receipt written before this field (no
+    // live page-in existed) reads as the base model, not as unknown.
+    #[test]
+    fn a_receipt_names_the_genes_that_actually_ran() {
+        use crate::ai::types::ActiveAdapterRequest;
+        let gene = |name: &str, path: &str, scale: f64| ActiveAdapterRequest {
+            name: name.into(),
+            path: path.into(),
+            domain: String::new(),
+            scale,
+        };
+        let asked = [gene("kimi-dream-1", "/genes/kimi-1.gguf", 1.0), gene("off", "/genes/off.gguf", 0.0), gene("named", "", 0.5)];
+        assert_eq!(genes_of(Some(&asked)), vec!["/genes/kimi-1.gguf".to_string(), "named".to_string()]);
+        assert!(genes_of(None).is_empty(), "no genome = the base model");
+        let old: GenerationReceipt = serde_json::from_value(serde_json::json!({
+            "submittedRequestId": "r", "outcome": {"kind": "faulted", "detail": "x"}
+        }))
+        .unwrap();
+        assert!(old.genes.is_empty());
+        let now = GenerationReceipt::faulted("r", "x").with_genes(vec!["/genes/kimi-1.gguf".into()]);
+        let round: GenerationReceipt = serde_json::from_value(serde_json::to_value(&now).unwrap()).unwrap();
+        assert_eq!(round.genes, vec!["/genes/kimi-1.gguf".to_string()]);
     }
 }

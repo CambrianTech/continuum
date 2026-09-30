@@ -290,6 +290,7 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
     &[
         &MistralToolCallsFormat,
         &EnvelopeFormat,
+        &XmlParameterFormat,
         &TaggedFormat,
         &BareFormat,
         &BbcodeCallFormat,
@@ -1353,6 +1354,90 @@ impl ToolCallFormat for EnvelopeFormat {
     }
 }
 
+/// `<function=NAME>` then one `<parameter=KEY>VALUE</parameter>` per argument, closed
+/// by `</function>` and usually wrapped in `<tool_call>`: the Qwen3-Coder XML dialect
+/// that the engine's own template parser reads. This is the floor for a call the engine
+/// refuses. Kimi (5090, 2026-09-27) wrote one parameter in the attribute spelling
+/// `<parameter name="cmd">` and the next as `<parameter=timeout_ms>`; the engine
+/// returned the whole call as content, nothing here read that dialect, and a `git show`
+/// was posted to the room as speech instead of running. Both spellings are read.
+struct XmlParameterFormat;
+impl ToolCallFormat for XmlParameterFormat {
+    fn id(&self) -> &'static str {
+        "xml-parameter"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        const OPEN: &str = "<function=";
+        const CLOSE: &str = "</function>";
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(open) = rest.find(OPEN) {
+            let after = &rest[open + OPEN.len()..];
+            let Some(name_end) = after.find('>') else {
+                break;
+            };
+            let name = after[..name_end].trim().trim_matches(['"', '\'']);
+            let body = &after[name_end + 1..];
+            // No `</function>`, no call: a call cut at max tokens holds only the parameters it
+            // finished (a shell cmd without its timeout), and running it would act on half an
+            // intention (Cormac on #4447).
+            let Some(close) = body.find(CLOSE) else {
+                break;
+            };
+            let (body, next) = (&body[..close], &body[close + CLOSE.len()..]);
+            let name_ok = !name.is_empty()
+                && name.len() <= 64
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || "/_-.".contains(c));
+            if let Some(input) = xml_parameters(body).filter(|_| name_ok) {
+                out.push(ToolCall {
+                    id: format!("jip-{}", Uuid::new_v4()),
+                    name: name.to_string(),
+                    input: serde_json::Value::Object(input),
+                });
+            }
+            rest = next;
+        }
+        out
+    }
+}
+
+/// The arguments of one XML-dialect call. `None` when a parameter tag is malformed
+/// (no key, no close), so a half-written call is never run with half its arguments.
+/// A value that is a JSON number, boolean or null keeps that type (`timeout_ms` is a
+/// number); anything else is text, so a file body that happens to be JSON is written
+/// as the text it is. One newline directly inside each tag is layout, not content.
+fn xml_parameters(body: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    const OPEN: &str = "<parameter";
+    const CLOSE: &str = "</parameter>";
+    let mut map = serde_json::Map::new();
+    let mut rest = body;
+    while let Some(open) = rest.find(OPEN) {
+        let after = &rest[open + OPEN.len()..];
+        let tag_end = after.find('>')?;
+        let head = after[..tag_end].trim();
+        let key = head
+            .strip_prefix('=')
+            .or_else(|| head.strip_prefix("name="))?
+            .trim()
+            .trim_matches(['"', '\''])
+            .trim();
+        if key.is_empty() {
+            return None;
+        }
+        let value = &after[tag_end + 1..];
+        let close = value.find(CLOSE)?;
+        let raw = value[..close].strip_prefix('\n').unwrap_or(&value[..close]);
+        let raw = raw.strip_suffix('\n').unwrap_or(raw);
+        let typed = match serde_json::from_str::<serde_json::Value>(raw.trim()) {
+            Ok(v @ (serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null)) => v,
+            _ => serde_json::Value::String(raw.to_string()),
+        };
+        map.insert(key.to_string(), typed);
+        rest = &value[close + CLOSE.len()..];
+    }
+    Some(map)
+}
+
 /// `<tool_call>{...}</tool_call>` — Qwen / Hermes / NousResearch style. Strips the
 /// tags and parses the inner object as a bare or enveloped call.
 struct TaggedFormat;
@@ -1399,17 +1484,30 @@ impl ToolCallFormat for BareFormat {
     }
     fn parse(&self, text: &str) -> Vec<ToolCall> {
         scan_objects(text, |obj| {
-            let has_name = ["\"name\"", "\"function\"", "\"tool\"", "\"command\""]
+            let value: serde_json::Value = serde_json::from_str(obj).ok()?;
+            let fields = value.as_object()?;
+            let has_name = ["name", "function", "tool", "command"]
                 .iter()
-                .any(|k| obj.contains(k));
+                .any(|k| fields.contains_key(*k));
             if !has_name {
                 return None; // not a tool call — avoid false positives
             }
-            let has_args = ["\"arguments\"", "\"parameters\"", "\"params\"", "\"input\""]
+            let has_args = ["arguments", "parameters", "params", "input"]
                 .iter()
-                .any(|k| obj.contains(k));
+                .any(|k| fields.contains_key(*k));
             let call = serde_json::from_str::<ToolCallJson>(obj).ok()?;
             if call.name.trim().is_empty() {
+                return None;
+            }
+            // Bare JSON has no explicit call intent. Schema/data objects can
+            // contain name + params/input too, including nested objects scanned
+            // after their parent is rejected. Require the same command shape
+            // for every bare lift; explicit envelopes and native calls retain
+            // their own handling, including unknown-command feedback.
+            let name = call.name.trim();
+            let tool_shaped = name.contains('/')
+                || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
+            if !tool_shaped {
                 return None;
             }
             // A name that could ONLY have come from the `command` key is held to
@@ -1420,16 +1518,10 @@ impl ToolCallFormat for BareFormat {
             // a tool literally called "cargo test". Same discriminator the
             // sibling-args lift uses below — does the name RESOLVE, not does the
             // key exist.
-            let command_keyed = !["\"name\"", "\"function\"", "\"tool\""]
+            let command_keyed = !["name", "function", "tool"]
                 .iter()
-                .any(|k| obj.contains(k));
+                .any(|k| fields.contains_key(*k));
             if command_keyed {
-                let name = call.name.trim();
-                let tool_shaped = name.contains('/')
-                    || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
-                if !tool_shaped {
-                    return None;
-                }
                 // A tool-shaped `command` with NO args is a complete no-arg call —
                 // the documented `{"tool_call": {"name": "ping"}}` form. Observed
                 // live from a second persona minutes after the first:
@@ -1444,11 +1536,8 @@ impl ToolCallFormat for BareFormat {
                 // Sibling-args lift (#293): precision-first. The name must be
                 // tool-shaped and at least one real sibling must have survived
                 // (metadata-only objects and bare `{"name": …}` stay speech).
-                let name = call.name.trim();
-                let tool_shaped = name.contains('/')
-                    || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
                 let has_sibling_args = call.arguments.as_object().is_some_and(|o| !o.is_empty());
-                if !tool_shaped || !has_sibling_args {
+                if !has_sibling_args {
                     return None;
                 }
             }
@@ -2317,6 +2406,35 @@ mod tests {
         assert_eq!(tc.input["file_path"], "x.rs");
     }
 
+    // what this catches: the Qwen3-Coder XML dialect going unread when the engine
+    // refuses a call. Kimi's exact leak (5090, 2026-09-27) mixed the attribute and the
+    // `=` spelling in one call and was posted as speech; it must run as one call with
+    // a typed number, a JSON-looking file body must stay text, and a malformed
+    // parameter must refuse the whole call rather than run it with half its arguments.
+    #[test]
+    fn the_xml_parameter_dialect_runs_in_either_spelling() {
+        let leaked = "<tool_call>\n<function=code/shell>\n<parameter name=\"cmd\">cd /c/w && git show a73053306 --stat | sed -n '1,240p'\n</parameter>\n<parameter=timeout_ms>\n90000\n</parameter>\n</function>\n</tool_call>";
+        let calls = parse_tool_calls(leaked);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/shell");
+        assert_eq!(
+            calls[0].input["cmd"],
+            "cd /c/w && git show a73053306 --stat | sed -n '1,240p'"
+        );
+        assert_eq!(calls[0].input["timeout_ms"], serde_json::json!(90000));
+
+        let write = "<function=code/write>\n<parameter=path>\nx.json\n</parameter>\n<parameter=content>\n{\"a\": 1}\n</parameter>\n</function>";
+        let calls = parse_tool_calls(write);
+        assert_eq!(calls[0].input["content"], "{\"a\": 1}", "a file body stays text");
+
+        let broken = "<function=code/shell>\n<parameter>\nls\n</parameter>\n</function>";
+        assert!(parse_tool_calls(broken).is_empty(), "a keyless parameter refuses the call");
+
+        // regression for #4447 (Cormac): a call cut before </function> never runs
+        let cut = "<tool_call>\n<function=code/shell>\n<parameter=cmd>\nrm -rf build\n</parameter>\n<parameter=timeout_ms>\n90";
+        assert!(parse_tool_calls(cut).is_empty(), "a call cut at max tokens holds half its arguments");
+    }
+
     // what this catches: Llama/Mistral-style BARE call with `parameters` (not
     // `arguments`). BareFormat + the `parameters` alias normalize it.
     // what this catches: the `{"command": <tool>, "params": {…}}` envelope must
@@ -2390,6 +2508,14 @@ relevant code.";
     fn prose_with_a_name_field_is_not_a_tool_call() {
         assert!(parse_tool_calls(r#"I think {"name": "Asha"} is a nice handle."#).is_empty());
         assert!(parse_tool_call("just answering normally, no tools today").is_none());
+        // Nested schema keys are data, not the outer object's call envelope.
+        // Substring scanning used to let nested `input` bypass the name guard,
+        // or nested `name` bypass the shell-command discriminator.
+        assert!(BareFormat.parse(r#"{"name":"owner_id","schema":{"input":"string"}}"#).is_empty());
+        assert!(BareFormat.parse(r#"{"command":"echo hello","schema":{"name":"field","input":"string"}}"#).is_empty());
+        assert_eq!(BareFormat.parse(r#"{"name":"code/read","input":{"path":"schema.json"}}"#).len(), 1);
+        assert!(BareFormat.parse(r#"{"name":"owner_id","params":{}}"#).is_empty());
+        assert_eq!(BareFormat.parse(r#"{"name":"read_file","params":{"path":"schema.json"}}"#).len(), 1);
     }
 
     // what this catches: #293 starvation, layer 1 — a lane mis-declared

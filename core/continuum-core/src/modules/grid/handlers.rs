@@ -580,25 +580,23 @@ pub async fn handle_job_control(
         .unwrap_or("unknown")
         .to_string();
 
+    // A job with no recorded pid has no process to signal. Never signal pid 0: kill(0, sig)
+    // reaches every process in the CALLER's group — pausing such a job would stop the core.
+    if pid <= 0 && matches!(action, "pause" | "resume") {
+        return Err(format!("Job '{job_id}' has no recorded process to {action}"));
+    }
     let new_state = match action {
         "pause" => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid, libc::SIGSTOP);
-            }
+            job_signal(pid, JobSignal::Stop)?;
             "paused"
         }
         "resume" => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid, libc::SIGCONT);
-            }
+            job_signal(pid, JobSignal::Continue)?;
             "running"
         }
         "cancel" => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
+            if pid > 0 {
+                job_signal(pid, JobSignal::Terminate)?;
             }
             // Move to failed
             let _ = move_job_files(&jobs_dir, job_id, "running", "failed");
@@ -1044,13 +1042,43 @@ fn list_meta_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn is_process_alive(pid: i32) -> bool {
+    u32::try_from(pid).is_ok_and(crate::inference::lane_process::is_alive)
+}
+
+enum JobSignal {
+    Stop,
+    Continue,
+    Terminate,
+}
+
+/// Deliver a job-control signal. Stop/continue have no Windows equivalent here, so they are
+/// REFUSED there — the handler used to report "paused"/"running" while nothing happened. Terminate
+/// ends the job's whole process tree on Windows (taskkill /T), SIGTERM on Unix.
+fn job_signal(pid: i32, signal: JobSignal) -> Result<(), String> {
     #[cfg(unix)]
     {
-        unsafe { libc::kill(pid, 0) == 0 }
+        let sig = match signal {
+            JobSignal::Stop => libc::SIGSTOP,
+            JobSignal::Continue => libc::SIGCONT,
+            JobSignal::Terminate => libc::SIGTERM,
+        };
+        // SAFETY: plain signal delivery to a positive pid (the callers exclude pid <= 0).
+        if unsafe { libc::kill(pid, sig) } != 0 {
+            return Err(format!("signal to pid {pid} failed: {}", std::io::Error::last_os_error()));
+        }
+        Ok(())
     }
     #[cfg(not(unix))]
     {
-        false
+        match signal {
+            JobSignal::Terminate => {
+                crate::inference::lane_process::kill9(pid as u32);
+                Ok(())
+            }
+            JobSignal::Stop | JobSignal::Continue => Err(
+                "pause/resume are not supported on Windows (no SIGSTOP/SIGCONT); the job is still running".into(),
+            ),
+        }
     }
 }
 

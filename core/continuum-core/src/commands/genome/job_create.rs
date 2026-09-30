@@ -114,9 +114,18 @@ crate::action_command! {
         //    on nothing and burn a job slot).
         match (&p.dataset_name, p.request.dataset.examples.is_empty()) {
             (Some(name), true) => {
-                let path = crate::modules::dataset::default_datasets_root()
-                    .join(name)
-                    .join("train.jsonl");
+                let root = match crate::modules::dataset::default_datasets_root() {
+                    Ok(root) => root,
+                    Err(e) => {
+                        return Ok(JobCreateOutcome {
+                            success: false,
+                            result: None,
+                            error: Some(format!("datasetName {name:?}: no datasets root ({e})")),
+                            error_kind: None,
+                        });
+                    }
+                };
+                let path = root.join(name).join("train.jsonl");
                 p.request.dataset = match crate::genome::fine_tuning::TrainingDataset::from_chat_jsonl(
                     &path,
                     crate::genome::fine_tuning::TrainingSource::OperatorCurated,
@@ -183,7 +192,7 @@ crate::action_command! {
 
         // Capture the genome-paging context BEFORE the request moves into the
         // adapter — the L3 completion sentinel needs exactly these four facts to run
-        // the eval→page-in chain when the job completes, without re-deriving any.
+        // the register→trial chain when the job completes, without re-deriving any.
         let watched_persona_id = p.request.persona_id;
         let watched_persona_name = p.request.persona_name.clone();
         let watched_base_model = p.request.base_model.clone();
@@ -240,8 +249,8 @@ crate::action_command! {
                 // the trigger's batch path dispatches THIS command, a direct
                 // `uu genome/job-create` lands here, and so will any future caller.
                 // Registering the in-flight handle on the board at this single point
-                // is what lets the completion sentinel poll it, run `cognition/eval`,
-                // and page the gene in on `lift > 0`. Without it the handle drops on
+                // is what lets the completion sentinel poll it and open an in-room gene trial
+                // after artifact registration and the finite-loss sanity gate. Without it the handle drops on
                 // the floor and the loop stops at "trained", never "measured +
                 // adopted" ([[dev-task-learning-loop-gap-map]] L3,
                 // docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md).

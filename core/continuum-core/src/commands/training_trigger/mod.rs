@@ -76,6 +76,7 @@ pub(crate) mod test_support {
             prompt: prompt.into(),
             completion: completion.into(),
             metadata: None,
+            lived: None,
         }
     }
 

@@ -211,6 +211,7 @@ fn build_redundancy_generation_request(
         room_id: Some(request.context.room_id.clone()),
         purpose: Some("cognition/check-redundancy".to_string()),
         persona_id: Some(request.context.persona_id.clone()),
+        turn_bound: None,
     }
 }
 

@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use ts_rs::TS;
 
+mod candidate;
+pub use candidate::{CandidateReservation, DatasetCandidate};
+
 /// Manifest persisted alongside imported datasets.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
@@ -869,18 +872,33 @@ pub struct DatasetModule {
     service: Arc<DatasetService>,
 }
 
-/// The ONE default datasets root (`~/.continuum/datasets`). Producers
+/// The ONE default datasets root (`<continuum home>/datasets`). Producers
 /// (`dataset/*` commands) and consumers (`genome/job-create` by `datasetName`)
-/// both resolve through here — the location is defined once.
-pub fn default_datasets_root() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".continuum").join("datasets")
+/// both resolve through here — the location is defined once, and the home through
+/// [`crate::commands::benchmark::continuum_home`], the resolution every other store uses.
+/// It read `HOME` alone before, and a Windows core started by its scheduled task has no
+/// `HOME`, so `dataset/list` on the 5090 read `/tmp\.continuum\datasets` and found nothing
+/// (Codex, 2026-09-28, preparing Kimi's first dream).
+/// With no home at all it fails loud (Cormac on #4496): a dataset written under a temp dir
+/// is a dataset the next boot cannot find.
+pub fn default_datasets_root() -> Result<PathBuf, crate::sdk_codegen::CommandError> {
+    Ok(crate::commands::benchmark::continuum_home()?.join("datasets"))
 }
 
 impl Default for DatasetModule {
     fn default() -> Self {
         Self {
-            service: Arc::new(DatasetService::new(default_datasets_root())),
+            // A module constructor cannot fail; with no home the service is rooted where
+            // nothing persists, and says so once. Every command path resolves the root itself
+            // and fails loud.
+            service: Arc::new(DatasetService::new(default_datasets_root().unwrap_or_else(|e| {
+                crate::probe!(
+                    class = "dataset.root.unresolved",
+                    error = e.to_string().as_str(),
+                    "no continuum home: dataset/* writes land in the temp dir and will not survive a boot"
+                );
+                std::env::temp_dir().join(".continuum").join("datasets")
+            }))),
         }
     }
 }

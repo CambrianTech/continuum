@@ -552,6 +552,7 @@ mod tests {
             prompt: prompt.into(),
             completion: completion.into(),
             metadata: None,
+            lived: None,
         }
     }
 
@@ -969,6 +970,7 @@ mod tests {
                 prompt: "X".into(),
                 completion: "".into(),
                 metadata: None,
+                lived: None,
             }];
             let loader = DataLoader::new(&examples, &ByteTokenizer::new(), 1, 4, &device).unwrap();
             let batch = loader.batches().next().expect("one batch");

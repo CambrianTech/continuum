@@ -277,7 +277,10 @@ impl CommandExecutor {
     ) -> Result<CommandResult, String> {
         let command: CommandUri = command.into();
         let start = std::time::Instant::now();
-        let outcome = self.dispatch(&command, params, caller.as_ref()).await;
+        let work = caller.as_ref().and_then(|c| {
+            crate::persona::cognition_pulse::CommandWork::capture(c.peer_id.as_uuid())
+        });
+        let outcome = self.dispatch(&command, params, caller.as_ref(), work).await;
         self.emit_command_completed(
             command.path(),
             &outcome,
@@ -303,9 +306,14 @@ impl CommandExecutor {
         let handle = uuid::Uuid::new_v4();
         let command: CommandUri = command.into();
         let this = std::sync::Arc::clone(self);
+        // Snapshot the acting card before spawning: the turn may change workspace
+        // before this task gets its first poll. The guard activates after auth.
+        let work = caller.as_ref().and_then(|c| {
+            crate::persona::cognition_pulse::CommandWork::capture(c.peer_id.as_uuid())
+        });
         tokio::spawn(async move {
             let start = std::time::Instant::now();
-            let outcome = this.dispatch(&command, params, caller.as_ref()).await;
+            let outcome = this.dispatch(&command, params, caller.as_ref(), work).await;
             this.emit_command_completed(
                 command.path(),
                 &outcome,
@@ -348,6 +356,7 @@ impl CommandExecutor {
         command: &CommandUri,
         params: Value,
         caller: Option<&crate::routing::CallerIdentity>,
+        work: Option<crate::persona::cognition_pulse::CommandWork>,
     ) -> Result<CommandResult, String> {
         let decision = route(command);
         // Local in-process dispatches pass `None` — substrate's own
@@ -390,12 +399,19 @@ impl CommandExecutor {
             // AircTransport commit lands, swapping `remote_transport`
             // is the only change needed — this match shape doesn't
             // move.
-            match decision {
+            let work = work.map(crate::persona::cognition_pulse::CommandWork::begin);
+            let outcome = match decision {
                 RouteDecision::Local { path, .. } => {
                     self.execute_inner(&path, params, caller).await
                 }
                 non_local => self.remote_transport.dispatch(non_local, params).await,
+            };
+            if outcome.is_ok() {
+                if let Some(work) = &work {
+                    work.completed(crate::modules::chat::now_ms());
+                }
             }
+            outcome
         }
         .instrument(span)
         .await

@@ -793,6 +793,7 @@ mod tests {
             "interface/screenshot",
             "perception/observe",
             "perception/look",
+            "perception/interact",
             "work/claim",
             // #358: the social sense. Pinned here because #339 proved a correct verb
             // that never declares NATIVE is invisible to every citizen — this list is
@@ -816,8 +817,17 @@ mod tests {
         // < 40 → < 42, stated plainly (2026-09-01): activity/recipes + activity/invite
         // joined the native set (the spawn→invite→brief flow — see the agentic-surface
         // ceiling note in llm_deliberation_faculty for the full rationale + token cost).
+        // < 42 → < 47, stated plainly (2026-09-28, Joel: citizens get Claude's hands):
+        // code/shell-poll (follow a long install, build or server), code/git/add,
+        // code/git/push, code/github/pr-create and code/github/pr-comment joined.
+        // < 47 -> < 48, stated plainly (2026-09-28, Joel: every activity's participants make
+        // cards toward its goals): work/create joined; a citizen could claim and move cards
+        // but not create them, so she could not break a project into slices.
+        // < 48 -> < 49, stated plainly (2026-09-28, Joel: help her screenshot and drive her
+        // own site): perception/interact joined, a persistent browser session she drives
+        // and sees after each step, so a slice's "Accepts" has visual evidence (card 3569675f).
         assert!(
-            names.len() < 42,
+            names.len() < 49,
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );

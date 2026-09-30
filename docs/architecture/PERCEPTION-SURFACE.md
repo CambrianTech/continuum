@@ -168,6 +168,15 @@ are this started for capture; Playwright is the full trilogy.
    OCR, layout/contrast/aesthetic classifiers — same adapter pattern as every other `ai/*`.
 5. **Wire a `Surface` as a persona-callable command** + **Critique/score/vote** cognition
    wiring + capture → first training corpus → LoRA the design personas → re-run the Arena.
+   The ACT half is wired (2026-09-28, card 3569675f): `perception/interact` holds a live
+   `PerceptionSession` behind a handle on the eye-node, so a persona drives a page across
+   calls (click, type, press, hover, goto) and gets the observation and `Delta` after each
+   step; `perception/session-close` releases it, and idle sessions close themselves.
+   CSS iteration also uses this session: send an action
+   `{"kind":"hotPatchCss","css":"body { background: purple; }"}` to replace
+   its patch layer, or empty `css` to clear it. The page's navigation and interaction
+   state persist, and the same observation/image/delta returns after the change.
+   The separate `perception/hot-edit` command remains a fresh-page comparison.
 
 ---
 

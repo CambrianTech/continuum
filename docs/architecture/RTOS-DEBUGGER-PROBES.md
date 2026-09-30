@@ -62,6 +62,15 @@ A stable set of `class` values so probes from different files compose into a coh
   - `inference.render_chat` — synchronous chat-template rendering (sub-ms typically, but cumulative)
   - `inference.forward.text` — pure-text LLM forward pass through the scheduler (the dominant cost on LCD tier — 95%+)
   - `inference.forward.multimodal` — mtmd single-flight path (text+image / text+audio)
+- `inference.bound.tripped` — a wait bound tripped and the turn reads as dead from here (`inference/turn_bound.rs`, card ba82d0a0): `at` = the seam (`pre_stream_headers` | `stream_queue` | `remote_deadline`), `name` = lane / model@peer, `bound_secs`, `source` = `floor` | `turn_bound`, `turn_bound_secs` + `expected_secs` (0 = the request carried none). A row whose lane was busy, not dead, says the bound was undersized — that is the number to fix, never the floor.
+
+**Serving: the KV cache decision** (`cognition/kv_cache_plan.rs`, `inference/llama_server.rs`, `ipc/mod.rs`):
+- `serving.kv_cache.backend` — the host's serving backend, recorded ONCE at the single `gpu::monitor::detect()` site: `platform` (what the monitor said), `backend` (`metal` | `cuda` | `rocm` | `vulkan` | `directml` | `cpu` | `unknown`), `quantized_kv` (the fallback table's answer for it — metal/cuda only; the cpu arm is f16 pending a measurement of the dequant cost, not an incapability).
+- `serving.kv_cache.engine_support` — what the serving binary advertises for `--cache-type-k`, asked once per process with a 10 s bound: `bin`, `outcome` (`answered` | `did_not_enumerate` | `probe_failed` | `probe_timeout`), `answered`, `quantized_kv` (read it WITH `answered` — `false` on an unanswered probe means "did not say", not "no"), `error`.
+- `serving.kv_cache.decided` — **the receipt that makes a half-size lane impossible to miss.** Emitted at every spawn: `model`, `cache_type`, `source` (`decided` | `override`), `backend`, `engine_advertised`, `flash_attn`, `divisor`, `kv_bytes_per_token` (the plan's own post-divisor rate, via `footprint_for`), `kv_rate_answered`, `window` (per-lane, the number the plan derived from that rate), `lanes`, `total_ctx`. The chosen type, where it came from, and the window it bought, on one line — because the defect it exists for was SELF-CONSISTENT: the 5090 and the CPU-serving IntelMac both planned *and* served at half their KV budget (a 26,880-token lane, measured 2026-09-20) and nothing ever disagreed.
+
+**Cognition: deliberation** (`cognition/llm_deliberation_faculty.rs`):
+- `delib.turn.bound` — the turn's wire bound was set: `persona`, `expected_secs` (her measured occupancy: uncached prompt at the box's prefill rate + last output at its decode rate), `turn_bound_secs` (× `TURN_BOUND_HEADROOM`). Absent when she has no measured turn behind her — the floors govern alone.
 
 **Cognition: shared analysis** (`cognition/shared_analysis/mod.rs`):
 - `cognition.analyze.enter` — input fingerprint, known_specialties count
@@ -70,6 +79,38 @@ A stable set of `class` values so probes from different files compose into a coh
 - `cognition.analyze.inference` — LLM call: model_used, duration_ms
 - `cognition.analyze.parse` — parsed angles: per-specialty present/empty
 - `cognition.analyze.error` — typed AnalysisError variant
+
+**Deploy** (`modules/deploy_tracker.rs`, `modules/deploy_actuator.rs` — the fleet follows the tip in Rust on every platform):
+- `deploy.track.request_written` — the tip is green and not running: a `DeployRequest` recorded, ONCE per tip (kept standing on later ticks, never re-stamped)
+- `deploy.track.decision` — the guard that refused this tick: verdict, running, reason/stale for a hold
+- `deploy.tip.checks` — the tip's verdict judged over its own push's suites: checks, total, excluded, filtered
+- `deploy.settled` — the requested tip is the running build: tip, running, waited_ms (the measured cost of a deploy on this tier)
+- `deploy.stranded` — a request with nothing building past the grace: tip, running, elapsed_ms (once per tip)
+- `deploy.actuate.deferred_to_external_owner` — a deploy is wanted and another owner acts on this node (the bash tracker's launchd agent / systemd timer, or `CONTINUUM_DEPLOY_ACTUATOR=off`): tip, owner (once per tip)
+- `deploy.actuate.spawned` — the consumer launched detached from the core: tip, pid (0 = a scheduler task run), mode, attempt, cli, log
+- `deploy.actuate.spawn_failed` — the consumer could not be launched: tip, attempt, cli, error
+- `deploy.actuate.decision` — a stranded request not re-actuated yet: verdict=awaiting_bound, attempt, elapsed_ms, bound_ms
+- `deploy.actuate.gave_up` — three actuations did not land the tip here: tip, attempts (once per tip)
+- `deploy.actuate.consumer_exited` — the consumer this core launched exited: tip, pid, status
+- `deploy.actuate.outcome` — at boot, the last actuation graded against the running build: outcome = landed | stale | unknown, running, tip, mode, spawned_ms, attempt
+
+**Workspace transfer** (`persona/workspace_transfer.rs`, card 73eefbbb — the workspace moves with the mind, by git):
+- `workspace.push` — act over, her card branch carried to origin: persona, card, root, branch, sha, committed, pushed, `outcome` = `ok` / `unreachable` / `rejected` / `commit_failed` / `not_pushable` (its reason names which: a detached HEAD, no origin, or an origin only this node can read — a `--shared`/`--mirror` clone of the local cache, which is never pushed into and PINS her instead) / `timed_out`, error, ms. Fired from `persona_workspace::restore_acting_workspace` on every turn her hands were rooted at a card.
+- `placement.move.deferred_unpushed` — a fall-home / return / spill held back this tick: persona, peer, move_kind, `why` (a turn in flight with her hands at a checkout, or unpushed work at a named root). Fired from `placement_switch::follow_the_fleet` before any reservation ask.
+- `workspace.transfer` — the card's branch arrived on a node before her first turn there: card, branch, root, sha, from_node (read off the WIP commit's subject), to_node, `stranded` (the `refs/continuum/stranded/<branch>-<ts>` ref holding a diverged local checkout, empty when none), `outcome` = `transferred` / `current` / `no_remote_branch` / `unreachable` / `not_transferable` (this checkout's origin is a local path — no fetch here can deliver another node's work) / `failed`, error, ms. Fired from `card_staging::stage_for_card`.
+**Prompt-cache reuse** (the prefix economy — card c119ace7; `docs/architecture/KV-CACHE-ECONOMY.md`):
+- `delib.generate.cache` — per generation, at `llm_deliberation_faculty::metrics_from`: persona, `cached_tokens` (llama `cache_n`), `prefill_tokens` (llama `prompt_n`), `hit_rate` = cached / (cached + prefilled), `prefill_ms`, `decode_ms`, input/output tokens. Emitted only when the lane reported timings — a cloud endpoint never fabricates a 0% row. THIS is the "prefix reuse" probe: near-0 `hit_rate` with a large `prefill_tokens` means the prefix is being invalidated upstream (a block moved, or a volatile byte sits ahead of a stable region).
+- `serving.kv.reuse` — the same generation folded into the persona's LIFETIME totals at `Workspace::note_generation` (`turn_rate`, `lifetime_rate`); the one writer that also feeds the hour's `prefix reuse NN%` on the `citizen.health.hour` line.
+- `delib.context.render` / `delib.turn.demand` — how big the prompt WAS (segments, demand vs window); read beside the two above to tell "big prompt" from "re-read prompt".
+
+**Grid allocator daemon** (`modules/grid_allocator.rs`, card 10bba591):
+- `grid.allocation.published` — the allocation CHANGED (inputs key moved) and was published: key, nodes, seats_per_node (`node8:seats,…`), seated, open_seats, dormant, minds, roles. An unchanged grid emits nothing (the key gate).
+- `grid.dormant.oldest_turn_age_ms` — the dormant order beside it: dormant count, oldest_turn_age_ms, slack_seats (open seats × idle fraction), clip_interval_ms (typical turn × dormant / slack; 0 = not derivable).
+- `grid.allocation.pass_panicked` / `grid.allocation.quarantined` — the task's catch_unwind counter and its self-quarantine after three in a row.
+
+**Placement — the opportunity move** (`persona/placement_switch.rs::follow_the_allocation`):
+- `placement.move.opportunity` — the allocation seated her on a strictly better seat and the switch moved her between turns: persona, from, to (`home` or the peer), reason (`requirement` / `capability` / `lanes` / `window`), model, lanes, window, cooldown_ms (her measured cadence).
+- `placement.move.opportunity_refused` — the better seat refused or did not answer the slot ask: persona, to, reason, seat_free.
 
 **Timing** (any seam):
 - `timing` — emitted by `time_sync!` and `time_probe!` spans. Field `seam` = the seam identifier (the macro's first argument). Field `duration_ms` = wall-clock duration from span creation to span close.

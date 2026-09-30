@@ -9,4 +9,4 @@
  * "is this pageable, or does it need a convert dispatch?" without knowing
  * which trainer produced it.
  */
-export type ArtifactFormat = "mlx-adapter-dir" | "gguf-lora" | "candle-safetensors" | "provider-hosted";
+export type ArtifactFormat = "peft-adapter-dir" | "mlx-adapter-dir" | "gguf-lora" | "candle-safetensors" | "provider-hosted";

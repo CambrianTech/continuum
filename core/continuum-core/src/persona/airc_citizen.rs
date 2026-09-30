@@ -379,6 +379,7 @@ pub struct StubAircCitizen {
     /// that exercises the held-work path seeds one so `active_claims()` returns
     /// held work (the held-work gate fires only on a Claimed/InProgress card).
     held: Vec<airc_lib::WorkCard>,
+    boards: std::collections::HashMap<Uuid, Vec<airc_lib::WorkCard>>,
     /// Records every `advance_card_to` call so a test can assert the held-work
     /// completion edge concluded the right card with the right state — the
     /// WRITE half the read supertraits can't observe. Shared `Arc` so the test
@@ -399,6 +400,7 @@ impl StubAircCitizen {
             rooms: Vec::new(),
             claimable: Vec::new(),
             held: Vec::new(),
+            boards: std::collections::HashMap::new(),
             advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             claimed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
@@ -420,6 +422,12 @@ impl StubAircCitizen {
     /// Stand this stub in `rooms` — what [`AircCitizen::subscribed_rooms`] reports.
     pub fn with_rooms(mut self, rooms: Vec<Uuid>) -> Self {
         self.rooms = rooms;
+        self
+    }
+
+    /// Seed a subscribed board without changing which cards the citizen holds.
+    pub fn with_board(mut self, room: Uuid, cards: Vec<airc_lib::WorkCard>) -> Self {
+        self.boards.insert(room, cards);
         self
     }
 
@@ -516,12 +524,12 @@ impl crate::persona::wall_source::WallReader for StubAircCitizen {
 impl crate::persona::room_board_source::RoomBoardReader for StubAircCitizen {
     async fn work_board(
         &self,
-        _room: Option<uuid::Uuid>,
+        room: Option<uuid::Uuid>,
     ) -> Result<airc_work::BoardSnapshot, AircError> {
         // No daemon in tests → an empty board. Cognition runs through cleanly
         // with no [room-kanban] grounding block.
         Ok(airc_work::BoardSnapshot {
-            cards: Vec::new(),
+            cards: room.and_then(|id| self.boards.get(&id)).cloned().unwrap_or_default(), // This stub models an unseeded room as an empty board.
             lanes: Vec::new(),
             workspaces: Vec::new(),
             repo_tracking: Vec::new(),

@@ -209,9 +209,15 @@ impl Transport for CoreIpcTransport {
         if resp.success {
             Ok(resp.result.unwrap_or(Value::Null))
         } else {
+            // THE REFUSAL KEEPS ITS DATA. The IPC server sends `result` beside `error`
+            // on an inner failure precisely so callers see more than the transport
+            // verdict (ipc/mod.rs); dropping it here turned every typed refusal —
+            // errorKind, a continuation offset, a malformed-row count — into a
+            // sentence (card f4d2fa49).
             Err(ClientError::Refused {
                 command: command.to_string(),
                 reason: resp.error.unwrap_or_else(|| "command failed".to_string()),
+                outcome: resp.result,
             })
         }
     }
@@ -296,7 +302,9 @@ mod tests {
             // Build the response payload (typed shape mirrored as json for the
             // server side — the SERVER is the core's role here).
             let payload = if command == "refuse/me" {
-                json!({ "success": false, "error": "refused by test server", "requestId": request_id })
+                json!({ "success": false, "error": "refused by test server", "requestId": request_id,
+                        // the command's own typed outcome rides beside the error (f4d2fa49)
+                        "result": { "success": false, "errorKind": "HistoryIncomplete", "nextHistoryOffset": 4096 } })
             } else {
                 json!({ "success": true, "result": { "echoed": command, "saw": req }, "requestId": request_id })
             };
@@ -427,7 +435,14 @@ mod tests {
             .await
             .expect_err("server refuses this command");
         match err {
-            ClientError::Refused { command, reason } => {
+            ClientError::Refused { command, reason, outcome } => {
+                // what this catches (card f4d2fa49): the typed outcome the IPC server
+                // sends beside `error` on an inner failure used to be dropped here, so
+                // HistoryIncomplete/HistoryCorrupt lost their continuation offset and
+                // malformed count and arrived as a sentence.
+                let outcome = outcome.expect("a refusal with a result carries it as the outcome");
+                assert_eq!(outcome["errorKind"], "HistoryIncomplete");
+                assert_eq!(outcome["nextHistoryOffset"], 4096);
                 assert_eq!(command, "refuse/me");
                 assert!(
                     reason.contains("refused by test server"),

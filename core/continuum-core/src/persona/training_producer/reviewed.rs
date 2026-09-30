@@ -244,6 +244,20 @@ pub struct CreditTransferIntent {
     pub snapshot: StagedCredit,
 }
 
+/// Destination ownership for a transfer, independent of a review or training.
+/// Create-only acknowledgement retains the source evidence and reservations.
+#[derive(Debug, Clone, Serialize, Deserialize, crate::orm::Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "credit_transfer_acceptance")]
+pub struct CreditTransferAcceptance {
+    #[entity(primary_key)]
+    pub id: Uuid,
+    #[entity(foreign_key("credit_transfer_intent.id", on_delete = "restrict"))]
+    pub transfer_intent_id: Uuid,
+    #[entity(json)]
+    pub receipt: SubmitOutcome,
+}
+
 /// A request id is reserved within its persona's store, not globally across
 /// peers. Reused/ambiguous request ids conservatively refuse overlapping credit.
 /// None denotes the existing benchmark settlement path; Some binds the exact
@@ -322,6 +336,81 @@ pub struct ReviewedCredit {
     pub destination: Option<SubmitOutcome>,
 }
 
+/// Inspectable staging metadata, not authorization to train or an inferred link
+/// to an artifact. In particular, the newest turn may only discuss the review.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/work/StagedCreditEvidence.ts"
+)]
+pub struct StagedCreditEvidence {
+    #[ts(type = "string")]
+    pub revision_id: Uuid,
+    #[ts(type = "string | null")]
+    pub claim_id: Option<Uuid>,
+    #[ts(type = "string | null")]
+    pub owner: Option<Uuid>,
+    // u64 -> number, the house convention two fields away in submission.rs
+    // (`submitted_at_ms`, `reviewed_at_ms`). serde sends a JSON NUMBER; without this
+    // ts-rs declares `bigint`, and a client honouring that type throws on
+    // JSON.stringify. Caught as a BLOCKER in review and carried across a rebase.
+    #[ts(type = "number")]
+    pub staged_at_ms: u64,
+    pub generation_count: usize,
+    /// Join keys into the existing capture owner, in dispatch order. Snapshot
+    /// write time is not their dispatch time; an absent capture stays unknown.
+    pub generation_request_ids: Vec<String>,
+    pub matches_submission_claim: bool,
+    pub predates_submission: bool,
+}
+
+/// The existing credit owner projects its own rows. Consumers never receive the
+/// prompt/completion, and an incomplete store response is an error, not "no work".
+pub async fn staged_evidence<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    submitted: &airc_work::WorkSubmission,
+) -> Result<Vec<StagedCreditEvidence>, ClientError> {
+    ensure_storage(conn, persona_name).await?;
+    let value = conn
+        .commands()
+        .execute_value(
+            "data/list",
+            json!({
+                "collection": StagedCredit::COLLECTION,
+                "dbPath": format!("@persona:{persona_name}"),
+                "filter": {"cardId": submitted.card_id.as_uuid().to_string()},
+            }),
+        )
+        .await?;
+    let rows = staged_credit_from_list(value)?;
+    let mut evidence = Vec::with_capacity(rows.len());
+    for row in rows {
+        if row.card_id != submitted.card_id.as_uuid() {
+            return Err(ClientError::Transport(
+                "staged credit query returned another card".into(),
+            ));
+        }
+        evidence.push(StagedCreditEvidence {
+            revision_id: row.id,
+            claim_id: row.claim_id,
+            owner: row.owner,
+            staged_at_ms: row.staged_at_ms,
+            generation_count: row.receipts.len(),
+            generation_request_ids: row
+                .receipts
+                .into_iter()
+                .map(|receipt| receipt.submitted_request_id)
+                .collect(),
+            matches_submission_claim: row.claim_id == Some(submitted.claim_id.as_uuid())
+                && row.owner == Some(submitted.publisher.as_uuid()),
+            predates_submission: row.staged_at_ms <= submitted.submitted_at_ms,
+        });
+    }
+    evidence.sort_by_key(|row| (row.staged_at_ms, row.revision_id));
+    Ok(evidence)
+}
+
 impl ReviewedCredit {
     pub fn pending(state: ReviewedCreditState) -> Self {
         Self {
@@ -354,6 +443,7 @@ pub async fn ensure_storage<T: Transport>(
     for collection in [
         StagedCredit::COLLECTION,
         CreditTransferIntent::COLLECTION,
+        CreditTransferAcceptance::COLLECTION,
         WorkCreditBinding::COLLECTION,
         CreditGenerationReservation::COLLECTION,
         CreditReviewDecision::COLLECTION,
@@ -500,9 +590,23 @@ async fn consume_review_credit<T: Transport>(
     {
         return Err(CreditBindingError::WrongSelection);
     }
-    let Some(mut params) = staged_submission_params(persona_id, persona_name, row, true) else {
-        result.state = ReviewedCreditState::IneligibleEvidence;
-        return Ok(result);
+    let mut params = match staged_submission_params(persona_id, persona_name, row, true) {
+        Ok(params) => params,
+        Err(reason) => {
+            // This path ALREADY named its state (`IneligibleEvidence`), so it was
+            // never silent the way the other caller was — but it could not say WHY.
+            // Now it can, from the same named reason.
+            crate::probe!(
+                class = "training.credit.reviewed_ineligible",
+                persona = %persona_name,
+                card = %row.card_id,
+                revision = %row.id,
+                reason,
+                "a reviewed credit's staged revision cannot be submitted — the state was already named, the reason now is too"
+            );
+            result.state = ReviewedCreditState::IneligibleEvidence;
+            return Ok(result);
+        }
     };
     reserve_transfer(conn, persona_name, row, Some(id)).await?;
     let decision = CreditReviewDecision {
@@ -701,6 +805,60 @@ async fn write_batch<T: Transport>(
         )
         .await?;
     storage_ok(&value, "data/batch", WorkCreditBinding::COLLECTION)
+}
+
+pub(super) async fn transfer_accepted<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    revision: Uuid,
+) -> Result<bool, ClientError> {
+    let prior =
+        read_one::<_, CreditTransferAcceptance>(conn, persona_name, &revision.to_string()).await?;
+    Ok(prior.is_some_and(|prior| {
+        prior.id == revision
+            && prior.transfer_intent_id == revision
+            && prior
+                .receipt
+                .acceptance
+                .as_ref()
+                .is_some_and(|a| a.submission_id == revision)
+    }))
+}
+
+/// Called only after exact-intent reservation and destination identity validation.
+/// A competing successful retry may win this create; a refusal never overwrites it.
+pub(super) async fn accept_transfer<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    revision: Uuid,
+    receipt: SubmitOutcome,
+) -> Result<(), ClientError> {
+    if receipt
+        .acceptance
+        .as_ref()
+        .is_none_or(|a| a.submission_id != revision)
+    {
+        return Err(ClientError::Transport(
+            "destination did not accept this revision".into(),
+        ));
+    }
+    let accepted = CreditTransferAcceptance {
+        id: revision,
+        transfer_intent_id: revision,
+        receipt,
+    };
+    if let Err(error) = write_batch(
+        conn,
+        persona_name,
+        vec![create(revision.to_string(), &accepted)?],
+    )
+    .await
+    {
+        if !transfer_accepted(conn, persona_name, revision).await? {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn reservations(

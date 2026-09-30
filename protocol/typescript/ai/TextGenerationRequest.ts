@@ -47,4 +47,16 @@ responseFormat?: ResponseFormat, activeAdapters?: Array<ActiveAdapterRequest>, r
  * pressure policy can't make per-persona eviction decisions.
  * See docs/architecture/PERSONA-CONTEXT-PAGING.md §13.
  */
-personaId?: string, };
+personaId?: string, 
+/**
+ * The bound this turn is owed on the wire, sized from the MEASURED work: the mind's
+ * expected occupancy (the uncached prompt at the box's measured prefill rate plus
+ * her last output at its decode rate) with headroom — `inference::turn_bound`.
+ * Every waiting seam takes `max(its floor, this)`: the header wait, the stream's
+ * queue budget, the remote deadline. So a slow box's long prefill is waited out
+ * instead of read as dead (card ba82d0a0: a 30k prompt at 25 tok/s is ~1200 s
+ * before the first byte, past every fixed bound). `None` = no expectation yet; the
+ * floors govern alone. Serialized as serde's `{secs, nanos}` so the SERVING peer's
+ * lane honours it too.
+ */
+turnBound?: { secs: number, nanos: number }, };

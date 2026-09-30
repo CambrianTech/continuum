@@ -1,0 +1,50 @@
+# THE RATCHETS, IN UNDER A MINUTE.
+#
+# Measured 2026-09-22: four of four CI reds that day were ratchet failures, not failing
+# tests — unwrap counts, boundary-serialization counts, rustc warnings. Half of them were
+# these source scans, and every one cost its author the full 12.4-minute continuum-core
+# build to learn that a number went 2264 -> 2265. Time-to-red is what a contributor pays.
+#
+# `source-hygiene` is std-only and dependency-free, so this job compiles and runs the
+# whole ratchet suite in seconds (measured locally: cargo check 0.77 s, 26 tests 3.4 s).
+# It is a SEPARATE workflow, not another job in continuum-rust-tests.yml, so it reports
+# in about a minute whatever the Rust suite is doing.
+#
+# This does NOT replace a gate. The same tests run in the same crate; this runs them
+# EARLY. Nothing was made conditional and nothing was removed.
+name: Source Hygiene Ratchets
+
+on:
+  pull_request:
+  push:
+    branches: [canary, main]
+
+concurrency:
+  group: source-hygiene-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ratchets:
+    name: source-hygiene ratchets (fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The scans read `core/continuum-core/src`; vendor_pin additionally asks git
+          # for the recorded submodule pointer, so the checkout must be able to answer.
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup show
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Its OWN key. Sharing continuum-core's would make a one-minute job wait on
+          # (and then save) a multi-gigabyte cache for a crate with zero dependencies.
+          shared-key: source-hygiene
+          cache-on-failure: true
+
+      - name: cargo test -p source-hygiene
+        run: cargo test -p source-hygiene

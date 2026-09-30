@@ -401,7 +401,7 @@ impl OpenAICompatibleAdapter {
     /// [`PROVIDER_ID`](crate::inference::llama_server::PROVIDER_ID) const — no
     /// name sniffing), and the address exists only when `/props` confirmed
     /// sight, so pixels can never be aimed at a text lane.
-    fn endpoints_for_model(&self, model: &str) -> OpenAiBase {
+    fn endpoints_for_model(&self, model: &str, base: &OpenAiBase) -> OpenAiBase {
         if self.config.provider_id == crate::inference::llama_server::PROVIDER_ID {
             let snap = crate::inference::llama_server::current_serving();
             if snap.vision_ready
@@ -413,7 +413,7 @@ impl OpenAICompatibleAdapter {
                 }
             }
         }
-        self.endpoints()
+        base.clone()
     }
 
     /// Fetch the live model list from the provider's /v1/models endpoint.
@@ -556,35 +556,6 @@ impl OpenAICompatibleAdapter {
     /// and NOT cached — a momentarily-dead server is not a server without LoRA
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
-    /// Stable slot for an ACTIVITY (a persona's conversation in a room — the
-    /// typed [`ActivityKey`](crate::inference::slots::ActivityKey)), discovering
-    /// the backend's slot count on first use (`GET /props` → `total_slots`).
-    /// The adapter owns only the TRANSPORT half (it has the HTTP client); the
-    /// lease itself lives in [`crate::inference::slots`] — the KV concern's
-    /// adapter over the ONE shared paging engine, per
-    /// [[one-paging-engine-many-trait-implementers]]. Returns `None` when the
-    /// backend has no props surface / one slot (latched unsupported) or on a
-    /// transport error (NOT latched — a momentarily-dead server is not a server
-    /// without slots; same discipline as the LoRA probe).
-    /// The reserved scratch slot for this server, if its pool is installed and
-    /// reserved one. Deliberately does NOT probe /props: scratch placement is a
-    /// best-effort courtesy for non-Turn traffic, and the first Turn request
-    /// installs the pool anyway — before that, non-Turn traffic simply runs
-    /// unpinned exactly as it always did.
-    fn scratch_slot_for_root(&self) -> Option<u32> {
-        let root = self.endpoints().root().to_string();
-        // Typed seam: the process-global SlotDirectory hands this adapter its
-        // server's KvSlotPool — the ONE paging-engine implementer for KV slots.
-        let dir: &crate::inference::slots::SlotDirectory = crate::inference::slots::directory();
-        match dir.get(&root) {
-            Some(Some(pool)) => {
-                let pool: std::sync::Arc<crate::inference::slots::KvSlotPool> = pool;
-                pool.scratch_slot()
-            }
-            _ => None,
-        }
-    }
-
     /// Ensure this server's KV slot pool exists — probe `/props` once, install via
     /// `ensure_pool` — and return it. DISCOVERY only: the lease + pin + KV paging live
     /// in [`crate::inference::turn_admission::admit_turn`], which takes this pool. (Was
@@ -592,18 +563,19 @@ impl OpenAICompatibleAdapter {
     /// lives in one place.)
     async fn ensure_slot_pool(
         &self,
+        endpoints: &OpenAiBase,
     ) -> Option<std::sync::Arc<crate::inference::slots::KvSlotPool>> {
-        let root = self.endpoints().root().to_string();
+        let root = endpoints.root();
         let dir = crate::inference::slots::directory();
         // Fast path: this server's state already known (process-global directory —
         // every adapter instance talking to the same server shares ONE assignment).
-        match dir.get(&root) {
+        match dir.get(root) {
             Some(Some(pool)) => return Some(pool),
             Some(None) => return None, // latched unsupported
             None => {}                 // never probed — probe below
         }
         // Probe /props once. Lock is NOT held across the await.
-        let url = self.endpoints().props();
+        let url = endpoints.props();
         let resp = match self.client.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
@@ -629,7 +601,7 @@ impl OpenAICompatibleAdapter {
                     status = status.as_u16() as u64,
                     "props endpoint absent — slot affinity latched OFF for this server",
                 );
-                dir.latch_unsupported(&root);
+                dir.latch_unsupported(root);
             } else {
                 crate::probe!(
                     class = "inference.slot_affinity.deferred",
@@ -661,7 +633,7 @@ impl OpenAICompatibleAdapter {
             .pointer("/default_generation_settings/n_ctx")
             .and_then(|v| v.as_u64())
         {
-            served_ctx_by_root().insert(root.clone(), n_ctx as u32);
+            served_ctx_by_root().insert(root.to_owned(), n_ctx as u32);
         }
         let n_slots = body
             .get("total_slots")
@@ -673,7 +645,7 @@ impl OpenAICompatibleAdapter {
         }
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
-        let pool = dir.ensure_pool(&root, n_slots);
+        let pool = dir.ensure_pool(root, n_slots);
         tracing::info!(
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
@@ -749,7 +721,18 @@ impl OpenAICompatibleAdapter {
                 return Some(*id);
             }
         }
-        // 2. substring on path or name
+        // 2. a gene staged into the engine's --train-dir for a runtime load (charter S1):
+        //    the catalog carries the staged file, named from the genome path
+        if !path.is_empty() {
+            if let Some(stage) = crate::inference::llama_server::gene_stage_name(std::path::Path::new(path)) {
+                if let Some((id, _)) = catalog.iter().find(|(_, p)| {
+                    std::path::Path::new(p).file_name().and_then(|n| n.to_str()) == Some(stage.as_str())
+                }) {
+                    return Some(*id);
+                }
+            }
+        }
+        // 3. substring on path or name
         catalog
             .iter()
             .find(|(_, p)| {
@@ -1012,29 +995,58 @@ impl OpenAICompatibleAdapter {
 ///    answer. Returns empty text so the caller refuses to post, never leaking raw
 ///    reasoning.
 ///
+/// And across all three: a BARE `</think>` in `content` (no `<think>` before it) closes
+/// reasoning that began before `content` did, so everything up to the LAST one is
+/// reasoning. Two shapes produce it. The Qwen3.x templates open `<think>` inside the PROMPT,
+/// so an unparsed completion starts mid-thought. And a mind that QUOTES the close tag while
+/// thinking (Kimi, 2026-09-28, reasoning about this very split) emits the special token, the
+/// server's parser ends `reasoning_content` at the quote, and the rest of her thinking, her
+/// real `</think>` and her answer all arrive as `content`: two fragments of her reasoning
+/// were published to the room as speech. The recovered reasoning is APPENDED to the
+/// reasoning, never dropped: thinking is what the learning genome trains on (Joel,
+/// 2026-09-28: "think is quintessential to learning genome").
+///
 /// Returns `(clean_text, reasoning)`. Pure + synchronous → unit-tested in isolation.
 pub(crate) fn extract_reasoning(
     content: &str,
     reasoning_content: Option<&str>,
 ) -> (String, Option<String>) {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    // A bare close: reasoning that began before `content` ends at its LAST STANDALONE
+    // `</think>` (alone on its line, as the model's own close is: `\n</think>\n\n`). A close
+    // written inline is a quote, in her thinking or in an answer, and closes nothing (Cormac
+    // on #4493: an answer that says "a bare `</think>`" must keep its head).
+    let (content, carried) = match last_standalone(content, CLOSE) {
+        Some(close) if !content[..close].contains(OPEN) => {
+            (&content[close + CLOSE.len()..], Some(content[..close].trim()))
+        }
+        _ => (content, None),
+    };
+    // Joined where the parser cut it: at the close tag she quoted (or the prompt's open).
+    let joined = |before: Option<&str>| -> Option<String> {
+        let parts: Vec<&str> = [before, carried].into_iter().flatten().map(str::trim).filter(|p| !p.is_empty()).collect();
+        (!parts.is_empty()).then(|| parts.join(&format!("\n{CLOSE}\n")))
+    };
+
     // (1) Server already split it out — trust that; content is the clean answer.
     if let Some(rc) = reasoning_content {
         let rc = rc.trim();
         if !rc.is_empty() {
-            return (content.trim().to_string(), Some(rc.to_string()));
+            return (content.trim().to_string(), joined(Some(rc)));
         }
     }
 
-    const OPEN: &str = "<think>";
-    const CLOSE: &str = "</think>";
     let Some(open_idx) = content.find(OPEN) else {
-        // (no think) plain content.
-        return (content.trim().to_string(), None);
+        // (no think) plain content, less any reasoning a bare close carried.
+        return (content.trim().to_string(), joined(None));
     };
     let before = content[..open_idx].trim();
     let after_open = &content[open_idx + OPEN.len()..];
 
-    match after_open.find(CLOSE) {
+    // The last STANDALONE close, else the first close: a close she quoted inline mid-thought
+    // is not the end of her thinking, and a compact `<think>x</think>answer` still splits.
+    match last_standalone(after_open, CLOSE).or_else(|| after_open.find(CLOSE)) {
         // (2) Well-formed <think>…</think>: answer is whatever sits OUTSIDE the block.
         Some(close_rel) => {
             let reasoning = after_open[..close_rel].trim();
@@ -1059,6 +1071,19 @@ pub(crate) fn extract_reasoning(
             )
         }
     }
+}
+
+/// PURE: the byte index of the last `tag` that stands alone on its line (only whitespace
+/// between it and the line's start and end), or `None`.
+fn last_standalone(text: &str, tag: &str) -> Option<usize> {
+    text.match_indices(tag)
+        .map(|(i, _)| i)
+        .filter(|&i| {
+            let before = text[..i].rsplit('\n').next().unwrap_or(""); // unwrap_or: rsplit always yields a piece
+            let after = text[i + tag.len()..].split('\n').next().unwrap_or(""); // unwrap_or: as above
+            before.trim().is_empty() && after.trim().is_empty()
+        })
+        .last()
 }
 
 // `apply_no_think_switch` / `close_trailing_assistant` live in `crate::inference::request_body` (S3b decompose).
@@ -1095,15 +1120,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self.config.name
     }
 
-    /// RESTORE-AHEAD (compression-ladder rung 1): the scheduler knows this
-    /// activity generates next, so page its KV in NOW, overlapped with the
-    /// caller's prompt assembly. Runs the SAME lease + save/restore protocol
-    /// as the pin-time path — `lease_paged` is idempotent for the same key, so
-    /// when the pin arrives the slot is already warm (`prev == key`) and the
-    /// backstop performs nothing. Pin-time restores were measured queueing
-    /// behind busy slots to the 10s timeout (2026-09-01); this moves the wait
-    /// off the turn's critical path. Fire-and-forget by design: a failed
-    /// warm-ahead costs nothing — the backstop still runs.
+    /// Restore the next activity during prompt assembly through the same
+    /// admission and paging owner as generation. Only a completed restore or
+    /// existing physical residency is warm; failure leaves the turn backstop
+    /// responsible for restoring or prefilling normally.
     fn warm_ahead(&self, persona: uuid::Uuid, room: uuid::Uuid) {
         let Some(key) = crate::inference::slots::ActivityKey::new(persona, room) else {
             return; // nil halves (test workspaces, roomless background) — nothing to warm
@@ -1115,45 +1135,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let Some(Some(pool)) = crate::inference::slots::directory().get(&root) else {
             return;
         };
-        if pool.n_slots() == 1 {
-            // No spare slot: restoration must hold the actual turn permit. This
-            // best-effort task must not restore over transient background KV.
+        if pool.scratch_slot().is_none() {
+            // Without reserved scratch, already-admitted keyless traffic can
+            // select any physical slot and bypass speculative paging admission.
             return;
         }
         let client = self.client.clone();
+        let concurrency = self.concurrency.clone();
         tokio::spawn(async move {
-            let started = std::time::Instant::now();
-            let Some(pg) = pool.lease_paged(key).await else {
-                return; // every slot pinned — the pin-time path will retry
-            };
-            if let Some(prev) = pg.save_first {
-                if crate::inference::turn_admission::kv_page_action(
-                    &client, &root, pg.slot, &prev, "save",
-                )
-                .await
-                {
-                    pool.note_saved(prev);
-                }
-            }
-            if pg.restore
-                && !crate::inference::turn_admission::kv_page_action(
-                    &client, &root, pg.slot, &key, "restore",
-                )
-                .await
-            {
-                pool.note_page_lost(&key);
-            }
-            crate::probe!(
-                class = "inference.kv_warm_ahead",
-                persona = %key.persona,
-                room = %key.room,
-                slot = pg.slot as u64,
-                saved_evictee = pg.save_first.is_some(),
-                restored = pg.restore,
-                ms = started.elapsed().as_millis() as u64,
-                "restore-ahead — the scheduler's knowledge of who generates next IS the \
-                 cache prediction; the page lands during prompt assembly, not during the turn",
-            );
+            let _ = crate::inference::turn_admission::warm_ahead(
+                &concurrency,
+                key,
+                pool,
+                &client,
+                &root,
+            )
+            .await;
         });
     }
 
@@ -1383,6 +1380,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         let start = Instant::now();
+        let endpoints = self.endpoints();
         let request_id = request
             .request_id
             .clone()
@@ -1432,12 +1430,19 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             vision_native,
         );
 
+        // Message content is final here; later extensions only add transport fields.
+        // Carry this estimate through admission, overflow checks and send receipts.
+        let prompt_tokens = crate::inference::serving_guard::approx_prompt_tokens(&body);
+
         // Held for the WHOLE turn: the concurrency permit + slot pin, as one RAII
         // guard bound HERE at function scope so it lives across the generation below
         // and releases both on drop. Assigned by turn admission inside the block (or,
         // for a non-llamacpp provider, by the permit-only fallback after it). This is
         // the scope that made the old inline permit/pin fragile — now it's one value.
         let mut _admission: Option<crate::inference::turn_admission::TurnAdmission> = None;
+        // The pinned slot, named for the act deadline's per-request progress check (card
+        // 6f3218ed); cleared when this generation ends.
+        let mut _in_flight: Option<crate::inference::llama_server::InFlightSlotGuard> = None;
         if self.config.llamacpp_sampling_extensions {
             if let Some(obj) = body.as_object_mut() {
                 apply_llamacpp_sampling_knobs(obj, &request);
@@ -1541,22 +1546,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
-            let approx_tokens = body
-                .get("messages")
-                .and_then(|m| m.as_array())
-                .map(|msgs| {
-                    msgs.iter()
-                        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                        .map(|c| c.len() / 4)
-                        .sum::<usize>()
-                })
-                .unwrap_or(0) as u64; // unwrap_or: unknown size = 0 tokens, the price basis floor
-                                      // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
-                                      // this activity's slot and page its KV onto a now-free slot. The returned
-                                      // guard holds the permit + slot pin for the WHOLE generation (bound into
-                                      // `_admission` at function scope above). A Turn that cannot name both
-                                      // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
-                                      // takes the permit only and lands on the scratch slot below.
+            let approx_tokens = prompt_tokens as u64;
+            // TURN ADMISSION (event-driven, no timeout) — permit-first, then lease+pin
+            // this activity's slot and page its KV onto a now-free slot. The returned
+            // guard holds the permit + slot pin for the WHOLE generation (bound into
+            // `_admission` at function scope above). A Turn that cannot name both
+            // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
+            // takes the permit only and lands on the scratch slot below.
             let turn_key = match class {
                 crate::inference::slots::SlotClass::Turn => request
                     .persona_id
@@ -1571,27 +1567,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r)),
                 _ => None,
             };
-            let root = self.endpoints().root().to_string();
+            let root = endpoints.root();
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool().await;
+            let pool = self.ensure_slot_pool(&endpoints).await;
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
                 turn_key,
                 pool,
                 &self.client,
-                &root,
+                root,
                 approx_tokens,
+                crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
             )
-            .await;
+            .await
+            .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
+            let scratch = adm.scratch_slot();
             let placement: Option<u32> = match class {
                 crate::inference::slots::SlotClass::Turn => adm.slot(),
                 _ => {
                     // Non-Turn: the scratch slot when this server reserved one. When
                     // it did not (≤2 slots), stay unpinned AND drop cache_prompt so
                     // the call cannot PERSIST a stolen cache into a citizen slot.
-                    let scratch = self.scratch_slot_for_root();
                     if scratch.is_none() {
                         if let Some(obj) = body.as_object_mut() {
                             obj.insert("cache_prompt".to_string(), json!(false));
@@ -1617,6 +1615,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 if let Some(obj) = body.as_object_mut() {
                     obj.insert("id_slot".to_string(), json!(slot));
                 }
+                if let (crate::inference::slots::SlotClass::Turn, Some(persona)) = (
+                    class,
+                    request.persona_id.as_deref().and_then(|p| uuid::Uuid::parse_str(p).ok()),
+                ) {
+                    _in_flight = Some(crate::inference::llama_server::InFlightSlotGuard::register(persona, root, slot));
+                }
             }
             if let Some(persona) = request.persona_id.as_deref() {
                 // #139 overshoot alarm: name the RAG-budget bug BEFORE the
@@ -1626,17 +1630,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // into a diagnosis. Chars/4 is a deliberately conservative
                 // token estimate — an alarm that only fires when the overshoot
                 // is unambiguous.
-                if let Some(served) = served_ctx_by_root().get(self.endpoints().root()) {
-                    let approx_tokens = body
-                        .get("messages")
-                        .and_then(|m| m.as_array())
-                        .map(|msgs| {
-                            msgs.iter()
-                                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                                .map(|c| c.len() / 4)
-                                .sum::<usize>()
-                        })
-                        .unwrap_or(0);
+                if let Some(served) = served_ctx_by_root().get(endpoints.root()) {
+                    let approx_tokens = prompt_tokens;
                     if approx_tokens > *served as usize {
                         // #3847: the total was measured but never ATTRIBUTED, so
                         // "the prompt is 6x the window" could not be turned into
@@ -1729,7 +1724,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // text-only mind) routes to the snapshot's verified `vision_base_url`.
         // Snapshot-driven: the daemon publishes the address only after `/props`
         // confirmed sight, so this can never aim pixels at a text lane.
-        let url = self.endpoints_for_model(&model).chat_completions();
+        let url = self
+            .endpoints_for_model(model, &endpoints)
+            .chat_completions();
 
         let mut request_builder = self
             .client
@@ -1774,17 +1771,19 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // large semaphore), held in `_admission` to the end of generation exactly like
         // the slot path. Acquire can't fail: the semaphore is never closed.
         if _admission.is_none() {
-            let root = self.endpoints().root().to_string();
+            let root = endpoints.root();
             _admission = Some(
                 crate::inference::turn_admission::admit_turn(
                     &self.concurrency,
                     None,
                     None,
                     &self.client,
-                    &root,
+                    root,
                     0,
+                    crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
                 )
-                .await,
+                .await
+                .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,
             );
         }
 
@@ -1795,7 +1794,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             self.dedicated_lane,
             model,
-            &body,
+            crate::inference::serving_guard::PromptCount::Estimated(prompt_tokens),
             request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;
@@ -1805,6 +1804,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             request_builder,
             body_bytes,
+            request.turn_bound,
+            crate::inference::lane_send::FillReceipt {
+                model,
+                prompt_tokens,
+                image_quote: (self.config.single_resident_model
+                    && self.targets_local_serving_lane()
+                    && crate::inference::serving_guard::needs_image_quote(&body))
+                    .then_some(crate::inference::lane_send::ImageQuote {
+                        client: &self.client,
+                        dedicated_lane: self.dedicated_lane,
+                        caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
+                        patience: crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
+                    }),
+            },
         )
         .await?;
 
@@ -1837,11 +1850,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // `note_real_decode` (which streaming never stamped, leaving the citizens'
         // primary path invisible to the liveness record). It also ends any failure
         // streak. Gated on the local lane like the failure stamps above.
-        if local_lane
-            && (!acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty())
-        {
-            crate::inference::llama_server::note_real_decode();
-        }
+        let delivered_something =
+            !acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty();
 
         // harness/memory and stripped from `text` so it can NEVER reach the room.
         let raw_content = acc_content;
@@ -1853,8 +1863,70 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .as_deref()
             .map(|r| self.map_finish_reason(r))
             .unwrap_or(FinishReason::Stop);
-        let generation_completed = finish_reason_str.is_some()
-            && !matches!(finish_reason, FinishReason::Error);
+        let generation_completed =
+            finish_reason_str.is_some() && !matches!(finish_reason, FinishReason::Error);
+
+        match crate::inference::llama_server::classify_real_decode(
+            local_lane,
+            delivered_something,
+            finish_reason,
+        ) {
+            crate::inference::llama_server::RealDecodeOutcome::NotOurLane => {}
+            // The output cap ended it on a HEALTHY lane — the allowance owns this, not
+            // the backend. Surfaced so it is never silent, never charged to the lane.
+            crate::inference::llama_server::RealDecodeOutcome::CappedBeforeOutput => {
+                crate::probe!(
+                    class = "inference.lane.capped_before_output",
+                    model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
+                    response_time_ms,
+                    "the local lane hit its output cap having committed no answer — an \
+                     allowance fault on a working backend, NOT lane wedge evidence"
+                );
+            }
+            crate::inference::llama_server::RealDecodeOutcome::ProofOfLife => {
+                crate::inference::llama_server::note_real_decode();
+            }
+            crate::inference::llama_server::RealDecodeOutcome::DeliveredNothing => {
+                // A stream that reached EOF CLEANLY having delivered nothing is a FAILED
+                // real generation, not a quiet one — and it was the only wedge class the
+                // liveness record could not see. The failure stamps in `sse_stream` fire on
+                // transport death (read error, mid-stream silence, non-200); a latched Metal
+                // backend does none of that. It answers 200, streams a well-formed SSE body
+                // with zero deltas, and closes. Success was correctly withheld here (the
+                // guard above), but nothing recorded a FAILURE either — so `REAL_DECODE_FAILS`
+                // stayed at 0 and the heartbeat's wedge evidence, which outranks both the
+                // recent-decode trust window and a passing 1-token smoke probe, never fired.
+                //
+                // Measured on the M5 2026-09-22, one llama-server log: 145
+                // `kIOGPUCommandBufferCallbackErrorOutOfMemory` lines resolving to 2 root
+                // Metal OOMs, each latching the backend ("backend is in error state from a
+                // previous command buffer failure - recreate the backend to recover") which
+                // the server never acts on. 113 tasks were then launched and released with
+                // NO generation eval at all — prefill ran, generation never did. Downstream:
+                // 73 `delib.empty_completion` faults across six citizens (Rania, Freya,
+                // Mathis, Esme, Benchy, Cyrus), every one `reasoning_chars = 0`, each after
+                // 30–190s of waiting. The deliberation faculty correctly refuses to launder
+                // that as chosen silence, but the fault stayed PER-CITIZEN: six minds each
+                // retried into the same dead backend for hours because no one told the LANE.
+                //
+                // Empty is the lane's failure, so the lane records it. At
+                // `HEALTH_FAILS_TO_RELAUNCH` (2) consecutive, the heartbeat relaunches and
+                // the Metal backend is recreated — the recovery the server's own log asks
+                // for. Gated on `local_lane` like every other stamp, so a cloud provider's
+                // empty turn can never smear the local record.
+                // [[the-measurement-already-exists-and-nothing-consumes-it]]
+                crate::inference::llama_server::note_real_decode_failure();
+                crate::probe!(
+                    class = "inference.lane.delivered_nothing",
+                    model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
+                    response_time_ms,
+                    consecutive =
+                        crate::inference::llama_server::consecutive_real_decode_failures(),
+                    "the local lane streamed a clean EOF with no content, no reasoning and \
+                     no tool call — counted against the lane, not the citizen"
+                );
+            }
+        }
 
         // Assemble native tool calls from the streamed fragments.
         let mut tool_calls: Option<Vec<ToolCall>> = if acc_tools.is_empty() {
@@ -1987,7 +2059,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // The measured prefill rate feeds the render budget (`inference::prefill_rate`):
             // what a turn may cost before its first token is derived from what this lane
             // actually prefills at, not from the served window alone.
-            crate::inference::prefill_rate::observe(model, t.prefill_ms, t.prefill_tokens_per_second);
+            crate::inference::prefill_rate::observe(
+                model,
+                t.prefill_ms,
+                t.prefill_tokens_per_second,
+            );
         }
 
         // Plain EOF is accepted by the existing stream reader, but is not proof
@@ -1996,6 +2072,24 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         if generation_completed {
             if let Some(admission) = _admission.as_mut() {
                 admission.generation_completed();
+                // THE RESTORE ECONOMY, JUDGED ON REAL TRAFFIC. A turn whose KV was
+                // restored from a page either reused it (the engine reports cached
+                // tokens) or silently re-prefilled everything (cache_n 0, the 09-04 /
+                // 09-14 class). This is the evidence the deploy self-check reads
+                // instead of injecting a probe into a live engine, which measured load
+                // and contention and held the M5 three times on 2026-09-25/26 while
+                // restores were warm (card 356ce732).
+                if admission.restored() {
+                    if let Some(t) = &timing {
+                        crate::probe!(
+                            class = "inference.restored_turn",
+                            cached = t.cached_tokens,
+                            prompt = t.prefill_tokens,
+                            outcome = if t.cached_tokens > 0 { "warm" } else { "cold" },
+                            "a turn restored from a KV page completed — did the engine reuse the restored prefix"
+                        );
+                    }
+                }
             }
         }
 
@@ -2572,6 +2666,8 @@ mod tests {
 
         let received = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let log = Arc::clone(&received);
+        let quotes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let quote_log = Arc::clone(&quotes);
         let app = Router::new().route("/v1/chat/completions", post(move |body: axum::body::Bytes| {
             let log = Arc::clone(&log);
             async move {
@@ -2586,6 +2682,16 @@ mod tests {
                     (StatusCode::BAD_REQUEST, r#"{"error":{"type":"exceed_context_size_error","message":"no counts may be inferred from this text","n_prompt_tokens":29722,"n_ctx":29440}}"#)
                 }
             }
+        }))
+        .route("/v1/chat/completions/input_tokens", post(move |body: axum::body::Bytes| {
+            let log = Arc::clone(&quote_log);
+            async move {
+                log.lock().expect("quote log").push(body.to_vec());
+                (StatusCode::OK, r#"{"input_tokens":1319}"#)
+            }
+        }))
+        .route("/bad/chat/completions/input_tokens", post(|| async {
+            (StatusCode::OK, r#"{"input_tokens":"unknown"}"#)
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -2629,6 +2735,17 @@ mod tests {
                     .post(format!("http://{address}/v1/chat/completions"))
                     .header("Content-Type", "application/json"),
                 body.clone(),
+                None,
+                crate::inference::lane_send::FillReceipt {
+                    model: "fixture",
+                    prompt_tokens: 4,
+                    image_quote: Some(crate::inference::lane_send::ImageQuote {
+                        client: &adapter.client,
+                        dedicated_lane: true,
+                        caller: "fixture",
+                        patience: std::time::Duration::from_secs(5),
+                    }),
+                },
             ),
         )
         .await
@@ -2640,6 +2757,25 @@ mod tests {
                 available: 29440
             })
         ));
+        assert_eq!(*quotes.lock().expect("actual quotes"), vec![body.clone(), body.clone()],
+            "the 503 transport retry must re-quote the unchanged prepared body");
+        // Use this same transport fixture to verify that quote failures remain
+        // errors, never a zero-cost image estimate or a generation request.
+        for (path, expected) in [
+            ("v1/chat/completions", Ok(1319)),
+            ("bad/chat/completions", Err("positive input_tokens")),
+            ("missing/chat/completions", Err("HTTP 404")),
+        ] {
+            let quoted = crate::inference::serving_guard::quote_image_prompt(
+                &adapter.client,
+                &adapter.client.post(format!("http://{address}/{path}")).body(body.clone()),
+                std::time::Duration::from_secs(5),
+            ).await;
+            match expected {
+                Ok(tokens) => assert_eq!(quoted.unwrap(), tokens),
+                Err(message) => assert!(quoted.unwrap_err().contains(message)),
+            }
+        }
         server.abort();
         let _ = server.await;
         let received = received.lock().expect("actual wire requests");
@@ -2703,9 +2839,11 @@ mod tests {
                     if (action == "save" && fail.load(Ordering::SeqCst))
                         || (action == "restore" && restore_fail.load(Ordering::SeqCst))
                     {
-                        StatusCode::INTERNAL_SERVER_ERROR
+                        (StatusCode::BAD_REQUEST, Json(json!({"error": {"code": 400, "type": "invalid_request_error", "message": "fixture page rejected"}})))
                     } else {
-                        StatusCode::OK
+                        let mut receipt = json!({"id_slot": 0, "filename": body["filename"]});
+                        receipt[if action == "save" { "n_saved" } else { "n_restored" }] = json!(4);
+                        (StatusCode::OK, Json(receipt))
                     }
                 }
             }))
@@ -3102,6 +3240,43 @@ mod tests {
         assert_eq!(reasoning.as_deref(), Some("I recall France's capital."));
     }
 
+    // what this catches (Kimi, 2026-09-28): her thinking published as speech. She QUOTED
+    // `</think>` while reasoning, the server ended `reasoning_content` there, and the rest of
+    // her thinking, her real close and her answer came as `content`. Everything up to the
+    // last bare close is reasoning, joined back where it was cut and never dropped (the
+    // genome trains on it); a template that opened `<think>` in the prompt, with no server
+    // split, is the same shape.
+    #[test]
+    fn a_quoted_close_tag_never_publishes_her_thinking() {
+        let (text, reasoning) = extract_reasoning(
+            "` with no opening tag, so the split fails. I should say so.\n</think>\n\nThe split needs a bare-close case.",
+            Some("Fable said extract_reasoning has no case for a bare"),
+        );
+        assert_eq!(text, "The split needs a bare-close case.");
+        let reasoning = reasoning.expect("her thinking is kept");
+        assert!(reasoning.starts_with("Fable said") && reasoning.contains("I should say so."), "{reasoning}");
+
+        let (text, reasoning) = extract_reasoning("Two is even, so yes.\n</think>\n\nyes", None);
+        assert_eq!(text, "yes");
+        assert_eq!(reasoning.as_deref(), Some("Two is even, so yes."));
+
+        let (text, reasoning) = extract_reasoning("yes", Some("Two is even."));
+        assert_eq!((text.as_str(), reasoning.as_deref()), ("yes", Some("Two is even.")), "a clean split is untouched");
+
+        let (text, reasoning) = extract_reasoning("<think>no case for a bare </think> yet, so\n</think>\n\nFixed.", None);
+        assert_eq!(text, "Fixed.", "an inline block ends at its standalone close, not the quoted one");
+        assert!(reasoning.expect("kept").contains("no case for a bare"));
+
+        // Cormac on #4493: an ANSWER that quotes the tag inline keeps its head, in both shapes.
+        let answer = "The split has no case for a bare `</think>` with no opening tag.";
+        let (text, reasoning) = extract_reasoning(answer, Some("She is asking about the split."));
+        assert_eq!((text.as_str(), reasoning.as_deref()), (answer, Some("She is asking about the split.")));
+        let (text, _) = extract_reasoning(&format!("<think>\nshort\n</think>\n\n{answer}"), None);
+        assert_eq!(text, answer);
+        let (text, _) = extract_reasoning("<think>x</think>compact answer", None);
+        assert_eq!(text, "compact answer", "a compact block with no standalone close still splits");
+    }
+
     // what this catches: a plain answer with no reasoning passes through untouched,
     // and an empty `<think></think>` (the JSON-path shape) yields no reasoning.
     #[test]
@@ -3345,6 +3520,19 @@ mod tests {
         fn unregistered_adapter_is_a_miss() {
             let id = OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
             assert_eq!(id, None);
+        }
+
+        // what this catches (charter S1): a gene loaded at runtime is listed under its
+        // staged --train-dir name, not its genome path; without this arm the request
+        // for it misses and fails loud although the engine holds it.
+        #[test]
+        fn a_runtime_loaded_gene_resolves_by_its_staged_name() {
+            let gene = "/genome/kimi-coursework/adapter.gguf";
+            let stage = crate::inference::llama_server::gene_stage_name(std::path::Path::new(gene))
+                .expect("stageable");
+            let mut loaded = catalog();
+            loaded.push((2, format!("/home/x/.continuum/cache/engine-train/{stage}")));
+            assert_eq!(OpenAICompatibleAdapter::match_lora_index(&loaded, "kimi", gene), Some(2));
         }
 
         // what this catches: an empty catalog (server loaded no adapters at

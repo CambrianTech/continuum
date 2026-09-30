@@ -43,6 +43,7 @@ pub mod deploy_claim;
 pub mod core_ipc_transport;
 pub mod deploy_provenance;
 pub mod deploy_tracker;
+pub mod event_graph;
 pub mod tracked_checkout;
 pub mod daemon;
 pub mod governor_bus;
@@ -112,7 +113,7 @@ pub use registry::ModuleRegistry;
 pub use admission_gate::{AdmissionGate, Permit};
 pub use runtime::{
     await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
-    signal_runtime, DrainOutcome, ModuleStop,
+    signal_runtime, shutdown_receipt, DrainOutcome, ModuleStop,
     ModuleStopOutcome, Runtime, ShutdownReceipt,
 };
 pub use service_module::{

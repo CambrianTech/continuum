@@ -562,6 +562,7 @@ async fn run_inference_probe(
         room_id: None,
         purpose: Some("persona_decide_and_respond".to_string()),
         persona_id: None,
+        turn_bound: None,
     };
 
     let items_count = items.len();

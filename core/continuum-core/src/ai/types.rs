@@ -348,6 +348,18 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub persona_id: Option<String>,
+    /// The bound this turn is owed on the wire, sized from the MEASURED work: the mind's
+    /// expected occupancy (the uncached prompt at the box's measured prefill rate plus
+    /// her last output at its decode rate) with headroom — `inference::turn_bound`.
+    /// Every waiting seam takes `max(its floor, this)`: the header wait, the stream's
+    /// queue budget, the remote deadline. So a slow box's long prefill is waited out
+    /// instead of read as dead (card ba82d0a0: a 30k prompt at 25 tok/s is ~1200 s
+    /// before the first byte, past every fixed bound). `None` = no expectation yet; the
+    /// floors govern alone. Serialized as serde's `{secs, nanos}` so the SERVING peer's
+    /// lane honours it too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "{ secs: number, nanos: number }")]
+    pub turn_bound: Option<std::time::Duration>,
 }
 
 /// Constrains the model's output format. OpenAI-compatible serialization:

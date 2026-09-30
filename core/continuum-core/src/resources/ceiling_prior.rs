@@ -60,7 +60,7 @@
 //! gate and the ledger came to disagree about the sidecar's size. One carrier, one
 //! provenance ladder, both axes.
 
-use super::footprint_source::{FootprintReading, Provenance};
+use super::footprint_source::FootprintReading;
 use super::lease::ResourceKind;
 
 /// Everything known about the ceiling right now, gathered by the caller so the decision
@@ -116,6 +116,7 @@ pub fn decide(evidence: CeilingEvidence) -> FootprintReading {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::footprint_source::Provenance;
 
     const DEVICE: u64 = 64 * 1024 * 1024 * 1024;
 

@@ -55,18 +55,13 @@ pub struct TrainingJobRequest {
     /// request reaches any adapter — adapters always see a populated dataset.
     #[serde(default)]
     pub dataset: TrainingDataset,
-    /// The gym that MEASURES this trait — a JSONL eval-set path (the
-    /// `cognition/eval` `eval_set`). The dataset and this gym are two
-    /// projections of the same recipe: train on the data, measure on
-    /// the gym. The automatic adoption path
-    /// ([`crate::modules::training_completion_sentinel`]) passes this
-    /// verbatim to `cognition/eval`; when `None` the sentinel REFUSES to
-    /// adopt rather than measuring against an arbitrary default gym —
-    /// a gene the substrate can't fairly measure is never paged into a
-    /// live persona ([[fallbacks-are-illegal-fail-loud]]). The
-    /// `cognition/eval` command keeps its own coder-eval default for
-    /// manual spot-checks; that default is a command affordance, not an
-    /// adoption gate.
+    /// A JSONL eval-set path (the `cognition/eval` `eval_set`) for a MANUAL
+    /// spot-check of this trait. It decides nothing: the automatic adoption
+    /// path ([`crate::modules::training_completion_sentinel`]) no longer runs
+    /// an eval copy of her mind (Joel, 2026-09-27: integrated, not parallel).
+    /// It registers the gene dormant and opens an in-room
+    /// [`GeneTrial`](crate::genome::gene_trial::GeneTrial), whose card
+    /// outcomes promote or retire it, whether or not this is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub eval_set: Option<String>,
@@ -89,6 +84,12 @@ pub struct TrainingJobRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub local_artifact_dir: Option<PathBuf>,
+    /// A checkpoint directory (a PEFT adapter plus its `state.json`) this job continues
+    /// from — set by the resume of a reboot-killed job (card 244757bc) so it loses
+    /// minutes, not the run. Absent on a fresh job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resume_from: Option<PathBuf>,
 }
 
 // ─── Dataset ─────────────────────────────────────────────────────────
@@ -176,12 +177,29 @@ impl TrainingDataset {
                     i + 1
                 ));
             }
+            // Audit provenance belongs to the example, not just its JSONL wrapper.
+            // Retain the existing top-level skillAxis mapping when both are present.
+            let mut metadata = match row.get("metadata") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::Object(object)) => Some(object.clone()),
+                Some(_) => {
+                    return Err(format!(
+                        "{}:{}: metadata must be an object or null",
+                        path.display(),
+                        i + 1,
+                    ))
+                }
+            };
+            if let Some(axis) = row.get("skillAxis") {
+                metadata
+                    .get_or_insert_with(serde_json::Map::new)
+                    .insert("skillAxis".into(), axis.clone());
+            }
             examples.push(TrainingExample {
                 prompt,
                 completion,
-                metadata: row
-                    .get("skillAxis")
-                    .map(|a| serde_json::json!({ "skillAxis": a })),
+                metadata: metadata.map(serde_json::Value::Object),
+                lived: None,
             });
         }
         if examples.is_empty() {
@@ -214,6 +232,30 @@ pub struct TrainingExample {
     #[ts(optional)]
     #[ts(type = "Record<string, unknown> | undefined")]
     pub metadata: Option<serde_json::Value>,
+    /// The call she actually lived, when this example came from one (card ad107e18):
+    /// the exact request the engine was served and her exact response, reasoning and
+    /// tool calls included. A trainer that renders it trains on what she saw and did;
+    /// `prompt`/`completion` stay as its flat projection for trainers that take text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[schemars(with = "Option<serde_json::Value>")]
+    pub lived: Option<LivedCall>,
+}
+
+/// One served call exactly as it happened, read back from the prompt capture.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/LivedCall.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct LivedCall {
+    /// The capture cursor it was read from: the link back to the trace.
+    pub capture: String,
+    /// The request as submitted to the engine: room, grounding, tools, stimulus.
+    pub request: crate::ai::types::TextGenerationRequest,
+    /// Her response: text, reasoning and tool calls.
+    pub response: crate::ai::types::TextGenerationResponse,
 }
 
 /// Where this dataset came from. The substrate's reputation signal
@@ -274,6 +316,15 @@ pub struct LoRAHyperparams {
     /// Empty `Vec` lets the adapter pick provider defaults
     /// (usually `q_proj` + `v_proj`).
     pub target_modules: Vec<String>,
+    /// Adapt only the last `top_layers` transformer blocks; `None` adapts every block. The
+    /// backward pass stops at the lowest adapted block, so the training graph's memory falls
+    /// roughly linearly with this (fork #27: Qwen2.5-1.5B at window 512, 2576 MiB for all 28
+    /// blocks, 1316 MiB for the last 7). A full-depth 27B run did not fit beside its serving
+    /// context (41.5 GB at window 1536), so a resident dream chooses a depth. Only the
+    /// in-engine trainer reads it; other adapters ignore it and train every block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub top_layers: Option<u32>,
 }
 
 /// Training schedule knobs.
@@ -295,6 +346,38 @@ pub struct ScheduleParams {
 }
 
 // ─── Handle + Status ─────────────────────────────────────────────────
+
+/// What re-attaching found for a job a previous core started (SHARED-RESIDENT-LIFECYCLE.md
+/// step 3). Only POSITIVE evidence changes ownership: a run still answering as this job's in
+/// the very incarnation it was bound to is re-attached, and a verifiably dead incarnation is
+/// released. Everything else is `Uncertain`: an engine answering with another run, or not
+/// answering, is not proof this run ended (Codex on the step-3 plan).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/fine_tuning/ReattachOutcome.ts")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReattachOutcome {
+    /// Still this job's run in its engine: watched again under the same id, never POSTed again.
+    Attached { handle: JobHandle },
+    /// No binding names the job (or this adapter's runs die with the core): resume as before.
+    NotResident,
+    /// The bound incarnation is verifiably dead: the binding is released and the run is gone.
+    EngineGone { reason: String },
+    /// Nothing proves the run ended and nothing reached it: the binding and its reservation
+    /// stay, serving stays off the engine, and nothing may start this job again until the
+    /// explicit recovery act decides.
+    Uncertain { reason: String },
+}
+
+impl ReattachOutcome {
+    /// THE one answer to "may this job be started again from its input?" (Cormac on the
+    /// step-3 plan: every resume path asks this, never its own scan). Exhaustive on purpose.
+    pub fn permits_resume(&self) -> bool {
+        match self {
+            ReattachOutcome::NotResident | ReattachOutcome::EngineGone { .. } => true,
+            ReattachOutcome::Attached { .. } | ReattachOutcome::Uncertain { .. } => false,
+        }
+    }
+}
 
 /// What [`super::FineTuningAdapter::create_job`] returns. Acts as a
 /// correlation token across the substrate side (`local_id`) and the
@@ -331,6 +414,15 @@ pub struct JobHandle {
 pub enum TrainingStatus {
     /// Job accepted; not yet started running.
     Queued,
+    /// Prepared work waiting for the resource governor. These bytes are the
+    /// latest admission refusal, not a promise that capacity will become free.
+    #[serde(rename_all = "camelCase")]
+    WaitingForCapacity {
+        #[ts(type = "number")]
+        required_bytes: u64,
+        #[ts(type = "number")]
+        available_bytes: u64,
+    },
     /// Running. `progress_pct` is best-effort; some providers report
     /// nothing and the adapter floors it at the epoch percentage.
     #[serde(rename_all = "camelCase")]
@@ -364,6 +456,8 @@ pub enum TrainingStatus {
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactFormat {
+    /// Standard PEFT adapter directory produced by CUDA QLoRA. Convert before paging.
+    PeftAdapterDir,
     /// Apple `mlx_lm.lora` output dir (`adapters.safetensors` +
     /// `adapter_config.json`). NOT directly pageable — the forge custodian
     /// converts it to a GGUF-lora gene (locally today, on a grid GPU node
@@ -443,6 +537,12 @@ pub struct JobMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cost_usd: Option<f64>,
+    /// The transformer blocks this adapter actually trained, as the engine reported it after
+    /// the run (not what was asked: an engine without `top_layers` adapts every block). `None`
+    /// = the provider does not say. The promotion gate compares a reduced-depth gene knowing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub layers_adapted: Option<u32>,
 }
 
 #[cfg(test)]
@@ -486,6 +586,27 @@ mod tests {
         let err =
             TrainingDataset::from_chat_jsonl(&bad, TrainingSource::OperatorCurated).unwrap_err();
         assert!(err.contains("not the assistant turn"), "{err}");
+        // Metadata pass-through cannot discard producer receipts or overwrite the
+        // established top-level skill-axis field with conflicting nested metadata.
+        let mut row = serde_json::json!({
+            "messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}],
+            "metadata": {"sourceRevision": "immutable-source", "skillAxis": "nested"},
+            "skillAxis": "operational",
+        });
+        std::fs::write(&good, serde_json::to_vec(&row).unwrap()).unwrap();
+        let ds =
+            TrainingDataset::from_chat_jsonl(&good, TrainingSource::TeacherSynthesized).unwrap();
+        assert_eq!(
+            ds.examples[0].metadata.as_ref().unwrap(),
+            &serde_json::json!({
+                "sourceRevision": "immutable-source", "skillAxis": "operational",
+            })
+        );
+        row["metadata"] = serde_json::json!(["not an object"]);
+        std::fs::write(&good, serde_json::to_vec(&row).unwrap()).unwrap();
+        let error = TrainingDataset::from_chat_jsonl(&good, TrainingSource::TeacherSynthesized)
+            .unwrap_err();
+        assert!(error.contains("metadata must be an object"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -565,6 +686,7 @@ mod tests {
             alpha: 16,
             dropout: 0.05,
             target_modules: vec!["q_proj".into(), "v_proj".into()],
+            top_layers: None,
         };
         let v = serde_json::to_value(&h).unwrap();
         assert_eq!(v["rank"], 8);

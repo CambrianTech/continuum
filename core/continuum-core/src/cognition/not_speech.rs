@@ -70,7 +70,23 @@ pub fn is_not_speech(text: &str) -> Option<&'static str> {
     if t.starts_with("[/") {
         return Some("bracketed_path");
     }
+    // A reply that ENDS in a tool call's closing markup — `</parameter>`, then
+    // `</function>`, then `</tool_call>` (Kimi, 5090, 2026-09-27: a `git show` the
+    // engine refused to parse reached the room as its raw tail, the head already gone).
+    // Anchored on the END, the mirror of the lead anchors above: a citizen writing about
+    // `</tool_call>` mid-sentence, as the ones reporting this did, is untouched.
+    if ends_with_call_markup(t) {
+        return Some("tool_markup_tail");
+    }
     None
+}
+
+/// The trimmed text ends with the closing tag of a tool call.
+fn ends_with_call_markup(t: &str) -> bool {
+    let end = t.trim_end();
+    ["</tool_call>", "</function>", "</parameter>"]
+        .iter()
+        .any(|tag| end.ends_with(tag))
 }
 
 /// The entire text is `[word]` — letters, spaces, underscores — and nothing else.
@@ -259,9 +275,40 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     if t.starts_with("```") && has_namespaced_call_with_object(t) {
         return true;
     }
+    // THE SIXTH DIALECT (Kimi, 5090, 2026-09-28, into #cambriantech, flagged by Cormac): no
+    // bracket, no fence — the OBSERVATION BLOCK itself posted as her reply:
+    //
+    //   code/shell(cmd=cd …/workspace && ls state) because Let me organize …\n\nResult:\n
+    //   execution_id: a4e2… exit_code: 0 … stdout: airc-attach-cursor-…
+    //
+    // That is byte-for-byte the act_observe rendering (`{name}({args}){because}\nResult:\n`),
+    // i.e. her own tool transcript echoed as speech, and it enters every citizen's context.
+    // The discriminator is BOTH halves of that rendering: a namespaced verb CALLED at the lead
+    // (`ns/verb(` with a JSON or kwargs object) AND a `Result:` line after it. Either alone
+    // stays speech — a citizen writing "code/shell(cmd=…) is how you'd list it" has no Result
+    // line, and prose that mentions a "Result:" does not open with a call.
+    if opens_with_bare_call(t) && t.contains("\nResult:") {
+        return true;
+    }
     // The canonical envelope, with or without leading whitespace inside the object.
     let compact: String = t.chars().take(24).filter(|c| !c.is_whitespace()).collect();
     compact.starts_with("{\"tool_call\"")
+}
+
+/// A namespaced command CALLED at the very start of `t`: `ns/verb(` or a deeper path
+/// (`collaboration/chat/send(`), with a JSON object, kwargs (`cmd=…`), or no arguments.
+fn opens_with_bare_call(t: &str) -> bool {
+    let Some((callee, after)) = t.split_once('(') else {
+        return false;
+    };
+    let seg = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-.".contains(c));
+    // every segment of the path, and at least two of them (Cormac on #4525)
+    let namespaced = callee.len() <= 96 && callee.contains('/') && callee.split('/').all(seg);
+    let a = after.trim_start();
+    let kwargs = a
+        .split_once('=')
+        .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    namespaced && (a.starts_with('{') || a.starts_with(')') || kwargs)
 }
 
 /// A namespaced command invoked with an object — `code/shell({…})` — anywhere in `t`.
@@ -598,6 +645,24 @@ mod tests {
     // bracket — 15 such lines in the same measured window — but none is a tool envelope,
     // and silencing them here would hide problems that belong to other gates (#4067)
     // behind a "not speech" verdict. The slash is what makes a verb a COMMAND.
+    // what this catches (Kimi, 5090, 2026-09-28; Cormac flagged it): her own observation
+    // block, `code/shell(cmd=…) because …\nResult:\n…`, posted to the room as a reply with no
+    // bracket or fence around it. It needs BOTH the leading call and the Result line: a
+    // citizen explaining a call, or quoting a result mid-sentence, is still speech.
+    #[test]
+    fn an_echoed_observation_block_is_not_speech_but_explaining_a_call_is() {
+        let kimi = "code/shell(cmd=cd /c/Users/x/workspace && ls state) because Let me organize the current state of this room (cb2e21a1).\n\nResult:\nexecution_id: a4e208b2\nexit_code: 0\nstdout:\nairc-attach-cursor.json";
+        assert!(is_not_speech(kimi).is_some(), "her observation block is not her voice");
+        let json = "code/read({\"file_path\":\"src/main.rs\"})\nResult:\nfn main() {}";
+        assert!(is_not_speech(json).is_some());
+        // Cormac on #4525: deeper command paths, and a call with no arguments
+        assert!(is_not_speech("collaboration/chat/send(room=general, message=hi)\nResult:\nshortId: abc").is_some());
+        assert!(is_not_speech("genome/training-trigger/submit({\"x\":1})\nResult:\nok").is_some());
+        assert!(is_not_speech("work/list()\nResult:\n3 cards").is_some());
+        assert!(is_not_speech("code/shell(cmd=ls state) is how you would list it; no need to run it twice.").is_none(), "explaining a call is speech");
+        assert!(is_not_speech("I ran it.\nResult: the tests pass now, 12 of 12.").is_none(), "a result reported in prose is speech");
+    }
+
     #[test]
     fn a_bracketed_word_that_is_not_a_command_is_still_speech() {
         for observed in [
@@ -621,6 +686,16 @@ mod tests {
     fn another_peers_transcript_line_is_not_speech() {
         let observed = "b6dcfc8e-98ab-4488-b469-d1441720621b: I understand the confusion and will focus on contributing more substantively.";
         assert_eq!(is_not_speech(observed), Some("peer_voice"));
+    }
+
+    // what this catches: Kimi's leaked call tail posted as speech (2026-09-27), and
+    // the gate over-reaching onto a citizen who names the tag while reporting it.
+    #[test]
+    fn a_reply_ending_in_call_markup_is_not_speech_and_a_report_of_it_is() {
+        let tail = "> \n<parameter name=\"cmd\">git show a73053306\n</parameter>\n<parameter=timeout_ms>\n90000\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(is_not_speech(tail), Some("tool_markup_tail"));
+        let report = "My call ended in </tool_call> and went to speech; the parser missed it.";
+        assert_eq!(is_not_speech(report), None);
     }
 
     // what this catches: the predicate eating real speech. Every line here is a

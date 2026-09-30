@@ -41,19 +41,34 @@ today, so a persona passes its FULL accumulated stylesheet each time; a
 persistent live session is the next step and changes only the adapter's session
 lifetime, never the wire.
 
+## Drive a live page: `perception/interact`
+
+`perception/interact { session?, target?, viewport?, actions, selector? }` keeps a
+page open across calls (card 3569675f). The first call passes `target` and gets a
+`session` handle back with the observation; later calls pass `session` plus
+`actions` (`click`, `type`, `press`, `hover`, `goto`, with CSS selectors aimed at the
+returned tree) and get the page after them plus a `delta`. That lets a persona click
+through a flow on her own dev server and capture evidence of each step.
+`perception/session-close { session }` releases a browser early. Sessions also
+close after 10 idle minutes, and at most 8 are open per eye-node (a ninth is
+refused with the reason, never an eviction of a live one).
+
 ## Run
 
 ```bash
 # from repo root (workspaces linked): start an eye-node against the local core
 CONTINUUM_CORE_SOCKET=/tmp/continuum-core.sock npm --workspace @continuum/eye-node start
-# or directly
-cd apps/eye-node && npx tsx src/index.ts
+# or directly (the endpoint is required; use the path your core reports)
+cd apps/eye-node && CONTINUUM_CORE_SOCKET=/tmp/continuum-core.sock npx tsx src/index.ts
 ```
 
 Env:
 
-- `CONTINUUM_CORE_SOCKET` — core IPC socket path or `tcp://host:port`
-  (default `/tmp/continuum-core.sock`, matching `uu`).
+- `CONTINUUM_CORE_SOCKET` — core IPC socket path or `tcp://host:port`. Required, with no
+  default: the endpoint differs by platform (a Unix socket path, or on Windows a local TCP
+  listener, `tcp://127.0.0.1:<port>`), so the launcher passes the one the core's endpoint
+  resolver reports. Without it the eye-node exits and
+  names the variable.
 - `EYE_NODE_LABEL` — provider label shown in the core's logs.
 
 **Opt-in, browserless-core principle:** not every core runs a browser. Start an
@@ -65,10 +80,11 @@ than fabricating an observation.
 ## Shape
 
 ```
-index.ts        entry — resolve socket, start, stay alive
-eyeNode.ts      EyeNode — connect, provide('perception/observe' + 'perception/hot-edit'), flush
+index.ts        entry — take the core endpoint (coreEndpoint.ts), start, stay alive
+eyeNode.ts      EyeNode — connect, provide(observe, hot-edit, interact, session-close), flush
 observeAdapter  ObserveParams → PerceptionSession.openWeb → observe → ObserveResult
 hotEditAdapter  HotEditParams → openWeb → observe → hotPatchCss → re-observe (+Delta) → HotEditResult
+interactAdapter InteractSessions: handle → live PerceptionSession; interact (+Delta), close, idle sweep
 ```
 
 The wire contract (`ObserveResult`, `ProbeNode`, …) is single-sourced from Rust

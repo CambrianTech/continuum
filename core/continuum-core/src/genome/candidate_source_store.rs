@@ -82,6 +82,14 @@ pub fn stable_local_id(name: &str) -> ArtifactId {
     ArtifactId(uuid::Uuid::from_bytes(bytes))
 }
 
+/// Qualified local identity for a manifest entry. Alias changes do not change
+/// identity; different bases or paths do. This is not a digest of adapter bytes.
+pub fn manifest_local_id(adapter: &crate::forge::adapter_manifest::TrainedAdapter) -> ArtifactId {
+    let path = adapter.path.to_string_lossy();
+    // Length-prefix the base so separators inside either component cannot collide.
+    stable_local_id(&format!("manifest:{}:{}{}", adapter.base_model_id.len(), adapter.base_model_id, path))
+}
+
 impl GenomeStoreCandidateSource {
     pub fn new(layers: Vec<LocalGenomeLayer>, embedder: Arc<dyn EmbeddingProvider>) -> Self {
         Self { layers, embedder }
@@ -130,7 +138,7 @@ impl GenomeStoreCandidateSource {
         let layers = manifest
             .iter()
             .map(|a| LocalGenomeLayer {
-                artifact_id: stable_local_id(&a.alias),
+                artifact_id: manifest_local_id(a),
                 match_text: a.alias.clone(),
                 // The manifest carries no recency; 0 = "never used" and the
                 // recency term decays it honestly rather than inventing warmth.
@@ -142,7 +150,7 @@ impl GenomeStoreCandidateSource {
                     .cloned(),
                 // Fitness joins by gene NAME — the `geneId` the eval ledger
                 // writes IS the adapter alias the whole page-in chain speaks.
-                outcome_factor: fitness.outcome_factor(&a.alias),
+                outcome_factor: fitness.qualified_outcome_factor(&a.base_model_id, &a.path),
             })
             .collect();
         Self::new(layers, embedder)
@@ -215,6 +223,23 @@ mod tests {
     use crate::genome::recall::{FreshnessTarget, RecallScope, TaskKind};
     use crate::genome::recall_trait::{DomainHint, RecallBudget};
     use uuid::Uuid;
+
+    // Same labels on different artifacts must survive candidate deduplication;
+    // renaming one artifact must not create a second identity.
+    #[test]
+    fn manifest_identity_separates_artifacts_and_bases_not_aliases() {
+        let mut a = crate::forge::adapter_manifest::TrainedAdapter {
+            alias: "code".into(), path: "/genes/one.gguf".into(), base_model_id: "base-a".into(),
+        };
+        let original = manifest_local_id(&a);
+        a.alias = "renamed".into();
+        assert_eq!(original, manifest_local_id(&a));
+        a.path = "/genes/two.gguf".into();
+        assert_ne!(original, manifest_local_id(&a));
+        a.path = "/genes/one.gguf".into();
+        a.base_model_id = "base-b".into();
+        assert_ne!(original, manifest_local_id(&a));
+    }
 
     fn layer(text: &str) -> LocalGenomeLayer {
         LocalGenomeLayer {

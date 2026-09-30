@@ -26,8 +26,9 @@
 //!      persona"). A node hosts the highest-priority role it can hold at requirement:
 //!      coders go where the capability is, weak nodes host orchestration phenotypes.
 //!   2. CAPABILITY — among holding plans the most capable model ("I need my 27b").
-//!   3. SEATS — then the plan with the most lanes.
-//!   4. WINDOW — then the largest window.
+//!   3. TARGET FIT — approach measured demand within that capability, when known.
+//!   4. SEATS — then the plan with the most lanes.
+//!   5. WINDOW — then the largest window.
 //! Minds beyond the seats stay DORMANT with identity and memory intact; seats beyond the
 //! minds are OPEN — the count the spawner may mint. A mind is seated at home when home has
 //! a seat for its role, else on any node that has one: residents exist between the grid.
@@ -40,11 +41,14 @@
 use uuid::Uuid;
 
 /// What a role needs from a lane before one of its minds may sit on it. Declared by the
-/// society (a recipe), never derived from a machine.
+/// society (a recipe), with measured sizing kept separate from admission.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Requirement {
-    /// Tokens one turn of this role needs (the persona's typical prompt with headroom).
+    /// Hard minimum declared by the recipe, or the bootstrap working-set floor when undeclared.
     pub window: u32,
+    /// Measured sizing target, not permission to exclude every feasible seat.
+    /// Among equally capable plans, prefer approaching this target before adding lanes.
+    pub target_window: Option<u32>,
     /// The least capable model this role is competent on (`ModelFootprint::capability_rank`).
     pub min_capability: u8,
     /// Decode below this is not a seat (the knee). `None` = the role does not care.
@@ -128,6 +132,50 @@ impl LanePlan {
         }
     }
 
+    /// THIS NODE'S OWN ROW, read from what it is actually SERVING — the same three
+    /// numbers its capacity beacon publishes (`grid_capacity`: `active_model`, `lanes`,
+    /// `served_context_window`), so the allocator judges this node by exactly what every
+    /// peer judges it by.
+    ///
+    /// The defect this closes (Astra, Windows 2026-09-22, card TBD-on-the-PR): the local
+    /// row came from the PLAN (`plan_rx`, an INTENT) while every foreign row came from the
+    /// peer's SERVED geometry. A node planning 2 lanes × 5,533 while its lane actually
+    /// served 1 × 124,160 judged itself `BelowEveryRequirement` and offered zero seats —
+    /// with live capacity standing right there, and its own beacon telling the grid so.
+    /// One quantity, two meanings, in one comparison.
+    ///
+    /// It takes NO plan, by signature: whether a proposed layout fits the GPU is an
+    /// admission-policy statement about a future lane, and gating the live row on it
+    /// would re-hide a healthy server behind an infeasible intent — the same defect in
+    /// new clothes (Astra's review question on this change). What the box serves now is a
+    /// seat because it is running.
+    ///
+    /// `None` when nothing is LIVE — not ready, no model, no lanes, or an unknown window:
+    /// an absence, never a substituted intent and never fabricated capacity.
+    pub fn serving(
+        snapshot: &crate::inference::llama_server::ServingSnapshot,
+        capability_rank: u8,
+        decode_tps_per_lane: Option<f32>,
+    ) -> Option<Self> {
+        // `is_live`, not just "has a model": a mid-relaunch publish keeps its geometry —
+        // `serving_consumer` flips `ready = false` with `send_modify` and clears nothing
+        // (llama_server's own transitional-publish test builds exactly that shape: lanes 1,
+        // window 32,768, ready false). Seating on it would announce a lane that cannot
+        // serve as capacity — "a lane that cannot serve is no seat", the same sentence the
+        // fall-home path uses. Caught by Astra reviewing this change.
+        if !snapshot.is_live() || snapshot.lanes == 0 || snapshot.served_context_window == 0 {
+            return None;
+        }
+        let model_id = snapshot.active_model.clone()?;
+        Some(Self {
+            model_id,
+            capability_rank,
+            window: snapshot.served_context_window,
+            lanes: snapshot.lanes,
+            decode_tps_per_lane,
+        })
+    }
+
     /// Does one lane of this plan seat a mind of a role with this requirement?
     pub fn holds(&self, req: &Requirement) -> bool {
         self.lanes > 0
@@ -140,8 +188,53 @@ impl LanePlan {
     }
 
     /// Objective 2–4: capability, then lanes, then window.
-    fn rank(&self) -> (u8, u32, u32) {
+    pub fn rank(&self) -> (u8, u32, u32) {
         (self.capability_rank, self.lanes, self.window)
+    }
+
+    /// The single seat order shared by allocation and between-turn migration.
+    pub fn seat_key(&self, req: &Requirement) -> (u8, u32, u32, u32) {
+        (self.capability_rank, req.target_window.map_or(0, |target| self.window.min(target)), self.lanes, self.window)
+    }
+
+    /// A strictly better eligible seat, and the first improving axis.
+    pub fn better_than(&self, other: &LanePlan, req: &Requirement) -> Option<BetterBy> {
+        let (next, current) = (self.seat_key(req), other.seat_key(req));
+        if next <= current {
+            return None;
+        }
+        Some(if next.0 != current.0 {
+            BetterBy::Capability
+        } else if next.1 != current.1 {
+            BetterBy::Window
+        } else if next.2 != current.2 {
+            BetterBy::Lanes
+        } else {
+            BetterBy::Window
+        })
+    }
+}
+
+/// Why one seat beats another — the first axis, in the allocator's order, on which
+/// the better plan wins. `Requirement` is objective 1 (a plan that holds her role's
+/// requirement beats a node that has none): the placement switch's reason when her
+/// current node seats nobody of her role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BetterBy {
+    Requirement,
+    Capability,
+    Lanes,
+    Window,
+}
+
+impl BetterBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BetterBy::Requirement => "requirement",
+            BetterBy::Capability => "capability",
+            BetterBy::Lanes => "lanes",
+            BetterBy::Window => "window",
+        }
     }
 }
 
@@ -162,11 +255,38 @@ pub struct NodeOffer {
 #[derive(Clone, Debug, Default)]
 pub struct OfferBook {
     heard: std::collections::BTreeMap<Uuid, (u64, NodeOffer)>,
+    /// The best seat each node has offered while LIVE — its most capable rank and its
+    /// widest window — kept through an offer with no plan (a relaunch), dropped only by
+    /// silence (an unplug). Relaunching and unplugged are two signals (Cormac on #4416):
+    /// a node between plans still bounds the coder floor, so a 1.5B never holds a coder
+    /// because a 27B blinked.
+    best_seen: std::collections::BTreeMap<Uuid, (u64, Vec<(u8, u32)>)>,
 }
 
 impl OfferBook {
     pub fn hear(&mut self, offer: NodeOffer, now_ms: u64) {
+        if offer.plans.is_empty() {
+            // Alive, no plan this pass: the seats it last offered stand, freshly heard.
+            if let Some(entry) = self.best_seen.get_mut(&offer.node) {
+                entry.0 = now_ms;
+            }
+        } else {
+            let seats = offer.plans.iter().map(|p| (p.capability_rank, p.window)).collect();
+            self.best_seen.insert(offer.node, (now_ms, seats));
+        }
         self.heard.insert(offer.node, (now_ms, offer));
+    }
+
+    /// Every seat a LIVE node has offered, as (rank, window) PAIRS — a node mid-relaunch
+    /// counts by its last plans; a node silent past the window does not. Pairs, never a
+    /// max per axis: a 27B at 35k beside a 7B at 65k is two seats, not one 27B at 65k
+    /// (Cormac on #4416). Empty when nobody offers.
+    pub fn seats_live(&self, now_ms: u64, silent_after_ms: u64) -> Vec<(u8, u32)> {
+        self.best_seen
+            .values()
+            .filter(|(heard_at, _)| now_ms.saturating_sub(*heard_at) <= silent_after_ms)
+            .flat_map(|(_, seats)| seats.iter().copied())
+            .collect()
     }
     /// The offers fresher than `silent_after_ms`, ordered by node id so two nodes
     /// computing the same allocation agree (Cormac's note on #4259).
@@ -187,6 +307,7 @@ impl OfferBook {
             .collect();
         for n in &gone {
             self.heard.remove(n);
+            self.best_seen.remove(n);
         }
         gone
     }
@@ -203,6 +324,7 @@ pub fn inputs_key(inputs: &GridInputs) -> u64 {
     for r in &inputs.roles {
         r.name.hash(&mut h);
         r.requirement.window.hash(&mut h);
+        r.requirement.target_window.hash(&mut h);
         r.requirement.min_capability.hash(&mut h);
         r.requirement.decode_floor_tps.map(f32::to_bits).hash(&mut h);
     }
@@ -333,13 +455,62 @@ pub struct GridAllocation {
     pub seated: Vec<Seat>,
     /// Minds with no seat anywhere on the grid: identity and memory kept, no lane.
     pub dormant: Vec<Uuid>,
+    /// The subset of [`Self::dormant`] whose ROLE no node on this grid can serve — no
+    /// node's plans meet the role's hard gate, so there was never a seat to wait for. As
+    /// distinct from the ones the grid merely had no ROOM for right now.
+    ///
+    /// THIS IS NOT THE BIG-MIND CASE, and the name says so deliberately (Cormac on
+    /// #4314). Since #4296 an UNDECLARED role's hard gate is the serve floor
+    /// (`BOOTSTRAP_WORKING_SET`) with the measured demand as a soft target, so every node
+    /// holds such a role: a mind whose TURN overflows every lane is SEATED, never
+    /// dormant, and never appears here. That mind is named by `grid.mind.unservable` at
+    /// the daemon, where her own measured requirement meets the grid's widest offered
+    /// window. This field is the DECLARED-role fact: a role the grid cannot host at all.
+    ///
+    /// Both cases read as "dormant" and they want opposite responses: a mind with
+    /// nowhere to sit needs a wider lane, a smaller context, or an accepted slow clip
+    /// ([[dormant-is-not-off-every-mind-gets-a-slow-clip-at-any-grid-size]]); a mind
+    /// waiting for room needs patience or more hardware. Measured 2026-09-21: Benchy's
+    /// SMALLEST recent prompt (76,952) exceeded the widest lane on the entire grid
+    /// (75,776), so every refusal was individually correct and nothing said the one
+    /// sentence a human or a peer needed — she read as a citizen who produces nothing
+    /// rather than a citizen with nowhere to sit (card b8503234).
+    pub role_unservable: Vec<Uuid>,
     /// Seats no existing mind fills — what the spawner may mint, per node and role.
     pub open: Vec<OpenSeats>,
+}
+
+/// One node's roster as the allocation reads it: the minds seated there and the seats
+/// nobody fills — what the spawner on that node may draw (`seated + open`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridRoster {
+    pub seated: u32,
+    pub open: u32,
+}
+
+impl GridRoster {
+    pub fn seats(self) -> u32 {
+        self.seated.saturating_add(self.open)
+    }
 }
 
 impl GridAllocation {
     pub fn node(&self, id: Uuid) -> Option<&NodeAllocation> {
         self.nodes.iter().find(|n| n.node == id)
+    }
+    /// The roster on `node` for `owner`'s spawner: how many are seated there and how many
+    /// seats stand open for that owner to mint. `None` when the allocation never saw the
+    /// node (it made no offer) — an absence, so the caller keeps its own prior.
+    pub fn roster_on(&self, node: Uuid, owner: Uuid) -> Option<GridRoster> {
+        self.node(node)?;
+        Some(GridRoster {
+            seated: self.seated.iter().filter(|s| s.node == node).count() as u32,
+            open: self.open.iter().filter(|o| o.node == node && o.owner == owner).map(|o| o.count).sum(),
+        })
+    }
+    /// The plan the node a mind is seated on serves — what her seat IS, for a comparison.
+    pub fn plan_of_seat(&self, mind: Uuid) -> Option<&LanePlan> {
+        self.node(self.seat_of(mind)?)?.plan.as_ref()
     }
     pub fn seat_of(&self, mind: Uuid) -> Option<Uuid> {
         self.seated.iter().find(|s| s.mind == mind).map(|s| s.node)
@@ -354,10 +525,88 @@ impl GridAllocation {
     }
 }
 
+/// The roles and floors an experience DECLARES, in the allocator's terms — `GridInputs`'
+/// roles and floors from data, never from a constant. Roles are ordered by first
+/// appearance (authoring order is priority); a role's floor is how many citizens the
+/// recipe lists for it. An undeclared citizen retains the serving floor as its hard
+/// minimum; measured demand is a sizing target. A large thought must not turn every
+/// node into a refused seat. Declared recipe requirements remain hard constraints.
+pub fn roles_from(
+    citizens: &[crate::experience::recipe::CitizenRecipe],
+    measured_target: Option<u32>,
+) -> (Vec<Role>, Vec<RoleFloor>) {
+    let mut roles: Vec<Role> = Vec::new();
+    let mut floors: Vec<RoleFloor> = Vec::new();
+    for c in citizens {
+        let name = c.role.as_str();
+        let requirement = match &c.requirement {
+            Some(r) => Requirement {
+                window: r.window_tokens,
+                target_window: None,
+                min_capability: r.min_capability,
+                decode_floor_tps: r.decode_floor_tps,
+            },
+            None => Requirement {
+                window: super::serving_plan::BOOTSTRAP_WORKING_SET,
+                target_window: measured_target,
+                min_capability: 0,
+                decode_floor_tps: None,
+            },
+        };
+        match roles.iter().position(|r| r.name == name) {
+            Some(i) => {
+                // A second citizen of a role adds a seat to its floor; a declared
+                // requirement on any of them is the role's (the strictest window wins).
+                floors[i].min_seats += 1;
+                if requirement.window > roles[i].requirement.window {
+                    roles[i].requirement.window = requirement.window;
+                }
+                roles[i].requirement.target_window = roles[i].requirement.target_window.max(requirement.target_window);
+                roles[i].requirement.min_capability = roles[i].requirement.min_capability.max(requirement.min_capability);
+                // The strictest on EVERY axis (Cormac, #4271): a later, laxer decode floor
+                // never loosens the role's.
+                roles[i].requirement.decode_floor_tps = match (roles[i].requirement.decode_floor_tps, requirement.decode_floor_tps) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            None => {
+                roles.push(Role { name: name.to_string(), requirement });
+                floors.push(RoleFloor { role: roles.len() - 1, min_seats: 1 });
+            }
+        }
+    }
+    (roles, floors)
+}
+
 /// The best plan on a node for a requirement: the most capable holding plan, then the
-/// most lanes, then the widest window. `None` when no plan holds.
+/// closest measured window target within that capability, then most lanes and width.
+/// Only declared minima gate admission. `None` when no plan holds those minima.
+/// The ask a role can actually be held to, given the seats the grid offers RIGHT NOW:
+/// the declared requirement is what the activity asks for; the grid bounds it so that
+/// ONE REAL SEAT always holds it. Capability first (the declared floor, or the most
+/// capable seat there is), then the window to the widest seat AT OR ABOVE that
+/// capability. Never a max per axis across different seats — a 27B at 35k and a 7B at
+/// 65k would give an ask of (27B, 65k) that neither holds. Joel: start at CPU on an
+/// Intel Mac alone; scale up when the 5090 joins; down when it leaves.
+pub fn ask_within(declared: &Requirement, seats: &[(u8, u32)]) -> Requirement {
+    let best_rank = seats.iter().map(|(r, _)| *r).max().unwrap_or(0); // unwrap_or: no seat = no floor to hold
+    let min_capability = declared.min_capability.min(best_rank);
+    let widest_at_rank = seats
+        .iter()
+        .filter(|(r, _)| *r >= min_capability)
+        .map(|(_, w)| *w)
+        .max()
+        .unwrap_or(0); // unwrap_or: no seat = no window to hold
+    Requirement {
+        window: declared.window.min(widest_at_rank),
+        min_capability,
+        ..declared.clone()
+    }
+}
+
 pub fn best_plan_for<'a>(plans: &'a [LanePlan], req: &Requirement) -> Option<&'a LanePlan> {
-    plans.iter().filter(|p| p.holds(req)).max_by_key(|p| p.rank())
+    plans.iter().filter(|p| p.holds(req)).max_by_key(|p| p.seat_key(req))
 }
 
 /// What each node serves: its best plan for the highest-priority role it can hold (so
@@ -416,6 +665,7 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
     let mut lent: Vec<u32> = vec![0; nodes.len()];
     let mut seated: Vec<Seat> = Vec::new();
     let mut dormant = Vec::new();
+    let mut role_unservable = Vec::new();
     // May this mind sit on node i? ONE predicate: under an exclusive hold, only its names;
     // then her owner's own node freely, another owner's within its terms.
     let admits = |i: usize, m: &Mind, lent_now: u32| -> bool {
@@ -489,7 +739,19 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
                     }
                     seated.push(Seat { mind: m.id, node: nodes[i].node, role });
                 }
-                None => dormant.push(m.id),
+                None => {
+                    // WHY she got no seat is known HERE and was thrown away. `hosts` is
+                    // the nodes whose plans MEET HER ROLE'S REQUIREMENT — the window and
+                    // capability gate. Empty means no node on this grid can serve her
+                    // role AT ALL, and no amount of waiting changes that. A non-empty
+                    // `hosts` that still seats nobody is the grid being FULL (or a hold
+                    // or lending terms refusing her, which `admits` decides) — a
+                    // different fact wanting a different response.
+                    if hosts.is_empty() {
+                        role_unservable.push(m.id);
+                    }
+                    dormant.push(m.id);
+                }
             }
         }
     }
@@ -522,24 +784,80 @@ pub fn allocate(inputs: &GridInputs) -> GridAllocation {
             open.push(OpenSeats { node: n.node, owner: offer.owner, role: *role, count: f });
         }
     }
-    GridAllocation { nodes, seated, dormant, open }
+    GridAllocation { nodes, seated, dormant, role_unservable, open }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // what this catches (Astra, Windows 2026-09-22): this node's row in the allocator
+    // coming from its PLAN while every peer's comes from their SERVED beacon. A box
+    // planning a 2 × 5,533 shrink while its lane actually served 1 × 124,160 read as
+    // BelowEveryRequirement and offered zero seats, with live capacity standing there.
+    // The local row must carry the same three numbers `grid_capacity` beacons — and must
+    // be an ABSENCE, never a substituted intent, when nothing is being served.
+    #[test]
+    fn the_local_row_is_the_served_geometry_the_beacon_publishes_or_nothing() {
+        use crate::inference::llama_server::ServingSnapshot;
+        let served = ServingSnapshot {
+            active_model: Some("qwen3.8-27b".into()),
+            ready: true,
+            lanes: 1,
+            served_context_window: 124_160,
+            ..ServingSnapshot::empty()
+        };
+        let row = LanePlan::serving(&served, 9, Some(20.0)).expect("a served lane is a row");
+        assert_eq!((row.lanes, row.window), (1, 124_160), "the beacon's numbers, not the plan's");
+        assert!(row.holds(&coder().requirement), "a 124k lane seats the 64k role");
+
+        // The intent that caused the misjudgement: the same box planning a shrink. Its
+        // row must NOT be built from these numbers.
+        let planned_shrink = ServingSnapshot {
+            active_model: Some("qwen3.8-27b".into()),
+            ready: true,
+            lanes: 2,
+            served_context_window: 5_533,
+            ..ServingSnapshot::empty()
+        };
+        let shrunk = LanePlan::serving(&planned_shrink, 9, Some(20.0)).expect("still a row");
+        assert!(!shrunk.holds(&coder().requirement), "5,533 below 65,536 is the reading that starved the node");
+
+        // Absence, not fabrication: nothing served ⇒ no row, on each of the three ways
+        // "nothing" arrives.
+        assert!(LanePlan::serving(&ServingSnapshot::empty(), 9, None).is_none(), "no model = no row");
+        // MID-RELAUNCH: geometry retained, `ready` false — `serving_consumer` flips the
+        // flag and clears nothing. A lane that cannot serve is no seat (Astra's review).
+        assert!(
+            LanePlan::serving(
+                &ServingSnapshot { active_model: Some("m".into()), ready: false, lanes: 1, served_context_window: 32_768, ..ServingSnapshot::empty() },
+                9,
+                None
+            )
+            .is_none(),
+            "a relaunching lane keeps its numbers and must NOT be announced as capacity"
+        );
+        assert!(
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            "zero lanes = no row"
+        );
+        assert!(
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            "unknown window = no row, never a guess"
+        );
+    }
+
     // ---- fixtures: shapes, not Joel's grid. Numbers are illustrative machine classes. ----
     fn coder() -> Role {
         Role {
             name: "coder".into(),
-            requirement: Requirement { window: 65_536, min_capability: 7, decode_floor_tps: Some(10.0) },
+            requirement: Requirement { window: 65_536, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) },
         }
     }
     fn orchestrator() -> Role {
         Role {
             name: "orchestrator".into(),
-            requirement: Requirement { window: 32_768, min_capability: 3, decode_floor_tps: None },
+            requirement: Requirement { window: 32_768, target_window: None, min_capability: 3, decode_floor_tps: None },
         }
     }
     fn plan(model: &str, cap: u8, window: u32, lanes: u32, tps: Option<f32>) -> LanePlan {
@@ -576,6 +894,46 @@ mod tests {
     }
     fn on(a: &GridAllocation, node: Uuid) -> Vec<Uuid> {
         a.seated.iter().filter(|s| s.node == node).map(|s| s.mind).collect()
+    }
+
+    // what this catches (card b8503234, measured 2026-09-21): "no seat" had ONE name for
+    // two opposite facts. Benchy's SMALLEST recent prompt (76,952) exceeded the widest
+    // lane on the entire grid (75,776), so every node correctly refused her and she
+    // landed in `dormant` beside minds who were merely waiting for room. Nothing said
+    // the one sentence a human or a peer needed — she read as a citizen who produces
+    // nothing rather than a citizen with nowhere to sit. The two want opposite
+    // responses: a wider lane / less context / an accepted slow clip, versus patience.
+    #[test]
+    fn a_mind_with_nowhere_to_sit_is_distinguished_from_one_waiting_for_room() {
+        let a_box = Uuid::new_v4();
+        // THE SAME GRID BOTH TIMES — only the requirement changes, so the contrast is
+        // the fact under test and not the fixture. `big_box` genuinely holds the coder
+        // role (capability 9 ≥ 7, a 67k and a 131k plan), which is what makes the
+        // waiting case a real wait.
+        let full = allocate(&inputs(vec![big_box(a_box)], minds(0, None, 20)));
+        assert!(!full.seated.is_empty(), "this role IS servable here");
+        assert!(!full.dormant.is_empty(), "twenty minds, far fewer seats");
+        assert!(
+            full.role_unservable.is_empty(),
+            "waiting for room is not unservable: {:?}",
+            full.role_unservable,
+        );
+
+        // Now a window no offered plan can serve: no node HOLDS the role, `hosts` is
+        // empty, and there was never a seat to wait for.
+        let mut i = inputs(vec![big_box(a_box)], minds(0, None, 1));
+        i.roles[0].requirement.window = 1_000_000;
+        let starved = allocate(&i);
+        assert!(starved.seated.is_empty(), "no plan on this grid meets her requirement");
+        assert_eq!(starved.dormant.len(), 1);
+        assert_eq!(
+            starved.role_unservable, starved.dormant,
+            "no node holds her role: unservable, never merely waiting",
+        );
+
+        // And a grid with room for everyone reports neither.
+        let roomy = allocate(&inputs(vec![big_box(a_box)], minds(0, None, 1)));
+        assert!(roomy.dormant.is_empty() && roomy.role_unservable.is_empty());
     }
 
     // what this catches (card 426a26fb): the operator's EXCLUSIVE hold as an input — on the
@@ -915,6 +1273,124 @@ mod tests {
         assert_eq!(allocate(&inputs(book.live(later, silent), m.clone())).dormant.len(), 2, "…and the allocation is the lone-box one again");
     }
 
+    // what this catches (card 10bba591): a recipe's citizens become the allocator's roles
+    // and floors from DATA — declared requirements taken as written, undeclared ones at
+    // the measured typical prompt (never a constant), authoring order as priority, a
+    // repeated role adding a seat to its floor with the strictest requirement kept.
+    #[test]
+    fn a_recipes_citizens_are_the_allocators_roles_and_floors() {
+        use crate::experience::recipe::{CitizenRecipe, CitizenRequirement};
+        use crate::persona::role_template::RoleId;
+        let coder = |window: u32| CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: window, min_capability: 7, decode_floor_tps: Some(10.0) }),
+        };
+        let helper = CitizenRecipe { role: RoleId::Helper, requirement: None };
+        let lax = CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: 8_192, min_capability: 3, decode_floor_tps: Some(5.0) }),
+        };
+        let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072), lax], Some(70_071));
+        assert_eq!(roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["coder", "helper"], "authoring order is priority");
+        assert_eq!(roles[0].requirement, Requirement { window: 131_072, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
+        assert_eq!(roles[1].requirement, Requirement { window: super::super::serving_plan::BOOTSTRAP_WORKING_SET, target_window: Some(70_071), min_capability: 0, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
+        assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 3 }, RoleFloor { role: 1, min_seats: 1 }]);
+        let (roles, _) = roles_from(&[helper], None);
+        assert_eq!(roles[0].requirement.window, super::super::serving_plan::BOOTSTRAP_WORKING_SET, "nothing measured yet = the bootstrap working-set floor");
+        assert!(roles_from(&[], Some(1)).0.is_empty());
+    }
+
+    // Regression: a measured turn larger than every host window made all three
+    // healthy nodes BelowEveryRequirement, leaving Kimi and Sahar dormant.
+    #[test]
+    fn measured_window_above_the_fleet_does_not_remove_its_seats() {
+        use crate::experience::recipe::CitizenRecipe;
+        use crate::persona::role_template::RoleId;
+        let node = Uuid::new_v4();
+        let (roles, floors) = roles_from(
+            &[CitizenRecipe { role: RoleId::Helper, requirement: None }],
+            Some(150_000),
+        );
+        let mut i = inputs(vec![
+            offer(node, vec![plan("27b", 255, 65_280, 1, Some(50.0))]),
+            offer(Uuid::new_v4(), vec![plan("peer", 42, 78_592, 3, None)]),
+            offer(Uuid::new_v4(), vec![plan("thin", 40, 32_768, 1, None)]),
+        ], minds(0, Some(node), 2));
+        i.roles = roles;
+        i.floors = floors;
+        let a = allocate(&i);
+        assert_eq!(a.seated.len(), 2);
+        assert!(a.dormant.is_empty());
+        assert!(a.nodes.iter().all(|n| n.seats > 0));
+        let key = inputs_key(&i);
+        i.roles[0].requirement.target_window = Some(160_000);
+        assert_ne!(key, inputs_key(&i), "new measurements must recompute selection");
+        i.nodes[0].plans[0].window = super::super::serving_plan::BOOTSTRAP_WORKING_SET - 1;
+        assert_eq!(allocate(&i).node(node).unwrap().seats, 0, "the bootstrap working-set floor remains hard");
+    }
+
+    // Regression: measured targets must neither become declared gates nor loosen
+    // declared requirements when citizens of the same role are combined.
+    #[test]
+    fn measured_targets_preserve_declared_gates_and_capability_order() {
+        use crate::experience::recipe::{CitizenRecipe, CitizenRequirement};
+        use crate::persona::role_template::RoleId;
+        let declared = CitizenRecipe {
+            role: RoleId::Coder,
+            requirement: Some(CitizenRequirement { window_tokens: 32_768, min_capability: 7, decode_floor_tps: Some(10.0) }),
+        };
+        let measured = CitizenRecipe { role: RoleId::Coder, requirement: None };
+        for citizens in [[declared.clone(), measured.clone()], [measured.clone(), declared.clone()]] {
+            let (roles, _) = roles_from(&citizens, Some(100_000));
+            let req = &roles[0].requirement;
+            assert_eq!(req.window, 32_768);
+            assert_eq!(req.target_window, Some(100_000));
+            assert!(!plan("short", 9, 32_767, 1, Some(20.0)).holds(req));
+            assert!(!plan("weak", 6, 131_072, 1, Some(20.0)).holds(req));
+            assert!(!plan("slow", 9, 131_072, 1, Some(5.0)).holds(req));
+            let candidates = vec![
+                plan("strong-wide", 9, 65_536, 1, Some(20.0)),
+                plan("strong-many", 9, 32_768, 3, Some(20.0)),
+                plan("weaker-fitting", 8, 131_072, 4, Some(20.0)),
+            ];
+            assert_eq!(best_plan_for(&candidates, req).unwrap().model_id, "strong-wide");
+            assert_eq!(candidates[0].better_than(&candidates[1], req), Some(BetterBy::Window));
+            assert_eq!(candidates[1].better_than(&candidates[0], req), None, "migration cannot undo target-fit selection");
+        }
+    }
+
+    // what this catches (card 10bba591): the "better seat" order IS the allocator's —
+    // capability first, then lanes, then window — strict on every axis, so equal plans
+    // are never a reason to move and a wider window never outranks a stronger model.
+    #[test]
+    fn a_better_seat_is_judged_in_the_allocators_own_order_and_never_on_equality() {
+        let base = plan("27b", 9, 67_072, 2, None);
+        let req = Requirement { window: 0, target_window: None, min_capability: 0, decode_floor_tps: None };
+        assert_eq!(base.better_than(&base, &req), None, "equal plans: no move");
+        assert_eq!(plan("27b", 9, 67_072, 2, Some(14.0)).better_than(&base, &req), None, "decode is not an axis of the order");
+        assert_eq!(plan("30b", 10, 2_048, 1, None).better_than(&base, &req), Some(BetterBy::Capability), "capability beats everything below it");
+        assert_eq!(base.better_than(&plan("30b", 10, 2_048, 1, None), &req), None);
+        assert_eq!(plan("27b", 9, 32_768, 3, None).better_than(&base, &req), Some(BetterBy::Lanes), "same rank: lanes before window");
+        assert_eq!(plan("27b", 9, 131_072, 1, None).better_than(&base, &req), None, "fewer lanes: no move, however wide");
+        assert_eq!(plan("27b", 9, 131_072, 2, None).better_than(&base, &req), Some(BetterBy::Window), "same rank and lanes: the wider window");
+        assert_eq!(BetterBy::Window.as_str(), "window");
+    }
+
+    // what this catches (card 10bba591): the node roster the spawner draws from is what
+    // the allocation seated there PLUS what stands open for that owner — a lender's open
+    // seats are not ours, and a node that made no offer is an absence (the spawner then
+    // keeps its own prior), never a zero.
+    #[test]
+    fn a_nodes_roster_is_what_is_seated_there_plus_what_is_open_for_that_owner() {
+        let n = Uuid::new_v4();
+        let a = allocate(&inputs(vec![big_box(n)], minds(0, Some(n), 1)));
+        assert_eq!(a.roster_on(n, US), Some(GridRoster { seated: 1, open: 3 }));
+        assert_eq!(a.roster_on(n, US).map(GridRoster::seats), Some(4), "one seated, three to mint: four seats");
+        assert_eq!(a.roster_on(n, Uuid::from_u128(0xB0B)), Some(GridRoster { seated: 1, open: 0 }), "the open seats are the owner's, not a stranger's");
+        assert_eq!(a.roster_on(Uuid::new_v4(), US), None, "a node that made no offer is an absence");
+        assert_eq!(a.plan_of_seat(a.seated[0].mind).map(|p| p.lanes), Some(2));
+    }
+
     // what this catches: the outlier validation — the REAL per-node planner's plan reads
     // as an offer with no translation layer, so the daemon feeds `allocate` what it
     // already publishes. A cold 64 GB-class budget planning a 27B-class footprint.
@@ -930,7 +1406,7 @@ mod tests {
             fixed_per_lane_bytes: 0,
         };
         let host = HostBudget { usable_bytes: 25_000_000_000, perf_cores: 12 };
-        let plan = plan_serving(host, &[model], ServingDemand::new(2, Some(70_000))).expect("a 27B fits a 25 GB budget");
+        let plan = plan_serving(&host, &[model], &ServingDemand::new(2, Some(70_000))).expect("a 27B fits a 25 GB budget");
         let lane = LanePlan::of(&plan, None);
         assert_eq!(lane.model_id, "coder-27b");
         assert_eq!(lane.capability_rank, 9);

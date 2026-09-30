@@ -13,7 +13,6 @@ collection: string,
  */
 filter?: Record<string, unknown>, 
 /**
- * Storage handle. Defaults to "main" (the shared DB). Accepts the legacy
- * `dbPath` field name as an alias.
+ * Storage handle. Defaults to "main" (the shared DB).
  */
-handle?: string, };
+dbPath?: string, };

@@ -56,7 +56,7 @@ const WORK_GATE_PAGE_ROWS: usize = 400;
 /// claimed but not yet started is held: beginning must not be the precondition for
 /// beginning).
 pub fn card_is_held(c: &airc_lib::WorkCard) -> bool {
-    matches!(c.state, airc_work::CardState::InProgress | airc_work::CardState::Claimed)
+    crate::persona::work_focus::actionable(c)
 }
 
 pub(crate) async fn ask_the_act_question(
@@ -130,13 +130,12 @@ pub(crate) async fn ask_the_act_question(
             let claims_result = citizen.active_claims().await;
             let claims_err = claims_result.as_ref().err().map(|e| e.to_string());
             let claims = claims_result.unwrap_or_default();
-            let held: Vec<&airc_lib::WorkCard> = claims.iter().filter(|c| card_is_held(c)).collect();
             // ONE card per work turn — her freshest live claim (the FOCUS rule,
             // `bench_round::room_for_card`): with two held cards the staging
             // resolution was ambiguous, her hands stayed at home, and every act
             // landed in her own repo copy (Lorcan, 2026-09-04). The other card
             // stays held; its turn comes when it is the freshest.
-            let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_card(held)
+            let held: Vec<&airc_lib::WorkCard> = crate::persona::work_focus::focus_actionable_card(claims.iter())
                 .into_iter()
                 .collect();
             crate::probe!(
@@ -235,58 +234,16 @@ pub(crate) async fn ask_the_act_question(
                             class = "persona.work.write_or_release_gate",
                             persona = %ctx.identity.agent_name,
                             acts_without_write,
-                            "the work turn is gated: edit now or release the card"
+                            "a write-less stretch on a held card: the advisory checkpoint is shown (never a release)"
                         );
                     }
-                    // THE GOVERNOR. At twice the gate the substrate takes the second exit
-                    // for her: the card goes back on the deck with a receipt, a peer (or
-                    // she, with a plan) can take it, and her lane stops paying for
-                    // orientation. Review cards are not released (they carry no write).
-                    if crate::persona::work_burst::governor_releases(acts_without_write) {
-                        for c in &held {
-                            if crate::commands::benchmark::parse_review_title(&c.title).is_some() {
-                                continue;
-                            }
-                            let Some(claim_id) = c.claim_id.clone() else {
-                                continue;
-                            };
-                            let id8: String =
-                                c.card_id.as_uuid().to_string().chars().take(8).collect();
-                            let reason = format!(
-                                "released by the substrate: {acts_without_write} acts without a write"
-                            );
-                            match citizen.release_card(c.card_id, claim_id, &reason).await {
-                                Ok(()) => {
-                                    crate::probe!(
-                                        class = "persona.work.released_by_governor",
-                                        persona = %ctx.identity.agent_name,
-                                        card = %id8,
-                                        acts_without_write,
-                                        "write-or-release at twice the gate: the substrate released the card"
-                                    );
-                                    if let Some(body) = cycle.acting() {
-                                        // PINNED, like [hands]/[env] (#3845): a recorded fact is
-                                        // gone by her third act; this one must reach her NEXT work
-                                        // turn, where the pull decision is made. Unpinned at that
-                                        // turn's restore (IntelMac's review of #3846).
-                                        body.working_memory.pin_fact_for_turns("released", &format!(
-                                            "[released] The substrate released card {id8} after \
-                                             {acts_without_write} acts of mine without a change to a \
-                                             file — the investigation was long enough. A peer may take \
-                                             it. Pull it again only with a file:line edit in hand."
-                                        ), 2);
-                                    }
-                                }
-                                Err(e) => crate::probe!(
-                                    class = "persona.work.governor_release_failed",
-                                    persona = %ctx.identity.agent_name,
-                                    card = %id8,
-                                    error = %e,
-                                    "the governor could not release the card — she keeps it this turn"
-                                ),
-                            }
-                        }
-                    }
+                    // NO GOVERNOR (card 3bd860ba, Joel 2026-09-28: responsibility is durable until
+                    // an explicit handoff). A write-less stretch is an OBSERVATION, never authority
+                    // over whose work a card is: planning, reading and review are real work with
+                    // no file change, and the act count released Kimi's multi-day project card with
+                    // her edits uncommitted. The gate probe above records the stretch; a card leaves
+                    // her only by her own release, an explicit reassignment, or an activity's
+                    // declared policy (the benchmark round's idle reconciler is one).
                     let burst_text = crate::persona::work_burst::held_work_burst_gated(
                         &held,
                         &last_state,
@@ -326,26 +283,14 @@ pub(crate) async fn ask_the_act_question(
                     // caller identity), so the restore below is mandatory on
                     // EVERY exit — #312: after a flask solve, Anwen's live
                     // self was still reading the exam repo hours later.
-                    // Non-bench cards resolve to None and nothing moves.
+                    // Ordinary project cards use the same card-id checkout authority as room turns.
                     // A REVIEW card roots her hands in the OWNER's checkout (the fix
                     // under review lives there); any other held card resolves to her
                     // own staged instance as before.
-                    let review_workspace = held
-                        .iter()
-                        .filter_map(|c| crate::commands::benchmark::parse_review_title(&c.title))
-                        .find_map(|instance| {
-                            let copies = crate::persona::staged_workspace::owners_of(&instance);
-                            copies
-                                .iter()
-                                .find(|c| c.has_work)
-                                .or_else(|| copies.first())
-                                .map(|c| c.path.clone())
-                        });
-                    let card_workspace = review_workspace.or_else(|| {
-                        crate::persona::staged_workspace::workspace_for_held_cards(
-                            &ctx.identity.peer_id.as_uuid(),
-                            held.iter().map(|c| c.title.as_str()),
-                        )
+                    // `held` was reduced through work_focus::focus_card above.
+                    // Reuse that same selection for hands, facts, credit and genes.
+                    let card_workspace = held.first().and_then(|card| {
+                        held_card_workspace(&ctx.identity.peer_id.as_uuid(), card)
                     });
                     let work_hands = match &card_workspace {
                         Some(ws) => {
@@ -377,34 +322,43 @@ pub(crate) async fn ask_the_act_question(
                                             &format!(
                                                 "[hands] For this turn my files and shell are \
                                                  rooted AT the repo root `{}` — paths are \
-                                                 repo-relative; `ls` lists the repo itself \
-                                                 (there is no `swe/` directory from here).",
+                                                 repo-relative; `ls` lists the repo itself.",
                                                 ws.display()
                                             ),
                                         );
-                                        // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
-                                        // holder ran `pip install --no-build-isolation -e .`
-                                        // twelve times in one checkout (21 acts, 0 edits) —
-                                        // the grader's prepared env for her instance sat
-                                        // beside it, unnamed. Absence is named too, so
-                                        // she never guesses an interpreter.
-                                        body.working_memory.pin_fact(
-                                            "env",
-                                            &crate::persona::instance_env_fact::instance_env_fact(
-                                                &ws,
-                                            ),
-                                        );
-                                        // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
-                                        // tests that grade her are not in the checkout.
-                                        if let Some(instance) =
-                                            ws.file_name().and_then(|n| n.to_str())
-                                        {
+                                        // Prepared environments and hidden grading belong only
+                                        // to benchmark recipes, never to an ordinary project.
+                                        if held.first().is_some_and(|card| {
+                                            crate::commands::benchmark::parse_card_title(&card.title).is_some()
+                                                || crate::commands::benchmark::parse_review_title(&card.title).is_some()
+                                        }) {
+                                            // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
+                                            // holder ran `pip install --no-build-isolation -e .`
+                                            // twelve times in one checkout (21 acts, 0 edits) —
+                                            // the grader's prepared env for her instance sat
+                                            // beside it, unnamed. Absence is named too, so
+                                            // she never guesses an interpreter.
                                             body.working_memory.pin_fact(
-                                                "grading",
-                                                &crate::persona::instance_env_fact::grading_fact(
-                                                    instance,
+                                                "env",
+                                                &crate::persona::instance_env_fact::instance_env_fact(
+                                                    &ws,
                                                 ),
                                             );
+                                            // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
+                                            // tests that grade her are not in the checkout.
+                                            if let Some(instance) =
+                                                ws.file_name().and_then(|n| n.to_str())
+                                            {
+                                                body.working_memory.pin_fact(
+                                                    "grading",
+                                                    &crate::persona::instance_env_fact::grading_fact(
+                                                        instance,
+                                                    ),
+                                                );
+                                            }
+                                        } else {
+                                            body.working_memory.unpin_fact("env");
+                                            body.working_memory.unpin_fact("grading");
                                         }
                                         // THE LEDGER, as the fact her turn opens with: the
                                         // saved state of the thought — hers from the last
@@ -455,6 +409,29 @@ pub(crate) async fn ask_the_act_question(
                     let selected_credit = held.first().map(|card| {
                         crate::persona::training_producer::CapturedCredit::from_selected_card(card)
                     });
+                    // HER GENES RIDE HER CARD, like her hands do (integrated, not parallel:
+                    // a gene is judged in her own work). The card this turn is credited to
+                    // decides the genome: her promoted genes, plus an open trial's gene when
+                    // this card drew its arm. Pinned before the turn and put back after it,
+                    // so the genome never changes beneath a request and every receipt of
+                    // this card names the same genes (`GenerationReceipt::genes`).
+                    let persona_uuid = ctx.identity.peer_id.as_uuid();
+                    let card_uuid = held.first().map(|card| card.card_id.as_uuid());
+                    // Whatever ends this turn (settled, cancelled, a panic unwinding), her
+                    // genome goes back to what she had before it: a trial gene never leaks onto
+                    // her conversation turns (Cormac on #4474).
+                    let mut genome_back =
+                        crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
+                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, card_uuid) {
+                        crate::probe!(
+                            class = "persona.genome.card_genes",
+                            persona = %ctx.identity.agent_name,
+                            card = %card_uuid.map(|c| c.to_string()).unwrap_or_default(), // probe field: "" = no card
+                            genes = genes.len() as u64,
+                            "the genome this work turn runs with: promoted genes plus any trial gene this card drew"
+                        );
+                        cycle.page_in(genes);
+                    }
                     let mut credit_capture =
                         crate::persona::training_producer::TurnCreditCapture::for_turn(
                             ctx.identity.peer_id.as_uuid(),
@@ -471,6 +448,12 @@ pub(crate) async fn ask_the_act_question(
                         credit_capture.as_mut(),
                     )
                     .await;
+                    // Her genome between cards is her promoted genome alone: a trial gene
+                    // rides only the cards that drew it. Unreadable: the pre-turn snapshot.
+                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, None) {
+                        genome_back.restore_to(genes);
+                    }
+                    drop(genome_back);
                     // Give her back her own hands BEFORE anything else can
                     // observe them — every exit path from here (Spoke, Passed,
                     // Acted) must leave her rooted at home (#312).
@@ -646,4 +629,19 @@ pub(crate) async fn ask_the_act_question(
     // Reached only when she held no work (or no citizen was present) — nothing
     // was driven this call.
     false
+}
+
+/// The work-turn checkout uses the same card-id authority as room turns.
+/// Benchmark review retains its explicit owner-checkout behavior.
+pub(crate) fn held_card_workspace(
+    peer: &uuid::Uuid,
+    card: &airc_lib::WorkCard,
+) -> Option<std::path::PathBuf> {
+    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
+        let copies = crate::persona::staged_workspace::owners_of(&instance);
+        if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
+            return Some(copy.path.clone());
+        }
+    }
+    crate::modules::card_staging::checkout_path_for(peer, card)
 }

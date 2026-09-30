@@ -15,31 +15,20 @@
 //! No new dependency: `libc` is already in the tree; identity via `ps -p <pid> -o
 //! comm=` works identically on macOS and Linux.
 
-/// True if `pid` names a live process. `kill(pid, 0)` sends no signal: `0` = alive
-/// and ours; `EPERM` = alive but owned by another user (still alive); `ESRCH` =
-/// gone.
-#[cfg(unix)]
+/// True if `pid` names a live process — the ONE liveness check (`deploy_claim::owner_alive`
+/// and the grid's job table ask it too). The process table itself via `sysinfo`, on every
+/// platform. The Windows arm used to scrape `tasklist` output for the pid as a SUBSTRING, so pid
+/// 42 read alive whenever any pid containing "42" existed (the bug deploy_claim had already
+/// fixed with exactly this lookup).
 pub fn is_alive(pid: u32) -> bool {
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if rc == 0 {
-        return true;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    if pid == 0 {
+        return false;
     }
-    matches!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(e) if e == libc::EPERM
-    )
-}
-
-/// Windows: no `kill(pid, 0)`. Query the task table — a matching row means the
-/// pid is live. `tasklist` failing (unavailable / no permission) is treated as
-/// "not alive", matching the Unix path's conservative-on-error stance.
-#[cfg(windows)]
-pub fn is_alive(pid: u32) -> bool {
-    std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
+    let target = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[target]), true, ProcessRefreshKind::nothing());
+    sys.process(target).is_some()
 }
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
@@ -432,9 +421,73 @@ pub fn cache_ram_mib_in(argv: &[String]) -> Option<u32> {
     None
 }
 
+/// The KV cache decision a running llama-server was LAUNCHED with, read off its argv —
+/// the process's truth about the geometry the plan cannot change without a relaunch.
+/// `cache_type` is `--cache-type-k <t>` (or `=`); absent = the engine's default (f16).
+/// `flash_attn` is `--flash-attn on` (a bare `--flash-attn` or `on`/`auto`; `off` is off).
+/// Card 977842fd: the KV cache type is applied at SPAWN, an engine now survives a deploy
+/// (#4284), and the adopt rail compared model + window + lanes + sight — so a new
+/// decision (q8_0 on the 5090) never reached the f16 engine the new core adopted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchKv {
+    pub cache_type: Option<String>,
+    pub flash_attn: bool,
+}
+
+impl LaunchKv {
+    /// f16 is the engine's default, so "no flag" and "f16" are the same launch.
+    pub fn cache_type_or_default(&self) -> &str {
+        self.cache_type.as_deref().unwrap_or(crate::cognition::kv_cache_plan::F16) // unwrap_or: no flag = the engine's f16 default, a value not an absence
+    }
+}
+
+/// PURE: the KV decision in a llama-server argv (see [`LaunchKv`]).
+pub fn launch_kv_in(argv: &[String]) -> LaunchKv {
+    let mut cache_type = None;
+    let mut flash_attn = false;
+    let mut it = argv.iter().peekable();
+    while let Some(a) = it.next() {
+        if a == "--cache-type-k" || a == "-ctk" {
+            cache_type = it.next().cloned();
+        } else if let Some(v) = a.strip_prefix("--cache-type-k=") {
+            cache_type = Some(v.to_string());
+        } else if a == "--flash-attn" || a == "-fa" {
+            flash_attn = match it.peek().map(|s| s.as_str()) {
+                Some("off") => {
+                    it.next();
+                    false
+                }
+                Some("on") | Some("auto") => {
+                    it.next();
+                    true
+                }
+                _ => true,
+            };
+        } else if let Some(v) = a.strip_prefix("--flash-attn=") {
+            flash_attn = v != "off";
+        }
+    }
+    LaunchKv { cache_type, flash_attn }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the one liveness check lying either way — this process is alive, pid 0
+    // is never alive (it is not a process; signalling it hits the caller's group), and a pid no
+    // process holds is dead even when live pids CONTAIN its digits (the tasklist substring
+    // scrape read pid 42 alive whenever a pid like 4213 existed).
+    #[test]
+    fn liveness_is_the_process_table_not_a_text_match() {
+        let me = std::process::id();
+        assert!(is_alive(me));
+        assert!(!is_alive(0));
+        let dead = (1..u32::MAX / 4).map(|k| me.wrapping_mul(10).wrapping_add(k % 10) + k * 1000)
+            .find(|p| !sysinfo::System::new_all().process(sysinfo::Pid::from_u32(*p)).is_some())
+            .expect("an unused pid");
+        assert!(!is_alive(dead));
+    }
 
     // what this catches: the Windows port-owner lookup returning None for a port
     // that IS held. Regression for the 2026-09-05 wedge on BigMama — `lsof` does
@@ -583,5 +636,21 @@ mod tests {
             !is_llama_server(dead),
             "a reaped pid must not read as a live llama-server"
         );
+    }
+
+    // what this catches (card 977842fd): the running engine's KV decision is read off its
+    // own argv in every shape the launcher and an operator write it — the fact the adopt
+    // rail compares the plan's decision against.
+    #[test]
+    fn the_kv_decision_is_read_off_the_engines_own_argv() {
+        let argv = |s: &str| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        let kv = launch_kv_in(&argv("llama-server -m x.gguf --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on -c 53760"));
+        assert_eq!(kv, LaunchKv { cache_type: Some("q8_0".into()), flash_attn: true });
+        let plain = launch_kv_in(&argv("llama-server -m x.gguf -c 26880 --parallel 1"));
+        assert_eq!(plain, LaunchKv { cache_type: None, flash_attn: false });
+        assert_eq!(plain.cache_type_or_default(), "f16", "no flag is the engine's f16 default");
+        assert_eq!(launch_kv_in(&argv("llama-server --cache-type-k=q4_0 --flash-attn=off")), LaunchKv { cache_type: Some("q4_0".into()), flash_attn: false });
+        assert!(launch_kv_in(&argv("llama-server -fa --mmproj p.gguf")).flash_attn, "a bare flag is on and eats nothing");
+        assert!(!launch_kv_in(&argv("llama-server --flash-attn off")).flash_attn);
     }
 }

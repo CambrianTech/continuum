@@ -136,6 +136,14 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         // Caller-provided persona attribution. TS sends `personaId` (camelCase)
         // per Continuum convention; snake_case alias accepted for symmetry.
         persona_id: p.string_opt_alias("persona_id", "personaId"),
+        // The turn's own wire bound (card ba82d0a0): the requesting mind's measured
+        // expectation with headroom, serde's `{secs, nanos}`. A remote turn arrives
+        // here on the SERVING peer, whose lane must wait out the same prefill the
+        // requester is waiting out — dropped here, the peer's 300 s floor would kill
+        // the very turn the requester sized a 1200 s bound for. Absent = the floor.
+        turn_bound: p
+            .json_opt::<std::time::Duration>("turn_bound")
+            .or_else(|| p.json_opt("turnBound")),
     })
 }
 

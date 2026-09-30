@@ -10,23 +10,97 @@
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::ai::types::ToolCall;
 use crate::cognition::workspace::{
     Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle,
 };
 
 use super::apply::apply_act;
 use super::perception::{
-    any_real_receipt, claimed_file_without_act, collect_touched_paths, mutated_workspace,
+    any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace,
     wrote_without_observation,
 };
 use super::types::{SettleOutcome, SettleStep};
 
-/// The most one ACT may take before the turn is surrendered — perceive, deliberate,
-/// act, observe. The detached solve's stall watchdog derives its allowance from this
-/// (`commands::agent::solve::ACT_STALL_ALLOWANCE`): a run whose ledger has not advanced
-/// for several of these is wedged; one that advances at any pace is not.
+/// The FLOOR under one ACT — perceive, deliberate, act, observe — never the ceiling.
+/// A mind with a measured turn raises it (`turn_bound::act_bound_with_source`, card
+/// ebce2ba0); this constant governs alone until she has one, and no derived bound ever
+/// sinks below it.
+///
+/// The detached solve's stall watchdog derives its allowance from this
+/// (`commands::agent::solve::ACT_STALL_ALLOWANCE` = 3x): a run whose ledger has not
+/// advanced for several of these is wedged; one that advances at any pace is not.
+/// KNOWN BOUNDARY, recorded rather than half-fixed: that watchdog reads the CONSTANT, so
+/// once a box's measured turn passes ~19 minutes the derived act bound (4x the
+/// expectation) exceeds the 75-minute stall allowance and a single honest act could read
+/// as a stall. No box in the fleet's measured range is there today (the M5 measures ~7
+/// min a turn), and the attempt ceiling fires long before on one that slow. Making the
+/// watchdog per-persona is a change to `commands/agent/solve.rs`, which has its own
+/// required-read and belongs in its own card.
 pub(crate) const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+
+/// How many times an act's deadline may be extended while its generation advances: the
+/// ceiling is `1 + ACT_EXTENSIONS` bounds, so even a moving act cannot hold the lane past
+/// it (a slow clip still reaches every mind, card ef25bf6c).
+// derived-or-floor: a ceiling — 3x the act bound total (Fable on 6f3218ed); it only ENDS a wait, never shortens one.
+const ACT_EXTENSIONS: u32 = 2;
+
+/// Await one settle step under the act bound, where the bound is a CHECKPOINT while the
+/// act's own generation advances (card 6f3218ed). IntelMac, 2026-09-27: five of seven
+/// cancellations in an hour were generations dropped at 24.6 to 25.0 min, alive and queued
+/// or prefilling, because the bound was pure elapsed time and the measured turn that
+/// would raise it is what this tier rarely completes. At the deadline the persona's
+/// pinned slot is read (`llama_server::in_flight_slot`): processing at the first
+/// checkpoint, or the same task with its work moved at a later one, extends by one bound,
+/// up to [`ACT_EXTENSIONS`]. No pinned slot, an idle or silent slot, or a new task on it
+/// ends the act exactly as before (`Err(Elapsed)`), so a request lost inside a busy engine
+/// still ends.
+async fn until_act_stalls<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    bound: std::time::Duration,
+    persona: Option<uuid::Uuid>,
+    step: F,
+) -> Result<F::Output, ()> {
+    tokio::pin!(step);
+    let mut deadline = deadline;
+    let mut extensions = 0u32;
+    let mut previous = None;
+    loop {
+        tokio::select! {
+            out = &mut step => return Ok(out),
+            _ = tokio::time::sleep_until(deadline) => {
+                let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
+                let now = match &pinned {
+                    Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
+                    None => None,
+                };
+                // A condemned engine is never extended on: its relaunch cuts this act anyway,
+                // and holding on keeps that relaunch's drain (and the whole node) waiting.
+                if extensions >= ACT_EXTENSIONS
+                    || crate::inference::llama_server::engine_condemned()
+                    || !crate::inference::llama_server::slot_advanced(previous, now)
+                {
+                    return Err(());
+                }
+                extensions += 1;
+                previous = now;
+                deadline += bound;
+                crate::probe!(
+                    class = "settle.tick.extended",
+                    slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
+                    extensions = extensions as u64,
+                    bound_s = bound.as_secs(),
+                    "the act reached its deadline with its generation still advancing on its pinned slot — busy, not dead; one more bound"
+                );
+            }
+        }
+    }
+}
+
+/// One client for the act deadline's slot reads, built once per process.
+fn act_probe_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 // The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
 // its own truncation). Still used here for the settlement answer-head.
@@ -65,6 +139,80 @@ pub(crate) const TICK_DEADLINE: std::time::Duration = std::time::Duration::from_
 /// Consecutive spoken plans a workspace-deliverable turn tolerates before it
 /// settles without a deliverable (each is re-perceived, not ended).
 pub(super) const NARRATION_BUDGET: usize = 3;
+
+/// WHAT A SETTLE ITERATION WAS — an act, or a wait wearing an act's clothes.
+///
+/// Measured on the M5 2026-09-20 ~21:55Z (build 0047d521b, 4 residents sharing 2 lanes
+/// at 67,072): the hour's `persona.act.pace` rows carried act_secs 164, 249, 365, 866,
+/// 920, 1411 and 1500, and TWO of them read `model_ms=0` with `residue_ms` equal to the
+/// WHOLE act — 365,000 and 1,500,001. The same minds' `delib.gate.lane_wait` read
+/// `lanes_available=0`. Those two iterations never reached the model: a mind burned 6
+/// minutes and another 25, produced nothing, and the turn charged the time to her ACT
+/// pace anyway, so the rolling mean climbed to 693–1018 s on a node whose acts were
+/// mostly a queue. A number that only a wait can raise is not a measurement of work
+/// ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActClass {
+    /// The model was reached — this iteration is an act of cognition.
+    Act,
+    /// It never reached the model: no generation dispatched, no metrics. She waited
+    /// on a lane she did not get. It is NOT an act and must not be counted as one.
+    LaneStarved,
+}
+
+/// PURE: classify one settle iteration. `model_ms` is the act's generation wall-time;
+/// `generations` is how many generation receipts the step dispatched.
+///
+/// A FAULTED call still pushes a receipt (`GenerationReceipt::faulted`), so a model
+/// that answered badly is an act that reached the model — never a starve. Only an
+/// iteration that dispatched NOTHING is a wait.
+pub(crate) fn classify_act(model_ms: u64, generations: usize) -> ActClass {
+    if model_ms == 0 && generations == 0 {
+        ActClass::LaneStarved
+    } else {
+        ActClass::Act
+    }
+}
+
+/// THE TURN'S OWN PACE CADENCE — the rolling mean each act's wall-clock is judged
+/// against. Only an [`ActClass::Act`] is a sample: a lane wait is real elapsed time
+/// but it is not a sample of how fast she THINKS, and folding it in is what took the
+/// mean to 1018 s above. A starved iteration advances nothing here.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct PaceCadence {
+    sum_secs: f64,
+    samples: u32,
+}
+
+impl PaceCadence {
+    /// Record one iteration. Returns whether it advanced the cadence.
+    pub(crate) fn record(&mut self, act_secs: f64, class: ActClass) -> bool {
+        if class == ActClass::Act {
+            self.sum_secs += act_secs;
+            self.samples += 1;
+            true
+        } else {
+            false
+        }
+    }
+    pub(crate) fn mean_secs(&self) -> f64 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.sum_secs / self.samples as f64
+        }
+    }
+    pub(crate) fn samples(&self) -> u32 {
+        self.samples
+    }
+    /// "Slow" is relative to THIS turn's own pace, never a constant: twice the rolling
+    /// mean, from the 4th sample on (the old `acts >= 3` written in the cadence's own
+    /// unit, so a turn whose early iterations were waits still needs four real acts
+    /// before anything is called slow).
+    pub(crate) fn is_slow(&self, act_secs: f64) -> bool {
+        self.samples >= 4 && act_secs > self.mean_secs() * 2.0
+    }
+}
 
 pub fn drive_to_settle(
     cycle: &WorkspaceCycle,
@@ -154,8 +302,9 @@ async fn settle_to_outcome(
     let room_id: Uuid = burst.room.as_uuid();
     let mut acts = 0usize;
     let mut turn_acts: Vec<(String, Vec<crate::ai::types::ToolCall>)> = Vec::new();
-    // Rolling act-duration sum for the inline pace verdict below.
-    let mut pace_sum_secs: f64 = 0.0;
+    // Rolling act-duration cadence for the inline pace verdict below. ACTS only —
+    // a lane wait is not a sample of her pace (see [`PaceCadence`]).
+    let mut pace = PaceCadence::default();
     // This turn's causal thread: each admitted act observation becomes the
     // CausedBy target of the next act in the SAME chain — the driver owns the
     // chain, so an edge can never cross turns or rooms (CAUSAL-MEMORY-GRAPH.md).
@@ -184,28 +333,12 @@ async fn settle_to_outcome(
     // deliberations and no single one is canonical (card 0d51573a).
     let mut generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt> = Vec::new();
 
-    // Signature of a tick's tool batch for loop-detection: `name|args` per call, the random
-    // per-call `id` excluded, sorted so batch order doesn't matter. Two ticks with the same
-    // signature emitted the byte-identical action.
-    fn calls_signature(calls: &[ToolCall]) -> String {
-        let mut parts: Vec<String> = calls.iter().map(|c| c.loop_fingerprint()).collect();
-        parts.sort();
-        parts.join(",")
-    }
-    // BOUNDED STUCK-ACT BACKSTOP (#206). The escalating repeat-proprioception makes a looping
-    // model's perception genuinely shift, but a determined greedy model can still re-emit the
-    // SAME act every tick (glass-boxed: `commands/help` ×54, then after the escalation fix an
-    // identical `code/write` ×8) — each a dedup no-op the short-circuit guard already refuses
-    // to execute, burning the whole act budget on nothing. This bounds that: after
-    // STUCK_LIMIT consecutive byte-identical acts, stop GRANTING acts (`may_act=false`) so she
-    // must settle into a Speak/Pass from what she has. It is NOT a steer — it never says WHAT
-    // to do, exactly like the `max_acts` budget cutoff; it only stops feeding a detected
-    // fixed-point loop, and it's personhood-POSITIVE: it returns her to think→speech instead
-    // of hammering. GENUINE iteration is untouched — a refined write has a DIFFERENT signature,
-    // so the counter resets; only a fixed point (identical batch, over and over) trips it.
-    // [[repetition-brick-fires-but-does-not-break-the-loop]], [[no-hardcoded-heuristics-to-steer-cognition]].
+    // Admission uses the caller's budget and lifecycle deadlines. Identical inputs
+    // do not establish a stuck mind: repeated reads/retries can observe new state.
+    // Bound only a repeated input AND actual result, after executing the retry.
+    // This preserves unlimited productive work while yielding a fixed-point loop.
     const STUCK_LIMIT: usize = 3;
-    let mut prev_sig: Option<String> = None;
+    let mut prior_evidence = None;
     let mut stuck = 0usize;
     // A workspace-deliverable turn re-perceives on a zero-deliverable Speak (see the Spoke
     // arm). This used to be ONE-SHOT, and the glass box showed what that costs: on
@@ -278,7 +411,27 @@ async fn settle_to_outcome(
     let mut seen_inputs = None;
     let mut input_watermark = 0;
     loop {
-        let tick_deadline = tokio::time::Instant::now() + TICK_DEADLINE;
+        // THE ACT'S DEADLINE IS SIZED FROM THE TURN IT MUST HOLD (card ebce2ba0).
+        // `TICK_DEADLINE` was a flat 25 minutes, and on the M5 2026-09-20 it reaped five
+        // generations MID-FLIGHT at 1,207,290 / 1,228,814 / 1,491,253 / 1,492,283 /
+        // 1,492,456 ms of elapsed generation — the deadline expiring, less however far
+        // into the act the model call had started. Each of those left a `cancelled`
+        // capture reading "request future dropped before a terminal response": the
+        // substrate reaping its own healthy work, then reading the silence as a lazy
+        // citizen. A turn whose own stated bound (the `turn_bound` the request carries,
+        // #4277) exceeds the act's cannot finish inside the act.
+        //
+        // So the constant becomes a FLOOR under her measured expectation, never a
+        // ceiling over it — the same rule every waiting seam below already follows.
+        // `act_bound_with_source` covers TWO turn bounds because an act is a lane wait
+        // PLUS the generation after it, and the serving gate's own wait is one.
+        let (act_bound, act_bound_source) = crate::inference::turn_bound::act_bound_with_source(
+            TICK_DEADLINE,
+            cycle.acting().and_then(|body| {
+                crate::cognition::llm_deliberation_faculty::expected_occupancy_for(body.persona_id)
+            }),
+        );
+        let tick_deadline = tokio::time::Instant::now() + act_bound;
         if !first_step {
             if let (Some(input), Some(body)) = (conversation.as_deref_mut(), cycle.acting()) {
                 let received = match tokio::time::timeout_at(tick_deadline, input.perceive_ready()).await {
@@ -447,8 +600,7 @@ async fn settle_to_outcome(
                 }
             }
         }
-        // may_act gates ACTING (not speaking): past the act budget, once she is provably
-        // stuck re-emitting the identical act, OR once a workspace-deliverable turn has
+        // may_act gates ACTING (not speaking): past the act budget, or once a workspace-deliverable turn has
         // saturated its discovery budget without a single mutation (#390 gate above), a
         // fresh Act is returned un-driven and she must settle into a Speak/Pass.
         // Speaking is never gated.
@@ -485,9 +637,15 @@ async fn settle_to_outcome(
         // (Flash-Next deep tick ≈ 10-15 min incl. tools), fatally below forever.
         // Elapse → loud infra outcome; the drive ends; the hold RELEASES; resume
         // retries; nothing stays silently becalmed again.
-        let (step, step_metrics, step_receipts) = match tokio::time::timeout_at(
+        let acting_persona = cycle.acting().map(|body| body.persona_id);
+        let (step, step_metrics, step_receipts) = match until_act_stalls(
             tick_deadline,
-            settle_step(cycle, burst.clone(), may_act, framing, situation, &chain),
+            act_bound,
+            acting_persona,
+            // Boxed: the step is the largest future in the drive, and holding it by value
+            // inside this wrapper's own state overflowed the layout query depth (CI,
+            // "queries overflow the depth limit"). The box keeps the wrapper one pointer wide.
+            Box::pin(settle_step(cycle, burst.clone(), may_act, framing, situation, &chain)),
         )
         .await
         {
@@ -497,14 +655,20 @@ async fn settle_to_outcome(
                     class = "settle.tick.deadline",
                     room = %room_id,
                     acts_so_far = acts as u64,
-                    deadline_s = TICK_DEADLINE.as_secs(),
-                    "tick exceeded its deadline — ending the turn LOUDLY as infra (never a capability verdict); the hold releases with the drive"
+                    deadline_s = act_bound.as_secs(),
+                    // Which sized it: `turn_bound` = her measured turn raised the floor,
+                    // `floor` = she has no measured turn yet and the constant governed.
+                    // A `floor` row on a slow box is the next thing to fix.
+                    bound_source = act_bound_source.as_str(),
+                    floor_s = TICK_DEADLINE.as_secs(),
+                    "tick exceeded its deadline — ending the turn LOUDLY as infra (never a capability verdict); the hold releases with the drive. Any generation in flight is dropped and says so on persona.generation.dropped"
                 );
                 (
                     SettleStep::InferenceFailed {
                         error: format!(
-                            "tick exceeded {}s deadline at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
-                            TICK_DEADLINE.as_secs(),
+                            "tick exceeded {}s deadline ({}) at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
+                            act_bound.as_secs(),
+                            act_bound_source.as_str(),
                             acts
                         ),
                     },
@@ -520,6 +684,10 @@ async fn settle_to_outcome(
         // the metrics — the pace row below splits act time into model vs
         // residue with it.
         let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0);
+        // How many generations THIS step dispatched — counted before the receipts are
+        // folded into the turn's, because it is the other half of "did this iteration
+        // reach the model at all" (`classify_act`).
+        let act_generations = step_receipts.len();
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -534,12 +702,37 @@ async fn settle_to_outcome(
         // No constants deciding cognition: "slow" is relative to THIS turn's
         // own pace (2x rolling mean, min 3 samples), and the row always carries
         // the raw numbers so a dashboard can re-judge.
+        let act_class = classify_act(act_model_ms, act_generations);
         {
             let act_secs = act_started.elapsed().as_secs_f64();
-            pace_sum_secs += act_secs;
-            let pace_n = acts as f64 + 1.0;
-            let mean = pace_sum_secs / pace_n;
-            let slow = acts >= 3 && act_secs > mean * 2.0;
+            // THE SAMPLE IS AN ACT, NEVER A WAIT. The row still fires for both — a
+            // starved iteration is not deleted from the ledger, it is CLASSIFIED —
+            // but only an act moves the mean it is judged against.
+            pace.record(act_secs, act_class);
+            let mean = pace.mean_secs();
+            let slow = pace.is_slow(act_secs);
+            if act_class == ActClass::LaneStarved {
+                let who = cycle
+                    .acting()
+                    .map(|b| b.persona_name.clone())
+                    .unwrap_or_default(); // unwrap_or_default: a cycle with no acting body is nobody's turn; the empty name is the truth, not a guess
+                // A WAIT IS NOT AN ACT. Its own class, naming the mind, the wait, and
+                // how many lanes were free while she waited — so "8 acts, 0 writes"
+                // can never again read as eight turns of work when two of them were a
+                // mind parked at the serving gate.
+                crate::probe!(
+                    class = "persona.act.lane_starved",
+                    persona = who.as_str(),
+                    room_id = %room_id,
+                    act = acts,
+                    waited_secs = act_secs as u64,
+                    lanes_available = crate::cognition::resource_admission::serving_lane_permits_available() as u64,
+                    model_ms = act_model_ms,
+                    generations = act_generations as u64,
+                    "this iteration never reached the model — she waited and produced nothing; it is NOT counted as an act"
+                );
+                crate::modules::citizen_health::note_lane_starved();
+            }
             crate::probe!(
                 class = "persona.act.pace",
                 room_id = %room_id,
@@ -547,7 +740,6 @@ async fn settle_to_outcome(
                 act_secs = act_secs as u64,
                 rolling_mean_secs = mean as u64,
                 slow = slow,
-                stuck_streak = stuck,
                 // THE LEDGER SPLIT (restore-economy VDD): model_ms is this act's
                 // generation wall-time (the adapter's own measurement, riding up
                 // through StepMetrics); residue_ms is everything else the act
@@ -558,6 +750,11 @@ async fn settle_to_outcome(
                 // where its time went, per-act, at the moment it happens.
                 model_ms = act_model_ms,
                 residue_ms = ((act_secs * 1000.0) as u64).saturating_sub(act_model_ms),
+                // THE CLASSIFICATION, on the row itself: `reached_model=false` is a
+                // WAIT, not an act, and `pace_samples` says how many acts the mean
+                // beside it actually stands on.
+                reached_model = act_class == ActClass::Act,
+                pace_samples = pace.samples() as u64,
                 "act pace vs this turn's own rolling mean — slow/looping visible the moment it happens"
             );
         }
@@ -589,7 +786,7 @@ async fn settle_to_outcome(
                 // round: each work turn was one act and a spoken plan, the second plan
                 // ended the turn, the next turn re-oriented — 29 acts, 0 writes in 70
                 // minutes on 12 held cards. The fact names the count so pacing stays
-                // hers; the stuck detector still bounds the turn.
+                // hers; the caller budget and lifecycle deadlines still apply.
                 if framing.workspace_deliverable && narrations_since_act < NARRATION_BUDGET {
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent_entries()) {
@@ -683,25 +880,30 @@ async fn settle_to_outcome(
                         }
                     }
                 }
-                // Loop-detection: a byte-identical batch back-to-back is the fixed point the
-                // backstop bounds (the short-circuit guard already refused to re-execute it).
-                // A genuinely different act resets the counter, so real iteration is free.
-                let sig = calls_signature(&calls);
-                if prev_sig.as_deref() == Some(sig.as_str()) {
+                let evidence = cycle.acting().and_then(|body| {
+                    batch_evidence(&calls, &body.working_memory.recent_acts())
+                });
+                if evidence.is_some() && evidence == prior_evidence {
                     stuck += 1;
-                    if stuck >= STUCK_LIMIT {
-                        crate::probe!(
-                            class = "persona.settle.stuck_backstop",
-                            room_id = %room_id,
-                            acts = acts,
-                            stuck = stuck,
-                            "identical act repeated to the stuck limit — withholding further acts so she settles into speech (#206 backstop)"
-                        );
-                    }
                 } else {
                     stuck = 0;
                 }
-                prev_sig = Some(sig);
+                prior_evidence = evidence;
+                if stuck >= STUCK_LIMIT {
+                    crate::probe!(
+                        class = "persona.settle.stuck_backstop",
+                        room_id = %room_id,
+                        acts = acts,
+                        stuck = stuck,
+                        "same calls and actual results repeated; yielding without claiming completion"
+                    );
+                    if let Some(body) = cycle.acting() {
+                        body.working_memory.record_fact(
+                            "[repetition] Consecutive executions returned the same results for \
+                             the same requests. This turn yields; the work is not declared complete."
+                        );
+                    }
+                }
                 // The observation re-enters perception through MEMORY + the volatile
                 // working-memory recency channel — `apply_act` admitted it and
                 // recorded a stamped proprioception trace, and the next `settle_step`
@@ -753,6 +955,43 @@ async fn settle_to_outcome(
             // not loop/retry here — the grader owns retry policy; the settle loop's
             // job is to report the truth of THIS attempt.
             SettleStep::InferenceFailed { error } => {
+                // A STARVED MIND KEEPS HER BUDGET. This arm's retry budget is for a
+                // TRANSIENT MODEL FAULT — a generation that reached the lane and came
+                // back broken. An iteration that never reached the model is not a
+                // fault, and spending a retry on it spends the turn on the wait: the
+                // 1,500,001 ms row above was the per-act deadline expiring at the
+                // serving gate, and with three retries behind it a single starved turn
+                // could hold a mind for 75 minutes and still produce nothing. She
+                // DEFERS instead: `acts` is untouched (so her whole act budget is
+                // intact), the pace cadence did not advance, no retry was spent, and
+                // the pass carries NO reason — `classify_pass` reads that as `Unclear`
+                // and `conclude_from_pass` as `Hold`, so a card she holds stays hers.
+                // The next metronome tick tries again, on a lane that may be free.
+                if act_class == ActClass::LaneStarved {
+                    crate::probe!(
+                        class = "persona.act.lane_starved",
+                        room_id = %room_id,
+                        act = acts,
+                        acts_kept = (max_acts.saturating_sub(acts)) as u64,
+                        delib_retries_kept = DELIBERATION_RETRY_BUDGET.saturating_sub(delib_retries) as u64,
+                        error = %error,
+                        "deferred at the serving gate without reaching the model — act budget and deliberation retries left intact for the next tick"
+                    );
+                    return SettleOutcome {
+                        room: room_id,
+                        decision: Decision::pass(),
+                        spoken: None,
+                        acts,
+                        world_state: burst.rendered.clone(),
+                        room_updates: Arc::clone(&burst.room_updates),
+                        metrics,
+                        generation_receipts: generation_receipts.clone(),
+                        // Not an inference fault: no inference was ever dispatched.
+                        inference_error: None,
+                        touched_paths: touched,
+                        turn_acts: turn_acts.clone(),
+                    };
+                }
                 // #386 transient-deliberation retry. A faulted generation is NOT
                 // yet a surrendered turn — glass-box (atlas-17139-h1) proved the
                 // very next generation succeeds ~2/3 of the time. Retry the thought
@@ -1153,4 +1392,89 @@ pub(super) fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 6f3218ed): the act bound's extension leaking to an act with no
+    // pinned generation. Without a slot to read, the deadline ends the act at the bound,
+    // exactly as the plain timeout did; a step that finishes first returns its output.
+    #[tokio::test(start_paused = true)]
+    async fn an_act_with_no_pinned_slot_ends_at_its_bound_as_before() {
+        let bound = std::time::Duration::from_secs(1500);
+        let start = tokio::time::Instant::now();
+        let never = super::until_act_stalls(start + bound, bound, None, std::future::pending::<()>()).await;
+        assert!(never.is_err());
+        assert_eq!(start.elapsed(), bound, "no extension without a pinned slot");
+        let unpinned = uuid::Uuid::new_v4();
+        let quick = super::until_act_stalls(start + bound * 2, bound, Some(unpinned), async { 42 }).await;
+        assert_eq!(quick, Ok(42));
+    }
+
+    // what this catches: a turn iteration that never reached the model being counted as
+    // an act. M5, 2026-09-20 ~21:55Z, build 0047d521b, 4 residents on 2 lanes at 67,072:
+    // two `persona.act.pace` rows read `model_ms=0` with `residue_ms` equal to the WHOLE
+    // act — 365,000 and 1,500,001 — while `delib.gate.lane_wait` read
+    // `lanes_available=0`. Those were waits. A regression that classified them as acts
+    // is what made the hour line say "8 acts, 0 writes".
+    #[test]
+    fn an_iteration_that_never_reached_the_model_is_a_wait_not_an_act() {
+        // The two measured starved rows: no model time, no generation dispatched.
+        assert_eq!(classify_act(0, 0), ActClass::LaneStarved, "365,000 ms residue, model_ms=0");
+        // A real act: the model answered.
+        assert_eq!(classify_act(18_400, 1), ActClass::Act);
+        // A FAULTED generation still pushed a receipt — it reached the lane, so it is an
+        // act that failed, never a starve. Misreading it as a starve would hide the very
+        // inference faults `settle.inference_failed` exists to surface.
+        assert_eq!(classify_act(0, 1), ActClass::Act);
+    }
+
+    // what this catches: a lane wait advancing the pace cadence it is then judged
+    // against — the measurement that can only rise. The M5 hour's rows were act_secs
+    // 164, 249, 365, 866, 920, 1411, 1500 with rolling_mean_secs 693–1018; the 365 and
+    // 1500 rows were waits, and folding them in inflated the mean every act after them.
+    #[test]
+    fn a_starved_turn_leaves_the_pace_cadence_where_it_was() {
+        let mut pace = PaceCadence::default();
+        assert!(pace.record(164.0, ActClass::Act));
+        assert!(pace.record(249.0, ActClass::Act));
+        let before = (pace.samples(), pace.mean_secs());
+        // The 6-minute wait and the 25-minute one: neither is a sample.
+        assert!(!pace.record(365.0, ActClass::LaneStarved));
+        assert!(!pace.record(1500.0, ActClass::LaneStarved));
+        assert_eq!(
+            (pace.samples(), pace.mean_secs()),
+            before,
+            "a wait advances neither the sample count nor the mean"
+        );
+        // A real act does advance it.
+        assert!(pace.record(866.0, ActClass::Act));
+        assert_eq!(pace.samples(), 3);
+        assert!(
+            (pace.mean_secs() - (164.0 + 249.0 + 866.0) / 3.0).abs() < 1e-9,
+            "the mean stands on acts only: {}",
+            pace.mean_secs()
+        );
+    }
+
+    // what this catches: "slow" being called on fewer than four real acts, which is how
+    // a turn whose first iterations were lane waits would have been judged slow against
+    // a mean built out of waiting. Same rule as the original `acts >= 3`, written in the
+    // cadence's own unit.
+    #[test]
+    fn slow_needs_four_act_samples_never_a_wait() {
+        let mut pace = PaceCadence::default();
+        for _ in 0..6 {
+            pace.record(1500.0, ActClass::LaneStarved);
+        }
+        assert_eq!(pace.samples(), 0);
+        assert!(!pace.is_slow(1500.0), "six waits are not four acts");
+        for _ in 0..4 {
+            pace.record(10.0, ActClass::Act);
+        }
+        assert!(pace.is_slow(60.0), "6x the turn's own mean, on four real samples");
+        assert!(!pace.is_slow(15.0), "under 2x the mean is not slow");
+    }
 }

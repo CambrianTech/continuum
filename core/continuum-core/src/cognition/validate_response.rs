@@ -248,6 +248,7 @@ fn build_validate_generation_request(
         room_id: None,
         purpose: Some("cognition/validate-response-decision".to_string()),
         persona_id: None,
+        turn_bound: None,
     }
 }
 

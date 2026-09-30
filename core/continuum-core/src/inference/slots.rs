@@ -112,7 +112,8 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("models/try:vision")
         | Some("genome/teach")
         | Some("local-coding-agent")
-        | Some("serving-smoke-probe") => SlotClass::Probe,
+        | Some("serving-smoke-probe")
+        | Some("cognition/replay-request") => SlotClass::Probe,
         _ => SlotClass::Background,
     }
 }
@@ -176,8 +177,12 @@ pub struct KvSlotPool {
     /// The reserved non-citizen slot (highest index) when the server has ≥3
     /// slots — where ALL non-Turn traffic lands, so it structurally cannot
     /// evict a citizen's warm tail. `None` on small servers (≤2 slots): there,
-    /// non-Turn traffic uses `cache_prompt: false`; one slot saves its resident
-    /// before transient use, while two slots keep the unpinned fallback.
+    /// non-Turn traffic uses `cache_prompt: false` and BORROWS a citizen slot
+    /// through the pool ([`Self::transient_slot`]) with its resident saved first.
+    /// Two slots used to keep an "unpinned fallback" instead — measured 2026-09-26
+    /// on BigMama (card 4deaed09): the server placed that traffic by similarity
+    /// onto a resident's slot and overwrote her page; Sahar reused 0 tokens on
+    /// every turn while Kimi, on the other slot, reused 44,950.
     scratch: Option<u32>,
     /// slot index → the activity whose KV last WARMED that slot. This is the
     /// paging ledger's "who is resident" half: when a lease hands a slot to a
@@ -188,9 +193,29 @@ pub struct KvSlotPool {
     /// Activities with a valid KV page on disk (written via
     /// `/slots/{id}?action=save` under the lane's `--slot-save-path`). The
     /// restore half of the ledger: a re-entering activity whose slot was
-    /// recycled restores its page (~0.1s measured at 20k tokens) instead of
+    /// recycled restores its page (at this node's measured switch cost) instead of
     /// re-prefilling (~35s at 22k — the 330× cliff the restore economy names).
     saved: Mutex<std::collections::HashSet<ActivityKey>>,
+    /// Physical-slot admission also excludes concurrent requests for the same key.
+    operations: Vec<Arc<tokio::sync::Semaphore>>,
+    /// Signalled whenever a slot's operation permit is released: what a turn that found every
+    /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
+    /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
+    released: Arc<tokio::sync::Notify>,
+}
+
+/// A slot's operation permit. Dropping it wakes turns waiting for a slot
+/// ([`KvSlotPool::released`]); the holder's pin was already dropped (field order in
+/// `TurnAdmission`), so a woken turn finds that lease evictable.
+pub struct SlotPermit {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    released: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for SlotPermit {
+    fn drop(&mut self) {
+        self.released.notify_waiters();
+    }
 }
 
 /// What a Turn must do AROUND its request to honor the KV paging design — the
@@ -206,6 +231,8 @@ pub struct SlotPaging {
     /// This activity has a page on disk and the slot does not currently hold
     /// its (fresher) KV — restore the page before the turn.
     pub restore: bool,
+    /// The physical slot already contains this activity, rather than a new lease.
+    pub already_resident: bool,
 }
 
 /// The page filename for an activity — stable across processes, one file per
@@ -372,6 +399,10 @@ impl KvSlotPool {
             scratch,
             holders: Mutex::new(std::collections::HashMap::new()),
             saved: Mutex::new(std::collections::HashSet::new()),
+            operations: (0..n_slots)
+                .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
+                .collect(),
+            released: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -383,6 +414,27 @@ impl KvSlotPool {
     /// spare one.
     pub fn scratch_slot(&self) -> Option<u32> {
         self.scratch
+    }
+
+    /// The citizen slot transient traffic borrows on a server with NO scratch slot:
+    /// a slot nobody's KV warms if there is one, else the resident whose page is the
+    /// cheapest to lose — the smallest `tail_tokens`, the priced eviction's own cost
+    /// basis. The single-slot rule ("save the resident, then borrow") generalised to
+    /// every scratch-less pool; the caller saves that resident before the borrow.
+    pub(crate) fn transient_slot(&self) -> u32 {
+        let holders = self.holders.lock();
+        let citizens = citizen_slots(self.n_slots);
+        if let Some(free) = (0..citizens).find(|slot| !holders.contains_key(slot)) {
+            return free;
+        }
+        (0..citizens)
+            .min_by_key(|slot| {
+                holders
+                    .get(slot)
+                    .and_then(|key| self.pool.get(key))
+                    .map_or(0, |lease| lease.tail_tokens.load(Ordering::Relaxed))
+            })
+            .unwrap_or(0) // unwrap_or: a pool has at least one slot; an empty range is impossible
     }
 
     /// Record the activity's current prompt size — the cost basis the priced
@@ -401,27 +453,38 @@ impl KvSlotPool {
         if let Some(lease) = self.pool.get(&key) {
             return Some(lease.slot);
         }
-        // Two rounds: (try allocate) → (make room, try again). load_or_share is
-        // single-flight per key, so concurrent same-activity requests share one
-        // assignment; distinct activities racing for the last index resolve by
-        // one of them evicting (mild over-eviction under a stampede is idle-
-        // activity warmth lost, never correctness).
-        for round in 0..2 {
-            if self.free.lock().is_empty() && round > 0 {
-                return None; // eviction freed nothing — everything pinned
-            }
+        // Allocation races are retryable, not evidence that every lease is pinned.
+        // Only a failed eviction below may return None: admission parks on that
+        // result and needs a real holder to eventually signal its release (#4515).
+        //
+        // INVARIANT this unbounded loop rests on (Fable on #4516): an evicted lease hands its
+        // index back SYNCHRONOUSLY (KvSlotLease's Drop pushes to `free`), so each extra pass costs
+        // exactly one eviction per race actually lost. Never hold a clone of a NON-pinned
+        // `Arc<KvSlotLease>` across an await: if one outlived its eviction, `free` would stay
+        // empty and every pass would evict ANOTHER resident, a cascade the old two-round bound
+        // capped. Pins are never evicted, so a pinned clone is safe.
+        loop {
             if self.free.lock().is_empty() {
                 let evicted = self.pool.evict_at_least(1);
+                if evicted == 0 {
+                    // Nothing to evict: every lease is pinned by an in-flight turn. Said as
+                    // what it is (it read "engine evicted" with evicted_count 0, Fable on the
+                    // M5); the caller waits for a release rather than running unpinned.
+                    crate::probe!(
+                        class = "inference.slot_affinity.all_pinned",
+                        persona = %key.persona,
+                        room = %key.room,
+                        "all slots are pinned by in-flight turns: nothing to evict"
+                    );
+                    return None;
+                }
                 crate::probe!(
                     class = "inference.slot_affinity.evicted",
                     evicted_count = evicted,
                     "all slots held — engine evicted the least-valuable activity; its \
                      warm prefix is forfeit and its next turn re-prefills (or restores \
-                     from the server's prompt cache, measured ~0.1s at 20k)",
+                     its page at this node's measured switch cost — inference.kv_page.action ms)",
                 );
-                if evicted == 0 {
-                    return None;
-                }
             }
             let free = Arc::clone(&self.free);
             let res = self
@@ -449,10 +512,14 @@ impl KvSlotPool {
                     );
                     return Some(lease.slot);
                 }
-                Err(_) => continue, // lost the race for the last index — make room
+                Err(_) => {
+                    // Another allocator took the last index. Recheck eviction after
+                    // yielding; exhausting an arbitrary retry count could park a
+                    // caller even though the competing lease is already evictable.
+                    tokio::task::yield_now().await;
+                }
             }
         }
-        None
     }
 
     /// [`Self::lease`] plus the paging ledger: who to SAVE before this turn
@@ -468,15 +535,48 @@ impl KvSlotPool {
     ///   ours if a page exists; nothing known to save.
     pub async fn lease_paged(&self, key: ActivityKey) -> Option<SlotPaging> {
         let slot = self.lease(key).await?;
+        Some(self.plan_paging(slot, key))
+    }
+
+    /// Resolve the physical index from the pinned assignment, not a prior lease
+    /// that another executor thread could have evicted before the pin.
+    pub(crate) fn pin_slot(&self, key: &ActivityKey) -> Option<(u32, SlotPin)> {
+        let pin = self.pin(key)?;
+        let slot = pin.value()?.slot;
+        Some((slot, pin))
+    }
+
+    /// Hold through paging and generation; pins alone only exclude eviction.
+    pub(crate) async fn acquire_slot(&self, slot: u32) -> Result<SlotPermit, String> {
+        let operation = self
+            .operations
+            .get(slot as usize)
+            .ok_or("unknown physical KV slot")?;
+        let permit = operation
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "physical KV slot admission closed".to_string())?;
+        Ok(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
+    }
+
+    /// The signal a slot release raises; see [`Self::released`] on the struct.
+    pub(crate) fn released(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.released)
+    }
+
+    /// Caller holds the physical-slot permit and activity pin before changing attribution.
+    pub(crate) fn plan_paging(&self, slot: u32, key: ActivityKey) -> SlotPaging {
         let prev = self.holders.lock().insert(slot, key);
         let save_first = prev.filter(|p| *p != key);
         let slot_holds_ours = prev == Some(key);
         let restore = !slot_holds_ours && self.saved.lock().contains(&key);
-        Some(SlotPaging {
+        SlotPaging {
             slot,
             save_first,
             restore,
-        })
+            already_resident: slot_holds_ours,
+        }
     }
 
     /// Pin this activity's slot for the duration of a turn. While the returned
@@ -526,29 +626,636 @@ impl KvSlotPool {
 /// unsupported (no /props surface). The transport-side probe
 /// (the adapter owns the HTTP client) discovers; this directory owns state.
 pub struct SlotDirectory {
-    pools: dashmap::DashMap<String, Option<Arc<KvSlotPool>>>,
+    endpoints: dashmap::DashMap<String, Arc<EndpointSlots>>,
+}
+
+/// Exact launch/page compatibility, supplied by the process owner, never inferred
+/// from the URL. Unknown or changed contracts cannot inherit saved-page eligibility.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct KvPageContract {
+    pub model_id: String,
+    pub model: std::path::PathBuf,
+    pub adapters: Vec<String>,
+    pub page_dir: Option<std::path::PathBuf>,
+    pub context: u32,
+    pub slots: u32,
+    pub cache_type: Option<String>,
+    pub engine: String,
+    /// Cold-path revision evidence for the resolved model, adapters and engine.
+    /// Unknown revisions refuse saved-page carry-over, never guess compatibility.
+    pub revisions: Option<Vec<(std::path::PathBuf, u64, std::time::SystemTime)>>,
+}
+
+struct EndpointState {
+    /// Whether admissions are open. A `watch` rather than a bool so a TURN can wait
+    /// for the writer that closed the endpoint to reopen it ([`EndpointSlots::admit_when_ready`])
+    /// instead of being refused on the spot; every write goes through `send_replace`,
+    /// so the field and the signal cannot disagree.
+    ready: tokio::sync::watch::Sender<bool>,
+    paging_uncertain: bool,
+    generation: Option<EngineGeneration>,
+    contract: Option<KvPageContract>,
+    pool: Option<Option<Arc<KvSlotPool>>>,
+    // An installed ledger can outlive its child until replacement readiness.
+    pool_generation: Option<Uuid>,
+}
+
+/// The directory's existing endpoint owner also arbitrates engine transitions.
+/// Admission holds a read lease through HTTP completion; transitions drain those
+/// leases before retiring the engine. Closing survives cancellation of a transition.
+pub(crate) struct EndpointSlots {
+    gate: Arc<tokio::sync::RwLock<()>>,
+    state: Mutex<EndpointState>,
+    /// The read side of `EndpointState::ready`, for turns that hold through a transition.
+    ready_rx: tokio::sync::watch::Receiver<bool>,
+}
+
+pub(crate) struct EndpointAdmission {
+    endpoint: Arc<EndpointSlots>,
+    _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    pub pool: Option<Arc<KvSlotPool>>,
+}
+
+impl EndpointAdmission {
+    /// Called while this generation's read lease still prevents replacement.
+    pub(crate) fn quarantine_paging(&self) {
+        self.endpoint.quarantine_paging();
+    }
+
+    pub(crate) fn check_ready(&self) -> Result<(), String> {
+        if *self.endpoint.state.lock().ready.borrow() {
+            Ok(())
+        } else {
+            Err("serving endpoint suspended; paging or engine completion remains unverified".into())
+        }
+    }
+}
+
+pub(crate) struct EndpointTransition {
+    endpoint: Arc<EndpointSlots>,
+    _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+/// Confirmed saves of every attributed resident. Retains the exclusive writer
+/// borrow; revalidates generation and installed ledger before exposing that same
+/// transition for composition. Lifecycle mutation through the returned transition
+/// requires a fresh validation before reuse. This proves neither launch dependency
+/// identity nor child exit/resource capacity.
+pub(crate) struct ResidentCheckpoint<'a> {
+    transition: &'a mut EndpointTransition,
+    generation: EngineGeneration,
+    pool: Arc<KvSlotPool>,
+}
+
+/// Exact live ledger suspended by one owned operation, not a new page contract.
+#[derive(Clone)]
+pub(crate) struct EndpointSuspension {
+    endpoint: Arc<EndpointSlots>,
+    generation: EngineGeneration,
+    pool: Arc<KvSlotPool>,
+    contract: KvPageContract,
+}
+
+impl ResidentCheckpoint<'_> {
+    /// Keep the original drained writer for eventual lifecycle composition.
+    pub(crate) fn transition_for(
+        &self,
+        expected: &EngineGeneration,
+    ) -> Result<&EndpointTransition, String> {
+        if !self.generation.same_engine(expected) || self.generation.has_exited() {
+            return Err("resident checkpoint generation exited or does not match".into());
+        }
+        let state = self.transition.endpoint.state.lock();
+        if state.paging_uncertain
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.same_engine(expected))
+            || state.pool_generation != Some(expected.id)
+            || !state
+                .pool
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_some_and(|p| Arc::ptr_eq(p, &self.pool))
+        {
+            return Err("resident checkpoint generation is no longer current".into());
+        }
+        Ok(self.transition)
+    }
+}
+
+// A backend request can outlive its cancelled Rust future. Quarantine while the
+// writer is still held, matching TurnAdmission's existing read-lease rule.
+struct CheckpointSave {
+    endpoint: Arc<EndpointSlots>,
+    pending: bool,
+}
+
+impl Drop for CheckpointSave {
+    fn drop(&mut self) {
+        if self.pending {
+            self.endpoint.quarantine_paging();
+        }
+    }
+}
+
+/// Travels with the actual owned Child, including after retirement. The exit bit
+/// belongs to this generation even when the endpoint already has a newer child.
+#[derive(Clone)]
+pub(crate) struct EngineGeneration {
+    id: Uuid,
+    exited: Arc<std::sync::atomic::AtomicBool>,
+    endpoint: std::sync::Weak<EndpointSlots>,
+}
+
+impl EngineGeneration {
+    pub(crate) fn same_engine(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+
+    pub(crate) fn retiring(&self) {
+        if let Some(endpoint) = self.endpoint.upgrade() {
+            let state = endpoint.state.lock();
+            if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
+                state.ready.send_replace(false);
+            }
+        }
+    }
+    pub(crate) fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn observed_exit(&self) {
+        self.exited.store(true, Ordering::Release);
+        if let Some(endpoint) = self.endpoint.upgrade() {
+            let state = endpoint.state.lock();
+            if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
+                state.ready.send_replace(false);
+                crate::probe!(
+                    class = "inference.kv_engine.exited",
+                    generation = %self.id,
+                    "owned engine exit observed; endpoint admissions remain closed"
+                );
+                // Do not mutate a ledger while an old HTTP future can still write
+                // it. Replacement readiness drains admissions and replaces it.
+            }
+        }
+    }
+}
+
+impl EndpointSlots {
+    fn quarantine_paging(&self) {
+        let mut state = self.state.lock();
+        state.paging_uncertain = true;
+        state.ready.send_replace(false);
+        crate::probe!(
+            class = "inference.kv_page.uncertain",
+            "paging completion unverified; endpoint requires verified engine replacement"
+        );
+    }
+
+    pub(crate) fn paging_recovery_required(&self) -> bool {
+        self.state.lock().paging_uncertain
+    }
+    pub(crate) fn is_ready(&self) -> bool {
+        let ready = *self.state.lock().ready.borrow();
+        ready
+    }
+    /// How long a TURN holds through a closed endpoint: an engine REPLACEMENT, not one
+    /// launch. Measured on BigMama 2026-09-26 14:24:55–14:27:10Z: a KV restore ran past
+    /// its bound, the endpoint was quarantined, the engine was retired and relaunched
+    /// (two exits, one verified generation) — 135 s of refusals, 36 of them Kimi's. One
+    /// launch budget ([`crate::inference::llama_server::DEFAULT_SERVING_WAIT`], 120 s)
+    /// would have missed that by 15 s and refused the turns that had waited longest. So:
+    /// an exit and a launch, each within the spawner's own budget. Still bounded — past
+    /// it the launch itself would have been judged failed twice over.
+    pub const TURN_READINESS_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
+        2 * crate::inference::llama_server::DEFAULT_SERVING_WAIT.as_secs(),
+    );
+
+    /// Admit a TURN, holding through a closed endpoint for up to `patience` before refusing.
+    ///
+    /// Why a turn holds and why the bound is what it is (BigMama, 2026-09-26): after the
+    /// 12:20Z boot Kimi's turn met [`Self::admit`] while the engine was still loading and
+    /// was refused 8 times in 1.5 s, then 8 more on the cross-grid fallback, which reached
+    /// a peer in the same state — 16 of her 26 requests in 90 minutes failed inside
+    /// 12:28:16–12:29:41Z, and the engine was ready at 12:30Z. A loading engine is BUSY,
+    /// not dead (Joel: busy is not dead). The writer that closed the endpoint reopens it;
+    /// a turn should be standing there when it does. `patience` is the caller's — the
+    /// persona adapter passes [`Self::TURN_READINESS_PATIENCE`]; a caller that wants the
+    /// instant answer (warm-ahead, the operator probe, a test asserting the refusal)
+    /// passes zero. Past it the refusal is the same as before, with the wait in it.
+    pub(crate) async fn admit_when_ready(
+        self: &Arc<Self>,
+        patience: std::time::Duration,
+    ) -> Result<EndpointAdmission, String> {
+        // Zero patience is the instant answer, not a zero-length timer: a
+        // `tokio::time::timeout(ZERO, …)` still goes through the time driver, and
+        // under a current-thread runtime that turn is observable (the warm-ahead
+        // fixture's parked handler never drained behind it) — so the instant path
+        // never touches the timer at all.
+        if patience.is_zero() {
+            return self.admit().await;
+        }
+        let mut ready = self.ready_rx.clone();
+        let held = std::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + patience;
+        let mut waited = !*ready.borrow_and_update();
+        let mut reopened: u64 = 0;
+        // ONE deadline for the whole hold, however many times the endpoint closes and
+        // reopens inside it (Cormac's review of #4411, the M5 grow chain: transitions
+        // back to back, and the first cut refused a held turn with patience left the
+        // moment the second one closed the endpoint behind the first one's reopen).
+        loop {
+            match tokio::time::timeout_at(deadline, ready.wait_for(|open| *open)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => {
+                    return Err("serving endpoint closed while a turn waited for readiness".into())
+                }
+                Err(_) => {
+                    crate::probe!(
+                        class = "inference.admission.refused_after_hold",
+                        held_ms = held.elapsed().as_millis() as u64,
+                        reopened,
+                        "engine readiness did not arrive within the turn's patience"
+                    );
+                    return Err(format!(
+                        "serving endpoint is suspended pending engine readiness (held {} s)",
+                        held.elapsed().as_secs()
+                    ));
+                }
+            }
+            match self.admit().await {
+                Ok(admission) => {
+                    if waited {
+                        crate::probe!(
+                            class = "inference.admission.held",
+                            held_ms = held.elapsed().as_millis() as u64,
+                            reopened,
+                            "a turn waited through engine readiness instead of being refused"
+                        );
+                    }
+                    return Ok(admission);
+                }
+                // Closed again between the reopen and the admission: the next writer
+                // is already in. The patience is the turn's, not one transition's.
+                Err(_) => {
+                    waited = true;
+                    reopened += 1;
+                }
+            }
+        }
+    }
+
+    /// The patience a TURN brings to a closed endpoint: [`Self::TURN_READINESS_PATIENCE`],
+    /// but never more than the turn has left on its own bound, counted from the request's
+    /// start — so the hold SPENDS the turn bound and never stacks 240 s on top of it
+    /// (Cormac and Fable's review of #4411). A turn with no bound of its own gets the
+    /// full patience; one that is already out of time gets the instant answer. PURE.
+    pub fn turn_patience(
+        turn_bound: Option<std::time::Duration>,
+        elapsed: std::time::Duration,
+    ) -> std::time::Duration {
+        match turn_bound {
+            Some(bound) => Self::TURN_READINESS_PATIENCE.min(bound.saturating_sub(elapsed)),
+            None => Self::TURN_READINESS_PATIENCE,
+        }
+    }
+
+    pub(crate) async fn admit(self: &Arc<Self>) -> Result<EndpointAdmission, String> {
+        if !*self.state.lock().ready.borrow() {
+            return Err("serving endpoint is suspended pending engine readiness".into());
+        }
+        let guard = self.gate.clone().read_owned().await;
+        let state = self.state.lock();
+        if !*state.ready.borrow() {
+            return Err("serving endpoint is suspended pending engine readiness".into());
+        }
+        Ok(EndpointAdmission {
+            endpoint: self.clone(),
+            _guard: guard,
+            pool: state.pool.as_ref().and_then(Clone::clone),
+        })
+    }
+
+    /// Queue a writer without suspending a replacement on behalf of a stale caller.
+    /// Tokio's fair writer queue bars later admissions while existing readers drain.
+    pub(crate) async fn transition_for_generation(
+        self: &Arc<Self>,
+        expected: &EngineGeneration,
+    ) -> Result<EndpointTransition, ()> {
+        self.transition_for_generation_if(expected, &|| true).await
+    }
+
+    pub(crate) async fn transition_for_generation_if(
+        self: &Arc<Self>,
+        expected: &EngineGeneration,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<EndpointTransition, ()> {
+        let guard = self.gate.clone().write_owned().await;
+        let state = self.state.lock();
+        if !state
+            .generation
+            .as_ref()
+            .is_some_and(|g| g.same_engine(expected))
+        {
+            return Err(());
+        }
+        drop(state);
+        if !current() {
+            return Err(());
+        }
+        self.state.lock().ready.send_replace(false);
+        Ok(EndpointTransition {
+            endpoint: self.clone(),
+            _guard: guard,
+        })
+    }
+
+    /// Drain first, then admit a conditional lifecycle operation. A superseded
+    /// request (or cancellation while queued) must not suspend the current engine.
+    pub(crate) async fn transition_if(
+        self: &Arc<Self>,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<EndpointTransition, ()> {
+        let guard = self.gate.clone().write_owned().await;
+        if !current() {
+            return Err(());
+        }
+        self.state.lock().ready.send_replace(false);
+        Ok(EndpointTransition {
+            endpoint: self.clone(),
+            _guard: guard,
+        })
+    }
+
+    pub(crate) async fn transition(self: &Arc<Self>) -> EndpointTransition {
+        self.state.lock().ready.send_replace(false);
+        let guard = self.gate.clone().write_owned().await;
+        // A preceding transition might have reopened while this writer waited.
+        self.state.lock().ready.send_replace(false);
+        EndpointTransition {
+            endpoint: self.clone(),
+            _guard: guard,
+        }
+    }
+}
+
+impl EndpointTransition {
+    pub(crate) fn capture_suspension(
+        &self,
+        expected: &EngineGeneration,
+    ) -> Result<EndpointSuspension, String> {
+        let state = self.endpoint.state.lock();
+        if expected.has_exited()
+            || state.paging_uncertain
+            || state.pool_generation != Some(expected.id)
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.same_engine(expected))
+        {
+            return Err("cannot suspend an unknown or uncertain live ledger".into());
+        }
+        Ok(EndpointSuspension {
+            endpoint: self.endpoint.clone(),
+            generation: expected.clone(),
+            pool: state
+                .pool
+                .as_ref()
+                .and_then(Clone::clone)
+                .ok_or("missing live ledger")?,
+            contract: state.contract.clone().ok_or("missing live page contract")?,
+        })
+    }
+
+    pub(crate) fn resume_suspension(
+        &self,
+        original: &EndpointSuspension,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(), String> {
+        if !Arc::ptr_eq(&self.endpoint, &original.endpoint) || !current() {
+            return Err("suspended endpoint or intent changed".into());
+        }
+        let state = self.endpoint.state.lock();
+        if original.generation.has_exited()
+            || state.paging_uncertain
+            || state.pool_generation != Some(original.generation.id)
+            || state.contract.as_ref() != Some(&original.contract)
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.same_engine(&original.generation))
+            || !state
+                .pool
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_some_and(|p| Arc::ptr_eq(p, &original.pool))
+        {
+            return Err("suspended live ledger changed or paging is uncertain".into());
+        }
+        state.ready.send_replace(true);
+        Ok(())
+    }
+
+    /// Save only known physical residents after all endpoint readers have drained.
+    /// Refusal never reopens the endpoint or retires its owned child.
+    pub(crate) async fn checkpoint_residents(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+    ) -> Result<ResidentCheckpoint<'_>, String> {
+        use super::turn_admission::{kv_page_action, PageOutcome};
+
+        if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
+            return Err("checkpoint URL does not identify the held endpoint".into());
+        }
+        let (generation, pool) = {
+            let state = self.endpoint.state.lock();
+            if state.paging_uncertain {
+                return Err("checkpoint refused: paging completion remains uncertain".into());
+            }
+            let generation = state
+                .generation
+                .clone()
+                .ok_or("checkpoint requires an owned generation")?;
+            if generation.has_exited() || state.pool_generation != Some(generation.id) {
+                return Err("checkpoint requires this live generation's verified pool".into());
+            }
+            if state
+                .contract
+                .as_ref()
+                .and_then(|c| c.page_dir.as_ref())
+                .is_none()
+            {
+                return Err("checkpoint requires a verified page directory".into());
+            }
+            let pool = state
+                .pool
+                .as_ref()
+                .and_then(Clone::clone)
+                .ok_or("checkpoint requires a known slot pool")?;
+            state.ready.send_replace(false);
+            (generation, pool)
+        };
+        let mut residents: Vec<_> = pool
+            .holders
+            .lock()
+            .iter()
+            .map(|(&slot, &key)| (slot, key))
+            .collect();
+        residents.sort_unstable_by_key(|(slot, _)| *slot);
+        for (slot, key) in residents {
+            if generation.has_exited() {
+                return Err("checkpoint engine exited before save".into());
+            }
+            pool.note_page_lost(&key);
+            let mut save = CheckpointSave {
+                endpoint: self.endpoint.clone(),
+                pending: true,
+            };
+            match kv_page_action(client, root, slot, &key, "save").await {
+                PageOutcome::Completed => {
+                    save.pending = false;
+                    pool.note_saved(key);
+                }
+                PageOutcome::Rejected => {
+                    save.pending = false;
+                    return Err(format!("checkpoint save rejected for slot {slot}"));
+                }
+                PageOutcome::Uncertain => {
+                    return Err(format!("checkpoint save completion uncertain for slot {slot}; endpoint quarantined"));
+                }
+            }
+        }
+        if generation.has_exited() {
+            return Err("checkpoint engine exited before completion".into());
+        }
+        Ok(ResidentCheckpoint {
+            transition: self,
+            generation,
+            pool,
+        })
+    }
+
+    pub(crate) fn previous_generation(&self) -> Option<EngineGeneration> {
+        self.endpoint.state.lock().generation.clone()
+    }
+
+    pub(crate) fn start_generation(&self) -> Result<EngineGeneration, String> {
+        let mut state = self.endpoint.state.lock();
+        if state.generation.as_ref().is_some_and(|g| !g.has_exited()) {
+            return Err("predecessor engine exit remains unverified".into());
+        }
+        let generation = EngineGeneration {
+            id: Uuid::new_v4(),
+            exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            endpoint: Arc::downgrade(&self.endpoint),
+        };
+        state.generation = Some(generation.clone());
+        state.paging_uncertain = false;
+        Ok(generation)
+    }
+
+    pub(crate) fn ready(
+        &self,
+        root: &str,
+        generation: &EngineGeneration,
+        contract: KvPageContract,
+    ) -> Result<(), String> {
+        let mut state = self.endpoint.state.lock();
+        if generation.has_exited()
+            || !state
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.id == generation.id)
+        {
+            return Err("engine generation exited or was superseded before readiness".into());
+        }
+        if state.paging_uncertain {
+            return Err(
+                "uncertain paging requires verified predecessor exit and a new engine generation"
+                    .into(),
+            );
+        }
+        if *state.ready.borrow() {
+            return if state.contract.as_ref() == Some(&contract) {
+                Ok(())
+            } else {
+                Err("ready engine cannot change its page contract without a transition".into())
+            };
+        }
+        // A fresh assignment ledger prevents old Arc holders/pins from affecting
+        // the new engine. Copy ONLY saved-page eligibility under an exact contract.
+        let pool = Arc::new(KvSlotPool::new(root, contract.slots));
+        if contract.page_dir.is_some()
+            && contract.cache_type.is_some()
+            && contract.revisions.is_some()
+            && state.contract.as_ref() == Some(&contract)
+        {
+            if let Some(Some(old)) = state.pool.as_ref() {
+                *pool.saved.lock() = old.saved.lock().clone();
+            }
+        }
+        state.pool = Some(Some(pool));
+        state.pool_generation = Some(generation.id);
+        state.contract = Some(contract);
+        state.ready.send_replace(true);
+        crate::probe!(
+            class = "inference.kv_engine.ready",
+            endpoint = root,
+            generation = %generation.id,
+            "verified engine generation installed with fresh physical KV attribution"
+        );
+        Ok(())
+    }
 }
 
 impl SlotDirectory {
+    pub(crate) fn endpoint(&self, root: &str) -> Arc<EndpointSlots> {
+        self.endpoints
+            .entry(root.trim_end_matches('/').to_string())
+            .or_insert_with(|| {
+                let (ready, ready_rx) = tokio::sync::watch::channel(true);
+                Arc::new(EndpointSlots {
+                    gate: Arc::new(tokio::sync::RwLock::new(())),
+                    ready_rx,
+                    state: Mutex::new(EndpointState {
+                        ready,
+                        paging_uncertain: false,
+                        generation: None,
+                        contract: None,
+                        pool: None,
+                        pool_generation: None,
+                    }),
+                })
+            })
+            .clone()
+    }
     /// `None` entry == latched Unsupported for this server root.
     pub fn latch_unsupported(&self, root: &str) {
-        self.pools.insert(root.to_string(), None);
+        let endpoint = self.endpoint(root);
+        let mut state = endpoint.state.lock();
+        if state.generation.is_none() {
+            state.pool = Some(None);
+        }
     }
 
     /// `Some(Some(pool))` = pool ready; `Some(None)` = latched unsupported;
     /// `None` = never probed (caller should probe /props).
     pub fn get(&self, root: &str) -> Option<Option<Arc<KvSlotPool>>> {
-        self.pools.get(root).map(|e| e.clone())
+        self.endpoint(root).state.lock().pool.clone()
     }
 
     /// Install (or return the already-installed) pool for a probed server.
     /// First writer wins — the probe race resolves to ONE pool per root.
     pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
-        let entry = self
-            .pools
-            .entry(root.to_string())
-            .or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots))));
-        match entry.value() {
+        let endpoint = self.endpoint(root);
+        let mut state = endpoint.state.lock();
+        let entry = state
+            .pool
+            .get_or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots))));
+        match entry {
             Some(pool) => Arc::clone(pool),
             None => {
                 // A racing latch_unsupported won — honor it by returning a
@@ -566,7 +1273,7 @@ impl SlotDirectory {
 pub fn directory() -> &'static SlotDirectory {
     static DIR: std::sync::OnceLock<SlotDirectory> = std::sync::OnceLock::new();
     DIR.get_or_init(|| SlotDirectory {
-        pools: dashmap::DashMap::new(),
+        endpoints: dashmap::DashMap::new(),
     })
 }
 
@@ -576,6 +1283,142 @@ mod tests {
 
     fn key(p: u128, r: u128) -> ActivityKey {
         ActivityKey::new(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    }
+
+    // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
+    // loading engine was refused instantly — 16 of Kimi's 26 requests in 90 min failed
+    // inside a 90 s launch window, half of them on the cross-grid fallback.
+    // what this catches: a turn HOLDS through an engine transition and is admitted the
+    // moment the writer reopens; only past its patience is it refused; the operator
+    // path (`admit`) keeps its instant refusal.
+    #[tokio::test]
+    async fn a_turn_holds_through_engine_readiness_and_is_admitted_when_the_writer_reopens() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let endpoint = dir.endpoint("test://warming");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec!["fixture.lora".into()],
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        // The launch: the writer closes the endpoint and holds it until the engine is verified.
+        let launch = endpoint.transition().await;
+        assert!(endpoint.admit().await.is_err(), "the operator path refuses instantly");
+        let held = endpoint.admit_when_ready(std::time::Duration::from_secs(5));
+        tokio::pin!(held);
+        assert!(
+            futures::poll!(&mut held).is_pending(),
+            "a turn holds through the launch, it is not refused"
+        );
+        let generation = launch.start_generation().expect("test: engine generation");
+        launch
+            .ready("test://warming", &generation, contract)
+            .expect("test: verified engine");
+        drop(launch);
+        let admitted = held.await.expect("admitted the moment the writer reopened");
+        assert!(admitted.check_ready().is_ok());
+        drop(admitted);
+        // Past its patience the refusal is the old one, with the wait in it.
+        let _closed = endpoint.transition().await;
+        let refused = endpoint
+            .admit_when_ready(std::time::Duration::from_millis(50))
+            .await;
+        assert!(
+            refused.is_err_and(|e| e.contains("suspended pending engine readiness (held 0 s)")),
+            "a turn is refused only past its patience"
+        );
+    }
+
+    // regression for Cormac's blocker on #4411 (the M5 grow chain): transitions back to
+    // back. The first cut waited for ONE reopen and then called `admit()` once; a second
+    // transition that closed the endpoint behind the first one's reopen made that call
+    // refuse a turn with patience left.
+    // what this catches: a held turn stays held across a re-close and is admitted by the
+    // transition that finally leaves the endpoint open, on the one deadline it started
+    // with. The interleaving is deterministic: the gate is FIFO, so the turn's read
+    // lease is granted by the first writer's drop before the second writer can take it,
+    // and the second writer has already closed the endpoint by then.
+    #[tokio::test]
+    async fn a_held_turn_survives_back_to_back_transitions_with_patience_left() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let endpoint = dir.endpoint("test://grow-chain");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        let first = endpoint.transition().await;
+        let held = endpoint.admit_when_ready(std::time::Duration::from_secs(5));
+        tokio::pin!(held);
+        assert!(futures::poll!(&mut held).is_pending(), "held on the closed endpoint");
+        let old = first.start_generation().expect("test: first generation");
+        first
+            .ready("test://grow-chain", &old, contract.clone())
+            .expect("test: first engine verified");
+        // Reopened, but the first writer is still held: the turn moves from the watch
+        // to the gate's read queue.
+        assert!(futures::poll!(&mut held).is_pending(), "queued on the gate behind the writer");
+        drop(first);
+        // The second transition closes the endpoint synchronously and queues for the
+        // writer BEHIND the turn's read lease.
+        let second = endpoint.transition();
+        tokio::pin!(second);
+        assert!(futures::poll!(&mut second).is_pending(), "second writer queued behind the read lease");
+        assert!(
+            futures::poll!(&mut held).is_pending(),
+            "closed again with patience left: still held (the first cut refused here)"
+        );
+        let second = second.await;
+        old.observed_exit();
+        let new = second.start_generation().expect("test: second generation");
+        second
+            .ready("test://grow-chain", &new, contract)
+            .expect("test: second engine verified");
+        drop(second);
+        let admitted = held.await.expect("admitted by the transition that finally left the endpoint open");
+        assert!(admitted.check_ready().is_ok());
+    }
+
+    // what this catches: the hold spends the TURN's bound, never stacks on it — and a
+    // turn with no time left gets the instant answer, not a 240 s wait.
+    #[test]
+    fn the_turns_patience_is_capped_by_what_the_turn_has_left() {
+        use std::time::Duration;
+        let cap = EndpointSlots::TURN_READINESS_PATIENCE;
+        assert_eq!(EndpointSlots::turn_patience(None, Duration::from_secs(10)), cap);
+        assert_eq!(EndpointSlots::turn_patience(Some(Duration::from_secs(600)), Duration::from_secs(10)), cap);
+        assert_eq!(
+            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(20)),
+            Duration::from_secs(24)
+        );
+        assert_eq!(
+            EndpointSlots::turn_patience(Some(Duration::from_secs(44)), Duration::from_secs(50)),
+            Duration::ZERO,
+            "out of time is the instant answer"
+        );
     }
 
     // what this catches: the 2026-08-26 KV-reuse-0% bug, both halves. One persona
@@ -732,7 +1575,7 @@ mod tests {
     #[test]
     fn directory_latch_and_ensure() {
         let dir = SlotDirectory {
-            pools: dashmap::DashMap::new(),
+            endpoints: dashmap::DashMap::new(),
         };
         assert!(dir.get("s1").is_none(), "unprobed root is unknown");
         dir.latch_unsupported("s1");
@@ -740,6 +1583,203 @@ mod tests {
         let p = dir.ensure_pool("s2", 4);
         assert_eq!(p.n_slots(), 4);
         assert!(matches!(dir.get("s2"), Some(Some(_))));
+    }
+
+    // What this catches: same-URL restart must restore saved KV, never trust old
+    // physical holders; queued/late work cannot reopen or clear a newer generation.
+    #[tokio::test]
+    async fn endpoint_restart_drains_admission_and_preserves_only_compatible_pages() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let endpoint = dir.endpoint("test://generation");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec!["fixture.lora".into()],
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        let first = endpoint.transition().await;
+        let old = first.start_generation().expect("first engine");
+        first
+            .ready("test://generation", &old, contract.clone())
+            .expect("ready");
+        drop(first);
+        assert!(endpoint.transition_if(&|| false).await.is_err());
+        assert!(endpoint
+            .transition_for_generation_if(&old, &|| false)
+            .await
+            .is_err());
+        assert!(
+            endpoint.is_ready(),
+            "refused lifecycle leaves live readiness untouched"
+        );
+        let admitted = endpoint.admit().await.expect("old request");
+        let old_pool = admitted.pool.as_ref().expect("pool").clone();
+        let activity = key(73, 74);
+        old_pool
+            .lease_paged(activity)
+            .await
+            .expect("old physical holder");
+        old_pool.note_saved(activity);
+        let current = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let authority = || current.load(Ordering::Acquire);
+        {
+            let queued = endpoint.transition_if(&authority);
+            tokio::pin!(queued);
+            assert!(futures::poll!(&mut queued).is_pending());
+            current.store(false, Ordering::Release);
+            drop(admitted);
+            assert!(
+                queued.await.is_err(),
+                "intent changed while existing readers drained"
+            );
+        }
+        assert!(endpoint.is_ready());
+        // Rejected checkpoint recovery resumes the exact live ledger, never
+        // constructs a new pool or resurrects invalidated saved-page eligibility.
+        let suspended = endpoint.transition_for_generation(&old).await.unwrap();
+        let receipt = suspended.capture_suspension(&old).unwrap();
+        old_pool.note_page_lost(&activity);
+        assert!(suspended.resume_suspension(&receipt, &|| false).is_err());
+        assert!(!endpoint.is_ready());
+        suspended.resume_suspension(&receipt, &|| true).unwrap();
+        drop(suspended);
+        let resumed = endpoint.admit().await.unwrap();
+        assert!(Arc::ptr_eq(resumed.pool.as_ref().unwrap(), &old_pool));
+        assert!(
+            old_pool
+                .lease_paged(activity)
+                .await
+                .unwrap()
+                .already_resident
+        );
+        assert!(!old_pool.saved.lock().contains(&activity));
+        old_pool.note_saved(activity); // Preserve the restart portion's fixture input.
+        drop(resumed);
+        let admitted = endpoint
+            .admit()
+            .await
+            .expect("refused operation preserves admission");
+
+        // A cancelled retirement waits for readers without closing the live engine.
+        // The queued writer also prevents a later reader from overtaking the drain.
+        {
+            let retirement = endpoint.transition_for_generation(&old);
+            tokio::pin!(retirement);
+            assert!(futures::poll!(&mut retirement).is_pending());
+            let later = endpoint.admit();
+            tokio::pin!(later);
+            assert!(futures::poll!(&mut later).is_pending());
+        }
+        assert!(
+            endpoint.is_ready(),
+            "cancelled pre-retirement drain changes no state"
+        );
+
+        let transition = endpoint.transition();
+        tokio::pin!(transition);
+        assert!(
+            futures::poll!(&mut transition).is_pending(),
+            "active admission must drain"
+        );
+        assert!(
+            endpoint.admit().await.is_err(),
+            "new admission is closed immediately"
+        );
+        drop(admitted);
+        let transition = transition.await;
+        assert!(
+            transition.start_generation().is_err(),
+            "Rust guard release is not engine exit"
+        );
+        old.observed_exit();
+        let new = transition.start_generation().expect("predecessor exited");
+        transition
+            .ready("test://generation", &new, contract.clone())
+            .expect("replacement ready");
+        // Refreshing readiness for this generation must preserve its current ledger.
+        let new_pool = dir
+            .get("test://generation")
+            .flatten()
+            .expect("replacement pool");
+        let pg = new_pool
+            .lease_paged(activity)
+            .await
+            .expect("returning activity");
+        assert!(pg.restore, "compatible saved page survives restart");
+        assert_eq!(pg.save_first, None, "dead physical KV must never be saved");
+        transition
+            .ready("test://generation", &new, contract.clone())
+            .expect("readiness refresh");
+        old.observed_exit();
+        drop(transition);
+        assert!(endpoint.transition_for_generation(&old).await.is_err());
+        assert!(
+            endpoint.is_ready(),
+            "stale retirement cannot suspend replacement"
+        );
+        let admitted = endpoint
+            .admit()
+            .await
+            .expect("late old exit cannot close new generation");
+        assert!(Arc::ptr_eq(
+            admitted.pool.as_ref().expect("pool"),
+            &new_pool
+        ));
+        assert!(!new_pool.lease_paged(activity).await.expect("warm").restore);
+        drop(admitted);
+
+        let transition = endpoint.transition().await;
+        new.observed_exit();
+        let changed = transition.start_generation().expect("new geometry engine");
+        let mut incompatible = contract;
+        incompatible.context += 256; // Same 16k page bucket is not proof of exact compatibility.
+        incompatible.slots = 1;
+        transition
+            .ready("test://generation", &changed, incompatible.clone())
+            .expect("changed ready");
+        drop(transition);
+        let admitted = endpoint.admit().await.expect("changed admission");
+        let pool = admitted.pool.as_ref().expect("changed pool");
+        assert_eq!(pool.n_slots(), 1);
+        assert!(!pool.lease_paged(activity).await.expect("cold").restore);
+        pool.note_saved(activity);
+        drop(admitted);
+        let transition = endpoint.transition().await;
+        changed.observed_exit();
+        let different_model = transition.start_generation().expect("different model");
+        incompatible.model_id = "other-model".into();
+        transition
+            .ready("test://generation", &different_model, incompatible)
+            .expect("different model ready");
+        drop(transition);
+        let admitted = endpoint.admit().await.expect("different model admission");
+        assert!(
+            !admitted
+                .pool
+                .as_ref()
+                .expect("different pool")
+                .lease_paged(activity)
+                .await
+                .expect("cold model")
+                .restore
+        );
+        drop(admitted);
+        drop(endpoint.transition().await); // Failed/cancelled bring-up has no ready receipt.
+        assert!(
+            endpoint.admit().await.is_err(),
+            "transition cancellation must stay closed"
+        );
     }
     // what this catches: the page store growing without bound (it is temporary disk),
     // and the trim removing the page just saved or a page's sidecar surviving its page.
@@ -751,7 +1791,21 @@ mod tests {
             let p = dir.join(name);
             std::fs::write(&p, vec![0u8; bytes]).unwrap(); // JUSTIFIED unwrap: test scaffolding
             let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age_s);
-            let _ = std::fs::File::open(&p).and_then(|f| f.set_modified(t));
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&p)
+                .expect("fixture timestamp requires a writable handle on Windows");
+            file.set_modified(t).expect("set fixture page age");
+            let observed = file
+                .metadata()
+                .expect("fixture page metadata")
+                .modified()
+                .expect("fixture mtime");
+            let error = observed.duration_since(t).unwrap_or_else(|e| e.duration());
+            assert!(
+                error <= std::time::Duration::from_secs(2),
+                "fixture must establish page age within filesystem granularity; ages differ by 100 seconds"
+            );
         };
         write("a-old.bin", 100, 300);
         write("a-old.bin.ckpt", 10, 300);

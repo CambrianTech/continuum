@@ -88,6 +88,29 @@ pub fn register_at(path: &Path, entry: TrainedAdapter) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove the gene at `path` from the manifest at `manifest` (a retired gene): the serving
+/// daemon's next reconcile drops it from the lane's set and retires it in place. A gene not
+/// on file is already out: `Ok`.
+pub fn unregister_at(manifest: &Path, path: &Path) -> Result<(), String> {
+    let mut list = load_from(manifest)?;
+    let before = list.len();
+    list.retain(|a| a.path != path);
+    if list.len() == before {
+        return Ok(());
+    }
+    let json = serde_json::to_string_pretty(&list)
+        .map_err(|e| format!("serialize adapter manifest: {e}"))?;
+    let tmp = manifest.with_extension("json.tmp");
+    std::fs::write(&tmp, json).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, manifest)
+        .map_err(|e| format!("rename {} → {}: {e}", tmp.display(), manifest.display()))
+}
+
+/// Remove the gene at `path` from the default manifest.
+pub fn unregister(path: &Path) -> Result<(), String> {
+    unregister_at(&manifest_path()?, path)
+}
+
 /// Pure filter: the genes registered for `base_model_id`. The whole reason the
 /// manifest exists — the continuum id match the on-disk PEFT config can't give.
 pub fn for_base(all: &[TrainedAdapter], base_model_id: &str) -> Vec<TrainedAdapter> {

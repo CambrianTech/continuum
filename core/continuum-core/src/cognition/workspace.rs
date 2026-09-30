@@ -1827,6 +1827,10 @@ impl WorkspaceCycle {
             .fetch_add(u64::from(m.prefill_tokens), Ordering::Relaxed)
             + u64::from(m.prefill_tokens);
         let lifetime = cached + prefill;
+        // The hour's prefix reuse, on the citizen-health line (card c119ace7): the same
+        // two numbers, folded once here — the one writer — so the receipt a human reads
+        // in the org room carries "prefix reuse NN%" without a probe query.
+        crate::modules::citizen_health::note_generation(m.cached_tokens, m.prefill_tokens);
         crate::probe!(
             class = "serving.kv.reuse",
             turn_cached = m.cached_tokens,

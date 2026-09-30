@@ -282,11 +282,20 @@ impl ResourceLeaseLedger {
     /// Reserved-but-not-yet-granted headroom that must stay free for OTHER
     /// consumers' floors. A requester never sees bytes another consumer is
     /// guaranteed but hasn't claimed yet.
+    ///
+    /// A floor is met by what its holder is GRANTED or by what it is measured to HOLD,
+    /// whichever is more: measured residency is already in `physical_used`, so subtracting
+    /// the whole floor on top of it counted those bytes twice (Codex, 2026-09-27: a warm
+    /// build reserving 10.5 GiB and resident at 6 GiB with no grant cost serving 16.5 GiB,
+    /// not 10.5). Grant, measured residency and declared floor stay three facts; only the
+    /// unmet part of the floor is withheld.
     fn reserved_headroom_excluding(&self, exclude_consumer: &str, kind: ResourceKind) -> u64 {
         self.reservations
             .iter()
             .filter(|((k, c), _)| *k == kind && c != exclude_consumer)
-            .map(|((k, c), floor)| floor.saturating_sub(self.granted_to(c, *k)))
+            .map(|((k, c), floor)| {
+                floor.saturating_sub(self.granted_to(c, *k).max(self.measured_by(c, *k)))
+            })
             .fold(0u64, |acc, h| acc.saturating_add(h))
     }
 
@@ -919,6 +928,39 @@ mod tests {
     // reserves a floor; inference can neither acquire into that floor (even when
     // the bytes are physically idle) nor reclaim the call below it. This is the
     // "always get some time" mechanism — the video call is never starved.
+    // what this catches (Codex on the M5 deploy reserve, 2026-09-27): a reserved floor
+    // counted on top of its holder's own measured residency. The holder's resident bytes are
+    // already in physical_used; the floor withholds only what is neither granted nor held.
+    // No grant: the whole floor, then shrinking as it becomes resident. A partial grant: the
+    // larger of grant and residency. Residency past the floor: nothing more withheld.
+    #[test]
+    fn a_reserved_floor_withholds_only_what_its_holder_does_not_already_hold() {
+        let gib = 1u64 << 30;
+        let mut ledger = ResourceLeaseLedger::new();
+        ledger.set_capacity(ResourceKind::Ram, 64 * gib);
+        ledger.set_physical_used(ResourceKind::Ram, 40 * gib);
+        ledger.reserve("deploy-build", ResourceKind::Ram, 10 * gib + gib / 2);
+        let foot = |bytes| vec![ConsumerFootprint { kind: ResourceKind::Ram, bytes, detail: "rustc".into() }];
+        // idle: nothing resident, the whole floor is withheld from serving
+        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 24 * gib - (10 * gib + gib / 2));
+        // building, 6 GiB resident (already inside physical_used): serving loses 10.5 in all, not 16.5
+        ledger.set_physical_used(ResourceKind::Ram, 46 * gib);
+        ledger.set_measured("deploy-build", foot(6 * gib));
+        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2));
+        assert_eq!(64 * gib - 40 * gib - ledger.available_for("serving", ResourceKind::Ram), 10 * gib + gib / 2, "the build costs its floor, once");
+        // resident past its floor: nothing more withheld; physical_used carries it
+        ledger.set_physical_used(ResourceKind::Ram, 52 * gib);
+        ledger.set_measured("deploy-build", foot(12 * gib));
+        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 12 * gib);
+        // a partial grant below its residency: the larger of the two meets the floor
+        ledger.set_measured("deploy-build", foot(6 * gib));
+        ledger.set_physical_used(ResourceKind::Ram, 46 * gib);
+        ledger
+            .acquire(&req("deploy-build", ResourceKind::Ram, 3 * gib, ReclaimPolicy::Graceful), "b".into(), 100)
+            .unwrap();
+        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2));
+    }
+
     #[test]
     fn reservation_floor_blocks_grant_and_reclaim_below_it() {
         let mut ledger = ResourceLeaseLedger::new();

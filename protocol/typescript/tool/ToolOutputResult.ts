@@ -6,9 +6,9 @@
  */
 export type ToolOutputResult = { 
 /**
- * Echo of the handle read.
+ * Echo of the output id read.
  */
-handle: string, 
+outputId: string, 
 /**
  * Total lines in the full spilled output.
  */

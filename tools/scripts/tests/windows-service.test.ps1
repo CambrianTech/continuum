@@ -5,9 +5,254 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
+. (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: binary-only updates left a legacy launcher/descriptor
+    # behind even when the running core SHA matched HEAD (5090, 2026-09-29).
+    $browserLauncher = Join-Path $scratch 'run-service-hidden.ps1'
+    [IO.File]::WriteAllText($browserLauncher, 'legacy launcher')
+    $browserRelease = [pscustomobject]@{ launcher = $browserLauncher }
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease)) {
+        throw 'Legacy descriptor falsely converged.'
+    }
+    $browserRelease | Add-Member -NotePropertyName eyeRoot -NotePropertyValue $repo
+    if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease)) {
+        throw 'Legacy launcher falsely converged with the new root.'
+    }
+    Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination $browserLauncher
+    if (Get-CoreBrowserReleaseDrift -RepoRoot $repo -Release $browserRelease) {
+        throw 'Verified launcher and root did not converge.'
+    }
+    Write-Output 'PASS: browser release drift includes descriptor and launcher bytes'
+    & {
+        # Exercise the migration itself through the existing scheduler seam;
+        # no live registration or serving process is touched by this fixture.
+        $keptCore = Join-Path $scratch 'kept-core.exe'
+        $legacy = [pscustomobject]@{ launcher = $browserLauncher; artifact = $keptCore; engine = 'kept-engine'; cli = 'kept-cli' }
+        $script:browserTask = [pscustomobject]@{ Description = ($legacy | ConvertTo-Json -Compress); Actions = @([pscustomobject]@{Arguments = 'legacy'}) }
+        $script:refuseBrowserRegistration = $true
+        function Get-ScheduledTask { $script:browserTask }
+        function Clear-Elevation { }
+        function Register-CoreServiceRelease {
+            param($Release, $RepoRoot, $WorkingDirectory)
+            # A real installed core can precede checkout HEAD. Metadata migration
+            # must validate that release in its own slot, not demand the new SHA.
+            if ($WorkingDirectory -ne $scratch) { throw 'Browser migration compared installed release with checkout HEAD.' }
+            if ($script:refuseBrowserRegistration) { throw 'fixture registration refused' }
+            if ($Release.artifact -ne $keptCore -or $Release.engine -ne 'kept-engine' -or $Release.cli -ne 'kept-cli') {
+                throw 'Migration replaced binary or engine identity.'
+            }
+            $script:browserTask = [pscustomobject]@{
+                Description = ($Release | ConvertTo-Json -Compress)
+                Actions = @([pscustomobject]@{Arguments = ('launcher -EyeRoot "{0}"' -f $RepoRoot)})
+            }
+        }
+        $original = $script:browserTask.Description
+        $refused = $false
+        try { Update-CoreBrowserRelease -RepoRoot $repo } catch { $refused = $_ -match 'fixture registration refused' }
+        if (-not $refused -or $script:browserTask.Description -cne $original) { throw 'Registration refusal did not preserve the release.' }
+        $script:refuseBrowserRegistration = $false
+        Update-CoreBrowserRelease -RepoRoot $repo
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo) { throw 'Migration did not converge.' }
+        # Rust tracked paths and PowerShell fresh-install paths can spell the
+        # same Windows directory differently; that must not cause redeploys.
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo.ToUpperInvariant()) {
+            throw 'Path casing caused perpetual browser migration drift.'
+        }
+        $script:browserTask.Actions[0].Arguments = 'legacy'
+        if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $repo)) { throw 'Missing action argument falsely converged.' }
+        Update-CoreBrowserRelease -RepoRoot $repo
+        if (Get-CoreBrowserReleaseDrift -RepoRoot $repo) { throw 'Action-only drift was not repaired.' }
+        Remove-Variable browserTask,refuseBrowserRegistration -Scope Script
+    }
+    Write-Output 'PASS: browser migration preserves identities, propagates refusal and repairs action drift'
+    # Engine application receipts reject changed candidate sets and bytes using
+    # real temporary files, without building/installing/spawning an engine.
+    $engineFixture = Join-Path $scratch 'receipt engine'
+    New-Item -ItemType Directory -Path $engineFixture | Out-Null
+    [IO.File]::WriteAllText((Join-Path $engineFixture 'llama-server.exe'), 'engine')
+    $runtimeFixture = Join-Path $engineFixture 'cublas64_12.dll'
+    [IO.File]::WriteAllText($runtimeFixture, 'before')
+    Start-CoreEnginePublication -Directory $engineFixture
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
+    if (-not $refused) { throw 'Incomplete fresh engine publication looked legacy.' }
+    Save-CoreEngineReceipt -Directory $engineFixture -SourceRevision ('a' * 40) -Backend cuda
+    Get-CoreEngineReceipt -Directory $engineFixture | Out-Null
+    $newCandidate = Join-Path $engineFixture 'ggml-cuda-new.dll'
+    [IO.File]::WriteAllText($newCandidate, 'candidate')
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'membership changed' }
+    if (-not $refused) { throw 'Added backend candidate was accepted.' }
+    Remove-Item -LiteralPath $newCandidate
+    $priorTime = (Get-Item -LiteralPath $runtimeFixture).LastWriteTimeUtc
+    [IO.File]::WriteAllText($runtimeFixture, 'after!')
+    (Get-Item -LiteralPath $runtimeFixture).LastWriteTimeUtc = $priorTime
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'input changed' }
+    if (-not $refused) { throw 'Same-length backdated runtime replacement was accepted.' }
+    [IO.File]::WriteAllText($runtimeFixture, 'before')
+    $engineCopy = Join-Path $scratch 'receipt copied slot'
+    New-Item -ItemType Directory -Path $engineCopy | Out-Null
+    Get-ChildItem -LiteralPath $engineFixture -File | Where-Object { $_.Name -ne 'engine-install.json' } | Copy-Item -Destination $engineCopy
+    Start-CoreEnginePublication -Directory $engineCopy
+    [IO.File]::WriteAllText((Join-Path $engineCopy 'cublas64_12.dll'), 'broken')
+    $refused = $false
+    try { Copy-CoreEngineReceipt -SourceDirectory $engineFixture -Directory $engineCopy } catch { $refused = $_ -match 'bytes differ' }
+    if (-not $refused -or -not (Test-Path -LiteralPath (Join-Path $engineCopy 'engine-install.pending'))) { throw 'Failed slot copy lost its incomplete state.' }
+    Copy-Item -LiteralPath $runtimeFixture -Destination (Join-Path $engineCopy 'cublas64_12.dll') -Force
+    Copy-CoreEngineReceipt -SourceDirectory $engineFixture -Directory $engineCopy
+    Get-CoreEngineReceipt -Directory $engineCopy | Out-Null
+    Remove-Item -LiteralPath (Join-Path $engineCopy 'cublas64_12.dll')
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $true }
+    if (-not $refused) { throw 'Missing runtime file was accepted.' }
+    Write-Output 'PASS: engine receipt pins application bytes, membership and copied-slot inputs'
+    # Receipt migration must use the existing source/slot owners even when the
+    # source SHA and legacy stamp are already current. No compiler is invoked.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        function Get-CoreEngineBackend { 'cpu' }
+        function git { $global:LASTEXITCODE = 0; if ($args -contains '--short') { 'aaaaaaa' } else { 'a' * 40 } }
+        function Module-Skip { }
+        function Module-Start { throw 'fixture: real build branch selected' }
+        function Module-Fail { param($Name, $Message) throw $Message }
+        $profile = Join-Path $scratch 'migration-profile'
+        $sourceRepo = Join-Path $scratch 'migration-source'
+        $server = Join-Path $sourceRepo 'core\vendor\llama.cpp\tools\server'
+        New-Item -ItemType Directory -Path $server -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $server 'CMakeLists.txt') -Value 'fixture'
+        $root = Join-Path $profile '.continuum\bin'
+        $source = Join-Path $root 'engine-a'
+        $destination = Join-Path $root 'engine-b'
+        $third = Join-Path $root 'engine-c'
+        New-Item -ItemType Directory -Path $source, $destination, $third -Force | Out-Null
+        foreach ($slot in @($source, $destination)) {
+            [IO.File]::WriteAllText((Join-Path $slot 'llama-server.exe'), 'legacy')
+            Set-Content -LiteralPath (Join-Path $slot '.llama-server.stamp') -Value 'aaaaaaa:cpu'
+        }
+        $oldProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $profile
+            $requirement = Get-CoreEngineRequirement -RepoRoot $sourceRepo
+            if (-not (Get-CoreEngineDrift -Directory $source -Requirement $requirement)) { throw 'Legacy stamp was called converged.' }
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $destination -RequireReceipt }
+            catch { $refused = $_ -match 'real build branch selected' }
+            if (-not $refused -or (Test-Path (Join-Path $destination 'engine-install.json')) -or
+                [IO.File]::ReadAllText((Join-Path $source 'llama-server.exe')) -cne 'legacy') {
+                throw 'Legacy destination/source shortcut bypassed receipt migration or changed the incumbent.'
+            }
+            # Ordinary compatible reuse retains its prior behavior.
+            Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $destination
+            Save-CoreEngineReceipt -Directory $source -SourceRevision ('a' * 40) -Backend cpu
+            $sourceHash = (Get-FileHash (Join-Path $source 'engine-install.json')).Hash
+            Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $destination -RequireReceipt
+            if ((Get-CoreEngineDrift -Directory $destination -Requirement $requirement) -or
+                (Get-FileHash (Join-Path $destination 'engine-install.json')).Hash -cne $sourceHash) {
+                throw 'Verified reuse did not preserve the original receipt.'
+            }
+            Start-CoreEnginePublication -Directory $source
+            Start-CoreEnginePublication -Directory $destination
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $third -RequireReceipt }
+            catch { $refused = $_ -match 'real build branch selected' }
+            if (-not $refused) { throw 'Pending source was reused.' }
+            Remove-Item -LiteralPath (Join-Path $source 'engine-install.pending')
+            [IO.File]::WriteAllText((Join-Path $source 'llama-server.exe'), 'broken')
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $sourceRepo -InstallDirectory $third -RequireReceipt }
+            catch { $refused = $_ -match 'input changed' }
+            if (-not $refused -or (Test-Path (Join-Path $third 'engine-install.json'))) { throw 'Invalid source was recertified.' }
+            [IO.File]::WriteAllText((Join-Path $source 'llama-server.exe'), 'legacy')
+            Remove-Item -LiteralPath (Join-Path $destination 'engine-install.pending')
+            $script:migrationDescription = (@{ engine = (Join-Path $source 'llama-server.exe') } | ConvertTo-Json -Compress)
+            function Get-ScheduledTask { [pscustomobject]@{ Description = $script:migrationDescription } }
+            function Get-CimInstance { [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $third 'llama-server.exe') } }
+            $receiptPath = Join-Path $scratch 'prepared-engine-path'
+            Prepare-CoreServiceEngine -RepoRoot $sourceRepo -Description $script:migrationDescription -ReceiptPath $receiptPath
+            if ([IO.File]::ReadAllText($receiptPath) -cne (Join-Path $destination 'llama-server.exe') -or
+                (Get-FileHash (Join-Path $source 'engine-install.json')).Hash -cne $sourceHash) {
+                throw 'Preparation selected a live/registered engine or changed its receipt.'
+            }
+            $refused = $false
+            try { Prepare-CoreServiceEngine -RepoRoot $sourceRepo -Description '{}' -ReceiptPath $receiptPath }
+            catch { $refused = $_ -match 'release changed before' }
+            if (-not $refused) { throw 'Stale installed selection reached preparation.' }
+        } finally { $env:USERPROFILE = $oldProfile }
+    }
+    Write-Output 'PASS: receipt migration selects verified reuse or checked build without legacy/pending bypass'
+    # The CLI starts a fresh PowerShell, so receipt validation cannot depend on
+    # functions that happen to have been dot-sourced by this fixture's parent.
+    $coldScript = @"
+`$ErrorActionPreference='Stop'
+. '$($repo.Replace("'", "''"))/tools/scripts/lib/windows-service.ps1'
+. '$($repo.Replace("'", "''"))/tools/scripts/lib/win-modules.ps1'
+`$drift=Get-CoreEngineDrift -Directory '$($engineFixture.Replace("'", "''"))' -Requirement ([pscustomobject]@{source_revision='$('a' * 40)';backend='cuda'})
+if (`$drift) { throw `$drift }
+"@
+    $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+    $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($coldScript))
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $child = [Diagnostics.Process]::Start($info)
+    try {
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit(120000)) { $child.Kill(); $child.WaitForExit(); throw 'Cold engine receipt query timed out.' }
+        if ($child.ExitCode -ne 0) { throw "Cold engine receipt query failed: $($stdout.Result) $($stderr.Result)" }
+    } finally { $child.Dispose() }
+    # The actual handoff function transfers the installer's exclusive lease
+    # before invoking reboot. Stop at the scheduler boundary, before PATH writes.
+    & {
+        $lockPath = Join-Path $scratch 'handoff-install.lock'
+        $lease = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $marker = Join-Path $scratch 'handoff-acquired'
+        $cli = Join-Path $scratch 'handoff-cli.ps1'
+        $core = Join-Path $scratch 'handoff-core.exe'
+        [IO.File]::WriteAllText($core, 'fixture-core')
+        @"
+if (`$args -contains '--validate-only') { Write-Output 'continuum-install-lease-protocol:1'; `$global:LASTEXITCODE = 0; return }
+if (`$args -notcontains '--service-descriptor-sha') { throw 'Missing selected descriptor binding' }
+`$owned = [IO.File]::Open('$($lockPath.Replace("'", "''"))', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } finally { `$owned.Dispose() }
+`$global:LASTEXITCODE = 0
+"@ | Set-Content -LiteralPath $cli
+        function Get-ScheduledTask {
+            $busy = $false
+            try { $unexpected = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $unexpected.Dispose() }
+            catch [IO.IOException] { $busy = $true }
+            if (-not $busy) { throw 'Post-handoff tail lost the installation lease.' }
+            throw 'fixture: handoff completed before scheduler check'
+        }
+        try {
+            $busy = $false
+            try { $unexpected = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $unexpected.Dispose() }
+            catch [IO.IOException] { $busy = $true }
+            if (-not $busy) { throw 'Installer lease was not exclusive before handoff.' }
+            $stopped = $false
+            try { Invoke-CoreServiceRelease -Release ([pscustomobject]@{ cli = $cli; artifact = $core }) -RepoRoot $scratch -InstallLease $lease }
+            catch { $stopped = $_ -match 'handoff completed before scheduler check' }
+            if (-not $stopped -or -not (Test-Path -LiteralPath $marker)) { throw 'Reboot did not receive the released installation lease.' }
+        } finally { $lease.Dispose() }
+        # A legacy prepared CLI cannot inherit an unsupported lock protocol.
+        Set-Content -LiteralPath $cli -Value "Write-Output 'prebuilt validated'; `$global:LASTEXITCODE = 0"
+        $lease = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $refused = $false
+            try { Invoke-CoreServiceRelease -Release ([pscustomobject]@{ cli = $cli; artifact = $core }) -RepoRoot $scratch -InstallLease $lease }
+            catch { $refused = $_ -match 'lacks the verified installation lease protocol' }
+            $busy = $false
+            try { $unexpected = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); $unexpected.Dispose() }
+            catch [IO.IOException] { $busy = $true }
+            if (-not $refused -or -not $busy) { throw 'Legacy CLI refusal lost installer ownership.' }
+        } finally { $lease.Dispose() }
+    }
+    Write-Output 'PASS: installer registration-to-reboot lease transfer permits exclusive reacquisition'
     # Regression for 81021ff6: the real scheduler projects SID registration as
     # an account name. Resolve via Windows without broadening caller ownership.
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -65,6 +310,15 @@ try {
         $refused = $false
         try { Assert-CorePreparedRelease -Release $bad -InstallRoot $resumeRoot } catch { $refused = $_ -match 'unexpected or missing fields' }
         if (-not $refused) { throw 'Unknown descriptor field was accepted' }
+        # Browser-root evolution must work through the prepared-release path,
+        # while old descriptors above remain valid and unsafe roots are refused.
+        $withEye = $release | ConvertTo-Json | ConvertFrom-Json
+        $withEye | Add-Member NoteProperty eyeRoot $repo
+        Assert-CorePreparedRelease -Release $withEye -InstallRoot $resumeRoot
+        $withEye.eyeRoot = 'relative/assets'
+        $refused = $false
+        try { Assert-CorePreparedRelease -Release $withEye -InstallRoot $resumeRoot } catch { $refused = $_ -match 'eyeRoot must be absolute' }
+        if (-not $refused) { throw 'Relative browser root was accepted' }
         $redirect = Join-Path $resumeRoot 'bin\service-b'
         New-Item -ItemType Junction -Path $redirect -Target $serviceSlot | Out-Null
         try {
@@ -192,6 +446,59 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         }
     }
     Write-Output 'PASS: noncanonical task ACL is repaired minimally; denied/conditional/object policy stays untouched'
+    # Repeated release updates require write, but never Delete/WriteDAC/WriteOwner.
+    $updateAcl = Grant-CoreServiceCallerAccess -Sddl $repaired -UserSid $callerSid -Update
+    if ((Test-CoreServiceCallerAccess -Sddl $repaired -UserSid $callerSid -Update) -or
+        -not (Test-CoreServiceCallerAccess -Sddl $updateAcl -UserSid $callerSid -Update)) {
+        throw 'Read/execute must not masquerade as update authority'
+    }
+    $updateAce = ([Security.AccessControl.RawSecurityDescriptor]::new($updateAcl)).DiscretionaryAcl[3]
+    if (($updateAce.AccessMask -band 0xD0000) -ne 0) { throw 'Update grant acquired delete or ACL/owner privileges' }
+    & {
+        $actions = [pscustomobject]@{ Count = 1; Entry = [pscustomobject]@{ Path = 'old'; Arguments = 'old' } }
+        $actions | Add-Member ScriptMethod Clear { $this.Count = 0 }
+        $actions | Add-Member ScriptMethod Create { param($kind) if ($kind -ne 0) { throw 'Expected exec action' }; $this.Count = 1; $this.Entry }
+        $actions | Add-Member ScriptMethod Item { param($index) $this.Entry }
+        $definition = [pscustomobject]@{
+            Actions = $actions
+            Principal = [pscustomobject]@{ UserId = $callerSid; LogonType = 2; RunLevel = 0 }
+            RegistrationInfo = [pscustomobject]@{ Description = 'old' }
+            Triggers = 'existing boot trigger'; Settings = 'existing policy'
+        }
+        $task = [pscustomobject]@{ Definition = $definition; Sddl = $updateAcl }
+        $task | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
+        $folder = [pscustomobject]@{ Task = $task; Writes = 0; Save = $true }
+        $folder | Add-Member ScriptMethod GetTask { param($name) $this.Task }
+        $folder | Add-Member ScriptMethod RegisterTaskDefinition {
+            param($name,$value,$flags,$sid,$password,$logon,$sddl)
+            if ($flags -ne 20 -or $password -or $sddl -or $logon -ne 2 -or
+                $sid -ne $this.Task.Definition.Principal.UserId) { throw 'Update changed security boundary' }
+            $this.Writes++
+            if (-not $this.Save) { $value.Actions.Entry.Path = 'provider ignored update' }
+        }
+        Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'new-cli' -Arguments 'new args' -Description 'new receipt'
+        if ($folder.Writes -ne 1 -or $definition.Triggers -ne 'existing boot trigger' -or
+            $definition.Settings -ne 'existing policy' -or $task.Sddl -cne $updateAcl) { throw 'Release update altered task policy' }
+        $task.Sddl = $repaired
+        $refused = $false
+        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'no' -Arguments 'no' }
+        catch { $refused = $_ -match 'not an updateable' }
+        if (-not $refused -or $folder.Writes -ne 1) { throw 'Read-only task was written' }
+        $task.Sddl = $updateAcl
+        $definition.Principal.RunLevel = 1
+        $refused = $false
+        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'no' -Arguments 'no' }
+        catch { $refused = $_ -match 'not an updateable' }
+        if (-not $refused -or $folder.Writes -ne 1) { throw 'Elevated task was written' }
+        $definition.Principal.RunLevel = 0
+        $folder.Save = $false
+        $refused = $false
+        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'new' -Arguments 'new' }
+        catch { $refused = $_ -match 'did not retain' }
+        if (-not $refused) { throw 'Lost update was reported successful' }
+    }
+    Write-Output 'PASS: repeated task update preserves policy/ACL, rejects insufficient rights/elevated principal, and verifies saved action'
+
 
     # Run the real registrar with only scheduler boundaries replaced. A provider
     # that ignores SetSecurityDescriptor must fail its reread, never claim success.
@@ -200,7 +507,8 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:aclTask | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
         $script:aclTask | Add-Member ScriptMethod SetSecurityDescriptor { param($value, $flags) if ($this.Save) { $this.Sddl = $value } }
         $folder = [pscustomobject]@{}
-        $folder | Add-Member ScriptMethod GetTask { param($name) $script:aclTask }
+        $script:aclDeployTask = $null
+        $folder | Add-Member ScriptMethod GetTask { param($name) if ($name -eq 'ContinuumDeploy' -and $script:aclDeployTask) { $script:aclDeployTask } else { $script:aclTask } }
         $script:aclScheduler = [pscustomobject]@{ Folder = $folder }
         $script:aclScheduler | Add-Member ScriptMethod Connect { }
         $script:aclScheduler | Add-Member ScriptMethod GetFolder { param($path) $this.Folder }
@@ -233,6 +541,14 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         try { . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath }
         catch { $refused = $_ -match 'Unsupported startup task ACL' }
         if (-not $refused -or $script:aclRegistrations -ne $writes) { throw 'Registrar changed task before refusing existing deny policy' }
+        $script:aclDeployTask = [pscustomobject]@{ Sddl = $script:aclTask.Sddl }
+        $script:aclDeployTask | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
+        $script:aclTask.Sddl = $acl
+        $refused = $false
+        try { . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath }
+        catch { $refused = $_ -match 'Unsupported startup task ACL' }
+        if (-not $refused -or $script:aclRegistrations -ne $writes) { throw 'Registrar changed Core before refusing Deploy deny policy' }
+
     }
     Write-Output 'PASS: registrar rereads saved access and refuses unsupported policy before task writes'
 
@@ -252,6 +568,8 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'exit /b 74'
+            } elseif ($script:elevationMode -eq 'cleanup-info') {
+                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo Info: Cache session closed. 1>&2 & exit /b 0'
             } else { $global:LASTEXITCODE = 0 }
         }
         $reason = 'registering the ContinuumCore startup task (before core handoff)'
@@ -275,6 +593,17 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         Ensure-Elevated -Reason $reason
         Ensure-Elevated -Reason $reason
         if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Successful elevation was not cached exactly once' }
+        # Regression: PS5 must not abort a completed registration on gsudo's
+        # informational stderr when cache teardown actually succeeds.
+        $script:elevationMode = 'cleanup-info'
+        Clear-Elevation
+        if ($script:ElevationWarmed -or $ErrorActionPreference -ne 'Stop') { throw 'Successful cleanup retained cache state or changed error policy' }
+        $script:ElevationWarmed = $true
+        $script:elevationMode = 'failure'
+        $failure = $null
+        try { Clear-Elevation } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'exit 73' -or -not $script:ElevationWarmed) { throw 'Failed cache cleanup was silently accepted' }
+        $script:elevationCalls = 3
         $script:ElevationWarmed = $false
         function Test-IsAdmin { $true }
         Ensure-Elevated -Reason $reason
@@ -323,10 +652,143 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Both installed core service slots' }
     if (-not $refused) { throw 'Two live slots were not protected' }
     $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum.exe'; ExecutablePath = $null })
+    $unreadable = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
+    if ($unreadable.artifact -ne $second.artifact) { throw 'Hidden image lost registered-slot protection' }
+    $busy = [IO.File]::Open($second.artifact, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $refused = $false
+        try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Both installed core service slots' }
+        if (-not $refused) { throw 'Unreadable busy candidate was overwritten' }
+    } finally { $busy.Dispose() }
+    $script:registeredTask = $null
     $refused = $false
     try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Cannot inspect all live' }
     if (-not $refused) { throw 'Inaccessible image path was treated as an empty slot' }
     Write-Output 'PASS: active core/engine slots and inaccessible image paths are protected'
+
+    # Card 2c5d0ec0: with a CLI that knows `continuum engine idle-slot`, the engine slot is the
+    # CORE's answer from its lane records, not a process-table guess (a service-session lane's
+    # path is unreadable from here). Exit 3 refuses; an answer outside the slots refuses; a
+    # readable live engine inside the answer refuses.
+    $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
+    Set-Content -LiteralPath $fakeCli -Value @'
+if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+if ($args[0] -eq 'engine' -and $args[1] -eq 'promote') {
+    if ($env:FAKE_PROMOTE_RC) { 'refused'; exit ([int]$env:FAKE_PROMOTE_RC) }
+    Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'bin\current') -Value $args[2]
+    Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'promoted-with') -Value "$($args[2]) $($args[3])"
+    exit 0
+}
+if ($args[0] -eq 'engine' -and $args[1] -eq 'idle-slot') {
+    if ($env:FAKE_IDLE_RC) { exit ([int]$env:FAKE_IDLE_RC) }
+    Join-Path $env:CONTINUUM_HOME ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
+}
+exit 64
+'@
+    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = $null })
+    try {
+        $env:FAKE_IDLE_SLOT = 'engine-b'; $env:FAKE_IDLE_RC = $null
+        $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli
+        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installed 'bin\engine-b'))) { throw "The core's idle slot was not used: $picked" }
+        $env:FAKE_IDLE_RC = '3'
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
+        if (-not $refused) { throw 'No idle slot (exit 3) was not refused' }
+        # card 3f8f5754: a DEPLOY that meets every slot busy skips the engine, as bash does.
+        if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli -SkipIfBusy)) {
+            throw 'A deploy with every slot busy did not skip the engine'
+        }
+        $env:FAKE_IDLE_RC = $null; $env:FAKE_IDLE_SLOT = 'service-a'
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'not an engine slot' }
+        if (-not $refused) { throw 'An answer outside the engine slots was accepted' }
+        $env:FAKE_IDLE_SLOT = 'engine-a'
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed 'bin\engine-a\llama-server.exe') })
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'running engine executes from it' }
+        if (-not $refused) { throw 'A readable live engine inside the core answer was overwritten' }
+    } finally { $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null; $script:liveProcesses = @() }
+    # The pre-verb path skips a busy deploy too: every slot live by the process table.
+    $script:liveProcesses = @('engine-a', 'engine-b', 'engine-c' | ForEach-Object {
+        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed "bin\$_\llama-server.exe") } })
+    try {
+        if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -SkipIfBusy)) { throw 'The pre-verb path did not skip a busy deploy' }
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
+        if (-not $refused) { throw 'A first install with every slot live was not refused' }
+    } finally { $script:liveProcesses = @() }
+    Write-Output 'PASS: the engine slot is the core answer from its lane records when the CLI knows the verb'
+
+    # card d5584dfc: a drift-verified slot is promoted by the core's own verb (current is the one
+    # truth), with the stamp the build wrote; a refused promote throws; a CLI without the verb
+    # leaves the release registration to bootstrap, and says so.
+    $promoteSlot = Join-Path $installed 'bin\engine-c'
+    New-Item -ItemType Directory -Force -Path $promoteSlot | Out-Null
+    Set-Content -LiteralPath (Join-Path $promoteSlot '.llama-server.stamp') -Value 'abc1234:cuda'
+    try {
+        if (-not (Invoke-CoreEnginePromote -Cli $fakeCli -InstallRoot $installed -Slot $promoteSlot)) { throw 'A CLI with the verb did not promote' }
+        if ((Get-Content -LiteralPath (Join-Path $installed 'promoted-with') -Raw).Trim() -cne 'engine-c abc1234:cuda') { throw 'Promoted without the slot stamp' }
+        $env:FAKE_PROMOTE_RC = '1'
+        $refused = $false
+        try { Invoke-CoreEnginePromote -Cli $fakeCli -InstallRoot $installed -Slot $promoteSlot | Out-Null } catch { $refused = $_ -match 'refused engine-c' }
+        if (-not $refused) { throw 'A refused promote was not surfaced' }
+        $env:FAKE_PROMOTE_RC = $null
+        if (Invoke-CoreEnginePromote -Cli (Join-Path $scratch 'no-such-cli.exe') -InstallRoot $installed -Slot $promoteSlot 3>$null) { throw 'A missing CLI claimed a promotion' }
+    } finally { $env:FAKE_PROMOTE_RC = $null }
+    Write-Output 'PASS: a verified engine slot is promoted by the core verb with its own stamp'
+
+    # card 6d5bacab (Codex on #4512): Prepare-CoreServiceEngine promotes a non-current slot that
+    # ALREADY holds the pinned engine, with no idle-slot question and no build; a drifting slot,
+    # a promote that cannot run, and a release that changes mid-way each take their own road.
+    # Isolated scope: every collaborator is mocked, so this proves the decision, not the build.
+    & {
+        $profileRoot = Join-Path $scratch 'already-built-profile'
+        $bin = Join-Path $profileRoot '.continuum\bin'
+        foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $bin $name) | Out-Null
+            Set-Content -LiteralPath (Join-Path $bin "$name\llama-server.exe") -Value 'engine'
+        }
+        $script:releaseJson = (@{ cli = (Join-Path $scratch 'fake-cli.exe') } | ConvertTo-Json -Compress)
+        $script:matching = 'engine-c'
+        $script:promoteResult = $true
+        $script:selected = $false
+        $script:changeTaskAfter = $false
+        $script:taskReads = 0
+        function Get-ScheduledTask {
+            $script:taskReads++
+            if ($script:changeTaskAfter -and $script:taskReads -gt 1) { return [pscustomobject]@{ Description = '{"changed":true}' } }
+            [pscustomobject]@{ Description = $script:releaseJson }
+        }
+        function Get-CoreEngineRequirement { [pscustomobject]@{ source_revision = ('a' * 40); backend = 'cuda' } }
+        function Get-CoreEngineDrift { param($Directory, $Requirement) if ((Split-Path -Leaf $Directory) -eq $script:matching) { '' } else { 'drift' } }
+        function Invoke-CoreEnginePromote { param($Cli, $InstallRoot, $Slot) $script:promoted = Split-Path -Leaf $Slot; $script:promoteResult }
+        function Select-CoreEngineSlot { $script:selected = $true; $null }
+        function Mod-LlamaServer { throw 'fixture: the already-built path must not build' }
+        $savedProfile = $env:USERPROFILE
+        $receipt = Join-Path $scratch 'already-built-receipt'
+        try {
+            $env:USERPROFILE = $profileRoot
+            # (1) engine-c already at the pin: promoted, no idle-slot question, no build
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
+            if ($script:promoted -ne 'engine-c' -or $script:selected) { throw 'A slot already at the pin was not promoted directly' }
+            if ([IO.File]::ReadAllText($receipt) -ne (Join-Path $bin 'engine-c\llama-server.exe')) { throw 'The receipt does not name the promoted slot' }
+            # (2) no slot at the pin: falls through to idle-slot selection (a busy set skips)
+            $script:matching = 'none'; $script:selected = $false; $script:promoted = $null
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
+            if (-not $script:selected -or $script:promoted) { throw 'A drifting slot was promoted instead of falling through' }
+            if (-not ([IO.File]::ReadAllText($receipt)).StartsWith('SKIP: ')) { throw 'The fall-through did not reach the idle-slot path' }
+            # (3) at the pin but the promote cannot run (a CLI without the verb): falls through
+            $script:matching = 'engine-c'; $script:promoteResult = $false; $script:selected = $false
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
+            if (-not $script:selected) { throw 'A promote that could not run did not fall through' }
+            # (4) the release changes during preparation: refused, nothing handed off
+            $script:promoteResult = $true; $script:changeTaskAfter = $true; $script:taskReads = 0
+            $refused = $false
+            try { Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt } catch { $refused = $_ -match 'changed during engine preparation' }
+            if (-not $refused) { throw 'A release changed mid-preparation was handed off' }
+        } finally { $env:USERPROFILE = $savedProfile }
+    }
+    Write-Output 'PASS: a slot already at the pin is promoted without a build, and every other case takes its own road'
 
     # Compile a tiny native child: arguments containing spaces must
     # arrive unchanged and a nonzero exit must reach Task Scheduler.
@@ -503,10 +965,19 @@ function Mod-LlamaServer {
             if ($held.HasExited -or [DateTime]::UtcNow -ge $until) { throw 'Held child did not initialize' }
             Start-Sleep -Milliseconds 50
         }
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $null })
+        $refused = $false
+        try { Protect-CoreBuildOutput -TargetDirectory $target } catch { $refused = $_ -match 'Cannot inspect running core image paths' }
+        if (-not $refused -or $held.HasExited -or -not (Test-Path $output)) { throw 'Unknown busy image was not preserved' }
         $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = ('\\?\' + $output) })
         Protect-CoreBuildOutput -TargetDirectory $target
         if ($held.HasExited -or (Test-Path $output)) { throw 'Busy output was not preserved live under its previous name' }
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $null })
         Copy-Item -LiteralPath $child -Destination $output
+        # A free Cargo output is safe even when the service hides its image path.
+        Protect-CoreBuildOutput -TargetDirectory $target
+        if (-not (Test-Path $output) -or $held.HasExited) { throw 'Hidden service path blocked writable output or disturbed live core' }
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = ('\\?\' + $output) })
         # CIM retains the old path after rename: a retry must recognize that
         # the new output is writable instead of deleting the mapped old file.
         Protect-CoreBuildOutput -TargetDirectory $target

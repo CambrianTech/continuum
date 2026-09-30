@@ -1,0 +1,6 @@
+# Tested CUDA backend. Install torch separately from the official cu128 index.
+transformers==5.17.0
+peft==0.21.0
+accelerate==1.15.0
+bitsandbytes==0.50.2
+safetensors==0.8.0

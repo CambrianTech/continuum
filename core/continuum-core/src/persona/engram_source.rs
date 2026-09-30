@@ -62,7 +62,7 @@ const RECENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Source identifier — referenced by budget presets, telemetry,
 /// continuation cursor scope check.
-const SOURCE_ID: &str = "engrams";
+pub(crate) const SOURCE_ID: &str = "engrams";
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private

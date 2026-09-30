@@ -26,12 +26,12 @@
 //! (un)load. No daemon restart, ever — a suppressed model re-loads by un-pinning,
 //! not by rebooting the substrate.
 
-use std::collections::HashSet;
+use crate::cognition::serving_plan::ServingPlan;
+use crate::modules::serving_daemon::ServingIntent;
 use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use crate::cognition::serving_plan::ServingPlan;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::ModelCatalog;
 use crate::modules::serving_daemon::PinFitChecker;
@@ -73,8 +73,7 @@ use unpin::ServingUnpin;
 ///   the daemon's published plan (intent) and snapshot (reality), so personas and
 ///   operators inspect the decision without probing the process.
 pub fn command_objects(
-    suppress: watch::Sender<Arc<HashSet<String>>>,
-    pin: watch::Sender<Option<String>>,
+    intent: ServingIntent,
     fit: PinFitChecker,
     serving: watch::Receiver<ServingSnapshot>,
     plan: watch::Receiver<Option<ServingPlan>>,
@@ -83,24 +82,24 @@ pub fn command_objects(
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ServingUnload {
-            suppress: suppress.clone(),
+            intent: intent.clone(),
             serving: serving.clone(),
             catalog: catalog.clone(),
         }),
         Arc::new(ServingLoad {
-            suppress,
+            intent: intent.clone(),
             serving: serving.clone(),
             catalog: catalog.clone(),
         }),
         Arc::new(ServingPin {
-            pin: pin.clone(),
+            intent: intent.clone(),
             fit,
             catalog,
             serving: serving.clone(),
             store: pin_store.clone(),
         }),
         Arc::new(ServingUnpin {
-            pin,
+            intent,
             store: pin_store,
         }),
         Arc::new(ServingCacheProbe { serving: serving.clone() }),
@@ -121,8 +120,7 @@ mod tests {
     fn family_exposes_the_full_serving_surface() {
         let reg = crate::model_registry::catalog::registry().expect("Rust catalog must validate");
         let catalog = Arc::new(ModelCatalog::from_registry(&reg));
-        let (suppress, _) = watch::channel(Arc::new(HashSet::new()));
-        let (pin, _) = watch::channel(None);
+        let intent = ServingIntent::new(None);
         let fit: PinFitChecker = Arc::new(|_m| crate::modules::serving_daemon::PinFit {
             plan: None,
             weights_bytes: 0,
@@ -132,8 +130,7 @@ mod tests {
         let (_ptx, plan) = watch::channel(None);
         let dir = tempfile::tempdir().expect("tempdir");
         let objs = command_objects(
-            suppress,
-            pin,
+            intent,
             fit,
             serving,
             plan,

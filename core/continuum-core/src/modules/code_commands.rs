@@ -47,7 +47,7 @@ use crate::code::types::{
     SearchResult, TreeResult, WriteResult,
 };
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
-use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
 
 /// The persona/owner this tool call acts AS — the authenticated caller identity
 /// (an airc `peer_id`), never a params field. `None` caller is the
@@ -405,7 +405,12 @@ pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), Co
             .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
         if last.get(who).cloned().flatten() != card_root {
             state.file_engines.remove(&who.to_string());
-            state.shell_sessions.remove(&who.to_string());
+            // Set aside, never drop: the same handle-keeping move as create-workspace.
+            let new_root = card_root
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_default(); // unwrap_or_default: an unreadable cwd parks the old session and opens fresh
+            state.re_root_shell(who, &new_root);
             crate::probe!(
                 class = "code.hands.rerooted",
                 who = who,
@@ -485,7 +490,8 @@ async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
     let peer = uuid::Uuid::parse_str(who).ok()?;
     let rt = crate::persona::operator_peer::local_runtime_of(peer)?;
     let held = rt.active_claims().await.ok()?;
-    held.iter().find_map(|card| crate::modules::card_staging::checkout_path_for(&peer, card))
+    let card = crate::persona::work_focus::focus_actionable_card(held.iter())?;
+    crate::modules::card_staging::checkout_path_for(&peer, card)
 }
 
 /// The card rooting each local identity's engine was last built for — a change here
@@ -1189,6 +1195,11 @@ impl ActionCommand for CodeSearch {
                 break;
             }
             let r = search::search_files(&root, &p.pattern, p.file_glob.as_deref(), remaining);
+            if !r.success {
+                // Preserve the search owner's typed refusal; an invalid regex/glob is
+                // not a successful empty search with orientation guidance.
+                return Ok(r);
+            }
             total_matches += r.total_matches;
             files_searched += r.files_searched;
             matches.extend(r.matches);
@@ -1381,7 +1392,7 @@ impl ActionCommand for CodeShell {
                 .map_err(CommandError::Internal)?;
             shell
                 .get_execution_state(&exec_id)
-                .ok_or_else(|| CommandError::Internal("execution vanished".into()))?
+                .map_err(CommandError::Internal)?
         };
 
         // BOUNDED inline wait: return the moment it completes, or hand back the
@@ -1426,7 +1437,7 @@ pub struct CodeShellPoll {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellPollParams {
-    /// The execution_id handle returned by `code/shell`.
+    /// Full execution_id or an unambiguous hex prefix within your shell session.
     pub execution_id: String,
 }
 
@@ -1434,6 +1445,7 @@ pub struct CodeShellPollParams {
 impl ActionCommand for CodeShellPoll {
     const NAME: &'static str = "code/shell-poll";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const NATIVE: bool = true; // follow a long command (install, build, server), like Claude's
     const DESCRIPTION: &'static str =
         "Poll a shell execution by its execution_id handle: current status, accumulated \
          stdout/stderr, and exit_code once finished. The non-blocking way to follow a long command.";
@@ -1446,18 +1458,30 @@ impl ActionCommand for CodeShellPoll {
         p: CodeShellPollParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
-        let shell = self
+        let state_arc = self
             .state
-            .shell_sessions
-            .get(&who)
-            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
-        let state_arc = shell
-            .get_execution_state(&p.execution_id)
-            .ok_or_else(|| CommandError::NotFound(format!("no execution {}", p.execution_id)))?;
+            .with_execution(&who, &p.execution_id, |s, id| s.get_execution_state(id))
+            .map_err(execution_lookup_error)?;
         let s = state_arc
             .lock()
             .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
         Ok(shell_response(&s))
+    }
+}
+
+/// The refusal for a handle that did not reach a command. "No shell session" only when she
+/// truly has none (Cormac on #4586); otherwise the handle is named as unknown or ambiguous.
+fn execution_lookup_error(e: crate::modules::code::ExecutionLookup) -> CommandError {
+    use crate::modules::code::ExecutionLookup;
+    match e {
+        ExecutionLookup::NoSession => CommandError::NotFound(
+            "no shell session for caller: start a command with code/shell first".into(),
+        ),
+        ExecutionLookup::Unresolved(why) => CommandError::Invalid(format!(
+            "{why}. The handle may belong to a finished-and-collected command or be ambiguous; \
+             use the full execution_id from code/shell"
+        )),
+        ExecutionLookup::Failed(why) => CommandError::Internal(why),
     }
 }
 
@@ -1470,7 +1494,7 @@ pub struct CodeShellKill {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellKillParams {
-    /// The execution_id handle returned by `code/shell`.
+    /// Full execution_id or an unambiguous hex prefix within your shell session.
     pub execution_id: String,
 }
 
@@ -1494,14 +1518,9 @@ impl ActionCommand for CodeShellKill {
         p: CodeShellKillParams,
     ) -> Result<CodeShellKillResult, CommandError> {
         let who = caller_id(ctx);
-        let shell = self
-            .state
-            .shell_sessions
-            .get(&who)
-            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
-        shell
-            .kill(&p.execution_id)
-            .map_err(CommandError::Internal)?;
+        self.state
+            .with_execution(&who, &p.execution_id, |s, id| s.kill(id))
+            .map_err(execution_lookup_error)?;
         Ok(CodeShellKillResult { killed: true })
     }
 }
@@ -1763,11 +1782,13 @@ impl ActionCommand for CodeCreateWorkspace {
             who.clone(),
             FileEngine::new(&who, security).with_write_policy(policy),
         );
-        // DROP the caller's shell session so it is re-created at the NEW root.
-        // `ensure_shell` early-returns when a session exists, so without this a
-        // re-root moved her FILE engine and left her SHELL in the old directory —
-        // the two halves of her hands pointing at different workspaces.
-        self.state.shell_sessions.remove(&who);
+        // Move the caller's shell to the NEW root. `ensure_shell` early-returns when a session
+        // exists, so without this a re-root moved her FILE engine and left her SHELL in the old
+        // directory. The old session is SET ASIDE, not dropped: a work turn roots at the card
+        // and restores home every turn, and dropping lost every execution handle she had been
+        // given (Kimi, 2026-09-29).
+        self.state
+            .re_root_shell(&who, std::path::Path::new(&p.workspace_root));
         if !p.path_prepend.is_empty() {
             ensure_shell(&self.state, &who).await?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
@@ -1807,6 +1828,63 @@ impl ActionCommand for CodeCreateWorkspace {
     }
 }
 
+// ─────────────── the shell's own verdict (card f6c50a49) ────────────────
+
+/// Project a shell execution's OWN declared status into the executor's verdict.
+///
+/// No key scanning and no guessing: `ShellExecutionStatus` is already the typed
+/// terminal state the session computes at
+/// `shell_session.rs` (`status.success()` → `Completed`, else `Failed`), and
+/// `code/shell` documents itself as "always returns immediately with the
+/// execution handle". Reading that field is reading what the command declares.
+///
+/// `Running` is deliberately NOT collapsed into either terminal arm: a handed-back
+/// handle is an ACCEPTED command, not a completed one, and only a carrier that can
+/// say so can stop a receipt from claiming work that has not finished.
+fn shell_verdict(r: &ShellExecuteResponse) -> ToolVerdict {
+    match r.status {
+        ShellExecutionStatus::Running => ToolVerdict::Running,
+        ShellExecutionStatus::Completed => ToolVerdict::Succeeded,
+        // A nonzero exit, a timeout and a kill are all failures the model must
+        // SEE — the stderr that comes with them is the feedback it acts on.
+        ShellExecutionStatus::Failed
+        | ShellExecutionStatus::TimedOut
+        | ShellExecutionStatus::Killed => ToolVerdict::Failed,
+    }
+}
+
+/// The execution handle this response hands back, declared by the COMMAND.
+///
+/// The act seam used to recover this by re-parsing the result TEXT
+/// (`apply.rs`, pre-#4352) — which read the FOLDED preview, so a flood-sized
+/// result no longer parsed, and matched the command name by hand so a `bash`
+/// alias never reached the branch at all. Declared here, it is decoded once from
+/// the pre-fold value alongside the verdict.
+fn shell_handle(r: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+    uuid::Uuid::parse_str(&r.execution_id).ok()
+}
+
+impl crate::sdk_codegen::ProjectsOutcome for CodeShell {
+    fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
+        shell_verdict(output)
+    }
+    fn dispatch_handle(output: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+        shell_handle(output)
+    }
+}
+
+/// The poll half reads the SAME projection, so a `code/shell` handed back as
+/// `Running` and the `code/shell-poll` that later observes it terminal cannot
+/// disagree about what the same execution did.
+impl crate::sdk_codegen::ProjectsOutcome for CodeShellPoll {
+    fn outcome(output: &ShellExecuteResponse) -> ToolVerdict {
+        shell_verdict(output)
+    }
+    fn dispatch_handle(output: &ShellExecuteResponse) -> Option<uuid::Uuid> {
+        shell_handle(output)
+    }
+}
+
 // ─────────────────── one registry: descriptors + objects ─────────────────
 
 // Static descriptors → the ONE `command_registry()` the persona surface + grid
@@ -1828,6 +1906,11 @@ crate::register_command!(CodeDiff);
 crate::register_command!(CodeUndo);
 crate::register_command!(CodeHistory);
 crate::register_command!(CodeCreateWorkspace);
+
+// Opt-in outcome projection: ONLY these two commands pay the `DeserializeOwned`
+// bound, and only they change how the executor flags their results.
+crate::register_outcome!(CodeShell);
+crate::register_outcome!(CodeShellPoll);
 
 /// The dep-holding command objects the [`CodeModule`](super::code::CodeModule)
 /// contributes to the kernel's typed object map (via `ServiceModule::commands`),
@@ -2181,6 +2264,43 @@ mod tests {
         assert_eq!(small.total_matches, 2);
         assert_eq!(small.matches.len(), 2, "under threshold keeps every line");
         assert!(small.error.is_none(), "no note on a small result");
+
+        // Regression: the real command must retain search_files' parse failures,
+        // while a valid empty glob still returns successful orientation guidance.
+        for (pattern, glob, expected_error) in [
+            ("(", None, "Invalid regex"),
+            ("needle", Some("["), "Invalid glob"),
+        ] {
+            let refused = cmd
+                .run(
+                    &Ctx::default(),
+                    CodeSearchParams {
+                        pattern: pattern.to_string(),
+                        file_glob: glob.map(str::to_string),
+                        max_results: None,
+                    },
+                )
+                .await
+                .expect("search refusal is outcome data");
+            assert!(!refused.success, "invalid syntax must not become empty success");
+            assert!(refused.matches.is_empty());
+            assert!(refused.error.as_deref().unwrap().contains(expected_error));
+        }
+        let empty = cmd
+            .run(
+                &Ctx::default(),
+                CodeSearchParams {
+                    pattern: "needle".to_string(),
+                    file_glob: Some("*.missing".to_string()),
+                    max_results: None,
+                },
+            )
+            .await
+            .expect("valid empty search runs");
+        assert!(empty.success, "orientation guidance is not a parse refusal");
+        assert_eq!(empty.files_searched, 0);
+        assert!(empty.matches.is_empty());
+        assert!(empty.error.as_deref().unwrap().contains("No files matched glob"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

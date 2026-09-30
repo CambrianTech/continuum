@@ -1,4 +1,4 @@
-//! The cognition pulse: per-persona "when did she last THINK" stamps.
+//! Claim activity: recent cognition and card-scoped command execution.
 //!
 //! Exists to make the claim heartbeat HONEST. The renewal loop in
 //! `airc_runtime.rs` was bound to the presence pump — "her work stays hers
@@ -11,18 +11,16 @@
 //! three leases renewing on the minute, three written artifacts ungraded).
 //!
 //! The honest predicate is the renewal comment's own words — "the substrate
-//! observes that she is WORKING" — and working means a recent TURN, not a live
-//! process. A turn that starts and then defers on serving pressure still
+//! observes that she is WORKING" — a recent turn or execution against her
+//! acting card, never merely a live process. A turn deferred on serving pressure still
 //! counts: she is trying to think; starving her of a lease for the governor's
-//! failure would be #384-class unfairness. Only true cognition silence lapses.
+//! failure would be #384-class unfairness.
 //!
-//! One module owns the stamp (compression law). Keyed by persona uuid because
-//! the participants live on opposite sides of the persona structs and never
-//! share a struct to hang it off: two WRITERS — the service loop (turn start)
-//! and a live `agent/solve` drive tick — and one READER, the airc runtime's
-//! heartbeat task (the renewal gate).
+//! This module owns the evidence consumed by the existing heartbeat task.
+//! The service loop and `agent/solve` stamp cognition; the common command
+//! dispatcher holds card-scoped execution guards, including background work.
 //!
-//! Both writers stamp on WORK ACTUALLY HAPPENING. That is the whole contract,
+//! Writers stamp on WORK ACTUALLY HAPPENING. That is the whole contract,
 //! and the reason there is no spawn/boot/presence writer — see `touch`.
 
 use std::collections::HashMap;
@@ -57,6 +55,47 @@ pub fn touch(persona_id: Uuid, now_ms: u64) {
     }
 }
 
+/// Whether her COGNITION LOOP is running right now: a different fact from recent work.
+/// A resting citizen has a live loop and no recent turn; a citizen whose loop exited has
+/// neither, yet her airc runtime kept beaconing "ready" every minute (Kimi after the 5090
+/// rehost, 2026-09-28, card 7524aa5b: 50 minutes ready, deaf to directed messages). The loop
+/// holds a [`LoopGuard`] for its whole life; the presence heartbeat reads [`loop_running`].
+/// This is a lifecycle fact, and deliberately NOT a [`touch`]: it never earns a renewal.
+pub fn enter_loop(persona_id: Uuid) -> LoopGuard {
+    if let Ok(mut loops) = loops().lock() {
+        *loops.entry(persona_id).or_insert(0) += 1;
+    }
+    LoopGuard(persona_id)
+}
+
+/// Is a cognition loop running for her in this process?
+pub fn loop_running(persona_id: Uuid) -> bool {
+    loops().lock().map(|loops| loops.get(&persona_id).is_some_and(|n| *n > 0)).unwrap_or(false) // a poisoned map cannot vouch for her: not running, said as such
+}
+
+/// Held by a running cognition loop; dropping it (a return, an error, a panic unwinding)
+/// ends the claim that she is thinking.
+#[must_use = "the loop is running only while the guard is held"]
+pub struct LoopGuard(Uuid);
+
+impl Drop for LoopGuard {
+    fn drop(&mut self) {
+        if let Ok(mut loops) = loops().lock() {
+            if let Some(n) = loops.get_mut(&self.0) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    loops.remove(&self.0);
+                }
+            }
+        }
+    }
+}
+
+fn loops() -> &'static Mutex<HashMap<Uuid, u32>> {
+    static LOOPS: OnceLock<Mutex<HashMap<Uuid, u32>>> = OnceLock::new();
+    LOOPS.get_or_init(Default::default)
+}
+
 /// Milliseconds since her last stamped cognition. `None` = never stamped in
 /// this process — callers decide the posture; the renewal gate treats it as
 /// NOT earned (an unstamped persona renewing forever is the exact lie this
@@ -74,6 +113,92 @@ pub fn idle_ms(persona_id: Uuid, now_ms: u64) -> Option<u64> {
         .map(|last| now_ms.saturating_sub(last))
 }
 
+/// Work evidence is scoped to the card captured when a command starts. The
+/// command dispatcher owns the guard across foreground and background execution;
+/// cancellation drops it, so process presence never masquerades as active work.
+#[derive(Default)]
+struct WorkPulse {
+    active: usize,
+    completed_at: Option<u64>,
+}
+
+fn work_pulses() -> &'static Mutex<HashMap<(Uuid, Uuid), WorkPulse>> {
+    static WORK: OnceLock<Mutex<HashMap<(Uuid, Uuid), WorkPulse>>> = OnceLock::new();
+    WORK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) struct CommandWork {
+    key: (Uuid, Uuid),
+    active: bool,
+}
+
+impl CommandWork {
+    pub(crate) fn capture(persona: Uuid) -> Option<Self> {
+        let card = crate::cognition::persona_workspace::acting_card_of(persona)?;
+        Some(Self {
+            key: (persona, card),
+            active: false,
+        })
+    }
+
+    pub(crate) fn begin(mut self) -> Self {
+        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
+        work.entry(self.key).or_default().active += 1;
+        self.active = true;
+        self
+    }
+
+    pub(crate) fn completed(&self, now_ms: u64) {
+        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
+        if let Some(pulse) = work.get_mut(&self.key) {
+            pulse.completed_at = Some(now_ms);
+        }
+        // Keep only evidence that can still earn renewal. Active commands retain
+        // their entry regardless of duration; no fabricated completion on drop.
+        work.retain(|_, p| {
+            p.active > 0
+                || p.completed_at.is_some_and(|t| {
+                    now_ms.saturating_sub(t) <= crate::modules::work::DEFAULT_CLAIM_TTL_MS
+                })
+        });
+    }
+}
+
+impl Drop for CommandWork {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
+        if let Some(pulse) = work.get_mut(&self.key) {
+            pulse.active = pulse.active.saturating_sub(1);
+            if pulse.active == 0 && pulse.completed_at.is_none() {
+                work.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// An individual claim uses its own work evidence, plus the existing thinking
+/// pulse. `None` asks whether ANY work can justify entering the renewal pass.
+pub(crate) fn work_idle_ms(persona: Uuid, card: Option<Uuid>, now_ms: u64) -> Option<u64> {
+    let thinking = idle_ms(persona, now_ms);
+    let work = work_pulses().lock().unwrap_or_else(|e| e.into_inner()); // Poison recovery preserves the existing evidence map; it never invents a pulse or completion.
+    thinking
+        .into_iter()
+        .chain(work.iter().filter_map(|((who, which), p)| {
+            if *who != persona || card.is_some_and(|c| c != *which) {
+                return None;
+            }
+            if p.active > 0 {
+                Some(0)
+            } else {
+                p.completed_at.map(|t| now_ms.saturating_sub(t))
+            }
+        }))
+        .min()
+}
+
 /// THE renewal contract, pure for the test: a claim renewal is earned only by
 /// cognition within one lease-length. Silence longer than the lease means the
 /// hold lapses naturally — which is recoverable (she can re-claim, #2286) and
@@ -85,6 +210,67 @@ pub fn renewal_earned(idle: Option<u64>, ttl_ms: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 7524aa5b): a citizen reading as running after her loop
+    // exited (Kimi, 2026-09-28: fifty minutes of "ready" beacons from a dead loop). The guard
+    // is the claim; dropping it, including by an error return, ends it; two overlapping loops
+    // (a restart racing the old one) count as running until both end.
+    #[test]
+    fn the_loop_is_running_only_while_its_guard_is_held() {
+        let persona = Uuid::new_v4();
+        assert!(!loop_running(persona));
+        let first = enter_loop(persona);
+        assert!(loop_running(persona));
+        let second = enter_loop(persona);
+        drop(first);
+        assert!(loop_running(persona), "the overlapping loop still runs");
+        drop(second);
+        assert!(!loop_running(persona), "no loop: she is not thinking, whatever the runtime says");
+        let ended_by_error = || -> Result<(), ()> {
+            let _live = enter_loop(persona);
+            Err(())
+        };
+        assert!(ended_by_error().is_err());
+        assert!(!loop_running(persona), "an error return releases the claim");
+    }
+
+    // Regression 1fc73f18: active work outlives a turn-start stamp; cancellation
+    // and failure do not mint completion, and card A cannot renew card B.
+    #[test]
+    fn command_work_protects_only_its_card_and_ends_on_drop() {
+        let persona = Uuid::new_v4();
+        let (card, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let ttl = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
+        let now = crate::modules::chat::now_ms();
+        touch(persona, now.saturating_sub(ttl * 3));
+        let captured = || CommandWork {
+            key: (persona, card),
+            active: false,
+        };
+        let running = captured().begin();
+        assert!(renewal_earned(work_idle_ms(persona, Some(card), now), ttl));
+        assert!(!renewal_earned(
+            work_idle_ms(persona, Some(other), now),
+            ttl
+        ));
+        drop(running);
+        assert!(!renewal_earned(work_idle_ms(persona, Some(card), now), ttl));
+        let completed = captured().begin();
+        completed.completed(now);
+        drop(completed);
+        assert!(renewal_earned(
+            work_idle_ms(persona, Some(card), now + ttl),
+            ttl
+        ));
+        assert!(!renewal_earned(
+            work_idle_ms(persona, Some(card), now + ttl + 1),
+            ttl
+        ));
+        assert!(!renewal_earned(
+            work_idle_ms(persona, Some(other), now),
+            ttl
+        ));
+    }
 
     // what this catches: the renewal contract itself. Renewal-on-presence is
     // the regression this module ends — if an idle-beyond-one-lease or

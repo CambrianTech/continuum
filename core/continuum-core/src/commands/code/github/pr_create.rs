@@ -46,11 +46,10 @@ crate::action_command! {
     pub struct CodeGithubPrCreate { state: Arc<CodeState> }
     name: "code/github/pr-create",
     access: AiSafe,
-    native: false, // reachable BY NAME; never pushed into every turn (placeholder-issue spam, 2026-09-03)
+    native: true, // offered like Claude's (Joel, 2026-09-28); the 9/03 spam cause, must-use pressure, was fixed in #3684
     params: GithubPrCreateParams,
     output: GithubPrCreateResult,
     run(this, ctx, p) => {
-        super::require_operator(ctx, "code/github/pr-create")?;
         if p.title.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/pr-create: 'title' is required".into()));
         }
@@ -58,7 +57,7 @@ crate::action_command! {
         let mut args = vec![
             "pr".to_string(), "create".to_string(),
             "--title".to_string(), p.title,
-            "--body".to_string(), p.body,
+            "--body".to_string(), super::attributed(p.body, ctx),
         ];
         if let Some(base) = p.base.filter(|s| !s.trim().is_empty()) {
             args.push("--base".to_string());

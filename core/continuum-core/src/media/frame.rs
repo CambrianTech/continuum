@@ -107,11 +107,11 @@ impl MediaFrame {
         // when scaling itself failed (a corrupt frame should still fail loudly
         // through the describer's own error, not silently skip description).
         let scaled = self.scaled(compute, None, DESCRIBE_TIER).await;
-        let source = match &*scaled {
-            Ok(bytes) => Arc::new(bytes.clone()), // one small thumbnail copy replaces a multi-MB inline
-            Err(_) => Arc::clone(&self.source),
+        let (source, mime) = match &*scaled {
+            // scale_crop always encodes PNG, regardless of the source format.
+            Ok(bytes) => (Arc::new(bytes.clone()), "image/png".to_string()),
+            Err(_) => (Arc::clone(&self.source), mime.to_string()),
         };
-        let mime = mime.to_string();
         compute
             .get_or_compute(&self.content_hash, DESCRIBE_KEY, async move {
                 describer.describe(&source, &mime).await
@@ -361,6 +361,8 @@ mod tests {
     impl FrameDescriber for CountingDescriber {
         async fn describe(&self, source: &[u8], mime: &str) -> Result<String, String> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(image::guess_format(source).unwrap().to_mime_type(), mime,
+                "description request MIME must identify the bytes actually sent");
             Ok(format!("a {mime} image of {} bytes", source.len()))
         }
     }
@@ -377,10 +379,15 @@ mod tests {
         let describer = CountingDescriber {
             calls: Arc::clone(&calls),
         };
-        let frame = MediaFrame::from_bytes(png(30, 30));
+        // Regression #4592: a JPEG source becomes a PNG derivative. Reusing
+        // its source MIME made the actual vision request internally inconsistent.
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(30, 30)
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let frame = MediaFrame::from_bytes(jpeg.into_inner());
 
-        let first = frame.description(&compute, &describer, "image/png").await;
-        let second = frame.description(&compute, &describer, "image/png").await;
+        let first = frame.description(&compute, &describer, "image/jpeg").await;
+        let second = frame.description(&compute, &describer, "image/jpeg").await;
 
         assert!(first.as_ref().is_ok(), "describe should succeed");
         assert!(

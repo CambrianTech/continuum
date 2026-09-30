@@ -53,6 +53,42 @@ impl WeightResidency {
     }
 }
 
+/// One buffer type's allocation in the serving context, as the engine reports it on `/props`
+/// (`memory_breakdown`, fork #25): weights (model), KV cache (context), compute buffers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct BufferUse {
+    pub buffer_type: String,
+    pub model_bytes: u64,
+    pub context_bytes: u64,
+    pub compute_bytes: u64,
+}
+
+/// The serving context's whole footprint per buffer type, as the engine allocated it. The lane's
+/// footprint where no process reading exists (Windows/WDDM attributes VRAM to no process) and an
+/// adopted lane has no spawn baseline for a device delta (card 27fe9f8b).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct EngineMemory {
+    #[serde(rename = "memory_breakdown")]
+    pub per_buffer: Vec<BufferUse>,
+}
+
+impl EngineMemory {
+    /// `None` when the engine predates the field (channel unavailable) or it does not parse.
+    pub fn from_props(props: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(props.clone()).ok()
+    }
+
+    /// The bytes BEYOND the weights on accelerators: KV cache + compute buffers on every buffer
+    /// type that is not host memory. What the device delta measures on a discrete GPU.
+    pub fn accelerator_beyond_weights(&self) -> u64 {
+        self.per_buffer
+            .iter()
+            .filter(|b| !is_host_backend(&b.buffer_type))
+            .map(|b| b.context_bytes + b.compute_bytes)
+            .sum()
+    }
+}
+
 fn is_host_backend(name: &str) -> bool {
     let n = name.trim();
     n.starts_with("CPU") || n.contains("_Host") || n.starts_with("BLAS")
@@ -66,6 +102,22 @@ mod tests {
     // (accelerator bytes = the Metal/CUDA buffers, host mapped bytes excluded),
     // a CPU-fallback model (accelerator bytes 0 though total is large), and an
     // engine without the field (None — channel unavailable, never "CPU").
+    // what this catches: the lane's footprint read from the engine's own report — KV + compute
+    // on accelerator buffers only (CUDA_Host is pinned RAM, CPU_Mapped holds mapped weights) —
+    // and an engine without the field reading as unavailable, never as zero bytes.
+    // Numbers: the 1.5B Q4_K_M at -c 4096 -np 2 on the 5090 (fork #25).
+    #[test]
+    fn engine_memory_counts_kv_and_compute_on_accelerators_only() {
+        let props = serde_json::json!({"memory_breakdown": [
+            {"buffer_type": "CUDA_Host", "model_bytes": 0u64, "context_bytes": 0u64, "compute_bytes": 8400928u64},
+            {"buffer_type": "CPU_Mapped", "model_bytes": 191439360u64, "context_bytes": 0u64, "compute_bytes": 0u64},
+            {"buffer_type": "CUDA0", "model_bytes": 980104704u64, "context_bytes": 117440512u64, "compute_bytes": 66594944u64}
+        ]});
+        let m = EngineMemory::from_props(&props).expect("parses");
+        assert_eq!(m.accelerator_beyond_weights(), 117440512 + 66594944);
+        assert!(EngineMemory::from_props(&serde_json::json!({"model_weight_buffers": []})).is_none());
+    }
+
     #[test]
     fn residency_reads_allocation_and_absence_honestly() {
         let gpu = serde_json::json!({"model_weight_buffers": [

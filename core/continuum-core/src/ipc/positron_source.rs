@@ -258,7 +258,16 @@ pub(crate) struct PersonaActUpdate {
     pub(crate) actor_name: String,
     pub(crate) tool: String,
     pub(crate) summary: String,
+    /// Legacy outcome bool, unchanged in meaning for the clients already reading
+    /// it: false ONLY for a real failure.
     pub(crate) ok: bool,
+    /// The act's TYPED state — "succeeded" | "failed" | "running" | "undecodable"
+    /// | "unprojected". `ok` cannot express a call that was accepted but has not
+    /// finished, nor a result the substrate could not decode, and rendering either
+    /// as a tick is card f6c50a49. New field rather than a redefinition of `ok`, so
+    /// a client that has not adopted it is not silently given a new meaning.
+    #[serde(default)]
+    pub(crate) state: String,
     pub(crate) timestamp: u64,
 }
 

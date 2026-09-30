@@ -324,6 +324,102 @@ pub fn tps_for(model: &str) -> Option<f64> {
     CURVES.lock().get(model).and_then(|c| c.lightest_trusted_tps(now))
 }
 
+/// Where a turn's decode rate came from — the `rate_source` field of
+/// `delib.turn.output_allowance`. A rate is NEVER 0.0 for a served model: the M5 on
+/// 2026-09-20 (20:58–21:14Z) restarted, every point went untrusted, the rate read 0.0,
+/// and the allowance fell to a floor no thinking pass could hold. The ladder is fresh
+/// → stale (the record survives the restart) → the box's most conservative curve →
+/// and only with NO curve at all, `None` — in which case the time term is skipped and
+/// the need term alone bounds the turn, never a floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateSource {
+    /// The freshest trusted point on this model's own curve.
+    Fresh,
+    /// This model's curve has evidence but no fresh trust (a restart, a gap).
+    Stale,
+    /// This model has no curve; the slowest rate any curve on this box holds.
+    Conservative,
+    /// Nothing measured on this box, ever. An absence, not a number.
+    None,
+}
+
+impl RateSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Stale => "stale",
+            Self::Conservative => "conservative",
+            Self::None => "none",
+        }
+    }
+}
+
+/// A decode rate for sizing a turn's output allowance, with its provenance.
+/// `tps` is `Some` for every source but [`RateSource::None`], and always positive.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeasuredRate {
+    pub tps: Option<f64>,
+    pub source: RateSource,
+}
+
+impl MeasuredRate {
+    pub const UNKNOWN: MeasuredRate = MeasuredRate { tps: None, source: RateSource::None };
+}
+
+impl DecodeCurve {
+    /// The freshest trusted point's rate, whatever its in-flight count: the rate she is
+    /// decoding at NOW. `None` until a point is trusted at `now_ms`.
+    pub fn fresh_tps(&self, now_ms: u64) -> Option<f64> {
+        self.points
+            .values()
+            .filter(|p| p.trusted_at(now_ms))
+            .max_by_key(|p| p.last_ms)
+            .map(|p| p.tps_ema)
+    }
+
+    /// The newest point with lifetime evidence and a positive rate, whatever its age —
+    /// the same stale branch the knee falls back to. A pre-freshness record (`tps_ema`
+    /// 0) is UNKNOWN, never a measured 0 t/s.
+    pub fn stale_tps(&self) -> Option<f64> {
+        self.points
+            .values()
+            .filter(|p| p.samples >= MIN_SAMPLES && p.tps_ema > 0.0)
+            .max_by_key(|p| p.last_ms)
+            .map(|p| p.tps_ema)
+    }
+
+    /// This curve's best rate and where it came from: fresh, else stale, else nothing.
+    fn own_rate(&self, now_ms: u64) -> Option<(f64, RateSource)> {
+        self.fresh_tps(now_ms)
+            .map(|t| (t, RateSource::Fresh))
+            .or_else(|| self.stale_tps().map(|t| (t, RateSource::Stale)))
+    }
+}
+
+/// PURE: the rate ladder for `model` over `curves` — fresh → stale on its own curve,
+/// else the SLOWEST rate any curve on this box holds (fresh or stale; the biggest
+/// model's, in practice — the same conservatism as [`conservative`]), else unknown.
+pub fn rate_from(curves: &BTreeMap<String, DecodeCurve>, model: &str, now_ms: u64) -> MeasuredRate {
+    if let Some((tps, source)) = curves.get(model).and_then(|c| c.own_rate(now_ms)) {
+        return MeasuredRate { tps: Some(tps), source };
+    }
+    let slowest = curves
+        .values()
+        .filter_map(|c| c.own_rate(now_ms).map(|(t, _)| t))
+        .fold(None, |acc: Option<f64>, t| Some(acc.map_or(t, |a| a.min(t))));
+    match slowest {
+        Some(tps) => MeasuredRate { tps: Some(tps), source: RateSource::Conservative },
+        None => MeasuredRate::UNKNOWN,
+    }
+}
+
+/// Her decode rate on this box for an output allowance, with its source — see
+/// [`RateSource`] for the ladder. `tps` is never `Some(0.0)`.
+pub fn rate_for(model: &str) -> MeasuredRate {
+    let now = now_ms();
+    rate_from(&CURVES.lock(), model, now)
+}
+
 fn default_path() -> Option<PathBuf> {
     crate::commands::benchmark::continuum_home()
         .ok()
@@ -553,4 +649,40 @@ mod tests {
         assert!(!old.trusted_at(6), "pre-field record: stale evidence, not fresh trust");
     }
 
+    // what this catches (the M5, 2026-09-20 20:58–21:14Z): after a restart the output
+    // allowance read `measured_tps=0.0` and fell to a floor (pass 768, act 1500) because
+    // the only rate on offer was the FRESH trusted point, and nothing was fresh yet. The
+    // ladder: fresh → stale (the record survives the restart) → the slowest curve on the
+    // box for a model with no curve → and only with no curve at all, unknown — never
+    // 0.0, never a floor rate standing in for a measurement.
+    #[test]
+    fn a_served_models_rate_is_never_zero_fresh_then_stale_then_conservative_then_unknown() {
+        let mut curves: BTreeMap<String, DecodeCurve> = BTreeMap::new();
+        assert_eq!(rate_from(&curves, "the-27b", T), MeasuredRate::UNKNOWN, "no curve at all: unknown, not 0.0");
+        let mut big = DecodeCurve::default();
+        measured_at(&mut big, 2, 12.0, T - FRESH_MS - 1); // measured last hour, then a restart
+        curves.insert("the-27b".into(), big);
+        let stale = rate_from(&curves, "the-27b", T);
+        assert_eq!((stale.tps, stale.source), (Some(12.0), RateSource::Stale), "a restart does not zero her rate");
+        measured_at(curves.get_mut("the-27b").expect("inserted"), 2, 14.0, T);
+        let fresh = rate_from(&curves, "the-27b", T);
+        assert_eq!(fresh.source, RateSource::Fresh);
+        assert!(fresh.tps.is_some_and(|t| t > 12.0), "fresh trust reads the current EMA: {:?}", fresh.tps);
+        // A model with no curve of its own takes the SLOWEST rate the box holds, not the
+        // newest: a 1.5B exam at 40 t/s must not size a remembered 27B's turn.
+        let mut small = DecodeCurve::default();
+        measured_at(&mut small, 8, 40.0, T);
+        curves.insert("the-1.5b".into(), small);
+        let cons = rate_from(&curves, "coder-14b", T);
+        assert_eq!(cons.source, RateSource::Conservative);
+        assert_eq!(cons.tps, fresh.tps, "the 27B's rate answers for the unmeasured model");
+        // A pre-freshness record (tps_ema 0) is unknown, never a measured zero.
+        let mut zero = BTreeMap::new();
+        let old: DecodeCurve = serde_json::from_str(r#"{"points":{"2":{"samples":9,"tps_ema":0.0,"last_ms":5}}}"#).unwrap();
+        zero.insert("m".to_string(), old);
+        assert_eq!(rate_from(&zero, "m", T), MeasuredRate::UNKNOWN);
+        for l in [RateSource::Fresh, RateSource::Stale, RateSource::Conservative, RateSource::None] {
+            assert!(!l.label().is_empty());
+        }
+    }
 }

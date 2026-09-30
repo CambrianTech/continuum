@@ -95,6 +95,31 @@ pub struct LaneRecord {
     /// its hand, see `sweep_stale_page_generations`).
     #[serde(default)]
     pub page_dir: Option<PathBuf>,
+    /// The engine binary this lane was launched from: how a deploy knows which engine slot a
+    /// live lane still runs, so it never builds into it (`engine_slots::idle_slot`, card
+    /// 2c5d0ec0), without guessing from the process table (unreadable across Windows service
+    /// sessions). `None` for lanes recorded before this field existed.
+    #[serde(default)]
+    pub engine_bin: Option<PathBuf>,
+    /// The process's OS start time (seconds since the epoch), stamped at spawn. With `pid` it
+    /// names ONE engine incarnation: a successor core compares both, so a recycled pid is
+    /// never mistaken for this engine (SHARED-RESIDENT-LIFECYCLE.md step 1). `0` for lanes
+    /// recorded before this field existed, which never match a live process.
+    #[serde(default)]
+    pub started_s: u64,
+}
+
+impl LaneRecord {
+    /// The lane's root url, the one spelling every in-process client addresses it by (the
+    /// training run posts `/train` under it).
+    pub fn root_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// This lane's engine incarnation.
+    pub fn incarnation(&self) -> super::engine_residency::EngineIncarnation {
+        super::engine_residency::EngineIncarnation { pid: self.pid, started_s: self.started_s, port: self.port }
+    }
 }
 
 /// The LIVE-role lane left behind by a previous generation of this core, if one
@@ -159,6 +184,8 @@ pub enum SweepMode {
 /// loggable and a new state can't be silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SweepOutcome {
+    /// Termination was requested, but exit is not observed; retain the record for retry.
+    ExitUnconfirmed { pid: u32, port: u16 },
     /// Killed a live ephemeral orphan and removed its record.
     ReapedEphemeral { pid: u32, port: u16 },
     /// Killed the LIVE lane and removed its record. [`SweepMode::Shutdown`] only —
@@ -356,6 +383,19 @@ fn records_in(dir: &Path) -> Vec<LaneRecord> {
         .collect()
 }
 
+// A successful signal request is not exit evidence (notably taskkill access
+// denial on Windows). Preserve ownership until the process is actually gone.
+fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
+    if lane_process::is_alive(rec.pid) {
+        return SweepOutcome::ExitUnconfirmed { pid: rec.pid, port: rec.port };
+    }
+    let _ = std::fs::remove_file(path);
+    match rec.role {
+        LaneRole::Live => SweepOutcome::ReapedLive { pid: rec.pid, port: rec.port },
+        LaneRole::Ephemeral => SweepOutcome::ReapedEphemeral { pid: rec.pid, port: rec.port },
+    }
+}
+
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
 fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
     let mut outcomes = Vec::new();
@@ -405,17 +445,7 @@ fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
         }
         if lane_process::is_llama_server(rec.pid) {
             lane_process::kill9(rec.pid);
-            let _ = std::fs::remove_file(&path);
-            outcomes.push(match rec.role {
-                LaneRole::Live => SweepOutcome::ReapedLive {
-                    pid: rec.pid,
-                    port: rec.port,
-                },
-                LaneRole::Ephemeral => SweepOutcome::ReapedEphemeral {
-                    pid: rec.pid,
-                    port: rec.port,
-                },
-            });
+            outcomes.push(finish_reap(&path, &rec));
         } else {
             // Alive but not one of ours — a reused pid. Drop the stale
             // record; never signal an unrelated process.
@@ -445,6 +475,8 @@ mod tests {
             context_window: 1,
             lanes: 1,
             page_dir: None,
+            engine_bin: None,
+            started_s: 0,
         };
         record_in(dir.path(), &good).expect("write");
         assert_eq!(records_checked_in(dir.path()).expect("clean registry").len(), 1);
@@ -476,7 +508,30 @@ mod tests {
             context_window: 16_384,
             lanes: 4,
             page_dir: None,
+            engine_bin: None,
+            started_s: 0,
         }
+    }
+
+    // what this catches: failed/asynchronous termination must not erase the
+    // registry or claim success; a later observed exit permits cleanup.
+    #[test]
+    fn reap_retains_record_until_exit_is_observed() {
+        let dir = tempfile::tempdir().expect("temporary registry");
+        let live = rec(std::process::id(), 58200, LaneRole::Live);
+        record_in(dir.path(), &live).expect("record");
+        let path = record_path(dir.path(), live.pid);
+        assert_eq!(finish_reap(&path, &live), SweepOutcome::ExitUnconfirmed { pid: live.pid, port: live.port });
+        assert!(path.exists(), "survivor ownership must remain recoverable");
+        // A second Live registration deliberately supersedes the first. Use
+        // an independent ephemeral record to test cleanup isolation.
+        let dead = rec(u32::MAX, 58201, LaneRole::Ephemeral);
+        record_in(dir.path(), &dead).expect("dead record");
+        let dead_path = record_path(dir.path(), dead.pid);
+        assert!(!lane_process::is_alive(dead.pid));
+        assert_eq!(finish_reap(&dead_path, &dead), SweepOutcome::ReapedEphemeral { pid: dead.pid, port: dead.port });
+        assert!(!dead_path.exists());
+        assert!(path.exists(), "cleaning a dead lane must preserve the survivor");
     }
 
     // what this catches: record_in → the file exists and round-trips through JSON;
@@ -702,6 +757,8 @@ mod tests {
                         context_window: 8192,
                         lanes: 1,
                         page_dir: None,
+                        engine_bin: None,
+                        started_s: 0,
                     },
                 )
                 .expect("record");
@@ -744,6 +801,8 @@ mod tests {
                     context_window: 8192,
                     lanes: 1,
                     page_dir: None,
+                    engine_bin: None,
+                    started_s: 0,
                 },
             )
             .expect("record");

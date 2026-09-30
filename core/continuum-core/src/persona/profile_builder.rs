@@ -53,7 +53,6 @@ use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::inference_profile::{
     InferenceProfileError, PersonaInferenceProfile, SamplingProfile,
 };
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// Serving-plan-derived knobs for ONE persona's backend, projected from the
@@ -222,6 +221,7 @@ mod tests {
     };
     use crate::model_registry::{Model, Registry};
     use std::collections::BTreeSet;
+    use std::sync::Arc;
     use std::path::PathBuf;
 
     /// Stand-in for whatever served window the ServingPlan computed for the

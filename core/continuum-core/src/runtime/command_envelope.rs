@@ -326,11 +326,20 @@ fn is_subsequence(short: &str, long: &str) -> bool {
 /// The list is load-bearing beyond that message: anything naming a kernel field back to a
 /// caller as something she "sent" points her at something she never typed. One place.
 pub fn is_envelope_field(key: &str) -> bool {
-    matches!(
-        key,
-        "handle" | "sessionId" | "userId" | "actorKind" | "contextId" | "requestId"
-    )
+    ENVELOPE_FIELDS.contains(&key)
 }
+
+/// Every wire name [`CommandRequest`] owns beside the command's params. ONE list, read
+/// by [`is_envelope_field`] (the you-sent filter) and by the schema guard in this file's
+/// tests: `params` is `#[serde(flatten)]`ed into the SAME object, so a params field
+/// spelled like one of these is claimed by the envelope and never reaches the handler
+/// — silently `None` for an option, "invalid type … expected struct HandleRef" for a
+/// string. Five collisions before the guard (card ea28d2f6): actorKind (#3781),
+/// requestId (#4178), `handle` on the staging path (#3924 — why `dbPath` exists), and
+/// `jobHandle` (#4326); `agent/status`, `agent/stop` and `agent/wait` could not be
+/// called through the envelope at all.
+pub const ENVELOPE_FIELDS: &[&str] =
+    &["handle", "sessionId", "userId", "actorKind", "contextId", "requestId"];
 
 impl<P> CommandRequest<P>
 where
@@ -733,15 +742,9 @@ mod tests {
     // message. Six-plus times across two citizens in minutes.
     #[test]
     fn every_envelope_field_is_filtered_from_the_you_sent_list() {
-        // Every wire name on `CommandRequest` that is NOT the caller's params.
-        const ENVELOPE_FIELDS: &[&str] = &[
-            "handle",
-            "sessionId",
-            "userId",
-            "actorKind",
-            "contextId",
-            "requestId",
-        ];
+        // Every wire name on `CommandRequest` that is NOT the caller's params — the one
+        // list the envelope owns, so a field added to the struct without being added
+        // there breaks THIS test rather than the next citizen's retry loop.
         let sent: Vec<String> = ENVELOPE_FIELDS.iter().map(|f| f.to_string()).collect();
         let msg = param_mismatch_message("missing field `cmd`", &sent);
         assert!(
@@ -1137,4 +1140,36 @@ mod tests {
             "canonical UUID string is the bridge format between handle and legacy paths"
         );
     }
+    // what this catches (card ea28d2f6): a registered command whose PARAMS declare a wire
+    // name the envelope owns. `params` is flattened into the same JSON object as
+    // `handle` / `sessionId` / …, so serde hands the envelope its named fields first and
+    // the params never see them. Measured through the real boundary, 2026-09-21:
+    // `CommandRequest::<AgentStatusParams>::from_value({"handle":"agent-abc"})` →
+    // `invalid type: string "agent-abc", expected struct HandleRef` — three public
+    // agent verbs uncallable, a data/* string handle refused (hence `dbPath`), and four
+    // renames-at-the-site before anyone wrote this. Walks every registered command's
+    // params schema — PARAMS only: an outcome struct never traverses the request
+    // envelope, so `JobCreateResult.handle` is correct and must not be flagged.
+    #[test]
+    fn no_registered_commands_params_schema_names_a_field_the_envelope_owns() {
+        let mut collisions: Vec<String> = Vec::new();
+        for d in crate::sdk_codegen::command_registry() {
+            let Some(props) = d.params_schema.get("properties").and_then(|p| p.as_object()) else {
+                continue;
+            };
+            for key in props.keys() {
+                if is_envelope_field(key) {
+                    collisions.push(format!("{} — params.{key}", d.name));
+                }
+            }
+        }
+        collisions.sort();
+        assert!(
+            collisions.is_empty(),
+            "the envelope owns these names; a params field spelled the same is claimed by \
+             CommandRequest and never reaches the handler. Rename the param (jobHandle, \
+             agentHandle, dbPath — see #4326) or drop it. Collisions: {collisions:#?}"
+        );
+    }
+
 }

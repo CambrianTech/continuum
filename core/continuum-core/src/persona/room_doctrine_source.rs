@@ -33,7 +33,6 @@
 use std::sync::Arc;
 
 use airc_core::doctrine::RoomDoctrinePublished;
-use airc_core::PeerId;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
@@ -43,7 +42,7 @@ use crate::persona::rag_budget::{
 
 /// Source identifier — the service-loop projection routes this delivery
 /// into system-prompt grounding (a `[Room operating doctrine]` block).
-const SOURCE_ID: &str = "room-doctrine";
+pub(crate) const SOURCE_ID: &str = "room-doctrine";
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
@@ -447,6 +446,7 @@ impl RagSource for RoomDoctrineSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
     use std::sync::Mutex;
     use uuid::Uuid;
 

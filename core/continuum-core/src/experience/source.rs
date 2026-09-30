@@ -276,8 +276,42 @@ impl RecipeExperienceSource {
     pub fn resident_roles(
         dir: &std::path::Path,
     ) -> Result<Vec<crate::persona::role_template::RoleId>, RecipeLoadError> {
+        Ok(Self::resident_citizens(dir)?.into_iter().map(|c| c.role).collect())
+    }
+
+    /// The node's resident citizens WITH what each declares of a lane
+    /// ([`CitizenRecipe::requirement`], #4271) — the grid allocator's roles and floors
+    /// come from these (`cognition::grid_allocation::roles_from`), while the spawner
+    /// reads only their roles. ONE fold over the recipes; [`Self::resident_roles`] is
+    /// its projection, so a declared requirement can never be dropped on the way to
+    /// the allocator by a second reader that forgot it exists.
+    pub fn resident_citizens(
+        dir: &std::path::Path,
+    ) -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
         let overlay = Self::load_dir(dir)?;
-        Ok(Self::resident_roles_from(Self::embedded().chain(overlay)))
+        Ok(Self::resident_citizens_from(Self::embedded().chain(overlay)))
+    }
+
+    /// [`Self::resident_citizens`] over the EMBEDDED set alone — the same infallible
+    /// floor [`Self::resident_roles_embedded`] serves.
+    /// Every activity's citizens, for the GRID (card ccb316a7): the roles a mind can be
+    /// seated as, with the strictest declared requirement per role (`roles_from` merges
+    /// same-named roles). The spawner keeps `resident_citizens` (the default experience's
+    /// roster); the allocator reads the activities the minds actually serve — the project
+    /// declares what a coder peer needs, and that is what a coder seat must hold.
+    pub fn grid_citizens(
+        dir: &std::path::Path,
+    ) -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
+        let overlay = Self::load_dir(dir)?;
+        Ok(Self::embedded().chain(overlay).flat_map(|r| r.citizens).collect())
+    }
+
+    pub fn grid_citizens_embedded() -> Vec<crate::experience::recipe::CitizenRecipe> {
+        Self::embedded().flat_map(|r| r.citizens).collect()
+    }
+
+    pub fn resident_citizens_embedded() -> Vec<crate::experience::recipe::CitizenRecipe> {
+        Self::resident_citizens_from(Self::embedded())
     }
 
     /// [`Self::resident_roles`] over the EMBEDDED set alone — infallible, for
@@ -285,18 +319,18 @@ impl RecipeExperienceSource {
     /// directory fails to load (same shape as the positron projection's #432
     /// refusal: serve the shipped floor, never go dark over one bad file).
     pub fn resident_roles_embedded() -> Vec<crate::persona::role_template::RoleId> {
-        Self::resident_roles_from(Self::embedded())
+        Self::resident_citizens_embedded().into_iter().map(|c| c.role).collect()
     }
 
-    fn resident_roles_from(
+    fn resident_citizens_from(
         recipes: impl Iterator<Item = ExperienceRecipe>,
-    ) -> Vec<crate::persona::role_template::RoleId> {
+    ) -> Vec<crate::experience::recipe::CitizenRecipe> {
         let default_purpose = Self::shipped_purpose(shipped::CHAT)
             .expect("embedded chat recipe must exist — build-time authoring bug");
         recipes
             .filter(|r| r.purpose == default_purpose)
             .last()
-            .map(|r| r.citizens.into_iter().map(|c| c.role).collect())
+            .map(|r| r.citizens)
             .unwrap_or_default()
     }
 

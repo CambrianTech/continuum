@@ -22,7 +22,7 @@
 //!
 //! `Privileged` — it changes what is eligible to occupy GPU memory on this node.
 
-use std::collections::HashSet;
+use crate::modules::serving_daemon::ServingIntent;
 use std::sync::Arc;
 
 use schemars::JsonSchema;
@@ -71,7 +71,7 @@ crate::action_command! {
     /// forces — the daemon stays the authority on VRAM. Fails loud on an unknown
     /// model id. Idempotent if the model was not pinned.
     pub struct ServingLoad {
-        suppress: watch::Sender<Arc<HashSet<String>>>,
+        intent: ServingIntent,
         serving: watch::Receiver<ServingSnapshot>,
         catalog: Arc<ModelCatalog>,
     }
@@ -89,12 +89,7 @@ crate::action_command! {
         }
 
         // 2. Lift the OFF pin if present. Track whether it actually changed.
-        let was_suppressed = this.suppress.borrow().contains(&p.model_id);
-        if was_suppressed {
-            this.suppress.send_modify(|s| {
-                Arc::make_mut(s).remove(&p.model_id);
-            });
-        }
+        let was_suppressed = this.intent.set_suppressed(&p.model_id, false, true);
 
         let now_serving = this.serving.borrow().active_model.clone();
         let detail = if was_suppressed {

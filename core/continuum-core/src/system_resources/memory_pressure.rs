@@ -87,6 +87,59 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// drop below High re-arms the immediate read for the next episode.
 const ANOMALY_SCAN_EVERY: Duration = Duration::from_secs(30);
 
+/// How often a PERSISTING anomaly is re-said in the org room. The scan re-reads every
+/// [`ANOMALY_SCAN_EVERY`] (30 s) — right for the probe, far too often for a room. The
+/// room hears the first crossing at once, then a reminder at this cadence while the
+/// same process stays over the floor.
+const ANOMALY_SAY_EVERY: Duration = Duration::from_secs(30 * 60);
+
+/// PURE: should this anomaly be said in the org room now? Yes the first time a process
+/// is named (`last_said` none), then once per [`ANOMALY_SAY_EVERY`].
+fn anomaly_line_due(last_said: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last_said.is_none_or(|at| now.saturating_duration_since(at) >= ANOMALY_SAY_EVERY)
+}
+
+/// Last time each named process was said, so a long episode is one line plus reminders.
+static ANOMALY_SAID: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// SAY THE ANOMALY WHERE A PERSON OR A PEER WILL SEE IT. `memory.pressure.anomaly` was
+/// written after fseventsd held 26.6 GB (2026-09-08) and NOTHING read it: the probe file
+/// rotates within the hour, so fseventsd grew to 14 GB again on 2026-09-24 and the only
+/// record was a line no one saw. A root-owned process is not ours to kill — the remedy
+/// needs a person or a peer — so the substrate's job is to TELL someone, once, promptly.
+fn say_anomaly(name: &str, pid: u32, rss_bytes: u64, total_bytes: u64) {
+    let now = std::time::Instant::now();
+    {
+        let mut said = ANOMALY_SAID.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned map is still the last-said times; recover it
+        if !anomaly_line_due(said.get(name).copied(), now) {
+            return;
+        }
+        said.insert(name.to_string(), now);
+    }
+    let gb = |b: u64| b / (1024 * 1024 * 1024);
+    let remedy = if name.contains("fseventsd") {
+        " fseventsd is root-owned: `sudo killall fseventsd` restarts it (it respawns empty)."
+    } else {
+        ""
+    };
+    let line = format!(
+        "[memory] {name} (pid {pid}) holds {} GB of this node's {} GB — over a quarter of physical memory, and not the model server. Left alone it degrades every continuum function and can take the machine down.{remedy}",
+        gb(rss_bytes),
+        gb(total_bytes),
+    );
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move { crate::modules::grid::say_in_org_room(&line).await });
+        }
+        Err(_) => crate::probe!(
+            class = "memory.pressure.anomaly_not_said",
+            process = %name,
+            "no async runtime on the monitor thread — the anomaly stays in the probe only"
+        ),
+    }
+}
+
 /// PURE: is the anomaly scan due on this tick? Due on the first tick at High or above
 /// (`last_scan` none), and thereafter once per [`ANOMALY_SCAN_EVERY`]; never below High.
 fn anomaly_scan_due(level: PressureLevel, last_scan: Option<Duration>, since_start: Duration) -> bool {
@@ -242,6 +295,26 @@ impl PressureLevel {
             Self::Warning
         } else {
             Self::Normal
+        }
+    }
+
+    /// The swap axis from what the node is DOING with swap (card f26d6568). A file nine
+    /// tenths full is Critical whatever the rate (nowhere left to page). Below that the
+    /// smoothed swap-in + swap-out rate decides, so inert pages a build left behind an
+    /// hour ago read Normal while real paging reads High. With no rate (no counters on
+    /// this platform, or the first poll) occupancy decides, as [`Self::from_swap`].
+    pub fn from_swap_activity(swap_pct: f64, bytes_per_sec: Option<f64>) -> Self {
+        use crate::system_resources::swap_activity::{
+            SWAP_FULL_FRACTION, SWAP_HIGH_BYTES_PER_SEC, SWAP_WARNING_BYTES_PER_SEC,
+        };
+        if swap_pct >= SWAP_FULL_FRACTION {
+            return Self::Critical;
+        }
+        match bytes_per_sec {
+            None => Self::from_swap(swap_pct),
+            Some(rate) if rate >= SWAP_HIGH_BYTES_PER_SEC => Self::High,
+            Some(rate) if rate >= SWAP_WARNING_BYTES_PER_SEC => Self::Warning,
+            Some(_) => Self::Normal,
         }
     }
 
@@ -589,6 +662,8 @@ struct MemoryTickState {
     anomaly_scanned_at: Option<Duration>,
     /// The monitor's own clock origin for `anomaly_scanned_at`.
     started: std::time::Instant,
+    /// The smoothed swap traffic the swap axis reads (card f26d6568).
+    swap_activity: crate::system_resources::swap_activity::SwapActivity,
 }
 
 /// Independent memory pressure monitoring system.
@@ -658,6 +733,7 @@ impl MemoryPressureMonitor {
                 log_counter: 0,
                 anomaly_scanned_at: None,
                 started: std::time::Instant::now(),
+                swap_activity: Default::default(),
             }),
         });
 
@@ -855,9 +931,13 @@ impl MemoryPressureMonitor {
             } else {
                 0.0
             };
+            let swap_rate = st.swap_activity.observe(
+                std::time::Instant::now(),
+                crate::system_resources::swap_activity::read_swap_traffic(),
+            );
             let level = PressureLevel::worse(
                 PressureLevel::from_pressure(pressure),
-                PressureLevel::from_swap(swap_pct),
+                PressureLevel::from_swap_activity(swap_pct, swap_rate),
             );
 
             // Atomics + cross-module level — lock-free reads from anywhere.
@@ -904,9 +984,11 @@ impl MemoryPressureMonitor {
                     avail_mb = available / (1024 * 1024),
                     swap_mb = swap_used / (1024 * 1024),
                     swap_pct = (swap_pct * 100.0) as u64,
+                    // -1 = no rate (no counters, or the first poll): occupancy decided.
+                    swap_rate_kib_s = swap_rate.map_or(-1, |r| (r / 1024.0) as i64),
                     rss_mb = rss / (1024 * 1024),
                     consecutive = consecutive_at_level,
-                    "memory pressure as the node reads it — swap is its own axis, so a full swap file is High even when the page counters read free"
+                    "memory pressure as the node reads it — swap is its own axis: a full swap file, or live paging, is pressure even when the page counters read free"
                 );
                 // NAME THE ANOMALY. fseventsd at 26 GB beside a 22 GB model server is a
                 // fault, not background; a reader who only sees "swap full" has to go
@@ -921,7 +1003,12 @@ impl MemoryPressureMonitor {
                 }
                 if anomaly_scan_due(level, st.anomaly_scanned_at, since_start) {
                     st.anomaly_scanned_at = Some(since_start);
-                    st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+                    // `remove_dead_processes = true`: sysinfo keeps an exited process in
+                    // its table until told to drop it, so a scan that refreshed with `false`
+                    // named pid 48653 (a rustc stopped at ~17:15Z) at 18:05Z with its last
+                    // RSS — a sensor reading with no age, and two peers chased it. A dead
+                    // process holds nothing; the table must say so before the scan reads it.
+                    st.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
                     let floor = total / 4;
                     let mut named = 0u32;
                     for (pid, proc) in st.sys.processes() {
@@ -942,6 +1029,7 @@ impl MemoryPressureMonitor {
                             source = "sysinfo",
                             "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
                         );
+                        say_anomaly(&name, pid.as_u32(), mem, total);
                     }
                     // sysinfo cannot read root-owned processes' memory on macOS (fseventsd
                     // at 26.6 GB reported 0 on 2026-09-08) — `ps` can. Bounded to 2 s.
@@ -964,6 +1052,7 @@ impl MemoryPressureMonitor {
                                         source = "ps",
                                         "a process other than the model server holds over a quarter of physical memory — this is the fault to name, not the lane"
                                     );
+                                    say_anomaly(&p.name, p.pid, p.rss_bytes, total);
                                 }
                             }
                             // A read that could not complete is said, never an empty list
@@ -1264,6 +1353,71 @@ impl crate::paging::pool::ResourcePool for MemoryPressureMonitor {
 mod tests {
     use super::*;
 
+    // what this catches: a FOURTH reader of `sysinfo::available_memory()`, which returns
+    // 0 on macOS while `total`/`used` are correct. `available_from` above exists to be the
+    // one derivation every reader shares, and its doc says so — but saying so in a doc did
+    // not stop three callers from using the broken call anyway:
+    //
+    //   bin/continuum.rs        the warm-build gate. A permanent 0 against a 12 GiB
+    //                           threshold meant the gate could NEVER open on a Mac, so
+    //                           every deploy stopped the core first. Measured 2026-09-21:
+    //                           two deploys, `drain Incomplete { in_flight: 7 }` then
+    //                           `{ in_flight: 9 }` — sixteen citizen turns cut — while
+    //                           `memory.pressure` reported avail_mb 9,009 and 8,324 at the
+    //                           same moments, because IT used `available_from`.
+    //   inference/backends/llamacpp.rs   KV-cache sizing at model load. Its own doc says a
+    //                           0 "floors the KV budget to MIN_CTX"; on the unified-memory
+    //                           Macs that comment is about, the floor was unconditional.
+    //   capacity/system_profile.rs       `DeviceCapacity::system_ram_free_bytes`, a
+    //                           permanent zero for anyone budgeting against it.
+    //
+    // A doc comment is not a guard. This is.
+    #[test]
+    fn nothing_reads_sysinfo_available_memory_directly() {
+        fn scan(dir: &std::path::Path, hits: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, hits);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    // THE NEEDLE IS BUILT FROM PARTS so this file does not contain it
+                    // literally. A scanner that spells its own target matches ITSELF —
+                    // the same shape as a `pgrep -f` wait loop matching its own command
+                    // line — and would fail here forever with one hit that is the guard.
+                    let needle = concat!(".", "available_memory()");
+                    for (i, line) in text.lines().enumerate() {
+                        if line.contains(needle) && !line.trim_start().starts_with("//") {
+                            hits.push(format!("{}:{}", path.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        scan(&source_hygiene::crate_src_root(), &mut hits);
+        assert!(
+            hits.is_empty(),
+            "`sysinfo::available_memory()` returns 0 on macOS — use \
+             `system_resources::memory_pressure::available_from(&sys)`, the one derivation \
+             every reader shares. Direct callers found at: {hits:?}"
+        );
+    }
+
+    // what this catches: the org-room line for a memory anomaly firing every 30 s scan
+    // for as long as fseventsd stays huge (a flood), or never firing again for a process
+    // that stays over the floor for hours (silence). First crossing: said at once. Same
+    // process: reminded once per ANOMALY_SAY_EVERY, never more often.
+    #[test]
+    fn a_memory_anomaly_is_said_once_then_reminded_not_flooded() {
+        let t0 = std::time::Instant::now();
+        assert!(anomaly_line_due(None, t0), "the first crossing is said at once");
+        assert!(!anomaly_line_due(Some(t0), t0 + Duration::from_secs(30)), "the next 30 s scan is not a new line");
+        assert!(!anomaly_line_due(Some(t0), t0 + ANOMALY_SAY_EVERY - Duration::from_secs(1)), "still inside the reminder window");
+        assert!(anomaly_line_due(Some(t0), t0 + ANOMALY_SAY_EVERY), "a persisting anomaly is reminded");
+    }
+
     // what this catches (card 948c30c2): the anomaly scan — a full process-table refresh
     // and, on macOS, a `ps` child on its own thread — ran on EVERY 2 s poll for as long
     // as pressure stayed High. It is due on the first tick of an episode, then once per
@@ -1369,6 +1523,22 @@ mod tests {
     #[test]
     fn export_bindings_memory_budget_snapshot() {
         MemoryBudgetSnapshot::export_all(&ts_rs::Config::default()).unwrap();
+    }
+
+    // what this catches: card f26d6568 — inert swap held the M5 at High for hours (55% of
+    // a 3 GB swapfile left by a deploy build, 22 GB free+inactive, zero paging). Occupancy
+    // with no traffic is Normal; live paging is High at any occupancy; a nearly full file
+    // is Critical whatever the rate; and with no rate, occupancy still decides (9/08).
+    #[test]
+    fn swap_pressure_is_paging_not_pages_left_behind() {
+        use crate::system_resources::swap_activity::SWAP_HIGH_BYTES_PER_SEC;
+        assert_eq!(PressureLevel::from_swap_activity(0.55, Some(0.0)), PressureLevel::Normal);
+        assert_eq!(
+            PressureLevel::from_swap_activity(0.05, Some(SWAP_HIGH_BYTES_PER_SEC)),
+            PressureLevel::High
+        );
+        assert_eq!(PressureLevel::from_swap_activity(0.97, Some(0.0)), PressureLevel::Critical);
+        assert_eq!(PressureLevel::from_swap_activity(0.55, None), PressureLevel::High);
     }
 
     // what this catches: swap dropping out of the level again (2026-09-08: swap 40/41 GB,

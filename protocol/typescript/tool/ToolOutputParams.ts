@@ -2,7 +2,7 @@
 import type { OutputFilter } from "./OutputFilter";
 
 /**
- * Inputs to `tool/output`. `handle` is required (from the preview); everything
+ * Inputs to `tool/output`. `outputId` is required (from the preview); everything
  * else selects WHAT to pull back.
  */
 export type ToolOutputParams = { 
@@ -10,7 +10,7 @@ export type ToolOutputParams = {
  * The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
  * the spill the preview told you was saved.
  */
-handle: string, 
+outputId: string, 
 /**
  * A PREBUILT filter — the easy path, no regex needed: `errors` (what broke?),
  * `warnings`, `failures` (which tests failed?), or `summary` (how did it end?).

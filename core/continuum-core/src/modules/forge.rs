@@ -674,6 +674,8 @@ fn run_train_native_mlx(
 /// (custodian-owned). Both stay custodian-side — the organism passes handles.
 #[derive(Debug, Deserialize)]
 struct ForgeExportParams {
+    #[serde(default)]
+    checkpoint_format: crate::forge::protocol::AdapterCheckpointFormat,
     /// The trained checkpoint directory (loaded into the custodian's exporter).
     checkpoint: String,
     /// Where the custodian writes the export (custodian-owned path).
@@ -763,6 +765,7 @@ async fn run_export_gguf_lora(
         .map_err(|e| e.to_string())?;
 
     let req = crate::forge::protocol::GgufLoraRequest {
+        checkpoint_format: p.checkpoint_format,
         checkpoint: p.checkpoint.clone(),
         save_directory: p.save_directory.clone(),
         base_model_id: hf_base.to_string(),
@@ -825,7 +828,7 @@ struct ForgePublishParams {
     rank: Option<i64>,
     /// Held-out lift as a fraction (0.051 = +5.1pts). Gate is `> 0`.
     lift: f64,
-    /// Which publisher adapter to use. Default `"huggingface"`.
+    /// Which publisher to use: `"huggingface"` (default) or `"github"`.
     #[serde(default)]
     target: Option<String>,
 }
@@ -836,7 +839,6 @@ struct ForgePublishParams {
 /// `PublishRequest::build` before any transport is touched.
 async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, String> {
     use crate::forge::publish_request::{PublishInputs, PublishRequest};
-    use crate::forge::publisher::Publisher;
 
     let inputs = PublishInputs {
         repo_id: p.repo_id,
@@ -858,24 +860,17 @@ async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, String> {
     let req = PublishRequest::build(&inputs, |path| path.exists())
         .map_err(|e| format!("forge/publish: {e}"))?;
 
-    let target = p.target.as_deref().unwrap_or("huggingface");
-    let publisher: Box<dyn Publisher> = match target {
-        "huggingface" | "hf" => Box::new(crate::forge::hf_publisher::HfPublisher::new()),
-        other => {
-            return Err(format!(
-                "forge/publish: unknown target '{other}' — 'huggingface' is the only publisher \
-                 built; a grid publisher (outlier B) satisfies the same trait when wired"
-            ))
-        }
-    };
-
-    let receipt = publisher
-        .publish(&req)
+    // one dispatcher, one staged bundle, proven by read-back (forge::publisher)
+    let target = p.target.clone().unwrap_or_else(|| "huggingface".to_string());
+    let (bundle, mut results) = crate::forge::publisher::publish_everywhere(&req, std::slice::from_ref(&target))
         .await
         .map_err(|e| format!("forge/publish: {e}"))?;
+    let (_, outcome) = results.pop().ok_or("forge/publish: no target was attempted")?;
+    let receipt = outcome.map_err(|e| format!("forge/publish: {e}"))?;
     Ok(CommandResult::Json(serde_json::json!({
         "transport": receipt.transport,
         "location": receipt.location,
+        "digest": bundle.digest,
         "liftPct": req.lift_pct,
         "tags": req.tags,
     })))
@@ -1372,6 +1367,7 @@ mod tests {
     async fn forge_export_gguf_lora_sends_stateless_contract_c_request() {
         let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
@@ -1407,6 +1403,7 @@ mod tests {
     async fn forge_export_gguf_lora_without_base_fails_loud() {
         let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
@@ -1439,6 +1436,7 @@ mod tests {
     async fn forge_export_gguf_lora_fails_loud_when_custodian_fails() {
         let cust = RecordingForgeCustodian::default(); // succeed=false
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
@@ -1469,6 +1467,7 @@ mod tests {
     async fn forge_export_gguf_lora_registers_gene_in_manifest() {
         let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
+            checkpoint_format: Default::default(),
             checkpoint: "/ckpts/asha-code".into(),
             save_directory: "/genes".into(),
             format: "gguf-lora".into(),

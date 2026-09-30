@@ -61,10 +61,13 @@ pub mod look;
 /// render → observe → hot-edit → re-grade). Same `Provided` shape as observe,
 /// same eye-node adapter family, same [`ObserveResult`] observation coming back.
 pub mod hot_edit;
+/// `perception/interact` + `perception/session-close`: a persistent browser session a persona
+/// drives (click, type, goto) and sees after each step (card 3569675f).
+pub mod interact;
 
 /// Render size for an observation, in the surface's pixels (CSS px for a UI,
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -84,7 +87,7 @@ pub struct ObserveViewport {
 /// uses). Deliberately narrow: adapter-private knobs (Playwright channel, device
 /// scale, headless flag) are NOT here — a browser tab, a phone, and a render node
 /// can ALL honor this.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -255,12 +258,75 @@ impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = ObserveParams;
     type Result = ObserveResult;
+    fn params_schema() -> serde_json::Value {
+        crate::sdk_codegen::input_schema::<Self::Params>()
+    }
+
 }
 
 crate::register_command!(ObserveCommand);
 
 #[cfg(test)]
 mod tests {
+    // Regression: provided perception tools must expose required fields instead of Null.
+    #[test]
+    fn provided_input_schemas_preserve_routing_and_required_fields() {
+        use crate::sdk_codegen::{command_registry, WireShape};
+        let registry = command_registry();
+        for (name, required) in [
+            ("perception/observe", "target"),
+            ("perception/hot-edit", "css"),
+            ("perception/session-close", "session"),
+        ] {
+            let d = registry.iter().find(|d| d.name == name).unwrap();
+            assert_eq!(d.wire, WireShape::Provided);
+            assert!(d.params_schema["required"].as_array().unwrap().iter().any(|v| v == required));
+        }
+        let d = registry.iter().find(|d| d.name == "perception/interact").unwrap();
+        assert_eq!(d.wire, WireShape::Provided);
+        assert!(d.params_schema["properties"]["actions"].is_object());
+        assert!(d.params_schema.to_string().contains("hotPatchCss"));
+    }
+
+    // Regression: browser pixels must survive transcript compaction by reference,
+    // without publishing a reference to bytes that failed to persist.
+    #[test]
+    fn capture_pixels_are_durable_and_history_is_reference_only() {
+        use base64::Engine;
+        use crate::media::artifact::{retain_capture_with, ImageArtifact};
+        let dir = tempfile::tempdir().unwrap();
+        let open = || airc_blobs::FsStore::new(dir.path()).map_err(|e| e.to_string());
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(32, 24)
+            .write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let data = format!("data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes.get_ref()));
+        let original = serde_json::json!({"success":true,"image":{"dataUrl":data,"width":32,"height":24}});
+        let mut capture = original.clone();
+        let reference = retain_capture_with("perception/observe", &mut capture, open).unwrap().unwrap();
+        assert!(capture["image"].get("dataUrl").is_none());
+        assert_eq!(reference.read(&open().unwrap()).unwrap(), *bytes.get_ref());
+        let restored: ImageArtifact = serde_json::from_value(capture["image"]["artifact"].clone()).unwrap();
+        assert_eq!(restored.hash, reference.hash);
+        assert_eq!((restored.width, restored.height), (32,24));
+        let mut other = original.clone();
+        assert!(retain_capture_with("code/shell", &mut other, open).unwrap().is_none());
+        assert_eq!(other, original);
+        let mut failed = original.clone();
+        assert!(retain_capture_with("perception/observe", &mut failed, || Err("disk unavailable".into())).is_err());
+        assert_eq!(failed, original, "failed storage must not erase the only source");
+        // Correct hash/size cannot authenticate a forged geometry or MIME.
+        let mut bad_geometry = restored.clone();
+        bad_geometry.width = 1;
+        assert!(bad_geometry.read(&open().unwrap()).is_err());
+        let mut bad_mime = restored.clone();
+        bad_mime.mime = "image/jpeg".into();
+        assert!(bad_mime.read(&open().unwrap()).is_err());
+        let mut bad_size = restored;
+        bad_size.size_bytes += 1;
+        assert!(bad_size.read(&open().unwrap()).is_err());
+    }
+
     use crate::cognition::persona_tools::native_tool_specs;
     use crate::sdk_codegen::{command_registry, AccessLevel, WireShape};
 

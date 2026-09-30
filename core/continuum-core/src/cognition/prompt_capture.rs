@@ -30,9 +30,21 @@ pub struct PromptCall {
     pub persona_id: Uuid,
     pub room_id: Uuid,
     pub cycle_id: Option<u64>,
-    pub context_window: u32,
+    /// Live binding window, or unknown for a replay provider without a window receipt.
+    pub context_window: Option<u32>,
     pub cause: &'static str,
     pub cause_root: Option<Uuid>,
+    /// Present only for an isolated replay; the original record remains untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_of: Option<ReplaySource>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplaySource {
+    /// Whether replay pinned an implicit model using its recorded terminal response.
+    pub model_from_response: bool,
+    pub persona_id: Uuid,
+    pub cursor: String,
 }
 #[derive(Debug, Clone)]
 pub struct CaptureToken {
@@ -52,6 +64,8 @@ pub trait PromptCaptureSink: Send + Sync {
     ) -> Option<CaptureToken> {
         None
     }
+    /// Record the call's end. Returns the cursor of the completed entry, which holds
+    /// both the request and the response, when the sink recorded one.
     fn terminal(
         &self,
         _token: &CaptureToken,
@@ -59,7 +73,8 @@ pub trait PromptCaptureSink: Send + Sync {
         _response: Option<&TextGenerationResponse>,
         _error: Option<&str>,
         _elapsed_ms: u64,
-    ) {
+    ) -> Option<String> {
+        None
     }
     fn record(
         &self,
@@ -95,17 +110,42 @@ impl CaptureLease {
             started: std::time::Instant::now(),
         }
     }
-    pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) {
+    pub fn cursor(&self) -> Option<&str> {
+        self.token
+            .as_ref()
+            .map(|token| token.header.cursor.as_str())
+    }
+    /// End the call. Returns the completed entry's cursor: the one entry that reads back
+    /// as the request AND the response (the submission's own cursor holds only the request).
+    pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) -> Option<String> {
+        let token = self.token.take()?;
+        self.sink.terminal(
+            &token,
+            if response.is_some_and(|response| response.generation_error().is_none()) {
+                CallStatus::Completed
+            } else {
+                CallStatus::Failed
+            },
+            response,
+            error,
+            self.started.elapsed().as_millis() as u64,
+        )
+    }
+    /// ABANDONED BEFORE DISPATCH, SAID BY NAME (card ebce2ba0). A call the substrate
+    /// gave up on at an admission gate — it never reached the model — is still a
+    /// `Cancelled` row, but with a reason instead of the `Drop` impl's generic
+    /// "request future dropped before a terminal response". Those two strings carried
+    /// the SAME meaning for eighteen of fifty generations on the M5 (2026-09-20), so a
+    /// reader could not tell a mind starved at the serving gate from a generation the
+    /// model was still producing when its awaiting side walked away. Naming the seam is
+    /// the whole difference.
+    pub fn abandon(&mut self, reason: &str) {
         if let Some(token) = self.token.take() {
             self.sink.terminal(
                 &token,
-                if response.is_some_and(|response| response.generation_error().is_none()) {
-                    CallStatus::Completed
-                } else {
-                    CallStatus::Failed
-                },
-                response,
-                error,
+                CallStatus::Cancelled,
+                None,
+                Some(reason),
                 self.started.elapsed().as_millis() as u64,
             );
         }
@@ -203,7 +243,7 @@ impl JsonlPromptCaptureSink {
         value: &impl Serialize,
         header: CallHeader,
         terminal: bool,
-    ) -> Option<PayloadRef> {
+    ) -> Option<CallHeader> {
         let result = self
             .store
             .lock()
@@ -245,7 +285,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         request: &TextGenerationRequest,
     ) -> Option<CaptureToken> {
         let captured_at_ms = now_ms();
-        let mut header = CallHeader {
+        let header = CallHeader {
             request_id: call.request_id.clone(),
             session_id: self.session_id,
             cycle_id: call.cycle_id,
@@ -273,7 +313,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             call,
             request,
         };
-        header.request = self.append(&record, header.clone(), false)?;
+        let header = self.append(&record, header, false)?;
         Some(CaptureToken { header })
     }
     fn terminal(
@@ -283,7 +323,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         response: Option<&TextGenerationResponse>,
         error: Option<&str>,
         elapsed_ms: u64,
-    ) {
+    ) -> Option<String> {
         let mut header = token.header.clone();
         header.status = status;
         header.captured_at_ms = now_ms();
@@ -298,7 +338,9 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             response,
             error,
         };
-        self.append(&record, header.clone(), true);
+        self.append(&record, header.clone(), true)
+            .map(|recorded| recorded.cursor)
+            .filter(|cursor| !cursor.is_empty())
     }
     fn record(
         &self,
@@ -345,6 +387,46 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         };
         self.append(&record, header, false);
     }
+}
+
+/// One recorded call read back from its capture: the exact request she was served
+/// and, when the call finished, the exact response she gave. The single decode of a
+/// schema-4 capture; replay and the training lifter both read through it.
+pub(crate) struct CapturedCall {
+    pub context_window: Option<u32>,
+    pub request: TextGenerationRequest,
+    pub response: Option<TextGenerationResponse>,
+}
+
+/// Decode a capture's detail into its typed call. Refuses a capture with integrity
+/// issues or an older schema rather than guessing at its shape.
+pub(crate) fn decode(mut detail: PlaybackDetail) -> Result<CapturedCall, String> {
+    if !detail.issues.is_empty() {
+        return Err(format!("capture integrity: {}", detail.issues.join("; ")));
+    }
+    let mut submitted = detail
+        .submitted
+        .take()
+        .ok_or("capture has no submitted request")?;
+    if submitted.get("schema_version").and_then(|v| v.as_u64()) != Some(4) {
+        return Err("unsupported captured-request schema; schema 4 is required".into());
+    }
+    let context_window: Option<u32> = serde_json::from_value(submitted["context_window"].take()) // BOUNDARY: decode the persisted capture header, preserving unknown window as None.
+        .map_err(|e| format!("captured context window: {e}"))?;
+    let request: TextGenerationRequest = serde_json::from_value(submitted["request"].take()) // BOUNDARY: the on-disk request payload into the adapter's typed input.
+        .map_err(|e| format!("captured request: {e}"))?;
+    let response = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
+        Some(value) if !value.is_null() => Some(
+            serde_json::from_value::<TextGenerationResponse>(value.take()) // BOUNDARY: the persisted terminal response.
+                .map_err(|e| format!("captured response: {e}"))?,
+        ),
+        _ => None,
+    };
+    Ok(CapturedCall {
+        context_window,
+        request,
+        response,
+    })
 }
 
 /// Old combined rows already cross the JSON compatibility boundary. Inspect
@@ -560,9 +642,10 @@ mod tests {
             persona_id: persona,
             room_id: Uuid::nil(),
             cycle_id: Some(1),
-            context_window: 8192,
+            context_window: Some(8192),
             cause: "synthetic",
             cause_root: None,
+            replay_of: None,
         };
         let request = TextGenerationRequest {
             request_id: Some("first".into()),

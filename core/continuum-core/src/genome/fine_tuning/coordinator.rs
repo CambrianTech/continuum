@@ -330,6 +330,7 @@ mod tests {
             persona_name: "test".into(),
             base_model: base_model.into(),
             trait_kind: "test-trait".into(),
+            resume_from: None,
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::OperatorCurated,
@@ -495,6 +496,7 @@ mod tests {
             alpha: 16,
             dropout: 0.0,
             target_modules: vec![],
+            top_layers: None,
         });
         let err = coord.select(&req, None).err().expect("must reject");
         assert!(matches!(err, CoordinatorError::NoCapableAdapter { .. }));

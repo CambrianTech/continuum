@@ -68,6 +68,9 @@ pub struct ResumeOrMintProvider {
     grid_view: Option<GridView>,
     /// The deferral is said once per draw (rewind resets it), not once per slot.
     deferral_said: bool,
+    /// Woken seats waiting for a free slot, yielded before anything else (card ef25bf6c):
+    /// the cursor already walked past them while they rested.
+    returning: std::collections::VecDeque<PersonaIdentityIntent>,
 }
 
 type GridView = std::sync::Arc<dyn Fn() -> Option<crate::persona::grid_roster_memory::GridRosterFact> + Send + Sync>;
@@ -118,6 +121,7 @@ impl ResumeOrMintProvider {
             minted_count: 0,
             grid_view: None,
             deferral_said: false,
+            returning: Default::default(),
         })
     }
 
@@ -156,6 +160,60 @@ impl ResumeOrMintProvider {
     /// draw) left the cursor at the end, and the next 700 attempts read "identity
     /// provider exhausted at slot 0" from a directory holding twelve citizens. A retry
     /// that cannot succeed is not a retry. Nothing was hosted, so nothing is double-drawn.
+    /// Queue woken seats for the next draw: each name found in the resumed list returns
+    /// ahead of the cursor. A name this node never resumed is not its to draw (she lives
+    /// on another node) and is said, not guessed at.
+    pub fn admit_returning(&mut self, names: Vec<String>) {
+        for name in names {
+            let known = self.resumed.iter().find(|i| i.agent_name.eq_ignore_ascii_case(&name));
+            match known {
+                Some(intent) if !self.returning.iter().any(|r| r.agent_name.eq_ignore_ascii_case(&name)) => {
+                    self.returning.push_back(intent.clone());
+                }
+                Some(_) => {}
+                None => crate::probe!(
+                    class = "persona.host.return_unknown",
+                    agent = %name,
+                    "a woken seat this node never resumed — not its to draw"
+                ),
+            }
+        }
+    }
+
+    /// Move rotated-out residents to the BACK of the draw order (card ef25bf6c). A drawn
+    /// identity sits before the cursor; taking her out of that stretch and appending her
+    /// keeps the list its size, puts every mind still waiting ahead of her, and brings
+    /// her round again in turn: never-seated minds first, then the rotated oldest first.
+    pub fn requeue(&mut self, names: Vec<String>) {
+        for name in names {
+            match self.resumed.iter().position(|i| i.agent_name.eq_ignore_ascii_case(&name)) {
+                Some(at) if at < self.resumed_cursor => {
+                    let intent = self.resumed.remove(at);
+                    self.resumed_cursor -= 1;
+                    self.resumed.push(intent);
+                }
+                Some(_) => {} // not drawn yet: already ahead of the cursor
+                None => crate::probe!(
+                    class = "persona.host.requeue_unknown",
+                    agent = %name,
+                    "a rotated-out seat this node never resumed — not its to queue"
+                ),
+            }
+        }
+    }
+
+    /// Publish how many minds this draw has not reached and could still seat: queued
+    /// returns plus the names past the cursor that are NOT resting (the draw skips a
+    /// resting one, so counting her would rotate a resident out only to redraw her —
+    /// Cormac on #4450).
+    fn publish_waiting(&self) {
+        let beyond = self.resumed[self.resumed_cursor.min(self.resumed.len())..]
+            .iter()
+            .filter(|i| !crate::persona::resting_seat::is_resting(&i.agent_name))
+            .count();
+        crate::persona::resting_seat::set_waiting(self.returning.len() + beyond);
+    }
+
     pub fn rewind(&mut self) {
         self.resumed_cursor = 0;
         self.minted_count = 0;
@@ -172,10 +230,25 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
     async fn next_persona(
         &mut self,
     ) -> Result<Option<PersonaIdentityIntent>, PersonaIdentityError> {
+        // Phase 0: a woken seat returns first. Without this she came back only on a
+        // restart: the cursor walked past her while she rested (card ef25bf6c).
+        self.admit_returning(crate::persona::resting_seat::take_returning());
+        self.requeue(crate::persona::resting_seat::take_requeued());
+        if let Some(intent) = self.returning.pop_front() {
+            self.publish_waiting();
+            crate::probe!(
+                class = "persona.host.returned",
+                agent = %intent.agent_name,
+                "a woken seat is drawn back into the freed slot"
+            );
+            return Ok(Some(intent));
+        }
+
         // Phase 1: yield queued resumed intents.
         if self.resumed_cursor < self.resumed.len() {
             let intent = self.resumed[self.resumed_cursor].clone();
             self.resumed_cursor += 1;
+            self.publish_waiting();
             return Ok(Some(intent));
         }
 
@@ -187,6 +260,7 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         if total_yielded < floor {
             let intent = mint_fresh_intent();
             self.minted_count += 1;
+            self.publish_waiting();
             return Ok(Some(intent));
         }
         if let Some(team) = team_elsewhere {
@@ -205,6 +279,7 @@ impl PersonaIdentityProvider for ResumeOrMintProvider {
         }
 
         // Phase 3: exhausted.
+        self.publish_waiting();
         Ok(None)
     }
 }
@@ -331,6 +406,7 @@ mod tests {
             minted_count: 0,
             grid_view: None,
             deferral_said: false,
+            returning: Default::default(),
         };
         let mut first = Vec::new();
         while let Some(i) = p.next_persona().await.expect("draw") {
@@ -348,6 +424,56 @@ mod tests {
         };
         assert_eq!(again.len(), 3);
         assert_eq!(&again[..2], &first[..2], "resumed identities come back in order");
+    }
+
+    // what this catches: a woken seat that never comes back until a restart (card
+    // ef25bf6c). The cursor walks past her while she rests; after the wake she must be the
+    // next identity drawn, ahead of names the cursor has not reached, and exactly once.
+    #[tokio::test]
+    async fn a_woken_seat_is_drawn_back_ahead_of_the_cursor_without_a_restart() {
+        let resting = mint_fresh_intent();
+        let later = mint_fresh_intent();
+        let mut p = ResumeOrMintProvider {
+            resumed: vec![resting.clone(), later.clone()],
+            resumed_cursor: 1, // the boot draw walked past her while she rested
+            min_personas: 0,
+            minted_count: 0,
+            grid_view: None,
+            deferral_said: false,
+            returning: Default::default(),
+        };
+        p.admit_returning(vec![resting.agent_name.to_uppercase(), "Nobody".into()]);
+        p.admit_returning(vec![resting.agent_name.clone()]); // a second wake queues her once
+        let first = p.next_persona().await.expect("draw").expect("her");
+        assert_eq!(first.agent_name, resting.agent_name, "the freed seat goes to HER");
+        let second = p.next_persona().await.expect("draw").expect("the cursor resumes");
+        assert_eq!(second.agent_name, later.agent_name);
+        assert!(p.next_persona().await.expect("draw").is_none(), "she is drawn once");
+    }
+
+    // what this catches: a rotation that hands the freed seat back to the mind it just
+    // rotated out, or to the same tail mind every time (card ef25bf6c). A rotated-out
+    // resident goes behind every mind still waiting: the never-seated first, then the
+    // rotated in the order they left.
+    #[tokio::test]
+    async fn a_rotated_out_resident_waits_behind_every_mind_still_waiting() {
+        let (a, b, c, d) = (mint_fresh_intent(), mint_fresh_intent(), mint_fresh_intent(), mint_fresh_intent());
+        let mut p = ResumeOrMintProvider {
+            resumed: vec![a.clone(), b.clone(), c.clone(), d.clone()],
+            resumed_cursor: 2, // A and B hold the two seats; C and D have never been seated
+            min_personas: 0,
+            minted_count: 0,
+            grid_view: None,
+            deferral_said: false,
+            returning: Default::default(),
+        };
+        p.requeue(vec![a.agent_name.clone()]);
+        assert_eq!(p.next_persona().await.unwrap().unwrap().agent_name, c.agent_name, "the never-seated come first");
+        p.requeue(vec![b.agent_name.clone()]);
+        assert_eq!(p.next_persona().await.unwrap().unwrap().agent_name, d.agent_name);
+        assert_eq!(p.next_persona().await.unwrap().unwrap().agent_name, a.agent_name, "then the rotated, oldest first");
+        assert_eq!(p.next_persona().await.unwrap().unwrap().agent_name, b.agent_name);
+        assert_eq!(p.resumed.len(), 4, "the list keeps its size");
     }
 
     use super::*;

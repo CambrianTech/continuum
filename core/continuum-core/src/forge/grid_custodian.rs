@@ -238,6 +238,7 @@ mod tests {
 
     fn sample_request() -> GgufLoraRequest {
         GgufLoraRequest {
+            checkpoint_format: Default::default(),
             checkpoint: "/runs/coder-4b".into(),
             save_directory: "/genes/coder-4b".into(),
             base_model_id: "continuum-ai/qwen3-4b-GGUF".into(),

@@ -5,9 +5,83 @@
 //! that function was ~1.3k lines doing everything; each concern becomes a module named
 //! for the concern, never the wire format). Behaviour-identical to the inline block.
 
-use serde_json::Value;
-
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
+use crate::ai::inference_error::InferenceError;
+
+/// Only engine measurements may calibrate the persona's next prompt fit.
+#[derive(Clone, Copy)]
+pub(crate) enum PromptCount {
+    Estimated(usize),
+    Measured(usize),
+}
+
+impl PromptCount {
+    fn tokens(self) -> usize {
+        match self { Self::Estimated(n) | Self::Measured(n) => n }
+    }
+
+    fn overflow(self, available: u32, provider: &str, caller: &str) -> InferenceError {
+        match self {
+            Self::Measured(tokens) => match u32::try_from(tokens) {
+                Ok(requested) => InferenceError::ContextExceeded { requested, available },
+                Err(_) => InferenceError::Protocol("measured prompt exceeds the capacity receipt's token range".into()),
+            },
+            Self::Estimated(tokens) => InferenceError::Transient(format!(
+                "{provider}: refusing to generate — prompt ~{tokens} tokens ≥ the served per-slot \
+                 window of {available} (caller: {caller}). Sending it would 500 and POISON the shared \
+                 slot for every later request; fit the prompt to the served window (#175)."
+            )),
+        }
+    }
+}
+
+/// Only image-bearing local requests need the projector quote. Text requests
+/// retain their existing estimate; cloud providers do not promise this endpoint.
+pub(crate) fn needs_image_quote(body: &serde_json::Value) -> bool {
+    body.get("messages").and_then(|v| v.as_array()).into_iter().flatten()
+        .filter_map(|message| message.get("content").and_then(|v| v.as_array()))
+        .flatten().any(|part| part.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+}
+
+fn image_quote_request(
+    builder: &reqwest::RequestBuilder,
+    patience: std::time::Duration,
+) -> Result<reqwest::Request, String> {
+    let mut request = builder.try_clone()
+        .ok_or("image token quote requires a replayable request")?
+        .build().map_err(|e| format!("image token quote request: {e}"))?;
+    // Reuse the actual selected endpoint and authorization, including dedicated
+    // vision lanes. Never consult a different lane or load a second projector.
+    let path = format!("{}/input_tokens", request.url().path().trim_end_matches('/'));
+    request.url_mut().set_path(&path);
+    *request.timeout_mut() = Some(patience);
+    Ok(request)
+}
+
+fn quoted_input_tokens(value: &serde_json::Value) -> Result<usize, String> {
+    value.get("input_tokens").and_then(|v| v.as_u64())
+        .and_then(|n| usize::try_from(n).ok()).filter(|n| *n > 0)
+        .ok_or_else(|| "image token quote omitted a positive input_tokens count".to_string())
+}
+
+/// Price the exact finalized wire body with the selected engine's template and
+/// projector. No generation, persistent cache, or guessed per-image allowance.
+/// A failed quote is explicit: a text-only lower bound cannot certify pixels fit.
+pub(crate) async fn quote_image_prompt(
+    client: &reqwest::Client,
+    builder: &reqwest::RequestBuilder,
+    patience: std::time::Duration,
+) -> Result<usize, String> {
+    let request = image_quote_request(builder, patience)?;
+    let response = client.execute(request).await
+        .map_err(|e| format!("image token quote failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("image token quote refused with HTTP {}; image context cost is unknown", response.status()));
+    }
+    let value = response.json::<serde_json::Value>().await
+        .map_err(|e| format!("invalid image token quote: {e}"))?;
+    quoted_input_tokens(&value)
+}
 
 /// Why a generation was refused when the requested model is not guaranteed resident, said
 /// in the words the caller needs to act on. THREE distinct situations reach this point and
@@ -66,7 +140,9 @@ pub(crate) fn snapshot_guarantees(
 /// readiness gate (#350) cannot cover this: it reads the snapshot BEFORE a deliberation that
 /// takes tens of seconds, so a teardown starting mid-deliberation always outruns it. The gate
 /// stops a turn that was doomed at its start; this stops one that was overtaken in flight.
-pub(crate) fn settled_on_another_model(snap: &crate::inference::llama_server::ServingSnapshot) -> bool {
+pub(crate) fn settled_on_another_model(
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> bool {
     snap.is_live()
 }
 
@@ -106,36 +182,64 @@ pub(crate) fn unguaranteed_model_refusal(
 /// unambiguous overflow that (with context-shift off) 500s AND poisons the slot for
 /// every later request, so the caller must refuse to send rather than take the shared
 /// lane down. `served_window == 0` (window unknown, e.g. mid-relaunch) → `None` (never
-/// block on an unknown budget). Estimate is chars/4 — the same conservative heuristic as
+/// block on an unknown budget). Text uses the deliberation budget's estimate — the same heuristic as
 /// the `serving.ctx_overshoot` alarm; we only trip on prompt-alone-overflows so a
 /// legitimately-budgeted request (which always leaves reply headroom) is never blocked.
-pub(crate) fn prompt_alone_overflows_served(body: &serde_json::Value, served_window: u32) -> Option<usize> {
+pub(crate) fn prompt_alone_overflows_served(
+    prompt_tokens: usize,
+    served_window: u32,
+) -> Option<usize> {
     if served_window == 0 {
         return None;
     }
-    let prompt_tokens = body
-        .get("messages")
+    (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
+}
+
+/// The text estimate of a chat body's prompt — the overflow guard above, the
+/// `serving.ctx_overshoot` alarm, and the tripped-bound prefill measurement
+/// (`prefill_rate::observe_bound`) all size the same prompt; they must size it the same
+/// way, using the same text unit as deliberation. Multipart content must not make
+/// its text disappear. This is a text lower bound for media-bearing requests;
+/// encoded image bytes are NOT text tokens and require model-specific pricing.
+pub(crate) fn approx_prompt_tokens(body: &serde_json::Value) -> usize {
+    use crate::cognition::deliberation_budget::est_tokens;
+    body.get("messages")
         .and_then(|m| m.as_array())
         .map(|msgs| {
             msgs.iter()
-                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
-                .map(|c| c.len() / 4)
+                .filter_map(|m| m.get("content"))
+                .map(|content| {
+                    if let Some(text) = content.as_str() {
+                        return est_tokens(text);
+                    }
+                    content.as_array().map(|parts| {
+                        // Sum bytes before converting units: splitting a text
+                        // into many short parts must not round its cost to zero.
+                        let bytes = parts.iter()
+                            .filter(|part| part.get("type").and_then(|t| t.as_str()) == Some("text"))
+                            .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
+                            .map(str::len)
+                            .sum::<usize>();
+                        bytes / crate::cognition::deliberation_budget::GUARD_CHARS_PER_TOKEN
+                    }).unwrap_or(0) // unwrap_or: absent/non-text content has no text cost; media pricing is separate.
+                })
                 .sum::<usize>()
         })
-        .unwrap_or(0);
-    (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
+        .unwrap_or(0) // unwrap_or: no messages array = nothing to prefill; 0 is the honest estimate
 }
 
 /// The pre-flight guard as one call. `Ok(())` = the lane guarantees `model` (or this
 /// adapter is not a single-resident gateway / runs a dedicated lane); `Err` = the refusal
-/// text the turn surfaces. `caller` names the requester for the overflow refusal.
+/// the turn surfaces. Measured overflow carries capacity fields for
+/// the existing corrective refit; estimates never become calibration evidence.
+/// `caller` names the requester for an estimated overflow refusal.
 pub(crate) async fn guard_resident_model(
     cfg: &OpenAICompatibleConfig,
     dedicated_lane: bool,
     model: &str,
-    body: &Value,
+    prompt_count: PromptCount,
     caller: &str,
-) -> Result<(), String> {
+) -> Result<(), InferenceError> {
     // Pre-flight the single-resident gateway: GUARANTEE our model is the one
     // actually serving before we trust a generation. The local gateway
     // (llama-server) serves ONE resident model, fixed at process launch, and
@@ -212,7 +316,7 @@ pub(crate) async fn guard_resident_model(
                 model,
                 &snap,
                 crate::inference::llama_server::has_reconciled(),
-            ));
+            ).into());
         }
         // #175 universal overflow backstop: REFUSE (never send) a prompt that alone
         // exceeds the served per-slot window. With context-shift OFF the server 500s
@@ -230,20 +334,14 @@ pub(crate) async fn guard_resident_model(
         // same conservative estimate the overshoot alarm uses.
         // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
         if let Some(prompt_tokens) =
-            prompt_alone_overflows_served(&body, snap.served_context_window)
+            prompt_alone_overflows_served(prompt_count.tokens(), snap.served_context_window)
         {
             // The refused size is demand this seat could not hold; it votes on the next
             // plan's window (the 5090's self-sealed 2048, 2026-09-20).
-            crate::cognition::resource_admission::note_refused_prompt(prompt_tokens.min(u32::MAX as usize) as u32);
-            return Err(format!(
-                "{}: refusing to generate — prompt ~{} tokens ≥ the served per-slot \
-                 window of {} (caller: {}). Sending it would 500 and POISON the shared \
-                 slot for every later request; fit the prompt to the served window (#175).",
-                cfg.name,
-                prompt_tokens,
-                snap.served_context_window,
-                caller,
-            ));
+            crate::cognition::resource_admission::note_refused_prompt(
+                prompt_tokens.min(u32::MAX as usize) as u32,
+            );
+            return Err(prompt_count.overflow(snap.served_context_window, &cfg.name, caller));
         }
     }
 
@@ -256,21 +354,66 @@ mod tests {
 
     #[test]
     fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
+        let measured = PromptCount::Measured(1319).overflow(1024, "fixture", "persona");
+        assert!(matches!(measured, InferenceError::ContextExceeded { requested: 1319, available: 1024 }));
+        assert!(!measured.is_retryable_unchanged(), "measured overflow must refit, not replay");
+        let estimated = PromptCount::Estimated(1319).overflow(1024, "fixture", "persona");
+        assert!(matches!(estimated, InferenceError::Transient(_)), "a text estimate is not a provider measurement");
+        if let Ok(too_large) = usize::try_from(u64::from(u32::MAX) + 1) {
+            assert!(matches!(PromptCount::Measured(too_large).overflow(1024, "fixture", "persona"),
+                InferenceError::Protocol(_)), "unrepresentable counts must not be silently clamped");
+        }
         let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
-        // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
+        // Same estimate as deliberation: 48000 bytes / 3 vs an 8000-token slot.
         assert_eq!(
-            prompt_alone_overflows_served(&body(48_000), 8_000),
-            Some(12_000),
+            prompt_alone_overflows_served(approx_prompt_tokens(&body(48_000)), 8_000),
+            Some(16_000),
             "prompt alone over the window must be refused"
         );
-        // ~4000 tokens vs an 8000 slot → fits (room for the prompt + a reply) → allow.
-        assert_eq!(prompt_alone_overflows_served(&body(16_000), 8_000), None);
-        // Window unknown (mid-relaunch) → never block, whatever the prompt size.
-        assert_eq!(prompt_alone_overflows_served(&body(48_000), 0), None);
-        // No messages array → nothing to overflow.
+        // ~5333 tokens vs an 8000 slot → fits (room for the prompt + a reply).
         assert_eq!(
-            prompt_alone_overflows_served(&serde_json::json!({}), 8_000),
+            prompt_alone_overflows_served(approx_prompt_tokens(&body(16_000)), 8_000),
             None
         );
+        // Window unknown (mid-relaunch) → never block, whatever the prompt size.
+        assert_eq!(
+            prompt_alone_overflows_served(approx_prompt_tokens(&body(48_000)), 0),
+            None
+        );
+        // No messages array → nothing to overflow.
+        assert_eq!(
+            prompt_alone_overflows_served(approx_prompt_tokens(&serde_json::json!({})), 8_000),
+            None
+        );
+        // Regression #4592: adding image_url parts cannot erase accompanying
+        // instructions from the guard; base64 size must not be priced as text.
+        let multipart = serde_json::json!({"messages":[{"role":"user","content":[
+            {"type":"text","text":"x".repeat(24_001)},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}},
+            {"type":"text","text":"x".repeat(23_999)}
+        ]}]});
+        assert_eq!(approx_prompt_tokens(&multipart), approx_prompt_tokens(&body(48_000)));
+        assert_eq!(prompt_alone_overflows_served(approx_prompt_tokens(&multipart), 8_000), Some(16_000));
+        assert!(needs_image_quote(&multipart));
+        assert!(!needs_image_quote(&body(48_000)));
+        assert!(!needs_image_quote(&serde_json::json!({"messages":[{"content":"image_url"}]})));
+        // The quote must preserve the final template options, media, and auth,
+        // and target the same lane. It must not mutate the generation builder.
+        let client = reqwest::Client::new();
+        let encoded = serde_json::to_vec(&multipart).unwrap();
+        let builder = client.post("http://127.0.0.1:1234/v1/chat/completions")
+            .header("Authorization", "Bearer test-only").body(encoded.clone());
+        let patience = std::time::Duration::from_secs(7);
+        let quote = image_quote_request(&builder, patience).unwrap();
+        assert_eq!(quote.url().as_str(), "http://127.0.0.1:1234/v1/chat/completions/input_tokens");
+        assert_eq!(quote.headers()["Authorization"], "Bearer test-only");
+        assert_eq!(quote.body().unwrap().as_bytes().unwrap(), encoded);
+        assert_eq!(quote.timeout(), Some(&patience));
+        assert_eq!(builder.build().unwrap().url().path(), "/v1/chat/completions");
+        assert_eq!(quoted_input_tokens(&serde_json::json!({"input_tokens":1319})).unwrap(), 1319);
+        for invalid in [serde_json::json!({}), serde_json::json!({"input_tokens":-1}),
+            serde_json::json!({"input_tokens":0}), serde_json::json!({"input_tokens":"1319"})] {
+            assert!(quoted_input_tokens(&invalid).is_err());
+        }
     }
 }

@@ -318,6 +318,11 @@ fn assemble_workspace_cycle(
     // recall runs inline or deferred. Constructing a fork grants no disk access.
     if let Some(persisted) = restored {
         let n = persisted.wm.entries.len();
+        // The previous life's handoff re-seeds this one: her ledger and card are known at
+        // the NEXT seam too, without a wall read (card 49b5e806).
+        if let Some(handoff) = persisted.wm.handoff.as_ref() {
+            crate::cognition::handoff::reload(cfg.persona_id, handoff);
+        }
         working_memory.restore(persisted.wm);
         let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
         match &persisted.own_speech {
@@ -853,6 +858,42 @@ fn note_acting_root(persona_id: uuid::Uuid, root: Option<std::path::PathBuf>) {
     );
 }
 
+/// What the board says became of a card she believed she held, from the ONE holder
+/// projection the board itself renders (`card_holder`). PURE, so every branch is pinned:
+/// a live lease held by `her` → `None` (the card IS hers — a renewal or re-claim landed
+/// between the wake's two reads, nothing is gone); a live lease that is not hers →
+/// `HeldBy`; a card past the claimable states → `MovedOn` (its life advanced, not a
+/// lapse); otherwise `Lapsed` — the last lease, whoever's, ran out and nobody holds it.
+/// `owner` is never read as authority: an expired claim still names its last holder, and
+/// that holder may be her.
+pub(crate) fn claim_gone_verdict(
+    card: &airc_lib::WorkCard,
+    now_ms: u64,
+    her: uuid::Uuid,
+) -> Option<crate::cognition::working_memory::ClaimGone> {
+    use crate::cognition::working_memory::ClaimGone;
+    use crate::persona::card_holder::{hold_of, refused_by_claim, Hold};
+    if refused_by_claim(card.state) {
+        return Some(ClaimGone::MovedOn {
+            state: crate::modules::work::state_str(&card.state),
+        });
+    }
+    let expired_at_ms = card.claim_expires_at_ms;
+    Some(match hold_of(card, now_ms) {
+        Hold::Held => match card.owner {
+            Some(peer) if peer.as_uuid() == her => return None,
+            Some(peer) => ClaimGone::HeldBy {
+                peer: peer.as_uuid(),
+                expires_at_ms: expired_at_ms,
+            },
+            // A live hold with no owner cannot be rendered by the board either; say
+            // lapsed-and-open rather than invent a holder.
+            None => ClaimGone::Lapsed { expired_at_ms },
+        },
+        Hold::Lapsed | Hold::Unclaimed => ClaimGone::Lapsed { expired_at_ms },
+    })
+}
+
 /// Root her hands at her held card's staged checkout for THIS turn — any turn,
 /// not only the work turn. Freya (2026-09-05) edited a file during a room turn
 /// with her hands at home: her home is a copy of the continuum repo, and the
@@ -872,6 +913,55 @@ pub(crate) async fn root_at_held_card(
     let Ok(held) = citizen.active_claims().await else {
         return HeldCardTurn::unheld();
     };
+    // THE WAKE'S FIRST READ OF THE BOARD answers what the checkpoint believed (card
+    // c8303c32, Kimi 2026-09-21): her hands were rooted at a card when the snapshot was
+    // written; if the board no longer lists it among her holds, she is told NOW — in her
+    // window, before she resumes as its holder — instead of by a submit refusal hours on.
+    // The verdict is the board's, through the SAME holder projection the board renders
+    // (`card_holder`), never an owner field read as authority (Astra on #4315: an expired
+    // claim still names its last holder). The belief is consumed only once the board has
+    // ANSWERED; a card no board she stands in shows is UNKNOWN — said as such, and asked
+    // again next turn — never "nobody holds it".
+    if let Some(body) = cycle.acting() {
+        if let Some(believed) = body.working_memory.peek_restored_acting_card() {
+            if held.iter().any(|c| c.card_id.as_uuid() == believed) {
+                // The board agrees with the checkpoint: nothing to say, nothing to keep.
+                body.working_memory.take_restored_acting_card();
+            } else {
+                // The card's own row is a SECOND read; a renewal or re-claim can land
+                // between it and `active_claims`, so the verdict is reconciled with HER
+                // identity — a live hold that is hers is not gone (Astra, #4315 round 2).
+                // Three outcomes: the row shows her holding it (settled, silent); the row
+                // shows it gone (settled, said); no board she stands in shows the row
+                // (unsettled — said as unknown, the belief kept for the next read).
+                let now_ms = crate::modules::chat::now_ms();
+                let row = citizen.card(believed).await;
+                let verdict = row.as_ref().map(|card| claim_gone_verdict(card, now_ms, peer_id));
+                match verdict {
+                    Some(None) => {
+                        body.working_memory.take_restored_acting_card();
+                    }
+                    Some(Some(v)) => {
+                        body.working_memory.take_restored_acting_card();
+                        body.working_memory.note_claim_gone(believed, v);
+                    }
+                    None => body.working_memory.note_claim_gone(
+                        believed,
+                        crate::cognition::working_memory::ClaimGone::Unknown,
+                    ),
+                }
+                if !matches!(verdict, Some(None)) {
+                    crate::probe!(
+                        class = "persona.claim.gone_on_wake",
+                        peer = %peer_id,
+                        card = %believed,
+                        verdict = ?verdict.flatten(),
+                        "her checkpoint rooted her at a card the board no longer counts as hers — told in her window on the first held-card read"
+                    );
+                }
+            }
+        }
+    }
     if held.is_empty() {
         return HeldCardTurn::unheld();
     }
@@ -879,9 +969,12 @@ pub(crate) async fn root_at_held_card(
     // was ambiguous for a two-card holder, so her message turns kept her hands
     // at home while her work turns rooted (`persona.work.staged_ambiguous` ×2
     // after the focus cut, 2026-09-04).
-    let Some(focus) = crate::persona::work_focus::focus_card(held.iter()) else {
+    let Some(focus) = crate::persona::work_focus::focus_actionable_card(held.iter()) else {
         return HeldCardTurn::unheld();
     };
+    // Stamped for the seam as the turn roots: the handoff record carries this card WHOLE
+    // (claim id, lease edge, submissions) without a board walk at stop time (card 49b5e806).
+    crate::cognition::handoff::note_held(peer_id, None, focus, crate::modules::chat::now_ms());
     // ── FROM HERE THE CARD IS KNOWN ───────────────────────────────────────────────
     // Everything that can still fail below is a fact about the WORKSPACE — no checkout
     // on this node, no acting body, a rooting error. NONE of them is a fact about which
@@ -938,6 +1031,35 @@ pub(crate) async fn root_at_held_card(
     match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
         Ok(()) => {
             note_acting_card(hands.persona_id, focus.card_id.as_uuid());
+            // SAY WHERE SHE NOW STANDS when it is not where she was last told (card
+            // 822c4253): staging a card's checkout moved Kimi from the career-wrangler/
+            // tree she had built at home into a per-card worktree on a card branch, and
+            // her next code/read of career-wrangler/docs/... failed with no word of why.
+            // Recorded as told only AFTER the line is pinned (Cormac on #4555): marking
+            // first would leave a body-less turn "told" and silent at this checkout forever.
+            if !already_told(hands.persona_id, &ws) {
+                let branch = crate::modules::card_staging::card_branch(focus);
+                let Some(body) = cycle.acting() else {
+                    return HeldCardTurn {
+                        credit: Some(credit),
+                        hands: Some(hands),
+                    };
+                };
+                body.working_memory.pin_fact_for_turns(
+                    "rooted",
+                    &rooted_notice(&focus.repo.to_string(), &ws, &branch),
+                    3,
+                );
+                mark_told(hands.persona_id, &ws);
+                crate::probe!(
+                    class = "persona.work.root_moved",
+                    peer = %peer_id,
+                    card = %focus.card_id.as_uuid(),
+                    root = %ws.display(),
+                    branch = %branch,
+                    "her hands stand in a checkout she was not last told about; she is told now"
+                );
+            }
             HeldCardTurn {
                 credit: Some(credit),
                 hands: Some(hands),
@@ -950,6 +1072,45 @@ pub(crate) async fn root_at_held_card(
             HeldCardTurn::unrooted(credit)
         }
     }
+}
+
+/// The checkout each citizen was last TOLD her hands stand in (card 822c4253). Process
+/// memory: after a restart she is told once more, which costs one pinned line.
+static ANNOUNCED_ROOTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Whether `root` is the checkout she was last told about. A per-turn rooting at the
+/// same checkout says nothing.
+fn already_told(persona_id: uuid::Uuid, root: &std::path::Path) -> bool {
+    ANNOUNCED_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .get(&persona_id)
+        .is_some_and(|r| r == root)
+}
+
+/// Record `root` as told, once the line naming it is pinned in her window.
+fn mark_told(persona_id: uuid::Uuid, root: &std::path::Path) {
+    ANNOUNCED_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .insert(persona_id, root.to_path_buf());
+}
+
+/// PURE: the line that tells her where her hands now stand and what did not move. The
+/// branch is the card's EXPECTED branch (derived from the card), never asserted as the
+/// checked-out HEAD, which an existing tree may have moved (Codex on #4555).
+fn rooted_notice(repo: &str, root: &std::path::Path, branch: &str) -> String {
+    format!(
+        "[workspace] For your held card on {repo}, your hands now stand in its own checkout: \
+         {root}. The card's branch is {branch}; git status shows what is actually checked \
+         out. Paths in code/* are relative to it (docs/x.md, not <repo>/docs/x.md). Your \
+         home workspace is unchanged: a copy of this repo you keep there is a SEPARATE tree, \
+         and anything not pushed from it lives only there. Commits here stay on the checked \
+         out branch until you push them where the project wants them.",
+        root = root.display()
+    )
 }
 
 /// What a turn knows about the card being worked, kept SEPARATE from whether her hands
@@ -1053,6 +1214,16 @@ pub(crate) async fn root_acting_workspace(
 pub(crate) async fn restore_acting_workspace(
     hands: &ActingHands,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
+    // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): this is the one restore every
+    // acting path goes through, and the last moment both facts still stand — WHERE her
+    // hands acted and WHICH card rooted them. Before her hands leave the checkout, the
+    // act's work is WIP-committed on the card's branch and pushed to origin, so a node she
+    // is next staged on fetches it (`workspace_transfer::arrive`) and a seat change waits
+    // on it (`move_blocker`). Bounded, probed, never the turn's failure. A root with no
+    // card (an eval sandbox rooted directly) carries nothing: nothing to push.
+    if let (Some(root), Some(card)) = (acting_root_of(hands.persona_id), acting_card_of(hands.persona_id)) {
+        crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card).await;
+    }
     // `ensure_`, not `path_`: `code/create-workspace` REFUSES a root that does not exist
     // (PathSecurity canonicalizes), and a persona who has never written anything has no
     // layer on disk yet. Provisioning here is not a new side effect — it is exactly what
@@ -1275,13 +1446,13 @@ impl PersonaWorkspaceRegistry {
         if *stopped {
             return Vec::new();
         }
-        self.write_volatile_all()
+        self.write_volatile_all(SaveReason::Periodic)
     }
 
     /// Explicit save is repeatable and leaves periodic persistence running.
     pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
         let _checkpoint = self.checkpoint_stopped.lock();
-        self.write_volatile_all()
+        self.write_volatile_all(SaveReason::Seam)
     }
 
     /// Shutdown boundary: drain the admitted checkpoint, close periodic writes,
@@ -1291,12 +1462,16 @@ impl PersonaWorkspaceRegistry {
     pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<()>)> {
         let mut stopped = self.checkpoint_stopped.lock();
         *stopped = true;
-        self.write_volatile_all()
+        self.write_volatile_all(SaveReason::Seam)
     }
 
     // Only called under checkpoint_stopped. The cycle lookup lock is released
     // before snapshot/serialization/IO, keeping room turns and roster reads free.
-    fn write_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
+    fn write_volatile_all(&self, reason: SaveReason) -> Vec<(Uuid, std::io::Result<()>)> {
+        // ONE staged-read budget for the whole seam, shared by every resident, so the save
+        // phase is bounded by the phase and not by resident count; a periodic write has none.
+        let staged_deadline = matches!(reason, SaveReason::Seam)
+            .then(|| std::time::Instant::now() + crate::cognition::handoff::STAGED_READ_BOUND);
         let residents: Vec<_> = self
             .cycles
             .lock()
@@ -1317,21 +1492,83 @@ impl PersonaWorkspaceRegistry {
                 );
             }
         }
-        residents
-            .into_iter()
-            .map(|(id, memory)| {
+        let save_one = |id: Uuid, memory: Arc<WorkingMemory>| {
+            let started = std::time::Instant::now();
+            let result = save_volatile(id, reason, staged_deadline, &memory);
+            crate::probe!(
+                class = "persona.volatile.checkpoint",
+                persona_id = %id,
+                outcome = if result.is_ok() { "ok" } else { "error" },
+                ms = started.elapsed().as_millis() as u64,
+                "resident volatile checkpoint completed"
+            );
+            (id, result)
+        };
+        match reason {
+            // A periodic checkpoint reads no tree and writes one small file per resident:
+            // sequential on the checkpoint worker, no threads per tick.
+            SaveReason::Periodic => residents
+                .into_iter()
+                .map(|(id, memory)| save_one(id, memory))
+                .collect(),
+            // THE SEAM RUNS EVERY RESIDENT AT ONCE (card 1e4d8b3b). Each resident's record
+            // reads her tree (two bounded git children); sequential under one shared
+            // deadline meant the first cold `git status` spent the budget and every later
+            // resident wrote `Unmeasured` or, past the save phase, only a Periodic record
+            // (M5, first deploy seam 2026-09-26 16:37Z: five Deploy records, two Periodic).
+            // Fork/join like the runtime's own save phase: the seam's wall time is the
+            // slowest resident, never the sum, and one deadline is enough for all.
+            SaveReason::Seam => {
                 let started = std::time::Instant::now();
-                let result = save_volatile(id, &memory);
+                let count = residents.len();
+                let save_one = &save_one;
+                // A test's native-home fixture is thread-local; each seam thread carries it
+                // (a fixture not carried is a real home written from a test).
+                #[cfg(test)]
+                let test_home = crate::paths::NativeHomeOverride::current();
+                #[cfg(test)]
+                let test_home = &test_home;
+                let results: Vec<(Uuid, std::io::Result<()>)> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = residents
+                        .into_iter()
+                        .map(|(id, memory)| {
+                            let handle = scope.spawn(move || {
+                                #[cfg(test)]
+                                let _home = test_home
+                                    .as_deref()
+                                    .map(crate::paths::NativeHomeOverride::install);
+                                save_one(id, memory)
+                            });
+                            (id, handle)
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|(id, handle)| {
+                            handle.join().unwrap_or_else(|_| { // unwrap_or_else: a resident's save thread panicked — her record is the one thing lost, named; the seam goes on
+                                (
+                                    id,
+                                    Err(std::io::Error::other(
+                                        "the resident's seam checkpoint thread panicked",
+                                    )),
+                                )
+                            })
+                        })
+                        .collect()
+                });
                 crate::probe!(
-                    class = "persona.volatile.checkpoint",
-                    persona_id = %id,
-                    outcome = if result.is_ok() { "ok" } else { "error" },
+                    class = "persona.volatile.seam",
+                    residents = count,
+                    failed = results.iter().filter(|(_, r)| r.is_err()).count(),
                     ms = started.elapsed().as_millis() as u64,
-                    "resident volatile checkpoint completed"
+                    staged_budget_ms =
+                        crate::cognition::handoff::STAGED_READ_BOUND.as_millis() as u64,
+                    "every resident's seam record was written concurrently under one \
+                     phase-derived deadline"
                 );
-                (id, result)
-            })
-            .collect()
+                results
+            }
+        }
     }
 
     /// Fork an EPHEMERAL measurement cycle for `cognition/eval`: a faithful copy
@@ -1615,17 +1852,45 @@ fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
         .join("volatile.json"))
 }
 
+pub use crate::cognition::handoff::SaveReason;
+
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
 /// leaves a torn file. Called under the registry checkpoint gate, on a blocking
 /// worker. Failures propagate to both periodic and shutdown lifecycle receipts.
 fn save_volatile(
     persona_id: Uuid,
+    reason: SaveReason,
+    staged_deadline: Option<std::time::Instant>,
     wm: &super::working_memory::WorkingMemory,
 ) -> std::io::Result<()> {
     let path = volatile_path(persona_id)?;
     let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
+    let mut snapshot = wm.snapshot();
+    // THE HANDOFF (card 49b5e806): composed from what her turns already stamped (rooting,
+    // work/note, the seam walk) plus the two things only the seam knows — what tears this
+    // life, read from the deploy claim the reboot holds, and what stands on disk at her root.
+    let now_ms = crate::modules::chat::now_ms();
+    let home = crate::commands::benchmark::continuum_home().ok();
+    let torn_by = crate::cognition::handoff::torn_by_for(reason, home.as_deref(), now_ms);
+    let acting_root = acting_root_of(persona_id);
+    snapshot.handoff = crate::cognition::handoff::compose(
+        persona_id,
+        torn_by,
+        acting_root.as_deref(),
+        staged_deadline,
+        now_ms,
+    );
+    // What she believes she holds, stamped by the one writer that knows whose memory this
+    // is: her next wake compares it to the board (card c8303c32). A belief the board has
+    // NOT yet answered (restored, then `Unknown` on every read so far) outranks where her
+    // hands stand now: the card she stands at is on the board and recoverable from it, the
+    // pending comparison is recoverable from nowhere else — a checkpoint that wrote the
+    // ambient root would settle it by forgetting (Astra on #4315, round 2).
+    snapshot.acting_card = wm
+        .peek_restored_acting_card()
+        .or_else(|| acting_card_of(persona_id));
     let persisted = PersistedVolatile {
-        wm: wm.snapshot(),
+        wm: snapshot,
         own_speech: OwnSpeechPersisted::ByRoom(super::deliberation_budget::own_speech_by_room(
             crate::identity::PeerId::from_uuid(persona_id),
         )),
@@ -1669,6 +1934,125 @@ mod tests {
     use tokio::sync::{watch, Notify};
     use tokio::time::timeout;
 
+    // what this catches (card 822c4253): her hands moving to a card's own checkout with no
+    // word (Kimi's code/read of career-wrangler/docs/... failing in a per-card worktree),
+    // or the notice repeating every turn at the same checkout. Told on a new root, silent
+    // on the same one, told again when it moves; the notice names root, branch and the
+    // home tree that did not move.
+    #[test]
+    fn she_is_told_when_her_hands_move_and_only_then() {
+        let kimi = Uuid::new_v4();
+        let card = std::path::Path::new("/w/worktrees/af4e2cea");
+        assert!(!already_told(kimi, card), "first rooting is news");
+        assert!(!already_told(kimi, card), "checking does not record: only a pinned line does");
+        mark_told(kimi, card);
+        assert!(already_told(kimi, card), "the same checkout next turn is not news");
+        assert!(!already_told(kimi, std::path::Path::new("/w/worktrees/b0b0b0b0")));
+        assert!(!already_told(Uuid::new_v4(), card), "per citizen, never shared");
+        let line = rooted_notice("CambrianTech/career-wrangler", card, "af4e2cea/a-real-product");
+        for want in ["/w/worktrees/af4e2cea", "af4e2cea/a-real-product", "docs/x.md", "home workspace is unchanged"] {
+            assert!(line.contains(want), "{want}: {line}");
+        }
+    }
+
+    // what this catches (Astra's block on #4315): the wake's verdict must come from the
+    // board's holder projection, never from `owner` read as authority. An EXPIRED claim
+    // still names its last holder — which may be HER — so "X took it" from `owner` would
+    // tell Kimi that Kimi took her own card; a card in Review is absent from her live
+    // claims because its life advanced, not because a lease lapsed. Each branch pinned at
+    // a fixed clock.
+    #[test]
+    fn the_wakes_verdict_is_the_boards_never_the_owner_fields() {
+        use crate::cognition::working_memory::ClaimGone;
+        use airc_core::PeerId;
+        use airc_work::{CardState, Priority, RepoId, WorkCard, WorkCardId};
+        let now = 1_000_000u64;
+        let card = |owner: Option<PeerId>, claimed: bool, expires: Option<u64>, state: CardState| WorkCard {
+            card_id: WorkCardId::new(),
+            repo: RepoId::new("CambrianTech/continuum").expect("valid repo id in fixture"),
+            title: "a card".to_string(),
+            body: None,
+            priority: Priority::P2,
+            lane_id: None,
+            state,
+            owner,
+            claim_provenance: None,
+            claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(Uuid::new_v4())),
+            claim_expires_at_ms: expires,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: PeerId::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
+        };
+        let her = PeerId::new();
+        let me = her.as_uuid();
+        let peer = PeerId::new();
+        // Her own EXPIRED claim: the owner field still says her — the verdict must be Lapsed,
+        // never "her took it".
+        let lapsed_self = card(Some(her), true, Some(now - 1), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&lapsed_self, now, me), Some(ClaimGone::Lapsed { expired_at_ms: Some(now - 1) }));
+        // Her own LIVE hold on the second read (a renewal or re-claim landed between the
+        // wake's two board reads): nothing is gone — never "you lost it, <her uuid> took it".
+        let held_self = card(Some(her), true, Some(now + 60_000), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&held_self, now, me), None);
+        // A peer's LIVE lease: held by them, with the edge.
+        let held = card(Some(peer), true, Some(now + 60_000), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&held, now, me), Some(ClaimGone::HeldBy { peer: peer.as_uuid(), expires_at_ms: Some(now + 60_000) }));
+        // A peer's EXPIRED lease: lapsed and open, the peer is not named as holder.
+        let lapsed_peer = card(Some(peer), true, Some(now - 1), CardState::Claimed);
+        assert_eq!(claim_gone_verdict(&lapsed_peer, now, me), Some(ClaimGone::Lapsed { expired_at_ms: Some(now - 1) }));
+        // Review / Merged / Closed: the card moved on — whatever the lease fields say, even
+        // a live lease in her own name.
+        for state in [CardState::Review, CardState::Merged, CardState::Closed] {
+            let moved = card(Some(her), true, Some(now + 60_000), state);
+            assert!(matches!(claim_gone_verdict(&moved, now, me), Some(ClaimGone::MovedOn { .. })), "{state:?}");
+        }
+        // Unclaimed and open: lapsed-and-open is the honest word for "nobody holds it".
+        let open = card(None, false, None, CardState::Open);
+        assert_eq!(claim_gone_verdict(&open, now, me), Some(ClaimGone::Lapsed { expired_at_ms: None }));
+    }
+
+    // what this catches (Astra, #4315 round 2): a belief the board has not answered must
+    // SURVIVE the next checkpoint. `snapshot()` writes `acting_card: None` and the writer
+    // stamps the ambient root; with her hands unheld and the board unseen, that wrote None
+    // and a second restart forgot the comparison. Restore → unknown → save → restore must
+    // carry the same card; once the board has answered (take), the next save stamps the
+    // ambient root again.
+    #[test]
+    fn an_unanswered_belief_survives_the_next_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let believed = Uuid::new_v4();
+        // First lifetime: rooted at `believed` when the checkpoint was written.
+        let first = WorkingMemory::new(8);
+        let mut snap = first.snapshot();
+        snap.acting_card = Some(believed);
+        let woke = WorkingMemory::new(8);
+        woke.restore(snap);
+        assert_eq!(woke.peek_restored_acting_card(), Some(believed));
+        // The board is unseen this lifetime (Unknown keeps the belief); hands unheld, so
+        // the ambient root is None. The periodic checkpoint runs.
+        woke.note_claim_gone(believed, crate::cognition::working_memory::ClaimGone::Unknown);
+        assert_eq!(acting_card_of(persona), None, "fixture premise: hands unheld");
+        save_volatile(persona, SaveReason::Seam, None, &woke).unwrap();
+        let persisted = load_volatile(persona).unwrap().expect("checkpoint written");
+        assert_eq!(persisted.wm.acting_card, Some(believed), "the unanswered belief is carried, not settled by forgetting");
+        // Second restart: the comparison is still pending.
+        let again = WorkingMemory::new(8);
+        again.restore(persisted.wm);
+        assert_eq!(again.peek_restored_acting_card(), Some(believed));
+        // The board answers: consumed. The next checkpoint stamps the ambient root (None here).
+        again.take_restored_acting_card();
+        save_volatile(persona, SaveReason::Seam, None, &again).unwrap();
+        let settled = load_volatile(persona).unwrap().expect("checkpoint written");
+        assert_eq!(settled.wm.acting_card, None, "answered beliefs are not resurrected");
+    }
+
     // Uses the real persisted schema and WorkingMemory writer, not a second
     // checkpoint model. Explicit legacy root belongs to each temporary fixture.
     fn adoption_source(
@@ -1701,7 +2085,7 @@ mod tests {
         let memory = WorkingMemory::new(8);
         memory.record_receipt("different previous lifetime");
         memory.record_receipt("higher sequence is not a selection policy");
-        save_volatile(persona, &memory).unwrap();
+        save_volatile(persona, SaveReason::Seam, None, &memory).unwrap();
         let destination = volatile_path(persona).unwrap();
         let original = std::fs::read(&destination).unwrap();
         let (source, selected) =
@@ -1947,7 +2331,7 @@ mod tests {
         let memory = super::super::working_memory::WorkingMemory::new(8);
         let receipt = "review complete: the caller keeps its room membership";
         memory.record_receipt(receipt);
-        save_volatile(persona, &memory).unwrap();
+        save_volatile(persona, SaveReason::Seam, None, &memory).unwrap();
         assert_eq!(
             volatile_path(persona).unwrap(),
             home.path()
@@ -1969,6 +2353,61 @@ mod tests {
             resumed.snapshot().last_action,
             memory.snapshot().last_action
         );
+    }
+
+    // what this catches (card 1e4d8b3b): at a seam, EVERY resident's record measures HER
+    // tree — including a file she just created, which is untracked until staged (the
+    // "resume the edit, do not re-derive it" case the record exists for; a `-uno` status
+    // would drop it, Cormac on #4407). The first cut spent one 400 ms budget sequentially,
+    // so on the M5's first deploy seam only the first resident measured and the rest wrote
+    // Unmeasured or Periodic-only. Three residents at three cold roots, one seam.
+    #[tokio::test]
+    async fn every_resident_at_a_seam_measures_her_own_tree_including_untracked_files() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        let mut residents = Vec::new();
+        for i in 0..3 {
+            let persona = Uuid::new_v4();
+            registry
+                .register_from_cfg(cfg_for(persona))
+                .expect("test: resident registers");
+            let root = home.path().join(format!("work-{i}"));
+            std::fs::create_dir_all(&root).unwrap();
+            let init = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&root)
+                .status()
+                .expect("git is on PATH");
+            assert!(init.success());
+            std::fs::write(root.join(format!("new_{i}.py")), "x = 1\n").unwrap();
+            note_acting_root(persona, Some(root.clone()));
+            residents.push((persona, root, format!("new_{i}.py")));
+        }
+        let outcomes = registry.flush_volatile_all();
+        assert_eq!(outcomes.len(), 3);
+        for (id, r) in &outcomes {
+            assert!(r.is_ok(), "{id}: {r:?}");
+        }
+        for (persona, root, new_file) in &residents {
+            let saved = load_volatile(*persona).unwrap().expect("a seam record");
+            let handoff = saved
+                .wm
+                .handoff
+                .expect("she stands at a root, so she hands off");
+            match handoff.staged.expect("rooted = measured or named") {
+                crate::cognition::handoff::Staged::Measured {
+                    root: r,
+                    dirty_paths,
+                    ..
+                } => {
+                    assert_eq!(r, root.to_string_lossy());
+                    assert_eq!(dirty_paths, vec![new_file.clone()], "untracked file kept");
+                }
+                other => panic!("{persona}: {other:?}"),
+            }
+            note_acting_root(*persona, None);
+        }
     }
 
     // What this catches (#3918): replaced cycles and BOTH real eval fork paths
@@ -2059,7 +2498,7 @@ mod tests {
         let persona = Uuid::new_v4();
         let memory = WorkingMemory::new(8);
         memory.record_receipt("resident-only scratchpad");
-        save_volatile(persona, &memory).unwrap();
+        save_volatile(persona, SaveReason::Seam, None, &memory).unwrap();
         let before = std::fs::read(volatile_path(persona).unwrap()).unwrap();
         let mut cfg = cfg_for(persona);
         cfg.defer_recall = true;
@@ -3000,8 +3439,7 @@ mod tests {
         use crate::cognition::tool_executor::CommandToolExecutor;
         use crate::modules::code::{CodeModule, CodeState};
         use crate::routing::CallerIdentity;
-        use crate::runtime::{CommandExecutor, InProcessTransport, ModuleRegistry};
-        use continuum_client::Connection;
+        use crate::runtime::{CommandExecutor, ModuleRegistry};
         use dashmap::DashMap;
 
         /// One core with the REAL `CodeModule` — the single process-global engine map
@@ -3013,17 +3451,14 @@ mod tests {
                 Arc::new(DashMap::new()),
                 tokio::runtime::Handle::current(),
             )))));
-            let executor = Arc::new(CommandExecutor::new(registry));
-            let transport = InProcessTransport::new(
-                executor,
-                Some(CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(persona),
-                )),
+            let executor = Arc::new(
+                CommandExecutor::new(registry)
+                    .with_message_bus(Arc::new(crate::runtime::MessageBus::new())),
             );
             ActingHands {
                 persona_id: persona,
                 persona_name: "Anwen".to_string(),
-                executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
+                executor: Arc::new(CommandToolExecutor::for_persona(executor, persona)),
                 working_memory: Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)),
             }
         }
@@ -3053,6 +3488,57 @@ mod tests {
                 .await
                 .expect("code/list runs");
             out.results[0].content.clone()
+        }
+
+        // Regression: actual foreground hands and background dispatch both record
+        // work; a workspace switch before the task's first poll cannot move it.
+        #[tokio::test]
+        async fn command_work_stays_with_its_card_across_background_dispatch() {
+            use crate::persona::cognition_pulse::work_idle_ms;
+            let home = tempfile::TempDir::new().unwrap();
+            std::fs::write(home.path().join("work.txt"), "work").unwrap();
+            let persona = Uuid::new_v4();
+            let hands = hands_for(persona);
+            drive_create_workspace(&hands, &home.path().to_string_lossy(), &[], "root", false)
+                .await
+                .unwrap();
+            note_acting_root(persona, Some(home.path().to_path_buf()));
+            let (foreground, background, next) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+            note_acting_card(persona, foreground);
+            assert!(listing(&hands).await.contains("work.txt"));
+            assert!(
+                work_idle_ms(persona, Some(foreground), crate::modules::chat::now_ms()).is_some()
+            );
+
+            let exec = hands.executor.command_executor().unwrap();
+            let mut rx = exec.message_bus().unwrap().receiver();
+            note_acting_card(persona, background);
+            let handle = exec.dispatch_background(
+                "code/list",
+                serde_json::json!({"path": "."}),
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona),
+                )),
+            );
+            // Current-thread test: the spawned task has not been polled yet.
+            note_acting_card(persona, next);
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let event = rx.recv().await.unwrap();
+                    if event.name == "command:completed"
+                        && event.payload["handle"] == handle.to_string()
+                    {
+                        assert_eq!(event.payload["success"], true);
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("background completion");
+            let now = crate::modules::chat::now_ms();
+            assert!(work_idle_ms(persona, Some(background), now).is_some());
+            assert_eq!(work_idle_ms(persona, Some(next), now), None);
+            note_acting_root(persona, None);
         }
 
         // what this catches: #312 — the measurement leaving the LIVING persona standing in

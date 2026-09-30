@@ -76,11 +76,59 @@ pub fn seat_queued(wait_p50_ms: u64, wait_samples: u32, home_wait_p50_ms: Option
 /// never twice a minute.
 pub const MOVE_COOLDOWN_MS: u64 = 600_000;
 
+/// THE OPPORTUNITY MOVE (card 10bba591; Joel: "can it grow to higher capacity as both
+/// the M5 and the 5090 come online, ideally no time lost"). The failure rule above moves
+/// a mind only when her seat fails her. This is the mirror: the grid allocator
+/// (`modules::grid_allocator`) seats her on the node the grid's offers make best for
+/// her role, and when that is NOT where she sits and it is STRICTLY better — first a
+/// node that holds her requirement at all, then the allocator's own order (capability,
+/// target fit, lanes, window) — the switch moves her there BETWEEN turns, never mid-turn, and never
+/// inside her own cooldown. Equal seats are never a reason to move.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OpportunityInputs<'a> {
+    /// The plan of the seat she is on now, as the allocation reads that node; `None` =
+    /// her node offers no plan the allocation counts.
+    pub current: Option<&'a crate::cognition::grid_allocation::LanePlan>,
+    /// Does her current node's plan hold HER role at all (the node's `holds`)?
+    pub current_holds_her: bool,
+    /// The plan of the seat the allocation gives her.
+    pub target: &'a crate::cognition::grid_allocation::LanePlan,
+    /// The same role requirement used by the allocation being followed.
+    pub requirement: &'a crate::cognition::grid_allocation::Requirement,
+    pub target_is_current: bool,
+    pub turn_in_flight: bool,
+    pub since_last_move_ms: u64,
+    pub cooldown_ms: u64,
+}
+
+/// The rule. Pure.
+pub(crate) fn decide_opportunity(i: &OpportunityInputs<'_>) -> Option<crate::cognition::grid_allocation::BetterBy> {
+    if i.target_is_current || i.turn_in_flight || i.since_last_move_ms < i.cooldown_ms {
+        return None;
+    }
+    match i.current {
+        Some(c) if i.current_holds_her => i.target.better_than(c, i.requirement),
+        // Her node seats nobody of her role: any seat that holds her is objective 1.
+        _ => Some(crate::cognition::grid_allocation::BetterBy::Requirement),
+    }
+}
+
+/// Her cooldown between opportunity moves, in HER units: her measured turn cadence (the
+/// gap between her turn starts), never under her turn duration — so she completes at
+/// least one turn on the new seat before she may be moved again. Nothing measured yet =
+/// the failure rule's cooldown, the one number that already bounds a move. Pure.
+pub(crate) fn opportunity_cooldown_ms(shape: Option<crate::cognition::resource_admission::TurnShape>) -> u64 {
+    match shape {
+        Some(s) if s.cadence_ms.max(s.turn_ms) > 0 => s.cadence_ms.max(s.turn_ms),
+        _ => MOVE_COOLDOWN_MS,
+    }
+}
+
 /// The bound "remote" seat is one of THIS node's own ids (card 2500d2f1): she was never
 /// off-box, so she comes home at once — no cooldown, no beacon read — and the durable
 /// record that named the seat is retired so the next boot does not repeat it.
 pub const SEAT_STARVES_REASON: &str = "seat window below her turn: a lane that cannot serve is no seat";
-const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
+pub(crate) const SELF_SEAT_REASON: &str = "seat is this node: never a remote seat";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -122,6 +170,28 @@ pub struct PlacementInputs {
     pub requirement: Option<u32>,
 }
 
+/// THE TWO NUMBERS A SEAT VERDICT COMPARED. Carried to the probe so the glass-box record
+/// answers the question it raises: a `fell_home` line reading "seat window below her turn"
+/// without the width and the demand cannot tell a seat that is honestly too small from a
+/// beacon that disagrees with its own node's plan — and on 2026-09-21 that ambiguity is
+/// exactly what stalled the diagnosis of three citizens falling off one seat. A verdict
+/// that omits its inputs is the same defect as `NodeVerdict::BelowEveryRequirement` never
+/// naming the requirement it missed. `None` is honest: an unpublished width, or a mind
+/// whose turn has not been measured yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct SeatFit {
+    /// The seat's per-slot window as ITS beacon published it — never this node's plan for it.
+    pub window: Option<u32>,
+    /// What her turn needs of a lane, measured.
+    pub requirement: Option<u32>,
+}
+
+impl SeatFit {
+    fn of(i: &PlacementInputs) -> Self {
+        Self { window: i.seat_window, requirement: i.requirement }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlacementMove {
     FallHome { reason: &'static str },
@@ -129,6 +199,20 @@ pub enum PlacementMove {
     /// The seat is dark and this node has nothing to run her on: say so, move nothing.
     Park { reason: &'static str },
     Stay,
+}
+
+/// CAN THIS SEAT HOLD HER TURN AT ALL? The ONE answer, because two callers ask it: the
+/// rule below (which move to make) and the tick (whether the durable override naming the
+/// seat should survive the reboot). Before this was extracted only [`decide`] asked, so a
+/// seat proven unable to serve her was walked home every boot and re-bound by the next
+/// one — three citizens (Benchy, Aiko, Atlas) off the same seat across four deploys on
+/// 2026-09-21, 8 `fell_home` events against 0 returns ([[the-compression-principle]]).
+///
+/// Unknown width (an older core's beacon, or a seat that has never published one) is NOT
+/// a refusal — an absence is not a number, and [`crate::cognition::serving_plan::persona_lane_holds`]
+/// already answers the unmeasured-requirement case with the serve floor. Pure.
+pub(crate) fn seat_starves(seat_window: Option<u32>, requirement: Option<u32>) -> bool {
+    seat_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, requirement))
 }
 
 /// The rule. Pure so the four scenarios are hand-computed tests.
@@ -148,7 +232,7 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
     // token seat). She comes home now — no cooldown, this is not a flap between machines,
     // it is a lane that cannot serve — and she is never returned to it. Unknown width
     // (an older core's beacon) is not a refusal: an absence is not a number.
-    if i.seat_window.is_some_and(|w| !crate::cognition::serving_plan::persona_lane_holds(w, i.requirement)) {
+    if seat_starves(i.seat_window, i.requirement) {
         return match i.seat {
             Seat::Remote if i.local_available => PlacementMove::FallHome { reason: SEAT_STARVES_REASON },
             Seat::Remote => PlacementMove::Park { reason: SEAT_STARVES_REASON },
@@ -201,6 +285,14 @@ pub fn decide(i: PlacementInputs) -> PlacementMove {
     }
 }
 
+/// PURE: is this a move BETWEEN MACHINES — the kind her workspace must be carried across
+/// first (card 73eefbbb)? A fall-home or a return is; Stay and Park move nothing; and a
+/// "remote" seat that is this very node (card 2500d2f1) is a loopback lane, not another
+/// machine — her workspace is already here, so it never waits on a push.
+pub fn moves_between_machines(mv: &PlacementMove, seat_is_self: bool) -> bool {
+    !seat_is_self && matches!(mv, PlacementMove::FallHome { .. } | PlacementMove::ReturnRemote)
+}
+
 /// The adapter a remote-bound persona runs on: her remote lane, her home adapter (built
 /// on first fall-home), and the seat she is on.
 pub struct PlacementSwitch {
@@ -218,6 +310,14 @@ pub struct PlacementSwitch {
     home: Option<PersonaHome>,
     seat: AtomicU8,
     moved_at_ms: AtomicU64,
+    /// Has a retirement of her bound seat already been SAID? The retirement itself stays
+    /// idempotent and unconditional (the self-seat path needs the second call — the first
+    /// runs while she is still Remote and cannot drop the lane, the second does once she
+    /// is Home). Only the RECEIPT is once-per-change: a PARKED mind on a starving seat is
+    /// re-asked every tick by design, and a probe that fires on every tick is noise that
+    /// buries the change it was added to report — the third time that shape bit this
+    /// session (Cormac on #4307).
+    retire_said: std::sync::atomic::AtomicBool,
     /// Fixed strings the adapter trait hands out by reference.
     provider_label: String,
     name_label: String,
@@ -274,6 +374,7 @@ impl PlacementSwitch {
             home,
             seat: AtomicU8::new(Seat::Home as u8),
             moved_at_ms: AtomicU64::new(0),
+            retire_said: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -309,6 +410,13 @@ impl PlacementSwitch {
         self.remote_adapter().map(|r| r.is_cold()).unwrap_or(false) // JUSTIFIED unwrap_or: no remote lane = nothing to be cold
     }
 
+    /// Does a checkout her hands acted in hold work `origin` does not (card 73eefbbb)?
+    /// The workspace side of a seat change: a move between machines waits on her last
+    /// push landing, so the node she lands on can fetch what she was doing.
+    pub fn has_unpushed_work(&self) -> bool {
+        crate::persona::workspace_transfer::persona_has_unpushed_work(self.persona_id)
+    }
+
     /// Bind a remote lane on `peer` serving `model` and move there (stage B). Persists
     /// the move as her override so a reboot keeps it. Fails loudly without a wire.
     pub fn go_remote(&self, peer: Uuid, model: &str, now_ms: u64) -> Result<(), String> {
@@ -342,14 +450,50 @@ impl PlacementSwitch {
     }
 
     /// Her bound seat was this node (card 2500d2f1): retire the durable override that
-    /// named it, and — once she is home — the loopback lane and the peer, so she is
-    /// home-born from here and the next boot does not bear her on a lane to herself.
-    /// Idempotent; the override is a record of the old confusion, never an assignment.
+    /// named it. See [`Self::retire_bound_seat`] — this is one of its two callers.
     pub fn retire_self_seat(&self) {
+        self.retire_bound_seat(SELF_SEAT_REASON);
+    }
+
+    /// The seat cannot hold her turn (2026-09-21): retire the durable override the same
+    /// way, so the NEXT BOOT does not bear her back onto it.
+    ///
+    /// Why this is not a fall-home. [`Self::come_home_for_good`] already draws the line —
+    /// a fall-home deliberately KEEPS the seat to return to, because the seat going dark
+    /// or cold is a temporary outage. A window that cannot hold her turn is not an
+    /// outage; `decide` says so in its own words ("this is not a flap between machines,
+    /// it is a lane that cannot serve") and refuses to return her to it. But that refusal
+    /// lived only in the running process: the override on disk survived, and each deploy
+    /// bound her to the same seat again. Measured 2026-09-21 on the IntelMac — Benchy,
+    /// Aiko and Atlas off seat e85a5bb3, EIGHT `fell_home` events across four deploys
+    /// against ZERO returns, clustering 28 s and 69 s after two of those deploys.
+    ///
+    /// Retiring is not exile. The override is a BINDING, not a verdict on the node: a
+    /// mind sitting home past her cooldown is a chooser candidate again (see the
+    /// `at_home` push below), so if that seat's window grows to hold her the chooser
+    /// re-binds her on its own. That is what makes this safe against a seat read narrow
+    /// mid-relaunch, when the grow-back ladder has not yet restored the window — the cost
+    /// of retiring too eagerly is one chooser pass, while the cost of keeping a stale
+    /// binding is a citizen walked home on every deploy forever.
+    pub fn retire_starving_seat(&self) {
+        self.retire_bound_seat(SEAT_STARVES_REASON);
+    }
+
+    /// Retire the durable override naming her bound seat, and — once she is home — the
+    /// remote lane and the peer, so she is home-born from here and the next boot does not
+    /// bear her onto a seat this run already proved is none.
+    /// Idempotent; the override is a record of the old confusion, never an assignment.
+    fn retire_bound_seat(&self, why: &'static str) {
         let Some(peer) = self.peer() else {
             return;
         };
-        if self.seat() == Seat::Home {
+        // THE WORK IS UNCONDITIONAL, THE RECEIPT IS ONCE-PER-CHANGE. The self-seat path
+        // needs to be re-asked: the first call runs while she is still Remote and cannot
+        // drop the lane, the second drops it once she is Home. So the clear stays
+        // idempotent and repeated — only the probe below is gated, on something having
+        // actually changed.
+        let dropped_lane = self.seat() == Seat::Home;
+        if dropped_lane {
             *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
             *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         }
@@ -357,15 +501,45 @@ impl PlacementSwitch {
             Some(home) => PersonaModelOverride::clear(home).map_err(|e| e.to_string()),
             None => Ok(()),
         };
+        // A PARKED mind on a starving seat is re-asked every tick by design (Park repeats;
+        // that is why `apply` returns no room line for it). Saying it every tick would
+        // bury the one transition worth reading, so the receipt fires on the first sight
+        // and again when the lane actually drops — never on the ticks between.
+        let first = !self
+            .retire_said
+            .swap(true, std::sync::atomic::Ordering::Relaxed);
+        if !(first || dropped_lane) {
+            return;
+        }
         crate::probe!(
-            class = "persona.placement.self_seat_retired",
+            class = "persona.placement.seat_retired",
             persona = %self.persona_name,
             peer = %peer,
+            why,
             cleared = cleared.is_ok(),
             error = %cleared.err().unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
             at_home = self.seat() == Seat::Home,
-            "her bound seat was this very node — the override naming it is retired, and the loopback lane once she is home"
+            "this run proved her bound seat is no seat — the override naming it is retired, and her remote lane once she is home"
         );
+    }
+
+    /// Come home FOR GOOD (an opportunity move to this node): the seat, the remote lane
+    /// and the peer go, and the durable override that named the seat is retired, so the
+    /// next boot bears her home — unlike a fall-home, which keeps the seat to return to.
+    pub(crate) fn come_home_for_good(&self, now_ms: u64) {
+        self.set_seat(Seat::Home, now_ms);
+        *self.remote.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
+        if let Some(home) = &self.home {
+            if let Err(e) = PersonaModelOverride::clear(home) {
+                crate::probe!(
+                    class = "persona.placement.override_unpersisted",
+                    persona = %self.persona_name,
+                    error = %e,
+                    "she is home for good this session but the override naming her old seat could not be cleared — a reboot bears her there once more"
+                );
+            }
+        }
     }
 
     /// Build (once) or fetch her home adapter. `None` = this node cannot host her.
@@ -411,7 +585,7 @@ impl PlacementSwitch {
 
     /// Apply one decided move. Returns the org-room line for a move, `None` for Stay/Park
     /// (Park is a probe only — it repeats every tick and would flood the room).
-    pub async fn apply(&self, mv: &PlacementMove, now_ms: u64) -> Option<String> {
+    pub(crate) async fn apply(&self, mv: &PlacementMove, now_ms: u64, fit: SeatFit) -> Option<String> {
         match mv {
             PlacementMove::Stay => None,
             PlacementMove::Park { reason } => {
@@ -421,6 +595,8 @@ impl PlacementSwitch {
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
 
                     reason = *reason,
+                    seat_window = ?fit.window,
+                    requirement = ?fit.requirement,
                     "her remote seat is dark and this node has no lane for her — parked, not downgraded"
                 );
                 None
@@ -430,16 +606,26 @@ impl PlacementSwitch {
                     return None;
                 }
                 self.set_seat(Seat::Home, now_ms);
+                crate::modules::citizen_health::note_move(false);
                 crate::probe!(
                     class = "persona.placement.fell_home",
                     persona = %self.persona_name,
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
 
                     reason = *reason,
-                    "her remote seat went dark — her brain runs on this node until the seat beacons again"
+                    seat_window = ?fit.window,
+                    requirement = ?fit.requirement,
+                    "her remote seat went dark — her turns are SERVED by this node's lane until the seat beacons again; residency is unchanged"
                 );
+                // "RUNS HERE" MEANT TWO THINGS AND COST A PEER A MEASUREMENT (2026-09-21).
+                // A reader — me, who had shipped a change to this very file that day —
+                // took it as "she is RESIDENT on this node". It means her inference
+                // ROUTES to this node's local adapter; residency is a different fact
+                // that `persona/instances/list` answers. The line the substrate uses to
+                // tell someone where they are must not be ambiguous about the one thing
+                // it exists to say.
                 Some(format!(
-                    "[placement] {} fell home from {} ({}) — runs here until the seat beacons again",
+                    "[placement] {} fell home from {} ({}) — her turns are SERVED here (not resident) until the seat beacons again",
                     self.persona_name,
                     self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: line text only
                     reason
@@ -447,6 +633,7 @@ impl PlacementSwitch {
             }
             PlacementMove::ReturnRemote => {
                 self.set_seat(Seat::Remote, now_ms);
+                crate::modules::citizen_health::note_move(false);
                 crate::probe!(
                     class = "persona.placement.returned",
                     persona = %self.persona_name,
@@ -689,10 +876,10 @@ pub async fn follow_the_fleet(
     };
     let mut lines = Vec::new();
     let mut at_home: Vec<(Uuid, u64)> = Vec::new();
-    // What a turn needs of a lane, read once per pass: hers when she has sent one, the
-    // node's typical otherwise (Joel: "find something once and pass it along").
+    // What a turn needs of a lane, read once per pass (Joel: "find something once and
+    // pass it along"). HERS, and only hers — the node's typical used to stand in when she
+    // had sent nothing, which is the line this fix removed; see `requirement` below.
     let working_set = crate::cognition::working_set::global();
-    let node_median = working_set.sent_median_of(&switches().iter().map(|s| s.persona_id()).collect::<Vec<_>>());
     // Home-bound minds whose seat is fresh and serving but offers no slot this tick —
     // one line per seat per tick, not one refused ask per mind per tick.
     let mut withheld: std::collections::HashMap<Uuid, u32> = std::collections::HashMap::new();
@@ -729,9 +916,22 @@ pub async fn follow_the_fleet(
             seat_is_self,
             seat_offers_slot: offers.get(&peer).is_some_and(|o| o.free_slots_live > 0),
             seat_window: offers.get(&peer).and_then(|o| o.served_context_window),
+            // HER demand, or NOTHING — never the population's. This read `.or(node_median)`,
+            // so a mind with no measurement of her own was judged against the median of every
+            // resident's sent peak, and evicted on it: `seat_starves` feeds `FallHome`, and a
+            // node hosting ONE huge prompt drags that median over every small mind's head.
+            // Measured 2026-09-21 on the M5 — Benchy's peak is ~110k while Aiko wants 22-24k
+            // and Atlas 21-35k, and all three were walked off the same 75,776 seat that holds
+            // the latter two with room to spare.
+            //
+            // An absence is not a number ([[unknown-is-not-a-quantity-context-needs-the-vram-machinery]]).
+            // `None` is the honest answer for an unmeasured mind, and `persona_lane_holds`
+            // already treats it correctly — it asks only `window >= MIN_SERVE_CTX`, so any
+            // real seat holds her and nobody is evicted on a stranger's demand. The node
+            // median remains right where it belongs: SIZING lanes for the whole population
+            // (`ServingDemand`), never ADMITTING one mind to a seat.
             requirement: working_set
                 .sent_median_of(&[sw.persona_id()])
-                .or(node_median)
                 .map(crate::cognition::serving_plan::prompt_floor_of),
         };
         // Withheld = she would have returned had the seat offered a slot. Pure and exact:
@@ -743,6 +943,23 @@ pub async fn follow_the_fleet(
             *withheld.entry(peer).or_default() += 1;
         }
         let mut mv = decide(inputs);
+        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a seat change happens only
+        // between turns and only after her last push landed — asked BEFORE the return's
+        // reservation below, so a deferred move never burns a grant. Deferred, not
+        // refused: the next tick asks again, and the act-end sync retries the push.
+        if moves_between_machines(&mv, seat_is_self) {
+            if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(sw.persona_id()).await {
+                crate::probe!(
+                    class = "placement.move.deferred_unpushed",
+                    persona = %sw.persona_name(),
+                    peer = %peer,
+                    move_kind = ?mv,
+                    why = %why,
+                    "her workspace is not on origin yet (or a turn is in flight) — the move waits for the next tick"
+                );
+                mv = PlacementMove::Stay;
+            }
+        }
         // A RETURN ASKS FOR ITS SLOT LIKE A SPILL DOES (2026-09-19 00:3xZ): the 5090's beacon
         // first carried its measured wait, read QUEUED, and the IntelMac brought all seven
         // bound minds home in one tick — correct. The moment that seat's wait dips under
@@ -789,7 +1006,7 @@ pub async fn follow_the_fleet(
                 }
             }
         }
-        if let Some(line) = sw.apply(&mv, now_ms).await {
+        if let Some(line) = sw.apply(&mv, now_ms, SeatFit::of(&inputs)).await {
             lines.push(line);
         }
         // A seat that is this node is retired whatever the move (idempotent): the
@@ -797,6 +1014,15 @@ pub async fn follow_the_fleet(
         // loopback lane goes once she is home (a parked mind keeps the lane she has).
         if seat_is_self {
             sw.retire_self_seat();
+        }
+        // A SEAT THAT CANNOT HOLD HER TURN IS RETIRED THE SAME WAY, and for the same
+        // reason: the record must not outlive the run that disproved it. `decide` already
+        // refuses to return her to such a seat — but only while this process lives, so
+        // before this the override survived every deploy and re-bound her at the next
+        // boot (Benchy, Aiko, Atlas off one seat, 8 fall-homes / 0 returns, 2026-09-21).
+        // Asked through the SAME predicate `decide` used, never a second reading.
+        if seat_starves(inputs.seat_window, inputs.requirement) {
+            sw.retire_starving_seat();
         }
         // A bound switch sitting HOME past her cooldown is a chooser candidate again —
         // the chooser may bind her to a seat that is capacity now (S1b). Her old seat is
@@ -826,6 +1052,19 @@ pub async fn follow_the_fleet(
             switches().into_iter().map(|s| (s.persona_id(), s)).collect();
         for (mind, peer, model) in moves {
             let Some(sw) = by_id.get(&mind) else { continue };
+            // A spill is a move between machines too (card 73eefbbb): same gate, before
+            // the seat is asked for a grant that a deferral would waste.
+            if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
+                crate::probe!(
+                    class = "placement.move.deferred_unpushed",
+                    persona = %sw.persona_name(),
+                    peer = %peer,
+                    move_kind = "spill",
+                    why = %why,
+                    "her workspace is not on origin yet (or a turn is in flight) — the spill waits for the next tick"
+                );
+                continue;
+            }
             // A SLOT IS A LEASE THE SEAT GRANTS: ask before she moves — on HER wire, in
             // her room, where the seat's core listens. Refused or unanswered = she stays
             // home this tick, receipted (S1b).
@@ -873,6 +1112,7 @@ pub async fn follow_the_fleet(
             );
             match sw.go_remote(peer, &model, now_ms) {
                 Ok(()) => {
+                    crate::modules::citizen_health::note_move(false);
                     crate::probe!(
                         class = "persona.placement.offloaded",
                         persona = %sw.persona_name(),
@@ -898,12 +1138,259 @@ pub async fn follow_the_fleet(
             }
         }
     }
+    lines.extend(follow_the_allocation(now_ms).await);
+    lines
+}
+
+/// The opportunity pass (card 10bba591): read the grid allocator's last publish and,
+/// for every switch the allocation seats somewhere strictly better than where she sits,
+/// move her there between turns — a remote seat asks for its slot like a spill does; a
+/// home seat retires her override. Returns the org-room lines. No allocation published
+/// = nothing to follow.
+pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
+    use crate::cognition::resource_admission::{turn_in_flight, turn_shape_of};
+    let mut lines = Vec::new();
+    let Some(p) = crate::modules::grid_allocator::current() else {
+        return lines;
+    };
+    for sw in switches() {
+        let mind = sw.persona_id();
+        let Some(seat) = p.allocation.seated.iter().find(|s| s.mind == mind) else {
+            continue; // dormant: the slack's clip, not a move
+        };
+        let target_here = p.is_this_node(seat.node);
+        let (current_node, target_is_current) = match sw.seat() {
+            Seat::Home => (Some(p.this_node), target_here),
+            Seat::Remote => (sw.peer(), sw.peer() == Some(seat.node)),
+        };
+        let current_alloc = current_node.and_then(|n| p.allocation.node(n));
+        let Some(target_plan) = p.allocation.node(seat.node).and_then(|n| n.plan.as_ref()) else {
+            continue;
+        };
+        let inputs = OpportunityInputs {
+            current: current_alloc.and_then(|n| n.plan.as_ref()),
+            current_holds_her: current_alloc.is_some_and(|n| n.holds.contains(&seat.role)),
+            target: target_plan,
+            requirement: &p.roles[seat.role].requirement,
+            target_is_current,
+            turn_in_flight: turn_in_flight(mind),
+            since_last_move_ms: now_ms.saturating_sub(sw.moved_at_ms()),
+            cooldown_ms: opportunity_cooldown_ms(turn_shape_of(mind)),
+        };
+        let Some(why) = decide_opportunity(&inputs) else {
+            continue;
+        };
+        let from = current_node.map(|n| n.to_string()).unwrap_or_else(|| "nowhere".to_string()); // unwrap_or_else: a switch with no seat named reads "nowhere" in the receipt
+        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): an opportunity move is a
+        // seat change between machines like a fall-home, a return or a spill — the same
+        // gate, asked BEFORE the reservation so a deferral never burns a grant. A better
+        // seat is still there next tick; her unpushed work is not recoverable.
+        if let Some(blocked) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
+            crate::probe!(
+                class = "placement.move.deferred_unpushed",
+                persona = %sw.persona_name(),
+                peer = %seat.node,
+                move_kind = "opportunity",
+                why = %blocked,
+                "her workspace is not on origin yet (or a turn is in flight) — the better seat waits for the next tick"
+            );
+            continue;
+        }
+        if target_here {
+            // Home is the better seat: she comes home for good — if this node can build
+            // her a lane (a node that cannot never claims her back).
+            if !sw.local_available().await {
+                continue;
+            }
+            sw.come_home_for_good(now_ms);
+            crate::modules::citizen_health::note_move(true);
+            crate::probe!(
+                class = "placement.move.opportunity",
+                persona = %sw.persona_name(),
+                from = %from,
+                to = "home",
+                reason = why.as_str(),
+                model = %target_plan.model_id,
+                lanes = target_plan.lanes,
+                window = target_plan.window,
+                cooldown_ms = inputs.cooldown_ms,
+                "the grid allocation seats her at home on a strictly better seat — moved between turns"
+            );
+            lines.push(format!(
+                "[placement] {} came home from {} on opportunity ({}): {} at {} × {}k",
+                sw.persona_name(), from, why.as_str(), target_plan.model_id, target_plan.lanes, target_plan.window / 1000
+            ));
+            continue;
+        }
+        // A remote seat: a slot is a lease the seat grants — ask on her wire first.
+        let asked = match sw.airc_handle() {
+            Some(a) => crate::persona::placement_reservation::request_reservation(&a, seat.node, mind).await,
+            None => Err("no airc handle for her — cannot ask the seat".to_string()),
+        };
+        match asked {
+            Ok(g) if g.granted => {}
+            Ok(g) => {
+                crate::probe!(
+                    class = "placement.move.opportunity_refused",
+                    persona = %sw.persona_name(),
+                    to = %seat.node,
+                    reason = %g.reason,
+                    seat_free = g.free_slots_live,
+                    "the better seat has no slot for her this tick — she stays where she is"
+                );
+                continue;
+            }
+            Err(e) => {
+                crate::probe!(
+                    class = "placement.move.opportunity_refused",
+                    persona = %sw.persona_name(),
+                    to = %seat.node,
+                    reason = %e,
+                    "the better seat did not answer the ask in time — she stays where she is"
+                );
+                continue;
+            }
+        }
+        match sw.go_remote(seat.node, &target_plan.model_id, now_ms) {
+            Ok(()) => {
+                crate::modules::citizen_health::note_move(true);
+                crate::probe!(
+                    class = "placement.move.opportunity",
+                    persona = %sw.persona_name(),
+                    from = %from,
+                    to = %seat.node,
+                    reason = why.as_str(),
+                    model = %target_plan.model_id,
+                    lanes = target_plan.lanes,
+                    window = target_plan.window,
+                    cooldown_ms = inputs.cooldown_ms,
+                    "the grid allocation seats her on a strictly better seat — moved between turns"
+                );
+                lines.push(format!(
+                    "[placement] {} → {} on opportunity ({}): {} at {} × {}k",
+                    sw.persona_name(), seat.node, why.as_str(), target_plan.model_id, target_plan.lanes, target_plan.window / 1000
+                ));
+            }
+            Err(e) => crate::probe!(
+                class = "persona.placement.offload_failed",
+                persona = %sw.persona_name(),
+                peer = %seat.node,
+                error = %e,
+                "could not bind the better seat's lane — she stays where she is"
+            ),
+        }
+    }
     lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 10bba591): the opportunity rule — a strictly better seat
+    // moves her, in the allocator's order (requirement, capability, lanes, window); an
+    // equal seat, her own seat, a turn in flight, or her cooldown holds her; and the
+    // cooldown is HER measured cadence (never under her turn), the failure rule's bound
+    // only while nothing is measured.
+    #[test]
+    fn a_strictly_better_seat_moves_her_between_turns_and_never_inside_her_cooldown() {
+        use crate::cognition::grid_allocation::{BetterBy, LanePlan};
+        use crate::cognition::resource_admission::TurnShape;
+        let plan = |cap: u8, window: u32, lanes: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes, decode_tps_per_lane: None };
+        let (home, wide, strong) = (plan(9, 67_072, 2), plan(9, 131_072, 2), plan(12, 32_768, 1));
+        fn i<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {
+            const REQUIREMENT: crate::cognition::grid_allocation::Requirement = crate::cognition::grid_allocation::Requirement {
+                window: 0, target_window: None, min_capability: 0, decode_floor_tps: None,
+            };
+            OpportunityInputs {
+                requirement: &REQUIREMENT,
+                current, current_holds_her: current.is_some(), target, target_is_current: false, turn_in_flight: false, since_last_move_ms: 1_000, cooldown_ms: 1_000,
+            }
+        }
+        assert_eq!(decide_opportunity(&i(Some(&home), &wide)), Some(BetterBy::Window));
+        let target_requirement = crate::cognition::grid_allocation::Requirement {
+            window: 16_384, target_window: Some(100_000), min_capability: 0, decode_floor_tps: None,
+        };
+        let narrow_many = plan(9, 32_768, 3);
+        let mut toward_fit = i(Some(&narrow_many), &home);
+        toward_fit.requirement = &target_requirement;
+        assert_eq!(decide_opportunity(&toward_fit), Some(BetterBy::Window));
+        let mut away_from_fit = i(Some(&home), &narrow_many);
+        away_from_fit.requirement = &target_requirement;
+        assert_eq!(decide_opportunity(&away_from_fit), None, "more lanes cannot reverse the allocator's target-fit choice");
+        assert_eq!(decide_opportunity(&i(Some(&home), &strong)), Some(BetterBy::Capability));
+        assert_eq!(decide_opportunity(&i(Some(&wide), &home)), None, "a worse seat is not an opportunity");
+        assert_eq!(decide_opportunity(&i(Some(&home), &home)), None, "an equal seat is never a reason to move");
+        assert_eq!(decide_opportunity(&i(None, &home)), Some(BetterBy::Requirement), "her node counts no plan: any seat that holds her is objective 1");
+        let mut held = i(Some(&home), &wide);
+        held.current_holds_her = false;
+        assert_eq!(decide_opportunity(&held), Some(BetterBy::Requirement), "her node's plan seats nobody of her role: requirement before window");
+        assert_eq!(decide_opportunity(&OpportunityInputs { target_is_current: true, ..i(Some(&home), &wide) }), None, "she already sits there");
+        assert_eq!(decide_opportunity(&OpportunityInputs { turn_in_flight: true, ..i(Some(&home), &wide) }), None, "a turn in flight: stay");
+        assert_eq!(decide_opportunity(&OpportunityInputs { since_last_move_ms: 999, ..i(Some(&home), &wide) }), None, "inside her cooldown: stay");
+        assert_eq!(opportunity_cooldown_ms(None), MOVE_COOLDOWN_MS, "nothing measured: the failure rule's bound");
+        assert_eq!(opportunity_cooldown_ms(Some(TurnShape { turn_ms: 40_000, cadence_ms: 180_000, turns: 3 })), 180_000, "her cadence");
+        assert_eq!(opportunity_cooldown_ms(Some(TurnShape { turn_ms: 240_000, cadence_ms: 180_000, turns: 3 })), 240_000, "never under her turn");
+        assert_eq!(opportunity_cooldown_ms(Some(TurnShape::default())), MOVE_COOLDOWN_MS, "an empty shape measures nothing");
+        // The shape's fold: an EMA that settles, the first turn taken whole.
+        let s = TurnShape::default().observe(60_000, None);
+        assert_eq!((s.turn_ms, s.cadence_ms, s.turns), (60_000, 0, 1));
+        let s = s.observe(20_000, Some(200_000));
+        assert_eq!((s.turn_ms, s.cadence_ms, s.turns), (50_000, 200_000, 2), "a quarter step toward the new sample; the first gap is taken whole");
+        let s = s.observe(20_000, Some(100_000));
+        assert_eq!(s.cadence_ms, 175_000);
+    }
+
+    // what this catches (card 10bba591, the goal): a node with a WIDER holding plan
+    // joins. The coder whose 65k requirement her home's 32k box never held — dormant
+    // there — is seated on the new box and the rule moves her (requirement); the helper
+    // the home box holds stays home, no move; the sentinel whose 131k requirement the
+    // new box does not hold either has no seat and no move. Then the new box drops and
+    // the allocation sends nobody anywhere better.
+    #[test]
+    fn a_new_wider_node_moves_the_mind_it_holds_and_not_the_ones_it_does_not() {
+        use crate::cognition::grid_allocation::{allocate, BetterBy, GridAllocation, GridInputs, LanePlan, Mind, NodeOffer, OfferTerms, Requirement, Role};
+        let role = |name: &str, window: u32| Role { name: name.into(), requirement: Requirement { window, target_window: None, min_capability: 0, decode_floor_tps: None } };
+        let plan = |window: u32, lanes: u32| LanePlan { model_id: "27b".into(), capability_rank: 9, window, lanes, decode_tps_per_lane: None };
+        let (home, joined) = (Uuid::from_u128(0x40), Uuid::from_u128(0x5090));
+        let (coder, helper, sentinel) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let mind = |id, role| Mind { id, role, home: Some(home), owner: Uuid::nil() };
+        let offer = |node, p: LanePlan| NodeOffer { node, owner: Uuid::nil(), terms: OfferTerms::open(), plans: vec![p] };
+        let inputs = |nodes| GridInputs {
+            roles: vec![role("coder", 65_536), role("helper", 8_192), role("sentinel", 131_072)],
+            minds: vec![mind(coder, 0), mind(helper, 1), mind(sentinel, 2)],
+            nodes,
+            minds_per_lane: 2,
+            holds: vec![],
+            floors: vec![],
+        };
+        let alone = allocate(&inputs(vec![offer(home, plan(32_768, 2))]));
+        assert_eq!(alone.seat_of(helper), Some(home));
+        assert_eq!(alone.dormant, vec![coder, sentinel], "the 32k box holds the helper only");
+        let grown = allocate(&inputs(vec![offer(home, plan(32_768, 2)), offer(joined, plan(70_000, 2))]));
+        assert_eq!(grown.seat_of(coder), Some(joined), "the coder wakes on the wider box");
+        assert_eq!(grown.seat_of(helper), Some(home), "the helper stays home");
+        assert_eq!(grown.seat_of(sentinel), None, "the sentinel's 131k is held nowhere");
+        // The rule, per mind, as the pass would read it: every mind sits at home now.
+        let decide_for = |a: &GridAllocation, m: Uuid| -> Option<BetterBy> {
+            let seat = a.seated.iter().find(|s| s.mind == m)?;
+            let cur = a.node(home);
+            decide_opportunity(&OpportunityInputs {
+                current: cur.and_then(|n| n.plan.as_ref()),
+                current_holds_her: cur.is_some_and(|n| n.holds.contains(&seat.role)),
+                target: a.node(seat.node).and_then(|n| n.plan.as_ref())?,
+                requirement: &inputs(vec![]).roles[seat.role].requirement,
+                target_is_current: seat.node == home,
+                turn_in_flight: false,
+                since_last_move_ms: MOVE_COOLDOWN_MS,
+                cooldown_ms: MOVE_COOLDOWN_MS,
+            })
+        };
+        assert_eq!(decide_for(&grown, coder), Some(BetterBy::Requirement), "moved: her home never held her");
+        assert_eq!(decide_for(&grown, helper), None, "not moved: home holds her and seats her");
+        assert_eq!(decide_for(&grown, sentinel), None, "not moved: no seat holds her");
+        assert_eq!(decide_for(&alone, helper), None, "before the join, nobody moved either");
+    }
 
     fn inputs(seat: Seat, age: Option<u64>, cold: bool, local: bool, since: u64) -> PlacementInputs {
         // peer_served_ok defaults TRUE here: these cases predate the return-gate service
@@ -1005,6 +1492,20 @@ mod tests {
         assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None, requirement: None }, &peers, &rank, &minds).is_empty());
     }
 
+    // what this catches (card 73eefbbb): which decided moves the workspace must be
+    // carried across first — a fall-home or a return between machines; never Stay,
+    // never Park, and never a "remote" seat that is this very node (a loopback lane:
+    // her workspace is already here, a push would gate nothing).
+    #[test]
+    fn only_a_move_between_machines_waits_on_the_workspace() {
+        assert!(moves_between_machines(&PlacementMove::ReturnRemote, false));
+        assert!(moves_between_machines(&PlacementMove::FallHome { reason: "seat silent: no capacity beacon" }, false));
+        assert!(!moves_between_machines(&PlacementMove::FallHome { reason: SELF_SEAT_REASON }, true));
+        assert!(!moves_between_machines(&PlacementMove::ReturnRemote, true));
+        assert!(!moves_between_machines(&PlacementMove::Stay, false));
+        assert!(!moves_between_machines(&PlacementMove::Park { reason: "seat silent: no capacity beacon" }, false));
+    }
+
     // what this catches: a flapping tower cannot move her twice inside the cooldown, and
     // a live seat is left alone (the common tick).
     #[test]
@@ -1050,6 +1551,36 @@ mod tests {
     // narrow seat sends her home NOW (no cooldown: it is not a flap, it cannot serve),
     // is never returned to, and is never chosen for a spill; an unknown width (an older
     // core's beacon) changes nothing; a wide seat is capacity as before.
+    // what this catches (2026-09-21, the IntelMac): `decide` refuses to RETURN her to a
+    // starving seat, but that refusal lived only in the running process — the durable
+    // override on disk survived, so each deploy re-bound Benchy, Aiko and Atlas to seat
+    // e85a5bb3 and the first tick walked them home again. Eight `fell_home` events across
+    // four deploys against ZERO returns, two clusters landing 28 s and 69 s after a
+    // deploy. The tick now asks THIS predicate — the same one `decide` asks, never a
+    // second reading of the same two numbers — to decide whether the record survives.
+    #[test]
+    fn the_predicate_that_refuses_a_seat_is_the_one_that_retires_its_record() {
+        // The starving case `decide` acts on is exactly the case the tick retires.
+        assert!(seat_starves(Some(2_048), Some(70_071)));
+        assert_eq!(
+            decide(PlacementInputs { seat_window: Some(2_048), requirement: Some(70_071), ..inputs(Seat::Remote, Some(1_000), false, true, 0) }),
+            PlacementMove::FallHome { reason: SEAT_STARVES_REASON },
+            "the move and the retirement must never disagree about what starves",
+        );
+        // A seat wide enough keeps its binding — retiring a good record would cost her
+        // the seat she is correctly on.
+        assert!(!seat_starves(Some(131_072), Some(70_071)));
+        // UNKNOWN WIDTH IS NOT A REFUSAL, so it is not a retirement either: an older
+        // core's beacon publishes no width, and an absence is not a number. Before this
+        // was one predicate, a second hand-rolled reading here is exactly where that
+        // asymmetry would have crept back in.
+        assert!(!seat_starves(None, Some(70_071)));
+        assert!(!seat_starves(None, None));
+        // Nothing measured of her turn: the serve floor is the bar, on both sides.
+        assert!(!seat_starves(Some(crate::cognition::serving_plan::MIN_SERVE_CTX), None));
+        assert!(seat_starves(Some(crate::cognition::serving_plan::MIN_SERVE_CTX - 1), None));
+    }
+
     #[test]
     fn a_seat_whose_window_cannot_hold_her_turn_is_no_seat() {
         let starves = |i: PlacementInputs| PlacementInputs { seat_window: Some(2_048), requirement: Some(70_071), ..i };

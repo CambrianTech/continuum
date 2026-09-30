@@ -135,10 +135,13 @@ pub struct ChatSendParams {
     #[ts(type = "string")]
     pub sender_id: Uuid,
 
-    /// Message text. Other media types (image, audio, file) are
-    /// deferred — when media externalization migrates, this struct
-    /// gains a `media: Option<Vec<MediaItem>>` field.
+    /// Message text, separate from referenced media.
     pub text: String,
+
+    /// Media references only; bytes stay in the existing blob store. No fetch or
+    /// vision inference is performed by sending a message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<crate::persona::channel_items::MediaItemRequest>,
 
     /// Optional thread anchor. When set, both the stored message and
     /// the airc-published envelope carry this as the reply-to link.

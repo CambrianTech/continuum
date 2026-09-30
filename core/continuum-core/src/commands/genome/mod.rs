@@ -8,7 +8,7 @@
 //! - `genome/job-create` — coordinator picks a capable adapter (honoring an
 //!   optional `preferredProvider`), the adapter creates the job, the
 //!   [`JobHandle`] + selected provider come back.
-//! - `genome/job-status` — look the adapter back up by `handle.providerId`, poll.
+//! - `genome/job-status` — look the adapter back up by `jobHandle.providerId`, poll.
 //! - `genome/job-cancel` — same lookup, then cancel.
 //!
 //! Per [[commands-are-dumb-daemons-are-smart]] the verbs are narrow: validate →
@@ -42,11 +42,13 @@ use crate::sdk_codegen::DynCommand;
 pub mod curriculum;
 pub mod job_cancel;
 pub mod job_create;
+pub mod job_pause;
+pub mod job_reattach;
 pub mod job_status;
 pub mod teach;
 
-/// Wire shape for `genome/job-status` + `genome/job-cancel`. A single handle;
-/// adapter lookup keys on `handle.providerId`.
+/// Wire shape for `genome/job-cancel`. Status adds its own history continuation.
+/// The adapter is selected by `jobHandle.providerId`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -55,6 +57,7 @@ pub mod teach;
 #[serde(rename_all = "camelCase")]
 pub struct JobLookupParams {
     /// The job handle returned by `genome/job-create`.
+    #[serde(rename = "jobHandle")]
     pub handle: JobHandle,
 }
 
@@ -87,13 +90,17 @@ pub fn command_objects(
         Arc::new(job_create::GenomeJobCreate {
             coordinator,
             #[cfg(test)]
-            test_job_board,
+            test_job_board: test_job_board.clone(),
             #[cfg(test)]
             test_artifacts,
         }),
         Arc::new(job_status::GenomeJobStatus {
             registry: registry.clone(),
+            #[cfg(test)]
+            test_job_board,
         }),
+        Arc::new(job_pause::GenomeJobPause { registry: registry.clone() }),
+        Arc::new(job_reattach::GenomeJobReattach { registry: registry.clone() }),
         Arc::new(job_cancel::GenomeJobCancel { registry }),
     ]
 }
@@ -166,6 +173,7 @@ pub(crate) mod test_support {
                 prompt: "ctx".into(),
                 completion: "act".into(),
                 metadata: None,
+                lived: None,
             }],
             source: TrainingSource::OperatorCurated,
             validation_split: 0.0,
@@ -180,6 +188,7 @@ pub(crate) mod test_support {
             persona_name: "test".into(),
             base_model: base.into(),
             trait_kind: "test-trait".into(),
+            resume_from: None,
             dataset: dataset(),
             eval_set: None,
             lora: None,
@@ -229,6 +238,6 @@ mod tests {
             Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             Arc::new(tempfile::tempdir().unwrap()),
         );
-        assert_eq!(objs.len(), 3);
+        assert_eq!(objs.len(), 5);
     }
 }

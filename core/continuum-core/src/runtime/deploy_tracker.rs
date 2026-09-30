@@ -19,11 +19,11 @@
 //! ACTION wire onto this in later slices, so the decision is proven in tests first.
 //!
 //! THE SEAM (Joel's split, 2026-09-17): this module OWNS THE DECISION and, on a deploy,
-//! records a [`DeployRequest`] — it never spawns a process or reboots. A SUPERVISOR
-//! (BigMama's lane, card 82af11f5 — supervised core via launchd / systemd / a Windows
-//! service) consumes the request and performs the cross-platform build + swap + re-exec.
-//! Decoupling the portable decision from the OS-integration action is what makes the
-//! whole thing work on Windows.
+//! records a [`DeployRequest`] — it never spawns a process or reboots. The ACTION is
+//! `crate::modules::deploy_actuator` (2026-09-20): the core launches the consumer verb
+//! detached from itself the moment the request is recorded, on every platform, and keeps
+//! the receipt — unless another owner is installed on the node. Decoupling the portable
+//! decision from the OS-integration action is what makes the whole thing work on Windows.
 //!
 //! The [`Hold`] carries an EXPIRY — the fix for the unbounded-hold class (a 3-day-stale
 //! `deploy-hold` file paused the whole fleet, card ee76c0df; `ServingSteadyHold` held a
@@ -257,6 +257,41 @@ pub fn same_commit(a: &str, b: &str) -> bool {
 /// than invent a second signal.
 pub const STRANDED_GRACE_MS: u64 = 20 * 60 * 1000;
 
+/// What a `Deploy` verdict should PERSIST, given what is already on record. `None` = leave
+/// the existing request exactly as it is.
+///
+/// This is the idempotence [`DeployRequest`] has always documented — *"keyed by `tip_sha` so
+/// re-recording the same tip is idempotent (the module does not re-emit an identical pending
+/// request every tick)"* — and never had. The write site stamped `requested_ms: now`
+/// unconditionally, every tick, for the same tip.
+///
+/// That is not a tidiness problem, it is what made `elapsed_ms` a lie. In the STRANDED state
+/// every guard in [`decide`] passes (tip readable, core answering, tip != running, no hold, no
+/// build in flight, checks green, tree clean), so the verdict is `Deploy` on EVERY tick — the
+/// request was re-stamped each time, [`reconcile_request`] always read one stamped exactly one
+/// tick ago, and `elapsed_ms` was pinned at the tick period forever. Measured across three
+/// separate deploys, 2026-09-18: `deploy.stranded` reported 300014, 300004 and 299882 ms
+/// against a 300 s tick. Three deploys, one number, and it was the cadence wearing a
+/// duration's name (card c48fc453).
+///
+/// Downstream that made the age unusable for any decision about age — including the
+/// `STRANDED_GRACE_MS` comparison added in #4190, which could never be satisfied, so
+/// `deploy.stranded` became unreachable. Preserving `requested_ms` across ticks of an
+/// unchanged tip is what turns `elapsed_ms` back into an AGE.
+pub fn request_to_persist(
+    existing: Option<&DeployRequest>,
+    tip_sha: &str,
+    now_ms: u64,
+) -> Option<DeployRequest> {
+    match existing {
+        // Same tip already on record: its original timestamp IS the answer to "how long has
+        // this been owed". Re-stamping it destroys the only copy of that fact.
+        Some(req) if req.tip_sha == tip_sha => None,
+        // A different tip (or none): this is a new thing to owe, stamped now.
+        _ => Some(DeployRequest::new(tip_sha, now_ms)),
+    }
+}
+
 /// Close the deploy loop: given the request on record and the build actually running,
 /// say whether what was asked for has arrived. Pure — the module supplies the two facts
 /// it already gathers every tick, so this costs nothing and can be asserted with no
@@ -292,6 +327,38 @@ pub trait DeploySource: Send + Sync {
     /// tip (empty branch); `Err` = unreachable (offline) → the running build stands.
     async fn tip(&self) -> Result<Option<(String, Checks)>, String>;
 }
+
+/// How old a git `index.lock` must be before the deploy consumer treats it as abandoned
+/// (card 677437fa). Git holds `index.lock` only while it writes the index, so seconds, and a
+/// full checkout of this tree on the slowest node takes well under a minute. Ten minutes is
+/// past anything a live git operation holds; a lock older than that was left by a process
+/// that died mid-write (the M5 on 2026-09-27: 41 refusals over ~3.4 h, then again 17:27-19:3xZ,
+/// each time cleared by hand).
+// derived-or-floor: a floor, ten times the slowest checkout seen here, far under the hours a stale lock sat.
+pub const STALE_INDEX_LOCK: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// What the deploy consumer (`continuum deploy-consume`) does about the deploy tree's `index.lock`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexLock {
+    /// No lock: deploy.
+    Absent,
+    /// A lock a live git operation may still hold (young, or a git process stands in the
+    /// tree): leave it, name it, try next tick without spending an attempt.
+    Held,
+    /// A lock no git operation holds: remove it with a receipt, then deploy.
+    Stale,
+}
+
+/// PURE: the verdict on the tree's lock from its age and whether any git process has its
+/// cwd inside the tree. Never removes a lock a running git might own.
+pub fn index_lock_verdict(age: Option<std::time::Duration>, git_in_tree: bool) -> IndexLock {
+    match age {
+        None => IndexLock::Absent,
+        Some(age) if age >= STALE_INDEX_LOCK && !git_in_tree => IndexLock::Stale,
+        Some(_) => IndexLock::Held,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -461,10 +528,71 @@ mod tests {
         ));
     }
 
+    // what this catches: the defect that made elapsed_ms unusable — and, through it, made
+    // #4190's STRANDED_GRACE_MS unreachable. Measured 2026-09-18: three separate deploys
+    // reported deploy.stranded with elapsed_ms 300014, 300004 and 299882 against a 300 s
+    // tick. Three deploys, one number, because in the stranded state decide() returns Deploy
+    // EVERY tick and the write site re-stamped requested_ms each time, so the age could only
+    // ever be one tick. The second assertion below is the one that fails against the old
+    // behaviour: with a re-stamped request, Stranded can never be reached at all.
+    #[test]
+    fn a_standing_request_keeps_its_original_timestamp_so_elapsed_is_an_age() {
+        let first = request_to_persist(None, "aaaaaaaaa111bbbb", NOW)
+            .expect("nothing on record — the first Deploy verdict must persist a request");
+        assert_eq!(first.requested_ms, NOW);
+
+        // Ticks two and three, same tip: nothing to write, so the original stamp survives.
+        const TICK: u64 = 300_000;
+        assert_eq!(
+            request_to_persist(Some(&first), "aaaaaaaaa111bbbb", NOW + TICK),
+            None,
+            "an unchanged tip must not be re-stamped — that stamp is the age"
+        );
+        assert_eq!(
+            request_to_persist(Some(&first), "aaaaaaaaa111bbbb", NOW + TICK * 2),
+            None
+        );
+
+        // THE POINT: after the grace has genuinely elapsed, with the request still standing
+        // and nothing building, the outcome is Stranded. Under the re-stamping behaviour
+        // elapsed_ms was pinned at one TICK, so this could never fire.
+        let late = NOW + STRANDED_GRACE_MS + TICK;
+        assert!(
+            matches!(
+                reconcile_request(Some(&first), "999999999", false, late),
+                RequestOutcome::Stranded { .. }
+            ),
+            "a request standing past the grace with nothing building IS stranded"
+        );
+
+        // A DIFFERENT tip is a new thing owed and starts its own clock.
+        let next = request_to_persist(Some(&first), "ccccccccc333dddd", late)
+            .expect("a changed tip must persist");
+        assert_eq!(next.requested_ms, late);
+        assert_eq!(next.tip_sha, "ccccccccc333dddd");
+    }
+
     // what this catches: no request on record must be quiet, not a false Stranded every
     // tick on a node that is simply up to date.
     #[test]
     fn no_request_on_record_is_nothing_owed() {
         assert_eq!(reconcile_request(None, "c2344d758", false, NOW), RequestOutcome::Nothing);
+    }
+
+    // what this catches (card 677437fa): a git that died mid-write left the deploy tree's
+    // index.lock behind, and every consumer tick failed its checkout for hours (the M5, twice
+    // on 2026-09-27), spending the tip's attempts. An old lock with no git in the tree is
+    // cleared; a young one, or one a git process may own, is only named. Lives in the lib so
+    // CI's lib-test job runs it (bin tests are compiled there, never run).
+    #[test]
+    fn a_stale_index_lock_is_cleared_and_a_live_one_is_left() {
+        use std::time::Duration;
+        let old = Some(STALE_INDEX_LOCK + Duration::from_secs(1));
+        let young = Some(Duration::from_secs(5));
+        assert_eq!(index_lock_verdict(None, false), IndexLock::Absent);
+        assert_eq!(index_lock_verdict(old, false), IndexLock::Stale, "abandoned: remove it");
+        assert_eq!(index_lock_verdict(old, true), IndexLock::Held, "a git that may own it: leave it");
+        assert_eq!(index_lock_verdict(young, false), IndexLock::Held, "young: a live write");
+        assert_eq!(index_lock_verdict(Some(STALE_INDEX_LOCK), false), IndexLock::Stale, "the bound itself is stale");
     }
 }

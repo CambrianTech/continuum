@@ -64,11 +64,33 @@ use std::sync::OnceLock;
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use super::types::JobHandle;
+use super::types::{JobHandle, TrainingStatus};
 
 /// One in-flight training job, plus the context the L3 sentinel needs to run the
 /// eval→page-in chain when it completes WITHOUT re-deriving any of it. Cloned out of
 /// the board on snapshot; the `handle.local_id` is the board key.
+/// A job a previous core registered and never brought to a terminal state — what the
+/// boot replay found in the ledger. Journaled `killed-by-reboot` (that process IS dead)
+/// and handed to the trigger, which resumes it from its job directory when the input
+/// survived (card 244757bc: three of these on BigMama, none ever resumed, while the
+/// consumer deploys six times a day).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanedJob {
+    pub local_id: Uuid,
+    pub trigger_dispatch_id: Option<Uuid>,
+    pub provider_id: String,
+    pub persona_id: Uuid,
+    pub persona_name: String,
+    pub base_model: String,
+    pub trait_kind: String,
+    pub eval_set: Option<String>,
+}
+
+/// How many times one job's lineage may be resumed before the board stops trying:
+/// a job that dies at every boot is not an interrupted job, it is a broken one, and
+/// the third death is the receipt that says so.
+pub const MAX_RESUMES: u32 = 3;
+
 #[derive(Debug, Clone)]
 pub struct WatchedJob {
     /// Exact durable trigger intent which produced this handle, when present.
@@ -81,16 +103,16 @@ pub struct WatchedJob {
     pub persona_id: Uuid,
     /// The persona's display name — log/observability context only.
     pub persona_name: String,
-    /// The base model the layer was forged against — log/observability context.
+    /// The base model the layer was forged against: the continuum id the serving daemon
+    /// filters the adapter manifest by, so a trained gene is registered (and trialled)
+    /// under the base that serves it. In-engine training trains on exactly this served id.
     pub base_model: String,
     /// The domain bucket (`DomainClassifier` output) this layer specializes — used
     /// as the gene NAME on page-in and the eval gene label.
     pub trait_kind: String,
-    /// The gym that measures this trait — the `cognition/eval` `eval_set` JSONL path,
-    /// carried verbatim from the [`super::types::TrainingJobRequest`]. The sentinel
-    /// passes it to the A/B eval; `None` means the recipe declared no gym, so the
-    /// gene is unmeasurable and the sentinel refuses to adopt it (never falls back to
-    /// a default gym — [[fallbacks-are-illegal-fail-loud]]).
+    /// The `cognition/eval` `eval_set` JSONL path, carried verbatim from the
+    /// [`super::types::TrainingJobRequest`] for a manual spot-check. The sentinel does
+    /// not read it: a gene's verdict is its in-room trial, never an A/B eval.
     pub eval_set: Option<String>,
     /// The gene's embedding-space identity, MINTED at `genome/job-create` — the
     /// one moment the training corpus is in hand (before this field the chain
@@ -111,17 +133,32 @@ pub struct TrainingJobBoard {
     jobs: DashMap<Uuid, WatchedJob>,
     /// Append-only journal path; `None` disables journaling.
     ledger: Option<PathBuf>,
+    /// Corrupt offsets already reported by this board; rows stay untouched on disk.
+    quarantined: DashMap<u64, ()>,
     #[cfg(test)]
     _test_directory: Option<std::sync::Arc<tempfile::TempDir>>,
+    /// Orphans the boot replay found, until the trigger takes them (`take_orphans`).
+    orphans: std::sync::Mutex<Vec<OrphanedJob>>,
 }
 
 /// A bounded evidence read. Neither absence, a partial scan, nor an I/O error
 /// establishes that an uncertain dispatch did not create a provider job.
-pub(crate) enum DispatchLookup {
-    Observed(JobHandle),
+pub(crate) enum JournalLookup<T> {
+    Observed(T),
     NotObserved,
-    Incomplete { next_offset: u64 },
+    Incomplete {
+        next_offset: u64,
+    },
+    /// This page contained unreadable evidence. A positive match remains usable;
+    /// no match never establishes absence. Counts are per page, not cumulative.
+    Corrupt {
+        observed: Option<T>,
+        malformed: u32,
+        next_offset: u64,
+    },
 }
+
+pub(crate) type DispatchLookup = JournalLookup<JobHandle>;
 
 static GLOBAL: OnceLock<TrainingJobBoard> = OnceLock::new();
 const DISPATCH_JOURNAL_PAGE_BYTES: u64 = 64 * 1024;
@@ -140,7 +177,31 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// The exact bytes one ledger row occupies: compact JSON and its newline, built
+/// before any I/O so the append is a single write. PURE, so the two-writer test
+/// below can pin that a row never spans a syscall boundary by construction.
+fn ledger_line(line: &serde_json::Value) -> String {
+    let mut s = line.to_string();
+    s.push('\n');
+    s
+}
+
 impl TrainingJobBoard {
+    /// Command-facing read delegates filesystem work to the existing board owner.
+    /// One page per request; callers receive continuation rather than a scan loop.
+    pub(crate) async fn terminal_history(
+        handle: JobHandle,
+        offset: u64,
+        #[cfg(test)] board: std::sync::Arc<Self>,
+    ) -> Result<JournalLookup<TrainingStatus>, String> {
+        tokio::task::spawn_blocking(move || {
+            #[cfg(not(test))]
+            let board = Self::global();
+            board.lookup_terminal(&handle, offset)
+        })
+        .await
+        .map_err(|e| format!("training history worker failed: {e}"))?
+    }
     /// Normal path reads the existing live board. Recovery scans at most 64 KiB
     /// of its existing journal per call, with an explicit continuation offset.
     /// Caller performs this filesystem boundary on a blocking worker.
@@ -149,19 +210,99 @@ impl TrainingJobBoard {
         dispatch_id: Uuid,
         offset: u64,
     ) -> Result<DispatchLookup, String> {
-        use std::io::{Read, Seek, SeekFrom};
         if let Some(handle) = self.jobs.iter().find_map(|job| {
             (job.trigger_dispatch_id == Some(dispatch_id)).then(|| job.handle.clone())
         }) {
             return Ok(DispatchLookup::Observed(handle));
         }
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            event: String,
+            #[serde(default)]
+            trigger_dispatch_id: Option<Uuid>,
+            #[serde(default)]
+            local_id: Option<Uuid>,
+            #[serde(default)]
+            provider_id: Option<String>,
+            #[serde(default)]
+            provider_job_id: Option<String>,
+        }
+        self.scan_journal_page(offset, |line| {
+            let entry: Entry = serde_json::from_slice(line)
+                .map_err(|e| format!("malformed training dispatch journal entry: {e}"))?;
+            if entry.event == "registered" && entry.trigger_dispatch_id == Some(dispatch_id) {
+                return Ok(Some(JobHandle {
+                    local_id: entry
+                        .local_id
+                        .ok_or("training dispatch evidence omitted local_id")?,
+                    provider_id: entry
+                        .provider_id
+                        .ok_or("training dispatch evidence omitted provider_id")?,
+                    provider_job_id: entry
+                        .provider_job_id
+                        .ok_or("training dispatch evidence omitted provider_job_id")?,
+                }));
+            }
+            Ok(None)
+        })
+    }
+
+    /// Read only a terminal receipt whose complete provider handle matches.
+    /// Old records without typed status never imply successful training.
+    pub(crate) fn lookup_terminal(
+        &self,
+        handle: &JobHandle,
+        offset: u64,
+    ) -> Result<JournalLookup<TrainingStatus>, String> {
+        #[derive(serde::Deserialize)]
+        struct TerminalEntry {
+            event: String,
+            local_id: Option<Uuid>,
+            handle: Option<JobHandle>,
+            status: Option<TrainingStatus>,
+        }
+        self.scan_journal_page(offset, |line| {
+            let entry: TerminalEntry = serde_json::from_slice(line)
+                .map_err(|e| format!("malformed training journal entry: {e}"))?;
+            if entry.event != "terminal" || entry.local_id != Some(handle.local_id) {
+                return Ok(None);
+            }
+            let Some(recorded) = entry.handle else {
+                return Ok(None);
+            };
+            if recorded.local_id != handle.local_id
+                || recorded.provider_id != handle.provider_id
+                || recorded.provider_job_id != handle.provider_job_id
+            {
+                return Ok(None);
+            }
+            match entry.status {
+                Some(
+                    status @ (TrainingStatus::Completed { .. }
+                    | TrainingStatus::Failed { .. }
+                    | TrainingStatus::Cancelled),
+                ) => Ok(Some(status)),
+                Some(_) => Err("terminal training receipt carries a nonterminal status".into()),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// One bounded filesystem read shared by dispatch recovery and status history.
+    /// Run on a blocking worker; a partial page is never evidence of absence.
+    fn scan_journal_page<T>(
+        &self,
+        offset: u64,
+        mut select: impl FnMut(&[u8]) -> Result<Option<T>, String>,
+    ) -> Result<JournalLookup<T>, String> {
+        use std::io::{Read, Seek, SeekFrom};
         let Some(path) = &self.ledger else {
-            return Ok(DispatchLookup::NotObserved);
+            return Ok(JournalLookup::NotObserved);
         };
         let mut file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(DispatchLookup::NotObserved)
+                return Ok(JournalLookup::NotObserved)
             }
             Err(e) => return Err(format!("read training dispatch journal: {e}")),
         };
@@ -176,7 +317,7 @@ impl TrainingJobBoard {
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         if bytes.is_empty() {
-            return Ok(DispatchLookup::NotObserved);
+            return Ok(JournalLookup::NotObserved);
         }
         let Some(last_newline) = bytes.iter().rposition(|b| *b == b'\n') else {
             if bytes.len() as u64 == DISPATCH_JOURNAL_PAGE_BYTES {
@@ -184,47 +325,49 @@ impl TrainingJobBoard {
                     "training dispatch journal record exceeds the bounded recovery page".into(),
                 );
             }
-            return Ok(DispatchLookup::Incomplete {
+            return Ok(JournalLookup::Incomplete {
                 next_offset: offset,
             });
         };
-        #[derive(serde::Deserialize)]
-        struct Entry {
-            event: String,
-            #[serde(default)]
-            trigger_dispatch_id: Option<Uuid>,
-            #[serde(default)]
-            local_id: Option<Uuid>,
-            #[serde(default)]
-            provider_id: Option<String>,
-            #[serde(default)]
-            provider_job_id: Option<String>,
-        }
-        for line in bytes[..=last_newline]
-            .split(|b| *b == b'\n')
-            .filter(|line| !line.is_empty())
-        {
-            let entry: Entry = serde_json::from_slice(line)
-                .map_err(|e| format!("malformed training dispatch journal entry: {e}"))?;
-            if entry.event == "registered" && entry.trigger_dispatch_id == Some(dispatch_id) {
-                return Ok(DispatchLookup::Observed(JobHandle {
-                    local_id: entry
-                        .local_id
-                        .ok_or("training dispatch evidence omitted local_id")?,
-                    provider_id: entry
-                        .provider_id
-                        .ok_or("training dispatch evidence omitted provider_id")?,
-                    provider_job_id: entry
-                        .provider_job_id
-                        .ok_or("training dispatch evidence omitted provider_job_id")?,
-                }));
+        let mut observed = None;
+        let mut malformed = 0;
+        let mut line_offset = offset;
+        for record in bytes[..=last_newline].split_inclusive(|b| *b == b'\n') {
+            let line = &record[..record.len() - 1];
+            if !line.is_empty() {
+                match select(line) {
+                    Ok(value) => {
+                        if observed.is_none() {
+                            observed = value;
+                        }
+                    }
+                    Err(error) => {
+                        malformed += 1;
+                        if self.quarantined.insert(line_offset, ()).is_none() {
+                            crate::probe!(class = "training.journal.corrupt",
+                                offset = line_offset, error = %error,
+                                "unreadable journal row retained; recovery advances with explicit uncertainty");
+                        }
+                    }
+                }
             }
+            line_offset += record.len() as u64;
         }
         let next_offset = offset + last_newline as u64 + 1;
+        if malformed > 0 {
+            return Ok(JournalLookup::Corrupt {
+                observed,
+                malformed,
+                next_offset,
+            });
+        }
+        if let Some(value) = observed {
+            return Ok(JournalLookup::Observed(value));
+        }
         if next_offset < len {
-            Ok(DispatchLookup::Incomplete { next_offset })
+            Ok(JournalLookup::Incomplete { next_offset })
         } else {
-            Ok(DispatchLookup::NotObserved)
+            Ok(JournalLookup::NotObserved)
         }
     }
 
@@ -235,7 +378,7 @@ impl TrainingJobBoard {
     pub fn global() -> &'static TrainingJobBoard {
         GLOBAL.get_or_init(|| {
             let board = TrainingJobBoard::with_ledger(Some(default_ledger_path()));
-            let orphaned = board.reconcile_orphans();
+            let orphaned = board.reconcile_orphans().len();
             if orphaned > 0 {
                 tracing::warn!(
                     orphaned,
@@ -254,6 +397,8 @@ impl TrainingJobBoard {
     pub fn with_ledger(ledger: Option<PathBuf>) -> Self {
         TrainingJobBoard {
             jobs: DashMap::new(),
+            quarantined: DashMap::new(),
+            orphans: std::sync::Mutex::new(Vec::new()),
             ledger,
             #[cfg(test)]
             _test_directory: None,
@@ -281,7 +426,14 @@ impl TrainingJobBoard {
                 .create(true)
                 .append(true)
                 .open(path)?;
-            writeln!(f, "{line}")
+            // ONE LINE, ONE write(2). `writeln!(f, "{line}")` on a raw `File` let
+            // `Value`'s Display emit the JSON as dozens of `write_str` fragments, each
+            // its own syscall; O_APPEND makes each SYSCALL land atomically at the end,
+            // not each LINE, so two tasks journaling at once zipped their records
+            // together byte-wise — 136 of 701 lines on the M5 unreadable (card
+            // faed9279), and every later reader of that ledger failed on them forever.
+            // Serialize first, then a single `write_all` of the whole line.
+            f.write_all(ledger_line(line).as_bytes())
         };
         if let Err(e) = write() {
             tracing::warn!(error = %e, ledger = %path.display(), "job-ledger append failed");
@@ -293,10 +445,10 @@ impl TrainingJobBoard {
     /// survive a restart). Journal each as `terminal/killed-by-reboot`, log loud,
     /// and return the count. Idempotent — the terminal lines written here close
     /// the ids for the next replay. A missing ledger is a first boot, not an error.
-    pub fn reconcile_orphans(&self) -> usize {
-        let Some(path) = &self.ledger else { return 0 };
+    pub fn reconcile_orphans(&self) -> Vec<OrphanedJob> {
+        let Some(path) = &self.ledger else { return Vec::new() };
         let Ok(text) = std::fs::read_to_string(path) else {
-            return 0;
+            return Vec::new();
         };
         let mut open: std::collections::HashMap<String, serde_json::Value> =
             std::collections::HashMap::new();
@@ -320,13 +472,15 @@ impl TrainingJobBoard {
                 _ => {}
             }
         }
+        let mut orphans = Vec::new();
         for (id, reg) in &open {
             tracing::warn!(
                 local_id = %id,
                 persona = %reg.get("persona_name").and_then(|p| p.as_str()).unwrap_or("?"),
                 trait_kind = %reg.get("trait_kind").and_then(|t| t.as_str()).unwrap_or("?"),
                 "orphaned training job: registered by a previous core, never reached a \
-                 terminal state — journaling killed-by-reboot"
+                 terminal state — journaling killed-by-reboot; the trigger resumes it \
+                 from its job directory if the input survived"
             );
             self.journal(&serde_json::json!({
                 "event": "terminal",
@@ -334,8 +488,84 @@ impl TrainingJobBoard {
                 "local_id": id,
                 "at_ms": now_ms(),
             }));
+            let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_string);
+            let (Ok(local_id), Some(persona_id)) = (
+                Uuid::parse_str(id),
+                field("persona_id").and_then(|p| Uuid::parse_str(&p).ok()),
+            ) else {
+                continue; // a registration without parseable ids cannot be resumed, only reported
+            };
+            orphans.push(OrphanedJob {
+                local_id,
+                trigger_dispatch_id: field("trigger_dispatch_id").and_then(|d| Uuid::parse_str(&d).ok()),
+                provider_id: field("provider_id").unwrap_or_default(), // unwrap_or_default: an unknown provider lets job-create choose
+                persona_id,
+                persona_name: field("persona_name").unwrap_or_default(), // unwrap_or_default: the job dir lookup then fails loud as not-resumable
+                base_model: field("base_model").unwrap_or_default(), // unwrap_or_default: same — the request.json carries the truth
+                trait_kind: field("trait_kind").unwrap_or_default(), // unwrap_or_default: same
+                eval_set: field("eval_set"),
+            });
         }
-        open.len()
+        if let Ok(mut held) = self.orphans.lock() {
+            held.extend(orphans.iter().cloned());
+        }
+        orphans
+    }
+
+    /// The orphans the boot replay found, once: the trigger takes them on its first
+    /// tick with a live executor and resumes what it can.
+    pub fn take_orphans(&self) -> Vec<OrphanedJob> {
+        self.orphans.lock().map(|mut o| std::mem::take(&mut *o)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to resume, never a panic at boot
+    }
+
+    /// The first job in `local_id`'s resume lineage, from the ledger's `resumed` rows.
+    pub fn resume_origin(&self, local_id: Uuid) -> Uuid {
+        let mut origin = local_id;
+        for row in self.replay_rows() {
+            if row.get("event").and_then(|e| e.as_str()) == Some("resumed")
+                && row.get("new_local_id").and_then(|v| v.as_str()) == Some(&origin.to_string())
+            {
+                if let Some(o) = row.get("origin_local_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) {
+                    origin = o;
+                }
+            }
+        }
+        origin
+    }
+
+    /// How many resumes this lineage has already had.
+    pub fn resume_attempts(&self, origin: Uuid) -> u32 {
+        let origin = origin.to_string();
+        self.replay_rows()
+            .filter(|row| {
+                row.get("event").and_then(|e| e.as_str()) == Some("resumed")
+                    && row.get("origin_local_id").and_then(|v| v.as_str()) == Some(origin.as_str())
+            })
+            .count() as u32
+    }
+
+    /// Journal a resume: `from` died with a core, `to` carries its input on.
+    pub fn journal_resumed(&self, origin: Uuid, from: Uuid, to: Uuid, attempt: u32) {
+        self.journal(&serde_json::json!({
+            "event": "resumed",
+            "origin_local_id": origin.to_string(),
+            "from_local_id": from.to_string(),
+            "new_local_id": to.to_string(),
+            "attempt": attempt,
+            "at_ms": now_ms(),
+        }));
+    }
+
+    fn replay_rows(&self) -> impl Iterator<Item = serde_json::Value> {
+        let text = self
+            .ledger
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default(); // unwrap_or_default: no ledger = no history, an empty lineage
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// Register a freshly-dispatched job to watch. Called by the L2 trigger right
@@ -370,14 +600,26 @@ impl TrainingJobBoard {
 
     /// Atomically remove and return a job — the sentinel's "claim" the instant it
     /// observes a terminal status, BEFORE spawning the eval chain, so no later tick
-    /// re-handles it. `None` if it was already claimed. Journals `terminal/claimed`
-    /// so the ledger's replay sees this id as closed.
-    pub fn claim(&self, local_id: Uuid) -> Option<WatchedJob> {
+    /// re-handles it. `None` if already claimed or not terminal. Journals the
+    /// borrowed typed outcome and correlation so reboot cannot erase why it ended.
+    /// Training completion is not proof the later evaluation/adoption succeeded.
+    pub fn claim(&self, local_id: Uuid, status: &TrainingStatus) -> Option<WatchedJob> {
+        if matches!(
+            status,
+            TrainingStatus::Queued
+                | TrainingStatus::WaitingForCapacity { .. }
+                | TrainingStatus::Running { .. }
+        ) {
+            return None;
+        }
         let job = self.jobs.remove(&local_id).map(|(_, job)| job);
-        if job.is_some() {
+        if let Some(job) = &job {
             self.journal(&serde_json::json!({
                 "event": "terminal",
                 "reason": "claimed",
+                "status": status,
+                "handle": &job.handle,
+                "trigger_dispatch_id": job.trigger_dispatch_id,
                 "local_id": local_id.to_string(),
                 "at_ms": now_ms(),
             }));
@@ -470,6 +712,7 @@ mod tests {
                 DispatchLookup::NotObserved => {
                     panic!("lost correlated evidence after a partial scan")
                 }
+                DispatchLookup::Corrupt { .. } => panic!("clean fixture reported corruption"),
             }
         }
         let end = std::fs::metadata(&path).unwrap().len();
@@ -495,7 +738,10 @@ mod tests {
             .unwrap()
             .write_all(b"bad}\n")
             .unwrap();
-        assert!(recovered.lookup_trigger_dispatch(dispatch_id, end).is_err());
+        assert!(
+            matches!(recovered.lookup_trigger_dispatch(dispatch_id, end).unwrap(),
+            DispatchLookup::Corrupt { observed: None, malformed: 1, next_offset } if next_offset > end)
+        );
         assert!(recovered
             .lookup_trigger_dispatch(dispatch_id, u64::MAX)
             .is_err());
@@ -518,11 +764,28 @@ mod tests {
             "snapshot sees the registered job"
         );
 
-        let claimed = board.claim(id).expect("first claim returns the job");
+        assert!(board.claim(id, &TrainingStatus::Queued).is_none());
+        assert!(board
+            .claim(
+                id,
+                &TrainingStatus::WaitingForCapacity {
+                    required_bytes: 1024,
+                    available_bytes: 512
+                }
+            )
+            .is_none());
+        assert_eq!(
+            board.len(),
+            1,
+            "a nonterminal observation cannot retire a job"
+        );
+        let claimed = board
+            .claim(id, &TrainingStatus::Cancelled)
+            .expect("first claim returns the job");
         assert_eq!(claimed.handle.local_id, id);
         assert!(board.is_empty(), "claim removes the job from the board");
         assert!(
-            board.claim(id).is_none(),
+            board.claim(id, &TrainingStatus::Cancelled).is_none(),
             "a second claim of the same job must be None — no double-processing"
         );
     }
@@ -554,27 +817,185 @@ mod tests {
         let orphan = Uuid::new_v4();
         previous.register(watched(done, "mlx"));
         previous.register(watched(orphan, "mlx"));
-        previous.claim(done).expect("claim the finished job");
+        previous
+            .claim(
+                done,
+                &TrainingStatus::Failed {
+                    error: "capacity refused before weights".into(),
+                },
+            )
+            .expect("claim the finished job");
         drop(previous);
 
         // "Next boot": replay finds exactly the unclaimed job.
         let next = TrainingJobBoard::with_ledger(Some(ledger.clone()));
         assert_eq!(
-            next.reconcile_orphans(),
+            next.reconcile_orphans().len(),
             1,
             "exactly the never-terminal job is orphaned"
         );
         let text = std::fs::read_to_string(&ledger).expect("ledger exists");
+        let terminal: serde_json::Value = text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|row| row["event"] == "terminal" && row["local_id"] == done.to_string())
+            .expect("completed job has a durable outcome");
+        assert_eq!(terminal["status"]["state"], "failed");
+        assert_eq!(
+            terminal["status"]["error"],
+            "capacity refused before weights"
+        );
+        assert_eq!(terminal["handle"]["localId"], done.to_string());
+        let handle = watched(done, "mlx").handle;
+        assert!(matches!(next.lookup_terminal(&handle, 0).unwrap(),
+            JournalLookup::Observed(TrainingStatus::Failed { error })
+                if error == "capacity refused before weights"));
+        let foreign = JobHandle {
+            provider_id: "another-provider".into(),
+            ..handle.clone()
+        };
+        assert!(matches!(
+            next.lookup_terminal(&foreign, 0).unwrap(),
+            JournalLookup::NotObserved
+        ));
         assert!(
             text.contains("killed-by-reboot") && text.contains(&orphan.to_string()),
             "the orphan's death is journaled: {text}"
         );
         // Idempotent: the terminal line just written closes the id.
         assert_eq!(
-            next.reconcile_orphans(),
+            next.reconcile_orphans().len(),
             0,
             "a second replay sees the orphan as closed"
         );
+        // Corruption between valid receipts must not hide either receipt or
+        // imply clean absence. Keep the bad bytes and report their page count.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&ledger)
+            .unwrap();
+        writeln!(file, "not-json").unwrap();
+        let later = Uuid::new_v4();
+        let dispatch = Uuid::new_v4();
+        let mut job = watched(later, "mlx");
+        job.trigger_dispatch_id = Some(dispatch);
+        let later_handle = job.handle.clone();
+        next.register(job);
+        next.claim(later, &TrainingStatus::Cancelled).unwrap();
+        let reread = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        for expected in [&handle, &later_handle] {
+            assert!(matches!(
+                reread.lookup_terminal(expected, 0).unwrap(),
+                JournalLookup::Corrupt {
+                    observed: Some(_),
+                    malformed: 1,
+                    ..
+                }
+            ));
+        }
+        assert!(
+            matches!(reread.lookup_trigger_dispatch(dispatch, 0).unwrap(),
+            JournalLookup::Corrupt { observed: Some(found), malformed: 1, .. }
+                if found.local_id == later)
+        );
+        assert!(matches!(
+            reread.lookup_terminal(&foreign, 0).unwrap(),
+            JournalLookup::Corrupt {
+                observed: None,
+                malformed: 1,
+                ..
+            }
+        ));
+        assert_eq!(
+            reread.quarantined.len(),
+            1,
+            "repeat scans report the offset once"
+        );
+        assert!(std::fs::read_to_string(&ledger)
+            .unwrap()
+            .contains("not-json"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    // what this catches (card faed9279): two tasks journaling at once zipped their
+    // rows together byte-wise — `writeln!` on a raw File was one write(2) per Display
+    // fragment, and O_APPEND made each fragment, not each line, the atomic unit. 136 of
+    // 701 lines on the M5 were unreadable, in two shapes (interleaved, and "torn" — a
+    // row whose tail landed after another writer's newline). One serialized line, one
+    // write_all: every row lands whole. Two threads × 1,000 rows → 2,000 rows, every one
+    // parses, every one carries exactly its own writer's id. PROVEN RED before the fix:
+    // with the writer reverted to `writeln!(f, "{line}")`, run 0 line 0 was already
+    // unreadable ("expected `:` at line 1 column 9" — a fragment boundary inside the
+    // first key) on the IntelMac, 2026-09-22. Five runs so a lucky schedule cannot pass
+    // a broken writer.
+    #[test]
+    fn two_writers_never_zip_their_rows_together() {
+        for run in 0..5 {
+            let dir = std::env::temp_dir().join(format!("faed9279-{}-{run}", Uuid::new_v4()));
+            let board = std::sync::Arc::new(TrainingJobBoard::with_ledger(Some(dir.join("jobs-ledger.jsonl"))));
+            let writers: Vec<_> = ["aaaaaaaa", "bbbbbbbb"]
+                .into_iter()
+                .map(|who| {
+                    let board = board.clone();
+                    std::thread::spawn(move || {
+                        for n in 0..1_000u32 {
+                            board.journal(&serde_json::json!({
+                                "event": "registered",
+                                "who": who,
+                                "n": n,
+                                // long enough that Display would split it across many
+                                // fragments — the shape that interleaved in production
+                                "pad": "x".repeat(200),
+                            }));
+                        }
+                    })
+                })
+                .collect();
+            for w in writers {
+                w.join().expect("writer thread");
+            }
+            let text = std::fs::read_to_string(dir.join("jobs-ledger.jsonl")).expect("ledger");
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), 2_000, "run {run}: every row landed, none merged");
+            for (i, line) in lines.iter().enumerate() {
+                let v: serde_json::Value = serde_json::from_str(line)
+                    .unwrap_or_else(|e| panic!("run {run} line {i} unreadable: {e}\n{line}"));
+                let who = v["who"].as_str().expect("who");
+                assert!(who == "aaaaaaaa" || who == "bbbbbbbb", "run {run} line {i}: {who}");
+                assert_eq!(v["pad"].as_str().map(str::len), Some(200), "run {run} line {i}: pad intact");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    // regression for card 244757bc: the boot replay must HAND BACK what it found, not
+    // only count it — and a lineage's resumes are counted from the ledger so a job that
+    // dies at every boot stops at MAX_RESUMES.
+    #[test]
+    fn the_boot_replay_hands_orphans_back_and_counts_a_lineages_resumes() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let ledger = dir.path().join("jobs-ledger.jsonl");
+        let board = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        let dead = Uuid::from_u128(0xdead);
+        board.journal(&serde_json::json!({
+            "event": "registered", "local_id": dead.to_string(), "provider_id": "cuda-local",
+            "persona_id": Uuid::from_u128(7).to_string(), "persona_name": "Kimi",
+            "base_model": "ggml-org/Qwen3.8-27B-GGUF", "trait_kind": "code", "at_ms": 1
+        }));
+        let replay = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        let orphans = replay.reconcile_orphans();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!((orphans[0].local_id, orphans[0].provider_id.as_str(), orphans[0].trait_kind.as_str()), (dead, "cuda-local", "code"));
+        assert_eq!(replay.take_orphans().len(), 1, "handed to the trigger once");
+        assert!(replay.take_orphans().is_empty(), "…and only once");
+        // The lineage: dead → r1 → r2; attempts count from the origin.
+        let r1 = Uuid::from_u128(0x11);
+        let r2 = Uuid::from_u128(0x22);
+        replay.journal_resumed(dead, dead, r1, 1);
+        replay.journal_resumed(dead, r1, r2, 2);
+        assert_eq!(replay.resume_origin(r2), dead);
+        assert_eq!(replay.resume_attempts(dead), 2);
+        assert_eq!(replay.resume_origin(Uuid::from_u128(0x99)), Uuid::from_u128(0x99), "a job with no lineage is its own origin");
+        // The dead one is journaled dead too: a second replay finds no open registration.
+        assert!(TrainingJobBoard::with_ledger(Some(ledger)).reconcile_orphans().is_empty());
     }
 }

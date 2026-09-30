@@ -139,6 +139,9 @@ impl AircIpcTransport {
             .map_err(|message| ClientError::Refused {
                 command: "<unknown>".to_string(),
                 reason: message,
+                // `AircCommandResponse::Error` is a gate sentence; a peer's inner
+                // `{ success: false, … }` crosses as `Ok { result }` with its data.
+                outcome: None,
             })
     }
 }
@@ -177,9 +180,10 @@ impl Transport for AircIpcTransport {
             .map_err(|e| ClientError::Transport(format!("await_reply failed: {e}")))?;
 
         Self::decode_reply(reply.body).map_err(|e| match e {
-            ClientError::Refused { reason, .. } => ClientError::Refused {
+            ClientError::Refused { reason, outcome, .. } => ClientError::Refused {
                 command: command.to_string(),
                 reason,
+                outcome,
             },
             other => other,
         })

@@ -145,6 +145,83 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
 }
 
+/// Registered verbs omitted from the default hands menu, still discoverable and
+/// callable under their command's preconditions. This is presentation policy, NOT
+/// authorization. Share purpose guidance with error feedback without erasing the
+/// real failure or declaring a discoverable command impossible to use.
+pub(crate) struct WithheldVerb {
+    pub why: &'static str,
+    pub instead: &'static str,
+}
+
+pub(crate) fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
+    match name.replace('_', "/").as_str() {
+        "work/review" => Some(WithheldVerb {
+            why: "`work/review` records a reviewer's verdict under a REVIEW claim for someone else's work. It does not inspect or submit your own implementation card.",
+            instead: "For your own card: `work/get` to read it, `work/note` to record progress, `work/submit` to hand it in. To give a review word on a peer's PR, say it in the room: \"APPROVED at <sha>\" or \"CHANGES REQUESTED at <sha>: <why>\".",
+        }),
+        "work/submission" => Some(WithheldVerb {
+            why: "`work/submission` inspects a submitted artifact for review; use `work/get` to inspect your own card.",
+            instead: "For your own card: `work/get` to read it, `work/submit` to hand it in (that IS the submission).",
+        }),
+        "code/git/apply" => Some(WithheldVerb {
+            why: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits.",
+            instead: "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
+        }),
+        _ => None,
+    }
+}
+
+/// What sat in the tool NAME field when it was not a verb at all. The executor's
+/// did-you-mean answers a NEAR verb; these two are not near anything, and before this
+/// the receipt was "call `commands/help`" — a turn spent with no lesson (card b579a9c7,
+/// Kimi 2026-09-26: `⚙ C:\Users\...\.airc/worktrees\d33e928a ✗`, then `⚙ msg_budget ✗`,
+/// a probe field she had just read). Both are one model-authoring slip at the envelope:
+/// the thing she was ABOUT (a path, a symbol) landed where the verb goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotAVerb {
+    /// A filesystem path: a drive letter, a backslash, a leading `/` `~` `.`, or a
+    /// `dir/file.ext` shape. No command name has any of these.
+    Path,
+    /// A bare identifier (no `/` in what she wrote) that did-you-mean could not place
+    /// near any verb or alias — a field, a variable, a symbol from what she was reading.
+    Identifier,
+}
+
+/// Classify a wire name that the registry did not know. `near_a_verb` is whether
+/// did-you-mean found ANY candidate for it — a bare identifier near a real verb is a
+/// typo and keeps the did-you-mean lesson; only an identifier near nothing is named as
+/// one. A path is a path whatever did-you-mean says.
+pub(crate) fn not_a_verb(attempted: &str, near_a_verb: bool) -> Option<NotAVerb> {
+    let name = attempted.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let bytes = name.as_bytes();
+    let drive_letter = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    let leading = name.starts_with('/') || name.starts_with('~') || name.starts_with('.');
+    let last_segment_has_extension = name.contains('/')
+        && name
+            .rsplit('/')
+            .next()
+            .and_then(|seg| seg.rsplit_once('.'))
+            .is_some_and(|(stem, ext)| {
+                !stem.is_empty()
+                    && (1..=6).contains(&ext.len())
+                    && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            });
+    if drive_letter || name.contains('\\') || leading || last_segment_has_extension {
+        return Some(NotAVerb::Path);
+    }
+    if !name.contains('/') && !near_a_verb {
+        return Some(NotAVerb::Identifier);
+    }
+    None
+}
+
 /// Every declared alias whose command is AiSafe — the trained-reflex vocabulary a
 /// persona might reach for. Used to WIDEN did-you-mean candidates on a miss, so a
 /// reflex like `grep_files` finds `grep` (→ `code/search`) instead of no match.

@@ -361,7 +361,7 @@ impl ChatModule {
             "roomId": params.room_id.to_string(),
             "senderId": params.sender_id.to_string(),
             "timestamp": now_iso,
-            "content": { "text": params.text },
+            "content": { "text": params.text, "media": params.media },
             "replyToId": params.reply_to_id.map(|u| u.to_string()),
             "metadata": { "source": "user" },
             "status": "sent",
@@ -404,6 +404,37 @@ impl ChatModule {
         Ok((message_id, now_ms))
     }
 
+    /// One envelope shape for operator publication and caller-owned publication.
+    pub(crate) fn transcript_envelope(
+        message_id: Uuid,
+        params: &ChatSendParams,
+        now_ms: u64,
+    ) -> Value {
+        json!({
+            "eventId": Uuid::new_v4().to_string(),
+            "roomId": params.room_id.to_string(),
+            "sourceId": params.sender_id.to_string(),
+            "createdAtMs": now_ms,
+            // Delivery must match the payload's semantics — see
+            // `AircRealtimePayload::delivery()`. ExistingSchema/
+            // ChatTranscript → Durable.
+            "delivery": "durable",
+            "payload": {
+                "kind": "existing_schema",
+                "payload": {
+                    "schema": "chat_transcript",
+                    "inline": {
+                        "messageId": message_id.to_string(),
+                        "text": params.text,
+                        "media": params.media,
+                        "senderId": params.sender_id.to_string(),
+                        "replyToId": params.reply_to_id.map(|u| u.to_string()),
+                    }
+                }
+            },
+        })
+    }
+
     /// Step 2 of a send: the ENVELOPE wire leg — the chat transcript schema
     /// published as an airc realtime envelope through `airc/realtime-publish`
     /// (best-effort; a miss is named in `warning`, never silent). Public so
@@ -427,28 +458,7 @@ impl ChatModule {
         // surface a parse error and the test
         // `send_envelope_matches_airc_publish_wire_shape` will
         // catch the drift.
-        let publish_envelope = json!({
-            "eventId": Uuid::new_v4().to_string(),
-            "roomId": params.room_id.to_string(),
-            "sourceId": params.sender_id.to_string(),
-            "createdAtMs": now_ms,
-            // Delivery must match the payload's semantics — see
-            // `AircRealtimePayload::delivery()`. ExistingSchema/
-            // ChatTranscript → Durable.
-            "delivery": "durable",
-            "payload": {
-                "kind": "existing_schema",
-                "payload": {
-                    "schema": "chat_transcript",
-                    "inline": {
-                        "messageId": message_id.to_string(),
-                        "text": params.text,
-                        "senderId": params.sender_id.to_string(),
-                        "replyToId": params.reply_to_id.map(|u| u.to_string()),
-                    }
-                }
-            },
-        });
+        let publish_envelope = Self::transcript_envelope(message_id, params, now_ms);
 
         let publish_params = json!({ "envelope": publish_envelope });
 
@@ -1548,6 +1558,7 @@ mod tests {
             sender_id: Uuid::new_v4(),
             text: "hello world".into(),
             reply_to_id: None,
+            media: Vec::new(),
         }
     }
 
@@ -1603,6 +1614,38 @@ mod tests {
             result.warning.is_none(),
             "no warning on happy path: {result:?}"
         );
+    }
+
+    // what this catches: media surviving local storage but disappearing from the
+    // room envelope (or vice versa). No image bytes enter either message surface.
+    #[tokio::test]
+    async fn send_preserves_the_same_media_reference_in_store_and_envelope() {
+        let media = serde_json::json!({
+            "type": "image", "mimeType": "image/png",
+            "blobHash": "sha256:1234", "url": null, "description": null
+        });
+        let stored = media.clone();
+        let sent = media.clone();
+        let chat = chat_with_stubs(vec![
+            Arc::new(StubDataModule::new(move |cmd, p| {
+                assert_eq!(cmd, "data/create");
+                assert_eq!(p["data"]["content"]["media"], json!([stored]));
+                assert_eq!(p["data"]["content"]["text"], "Look at the page");
+                Ok(json!({ "success": true }))
+            })),
+            Arc::new(StubAircModule::with(move |p| {
+                assert_eq!(p["envelope"]["payload"]["payload"]["inline"]["media"], json!([sent]));
+                Ok(airc_ok_response("evt-media"))
+            })),
+        ]);
+        let mut params = sample_send_params();
+        params.text = "Look at the page".into();
+        params.media = vec![serde_json::from_value(media).expect("existing media reference")];
+        chat.send(params).await.expect("media reference persisted and published");
+        let legacy: ChatSendParams = serde_json::from_value(json!({
+            "roomId": Uuid::new_v4(), "senderId": Uuid::new_v4(), "text": "old text"
+        })).expect("legacy text-only request");
+        assert!(legacy.media.is_empty());
     }
 
     // ── Partial failure: data ok + airc fail ─────────────────────────
@@ -1800,6 +1843,7 @@ mod tests {
                 sender_id,
                 text: "wire contract message".into(),
                 reply_to_id: Some(reply_to_id),
+                media: Vec::new(),
             })
             .await
             .expect("send must succeed");
@@ -1872,6 +1916,7 @@ mod tests {
                 sender_id,
                 text: "envelope shape test".into(),
                 reply_to_id: None,
+                media: Vec::new(),
             })
             .await
             .expect("send must succeed");
@@ -1994,6 +2039,7 @@ mod tests {
                         sender_id: Uuid::new_v4(),
                         text: format!("concurrent message {i}"),
                         reply_to_id: None,
+                        media: Vec::new(),
                     })
                     .await
                     .expect("send must succeed")
@@ -2165,6 +2211,7 @@ mod tests {
                             sender_id: Uuid::new_v4(),
                             text,
                             reply_to_id: None,
+                            media: Vec::new(),
                         })
                         .await
                         .expect("send must succeed (degraded success counts)");

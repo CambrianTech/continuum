@@ -242,6 +242,71 @@ shipping it alone would look like a regression and be read as "caching doesn't h
 
 ---
 
+### The M5, 2026-09-20 — the message side had the same defect, and the wall is the rest
+
+Card c119ace7. Read from `~/.continuum/logs/llama-server-58057.log` (the serving engine's
+own `prompt eval time = … / N tokens` and `stop processing: n_tokens` lines, so reuse =
+prompt − prefilled) over the last 30 completed generations, and from four citizens' prompt
+captures (`~/.continuum/fixtures/prompt-captures/*.jsonl`, schema 4):
+
+| shape (of the 24 persona turns >1k tokens) | turns | prompt tokens | prefilled | reuse |
+|---|---|---|---|---|
+| warm slot, same mind, next act | 9 | 29–38k | 6.4–12.1k | **65–78%** |
+| board changed between turns (the wall) | 4 | 28–35k | 26.7–33.0k | **6–7%** (2,046 tokens: the tools + identity head only) |
+| slot last held another mind | 6 | 19–35k | all | **0%** |
+| restored whole from the prompt cache | 5 | 30–37k | 0 | 100% |
+
+A 0% turn is 27–34k tokens at 77–92 tok/s: **5.5–6 minutes of prefill before the first
+output token.** The captures explain the two failing shapes:
+
+- **The system prompt is byte-identical across a mind's turns and carries no clock** —
+  until a teammate touches the board. Layout as it shipped: tools (5,986 chars, shared by
+  every persona with the same hands) → identity + turn contract (to char 8,135 ≈ 2,046
+  tokens) → the room's ground: doctrine, roster, then `[room-wall]` with every card's
+  ledger (≈57k chars). When ANY teammate writes a ledger the wall mutates in place and
+  reuse falls to exactly that 2,046-token head — **the 6% rows ARE the wall changing.**
+
+  The first draft of this section argued the wall should stay where it was, on the
+  grounds that everything behind it changes at least as often. **The measurement in the
+  table above refutes that, and it is the same table:** the warm rows reused 65-78% with
+  the SAME conversation sitting behind the SAME wall. If the conversation changed as
+  often as the wall, those rows could not exist. A block is only entitled to the
+  cacheable prefix if it is more stable than what follows it, and the wall is not —
+  it is the busiest shared object in the room (Cormac, reviewing #4280, from these
+  numbers).
+
+  So the stable tier now carries **Standing churn only** (tools, identity, turn contract,
+  doctrine, roster); the wall is Board churn and renders after the conversation beside
+  map / active-work / kanban, under the same `stable_prefix_order`. Enforced at the
+  registration seam (`rag_source_faculty::RagSourceFaculty::new` consults
+  `deliberation_prompt::churn_of`), not by a builder call a future registration can
+  forget — which is exactly how the wall got there: `with_volatile_content` existed,
+  named `room-wall` in its own doc comment as the case it was for, and was never applied
+  to it. The wall's remaining cost is its SIZE, which is the wall source's economy.
+- **The message side was volatile-first in one place:** the standing grounding that rides
+  the conversation tail (`[workspace-map]`, `[active-work]`, `[room-kanban]`) rendered in
+  BROADCAST order — the arbiter's per-turn salience — and the captures hold both
+  `map, active-work, kanban` and `active-work, map, kanban`. A swap at the head of that
+  region re-prefilled every byte behind it with nothing changed. The system side had this
+  fixed in `40075d7ea`; the message side did not. Now ONE comparator,
+  `deliberation_prompt::stable_prefix_order` (churn class — standing → board → turn — then
+  name), orders the system's stable tier, the trailing standing grounding and the trailing
+  proprioception turns alike.
+- Two further economies stay on card c119ace7 as the next slices, deliberately not in
+  this change: **(A) budget-invariant membership** — which blocks are present must not
+  depend on the budget, or a window change silently re-cuts the prefix — and **(B) earned
+  stability**: a block keeps its place in front of the conversation only while it is
+  measurably the more stable of the two, re-derived from the reuse rows rather than
+  declared.
+- Within a warm turn the 22–35% that still re-prefills is the `[working-memory]` trail
+  (18.6k chars rewriting itself every act — a sliding ring, common prefix 127 chars),
+  which already sits after the append-only results ring, plus the facts / clock / ask /
+  room-updates tail. That is the next economy, not an ordering defect.
+
+The receipt now reaches the humans without a probe query: the hour's `prefix reuse NN%
+(Xk cached / Yk prefilled)` rides the `[health]` line (`modules/citizen_health.rs`), fed
+from the one KV writer (`Workspace::note_generation`).
+
 ## 6. Policy is an ADAPTER, never a rule (Joel, 2026-08-21)
 
 > *"It's solvable, just not too hard coded into one paradigm here — better add proper

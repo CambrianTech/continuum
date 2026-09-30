@@ -26,6 +26,7 @@ pub mod disk_reporters;
 pub mod memory_pressure;
 pub mod monitor;
 pub mod rotation_log_pool;
+pub mod swap_activity;
 
 pub use concurrency::local_inference_capacity;
 
@@ -39,6 +40,7 @@ pub use disk_pressure::{
 };
 pub use disk_reporters::{
     install_tracked_dirs, standard_tracked_dirs, tracked_dir, DiskUsageScanner, TrackedDir,
+    CARGO_TARGET_CLASSES,
 };
 pub use memory_pressure::{
     current_available_bytes, is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot,

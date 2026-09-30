@@ -90,6 +90,8 @@ pub struct PersonaSlot {
     /// despawn (which aborts the loop task entirely).
     /// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
     quiesced: Arc<AtomicBool>,
+    /// The role the spawner named for her (`set_role`), read by the grid allocator.
+    role: OnceLock<crate::persona::role_template::RoleId>,
 }
 
 /// Registry of personas currently online in The Grid.
@@ -184,6 +186,7 @@ impl PersonaAircRuntimeRegistry {
             runtime: runtime_arc.clone(),
             service_loop: Mutex::new(None),
             quiesced: Arc::new(AtomicBool::new(false)),
+            role: OnceLock::new(),
         });
         self.inner.insert(persona_id, slot);
         tracing::info!(
@@ -297,6 +300,21 @@ impl PersonaAircRuntimeRegistry {
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    /// Record the role she was spawned for. The spawner is the one writer (it holds the
+    /// desired roster); the grid allocator is the reader (card ccb316a7: a mind is seated
+    /// as HER role, never as the first role a seat fits). First write wins — a respawn
+    /// of the same persona is the same role.
+    pub fn set_role(&self, persona_id: Uuid, role: crate::persona::role_template::RoleId) {
+        if let Some(e) = self.inner.get(&persona_id) {
+            let _ = e.role.set(role); // a second set is the same role; nothing to do
+        }
+    }
+
+    /// The role she was spawned for; `None` if she is not online or was never stamped.
+    pub fn role_of(&self, persona_id: Uuid) -> Option<crate::persona::role_template::RoleId> {
+        self.inner.get(&persona_id).and_then(|e| e.role.get().copied())
     }
 
     /// The persona's autonomic-quiesce flag (a shared handle). The service loop

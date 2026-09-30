@@ -30,14 +30,19 @@ use continuum_airc_protocol::{
 };
 use uuid::Uuid;
 
-/// How long a remote INFERENCE request may take, end to end. This is a
-/// turn, not a command: a citizen's prompt is 15k–25k tokens of prefill plus
+/// FLOOR on how long a remote INFERENCE request may take, end to end. This is
+/// a turn, not a command: a citizen's prompt is 15k–25k tokens of prefill plus
 /// a decode of up to ~3k tokens on a lane she shares with the peer's own
 /// citizens — minutes, not seconds. Measured 2026-09-07 01:2xZ: every reply
 /// from the 5090 arrived 35 s or more after the request, past the 30 s
 /// `DEFAULT_COMMAND_DEADLINE` this transport used to inherit, so the peer did
 /// the work and the requester dropped the answer, 21 times in an hour, then
-/// read the peer as cold. Sized like the local generation ceiling.
+/// read the peer as cold. Sized like the local generation floor.
+///
+/// A floor, not the bound (card ba82d0a0): a request carrying its own
+/// `turn_bound` (the mind's measured expectation with headroom,
+/// `inference::turn_bound`) gets `max(this, turn_bound)` — a 30k prompt on a
+/// peer that prefills at ~25 tok/s is ~1200 s before its first byte, past this.
 pub const REMOTE_INFERENCE_DEADLINE: Duration = Duration::from_secs(600);
 
 use crate::ai::adapter::{AIProviderAdapter, GenerationChunk};
@@ -306,8 +311,8 @@ impl AircLiveTransport {
         })
     }
 
-    /// Override the round-trip deadline. Builder-style; consume the
-    /// inner value before re-Arc'ing.
+    /// Override the round-trip deadline FLOOR (a request's own `turn_bound`
+    /// still raises it). Builder-style; consume the inner value before re-Arc'ing.
     pub fn with_deadline(self, deadline: Duration) -> Arc<Self> {
         Arc::new(Self {
             airc: self.airc,
@@ -409,6 +414,17 @@ impl AircInferenceTransport for AircLiveTransport {
         let start = std::time::Instant::now();
         let target = self.resolve_target(&request)?;
         let correlation_id = request.correlation_id;
+        // The deadline in force for THIS turn: the transport's floor, or the request's
+        // measured bound above it (card ba82d0a0). The peer's own lane reads the same
+        // field off the wire, so both ends wait out the same prefill.
+        let turn_bound = request.text_request.turn_bound;
+        let (deadline, deadline_source) =
+            crate::inference::turn_bound::effective_bound_with_source(self.deadline, turn_bound);
+        let bound_name = format!(
+            "{}@{}",
+            request.text_request.model.as_deref().unwrap_or("unspecified-model"), // unwrap_or: a request without a model is routed by the peer; the receipt still names the peer
+            target.0
+        );
 
         // Wire envelope: substrate's `ai/generate` handler reads
         // `params` as a `TextGenerationRequest`. RemoteInferenceRequest
@@ -480,7 +496,7 @@ impl AircInferenceTransport for AircLiveTransport {
                     MentionTarget::Peer(target),
                     headers,
                     body,
-                    self.deadline,
+                    deadline,
                 )
                 .await?;
             Ok::<_, airc_lib::AircError>((room, pending))
@@ -621,13 +637,22 @@ impl AircInferenceTransport for AircLiveTransport {
             // The generic bus can return the first correlated event. Never
             // accept an unrelated responder; recover the intended answer.
             Ok(_) => self
-                .recover_reply_from_store(&room, &expected, start, self.deadline)
+                .recover_reply_from_store(&room, &expected, start, deadline)
                 .await
-                .ok_or_else(|| RemoteInferenceError::Timeout {
-                    elapsed_ms: start.elapsed().as_millis() as u64,
+                .ok_or_else(|| {
+                    crate::inference::turn_bound::probe_tripped(
+                        "remote_deadline",
+                        &bound_name,
+                        deadline,
+                        deadline_source,
+                        turn_bound,
+                    );
+                    RemoteInferenceError::Timeout {
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    }
                 })?,
             Err(airc_lib::AircError::CommandDeadline { .. })
-                if reply_stream_ended_early(start.elapsed(), self.deadline) =>
+                if reply_stream_ended_early(start.elapsed(), deadline) =>
             {
                 // airc's `await_reply` reports a closed reply stream as a
                 // deadline (`Ok(None)` → `CommandDeadline`), and the per-request
@@ -644,11 +669,18 @@ impl AircInferenceTransport for AircLiveTransport {
                     "reply stream closed before the deadline; recovering the reply from the store"
                 );
                 match self
-                    .recover_reply_from_store(&room, &expected, start, self.deadline)
+                    .recover_reply_from_store(&room, &expected, start, deadline)
                     .await
                 {
                     Some(reply) => reply,
                     None => {
+                        crate::inference::turn_bound::probe_tripped(
+                            "remote_deadline",
+                            &bound_name,
+                            deadline,
+                            deadline_source,
+                            turn_bound,
+                        );
                         return Err(RemoteInferenceError::Timeout {
                             elapsed_ms: start.elapsed().as_millis() as u64,
                         });
@@ -656,6 +688,13 @@ impl AircInferenceTransport for AircLiveTransport {
                 }
             }
             Err(airc_lib::AircError::CommandDeadline { .. }) => {
+                crate::inference::turn_bound::probe_tripped(
+                    "remote_deadline",
+                    &bound_name,
+                    deadline,
+                    deadline_source,
+                    turn_bound,
+                );
                 return Err(RemoteInferenceError::Timeout {
                     elapsed_ms: start.elapsed().as_millis() as u64,
                 });
@@ -914,6 +953,22 @@ mod tests {
         assert!(REMOTE_INFERENCE_DEADLINE >= Duration::from_secs(300));
         assert!(REMOTE_INFERENCE_DEADLINE > DEFAULT_COMMAND_DEADLINE * 5);
     }
+
+    // what this catches (card ba82d0a0): the constant is a FLOOR. A request whose
+    // measured bound is longer (a 30k prompt on a ~25 tok/s peer: ~1200 s to the first
+    // byte, ×2 headroom) waits its own bound; one with none, or a shorter one, waits
+    // the floor. A revert to `self.deadline` alone kills every slow-peer turn again.
+    #[test]
+    fn a_request_with_a_longer_measured_bound_raises_the_remote_deadline_never_lowers_it() {
+        use crate::inference::turn_bound::effective_bound;
+        let long = Duration::from_secs(2_400);
+        assert_eq!(effective_bound(REMOTE_INFERENCE_DEADLINE, Some(long)), long);
+        assert_eq!(effective_bound(REMOTE_INFERENCE_DEADLINE, None), REMOTE_INFERENCE_DEADLINE);
+        assert_eq!(
+            effective_bound(REMOTE_INFERENCE_DEADLINE, Some(Duration::from_secs(30))),
+            REMOTE_INFERENCE_DEADLINE
+        );
+    }
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{
         ChatMessage, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse,
@@ -948,6 +1003,7 @@ mod tests {
             room_id: None,
             purpose: None,
             persona_id: None,
+            turn_bound: None,
         })
     }
 

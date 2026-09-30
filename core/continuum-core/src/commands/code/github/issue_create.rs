@@ -36,11 +36,10 @@ crate::action_command! {
     pub struct CodeGithubIssueCreate { state: Arc<CodeState> }
     name: "code/github/issue-create",
     access: AiSafe,
-    native: false, // reachable BY NAME; never pushed into every turn (placeholder-issue spam, 2026-09-03)
+    native: false, // reachable BY NAME; the 9/03 placeholder-issue spam was issues, so issues stay one call away
     params: GithubIssueCreateParams,
     output: GithubIssueCreateResult,
     run(this, ctx, p) => {
-        super::require_operator(ctx, "code/github/issue-create")?;
         if p.title.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/issue-create: 'title' is required".into()));
         }
@@ -48,7 +47,7 @@ crate::action_command! {
         let mut args = vec![
             "issue".to_string(), "create".to_string(),
             "--title".to_string(), p.title,
-            "--body".to_string(), p.body,
+            "--body".to_string(), super::attributed(p.body, ctx),
         ];
         if let Some(labels) = p.labels.filter(|s| !s.trim().is_empty()) {
             args.push("--label".to_string());

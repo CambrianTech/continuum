@@ -1159,6 +1159,9 @@ mod tests {
             // Same owner and the same rule as the shared target: derived build output,
             // re-creatable by definition, evicted oldest-artifact-first under pressure.
             "cargo-target-wt",
+            // Same owner, same loop, same reasoning — the airc build tree is derived
+            // artifacts like its two siblings, so it is OWNED rather than deferred.
+            "cargo-target-airc",
             // Owner: CitizenWorkspacePool — dormant, non-resident WORKSPACES only, and
             // only after complete verified preservation. Memory is never evicted.
             "citizens",
@@ -1172,6 +1175,16 @@ mod tests {
             "eye-profiles",
         ];
         let deferred = [
+            // Registered 2026-09-28 with claim-time cloning: a repo card for a repo the
+            // node never checked out is cloned here so the citizen's hands root in it.
+            // Deferred, not owned, because blind deletion is UNSAFE: every live per-card
+            // worktree is a linked worktree of one of these clones and dies with it.
+            (
+                "repos",
+                "5c5f3b42: managed-clone pool — evict a clone no live card worktree is cut \
+                 from and no claimed card names, oldest first, retiring its repo_registry \
+                 entry in the same step; sweep `.partial-` dirs a timed-out clone left",
+            ),
             (
                 "hf-hub",
                 "#155: hub LRU keyed on last-access — downloads are re-fetchable. Measured \
@@ -1257,7 +1270,10 @@ mod tests {
                  EVIDENCE — small, and the only thing that can answer what she wrote — and \
                  reclaim the bulky re-creatable clones/venvs instead. Corrected 2026-08-18: \
                  this entry read \"everything under it is re-creatable\", which the 25 \
-                 patches already sitting there had falsified since before it was written",
+                 patches already sitting there had falsified since before it was written. \
+                 The `swe/grades` sub-class is owned in-file since 2026-09-25: \
+                 `GradeCheckoutHold` removes a grade's tree when the grade ends and the \
+                 next grade sweeps any tree no live grade holds",
             ),
             // Steady-state owner ALREADY EXISTS in-file: RAII drop on every in-process
             // return path + the provision-time orphan sweep for worlds a killed process
@@ -1304,6 +1320,14 @@ mod tests {
                 "kv-pages",
                 "#155: broker-reachable pool keyed on slot-pool residency; the \
                  spawn-time generation sweep already owns the stale-geometry path",
+            ),
+            // Every lane's --train-dir (2026-09-26). A finished adapter is MOVED into its
+            // job dir by the engine trainer, so what stays is a run in flight (never
+            // touched) or a crashed run's partial file (dead the moment its job is).
+            (
+                "engine-train",
+                "charter S3/S6 engine trainer: delete every `<uuid>.gguf` whose job is not \
+                 live on the TrainingJobBoard; a live job's file is never touched",
             ),
         ];
         use super::super::disk_pressure::DiskReporter as _;

@@ -116,6 +116,7 @@ pub async fn rate_proposals_with_ai(
         room_id: None,
         purpose: Some("cognition-rate-proposals".to_string()),
         persona_id: None,
+        turn_bound: None,
     };
 
     let registry = global_registry();

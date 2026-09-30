@@ -182,6 +182,21 @@ use protocol::Response;
 // IPC Server State
 // ============================================================================
 
+/// The socket path's ONE routing decision: a command string that names a PEER or a
+/// ROOM (`airc://<peer>[@node]/<path>`, `airc://#room/<path>`) is dispatched by the
+/// CommandExecutor, which owns the URI grammar and the remote transport; anything
+/// else — a bare name, or the explicit-local `airc:///<path>` — stays on the
+/// name-based `Runtime::route_command` path, byte-for-byte as before. PURE, so the
+/// decision is pinned by a test rather than discovered at the CLI ("Unknown command:
+/// 'airc://…/ping'", card 4fb5895c — #3690's transport was installed and unreachable
+/// from every socket client).
+fn addressed_elsewhere(command: &str) -> Option<crate::routing::CommandUri> {
+    match crate::routing::CommandUri::parse(command) {
+        Ok(crate::routing::CommandUri::Local { .. }) | Err(_) => None,
+        Ok(uri) => Some(uri),
+    }
+}
+
 /// ServerState holds Arc references that are passed to ServiceModules during initialization.
 /// After modules are registered with the runtime, these fields are not accessed directly
 /// by ServerState methods — all command handling goes through runtime.dispatch().
@@ -211,6 +226,11 @@ struct ServerState {
     /// on any connection binds here, and the interceptor routes perception/observe
     /// + interface/screenshot to whoever is bound. Empty ⇒ those commands fail loud.
     provider_registry: Arc<crate::runtime::ProviderRegistry>,
+    /// The ONE command executor (the same Arc every module and the training
+    /// producer hold) — the owner of URI routing and the remote transport. The
+    /// socket path dispatches a PEER- or ROOM-addressed command through it; a bare
+    /// name keeps the name-based `Runtime::route_command` path (card 4fb5895c).
+    executor: Arc<crate::runtime::CommandExecutor>,
 }
 
 impl ServerState {
@@ -227,6 +247,7 @@ impl ServerState {
         shell_sessions: Arc<DashMap<String, ShellSession>>,
         gpu_manager: Arc<GpuMemoryManager>,
         provider_registry: Arc<crate::runtime::ProviderRegistry>,
+        executor: Arc<crate::runtime::CommandExecutor>,
     ) -> Self {
         Self {
             voice_service,
@@ -240,6 +261,7 @@ impl ServerState {
             runtime,
             gpu_manager,
             provider_registry,
+            executor,
         }
     }
 }
@@ -547,10 +569,25 @@ fn handle_client<S: IpcStream>(
                 let rss_before = current_rss_mb();
                 // Thread the caller so the typed object path sees the REMOTE identity
                 // (composition then propagates remote-not-owner — no escalation).
-                let result = state
-                    .runtime
-                    .route_command(cmd, json_value.clone(), caller.clone())
-                    .await;
+                // A PEER- OR ROOM-ADDRESSED COMMAND GOES TO THE EXECUTOR, which owns the
+                // URI grammar and the remote transport (#3690 installed it; nothing on
+                // the socket path ever reached it — card 4fb5895c: `airc://<peer>/ping`
+                // was refused as "Unknown command" because this path only ever knew
+                // names). A bare name keeps the name-based route exactly as before.
+                let result = match addressed_elsewhere(cmd) {
+                    Some(uri) => Some(
+                        state
+                            .executor
+                            .execute_with_caller(uri, json_value.clone(), caller.clone())
+                            .await,
+                    ),
+                    None => {
+                        state
+                            .runtime
+                            .route_command(cmd, json_value.clone(), caller.clone())
+                            .await
+                    }
+                };
                 let rss_after = current_rss_mb();
                 log_command_rss_delta(cmd, rss_before, rss_after);
 
@@ -686,6 +723,42 @@ fn handle_client<S: IpcStream>(
 
 #[cfg(test)]
 mod tests {
+    // what this catches (card 4fb5895c): the socket path never built a CommandUri, so
+    // `airc://<peer>/ping` was refused as "Unknown command" while #3690's remote transport
+    // sat installed on the executor. A peer- or room-addressed string MUST leave the
+    // name-based route (never dispatch locally under a remote address — the one outcome
+    // the #3690 probe pre-registered as forbidden); a bare name and the explicit-local
+    // form MUST stay on it, byte-for-byte, so nothing that works today changes route.
+    #[test]
+    fn a_peer_or_room_address_leaves_the_name_route_and_a_bare_name_stays() {
+        use crate::routing::CommandUri;
+        let peer = "airc://2f0aed7f-3359-4dd5-9f9b-aaa0b07c6266/ping";
+        assert!(
+            matches!(
+                super::addressed_elsewhere(peer),
+                Some(CommandUri::Peer { .. })
+            ),
+            "a peer-addressed verb goes to the executor's remote transport"
+        );
+        assert!(
+            matches!(
+                super::addressed_elsewhere("airc://room:3be59578-7f1d-5d78-8b17-1eb0834b4643/ping"),
+                Some(CommandUri::Room { .. })
+            ),
+            "a room-addressed verb goes to the executor"
+        );
+        // Bare names and the explicit-local spelling are the local route, unchanged.
+        for local in ["ping", "genome/job-status", "airc:///ping", "commands/list"] {
+            assert!(
+                super::addressed_elsewhere(local).is_none(),
+                "{local} stays name-routed"
+            );
+        }
+        // Garbage is not an address: it stays on the name route and gets the registry's
+        // own "Unknown command … did you mean" sentence rather than a URI parse error.
+        assert!(super::addressed_elsewhere("airc://").is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -1282,6 +1355,13 @@ pub fn start_server(
                 // live GPU stats next to cpu+mem — one probe, reused, never a
                 // second `gpu::monitor::detect()`.
                 system_monitor.attach_gpu_monitor(monitor.clone());
+                // The SAME one probe also fixes the host's serving backend for the KV
+                // cache decision (cognition/kv_cache_plan.rs). Recorded here because
+                // this is the only place the substrate asks the device what it is —
+                // and because both consumers of that decision (the launcher's
+                // `--cache-type-k/v` flags and the serving plan's resident-KV divisor)
+                // must read ONE answer, not re-derive it independently.
+                crate::cognition::kv_cache_plan::record_host_backend(monitor.platform());
                 unified_gpu_hint = match monitor.memory_mode() {
                     // UMA (Apple Silicon): VRAM and RAM are ONE physical pool. Registering
                     // a GPU source here would create the second independent ledger that
@@ -1390,6 +1470,8 @@ pub fn start_server(
         model_catalog.clone(),
         pin_store,
     ));
+    // Training admission reads governed memory under this gate (aae8af55).
+    crate::modules::serving_daemon::LifecycleGate::set_global(serving_daemon.lifecycle_gate());
     crate::probe!(
         class = "boot.stretch",
         stretch = "serving_span",
@@ -1506,7 +1588,7 @@ pub fn start_server(
         // resolve keeps the floor — never a guess, never zero.
         use crate::capacity::system_profile::detect_drives;
         let drives = detect_drives();
-        for class in ["cargo-target", "cargo-target-wt"] {
+        for class in crate::system_resources::CARGO_TARGET_CLASSES {
             if let Some(cargo_dir) = crate::system_resources::tracked_dir(class) {
                 // Resolved per class: the two caches can live on different volumes
                 // (an operator who moves worktree builds to a second drive is exactly
@@ -2313,7 +2395,7 @@ pub fn start_server(
     let interceptor_airc_deps = persona_bootstrap_deps.clone();
     let airc_interceptor_cell: Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>> =
         Arc::new(tokio::sync::OnceCell::new());
-    if let Some(interceptor_daemon_socket) = interceptor_airc_deps {
+    {
         let cell = airc_interceptor_cell.clone();
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
         // `rt_handle.spawn`, NOT bare `tokio::spawn` — this runs in the SYNCHRONOUS boot
@@ -2321,35 +2403,27 @@ pub fn start_server(
         // ambient Tokio runtime here. Bare `tokio::spawn` panics "there is no reactor running"
         // and kills the IPC listener thread → the socket never binds → the whole core is a
         // zombie (regression from #2051's AircInterceptor block; every sibling spawn in this fn
-        // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
-        // boot on every airc-configured host.
+        // already uses `rt_handle.spawn`).
+        //
+        // UNCONDITIONAL since card e28a0340. This attach used to sit inside
+        // `if let Some(daemon_socket)`, so a core that booted with no daemon never even
+        // spawned the task — and the one attempt it did make on a found socket was a
+        // one-shot whose own error text named "a boot with a reachable airc daemon" as
+        // the remedy. Measured cost: BigMama failed 1,216 times over six hours against a
+        // live pipe; Windows (2026-09-22) restored its daemon under a running core and
+        // still refused every peer-addressed command. The boot socket is now a HINT for
+        // the first attempt — `attach_until_live` re-resolves on every later one.
+        rt_handle.spawn(crate::airc::reattach::attach_until_live(
+            root,
+            "continuum-airc-interceptor",
+            interceptor_airc_deps,
+            cell,
+        ));
         // #2561: the ACTIVITY GATE's owning task — boredom as substrate. Spawned
         // here with every other boot task (rt_handle.spawn: synchronous boot
         // region, no ambient reactor).
         rt_handle.spawn(async move {
             crate::cognition::activity_gate::spawn_activity_gate();
-        });
-        rt_handle.spawn(async move {
-            match airc_lib::Airc::attach_as(
-                root,
-                "continuum-airc-interceptor",
-                interceptor_daemon_socket,
-            )
-            .await
-            {
-                Ok(airc) => {
-                    crate::persona::self_peer::register(airc.peer_id().as_uuid());
-                    // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
-                    // share it as `Arc<Airc>`.
-                    let _ = cell.set(Arc::new(airc));
-                }
-                Err(err) => tracing::error!(
-                    error = %err,
-                    "airc interceptor: attach_as failed — aircPeer command routing stays \
-                     unavailable (commands with aircPeer will fail loud until a boot with a \
-                     reachable airc daemon)"
-                ),
-            }
         });
     }
 
@@ -2763,12 +2837,14 @@ pub fn start_server(
         // refuses loudly and the shipped floor still stands (same #432 arm as
         // the positron projection); the author's actionable error surfaces at
         // `activity/spawn`, which validates the same directory.
-        let resident_roles = {
+        // The recipe's citizens, ONCE: the allocator daemon takes them whole (role +
+        // declared requirement, #4271); the spawner takes their roles.
+        let resident_citizens = {
             use crate::experience::source::RecipeExperienceSource;
             let overlay_dir = RecipeExperienceSource::overlay_dir(
                 &crate::modules::persona_instance_manager::resolve_continuum_root(),
             );
-            match RecipeExperienceSource::resident_roles(&overlay_dir) {
+            match RecipeExperienceSource::resident_citizens(&overlay_dir) {
                 Ok(roles) => roles,
                 Err(e) => {
                     tracing::error!(
@@ -2779,10 +2855,33 @@ pub fn start_server(
                          citizens until the named file is fixed or removed \
                          (#430)"
                     );
-                    RecipeExperienceSource::resident_roles_embedded()
+                    RecipeExperienceSource::resident_citizens_embedded()
                 }
             }
         };
+        // THE GRID ALLOCATOR DAEMON (card 10bba591): the one live caller of the pure
+        // allocator. Reads this node's published plan and the gossip ledger's offers,
+        // seats the roster across the grid, publishes on change — the placement
+        // switch moves minds to strictly better seats between turns, the reconciler
+        // draws this node's open seats, the health line reports the moves. Same
+        // recipe roles the spawner hosts; the plan watch the reconciler parks on.
+        // The allocator seats by EVERY activity's citizens (card ccb316a7): the project
+        // declares what a coder peer needs; the default roster alone made every mind a
+        // helper any model could hold.
+        let grid_citizens = {
+            use crate::experience::source::RecipeExperienceSource;
+            let overlay_dir = RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            );
+            RecipeExperienceSource::grid_citizens(&overlay_dir)
+                .unwrap_or_else(|_| RecipeExperienceSource::grid_citizens_embedded()) // unwrap_or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
+        };
+        runtime.register(Arc::new(crate::modules::grid_allocator::GridAllocatorModule::new(
+            serving_daemon.subscribe(),
+            grid_citizens,
+        )));
+        let resident_roles: Vec<crate::persona::role_template::RoleId> =
+            resident_citizens.into_iter().map(|c| c.role).collect();
         stretch_mark("resident_roles_and_overlay", "supervisor_construct");
         stretch_mark("supervisor_construct", "resume_task_spawn_and_rest_of_block");
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
@@ -3014,6 +3113,11 @@ pub fn start_server(
             const RECONCILER_HEARTBEAT_PASSES: u32 = 60;
             let mut last_pass_row: Option<(bool, bool, bool, bool, u32)> = None;
             let mut last_ready_row: Option<(bool, bool, u32)> = None;
+            // The grid allocation's publishes wake the reconciler too (card 10bba591):
+            // a node joining or a plan changing re-seats the grid, and this node's open
+            // seats are drawn on that edge, not on the next plan edge.
+            let mut alloc_rx = crate::modules::grid_allocator::subscribe();
+            let mut alloc_closed = false;
             loop {
                 pass += 1;
                 let plan_ready = serving_plan_rx
@@ -3032,6 +3136,10 @@ pub fn start_server(
                 // must never leave more minds than warm lanes — 2026-09-06).
                 let live_plan = serving_plan_rx.borrow().clone();
                 supervisor.refresh_serving(live_plan.as_ref());
+                // This node's seats as the grid allocation counts them (seated + open),
+                // once the daemon has published; `None` keeps the warm-slot prior.
+                let roster_here = alloc_rx.borrow().as_ref().and_then(|p| p.roster_here());
+                supervisor.refresh_grid_roster(roster_here);
                 let snapshot_live = crate::inference::llama_server::current_serving().is_live();
                 let pass_state = (plan_ready, external_lane, booted, snapshot_live);
                 let pass_row_due = match last_pass_row {
@@ -3178,9 +3286,19 @@ pub fn start_server(
                     }
                 }
                 // Park until the serving daemon republishes (every tick, or
-                // sooner on a pressure edge). `changed()` errs only if the
-                // daemon is gone — then there is nothing left to react to.
-                if serving_plan_rx.changed().await.is_err() {
+                // sooner on a pressure edge) — or the grid allocation does. The plan
+                // watch's `changed()` errs only if the daemon is gone — then there is
+                // nothing left to react to.
+                let plan_edge = tokio::select! {
+                    changed = serving_plan_rx.changed() => Some(changed),
+                    changed = alloc_rx.changed(), if !alloc_closed => {
+                        if changed.is_err() {
+                            alloc_closed = true; // never in practice: the channel is process-global
+                        }
+                        None
+                    }
+                };
+                if matches!(plan_edge, Some(Err(_))) {
                     if booted {
                         tracing::warn!(
                             "serving-daemon watch closed — hosting reconciler exiting; \
@@ -3335,9 +3453,20 @@ pub fn start_server(
     // selection logic lives in the coordinator.
     {
         use crate::genome::fine_tuning::{
-            FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter,
+            CudaLoraFineTuner, EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner,
+            OpenAIFineTuningAdapter,
         };
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
+        ft_registry.register(std::sync::Arc::new(CudaLoraFineTuner::new()));
+        // In-engine training on the resident weights (the dream's trainer): selected by
+        // preference ("engine-local") until its measured 27B run makes it the default
+        // over the process trainers (charter S6); needs a live lane serving the base.
+        // SHARED-RESIDENT-LIFECYCLE.md step 3: a run a previous core bound to a still-live engine
+        // gets its lease back HERE, before any module ticks and so before anything can admit
+        // into the memory it is using; the trigger's first tick then re-attaches it.
+        let engine_tuner = std::sync::Arc::new(EngineLoraFineTuner::new());
+        engine_tuner.reclaim_resident_leases();
+        ft_registry.register(engine_tuner);
 
         // OpenAI when credentials present. Other cloud LoRA-trainer
         // adapters (Mistral, Anthropic, Fireworks, DeepSeek,
@@ -3392,9 +3521,17 @@ pub fn start_server(
             ),
         );
 
-        runtime.register(Arc::new(crate::modules::genome::GenomeModule::new(
-            ft_registry,
-        )));
+        runtime.register(Arc::new(
+            crate::modules::genome::GenomeModule::new(ft_registry)
+                .with_teacher_serving(serving_daemon.clone()),
+        ));
+
+        // Port leases for citizen services (card 0c42c0bf): a dev server or database a citizen
+        // runs gets a port clear of every other citizen's and of Continuum's own.
+        let ports_node = airc_interceptor_cell.clone();
+        runtime.register(Arc::new(crate::modules::ports::PortsModule::new(Arc::new(move || {
+            ports_node.get().map(|core| core.peer_id())
+        }))));
 
         // TrainingCompletionSentinel: L3 of the dev-task continuous-learning loop.
         // Polls in-flight training jobs (the TrainingJobBoard the trigger writes to);
@@ -3783,6 +3920,7 @@ pub fn start_server(
         shell_sessions,
         gpu_manager,
         provider_registry,
+        Arc::clone(&executor),
     ));
 
     log_info!("ipc", "server", "IPC server ready");
@@ -4291,11 +4429,7 @@ pub fn start_server(
     {
         let bind_host =
             std::env::var("CONTINUUM_CORE_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let port: u16 = std::env::var("CONTINUUM_CORE_TCP")
-            .ok()
-            .and_then(|s| s.parse::<u16>().ok())
-            .filter(|p| *p > 0)
-            .unwrap_or(9100);
+        let port = endpoint_paths::core_tcp_port();
         let bind_addr = format!("{bind_host}:{port}");
         // The same two phase rows the Unix path emits around ITS bind. They were
         // `#[cfg(unix)]`-gated with the Unix bind (the windows-msvc fix on #3714),

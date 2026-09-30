@@ -116,7 +116,13 @@ fn available_memory_bytes() -> u64 {
     use sysinfo::System;
     let mut sys = System::new();
     sys.refresh_memory();
-    sys.available_memory()
+    // NOT `available_memory()`: it returns 0 on macOS while total/used are correct
+    // (`system_resources::memory_pressure::available_from`, which exists to be the one
+    // derivation every reader shares). The doc above says a 0 here "floors the KV budget
+    // to MIN_CTX rather than over-allocating" — on a unified-memory Mac, which is the
+    // platform this comment is about, that floor was unconditional rather than a
+    // read-failure fallback.
+    crate::system_resources::memory_pressure::available_from(&sys)
 }
 
 /// Rich, model-derived capability facts — read ONCE from the loaded GGUF at

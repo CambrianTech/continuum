@@ -1047,6 +1047,7 @@ pub(crate) async fn run_env(
     let child = cmd
         .spawn()
         .map_err(|e| format!("could not run `{program}`: {e}"))?;
+    #[cfg(unix)]
     let child_pid = child.id();
     match tokio::time::timeout(SUBPROCESS_CEILING, child.wait_with_output()).await {
         Ok(out) => out.map_err(|e| format!("could not run `{program}`: {e}")),
@@ -1106,6 +1107,14 @@ fn clone_lock_for(repo_dir: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 /// artifact voided at scoring). The per-destination lock in [`clone_at`] already
 /// serializes callers; the nonce keeps even a future unlocked path collision-free and
 /// keeps a crashed run's leftovers from ever matching a live invocation's name.
+/// Whether a directory name is an in-flight staging tree minted by [`staging_path_for`]
+/// (`<instance>.cloning-<pid>-<nonce>`): a clone before its rename commit-point, never a
+/// usable checkout even when it already carries a `.git`. The one place that knows the
+/// shape, beside the one place that makes it.
+pub(crate) fn is_in_flight_staging_name(name: &str) -> bool {
+    name.contains(".cloning-")
+}
+
 fn staging_path_for(repo_dir: &Path) -> PathBuf {
     static CLONE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     repo_dir.with_extension(format!(
@@ -1117,6 +1126,31 @@ fn staging_path_for(repo_dir: &Path) -> PathBuf {
 
 /// Clone the repo at `base_commit`. The commit is the whole point — a clone left at HEAD is
 /// how eight runs got scored against a tree with the fix already in it.
+fn refuse_unrecovered_checkouts(repo_dir: &Path) -> Result<(), String> {
+    let (Some(parent), Some(name)) = (repo_dir.parent(), repo_dir.file_name()) else {
+        return Ok(());
+    };
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("cannot inspect interrupted staging at {}: {e}", parent.display())),
+    };
+    let prefix = format!("{}.cloning-", name.to_string_lossy());
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot inspect interrupted staging: {e}"))?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let path = entry.path();
+            if path.join(".git").try_exists().map_err(|e| format!("cannot inspect {}: {e}", path.display()))? {
+                return Err(format!(
+                    "interrupted staging checkout {} requires recovery before restaging {}; preserved because it may contain citizen work",
+                    path.display(), repo_dir.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), String> {
     // SERIALIZE PER DESTINATION (2026-08-21, from the 2026-08-18 grade loss). This
     // function both REMOVES `repo_dir` at entry and razes/renames it at the commit
@@ -1131,6 +1165,10 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     // section awaits on git subprocesses throughout.
     let lock = clone_lock_for(repo_dir);
     let _staged = lock.lock().await;
+    // A temporary name does not establish disposability. Citizens have reached
+    // interrupted clones and edited them (Sahar, 2026-09-29). Refuse BEFORE any
+    // destination removal; recovery must preserve those checkouts explicitly.
+    refuse_unrecovered_checkouts(repo_dir)?;
     // A stale tree here is not "probably fine" — it is the tree the score comes from. Removal
     // failing used to be SWALLOWED (`let _ =`), and the clone below then died on git's own
     // "destination path already exists and is not an empty directory", which reads like a
@@ -1201,7 +1239,8 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     // widening the diagnosis. Staging + rename also means a half-fetched tree is never
     // visible at `repo_dir`: the move is the commit point.
     let staging = staging_path_for(repo_dir);
-    // Sweep DEAD staging trees for this destination — any `<name>.cloning-*` sibling.
+    // Sweep incomplete staging remnants only. Git checkouts were refused above;
+    // their temporary names alone cannot prove that no citizen owns work there.
     // Under the per-destination lock nothing live matches, and a crashed run's leftovers
     // (whose nonce-bearing names can never collide with ours) must not accumulate as
     // unswept disk litter (the 2026-07-13 rule: no cache dir without an eviction story).
@@ -1209,7 +1248,9 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         let dead_prefix = format!("{}.cloning-", name.to_string_lossy());
         if let Ok(entries) = std::fs::read_dir(parent) {
             for entry in entries.flatten() {
-                if entry.file_name().to_string_lossy().starts_with(&dead_prefix) {
+                if entry.file_name().to_string_lossy().starts_with(&dead_prefix)
+                    && !entry.path().join(".git").exists()
+                {
                     let _ = std::fs::remove_dir_all(entry.path());
                 }
             }
@@ -1995,7 +2036,13 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         .clone();
     let _held = lock.lock().await;
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
-    let py = env_dir.join("bin").join("python");
+    // uv creates a native venv: Windows puts its interpreter under Scripts,
+    // Unix under bin. Use the same path for cache reuse and initial installation.
+    let py = env_dir.join(if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    });
     if py.exists() {
         // THE EDITABLE POINTS SOMEWHERE (root cause of the "2019-pytest era" + "flask-2.2
         // era" env-void classes, glass-boxed 2026-08-12): the env is cached per INSTANCE,
@@ -2053,7 +2100,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         }
         return Ok(py);
     }
-    // ANY failure below leaves NO half-built env: `bin/python` is the "env is complete"
+    // ANY failure below leaves NO half-built env: the interpreter is the "env is complete"
     // key, so a venv whose deps never installed (the index unreachable, card cffc9c5e)
     // would otherwise be adopted as complete on the next run and grade every attempt
     // ungradeable. Each fatal site still removes on its own; this is the floor under them.
@@ -2071,11 +2118,11 @@ async fn build_env_from_scratch(
     py: PathBuf,
 ) -> Result<PathBuf, String> {
     let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir));
-    let uv = which("uv").ok_or_else(|| {
-        "uv is not installed — it builds the per-instance environment (a Rust binary, \
-         install from https://astral.sh/uv)"
-            .to_string()
-    })?;
+    // A missing HOST tool is a failure to LOOK, never a fact about the instance: typed
+    // by its head so the sweep defers and re-tries every tick instead of recording a
+    // standing refusal that only a change in the citizen's WORK can lift (card 1aac0c72:
+    // sphinx-7889 on the 5090 sat unre-graded for hours after uv appeared on the box).
+    let uv = which("uv").ok_or_else(uv_missing_is_could_not_look)?;
     let interpreter = interpreter_for_year(instance.year());
     let env_s = env_dir.to_string_lossy().to_string();
     let py_s = py.to_string_lossy().to_string();
@@ -2279,11 +2326,16 @@ async fn build_env_from_scratch(
         };
         if !freetype_ok {
             let _ = std::fs::remove_dir_all(&env_dir);
-            return Err(format!(
-                "matplotlib needs the HOST freetype (its vendored freetype 2.6.1 cannot \
-                 build on this machine): install it with `brew install freetype pkg-config` \
-                 and re-run — an ENV prerequisite, not a model result ({})",
-                instance.instance_id
+            // A HOST prerequisite, not a model result — and not the instance's standing
+            // refusal either: typed COULD_NOT_LOOK so the sweep looks again after
+            // `brew install` instead of holding the marker until the citizen's work changes.
+            return Err(host_prereq_is_could_not_look(
+                "the HOST freetype that matplotlib needs (its vendored freetype 2.6.1 cannot \
+                 build on this machine)",
+                &format!(
+                    "install it with `brew install freetype pkg-config` and re-run ({})",
+                    instance.instance_id
+                ),
             ));
         }
     }
@@ -2552,6 +2604,30 @@ const MAX_ERA_OVERRIDES: usize = 8;
 /// reader that sees this head defers and looks again, it never records a verdict.
 pub const COULD_NOT_LOOK: &str = "COULD NOT LOOK — ";
 
+/// ONE answer to "how is a missing HOST prerequisite recorded": a [`COULD_NOT_LOOK`] —
+/// the box could not look at the instance at all, so no marker stands and the next sweep
+/// looks again. The marker's own invalidation rule (`refusal_stands_at`) watches the
+/// citizen's WORK mtime and cannot see a tool appearing on the host; a bare reason from
+/// any of these gates therefore stood forever (card 1aac0c72: sphinx-7889 after uv
+/// appeared on the 5090; every matplotlib graded before `brew install freetype`).
+/// `what` names the prerequisite, `remedy` says how to put it on the box.
+pub fn host_prereq_is_could_not_look(what: &str, remedy: &str) -> String {
+    format!(
+        "{COULD_NOT_LOOK}{what} is not available on this box — {remedy}; nothing about the \
+         instance is known until it is"
+    )
+}
+
+/// `uv` — the one tool that builds every per-instance environment — is not on this
+/// process's PATH.
+pub fn uv_missing_is_could_not_look() -> String {
+    host_prereq_is_could_not_look(
+        "uv",
+        "it builds the per-instance environment (a Rust binary, install from \
+         https://astral.sh/uv)",
+    )
+}
+
 /// Does uv's stderr say the INDEX was unreachable (resolver/network), as opposed to a
 /// package that would not resolve or build? Anchored on uv's/reqwest's own phrasing for
 /// transport failures; a build backend error, a missing wheel, or an unsatisfiable pin
@@ -2701,14 +2777,8 @@ async fn era_pinned_uv_install(
 }
 
 fn which(bin: &str) -> Option<String> {
-    let path = std::env::var("PATH").ok()?;
-    for dir in path.split(':') {
-        let candidate = Path::new(dir).join(bin);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
+    crate::shell_portable::locate_executable(bin)
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// The test files an instance's own `test_patch` touches — the scope to run.
@@ -3854,9 +3924,106 @@ pub async fn gold_gate(instance: &SweInstance) -> SweVerdict {
 /// clears and re-stages, so the checkout is pristine by construction rather than by a reset we
 /// have to remember to call.
 pub async fn ensure_grade_checkout(instance: &SweInstance) -> Result<PathBuf, String> {
-    let dir = swe_cache_dir().join("grades").join(&instance.instance_id);
+    let root = swe_cache_dir().join("grades");
+    let dir = root.join(&instance.instance_id);
+    // Debris from a grade whose process died is swept here, off the async thread: a
+    // Django checkout is ~100k files and removing it is seconds of blocking I/O.
+    let live = live_grade_ids();
+    let _ = tokio::task::spawn_blocking(move || sweep_orphan_grade_checkouts(&root, &live)).await;
     clone_at(instance, &dir).await?;
     Ok(dir)
+}
+
+/// Grades in flight in THIS process, counted per instance (two grades of one instance
+/// share one path — the tree goes only when the last of them finishes).
+static LIVE_GRADES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn live_grade_ids() -> std::collections::HashSet<String> {
+    LIVE_GRADES.lock().expect("live-grade registry poisoned").keys().cloned().collect() // a poisoned registry means a grade panicked holding it; the count is no longer trustworthy
+}
+
+/// A grade's hold on its checkout. The checkout exists for the grade and for nothing
+/// after it: `clone_at` re-stages it from the base commit on every grade, so a tree
+/// kept past its grade is never read again — it only sits on disk.
+///
+/// Measured 2026-09-25 (M5): 914,676 retained files under `benchmarks/swe/grades`,
+/// every one indexed by Spotlight, and fseventsd grown to 14 GB with grading re-writing
+/// thousands of those files per minute. Dropping the hold removes the tree (RAII covers
+/// every return path of `grade`, including cancellation); a process that dies mid-grade
+/// leaves its tree for [`sweep_orphan_grade_checkouts`] at the next grade.
+struct GradeCheckoutHold {
+    instance_id: String,
+    dir: PathBuf,
+}
+
+impl GradeCheckoutHold {
+    fn take(instance_id: &str) -> Self {
+        *LIVE_GRADES
+            .lock()
+            .expect("live-grade registry poisoned") // a poisoned registry means a grade panicked holding it; the count is no longer trustworthy
+            .entry(instance_id.to_string())
+            .or_default() += 1;
+        Self {
+            instance_id: instance_id.to_string(),
+            dir: swe_cache_dir().join("grades").join(instance_id),
+        }
+    }
+}
+
+impl Drop for GradeCheckoutHold {
+    fn drop(&mut self) {
+        let last = {
+            let mut live = LIVE_GRADES.lock().expect("live-grade registry poisoned"); // a poisoned registry means a grade panicked holding it; the count is no longer trustworthy
+            let n = live.get_mut(&self.instance_id).map(|n| {
+                *n -= 1;
+                *n
+            });
+            if n == Some(0) {
+                live.remove(&self.instance_id);
+            }
+            n == Some(0)
+        };
+        if !last {
+            return;
+        }
+        let dir = self.dir.clone();
+        let remove = move || {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    crate::probe!(class = "swe.grade_checkout_release_failed", dir = %dir.display(), error = %e);
+                }
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => drop(h.spawn_blocking(remove)),
+            Err(_) => remove(),
+        }
+    }
+}
+
+/// Remove every grade checkout (and dead `.cloning-*` staging tree) under `root` whose
+/// instance is not in `live`. Any tree here that no live grade holds is debris: the next
+/// grade of that instance re-clones from the base commit regardless.
+fn sweep_orphan_grade_checkouts(root: &Path, live: &std::collections::HashSet<String>) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let id = name.split(".cloning-").next().unwrap_or(&name); // split always yields a first piece; the fallback is unreachable
+        if live.contains(id) {
+            continue;
+        }
+        let path = entry.path();
+        let gone = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        if gone.is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        crate::probe!(class = "swe.grade_checkouts_swept", root = %root.display(), removed = removed);
+    }
+    removed
 }
 
 /// The gate's decision, as a pure function of the pristine FAIL_TO_PASS run.
@@ -3936,6 +4103,7 @@ pub fn pristine_gate(pre: &[(String, bool)]) -> PristineGate {
 }
 
 pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerdict {
+    let _hold = GradeCheckoutHold::take(&instance.instance_id);
     let mut verdict = SweVerdict {
         instance_id: instance.instance_id.clone(),
         ..Default::default()
@@ -4165,6 +4333,35 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
 
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-09-28, Sahar's scikit-learn-25747): an in-flight staging
+    // tree read as a staged checkout because it already carries .git. The predicate must
+    // recognize exactly the name staging_path_for mints, and never a real instance name.
+    #[test]
+    fn the_in_flight_predicate_knows_the_name_the_mint_makes() {
+        let minted = super::staging_path_for(std::path::Path::new("/w/swe/scikit-learn__scikit-learn-25747"));
+        let name = minted.file_name().and_then(|n| n.to_str()).expect("utf-8 name");
+        assert!(super::is_in_flight_staging_name(name), "{name}");
+        assert!(!super::is_in_flight_staging_name("scikit-learn__scikit-learn-25747"));
+        assert!(!super::is_in_flight_staging_name("sympy__sympy-18057"));
+    }
+
+    // what this catches: grade checkouts retained forever (914k files on the M5,
+    // 2026-09-25, fseventsd at 14 GB) — and the opposite failure, a sweep that deletes
+    // the tree or staging clone of a grade still in flight.
+    #[test]
+    fn the_orphan_sweep_removes_dead_grade_trees_and_spares_live_ones() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for d in ["live-1", "live-1.cloning-7-0", "dead-2", "dead-2.cloning-7-1"] {
+            std::fs::create_dir_all(root.path().join(d).join("src")).unwrap();
+        }
+        let live: std::collections::HashSet<String> = ["live-1".to_string()].into();
+        assert_eq!(super::sweep_orphan_grade_checkouts(root.path(), &live), 2);
+        assert!(root.path().join("live-1").exists());
+        assert!(root.path().join("live-1.cloning-7-0").exists());
+        assert!(!root.path().join("dead-2").exists());
+        assert!(!root.path().join("dead-2.cloning-7-1").exists());
+    }
+
     // what this catches: card cffc9c5e — uv's transport failure read as the instance's
     // env verdict. The signature must fire on the exact stderr the outage produced and
     // stay silent on a resolution / build failure, which IS an env fact.
@@ -4181,6 +4378,27 @@ mod tests {
         assert!(!network_failure_signature(""));
         // The head every reader keys on is one substrate sentence, never uv's wording.
         assert!(COULD_NOT_LOOK.starts_with("COULD NOT LOOK"));
+    }
+
+    // what this catches (card 1aac0c72): `uv` missing from the HOST was recorded as the
+    // instance's standing refusal; `refusal_stands_at` lifts a marker only when the
+    // citizen's work changes, so the grade was never re-tried after uv appeared on the
+    // box (sphinx-7889, 5090, 2026-09-21). The reason must carry the COULD_NOT_LOOK head
+    // the sweep defers on, and must never classify as an env fault.
+    #[test]
+    fn a_missing_host_prerequisite_is_a_could_not_look_never_a_standing_refusal() {
+        use super::{host_prereq_is_could_not_look, uv_missing_is_could_not_look, COULD_NOT_LOOK};
+        let uv = uv_missing_is_could_not_look();
+        let freetype = host_prereq_is_could_not_look(
+            "the HOST freetype that matplotlib needs",
+            "install it with `brew install freetype pkg-config`",
+        );
+        for reason in [&uv, &freetype] {
+            assert!(reason.starts_with(COULD_NOT_LOOK), "{reason}");
+            assert!(!crate::cognition::swe_verdict_sweep::refusal_is_env_fault(reason), "{reason}");
+        }
+        assert!(uv.contains("astral.sh/uv"), "still says how to fix it: {uv}");
+        assert!(freetype.contains("brew install freetype"), "still says how to fix it: {freetype}");
     }
 
     // what this catches: the Multilingual harness misread — the marked command not
@@ -4519,6 +4737,19 @@ FAILED testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexErr
             );
             assert_eq!(p.parent(), repo.parent(), "staging must be a sibling of its destination");
         }
+        // A crashed clone with .git may contain real citizen edits. Its nonce
+        // does not authorize deletion, even if another final checkout exists.
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("repo");
+        let interrupted = staging_path_for(&destination);
+        std::fs::create_dir_all(interrupted.join(".git")).unwrap();
+        std::fs::write(interrupted.join("work.txt"), "citizen work").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep.txt"), "final work").unwrap();
+        assert!(refuse_unrecovered_checkouts(&destination).is_err());
+        assert_eq!(std::fs::read_to_string(interrupted.join("work.txt")).unwrap(), "citizen work");
+        assert!(destination.join("keep.txt").exists());
+        assert!(refuse_unrecovered_checkouts(&root.path().join("other")).is_ok());
     }
 
     // what this catches: the serialization half of the same incident. clone_at both

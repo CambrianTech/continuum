@@ -40,6 +40,13 @@
 //! the reason and invites the reversion. They are copied verbatim from
 //! `llama_server.rs`, not paraphrased.
 
+/// The physical micro-batch a lane prefills in (`--ubatch-size`): the unit its `/slots`
+/// prefill counters advance by, so also how long a starved stream must be willing to see no
+/// counter move (`inference::sse_stream`). One number, set once here.
+// derived-or-floor: measured 2026-08-21 on the M5 (llama-bench, production gguf): 2048 nearly doubles prefill over 1024, and 4096 failed to allocate beside a serving lane.
+// context-budget-exempt: the engine's physical prefill micro-batch (--ubatch-size), a compute-pass size, never a context or prompt budget.
+pub(crate) const UBATCH_TOKENS: u32 = 2048;
+
 use std::path::Path;
 
 /// One conversion for anything that can be a CLI argument.
@@ -93,10 +100,35 @@ pub struct LaneInvocation {
     /// Positional CLI arguments, in order.
     pub args: Vec<String>,
     /// Environment variables the child must be spawned with, as `(key, value)`.
-    pub envs: Vec<(String, String)>,
+    pub envs: Vec<(String, std::ffi::OsString)>,
+    /// Managed keys deliberately left inherited because they were present when
+    /// resolved. Values are NOT captured; this is not a hermetic environment.
+    /// Other inherited variables are outside this invocation's provenance.
+    pub inherited_env_keys: Vec<String>,
 }
 
 impl LaneInvocation {
+    /// Preserve an operator's inherited override, otherwise assign the managed
+    /// default. Resolution supplies presence; this pure owner never reads env.
+    pub(crate) fn inherit_or_default_env(
+        &mut self,
+        key: &str,
+        default: &std::ffi::OsStr,
+        inherited: bool,
+    ) {
+        if inherited {
+            self.inherited_env_keys.push(key.to_string());
+        } else {
+            self.envs.push((key.to_string(), default.to_os_string()));
+        }
+    }
+
+    /// Preserve the backend verdict's last-wins CPU constraint in the SAME
+    /// invocation that reaches Command, after the model's original placement.
+    pub(crate) fn constrain_to_cpu(&mut self) {
+        pair(&mut self.args, "--n-gpu-layers", "0");
+    }
+
     /// Value of the flag named `flag`, if present — i.e. the argument that follows
     /// it. Test-facing convenience so assertions read as intent
     /// (`inv.value_of("--parallel")`) rather than as index arithmetic, which is its
@@ -139,6 +171,29 @@ pub const CACHE_RAM_MIB: u32 = 4096;
 /// model in [`host_prompt_cache_mib`]; hardcoding a byte count here would be the
 /// same mistake this function exists to delete.
 pub(crate) const CACHE_RAM_HARD_FLOOR_MIB: u32 = 256;
+
+/// The ONE-CONVERSATION floor in BYTES — the largest single conversation this cache
+/// must be able to hold without thrashing, from this model's own geometry. Below it
+/// every context switch is a guaranteed full re-prefill: the 330x cliff. A
+/// model-specific byte constant here would just be the old mistake wearing a
+/// different name.
+///
+/// Extracted to ONE definition on 2026-09-21 because a second consumer needs the same
+/// answer: the sizing decision below asks it at SPAWN, and the question "is the grant
+/// this engine is still holding big enough?" has to be asked of a RUNNING engine too.
+/// `--cache-ram` is immutable after spawn while the derived target moves every tick, so
+/// an engine can hold a number the substrate stopped believing hours ago — the M5's pid
+/// 33898 held 480 MiB (15,360 tokens at q8_0) against 22,612-41,547-token prompts, which
+/// is well under one conversation, and prefix reuse was 0%. Two places deciding "is this
+/// cache big enough" with two derivations is how that becomes invisible (card ab27b914).
+pub fn one_conversation_bytes(citizen_demand_tokens: &[u32], kv_per_token: u64) -> u64 {
+    citizen_demand_tokens
+        .iter()
+        .copied()
+        .max()
+        .map(|t| kv_per_token.saturating_mul(t as u64))
+        .unwrap_or(0) // unwrap_or: no citizen demand measured = no conversation to hold, not a guessed size
+}
 
 /// Size the host-RAM prompt cache from the WORKLOAD, not from a constant.
 ///
@@ -188,16 +243,7 @@ pub fn host_prompt_cache_mib(
         .iter()
         .map(|t| kv_per_token.saturating_mul(*t as u64))
         .fold(0u64, |a, b| a.saturating_add(b));
-    // The floor is ONE conversation — the largest single one we must not thrash —
-    // derived from this model's own geometry. Below that, every context switch is
-    // a guaranteed full re-prefill: the 330x cliff. A model-specific byte constant
-    // here would just be the old mistake wearing a different name.
-    let floor = citizen_demand_tokens
-        .iter()
-        .copied()
-        .max()
-        .map(|t| kv_per_token.saturating_mul(t as u64))
-        .unwrap_or(0);
+    let floor = one_conversation_bytes(citizen_demand_tokens, kv_per_token);
     let granted = want.max(floor).min(affordable_bytes.max(1));
     let mib = (granted / (1024 * 1024)) as u32;
     mib.max(CACHE_RAM_HARD_FLOOR_MIB)
@@ -311,7 +357,7 @@ pub fn base_invocation(
             // lane, and production always runs beside one. The live receipt to watch
             // stays `inference.prefill.complete`'s ingest_tok_per_s.
             arg("--ubatch-size"),
-            arg("2048"),
+            arg(&UBATCH_TOKENS.to_string()),
             // Overflow must FAIL, never silently amputate. With context shift on
             // (the llama.cpp default), a prompt larger than the slot's window has
             // its MIDDLE evicted and generation proceeds on the mutilated prompt —
@@ -335,6 +381,7 @@ pub fn base_invocation(
             arg("--jinja"),
         ],
         envs: Vec::new(),
+        inherited_env_keys: Vec::new(),
     }
 }
 
@@ -363,8 +410,13 @@ pub const ALL_GPU_LAYERS: &str = "999";
 pub struct LaneOptions<'a> {
     /// KV cache quantization (#232) — `Some("q8_0")` etc. `None` (or `f16` upstream)
     /// leaves llama.cpp's f16 default, byte-identical to passing nothing.
+    /// RESOLVED UPSTREAM by [`crate::cognition::kv_cache_plan`], never re-read here:
+    /// the same struct supplies the serving plan's resident-KV divisor, so the flag and
+    /// the fit math cannot disagree.
     pub kv_cache_type: Option<&'a str>,
-    /// Flash attention (#232), operator opt-in.
+    /// Flash attention (#232). Arrives from the SAME [`crate::cognition::kv_cache_plan`]
+    /// decision as `kv_cache_type`, because quantized KV rides the fused-attention path
+    /// — q8_0 with this off is a misconfiguration, not a half-fix.
     pub flash_attn: bool,
     /// Multimodal projector (#106) — the model actually SEES when present.
     pub mmproj: Option<&'a Path>,
@@ -389,6 +441,13 @@ pub struct LaneOptions<'a> {
     /// Trained genome layers to load into the `/lora-adapters` catalog, in index order;
     /// the per-request `"lora":[{id,scale}]` field pages them in.
     pub loras: &'a [std::path::PathBuf],
+    /// The ONE directory the engine's `POST /train` may write adapters into
+    /// (`--train-dir`, fork c09af02f4): LoRA-only training on the weights this lane
+    /// already serves, in a second context beside the slots, yielding between batches
+    /// while any slot is busy. The route is refused unless the flag is present, and
+    /// every file it writes is a bare `.gguf` name inside this directory. `None` =
+    /// training off on this lane; serving is the same either way.
+    pub train_dir: Option<&'a Path>,
     /// K3 expert paging (#278): `-ot` tensor placement for COLD layers, from the
     /// residency planner. `None` / all-hot → no flag (llama-server rejects an empty one).
     pub expert_ot: Option<&'a str>,
@@ -414,24 +473,31 @@ impl LaneInvocation {
     /// Fold the conditional surface onto a base invocation.
     pub fn with_options(mut self, opts: &LaneOptions<'_>) -> Self {
         let mut push = |s: String| self.args.push(s);
-        // KV CACHE QUANTIZATION (#232, opt-in field-proven technique). f16 KV is the
+        // KV CACHE QUANTIZATION (#232, field-proven technique). f16 KV is llama.cpp's
         // default; q8_0 is ~half the resident KV footprint at near-lossless quality,
-        // freeing memory the elastic window (#234) can spend on a BIGGER context or MORE
-        // warm lanes. OFF by default: not every backend/build ships Metal KV-quant
-        // kernels, so this is an operator opt-in, never a blind assumption
-        // ([[verify-real-device-numbers-not-a-clamp-premise]]). NOTE: to have the plan
-        // actually GROW the window on the freed memory (not just leave it as extra
-        // headroom), the fit math must also scale kv_per_token — that footprint coupling
-        // is the follow-up; this is the safe enablement.
+        // freeing memory the elastic window (#234) spends on a BIGGER context or MORE
+        // warm lanes.
+        //
+        // This was an operator OPT-IN until 2026-09-20 — and an opt-in that only two
+        // people ever opted into meant the 5090 (26,880-token lane, Joel) and the
+        // CPU-serving IntelMac (1 × 32k on ~15 GB usable, Cormac) both PLANNED and
+        // SERVED at half their KV budget for their whole lives, self-consistently and
+        // invisibly. It is now a DECISION the substrate makes from the engine's own
+        // advertised `--cache-type-k` values (backend table as the fallback), with the
+        // env key demoted to an override: [`crate::cognition::kv_cache_plan`]. The
+        // window-GROWTH coupling that comment called a follow-up shipped as
+        // `apply_kv_quantization` — and it now rides the same resolved struct as this
+        // flag, so the two can no longer name different numbers.
         if let Some(kv) = opts.kv_cache_type {
             push("--cache-type-k".into());
             push(kv.to_string());
             push("--cache-type-v".into());
             push(kv.to_string());
         }
-        // FLASH ATTENTION (#232, opt-in). Fused attention is faster on BOTH prefill and
+        // FLASH ATTENTION (#232). Fused attention is faster on BOTH prefill and
         // decode and lowers peak memory — directly attacking prefill-bound turn latency
-        // (#139). OFF by default: Metal/backend support + quality vary by build.
+        // (#139) — AND it is the path llama.cpp's quantized-KV kernels ride, so it is
+        // decided TOGETHER with the cache type above, never independently.
         //
         // MUST carry an explicit VALUE. Upstream changed this from a bare boolean switch
         // to `-fa, --flash-attn [on|off|auto]`. A bare `--flash-attn` now EATS THE NEXT
@@ -533,6 +599,15 @@ impl LaneInvocation {
                 .join(",");
             pair(&mut self.args, "--lora", joined);
         }
+        // IN-ENGINE TRAINING (ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md S3/S4): the
+        // dream trains a LoRA on the resident weights instead of loading a second copy
+        // in a separate trainer process. The fork's /train is OFF without this flag, so
+        // dropping it would leave every dream on the retired PyTorch path with nothing
+        // red; and it is the only place the route may write, so it is always the
+        // governed directory, never a caller's path.
+        if let Some(dir) = opts.train_dir {
+            pair(&mut self.args, "--train-dir", dir);
+        }
         // K3 slice-1 physical expert paging: offload COLD layers' stacked expert tensors
         // to CPU while hot layers stay GPU-resident. Experts are stacked (one
         // blk.N.ffn_*_exps per layer), so `-ot` — which places WHOLE tensors — pages at
@@ -570,8 +645,10 @@ impl LaneInvocation {
             }
         }
         if let Some(ov) = opts.resident_override {
-            self.envs
-                .push(("LLAMA_RESIDENT_OVERRIDE".to_string(), ov.to_string_lossy().into_owned()));
+            self.envs.push((
+                "LLAMA_RESIDENT_OVERRIDE".to_string(),
+                ov.to_string_lossy().into_owned().into(),
+            ));
         }
         self
     }
@@ -587,6 +664,44 @@ mod tests {
     // restore vs 32.9s re-prefill), so undersizing it does not cost a little —
     // it turns every context switch into recomputation. The hallmark is 14
     // personas collaborating; at that bar the constant is catastrophic.
+    // what this catches: the 2026-09-21 M5 shape. A grant can be affordable and still be
+    // structurally useless — below ONE conversation, prefix reuse is not "poor", it is
+    // impossible, because the cache cannot retain a single prefix across a switch. pid
+    // 33898 was spawned at 05:13:22Z with 480 MiB while deliberation prompts measured
+    // 22,612-41,547 tokens at q8_0's 32 KiB/token, and every prefill that hour reported
+    // cached=0. This pins the predicate the relaunch grow-check (card ab27b914) will use,
+    // so the running-engine question and the spawn question can never drift apart.
+    #[test]
+    fn a_grant_below_one_conversation_cannot_hold_a_single_prefix() {
+        let kv = 32 * 1024u64; // q8_0 on the 27B: 32,768 bytes/token, the measured value
+        let mib = |bytes: u64| (bytes / (1024 * 1024)) as u32;
+
+        // The real prompts that hour, largest first — one conversation is the LARGEST,
+        // never the sum: it is the single prefix a switch must not evict.
+        let measured = [22_612u32, 32_594, 37_213, 41_547];
+        let one = super::one_conversation_bytes(&measured, kv);
+        assert_eq!(one, kv * 41_547, "one conversation is the largest, not the total");
+        assert_eq!(mib(one), 1_298, "≈1.3 GiB to hold a single 41.5k-token prefix");
+
+        // The engine held 480 MiB. That is not a small cache, it is a broken one.
+        assert!(480 < mib(one), "480 MiB cannot hold one conversation — reuse is structurally 0");
+
+        // And the sizing function itself refuses to plan below one conversation when the
+        // host can afford it: the floor is the max, even though only one citizen is big.
+        let planned = super::host_prompt_cache_mib(&measured, kv, u64::MAX);
+        assert!(planned >= mib(one), "the plan must hold at least one conversation: {planned}");
+
+        // The trough that produced 480: affordability is a hard ceiling and CAN land under
+        // one conversation. That is exactly when a relaunch must be armed once the ceiling
+        // lifts — the engine cannot grow the grant it was born with.
+        let squeezed = super::host_prompt_cache_mib(&measured, kv, 480 * 1024 * 1024);
+        assert_eq!(squeezed, 480, "the affordability clamp still wins at spawn");
+        assert!(squeezed < mib(one), "and the result is a cache that cannot hold one prefix");
+
+        // Nothing measured = no conversation to hold, never a guessed size.
+        assert_eq!(super::one_conversation_bytes(&[], kv), 0);
+    }
+
     #[test]
     fn the_prompt_cache_is_sized_by_citizens_not_by_slots() {
         let kv = 32 * 1024u64; // ~32 KiB/token, Ornith-class geometry
@@ -753,7 +868,9 @@ mod tests {
     // with its own justification, not a drive-by.
     #[test]
     fn the_base_invocation_needs_no_environment() {
-        assert!(inv(2, 16_384).envs.is_empty());
+        let base = inv(2, 16_384);
+        assert!(base.envs.is_empty());
+        assert!(base.inherited_env_keys.is_empty());
     }
 
     // what this catches: a conditional silently becoming unconditional (or vice versa).
@@ -767,6 +884,23 @@ mod tests {
             assert!(!i.has(f), "{f} must be absent with default options\n{:?}", i.args);
         }
         assert!(i.envs.is_empty(), "no options must mean no environment");
+    }
+
+    // what this catches: in-engine training silently off, or pointed somewhere other
+    // than the governed directory. The fork refuses /train without --train-dir, so a
+    // dropped flag sends every dream back to the retired trainer with nothing red; a
+    // second or wrong value would let the route write outside the tracked dir.
+    #[test]
+    fn train_dir_flag_is_present_only_when_given_and_carries_that_path() {
+        let off = inv(1, 4096).with_options(&LaneOptions::default());
+        assert!(!off.has("--train-dir"), "no train dir must mean no flag\n{:?}", off.args);
+        let dir = PathBuf::from("/home/u/.continuum/cache/engine-train");
+        let on = inv(1, 4096).with_options(&LaneOptions {
+            train_dir: Some(&dir),
+            ..LaneOptions::default()
+        });
+        assert_eq!(on.value_of("--train-dir"), Some(dir.to_string_lossy().as_ref()));
+        assert_eq!(on.args.iter().filter(|a| *a == "--train-dir").count(), 1);
     }
 
     // what this catches: GPU offload left to the backend's default. Metal defaults to
@@ -783,6 +917,16 @@ mod tests {
             ..LaneOptions::default()
         });
         assert_eq!(cpu.value_of("--n-gpu-layers"), Some("0"));
+        // A hung backend probe constrains the already assembled GPU invocation.
+        // Preserve its last-wins ordering in the receipt as well as the command.
+        let original = gpu.args.clone();
+        let mut constrained = gpu;
+        constrained.constrain_to_cpu();
+        assert_eq!(&constrained.args[..original.len()], &original);
+        assert_eq!(
+            &constrained.args[original.len()..],
+            &["--n-gpu-layers", "0"]
+        );
     }
 
     // what this catches: THE 2026-08-20 SPAWN FAILURE, as a test instead of an outage.
@@ -814,9 +958,70 @@ mod tests {
         });
         assert_eq!(
             i.envs,
-            vec![("LLAMA_RESIDENT_OVERRIDE".to_string(), "/models/fit.gguf".to_string())]
+            vec![(
+                "LLAMA_RESIDENT_OVERRIDE".to_string(),
+                std::ffi::OsString::from("/models/fit.gguf")
+            )]
         );
-        assert!(!i.args.iter().any(|a| a.contains("fit.gguf")), "must not leak into args");
+        assert!(
+            !i.args.iter().any(|a| a.contains("fit.gguf")),
+            "must not leak into args"
+        );
+        // Managed MoE defaults share the same environment owner. Inherited
+        // operator settings are named but never overwritten or copied as values.
+        let mut managed = i;
+        let original_args = managed.args.clone();
+        managed.inherit_or_default_env(
+            "GGML_MOE_CAPTURE_FILE",
+            Path::new("/trace/capture").as_os_str(),
+            false,
+        );
+        managed.inherit_or_default_env(
+            "GGML_MOE_PLAN_FILE",
+            Path::new("/trace/unused-plan").as_os_str(),
+            true,
+        );
+        managed.inherit_or_default_env(
+            "GGML_MOE_TRACE_FILE",
+            Path::new("/trace/events").as_os_str(),
+            false,
+        );
+        assert_eq!(managed.args, original_args);
+        assert_eq!(
+            managed.envs.len(),
+            3,
+            "resident override plus two explicit defaults"
+        );
+        assert_eq!(
+            managed.envs[1],
+            (
+                "GGML_MOE_CAPTURE_FILE".to_string(),
+                std::ffi::OsString::from("/trace/capture")
+            )
+        );
+        assert_eq!(
+            managed.envs[2],
+            (
+                "GGML_MOE_TRACE_FILE".to_string(),
+                std::ffi::OsString::from("/trace/events")
+            )
+        );
+        assert_eq!(managed.inherited_env_keys, vec!["GGML_MOE_PLAN_FILE"]);
+        assert!(managed
+            .envs
+            .iter()
+            .all(|(key, _)| key != "GGML_MOE_PLAN_FILE"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let raw = std::ffi::OsString::from_vec(vec![b'/', 0xff]);
+            let mut native = LaneInvocation::default();
+            native.inherit_or_default_env("GGML_MOE_TRACE_FILE", &raw, false);
+            assert_eq!(
+                native.envs[0].1, raw,
+                "native path bytes survive without lossy conversion"
+            );
+        }
     }
 
     // what this catches: KV quant emitting only one half of the pair. K and V are

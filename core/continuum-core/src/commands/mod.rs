@@ -10,6 +10,7 @@
 //! ceremony. Dep-holding commands stay with the module that owns their state and
 //! are exposed through that module's `commands()`.
 
+pub mod access;
 pub mod adapter;
 pub mod agent;
 pub mod ai;
@@ -58,6 +59,7 @@ pub mod live_token;
 pub mod presence_directory;
 pub mod recipe_run;
 pub mod plasticity;
+pub mod ports;
 pub mod rag;
 pub mod resources;
 pub mod runtime;

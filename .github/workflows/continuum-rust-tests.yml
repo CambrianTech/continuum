@@ -17,32 +17,35 @@ jobs:
       rust: ${{ steps.select.outputs.rust }}
       installer: ${{ steps.select.outputs.installer }}
     steps:
+      - uses: actions/checkout@v4
+      - run: node --test tools/scripts/tests/ci-change-scope.test.cjs
       - uses: actions/github-script@v7
         id: select
         with:
           script: |
-            // Keep required jobs reporting on every PR; unknown/mixed changes run everything.
-            let rust = true, installer = true;
-            if (context.eventName === 'pull_request') {
-              try {
-                const files = await github.paginate(github.rest.pulls.listFiles, {
+            const { selectChecks } = require('./tools/scripts/ci-change-scope.cjs');
+            let selection = { rust: true, installer: true };
+            try {
+              let files;
+              if (context.eventName === 'pull_request') {
+                files = await github.paginate(github.rest.pulls.listFiles, {
                   ...context.repo, pull_number: context.issue.number, per_page: 100
                 });
-                // Include rename sources: moving Rust into docs still changes Rust.
-                const paths = files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
-                if (files.length > 0 && files.length < 3000 &&
-                    files.length === context.payload.pull_request.changed_files) {
-                  const docs = p => (p.startsWith('docs/') || p.endsWith('.md')) && !p.startsWith('docs/genome/');
-                  const windows = p => /^(install\.ps1|tools\/scripts\/(lib\/windows-(service|prepared)\.ps1|tests\/windows-service\.test\.ps1|register-core-service\.ps1|run-service-hidden\.ps1))$/.test(p);
-                  rust = paths.some(p => !docs(p) && !windows(p));
-                  installer = rust || paths.some(windows);
-                }
-              } catch (error) {
-                core.warning(`Cannot classify changes; running all checks: ${error.message}`);
+                if (files.length !== context.payload.pull_request.changed_files || files.length >= 3000) files = null;
+              } else if (context.eventName === 'push' && !/^0+$/.test(context.payload.before)) {
+                const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo, basehead: `${context.payload.before}...${context.sha}`
+                });
+                // GitHub caps comparison files at 300. A capped or non-forward
+                // comparison cannot establish the complete affected surface.
+                if (data.status === 'ahead' && data.files?.length < 300) files = data.files;
               }
+              selection = selectChecks(files);
+            } catch (error) {
+              core.warning(`Cannot classify changes; running all checks: ${error.message}`);
             }
-            core.setOutput('rust', String(rust));
-            core.setOutput('installer', String(installer));
+            core.setOutput('rust', String(selection.rust));
+            core.setOutput('installer', String(selection.installer));
 
   cargo-test-continuum-core:
     name: cargo test -p continuum-core --lib
@@ -83,8 +86,19 @@ jobs:
       - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
         if: needs.changes.outputs.rust != 'false'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # A THIRD-PARTY REPO WE NEVER INSTALL FROM MUST NOT FAIL OUR BUILD.
+          # The GitHub runner image ships vendor apt repos (Chrome, Microsoft, …).
+          # `apt-get update` exits 100 if ANY index fails, so on 2026-09-09 a Hash Sum
+          # mismatch on dl.google.com/linux/chrome-stable failed this step — and with it
+          # every Rust run on every branch — for a package list nothing here reads.
+          # Drop the vendor lists first, then update only the archives we install from,
+          # with retries for genuinely transient mirror errors. A real failure to fetch
+          # OUR packages still fails the step, loudly.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
             cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
             libclang-dev clang build-essential \
             libglib2.0-dev libasound2-dev libva-dev
@@ -93,19 +107,22 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: continuum-rust-1.95
+          shared-key: continuum-rust-1.95-workspace-v2
+          cache-workspace-crates: true
           cache-on-failure: true
 
       - name: cargo test -p continuum-core --lib
         if: needs.changes.outputs.rust != 'false'
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
+          bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
+          python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
           # `json` (not `json-render-diagnostics`): the warning ratchet below reads the
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          cargo test -p continuum-core --lib --no-run --message-format=json > lib-artifacts.jsonl
+          cargo test -p continuum-core --lib --profile dev-fast --no-run --message-format=json > lib-artifacts.jsonl
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
@@ -120,6 +137,23 @@ jobs:
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
 
+      # --lib never runs the CLI's handoff admission tests. Use this existing
+      # Linux native job/profile; Windows still type-checks its platform branches
+      # and runs the real PowerShell filesystem/lease suite below.
+      - name: CLI installed-release handoff regressions
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          for test in \
+            tests::prebuilt_reboot_options_are_explicit_and_strict \
+            tests::service_reboot_rejects_stale_action_and_artifact_before_teardown; do
+            cargo test -p continuum-core --bin continuum --profile dev-fast "$test" -- --exact 2>&1 | tee cli-handoff.log
+            if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
+              echo "::error::The exact CLI handoff regression did not execute: $test"
+              exit 1
+            fi
+          done
+
       # These tests share a database schema; run serially and reject zero matches.
       - name: cargo test -p continuum-core --lib (Postgres, --ignored)
         if: needs.changes.outputs.rust != 'false'
@@ -131,19 +165,6 @@ jobs:
           echo "postgres tests passed: ${passed:-0}"
           if [ "${passed:-0}" -lt 1 ]; then
             echo "::error::No Postgres tests ran. The service, the filter or the #[ignore] markers disagree — a green step here would be a lie about an unverified adapter."
-            exit 1
-          fi
-
-      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
-      - name: cargo test -p continuum-core --doc (compile-fail guards)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          set -o pipefail
-          cargo test -p continuum-core --doc BindingIsUnstatable 2>&1 | tee doc-guard.log
-          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
-            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
-            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
-            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
             exit 1
           fi
 
@@ -168,17 +189,109 @@ jobs:
   # Required legacy context mirrors the drift check above; never compile twice.
   ts-rs-binding-drift-detector:
     name: ts-rs binding drift detector
-    needs: cargo-test-continuum-core
+    # AGGREGATE OVER THE SPLIT, so splitting a job cannot weaken a gate.
+    # This job's only purpose has always been to publish a REQUIRED status context for
+    # a check that actually happens inside another job. Moving the doc guard out of
+    # `cargo test --lib` into its own parallel job created a second such case: the new
+    # job's check name is not in the repo's required set, so on its own a red there
+    # would not block a merge — the split would have traded 5.9 min of wall time for a
+    # gate that stopped gating. Rather than ask a human to add a required check (which
+    # is a promise, not a mechanism), the already-required context now fails when
+    # EITHER upstream fails. `!cancelled()` so a genuine failure still reports instead
+    # of being skipped into a green.
+    needs: [cargo-test-continuum-core, cargo-doc-guards]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Mirror the binding-drift verdict from cargo-test-continuum-core
+      - name: Mirror the binding-drift verdict and aggregate the split cargo jobs
         run: |
+          lib='${{ needs.cargo-test-continuum-core.result }}'
+          doc='${{ needs.cargo-doc-guards.result }}'
+          echo "cargo test --lib : $lib"
+          echo "cargo test --doc : $doc"
+          echo ""
           echo "ts-rs binding drift is gated by the 'Verify protocol/typescript/ in sync"
           echo "with Rust source' step inside 'cargo test -p continuum-core --lib'."
-          echo ""
-          echo "That job passed, so the drift check within it passed."
           echo "This job publishes the required status context; it does not re-check."
+          echo ""
+          for name in lib doc; do
+            eval "result=\$$name"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error::the $name cargo job concluded '$result' — failing the"
+                echo "::error::required context so a split job cannot pass unnoticed."
+                exit 1
+                ;;
+            esac
+          done
+
+  cargo-doc-guards:
+    # THE 5.9-MINUTE STEP THAT WAS COSTING EVERY PR ITS CRITICAL PATH.
+    # Measured 2026-09-22 on a full-cache-hit run: `cargo test --lib` 12.4 min and
+    # `cargo test --doc` 5.9 min ran SERIALLY in one job, so the doc guard added its
+    # whole wall time to every run (18.3 of a ~20 min job). As its own job it runs
+    # CONCURRENTLY with the lib build and costs zero additional wall time — the gate is
+    # unchanged, it just stopped queueing behind a build it does not depend on.
+    # Not made conditional on purpose: a compile-fail guard that only runs when someone
+    # remembers to touch the guarded file is the gate that is not a gate, and a red
+    # canary tip is a fleet-wide deploy outage.
+    name: cargo test -p continuum-core --doc (compile-fail guards)
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.rust != 'false'
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+          cargo --version
+
+      - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
+            cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
+            libclang-dev clang build-essential \
+            libglib2.0-dev libasound2-dev libva-dev
+
+      - name: Cache cargo state
+        if: needs.changes.outputs.rust != 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # SAME shared-key as the lib job: this job compiles the same crate with the
+          # same profile, so it reads the warm cache the lib job already populates
+          # rather than paying a cold build for the privilege of being parallel.
+          shared-key: continuum-rust-1.95-workspace-v2
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
+      - name: cargo test -p continuum-core --doc (compile-fail guards)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          # Same profile as the --lib build above, deliberately: a different profile
+          # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
+          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
+          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
+            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
+            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
+            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            exit 1
+          fi
 
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
@@ -200,7 +313,8 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: continuum-rust-windows-1.95
+          shared-key: continuum-rust-windows-1.95-workspace-v2
+          cache-workspace-crates: true
           cache-on-failure: true
       - name: cargo check (lib + test harness, incl. test-fixtures targets)
         if: needs.changes.outputs.rust != 'false'
@@ -222,8 +336,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $helperTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $ownerTest = Join-Path $env:RUNNER_TEMP 'continuum-owned-engine-test.exe'
-          rustc --edition 2021 --test core/continuum-core/src/bin/continuum/owned_engines.rs -o $ownerTest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $ownerTest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # The engine-ownership test used to be compiled here by hand:
+      #   rustc --edition 2021 --test .../bin/continuum/owned_engines.rs
+      # Someone reached for standalone rustc because `cargo test --bin continuum`
+      # links the whole of continuum-core to run it, and on Windows that PDB blows
+      # LNK1140. The hand-rolled invocation covered ONE file of the five.
+      # The crate makes the real thing cheap: all 17 tests, linked against 2,420
+      # lines instead of 624,456.
+      - name: continuum-cli-lifecycle tests (the CLI's platform lifecycle, no core link)
+        if: needs.changes.outputs.rust != 'false'
+        run: cargo test -p continuum-cli-lifecycle

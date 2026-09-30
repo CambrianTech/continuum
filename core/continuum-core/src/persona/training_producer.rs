@@ -439,6 +439,16 @@ pub struct StagedCredit {
     /// Her reply, likewise verbatim.
     pub completion: String,
 
+    /// Every served call of the turn exactly as it happened (card ad107e18), read from
+    /// the prompt capture when the turn staged, because the capture rotates within
+    /// hours and a card can settle days later. `None` when no call could be read back
+    /// (no capture installed, or the read failed, which is probed at stage time), and
+    /// cleared once the destination durably accepts the transfer, so a settled row
+    /// does not keep a second copy of what the trainer already holds.
+    #[entity(json)]
+    #[serde(default)]
+    pub lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>,
+
     /// When this turn was staged (epoch ms). Not a settlement clock — a staged row
     /// whose card never settles is never submitted, and that is correct, not a leak.
     pub staged_at_ms: u64,
@@ -573,11 +583,15 @@ pub fn is_stage_point(acts: usize) -> bool {
 /// An in-flight transaction may finish, but it can only replace this turn's rows.
 pub(crate) struct TurnCreditCapture {
     conn: Connection<InProcessTransport>,
+    persona_id: Uuid,
     persona_name: String,
     prompt: String,
     credit: CapturedCredit,
     snapshot: Option<(Uuid, [u8; 32])>,
     superseded: Vec<Uuid>,
+    /// Calls of this turn already read back from the capture, so each restage
+    /// reads only the calls made since the last one.
+    lived: Vec<crate::genome::fine_tuning::LivedCall>,
 }
 
 impl TurnCreditCapture {
@@ -620,11 +634,13 @@ impl TurnCreditCapture {
                     crate::identity::PeerId::from_uuid(persona_id),
                 )),
             )),
+            persona_id,
             persona_name,
             prompt,
             credit,
             snapshot: None,
             superseded: Vec::new(),
+            lived: Vec::new(),
         }
     }
 
@@ -665,6 +681,14 @@ impl TurnCreditCapture {
                 id
             }
         };
+        let (lived, complete) = read_lived(
+            self.persona_id,
+            &self.persona_name,
+            receipts,
+            std::mem::take(&mut self.lived),
+        )
+        .await;
+        self.lived = lived;
         let result = stage_credit(
             &self.conn,
             &self.persona_name,
@@ -672,6 +696,7 @@ impl TurnCreditCapture {
             receipts.to_vec(),
             self.prompt.clone(),
             completion,
+            complete.then(|| self.lived.clone()),
             submission_id,
             &self.superseded,
         )
@@ -761,7 +786,6 @@ fn snapshot_digest(
 pub fn produce(
     persona_id: Uuid,
     persona_name: String,
-    base_model: String,
     prompt: String,
     completion: String,
     credit: Option<CapturedCredit>,
@@ -770,7 +794,6 @@ pub fn produce(
     produce_with_id(
         persona_id,
         persona_name,
-        base_model,
         prompt,
         completion,
         credit,
@@ -786,18 +809,42 @@ pub fn produce(
 pub fn produce_with_id(
     persona_id: Uuid,
     persona_name: String,
-    base_model: String,
     prompt: String,
     completion: String,
     // The card this turn was rooted at, captured AT SELECTION on her hands.
-    // `Some` routes the turn to STAGING; `None` is ordinary conversation and keeps
-    // the pre-existing immediate-submit behaviour byte-identical.
+    // `Some` routes the turn to STAGING (it submits only if the card settles PASS);
+    // `None` is ordinary conversation and is NOT a training example (card 8e3dd206).
     credit: Option<CapturedCredit>,
     // Every generation this turn dispatched, in order, faults included.
     generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     submission_id: Uuid,
     replaces: Option<Uuid>,
 ) {
+    // AN UNVERIFIED TURN IS NOT A TRAINING EXAMPLE (card 8e3dd206, 2026-09-27).
+    //
+    // This path used to submit every unlinked live turn that cleared a quality floor,
+    // and that floor is a LENGTH score (`0.275 + 0.3 * substance`): nothing in it knows
+    // whether the turn was right. Read on the fleet: the IntelMac's ~10 full buckets were
+    // tool-error echoes, refusals, the same failed `cargo test` output a dozen times, all
+    // at ~0.5 (Cormac); Kimi's 15 "code" examples were her room posts, with the 120-char
+    // stimulus as the whole prompt. Every bucket is an SFT target, so a genome trained on
+    // them learns the failure modes and to write status posts. The Python trainer failing
+    // is the only reason none was ever trained; the in-engine trainer (#4443) will succeed.
+    //
+    // What enters a bucket is a turn credited to a card that settles PASS (the staged
+    // path below), a lesson another citizen deliberately taught, or a curated/teacher
+    // corpus. The whole recorded turn as the example is card ad107e18.
+    let Some(credit) = credit.filter(|c| c.is_card_linked()) else {
+        crate::probe!(
+            class = "training.example.unverified",
+            persona = %persona_name,
+            prompt_chars = prompt.len() as u64,
+            completion_chars = completion.len() as u64,
+            "live turn with no verdict — not a training example (only a graded turn, a taught \
+             lesson or a curated corpus enters a bucket)"
+        );
+        return;
+    };
     let Some(executor) = EXECUTOR.cloned() else {
         // Expected during tests / before boot installs the executor. Named, not
         // silent — but debug, because a turn before install is normal at startup
@@ -811,92 +858,57 @@ pub fn produce_with_id(
 
     tokio::spawn(async move {
         // CARD-LINKED TURNS STAGE. The quality floor and the domain bucket are NOT
-        // decided here for them: `plan` applies the evidence floor and it needs a
-        // verdict, which does not exist until the card settles. Deciding now would
-        // bake in a judgment made without the evidence — the exact conflation this
-        // card exists to remove. Unlinked conversation still takes the immediate
-        // path below, byte-identical.
-        if let Some(credit) = credit.filter(|c| c.is_card_linked()) {
-            // The SAME identity-bearing connection `submit_plan` builds — not a bare
-            // `Connection::new(executor)`, which does not even satisfy `Transport`.
-            // The identity is load-bearing here and not merely for gating: the
-            // `@persona:{name}` handle these writes target resolves AS this persona,
-            // so a connection without her `LocalPersona` would stage her credit
-            // somewhere other than her own store.
-            let conn = Connection::new(InProcessTransport::new(
-                executor,
-                Some(CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(persona_id),
-                )),
-            ));
-            match stage_credit(
-                &conn,
-                &persona_name,
-                &credit,
-                generation_receipts,
-                prompt,
-                completion,
-                submission_id,
-                replaces.as_slice(),
-            )
-            .await
-            {
-                Ok(submission_id) => crate::probe!(
-                    class = "training.credit.staged",
-                    replaced_partial = replaces.is_some(),
-                    persona = %persona_name,
-                    card = %credit.card_id,
-                    submission = %submission_id,
-                    stampable = credit.claim.is_some(),
-                    "card-linked turn staged — it submits only if this card settles PASS"
-                ),
-                // Best-effort like the submit path below: a staging failure must
-                // never touch the turn that already happened. NAMED, not swallowed
-                // — a turn that failed to stage is credit that silently vanished.
-                Err(e) => crate::probe!(
-                    class = "training.credit.stage_failed",
-                    persona = %persona_name,
-                    card = %credit.card_id,
-                    error = %e,
-                    "card-linked turn could NOT be staged — this turn's credit is lost"
-                ),
-            }
-            return;
-        }
-
-        let classifier = CLASSIFIER.get_or_init(DomainClassifier::new);
-        crate::modules::citizen_health::note_credit_staged();
-        // A LIVE turn carries no verdict — nothing has settled yet, so `None` here
-        // is the pre-cc34ac0f path, byte-identical.
-        //
-        // THIS IS THE ONLY NON-TEST CALL SITE, and it always passes `None`. There is
-        // no `produce_stamped` and nothing carries a settled card's verdict into this
-        // module, so the stamped path — including the evidence floor in [`plan`] — is
-        // UNREACHABLE in production today. An earlier version of this comment named
-        // `produce_stamped` as if it existed; it does not. Card 0d51573a owns minting
-        // the link (which turns produced which card, in which role) that a stamped
-        // caller would need before it could truthfully stamp anything.
-        let Some(plan) = plan(classifier, &prompt, &completion, None) else {
-            crate::probe!(
-                class = "training.example.skipped",
-                persona = %persona_name,
-                prompt_chars = prompt.len() as u64,
-                completion_chars = completion.len() as u64,
-                "live turn below the training-quality floor — not buffered"
-            );
-            return;
-        };
-        // One submit path, N experience sources — the live turn is the "live-turn"
-        // provenance into the shared flywheel entry.
-        submit_plan(
-            persona_id,
-            persona_name,
-            base_model,
+        // decided here: `plan` applies the evidence floor and it needs a verdict, which
+        // does not exist until the card settles. Deciding now would bake in a judgment
+        // made without the evidence.
+        // The SAME identity-bearing connection `submit_plan` builds — not a bare
+        // `Connection::new(executor)`, which does not even satisfy `Transport`.
+        // The identity is load-bearing here and not merely for gating: the
+        // `@persona:{name}` handle these writes target resolves AS this persona,
+        // so a connection without her `LocalPersona` would stage her credit
+        // somewhere other than her own store.
+        let conn = Connection::new(InProcessTransport::new(
             executor,
-            plan,
-            "live-turn",
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona_id),
+            )),
+        ));
+        let (lived, complete) =
+            read_lived(persona_id, &persona_name, &generation_receipts, Vec::new()).await;
+        let lived = complete.then_some(lived);
+        match stage_credit(
+            &conn,
+            &persona_name,
+            &credit,
+            generation_receipts,
+            prompt,
+            completion,
+            lived,
+            submission_id,
+            replaces.as_slice(),
         )
-        .await;
+        .await
+        {
+            Ok(submission_id) => crate::probe!(
+                class = "training.credit.staged",
+                replaced_partial = replaces.is_some(),
+                persona = %persona_name,
+                card = %credit.card_id,
+                submission = %submission_id,
+                stampable = credit.claim.is_some(),
+                "card-linked turn staged — it submits only if this card settles PASS"
+            ),
+            // Best-effort: a staging failure must
+            // never touch the turn that already happened. NAMED, not swallowed
+            // — a turn that failed to stage is credit that silently vanished.
+            Err(e) => crate::probe!(
+                class = "training.credit.stage_failed",
+                persona = %persona_name,
+                card = %credit.card_id,
+                error = %e,
+                "card-linked turn could NOT be staged — this turn's credit is lost"
+            ),
+        }
     });
 }
 
@@ -926,6 +938,44 @@ pub fn plan_received(classifier: &DomainClassifier, topic: &str, lesson: &str) -
         // she did not produce — the confabulation this card exists to end.
         stamp: None,
     }
+}
+
+/// Destination replay key for one persisted lesson, recipient and training base.
+/// Nested namespaces avoid delimiter collisions. Content is deliberately excluded:
+/// changing an already accepted record must raise SubmissionConflict, not mint credit.
+/// The version binds producer semantics too: changed names, classifier output, quality
+/// or eval policy conflict under v1. A deliberate migration must define its own replay
+/// policy before changing this revision; a deploy must not silently retrain old lessons.
+pub(crate) fn received_submission_id(persona: Uuid, base_model: &str, record_id: &str) -> Uuid {
+    let version = Uuid::new_v5(&Uuid::NAMESPACE_URL, b"continuum:received-lesson:v1");
+    let recipient = Uuid::new_v5(&version, persona.as_bytes());
+    let base = Uuid::new_v5(&recipient, base_model.as_bytes());
+    Uuid::new_v5(&base, record_id.as_bytes())
+}
+
+/// Preserve durable source identity through the existing received-lesson producer.
+/// Received provenance is not a work verdict or a staged-credit binding.
+pub(crate) fn received_submission_params(
+    persona: Uuid,
+    persona_name: &str,
+    base_model: &str,
+    classifier: &DomainClassifier,
+    record: &crate::memory::MemoryRecord,
+) -> serde_json::Value {
+    let episode = crate::cognition::experience::ExperienceRecord::from_shared_lesson(record);
+    let plan = plan_received(classifier, &episode.task.prompt, &episode.answer);
+    let mut params =
+        build_submit_params(persona, persona_name, base_model, &plan, "received-lesson");
+    params["submissionId"] = json!(received_submission_id(persona, base_model, &record.id));
+    let metadata = &mut params["examples"][0]["metadata"];
+    metadata["memoryRecordId"] = json!(record.id);
+    metadata["memoryTimestamp"] = json!(record.timestamp);
+    for field in ["shared_by", "original_author", "scope", "session"] {
+        if let Some(value) = record.context.get(field) {
+            metadata[field] = value.clone();
+        }
+    }
+    params
 }
 
 /// THE GATE BECOMES A LESSON (card 657e74de; Joel: "ideally they learn too"). Every
@@ -1043,11 +1093,26 @@ pub fn produce_received(
 /// dispatching received lessons on demand) produces byte-identical params to the
 /// fire-and-forget producers. `source: raw` = unfiltered capture; minExamples omitted →
 /// DEFAULT_MIN_EXAMPLES (the trigger auto-fires job-create at the threshold). `evalSet`
-/// rides the {trait → gym} edge: the committed gym that MEASURES `plan.trait_kind`. When
-/// the trait HAS a gym it is declared so the L3 sentinel can A/B and adopt the gene; when
-/// it has NONE the field is OMITTED and the sentinel REFUSES to adopt as unmeasurable
-/// ([[fallbacks-are-illegal-fail-loud]]) — never paged into a live persona on a gym that
-/// doesn't measure its trait. `provenance` is metadata only (live-turn vs received-lesson).
+/// rides the {trait → gym} edge: the committed gym for `plan.trait_kind` when there is one
+/// (omitted when there is none), kept for a manual spot-check. Adoption does not read it:
+/// the sentinel opens an in-room gene trial either way. `provenance` is metadata only
+/// (live-turn vs received-lesson).
+/// The audit metadata every example of a plan carries: source, quality, the bare
+/// domain, and the card stamp when there is one.
+fn example_metadata(plan: &SubmitPlan, provenance: &str) -> serde_json::Value {
+    let mut metadata = json!({
+        "source": provenance,
+        "quality": plan.quality,
+        "domain": plan.trait_kind,
+    });
+    if let (Some(stamp), serde_json::Value::Object(map)) = (plan.stamp, &mut metadata) {
+        map.insert("cardId".into(), json!(stamp.card_id));
+        map.insert("role".into(), json!(stamp.role.as_str()));
+        map.insert("outcome".into(), json!(stamp.outcome));
+    }
+    metadata
+}
+
 pub fn build_submit_params(
     persona_id: Uuid,
     persona_name: &str,
@@ -1059,20 +1124,11 @@ pub fn build_submit_params(
     // the domain is what the example is ABOUT, the key is where it is filed. Losing
     // the bare domain here would make a stamped example unqueryable alongside its
     // unstamped siblings.
-    let mut metadata = json!({
-        "source": provenance,
-        "quality": plan.quality,
-        "domain": plan.trait_kind,
-    });
-    if let (Some(stamp), serde_json::Value::Object(map)) = (plan.stamp, &mut metadata) {
-        map.insert("cardId".into(), json!(stamp.card_id));
-        map.insert("role".into(), json!(stamp.role.as_str()));
-        map.insert("outcome".into(), json!(stamp.outcome));
-    }
     let example = TrainingExample {
         prompt: plan.prompt.clone(),
         completion: plan.completion.clone(),
-        metadata: Some(metadata),
+        metadata: Some(example_metadata(plan, provenance)),
+        lived: None,
     };
     let bucket = plan.bucket_key();
     let mut params = json!({
@@ -1221,6 +1277,7 @@ async fn stage_credit<T: Transport>(
     generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
     prompt: String,
     completion: String,
+    lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>,
     submission_id: Uuid,
     replaces: &[Uuid],
 ) -> Result<Uuid, ClientError> {
@@ -1240,9 +1297,9 @@ async fn stage_credit<T: Transport>(
                 // SAME JSON object as its own `handle: Option<HandleRef>`, so a
                 // top-level "handle" is claimed by the ENVELOPE and never reaches the
                 // params' `handle: Option<String>` — the request fails to deserialize
-                // with `invalid type: string, expected struct HandleRef`. The params
-                // declare `#[serde(alias = "dbPath")]` precisely as the escape hatch
-                // from that collision. One word, two meanings, one object.
+                // with `invalid type: string, expected struct HandleRef`. `dbPath` is the
+                // params' WIRE name for it (card ea28d2f6 made that the rename, not an
+                // alias, and the envelope's schema guard refuses the bare name).
                 json!({ "collection": collection, "dbPath": handle }),
             )
             .await?;
@@ -1262,6 +1319,7 @@ async fn stage_credit<T: Transport>(
         served,
         prompt,
         completion,
+        lived,
         // Same clock the rest of this file already uses. `now_unix_ms` exists as a
         // PRIVATE helper in three other modules and none is importable — copying it
         // a fourth time would be the duplication the compression principle forbids.
@@ -1315,6 +1373,107 @@ async fn stage_credit<T: Transport>(
         .await?;
     storage_ok(&result, "data/batch", StagedCredit::COLLECTION)?;
     Ok(submission_id)
+}
+
+/// Read every served call of a turn back from her prompt capture (card ad107e18).
+///
+/// Each receipt that carries a capture cursor and was SERVED is decoded; a faulted
+/// call is not something she did. `known` holds calls this turn already read, so a
+/// restage every four acts reads only the new ones. Returns every call read (the
+/// caller keeps them as its cache) and whether the set is COMPLETE. An incomplete
+/// set is never staged: a turn with a hole in it would train as if the hole were
+/// not there. Named either way, never silent.
+async fn read_lived(
+    persona_id: Uuid,
+    persona_name: &str,
+    receipts: &[crate::cognition::provenance::GenerationReceipt],
+    known: Vec<crate::genome::fine_tuning::LivedCall>,
+) -> (Vec<crate::genome::fine_tuning::LivedCall>, bool) {
+    use crate::cognition::provenance::GenerationOutcome;
+    let served: Vec<Option<String>> = receipts
+        .iter()
+        .filter(|r| matches!(r.outcome, GenerationOutcome::Served { .. }))
+        .map(|r| r.capture.clone())
+        .collect();
+    let read = tokio::task::spawn_blocking(move || {
+        let dir = crate::persona::recorder::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR);
+        read_lived_calls(dir.as_deref(), persona_id, served, known)
+    })
+    .await;
+    let (calls, missing) = match read {
+        Ok(read) => read,
+        Err(e) => (Vec::new(), Some(format!("capture read task: {e}"))),
+    };
+    match (&missing, calls.is_empty()) {
+        (None, false) => {
+            crate::probe!(
+                class = "training.credit.lived_read",
+                persona = %persona_name,
+                calls = calls.len() as u64,
+                "the staged turn holds every served call as she lived it"
+            );
+            (calls, true)
+        }
+        _ => {
+            let reason = missing.unwrap_or_else(|| "the turn has no served call".into());
+            crate::probe!(
+                class = "training.credit.lived_unavailable",
+                persona = %persona_name,
+                reason = %reason,
+                read = calls.len() as u64,
+                "the staged turn holds no lived record; only its flat prompt and completion"
+            );
+            (calls, false)
+        }
+    }
+}
+
+/// The blocking read behind [`read_lived`]: every served call's cursor in dispatch
+/// order (`None` for a served call no capture recorded), decoded from `dir`. Returns
+/// the calls read and the first reason the set is incomplete, if any.
+fn read_lived_calls(
+    dir: Option<&std::path::Path>,
+    persona_id: Uuid,
+    served: Vec<Option<String>>,
+    known: Vec<crate::genome::fine_tuning::LivedCall>,
+) -> (Vec<crate::genome::fine_tuning::LivedCall>, Option<String>) {
+    let mut known: std::collections::HashMap<String, crate::genome::fine_tuning::LivedCall> =
+        known.into_iter().map(|c| (c.capture.clone(), c)).collect();
+    let mut calls = Vec::with_capacity(served.len());
+    let mut missing: Option<String> = None;
+    for cursor in served {
+        let Some(cursor) = cursor else {
+            missing.get_or_insert_with(|| "a served call carries no capture cursor".into());
+            continue;
+        };
+        if let Some(call) = known.remove(&cursor) {
+            calls.push(call);
+            continue;
+        }
+        let Some(dir) = dir else {
+            missing.get_or_insert_with(|| "capture directory unavailable".into());
+            continue;
+        };
+        let decoded = crate::cognition::prompt_capture::detail(dir, persona_id, &cursor)
+            .map_err(|e| e.to_string())
+            .and_then(crate::cognition::prompt_capture::decode)
+            .and_then(|call| {
+                call.response
+                    .map(|response| (call.request, response))
+                    .ok_or_else(|| "no terminal response".to_string())
+            });
+        match decoded {
+            Ok((request, response)) => calls.push(crate::genome::fine_tuning::LivedCall {
+                capture: cursor,
+                request,
+                response,
+            }),
+            Err(e) => {
+                missing.get_or_insert_with(|| format!("capture {cursor}: {e}"));
+            }
+        }
+    }
+    (calls, missing)
 }
 
 /// Summarize a homogeneous served lane using a real representative request. Mixed
@@ -1379,6 +1538,7 @@ fn storage_ok(
     // did not happen.
     Err(ClientError::Refused {
         command: command.to_string(),
+        outcome: None,
         reason: format!(
             "`{collection}`: {}",
             decoded
@@ -1486,8 +1646,28 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
         if rows.is_empty() {
             continue;
         }
+        // The room judged this card, so her open gene trials hear it: the card is credited
+        // to the genome that worked it, named by its receipts (genome/gene_trial.rs).
+        let turns: Vec<crate::genome::gene_trial::CardTurn> = rows
+            .iter()
+            .map(|r| crate::genome::gene_trial::CardTurn::from_receipts(r.staged_at_ms, &r.receipts))
+            .collect();
+        crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
         let mut submitted = 0usize;
-        for row in &rows {
+        let mut rows = rows;
+        rows.sort_by_key(|r| r.staged_at_ms);
+        for (row, dropped) in across_turns(&rows) {
+            if let Some(reason) = dropped {
+                crate::probe!(
+                    class = "training.credit.loop_dropped",
+                    persona = %persona_name,
+                    card = %card_id,
+                    submission = %row.id,
+                    reason,
+                    "a staged turn that repeats an earlier turn's actions on this card, or took none, is not a training example"
+                );
+                continue;
+            }
             match settle_staged_row(&conn, persona_id, &persona_name, row, passed).await {
                 Ok(true) => submitted += 1,
                 Ok(false) => {}
@@ -1515,7 +1695,7 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             passed,
             staged = rows.len() as u64,
             submitted = submitted as u64,
-            "card verdict checked staged revisions; only acknowledged transfers were removed"
+            "card verdict checked staged revisions; acknowledged transfers retain inspectable evidence"
         );
         crate::modules::citizen_health::note_credit_settled();
     }
@@ -1552,15 +1732,29 @@ fn staged_submission_params(
     persona_name: &str,
     row: &StagedCredit,
     passed: bool,
-) -> Option<serde_json::Value> {
+) -> Result<serde_json::Value, &'static str> {
+    // Every arm NAMES itself. This used to be one `Option`, and returning `None`
+    // was the ONLY exit on the settle path that left no trace anywhere — every
+    // other one emits a probe. A row could be skipped forever and the ledger would
+    // show a staged credit that simply never moved, with nothing to read (card
+    // f1771c83: 728 staged rows, 0 completed transfers).
     let eligible_role = match (passed, row.claim_id, row.owner, row.role) {
         (true, Some(_), Some(owner), Some(role)) if owner == persona_id => role,
-        _ => return None,
+        (false, ..) => {
+            return Err("card verdict was FAIL — staged credit is discarded, not submitted")
+        }
+        (_, None, ..) => return Err("row carries no claim_id"),
+        (_, _, None, _) => return Err("row carries no owner"),
+        (_, _, Some(owner), _) if owner != persona_id => {
+            return Err("row's owner is a different persona")
+        }
+        _ => return Err("row carries no role"),
     };
     // The full receipts are authoritative, including records written before the
     // scalar served summary existed. Never borrow another row's model.
     let served = served_provenance(&row.receipts)
-        .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())?;
+        .filter(|served| !served.model.trim().is_empty() && !served.provider.trim().is_empty())
+        .ok_or("no served provenance (model+provider) in this row's receipts")?;
     let stamp = OutcomeStamp {
         card_id: row.card_id,
         role: eligible_role,
@@ -1571,7 +1765,8 @@ fn staged_submission_params(
         &row.prompt,
         &row.completion,
         Some(stamp),
-    )?;
+    )
+    .ok_or("no training plan could be built from this turn's prompt/completion")?;
     let mut params = build_submit_params(
         persona_id,
         persona_name,
@@ -1579,8 +1774,106 @@ fn staged_submission_params(
         &plan,
         "card-credit",
     );
+    if let Some(calls) = row.lived.as_deref().filter(|calls| !calls.is_empty()) {
+        let examples = lived_examples(&plan, calls);
+        params["examples"] = serde_json::to_value(&examples).map_err(|_| "lived examples could not be serialized")?; // training-trigger submit boundary: the params ARE the command's wire payload
+    }
     params["submissionId"] = json!(row.id);
-    Some(params)
+    Ok(params)
+}
+
+/// One example per call she lived (card ad107e18). Each carries its call whole, so a
+/// trainer that renders it trains on the exact request she was served and the exact
+/// response she gave, reasoning and tool calls included. The flat `prompt` is the
+/// call's last message and `completion` her text, for trainers that take text only.
+/// Every example keeps the plan's metadata (card, role, outcome, domain).
+fn lived_examples(
+    plan: &SubmitPlan,
+    calls: &[crate::genome::fine_tuning::LivedCall],
+) -> Vec<TrainingExample> {
+    let metadata = example_metadata(plan, "card-credit");
+    let kept = not_a_loop(calls);
+    if kept.len() < calls.len() {
+        crate::probe!(
+            class = "training.example.loop_dropped",
+            card = %plan.stamp.map(|s| s.card_id).unwrap_or_default(), // unwrap_or_default: an unstamped plan has no card to name
+            calls = calls.len() as u64,
+            kept = kept.len() as u64,
+            "calls that repeated the previous action unchanged are not training examples"
+        );
+    }
+    kept
+        .into_iter()
+        .map(|call| TrainingExample {
+            prompt: call
+                .request
+                .messages
+                .last()
+                .map(|m| m.content_text())
+                .unwrap_or_default(),
+            completion: call.response.text.clone(),
+            metadata: Some(metadata.clone()),
+            lived: Some(call.clone()),
+        })
+        .collect()
+}
+
+/// The calls of a turn that are not a LOOP (Kimi's rule, card ad107e18: "61 act batches
+/// under one thought, no progress" is a thing she must not learn). A call whose action
+/// repeats the previous call's unchanged (the same tool calls with the same arguments,
+/// or the same text when it made no call) changed nothing; the first of a run is the
+/// action and stays, the repeats go. Order is kept.
+fn not_a_loop(calls: &[crate::genome::fine_tuning::LivedCall]) -> Vec<&crate::genome::fine_tuning::LivedCall> {
+    fn action(call: &crate::genome::fine_tuning::LivedCall) -> (Vec<(&str, String)>, &str) {
+        let tools: Vec<(&str, String)> = call
+            .response
+            .tool_calls
+            .iter()
+            .flatten()
+            .map(|t| (t.name.as_str(), t.input.to_string()))
+            .collect();
+        let text = if tools.is_empty() { call.response.text.trim() } else { "" };
+        (tools, text)
+    }
+    let mut kept = Vec::with_capacity(calls.len());
+    let mut previous = None;
+    for call in calls {
+        let this = action(call);
+        if previous.as_ref() != Some(&this) {
+            kept.push(call);
+        }
+        previous = Some(this);
+    }
+    kept
+}
+
+/// A card's staged turns, in staging order, each with the reason it is NOT an example
+/// (Kimi's loop rule across turns, card ad107e18). Her real loops were 58 and 84
+/// CONSECUTIVE work turns on one card, each repeating the last with zero acts. A turn
+/// whose actions repeat the turn right before it is the loop, and only the first of the
+/// run stays. Every turn that called no tool counts as the SAME action, so a run of
+/// no-action turns collapses whatever their wording, while a single spoken turn (a
+/// deliverable written as speech) stays, and so does a re-read after an edit (the
+/// verify step): only CONSECUTIVE repeats are the loop (Cormac on #4452). A turn with no
+/// lived record cannot be judged; it settles as before and breaks the run.
+fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<&'static str>)> {
+    let mut previous: Option<Vec<(String, String)>> = None;
+    rows.iter()
+        .map(|row| {
+            let Some(calls) = row.lived.as_deref() else {
+                previous = None;
+                return (row, None);
+            };
+            let actions: Vec<(String, String)> = not_a_loop(calls)
+                .into_iter()
+                .flat_map(|c| c.response.tool_calls.iter().flatten())
+                .map(|t| (t.name.clone(), t.input.to_string()))
+                .collect();
+            let repeat = previous.as_ref() == Some(&actions);
+            previous = Some(actions);
+            (row, repeat.then_some("repeats_the_previous_turn"))
+        })
+        .collect()
 }
 
 async fn settle_staged_row<T: Transport>(
@@ -1590,8 +1883,22 @@ async fn settle_staged_row<T: Transport>(
     row: &StagedCredit,
     passed: bool,
 ) -> Result<bool, ClientError> {
-    let Some(params) = staged_submission_params(persona_id, persona_name, row, passed) else {
-        return Ok(false);
+    let params = match staged_submission_params(persona_id, persona_name, row, passed) {
+        Ok(params) => params,
+        Err(reason) => {
+            // SAY IT. A staged credit that can never settle is a citizen's work
+            // that will never reach her curriculum, and the old silent `None`
+            // meant the only evidence was a row that sat still.
+            crate::probe!(
+                class = "training.credit.settle_ineligible",
+                persona = %persona_name,
+                card = %row.card_id,
+                revision = %row.id,
+                reason,
+                "a staged revision cannot be submitted for settlement — named so a stalled credit is readable instead of invisible"
+            );
+            return Ok(false);
+        }
     };
     match reviewed::reserve_transfer(conn, persona_name, row, None).await {
         Ok(()) => {}
@@ -1607,6 +1914,10 @@ async fn settle_staged_row<T: Transport>(
             );
             return Ok(false);
         }
+    }
+    if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
+        clear_lived(conn, persona_name, row).await;
+        return Ok(false);
     }
     let receipt = submit_training(conn, params).await?;
     if receipt
@@ -1624,21 +1935,55 @@ async fn settle_staged_row<T: Transport>(
         );
         return Ok(false);
     }
-    let deleted = conn.commands().execute_value(
-        "data/delete",
-        json!({ "collection": StagedCredit::COLLECTION, "id": row.id, "dbPath": format!("@persona:{persona_name}") }),
-    ).await?;
-    storage_ok(&deleted, "data/delete", StagedCredit::COLLECTION)?;
+    let replayed = receipt
+        .acceptance
+        .as_ref()
+        .is_some_and(|accepted| accepted.replayed);
+    let dispatch_success = receipt.success;
+    reviewed::accept_transfer(conn, persona_name, row.id, receipt).await?;
+    clear_lived(conn, persona_name, row).await;
     crate::probe!(
         class = "training.credit.transferred",
         persona = %persona_name,
         card = %row.card_id,
         submission = %row.id,
-        replayed = receipt.acceptance.as_ref().is_some_and(|accepted| accepted.replayed),
-        dispatch_success = receipt.success,
+        replayed,
+        dispatch_success,
         "destination durably accepted this staged revision; training is a separate outcome"
     );
     Ok(true)
+}
+
+/// Once the destination holds a row's lived calls as examples, the row keeps its
+/// receipts (the provenance) and drops the second copy, so settled rows stay small.
+/// A failed clear is named; the next settle pass meets the accepted transfer and
+/// clears again.
+async fn clear_lived<T: Transport>(conn: &Connection<T>, persona_name: &str, row: &StagedCredit) {
+    if row.lived.is_none() {
+        return;
+    }
+    let cleared = conn
+        .commands()
+        .execute_value(
+            "data/update",
+            json!({
+                "collection": StagedCredit::COLLECTION,
+                "id": row.id,
+                "data": { "lived": serde_json::Value::Null },
+                "dbPath": format!("@persona:{persona_name}"),
+            }),
+        )
+        .await
+        .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
+    if let Err(error) = cleared {
+        crate::probe!(
+            class = "training.credit.lived_retained",
+            persona = %persona_name,
+            submission = %row.id,
+            error = %error,
+            "transferred row still holds its lived calls; the next settle pass clears them"
+        );
+    }
 }
 
 /// Every card an INSTANCE names (a round's cards for it) settles when its verdict
@@ -1666,6 +2011,88 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 pub(crate) mod tests {
     use super::*;
 
+    /// Card f1771c83: the settle path's ONLY untraced exit.
+    ///
+    /// `staged_submission_params` returning `None` skipped a staged revision with no
+    /// probe anywhere — every other exit on that path names itself. A citizen's
+    /// credit could sit unsettled forever and the only evidence was a row that never
+    /// moved. These pin that each refusal now NAMES its reason.
+    mod a_skipped_credit_names_its_reason {
+        use super::*;
+
+        fn row(claim: Option<Uuid>, owner: Option<Uuid>, role: Option<CreditRole>) -> StagedCredit {
+            StagedCredit {
+                id: Uuid::new_v4(),
+                card_id: Uuid::new_v4(),
+                claim_id: claim,
+                owner,
+                role,
+                receipts: Vec::new(),
+                served: None,
+                prompt: "p".into(),
+                completion: "c".into(),
+                lived: None,
+                staged_at_ms: 1,
+            }
+        }
+
+        /// what this catches: the reasons collapsing back into one silent `None`.
+        /// Each arm must be distinguishable, because "this card failed" and "this
+        /// row has no provenance" are a normal discard and a defect respectively,
+        /// and a reader who cannot tell them apart learns nothing.
+        #[test]
+        fn each_refusal_is_distinguishable_from_the_others() {
+            let me = Uuid::new_v4();
+            let claim = Some(Uuid::new_v4());
+
+            let fail = staged_submission_params(
+                me,
+                "Kimi",
+                &row(claim, Some(me), Some(CreditRole::Owner)),
+                false,
+            )
+            .expect_err("a FAIL verdict submits nothing"); // JUSTIFIED: the test asserts the Err arm
+            assert!(fail.contains("FAIL"), "{fail}");
+
+            let no_claim = staged_submission_params(
+                me,
+                "Kimi",
+                &row(None, Some(me), Some(CreditRole::Owner)),
+                true,
+            )
+            .expect_err("no claim"); // JUSTIFIED: asserting the Err arm
+            assert!(no_claim.contains("claim_id"), "{no_claim}");
+
+            let foreign = staged_submission_params(
+                me,
+                "Kimi",
+                &row(claim, Some(Uuid::new_v4()), Some(CreditRole::Owner)),
+                true,
+            )
+            .expect_err("another persona's row"); // JUSTIFIED: asserting the Err arm
+            assert!(foreign.contains("owner"), "{foreign}");
+
+            // Distinct reasons, not one catch-all string.
+            assert_ne!(fail, no_claim);
+            assert_ne!(no_claim, foreign);
+        }
+
+        /// what this catches: the provenance gate going quiet again. A row with no
+        /// served model/provider in its receipts is the case that CANNOT be fixed by
+        /// retrying, so it is the one most worth naming out loud.
+        #[test]
+        fn a_row_with_no_served_provenance_says_so() {
+            let me = Uuid::new_v4();
+            let r = row(Some(Uuid::new_v4()), Some(me), Some(CreditRole::Owner));
+            let why = staged_submission_params(me, "Kimi", &r, true)
+                .expect_err("empty receipts carry no provenance"); // JUSTIFIED: asserting the Err arm
+            assert!(
+                why.contains("provenance"),
+                "the unfixable case must name itself: {why}"
+            );
+        }
+    }
+
     // what this catches (card 657e74de): the speech-discipline plan is exactly {burst →
     // PASS} in its OWN bucket at the curated floor — never the chat domain, never a
     // stamp, never a completion other than the silence token the parser reads.
@@ -1687,7 +2114,11 @@ pub(crate) mod tests {
         assert!(plan.stamp.is_none());
         // and the token is the one the Speak seam decides silence on
         assert_eq!(
-            crate::cognition::deliberation_parse::decision_from_response(SILENCE_COMPLETION, None, &[]),
+            crate::cognition::deliberation_parse::decision_from_response(
+                SILENCE_COMPLETION,
+                None,
+                &[]
+            ),
             crate::cognition::workspace::Decision::pass()
         );
         // the bucket is measurable: its gym exists, so the sentinel can adopt or refuse
@@ -1777,6 +2208,7 @@ pub(crate) mod tests {
                 lane_id: None,
                 state: airc_work::CardState::Claimed,
                 owner,
+                claim_provenance: None,
                 claim_id: claim,
                 claim_expires_at_ms: None,
                 last_heartbeat_at_ms: None,
@@ -2271,11 +2703,15 @@ pub(crate) mod tests {
     use crate::test_env::HomeGuard;
 
     /// A real `DataModule` over a real SQLite adapter, reached through the SAME
-    /// dispatch path production uses — `stage_credit` gets no special seam.
+    /// dispatch and authorization path production uses — a local persona must
+    /// not pass here merely because the fixture omitted the grid trust policy.
     fn data_runtime() -> Arc<CommandExecutor> {
         let registry = Arc::new(crate::runtime::ModuleRegistry::new());
         registry.register(Arc::new(crate::modules::data::DataModule::new()));
-        let executor = Arc::new(CommandExecutor::new(registry.clone()));
+        let executor = Arc::new(
+            CommandExecutor::new(registry.clone())
+                .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
+        );
         registry.install_executor_on_all(executor.clone());
         executor
     }
@@ -2317,6 +2753,8 @@ pub(crate) mod tests {
                 provider: "provider-a".into(),
                 provider_request_id: Some("provider-request-a".into()),
             },
+            capture: None,
+            genes: Vec::new(),
         });
         receipts.push(receipt("failed-after-serving"));
         let homogeneous = served_provenance(&receipts).unwrap();
@@ -2329,6 +2767,8 @@ pub(crate) mod tests {
                 provider: "provider-a".into(),
                 provider_request_id: None,
             },
+            capture: None,
+            genes: Vec::new(),
         });
         assert!(served_provenance(&receipts).is_none());
         let last = receipts.last_mut().unwrap();
@@ -2381,6 +2821,7 @@ pub(crate) mod tests {
             vec![receipt("req-a"), receipt("req-b")],
             "prompt".to_string(),
             "completion".to_string(),
+            None,
             Uuid::new_v4(),
             &[],
         )
@@ -2397,6 +2838,7 @@ pub(crate) mod tests {
             vec![receipt("req-dup"), receipt("req-dup")],
             "prompt".to_string(),
             "completion".to_string(),
+            None,
             Uuid::new_v4(),
             &[],
         )
@@ -2556,6 +2998,210 @@ pub(crate) mod tests {
             .collect()
     }
 
+    // what this catches: Kimi's real loops (58 and 84 consecutive work turns on one card,
+    // each repeating the last, zero acts) settling as 58 lessons; and the rule reaching
+    // past the loop (Cormac on #4452): a single spoken turn and a verify re-read after an
+    // edit are kept, because only a CONSECUTIVE repeat is the loop.
+    #[test]
+    fn a_loop_across_turns_on_one_card_settles_once() {
+        use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
+        let call = |tool: Option<(&str, serde_json::Value)>| crate::genome::fine_tuning::LivedCall {
+            capture: uuid::Uuid::new_v4().to_string(),
+            request: TextGenerationRequest::default(),
+            response: TextGenerationResponse {
+                text: "thinking it over".into(),
+                finish_reason: crate::ai::FinishReason::Stop,
+                model: "m".into(),
+                provider: "p".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: "r".into(),
+                content: None,
+                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.into(), input }]),
+                reasoning: None,
+                routing: None,
+                error: None,
+                timing: None,
+            },
+        };
+        let card = Uuid::new_v4();
+        let row = |at: u64, lived: Option<Vec<crate::genome::fine_tuning::LivedCall>>| StagedCredit {
+            id: Uuid::new_v4(),
+            card_id: card,
+            claim_id: None,
+            owner: None,
+            role: None,
+            receipts: Vec::new(),
+            served: None,
+            prompt: "p".into(),
+            completion: "c".into(),
+            lived,
+            staged_at_ms: at,
+        };
+        let read = || call(Some(("code/read", json!({"path": "xarray/core/merge.py"}))));
+        let edit = || call(Some(("code/edit", json!({"path": "xarray/core/merge.py"}))));
+        let rows = vec![
+            row(1, Some(vec![read()])),
+            row(2, Some(vec![read()])),                // the loop: repeats the turn before
+            row(3, Some(vec![call(None)])),            // a spoken turn: kept
+            row(4, Some(vec![call(None)])),            // a no-action run collapses
+            row(5, Some(vec![call(None)])),
+            row(6, None),                              // unjudgeable: settles, breaks the run
+            row(7, Some(vec![read(), edit()])),
+            row(8, Some(vec![read()])),                // the verify re-read after the edit: kept
+        ];
+        let verdicts: Vec<Option<&str>> = across_turns(&rows).into_iter().map(|(_, d)| d).collect();
+        let r = Some("repeats_the_previous_turn");
+        assert_eq!(verdicts, vec![None, r, None, r, r, None, None, None]);
+    }
+
+    // what this catches: a loop trained as lessons (Kimi's rule on card ad107e18: "61 act
+    // batches under one thought, no progress"). A call that repeats the previous action
+    // unchanged is dropped; the first of the run is kept, and a changed action is kept.
+    #[test]
+    fn a_repeated_action_is_not_a_training_example() {
+        use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
+        let call = |text: &str, tool: Option<(&str, serde_json::Value)>| crate::genome::fine_tuning::LivedCall {
+            capture: uuid::Uuid::new_v4().to_string(),
+            request: TextGenerationRequest::default(),
+            response: TextGenerationResponse {
+                text: text.into(),
+                finish_reason: crate::ai::FinishReason::Stop,
+                model: "m".into(),
+                provider: "p".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: "r".into(),
+                content: None,
+                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.into(), input }]),
+                reasoning: Some("let me organize the situation".into()),
+                routing: None,
+                error: None,
+                timing: None,
+            },
+        };
+        let read = || call("", Some(("code/read", json!({"path": "src/lib.rs"}))));
+        let calls = vec![
+            read(),
+            read(),
+            read(),
+            call("", Some(("code/edit", json!({"path": "src/lib.rs"})))),
+            call("done, tests pass", None),
+            call("done, tests pass", None),
+            read(),
+        ];
+        let kept = not_a_loop(&calls);
+        let actions: Vec<&str> = kept
+            .iter()
+            .map(|c| c.response.tool_calls.as_ref().map(|t| t[0].name.as_str()).unwrap_or(c.response.text.as_str()))
+            .collect();
+        assert_eq!(actions, vec!["code/read", "code/edit", "done, tests pass", "code/read"]);
+    }
+
+    /// what this catches: a staged example that is not the call she lived. The read
+    /// must return the exact request she was served and the response she gave, with
+    /// her reasoning and tool calls; a turn with any call that cannot be read back must
+    /// say so rather than stage as complete; and each settled example must carry its
+    /// call and the card stamp (card ad107e18).
+    #[test]
+    fn a_staged_turn_is_read_back_as_the_calls_she_lived_and_a_hole_is_named() {
+        use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
+        use crate::cognition::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall};
+        let dir = tempfile::tempdir().expect("capture dir");
+        let persona = Uuid::new_v4();
+        let request = TextGenerationRequest {
+            system_prompt: Some("her identity".into()),
+            messages: vec![
+                ChatMessage::text("user", "room: the build is red on lib"),
+                ChatMessage::text("user", "card: fix the failing test"),
+            ],
+            ..Default::default()
+        };
+        let response = TextGenerationResponse {
+            text: "reading the failing test first".into(),
+            finish_reason: crate::ai::FinishReason::ToolUse,
+            model: "served-model".into(),
+            provider: "fixture-provider".into(),
+            usage: crate::ai::UsageMetrics::default(),
+            response_time_ms: 0,
+            request_id: "req-lived".into(),
+            content: None,
+            tool_calls: Some(vec![crate::ai::ToolCall {
+                id: "t1".into(),
+                name: "code/read".into(),
+                input: json!({"path": "src/lib.rs"}),
+            }]),
+            reasoning: Some("the assertion names a path; read it before guessing".into()),
+            routing: None,
+            error: None,
+            timing: None,
+        };
+        let sink = JsonlPromptCaptureSink::open(dir.path(), persona).expect("sink");
+        let call = PromptCall {
+            request_id: "req-lived".into(),
+            persona_id: persona,
+            room_id: Uuid::new_v4(),
+            cycle_id: Some(1),
+            context_window: Some(32_768),
+            cause: "synthetic",
+            cause_root: None,
+            replay_of: None,
+        };
+        let mut lease = CaptureLease::start(Arc::new(sink), &call, &request);
+        let submitted = lease.cursor().expect("durable submission").to_owned();
+        // the receipt carries the COMPLETED entry's cursor: the submission holds no response
+        let cursor = lease.finish(Some(&response), None).expect("completed entry");
+        assert_ne!(cursor, submitted);
+        let (_, only_request) =
+            read_lived_calls(Some(dir.path()), persona, vec![Some(submitted)], Vec::new());
+        assert!(only_request.is_some_and(|r| r.contains("no terminal response")));
+
+        let (calls, missing) =
+            read_lived_calls(Some(dir.path()), persona, vec![Some(cursor.clone())], Vec::new());
+        assert_eq!(missing, None);
+        assert_eq!(calls.len(), 1);
+        let lived = &calls[0];
+        assert_eq!(lived.capture, cursor, "the example links back to its trace");
+        assert_eq!(
+            serde_json::to_value(&lived.request.messages).unwrap(),
+            serde_json::to_value(&request.messages).unwrap(),
+            "the example is the request she was served, not a re-derivation"
+        );
+        assert_eq!(lived.response.reasoning, response.reasoning, "her thinking stays");
+        assert_eq!(lived.response.tool_calls.as_ref().map(Vec::len), Some(1));
+
+        // A second pass reuses what the turn already read and reads nothing again.
+        let (again, missing) =
+            read_lived_calls(None, persona, vec![Some(cursor.clone())], calls.clone());
+        assert_eq!((again.len(), missing), (1, None));
+
+        // A hole anywhere in the turn is named, never staged as complete.
+        let (_, hole) = read_lived_calls(Some(dir.path()), persona, vec![Some(cursor), None], Vec::new());
+        assert!(hole.is_some_and(|reason| reason.contains("no capture cursor")));
+
+        let stamp = OutcomeStamp {
+            card_id: Uuid::new_v4(),
+            role: CreditRole::Owner,
+            outcome: true,
+        };
+        let plan = SubmitPlan {
+            trait_kind: "code".into(),
+            prompt: "stimulus".into(),
+            completion: "acted chain".into(),
+            quality: 1.0,
+            stamp: Some(stamp),
+        };
+        let examples = lived_examples(&plan, &calls);
+        assert_eq!(examples.len(), 1);
+        assert_eq!(examples[0].completion, "reading the failing test first");
+        assert_eq!(examples[0].prompt, "card: fix the failing test");
+        assert!(examples[0].lived.is_some());
+        assert_eq!(
+            examples[0].metadata.as_ref().unwrap()["cardId"],
+            json!(stamp.card_id)
+        );
+    }
+
     fn served_receipt(id: &str, model: &str) -> crate::cognition::provenance::GenerationReceipt {
         crate::cognition::provenance::GenerationReceipt {
             submitted_request_id: id.into(),
@@ -2564,6 +3210,8 @@ pub(crate) mod tests {
                 provider: "fixture-provider".into(),
                 provider_request_id: None,
             },
+            capture: None,
+            genes: Vec::new(),
         }
     }
 
@@ -2709,20 +3357,29 @@ pub(crate) mod tests {
             .await
             .pop()
             .unwrap();
-        let params = WorkSubmitParams {
-            room: room.channel.as_uuid().to_string(),
-            submission_id: Some(Uuid::new_v4()),
-            card_id: card.as_uuid(),
-            claim_id: Some(claim.as_uuid()),
-            instance: Some("generic-project-work".into()),
-            base_sha: Some("a".repeat(40)),
-            artifact: Some(WorkArtifactReference {
-                hash: "b".repeat(64),
-                size_bytes: 20,
-                mime: Some("text/x-diff".into()),
-            }),
-            staged_revision_id: Some(selected.id),
-        };
+        // THROUGH SERDE, CARRYING THE SHORT HANDLES THE BOARD PRINTS (Astra's review of
+        // #4357). The defect these verbs carried was a DESERIALIZATION refusal — a
+        // `Uuid`-typed `card_id` rejected `d61513e4` before any handler ran — so a test
+        // that builds the struct in Rust cannot see it at all. This fixture now arrives
+        // the way a citizen's call actually does: as JSON, in the 8-char form she was
+        // shown, and the assertions below prove the whole path end to end.
+        let short = |id: Uuid| id.simple().to_string().chars().take(8).collect::<String>();
+        let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "room": room.channel.as_uuid().to_string(),
+            "submission_id": Uuid::new_v4().to_string(),
+            "card_id": short(card.as_uuid()),
+            "claim_id": short(claim.as_uuid()),
+            "instance": "generic-project-work",
+            "base_sha": "a".repeat(40),
+            "artifact": { "hash": "b".repeat(64), "size_bytes": 20, "mime": "text/x-diff" },
+            "staged_revision_id": selected.id.to_string(),
+        }))
+        .expect("a citizen's call carries the handles her board printed"); // expect: the fixture's own json, asserted decodable
+        assert_eq!(
+            params.card_id,
+            short(card.as_uuid()),
+            "the handle survives deserialization — it used to be refused here"
+        );
         let submit = WorkSubmit {
             registry: registry.clone(),
             executor_slot: slot.clone(),
@@ -2776,13 +3433,27 @@ pub(crate) mod tests {
                 room: params.room.clone(),
                 review_id: Some(Uuid::new_v4()),
                 card_id: Some(card.as_uuid()),
-                submission_id: Some(params.submission_id.expect("the fixture names its submission")),
-                artifact: Some(params.artifact.clone().expect("the fixture names its artifact")),
+                submission_id: Some(
+                    params
+                        .submission_id
+                        .expect("the fixture names its submission"),
+                ),
+                artifact: Some(
+                    params
+                        .artifact
+                        .clone()
+                        .expect("the fixture names its artifact"),
+                ),
                 review_card_id: review_card.as_uuid(),
                 review_claim_id: Some(review_claim.as_uuid()),
                 outcome: ReviewOutcome::Passed,
                 evidence_text: None,
-                evidence: Some(params.artifact.clone().expect("the fixture names its artifact")),
+                evidence: Some(
+                    params
+                        .artifact
+                        .clone()
+                        .expect("the fixture names its artifact"),
+                ),
             },
         )
         .await
@@ -2796,23 +3467,77 @@ pub(crate) mod tests {
             reviewed.credit.unwrap().state,
             reviewed::ReviewedCreditState::IndependentReviewRequired
         );
+        let later_revision = Uuid::new_v4();
+        let another_claim = CapturedCredit {
+            card_id: card.as_uuid(),
+            claim: Some(ClaimReceipt {
+                claim_id: Uuid::new_v4(),
+                owner: airc.peer_id(),
+                role: CreditRole::Owner,
+            }),
+        };
+        stage_credit(
+            &capture.conn,
+            name,
+            &another_claim,
+            vec![served_receipt("another-claim-request", "served-model")],
+            "private later prompt".into(),
+            "private later completion".into(),
+            None,
+            later_revision,
+            &[],
+        )
+        .await
+        .unwrap();
         let inspected = WorkSubmission {
             registry,
             executor_slot: slot,
         }
         .run(
             &ctx,
-            WorkSubmissionParams {
-                room: params.room,
-                card_id: card.as_uuid(),
-                submission_id: params.submission_id.expect("the fixture names its submission"),
-            },
+            // The readback takes handles too, and its submission handle resolves against
+            // THIS CARD's submissions — the card-scoped half of the same change. The
+            // evidence opt-in rides the same decode, so one fixture proves both.
+            serde_json::from_value(serde_json::json!({
+                "room": params.room,
+                "card_id": short(card.as_uuid()),
+                "submission_id": short(
+                    params.submission_id.expect("the fixture names its submission"), // expect: set in the json above
+                ),
+                "include_staged_evidence": true,
+            }))
+            .expect("the readback's handles decode"), // expect: the fixture's own json, asserted decodable
         )
         .await
         .unwrap();
         assert_eq!(inspected.submission.publisher, persona);
         assert_eq!(inspected.reviews.len(), 1);
         assert_eq!(inspected.reviews[0].reviewer, persona);
+        // Regression: Kimi's accepted review exposed only "unbound", with no
+        // way to inspect the source-owned revision without reading private text.
+        let evidence = inspected.staged_evidence.as_ref().unwrap();
+        assert_eq!(evidence.len(), 2);
+        let original = evidence
+            .iter()
+            .find(|row| row.revision_id == selected.id)
+            .unwrap();
+        assert!(original.matches_submission_claim);
+        assert!(original.predates_submission);
+        assert_eq!(original.generation_count, selected.receipts.len());
+        assert_eq!(original.generation_request_ids, vec!["public-command-request"]);
+        let later = evidence
+            .iter()
+            .find(|row| row.revision_id == later_revision)
+            .unwrap();
+        assert!(
+            !later.matches_submission_claim,
+            "newest is not automatically the selected experience"
+        );
+        assert!(inspected.staged_evidence_error.is_none());
+        let public_evidence = serde_json::to_string(evidence).unwrap();
+        assert!(!public_evidence.contains(&selected.prompt));
+        assert!(!public_evidence.contains(&selected.completion));
+        assert!(!public_evidence.contains("private later"));
         assert_eq!(
             inspected.credit.unwrap().state,
             reviewed::ReviewedCreditState::AwaitingReview
@@ -2902,6 +3627,8 @@ pub(crate) mod tests {
         };
         let claim = |card_id, claim_id, holder| {
             WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
+                selected_at_ms: None,
+                origin: airc_work::ClaimOrigin::Unknown,
                 card_id,
                 claim_id,
                 owner: holder,
@@ -3719,7 +4446,26 @@ pub(crate) mod tests {
             .await
             .unwrap());
         let remaining = stored_credit_rows(&data, name).await;
-        assert_eq!(remaining.len(), 2);
+        assert_eq!(
+            remaining.len(),
+            4,
+            "acceptance preserves inspectable source evidence"
+        );
+        assert!(reviewed::transfer_accepted(&data, name, a.id)
+            .await
+            .unwrap());
+        assert!(reviewed::transfer_accepted(&data, name, b.id)
+            .await
+            .unwrap());
+        submit.respond_to("genome/training-trigger/submit", |_| {
+            panic!("acknowledged transfer was dispatched again")
+        });
+        assert!(!settle_staged_row(&conn, persona, name, &a, true)
+            .await
+            .unwrap());
+        assert!(!settle_staged_row(&conn, persona, name, &b, true)
+            .await
+            .unwrap());
         assert!(remaining.iter().any(|row| row.id == mixed.id));
         assert!(remaining.iter().any(|row| row.id == faulted.id));
     }

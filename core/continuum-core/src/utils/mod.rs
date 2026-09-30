@@ -5,5 +5,6 @@
 
 pub mod audio;
 pub mod params;
+pub mod ports;
 pub mod str_case;
 pub mod str_truncate;

@@ -780,6 +780,7 @@ async fn call_llm(
         purpose: None,
         // Agent-mode call from the IPC bridge — not a persona-owned conversation.
         persona_id: None,
+        turn_bound: None,
     };
 
     let response = adapter.generate_text(request).await?;

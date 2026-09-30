@@ -260,21 +260,25 @@ mod tests {
                     prompt: "hi".into(),
                     completion: "ok".into(),
                     metadata: None,
+                    lived: None,
                 },
                 TrainingExample {
                     prompt: "yo".into(),
                     completion: "hey".into(),
                     metadata: None,
+                    lived: None,
                 },
                 TrainingExample {
                     prompt: "foo".into(),
                     completion: "bar".into(),
                     metadata: None,
+                    lived: None,
                 },
                 TrainingExample {
                     prompt: "ping".into(),
                     completion: "pong".into(),
                     metadata: None,
+                    lived: None,
                 },
             ],
             source: TrainingSource::OperatorCurated,
@@ -288,6 +292,7 @@ mod tests {
             persona_name: "test-p".into(),
             base_model: "synthetic".into(),
             trait_kind: "stand-in".into(),
+            resume_from: None,
             dataset: small_dataset(),
             eval_set: None,
             lora: Some(LoRAHyperparams {
@@ -295,6 +300,7 @@ mod tests {
                 alpha: 4,
                 dropout: 0.0,
                 target_modules: vec![],
+                top_layers: None,
             }),
             schedule: Some(ScheduleParams {
                 epochs: 2,

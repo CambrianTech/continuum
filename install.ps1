@@ -107,7 +107,7 @@ try {
 . (Join-Path $LibDir 'windows-service.ps1')
 . (Join-Path $LibDir 'windows-prepared.ps1')
 if ($ResumePrepared) {
-    try { Resume-CorePreparedRelease -RepoRoot $RepoRoot }
+    try { Resume-CorePreparedRelease -RepoRoot $RepoRoot -InstallLease $installLease }
     finally { Clear-Elevation }
     Write-Ok 'Prepared release is verified and supervised.'
     return
@@ -184,7 +184,7 @@ try {
         Write-Ok 'Release prepared and validated. Deploy it with .\install.ps1 -ResumePrepared when ready for startup registration and handoff.'
         return
     }
-    Invoke-CoreServiceRelease -Release $release -RepoRoot $RepoRoot
+    Invoke-CoreServiceRelease -Release $release -RepoRoot $RepoRoot -InstallLease $installLease
 }
 finally {
     # Always drop the cached elevation so an admin session never outlives install.

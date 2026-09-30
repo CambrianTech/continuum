@@ -114,6 +114,10 @@ impl Transport for InProcessTransport {
             .map_err(|reason| ClientError::Refused {
                 command: command.to_string(),
                 reason,
+                // An executor `Err` is a gate or transport sentence with nothing typed
+                // behind it; an inner `{ success: false, … }` value is NOT an `Err` here —
+                // it flows through `command_result_to_value` as `Ok(value)`, outcome intact.
+                outcome: None,
             })?;
         command_result_to_value(command, result)
     }

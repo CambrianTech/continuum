@@ -15,10 +15,10 @@ use super::workspace::BurstTurn;
 /// tokens (divide by 3, not 4) to stay safely under `n_ctx`. The completion reserve
 /// absorbs the remaining slack.
 // context-budget-exempt: a chars-per-token UNIT CONVERSION, not a budget — it is the basis ContextBudget itself computes against
-pub(super) const GUARD_CHARS_PER_TOKEN: usize = 3;
+pub(crate) const GUARD_CHARS_PER_TOKEN: usize = 3;
 
 /// Conservative token estimate for the window guard (see [`GUARD_CHARS_PER_TOKEN`]).
-pub(super) fn est_tokens(s: &str) -> usize {
+pub(crate) fn est_tokens(s: &str) -> usize {
     s.len() / GUARD_CHARS_PER_TOKEN
 }
 

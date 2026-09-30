@@ -286,6 +286,70 @@ mod tests {
         })
     }
 
+    // What this catches: resolving a short persona ID is insufficient if the
+    // handler still queries @persona:<prefix> or filters rows by that prefix.
+    #[tokio::test]
+    async fn consolidate_short_persona_reads_the_canonical_corpus() {
+        use crate::runtime::module_harness::ModuleHarness;
+        let home = tempfile::tempdir().expect("test: temporary memory home");
+        let _home = HomeGuard::set(home.path()).await;
+        let persona = uuid::Uuid::new_v4();
+        let canonical = persona.to_string();
+        // The registry is process-global; remove only this test's unique card,
+        // including when an assertion unwinds. No shared registry reset.
+        struct RegisteredCard(String);
+        impl Drop for RegisteredCard {
+            fn drop(&mut self) {
+                crate::persona::card::remove(&self.0);
+            }
+        }
+        let _card = RegisteredCard(canonical.clone());
+        crate::persona::card::register(crate::persona::card::PersonaCard::genesis(
+            persona,
+            "received-lesson-fixture",
+            1,
+            None,
+        ));
+        let h = ModuleHarness::with_modules([
+            fresh_memory_module(),
+            Arc::new(crate::modules::data::DataModule::new())
+                as Arc<dyn crate::runtime::ServiceModule>,
+        ])
+        .await;
+        let mut memory = test_memory(&canonical, "shared-canonical", "A received lesson.");
+        memory["record"]["memory_type"] = serde_json::json!("shared");
+        memory["record"]["context"] = serde_json::json!({"scope": "rust", "shared_by": "teacher"});
+        let appended: AppendResult = h
+            .execute(
+                "memory/append-memory",
+                serde_json::json!({
+                    "persona_id": canonical,
+                    "memory": memory,
+                }),
+            )
+            .await
+            .expect("test: append shared lesson to full UUID corpus");
+        assert!(appended.appended);
+        let result: consolidate::ConsolidateResult = h
+            .execute(
+                "memory/consolidate",
+                serde_json::json!({
+                    "persona_id": &canonical[..8],
+                    "base_model": "synthetic",
+                }),
+            )
+            .await
+            .expect("test: consolidate resolves short persona");
+        assert_eq!(
+            result.shared_lessons, 1,
+            "the canonical stored lesson must be found"
+        );
+        // No training module exists in this harness: the found lesson is refused,
+        // so this test exercises the real read path without dispatching training.
+        assert_eq!(result.consolidated, 0);
+        assert_eq!(result.latest_consolidated_ts, None);
+    }
+
     // what this catches: the cache-only amnesia bug (card aded8871) — a memory
     // appended via memory/append-memory must survive a core restart. Session 1
     // appends (durable write-through to the persona's longterm.db via data/*);

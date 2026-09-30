@@ -171,15 +171,86 @@ fn step_eye_node_beside(repo_root: &std::path::Path) -> Outcome {
     if !eye.exists() {
         return Outcome::Skipped("no eye-node in this tree".into());
     }
-    match std::process::Command::new("npx")
-        .args(["tsx", eye.to_string_lossy().as_ref()])
-        .current_dir(repo_root.join("apps/eye-node"))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let tsx = repo_root.join("node_modules/tsx/dist/cli.mjs");
+    if !tsx.is_file() {
+        return Outcome::Skipped("eye-node needs the installed workspace dependency tsx".into());
+    }
+    let endpoint = crate::ipc::endpoint_paths::core_provider_endpoint();
+    let log_path = std::path::PathBuf::from(crate::ipc::endpoint_paths::core_start_logfile())
+        .with_file_name("continuum-eye-node.log");
+    let log = match std::fs::File::create(&log_path) {
+        Ok(log) => log,
+        Err(e) => return Outcome::Skipped(format!("eye-node log {}: {e}", log_path.display())),
+    };
+    let node = match crate::shell_portable::locate_executable("node")
+        .and_then(|path| std::fs::canonicalize(path).ok())
     {
-        Ok(_) => Outcome::Ok("perception provider spawned".into()),
-        Err(e) => Outcome::Skipped(format!("npx unavailable: {e}")),
+        Some(node) => node,
+        None => return Outcome::Skipped("eye-node needs a resolvable node executable on PATH".into()),
+    };
+    let command = eye_node_command(repo_root, &endpoint, &node);
+    match spawn_eye_logged(command, &log) {
+        Ok(pid) => Outcome::Ok(format!(
+            "eye-node spawned pid {} for {endpoint}; registration pending; log {}",
+            pid, log_path.display()
+        )),
+        Err(e) => Outcome::Skipped(format!("eye-node launch for {endpoint} failed: {e}")),
+    }
+}
+
+/// Pass the core's endpoint authority to the worker. Invoke the installed JS entry
+/// through node directly: npx is a .cmd shim on Windows and may fetch packages.
+fn eye_node_command(repo_root: &std::path::Path, endpoint: &str, node: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new(node);
+    command
+        .arg(repo_root.join("node_modules/tsx/dist/cli.mjs"))
+        .arg(repo_root.join("apps/eye-node/src/index.ts"))
+        .current_dir(repo_root.join("apps/eye-node"))
+        .env("CONTINUUM_CORE_SOCKET", endpoint)
+        .stdin(std::process::Stdio::null());
+    command
+}
+
+/// The Windows service host holds this value until its core exits. Assets are
+/// explicitly registered by the installer, never inferred from a task's cwd.
+#[cfg(windows)]
+pub fn start_service_eye(
+    root: &std::path::Path,
+    endpoint: &str,
+) -> Result<continuum_cli_lifecycle::windows_launch::OwnedProcessTree, String> {
+    if !root.is_absolute() {
+        return Err("browser asset root must be absolute".into());
+    }
+    for relative in ["apps/eye-node/src/index.ts", "node_modules/tsx/dist/cli.mjs"] {
+        if !root.join(relative).is_file() {
+            return Err(format!("browser asset missing: {}", root.join(relative).display()));
+        }
+    }
+    let node = crate::shell_portable::locate_executable("node")
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .ok_or("browser worker needs Node on the service PATH")?;
+    let log_path = std::path::PathBuf::from(crate::ipc::endpoint_paths::core_start_logfile())
+        .with_file_name("continuum-eye-node.log");
+    let log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
+    let mut command = eye_node_command(root, endpoint, &node);
+    command.env("CONTINUUM_EYE_STDIN_LIFELINE", "1");
+    continuum_cli_lifecycle::windows_launch::spawn_owned_logged(&command, &log, &log, 0x0800_0000)
+        .map_err(|e| format!("browser worker for {endpoint}: {e}"))
+}
+
+fn spawn_eye_logged(command: std::process::Command, log: &std::fs::File) -> std::io::Result<u32> {
+    #[cfg(windows)]
+    {
+        // Reuse the restricted-handle launcher: std Command would let this long-lived
+        // child inherit unrelated CLI-host pipes and keep their EOF open (#9bc0fc5e).
+        continuum_cli_lifecycle::windows_launch::spawn_logged(
+            &command, log, log, 0x0800_0000, // CREATE_NO_WINDOW
+        ).map(|child| child.id())
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = command;
+        command.stdout(log.try_clone()?).stderr(log.try_clone()?).spawn().map(|child| child.id())
     }
 }
 
@@ -209,6 +280,17 @@ pub fn run_before_phase() -> BootReceipt {
     receipt
 }
 
+/// The start-script locator returns <repo>/tools/scripts/start-server.sh.
+/// Keep that layout conversion shared: two parents select tools, not the repo.
+pub fn repo_root_from_start_script(script: &std::path::Path) -> Option<std::path::PathBuf> {
+    let scripts = script.parent()?;
+    let tools = scripts.parent()?;
+    if scripts.file_name()? != "scripts" || tools.file_name()? != "tools" {
+        return None;
+    }
+    tools.parent().map(std::path::Path::to_path_buf)
+}
+
 /// The Beside phase — call AFTER the core process is launched (never awaited).
 pub fn run_beside_phase(receipt: &mut BootReceipt, repo_root: Option<&std::path::Path>) {
     match repo_root {
@@ -216,9 +298,18 @@ pub fn run_beside_phase(receipt: &mut BootReceipt, repo_root: Option<&std::path:
             let t = Instant::now();
             receipt.push("desktop-beside", t, step_desktop_beside(root));
             let t = Instant::now();
-            receipt.push("reap-eyes", t, step_reap_eyes());
-            let t = Instant::now();
-            receipt.push("eye-node-beside", t, step_eye_node_beside(root));
+            if cfg!(windows) {
+                // The installed service owns the Node/browser tree. A second
+                // beside worker would compete for provider registrations and
+                // survive independently of that owner. Never reap its children.
+                receipt.push("eye-node-beside", t, Outcome::Skipped(
+                    "Windows browser worker belongs to service-host; no detached launch".into()
+                ));
+            } else {
+                receipt.push("reap-eyes", t, step_reap_eyes());
+                let t = Instant::now();
+                receipt.push("eye-node-beside", t, step_eye_node_beside(root));
+            }
         }
         None => {
             let t = Instant::now();
@@ -248,5 +339,30 @@ mod tests {
         r.push("x", t, Outcome::Skipped("test".into()));
         assert_eq!(r.steps.len(), 1);
         assert!(matches!(r.steps[0].outcome, Outcome::Skipped(_)));
+    }
+
+    // what this catches: a worker guessing /tmp instead of the selected endpoint,
+    // or going through npx and shell parsing instead of installed dependencies.
+    #[test]
+    fn eye_launch_preserves_endpoint_and_paths_as_arguments() {
+        let root = std::env::temp_dir().join("source tree with spaces");
+        // The actual boot caller must select the repo, not <repo>/tools, or
+        // every beside rail silently skips its assets before reaching spawn.
+        assert_eq!(
+            repo_root_from_start_script(&root.join("tools/scripts/start-server.sh")),
+            Some(root.clone())
+        );
+        assert!(repo_root_from_start_script(&root.join("custom/start.sh")).is_none());
+        let endpoint = "tcp://127.0.0.1:45678";
+        let node = root.join("node executable");
+        let command = eye_node_command(&root, endpoint, &node);
+        assert_eq!(command.get_program(), node.as_os_str());
+        assert_eq!(command.get_current_dir(), Some(root.join("apps/eye-node").as_path()));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), vec![
+            root.join("node_modules/tsx/dist/cli.mjs").as_os_str(),
+            root.join("apps/eye-node/src/index.ts").as_os_str(),
+        ]);
+        assert!(command.get_envs().any(|(key, value)|
+            key == "CONTINUUM_CORE_SOCKET" && value == Some(std::ffi::OsStr::new(endpoint))));
     }
 }

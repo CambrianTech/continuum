@@ -61,6 +61,8 @@ pub const DEFAULT_CUSTODIAN_ADDR: &str = "127.0.0.1:8899";
 /// measure lift — this is the page-in supply contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GgufLoraRequest {
+    #[serde(default)]
+    pub checkpoint_format: AdapterCheckpointFormat,
     /// The trained MLX checkpoint dir (holds `adapters.safetensors` +
     /// `adapter_config.json`). Named directly because the contract is stateless.
     pub checkpoint: String,
@@ -74,6 +76,15 @@ pub struct GgufLoraRequest {
     /// little, so `f16` (preserve the trained signal) is the default.
     #[serde(default = "default_outtype")]
     pub outtype: String,
+}
+
+/// The producing adapter declares its layout; exporters do not guess from names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdapterCheckpointFormat {
+    #[default]
+    Mlx,
+    Peft,
 }
 
 /// The default adapter weight type — `f16` preserves the trained LoRA signal.
@@ -315,6 +326,7 @@ mod tests {
     #[test]
     fn gguf_lora_request_round_trips() {
         let req = GgufLoraRequest {
+            checkpoint_format: Default::default(),
             checkpoint: "/runs/coder-3b".to_string(),
             save_directory: "/genes".to_string(),
             base_model_id: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),

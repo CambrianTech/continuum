@@ -23,6 +23,6 @@ base_model: string,
  * after this (rfc3339, lexicographically ordered). Omit to consolidate all (the
  * explicit first run). The autonomic tick persists [`ConsolidateResult::latest_consolidated_ts`]
  * and passes it back here next cycle. A partial timestamp group may be retried;
- * this watermark does not provide exactly-once delivery into the trigger.
+ * stable lesson identities let the destination recognize accepted replays.
  */
 since_timestamp?: string, };

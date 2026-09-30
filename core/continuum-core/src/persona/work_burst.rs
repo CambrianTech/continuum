@@ -5,24 +5,11 @@
 
 use uuid::Uuid;
 
-/// Acts on a held card without a file change before the work turn stops narrating
-/// and GATES: edit now, or release with a reason. Six is two turns of "let me read
-/// one more thing" — the shape every glass box found tonight (Atlas: 850+ acts, no
-/// deliverable; the substrate said "no act of mine has changed a file" and nothing
-/// followed from it).
+/// Diagnostic interval for an advisory progress checkpoint. This never grants an
+/// action allowance or requires an edit or release. The count stays in telemetry;
+/// the citizen sees concrete receipts and a reminder to preserve useful context.
 // context-budget-exempt: an act count, not a window or token budget
 pub(crate) const WRITE_OR_RELEASE_AFTER_ACTS: usize = 6;
-/// The substrate's own exit from "write or release": at twice the gate, the card
-/// is released FOR her, with a receipt. Measured 2026-09-07 11:30–12:20Z on
-/// 66ab948fc: the gate fired eight times across five holders, 78 acts, 0 writes,
-/// 0 releases — the sentence was read and not acted on. A governor acts.
-pub(crate) const GOVERNOR_RELEASE_AFTER_ACTS: usize = 2 * WRITE_OR_RELEASE_AFTER_ACTS;
-
-/// Whether the substrate releases the card this turn. Pure.
-pub(crate) fn governor_releases(acts_without_write: usize) -> bool {
-    acts_without_write >= GOVERNOR_RELEASE_AFTER_ACTS
-}
-
 /// Her acts since her last file change, counted from her own ⚙ receipts in the
 /// room (oldest → newest). A `code/edit` / `git_apply` / `edit_file` receipt resets
 /// the count; a card with no edit ever counts every act. Pure.
@@ -87,6 +74,8 @@ pub(crate) struct CardProgress {
     /// Distinct objects of her read-shaped acts (code/read, code/list) — paths —
     /// newest last, capped.
     pub read: Vec<String>,
+    /// Successful write receipts, including the verb so a work note is not a file edit.
+    pub wrote: Vec<String>,
     /// Distinct code/search terms, newest last, capped (review on #3793: a search
     /// term is not something she "already read").
     pub searched: Vec<String>,
@@ -123,6 +112,9 @@ pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], m
                 p.writes += 1;
             }
             let obj: String = object.chars().take(72).collect();
+            if ok && is_write_verb(verb) {
+                push_distinct(&mut p.wrote, format!("{verb} {obj}"));
+            }
             if verb.starts_with("code/read") || verb.starts_with("code/list") {
                 push_distinct(&mut p.read, obj);
             } else if verb.starts_with("code/search") {
@@ -157,10 +149,17 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
     if p.acts == 0 {
         return String::new();
     }
-    let mut s = format!("[progress] {} acts so far ({} writes).", p.acts, p.writes);
+    // Kimi read act/write totals as an allowance and stopped to seek help.
+    // Keep concrete receipts in her context; totals remain diagnostic data.
+    let mut s = String::from("[progress] Recent work receipts:");
     if !p.read.is_empty() {
         s.push_str(" Already read: ");
         s.push_str(&p.read.join(", "));
+        s.push('.');
+    }
+    if !p.wrote.is_empty() {
+        s.push_str(" Successful write receipts: ");
+        s.push_str(&p.wrote.join("; "));
         s.push('.');
     }
     if !p.searched.is_empty() {
@@ -173,7 +172,7 @@ pub(crate) fn progress_line(p: &CardProgress) -> String {
         s.push_str(&p.ran.join("; "));
         s.push('.');
     }
-    s.push_str(" Do not re-read those; go on from your last thought.");
+    s.push_str(" Use these receipts to resume; re-read when the file may have changed or you need to verify it.");
     s
 }
 
@@ -198,9 +197,9 @@ fn is_write_verb(verb: &str) -> bool {
         || verb.starts_with("code/git/apply")
 }
 
-/// [`held_work_burst`] with the write-or-release gate: past
-/// [`WRITE_OR_RELEASE_AFTER_ACTS`] acts without a file change, the turn is told the
-/// investigation is finished and given exactly two ways out.
+/// [`held_work_burst`] with an advisory progress checkpoint. Receipt counts do
+/// not establish that investigation is finished or that responsibility should
+/// transfer (card 3bd860ba: multi-day project work includes reading and review).
 pub(crate) fn held_work_burst_gated(
     held: &[&airc_lib::WorkCard],
     last_state: &[String],
@@ -245,18 +244,17 @@ pub(crate) fn held_work_burst_gated(
          passing with a reason on ONE line: 'PASS: done' (the work is complete \
          and in the workspace), 'PASS: blocked — <one line why>', or \
          'PASS: nothing' (nothing to contribute). 'PASS: done' concludes the \
-         card, so use it only when the deliverable is really written. Speak only \
-         to report a result or blocker to the room.",
+         card, so use it only when the deliverable is complete and verified. You may \
+         ask collaborators for help, discuss a finding, or report a result or blocker \
+         to the room. Being blocked is not a request to hand off responsibility.",
     );
     if acts_without_write >= WRITE_OR_RELEASE_AFTER_ACTS {
-        let _ = write!(
-            s,
-            "\n[write or release] You have made {acts_without_write} acts on this card \
-             without changing a file. The investigation is finished. This turn does ONE \
-             of two things: make the edit now (code/edit or git_apply — the fix you have \
-             already named in your last thoughts), or conclude 'PASS: blocked — <one \
-             line why>' and release the card so a peer can take it. No more reading, \
-             running, or status checks before one of those."
+        s.push_str(
+            "\n[progress checkpoint] Reading, planning, verification and review can be \
+             useful work. When useful for resuming or collaborating, use work/note to record what changed in your \
+             understanding, the next step, or a specific blocker and who can help. \
+             Continue the appropriate investigation or action. If you choose a handoff, identify the remaining \
+             work and any uncommitted changes explicitly."
         );
     }
     s
@@ -436,14 +434,21 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
 #[cfg(test)]
 mod tests {
     use super::*;
-    // what this catches: the governor firing under the gate (a nag becoming a release
-    // at six acts) or never (the sentence read and ignored forever). It releases at
-    // exactly twice the gate.
+    // what this catches: card 3bd860ba's prompt coercing release or unnecessary
+    // edits when legitimate project investigation reaches the gate or twice it (the
+    // old governor threshold, which no longer releases anything).
     #[test]
-    fn the_governor_releases_at_twice_the_gate_and_not_before() {
-        assert!(!governor_releases(WRITE_OR_RELEASE_AFTER_ACTS));
-        assert!(!governor_releases(GOVERNOR_RELEASE_AFTER_ACTS - 1));
-        assert!(governor_releases(GOVERNOR_RELEASE_AFTER_ACTS));
-        assert!(governor_releases(GOVERNOR_RELEASE_AFTER_ACTS + 30));
+    fn progress_checkpoint_preserves_investigation_and_explicit_handoff() {
+        for acts in [WRITE_OR_RELEASE_AFTER_ACTS, 2 * WRITE_OR_RELEASE_AFTER_ACTS] {
+            let burst = held_work_burst_gated(&[], &[], acts, &CardProgress::default());
+            assert!(burst.contains("[progress checkpoint]"));
+            assert!(burst.contains("specific blocker and who can help"));
+            assert!(burst.contains("uncommitted changes explicitly"));
+            assert!(!burst.contains("release the card"));
+            assert!(!burst.contains("No more reading"));
+            assert!(!burst.contains("substrate releases"));
+            assert!(!burst.contains("acts since"));
+            assert!(!burst.contains("counter"));
+        }
     }
 }

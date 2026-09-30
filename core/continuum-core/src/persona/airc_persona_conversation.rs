@@ -165,30 +165,7 @@ fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
     }
 }
 
-/// A durable chat row as the transcript event the inbound seam admits: kind
-/// Message, a text body, wall time, the row id as the event id. Lamport is 0 —
-/// the loop head judges staleness by event id, never by this clock.
-fn event_from_row(room: Uuid, row: crate::persona::durable_history::RoomRow) -> TranscriptEvent {
-    use airc_core::{
-        Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,
-    };
-    let room_id = RoomId::from_uuid(room);
-    TranscriptEvent {
-        event_id: EventId::from_uuid(row.id),
-        room_id,
-        peer_id: PeerId::from_uuid(row.sender),
-        client_id: ClientId::new(),
-        kind: TranscriptKind::Message,
-        occurred_at_ms: row.occurred_at_ms,
-        lamport: 0,
-        target: MentionTarget::Room(room_id),
-        headers: Headers::default(),
-        body: Some(Body::text(&row.text)),
-        attachment: None,
-        receipt: None,
-        metadata: serde_json::Value::Null,
-    }
-}
+use super::durable_history::event_from_row;
 
 async fn catch_up_from_store(
     runtime: &dyn AircCitizen,
@@ -395,6 +372,8 @@ pub struct AircPersonaConversation {
     /// The rejoin replay's dedupe watermark: only events strictly newer are ever
     /// replayed, so a reopen can never re-feed history as fresh perception.
     last_lamport: u64,
+    /// Immutable attach cutoff; None means readiness has not completed.
+    initial_watermark: Option<u64>,
     /// Per room: the lamport FLOOR adopted at first sight (nothing older is ever
     /// replayed) and the ring of lamports actually SEEN since. A newest-seen mark
     /// cannot stand in for this: live `event` frames keep arriving after the
@@ -429,6 +408,7 @@ impl AircPersonaConversation {
             seen: std::sync::Arc::new(std::sync::Mutex::new(SeenRooms::default())),
             membership_epoch,
             last_lamport: 0,
+            initial_watermark: None,
             next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
             rejoin_backlog: std::collections::VecDeque::new(),
         }
@@ -554,7 +534,7 @@ impl AircPersonaConversation {
                             live_since_tick = live_since_tick.saturating_add(1);
                             reopen_attempt = 0;
                             if let Ok(ev) = &item {
-                                // These headers already mean "not perception" in
+                                // These routing headers mean "not perception" in
                                 // admission and durable catch-up. Drop them BEFORE
                                 // the bounded attention inbox: a token flood must
                                 // not consume the ready-drain budget ahead of a
@@ -562,6 +542,7 @@ impl AircPersonaConversation {
                                 // seen-ring churn for traffic we will never admit.
                                 if crate::persona::airc_citizen::is_heartbeat(ev)
                                     || crate::airc::realtime_wire::is_stream_chunk(ev)
+                                    || crate::airc::realtime_wire::is_command_frame(ev)
                                 {
                                     continue;
                                 }
@@ -750,7 +731,6 @@ impl AircPersonaConversation {
                 if ready_scan_remaining == 0 {
                     return Ok(None);
                 }
-                ready_scan_remaining -= 1;
             }
             // Rejoin-replayed turns first — they are OLDER than anything the live
             // stream will yield, and ordering is what keeps an addressed kickoff
@@ -765,6 +745,11 @@ impl AircPersonaConversation {
                 if let Some(event) = self.ready_event.clone() {
                     let message = self.admit_event(event).await;
                     self.ready_event = None;
+                    // Charge an examined event, not the earlier pass that only
+                    // retained it across awaits. Cancellation retains ownership.
+                    if !wait {
+                        ready_scan_remaining -= 1;
+                    }
                     if message.is_some() {
                         return Ok(message);
                     }
@@ -939,26 +924,35 @@ impl PersonaConversation for AircPersonaConversation {
     /// has identical semantics — it's not a degraded path, it's a
     /// later-binding path.
     async fn prime(&mut self) -> Result<(), String> {
-        if self.rooms.is_some() {
+        if self.initial_watermark.is_some() {
             return Ok(());
         }
-        if !self.refresh_membership().await? {
-            return Ok(());
-        }
-        // #146 diagnostic: confirm the CHAT subscribe stream actually opened for
-        // this persona. Post-reboot the personas were room-deaf (0 perceptual
-        // decodes) while the core-positron raw-attach path received fine — this
-        // pins whether prime() even ran per persona.
+        let active = self.refresh_membership().await?;
+        // Resolve readiness once, before the host reports an attached mind.
+        // Never replace an unreadable cutoff with zero or leave a pump behind.
+        let cutoff = match self.high_water_mark(64).await {
+            Ok(cutoff) => cutoff,
+            Err(error) => {
+                self.stop_stream();
+                self.rooms = None;
+                return Err(format!("initial conversation watermark failed: {error}"));
+            }
+        };
+        self.last_lamport = cutoff;
+        self.initial_watermark = Some(cutoff);
         crate::probe!(
-            class = "persona.inbound.subscribe_opened",
+            class = "persona.inbound.primed",
             persona = %self.own_peer_id,
-            "persona chat subscribe stream opened (#146)"
+            subscribed = active,
+            watermark = cutoff,
+            "persona conversation primed with a verified attach cutoff"
         );
-        // Seed the rejoin-replay watermark at the CURRENT transcript head, so the
-        // first runtime room-join can never replay pre-subscribe history as fresh
-        // perception (the #131 "room starts at join" rule, preserved under replay).
-        self.last_lamport = self.high_water_mark(64).await.unwrap_or(0); // unwrap_or: an unreadable watermark = 0 (never read), the documented floor
         Ok(())
+    }
+
+    async fn initial_water_mark(&self, _limit: usize) -> Result<u64, String> {
+        self.initial_watermark.ok_or_else(||
+            "conversation initial watermark requested before successful prime()".to_string())
     }
 
     async fn high_water_mark(&self, limit: usize) -> Result<u64, String> {
@@ -1038,12 +1032,22 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
     // all three named skip reasons live in the ONE decoder `room_turn_from_event`
     // (realtime_wire) — shared with the digest element and the positron
     // projection. This wrapper only adds the transcript's lamport.
-    let (peer_id, text) = crate::airc::realtime_wire::room_turn_from_event(event)?;
+    let turn = crate::airc::realtime_wire::room_content_from_event(event)?;
+    // Work presence remains in the room's durable state/RAG projection. It is
+    // not a new utterance to append after every action: doing that bypassed
+    // AircRagSource's existing presence folding and filled active turns with
+    // other residents' work broadcasts. Media-bearing messages remain input.
+    if turn.media.is_empty()
+        && crate::persona::presence_glyph::is_presence_line(&turn.text)
+    {
+        return Err("work_presence");
+    }
     Ok(IncomingMessage {
+        media: turn.media,
         event_id: event.event_id.as_uuid(),
         lamport: event.lamport,
-        peer_id,
-        text,
+        peer_id: turn.sender,
+        text: turn.text,
         // The transport room is the turn's context (A.6) — without it the
         // service loop bound operator/CLI turns to a nil room and every
         // room-scoped source abstained.
@@ -1074,6 +1078,7 @@ mod tests {
                     id: Uuid::new_v4(),
                     sender: peer,
                     occurred_at_ms: 1,
+                    media: Vec::new(),
                     text: text.into(),
                 },
             )
@@ -1082,21 +1087,31 @@ mod tests {
         for index in 0..CATCH_UP_PAGE * 2 {
             let mut noise = event("not a completed utterance");
             noise.headers.insert(
-                if index % 2 == 0 {
-                    airc_lib::HEADER_STREAM_ID
-                } else {
-                    airc_lib::HEADER_HEARTBEAT_KIND
+                match index % 3 {
+                    0 => airc_lib::HEADER_STREAM_ID,
+                    1 => airc_lib::HEADER_HEARTBEAT_KIND,
+                    _ => airc_protocol::HEADER_AIRC_CORRELATION_ID,
                 }
                 .into(),
                 "fixture".into(),
             );
             frames.push(Ok(Arc::new(noise)));
         }
+        // Even textual RPC results are not a colleague speaking. A completed
+        // directed room message still passes below.
+        let mut rpc = event("RPC result, not speech");
+        rpc.headers.insert(airc_protocol::HEADER_AIRC_CORRELATION_ID.into(), Uuid::new_v4().to_string());
+        assert_eq!(crate::airc::realtime_wire::room_turn_from_event(&rpc), Err("command_frame"));
         let mut control = event("");
         control.kind = airc_core::TranscriptKind::System;
         control.body = None;
         let control = Arc::new(control);
         frames.push(Ok(Arc::clone(&control)));
+        // Regression #4592: completed work broadcasts are durable presence,
+        // not fresh conversational requests, even when they arrive mid-action.
+        let presence = event("⚙ code/read fixture.rs ✓");
+        assert!(matches!(perceptual_from_event(&presence), Err("work_presence")));
+        frames.push(Ok(Arc::new(presence)));
         let mut directed = event("@citizen Shared Cargo owner: please wait");
         directed.target = airc_core::MentionTarget::Peer(airc_core::PeerId::from_uuid(own));
         let directed = Arc::new(directed);
@@ -1116,8 +1131,8 @@ mod tests {
         let inbox = conversation.inbox.as_mut().unwrap();
         assert_eq!(
             inbox.len(),
-            2,
-            "only control and completed message are queued"
+            3,
+            "control, durable presence and completed message reach intake"
         );
         let forwarded_control = inbox.try_recv().unwrap().unwrap();
         assert!(Arc::ptr_eq(&forwarded_control, &control));
@@ -1132,6 +1147,23 @@ mod tests {
         assert_eq!(perceived[0].room_id, room);
         assert_eq!(perceived[0].peer_id, peer);
         assert!(perceived[0].text.contains("Shared Cargo owner"));
+
+        // A page counts examined events, not stash/admit loop iterations.
+        // Fill its first N-1 positions with legitimate non-turn control traffic.
+        let mut page: Vec<_> = (0..CATCH_UP_PAGE - 1)
+            .map(|_| Ok(Arc::clone(&control)))
+            .collect();
+        page.push(Ok(Arc::new(event("last event in one admission page"))));
+        let (drained, ready) = tokio::sync::oneshot::channel();
+        conversation.install_stream(futures::stream::iter(page).chain(
+            futures::stream::once(async move {
+                drained.send(()).unwrap();
+                std::future::pending().await
+            }),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
+        let last = conversation.next_message_inner(false, false).await.unwrap().unwrap();
+        assert_eq!(last.text, "last event in one admission page");
 
         // Error frames must still reach the consumer, never disappear as noise.
         let (drained, ready) = tokio::sync::oneshot::channel();
@@ -1153,6 +1185,32 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("lagged 7"), "{error}");
         conversation.stop_stream();
+    }
+
+    // Regression: priming establishes readiness once; the live loop must not
+    // make a second fallible history RPC after the host reports attachment.
+    #[tokio::test]
+    async fn initial_cutoff_is_established_by_prime_and_remains_stable() {
+        use crate::persona::identity_provider::PersonaIdentitySource;
+        use crate::persona::PersonaAircRuntime;
+        let home = tempfile::tempdir().unwrap();
+        let airc = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await.unwrap());
+        let room = airc.join("readiness-test").await.unwrap().channel;
+        let runtime = Arc::new(PersonaAircRuntime::from_attached(
+            airc.peer_id().as_uuid(), "readiness-test", home.path().to_path_buf(),
+            airc.clone(), room, PersonaIdentitySource::FreshlyMinted,
+        ));
+        runtime.say_in(room.as_uuid(), "before priming").await.unwrap();
+        let mut conversation = AircPersonaConversation::new(runtime.clone());
+        assert!(conversation.initial_water_mark(64).await.is_err());
+        conversation.prime().await.unwrap();
+        let cutoff = conversation.initial_water_mark(64).await.unwrap();
+        assert!(cutoff > 0);
+        runtime.say_in(room.as_uuid(), "after priming").await.unwrap();
+        assert!(conversation.high_water_mark(64).await.unwrap() > cutoff);
+        conversation.prime().await.unwrap();
+        assert_eq!(conversation.initial_water_mark(1).await.unwrap(), cutoff);
     }
 
     // what this catches: c5910be2 — ready intake must use the real decoder, keep
@@ -1182,6 +1240,7 @@ mod tests {
                     id,
                     sender: peer,
                     occurred_at_ms: index as u64,
+                    media: Vec::new(),
                     text: format!("colleague input {index}"),
                 },
             );
@@ -1533,12 +1592,52 @@ mod tests {
             id: Uuid::new_v4(),
             sender: Uuid::new_v4(),
             occurred_at_ms: 1_788_513_127_000,
+            media: Vec::new(),
             text: "Joel here — which card do you hold?".to_string(),
         };
+        let mut with_media = row.clone();
+        with_media.media.push(super::super::channel_items::MediaItemRequest {
+            kind: "image".into(), mime_type: Some("image/png".into()),
+            blob_hash: Some("sha256:1234".into()), url: None, description: None,
+        });
+        let media_event = event_from_row(room, with_media);
+        let envelope = crate::airc::realtime_wire::envelope_from_event(&media_event)
+            .expect("valid hydrated envelope").expect("media envelope present");
+        let encoded = serde_json::to_value(envelope).expect("encode");
+        assert_eq!(encoded["payload"]["payload"]["inline"]["media"][0]["blobHash"], "sha256:1234");
+        assert_eq!(media_event.event_id.as_uuid(), row.id);
+        let incoming = perceptual_from_event(&media_event).expect("caption turn");
+        assert_eq!(incoming.text, row.text);
+        assert_eq!(incoming.media.len(), 1);
+        assert!(incoming.render_room_update().contains("contents not loaded"));
+        let restored: IncomingMessage = serde_json::from_value(serde_json::to_value(&incoming).unwrap()).unwrap();
+        assert_eq!(restored.media, incoming.media);
         let (id, sender) = (row.id, row.sender);
         let msg = perceptual_from_event(&event_from_row(room, row)).expect("a text row is a turn");
         assert_eq!((msg.event_id, msg.peer_id, msg.room_id), (id, sender, room));
         assert_eq!(msg.text, "Joel here — which card do you hold?");
+
+        // Native AIRC attachment-only turns must reach the same typed projection,
+        // without turning another machine's filesystem path into a local read.
+        let mut native = media_event.clone();
+        native.kind = airc_core::TranscriptKind::Attachment;
+        native.body = None;
+        native.headers = airc_core::Headers::default();
+        native.attachment = Some(airc_core::AttachmentManifest {
+            file_id: airc_core::FileId::new(), name: "site.png".into(),
+            media_type: Some("image/png".into()), size_bytes: 42,
+            content_hash: airc_core::ContentHash(format!("sha256:{}", "a".repeat(64))),
+            local_path: Some("C:/private/site.png".into()),
+            remote_ref: Some("https://example.invalid/site.png".into()),
+        });
+        let perceived = perceptual_from_event(&native).expect("native attachment is a room turn");
+        assert_eq!(perceived.media.len(), 1);
+        assert_eq!(perceived.media[0].kind, "image");
+        assert!(perceived.text.is_empty());
+        assert!(perceived.media[0].url.is_none());
+        assert!(!perceived.render_room_update().contains("private"));
+        native.headers.insert(airc_lib::HEADER_STREAM_ID.into(), "stream".into());
+        assert!(perceptual_from_event(&native).is_err(), "attachments must not bypass stream filtering");
     }
 
     // what this catches: the same line under two ids (the sender's message id

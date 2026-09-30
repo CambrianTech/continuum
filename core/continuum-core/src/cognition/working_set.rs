@@ -121,6 +121,84 @@ pub struct PersonaDemand {
     /// count. Legacy files without it read 0.
     #[serde(default)]
     pub sent_peak: u32,
+    /// The last [`RECENT_TURNS`] untrimmed demands, newest overwriting oldest — what
+    /// her turns TYPICALLY assemble, as opposed to `peak_tokens` (once, ever). The
+    /// lane REQUIREMENT is the median of these with headroom (`typical_tokens`):
+    /// Kimi's peak on the 5090 was 176k, which no lane on a 32 GB card can hold,
+    /// while her turns run ~30–60k — sizing to the peak would shed her model for
+    /// nothing (Joel, 2026-09-20: "fix it, this is the bug"). Legacy files read empty.
+    #[serde(default)]
+    pub recent: [u32; RECENT_TURNS],
+    /// Next slot to overwrite in `recent`.
+    #[serde(default)]
+    pub recent_next: u8,
+    /// The last [`RECENT_TURNS`] post-fit sizes of turns the fit HELD — her NEED, as
+    /// opposed to `recent` (her WISH, the untrimmed assembly). A turn counts here only
+    /// when `fit_messages` kept the source's truthful minimum and something survived
+    /// the fit: dropping optional history is the fit working, not starvation. The
+    /// allocator GATES on the median of this ring (no headroom — she was served at
+    /// that size) and TARGETS the wish (card 70706a9e: Kimi's wish 99k × 1.25 read as
+    /// "over the grid" at a 75,776 seat her turns were fitting into every time).
+    /// Legacy files read empty → no need known → the wish stands in, as before.
+    #[serde(default)]
+    pub need_recent: [u32; RECENT_TURNS],
+    /// Next slot to overwrite in `need_recent`.
+    #[serde(default)]
+    pub need_next: u8,
+}
+
+/// How many recent turns define "typical". Sixteen: a working session, not a
+/// lifetime; a change of task shows within a dozen turns.
+pub const RECENT_TURNS: usize = 16;
+
+/// Push one untrimmed demand into her recent ring (newest overwrites oldest).
+fn push_recent(d: &mut PersonaDemand, demand_tokens: u32) {
+    let i = (d.recent_next as usize) % RECENT_TURNS;
+    d.recent[i] = demand_tokens;
+    d.recent_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+/// Push one HELD turn's post-fit size into her need ring (newest overwrites oldest).
+fn push_need(d: &mut PersonaDemand, need_tokens: u32) {
+    let i = (d.need_next as usize) % RECENT_TURNS;
+    d.need_recent[i] = need_tokens;
+    d.need_next = ((i + 1) % RECENT_TURNS) as u8;
+}
+
+fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
+    let mut v: Vec<u32> = ring.iter().copied().filter(|t| *t > 0).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    Some(v[v.len() / 2])
+}
+
+/// The median of her recent untrimmed demands — her TYPICAL turn. `None` until one
+/// is recorded (a legacy file carries only the peak).
+pub fn typical_tokens(d: &PersonaDemand) -> Option<u32> {
+    median_of(&d.recent)
+}
+
+/// The median post-fit size of her recent HELD turns — what a lane provably held for
+/// her. `None` until a held turn is recorded; the allocator then gates on the wish.
+pub fn need_tokens(d: &PersonaDemand) -> Option<u32> {
+    median_of(&d.need_recent)
+}
+
+/// The size a HELD turn contributes to her need ring — `None` when the turn was not
+/// held, so the ring never learns a starved window's echo (the 5090's self-sealed
+/// 2048, 2026-09-20). A turn is held when the fit kept the source's truthful minimum
+/// (`fit_ok`) AND something survived it (`sent > framing`): a fit that dropped every
+/// message and "succeeded" is the window measuring itself, not the turn. Pure.
+pub fn need_sample(sent_tokens: u32, framing_tokens: u32, fit_ok: bool) -> Option<u32> {
+    (fit_ok && sent_tokens > framing_tokens).then_some(sent_tokens)
+}
+
+/// What a lane must hold for her: the typical turn, else the last one — one honest
+/// sample, never the peak.
+pub fn requirement_tokens(d: &PersonaDemand) -> u32 {
+    typical_tokens(d).unwrap_or(d.last_tokens) // unwrap_or: no ring yet (a legacy record) = her last measured turn, a measurement, never the peak or a constant
 }
 
 /// One mind's observed REPLY size — the output-side twin of [`PersonaDemand`].
@@ -132,6 +210,55 @@ pub struct PersonaDemand {
 /// to 195 tokens and dropping the room board for want of 137 (measured
 /// 2026-08-31, the meta-loop spiral). Both reserve comments named this exact
 /// registry pattern as the honest endgame; this is it.
+/// How many recent turns the reasoning / answer NEED is read from — a p90 over this
+/// many is the mind's measured demand per channel; a peak alone is one loud turn.
+const NEED_SAMPLES: usize = 16;
+/// Turns observed before the need is trusted to size an allowance — the same bar the
+/// reserve asks (`turns >= 3`) before one reply sizes every turn after it.
+const MIN_NEED_TURNS: u32 = 3;
+/// Headroom over the p90 need (5/4): the p90 is what she USUALLY needs; the allowance
+/// must hold the turn that runs a little longer. An integer ratio, like the decay.
+const NEED_HEADROOM_NUM: u32 = 5;
+const NEED_HEADROOM_DEN: u32 = 4;
+
+/// What ONE turn of this mind needs to generate, per channel: her measured reasoning
+/// (the `<think>` / `reasoning_content` channel) and her measured answer — each the p90
+/// of recent turns with headroom. Measured on the M5 (2026-09-20, 20:58–21:14Z) because
+/// #4194 sized the allowance in TIME alone and two turns ended inside the reasoning
+/// channel (`persona.act.think_only reasoning_len=2730`, `2112`): no answer, no act. An
+/// allowance that does not hold the think never reaches the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputNeed {
+    /// Tokens of reasoning a turn needs (p90 × headroom).
+    pub reasoning: u32,
+    /// Tokens of answer a turn needs (p90 × headroom).
+    pub answer: u32,
+    /// Turns the need was read from — how much to trust it.
+    pub turns: u32,
+}
+
+impl OutputNeed {
+    /// The whole turn: think, then answer.
+    pub fn total(self) -> u32 {
+        self.reasoning.saturating_add(self.answer)
+    }
+}
+
+/// The p90 of `samples` (ascending sort, the value at the 90th percentile position)
+/// with the need headroom applied. Empty = 0.
+fn p90_with_headroom(samples: &[u32]) -> u32 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let n = sorted.len();
+    let idx = (n * 9).div_ceil(10).saturating_sub(1);
+    sorted[idx.min(n - 1)]
+        .saturating_mul(NEED_HEADROOM_NUM)
+        .div_ceil(NEED_HEADROOM_DEN)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PersonaEmission {
     /// High-water mark, in tokens, of a completed generation. A turn that hit
@@ -146,6 +273,103 @@ pub(crate) struct PersonaEmission {
     pub last_seen_ms: u64,
     /// Observation count — what lets a reader judge how much to trust the peak.
     pub turns: u64,
+    /// The last [`NEED_SAMPLES`] turns' reasoning tokens, a ring (`need_turns` is the
+    /// cursor). A file from before this field loads zeros with `need_turns` 0 — no
+    /// need measured, never a zero need.
+    #[serde(default)]
+    pub reasoning_samples: [u32; NEED_SAMPLES],
+    /// The last [`NEED_SAMPLES`] turns' answer tokens, the same ring.
+    #[serde(default)]
+    pub answer_samples: [u32; NEED_SAMPLES],
+    /// Turns recorded into the rings (saturating). `< MIN_NEED_TURNS` = no need yet.
+    #[serde(default)]
+    pub need_turns: u32,
+}
+
+/// How a generation ENDED, as the emission record has to know it. The registry sizes
+/// the next allowance from what it records here, so the record must say not only that
+/// a generation was cut at its cap but WHICH CHANNEL the cap fell in.
+///
+/// Why (BigMama, Kimi, 2026-09-26): every `FinishReason::Length` used to record at DOUBLE
+/// — "clamped by the reserve, so the true demand is above the count". Kimi's turns
+/// refuted that reading: 41% of her requests failed, and the failed ones were exactly
+/// the large ones (`maxTokens` ≥ 9,848 against a completed p50 of 6,448). A pass cut
+/// inside its think doubled the need, the next allowance grew to hold it, the longer
+/// generation ran past the turn deadline and failed outright — and a failure records
+/// nothing, so only the cuts were ever measured. A one-way ratchet; her live
+/// `emission.json` held think-only cuts at 14,272 and 18,154 and a peak of 18,154.
+///
+/// The first revision halved such a cut. Cormac's review of #4406 showed that is a
+/// ratchet the other way once the loop closes — a smaller need cuts her earlier, which
+/// halves again, C → C/2 → C/4 down to the floor — and that "committed = a parsed tool
+/// call" mislabels a `code/write` cut mid-payload, the very cut that needed more room.
+/// So the classification is by CHANNEL, and no factor below one exists anywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmissionStop {
+    /// The model stopped on its own (stop token or tool call): both channels record
+    /// verbatim — this is her real size for that turn.
+    Landed,
+    /// Cut at the cap WITH answer tokens: she was saying or calling something and the
+    /// cap fell in it. The answer channel records at double (the growth path), the
+    /// think verbatim, and the peak is the SUM of the two — never `output × 2`, which
+    /// is what walked a 7,000-token think with a three-token answer to 14,006.
+    CutMidAnswer,
+    /// Cut at the cap with NO answer tokens: the think consumed the whole allowance and
+    /// nothing was said. Not a sample of her need at all — a thinking model fills
+    /// whatever room it is given, so a censored think says only "at least this much
+    /// think fits in this allowance"; pushed into the need ring it would carry the
+    /// landed turns' headroom on top of a value that already IS the allowance, and the
+    /// loop would drift up ×5/4 a turn to the share. The peak takes it verbatim (so the
+    /// reserve holds), `turns` counts it, the need ring does not: the allowance stays
+    /// sized by the turns in which she said something, which is the branch's name.
+    /// The cut itself is the fault paths' business (`persona.act.think_only`,
+    /// `delib.truncated_not_an_answer`), not the measurement's.
+    CutMidThought,
+    /// The turn LANDED, but its think stopped AT the reasoning budget the request set
+    /// (three quarters of the allowance, `deliberation_reasoning_budget`). The reasoning
+    /// sample is censored: a thinking model fills whatever room it is given, so the
+    /// count says only "at least the budget", not her need. Pushed verbatim it would
+    /// teach the need ring the budget, and with the 5/4 headroom the next allowance is
+    /// 5/4 × (3/4 A + answer) = 15/16 A + 5/4 answer — a geometric contraction toward
+    /// max(time floor, 20 × answer), the forbidden clamp arrived at by feedback (Cormac
+    /// on #4409). Recording it AT the allowance instead compounds the other way: a
+    /// thinking model fills every budget, so "at least what she was given" ×5/4 each
+    /// turn drives every deliberating mind to the full reserve (simulated: 8k → 184k in
+    /// 20 turns), and on a slow lane that is the latency law broken. So a budget-hit is
+    /// NOT a need sample, exactly as a think-only cut is not: the need ring keeps her
+    /// landed shape, the peak takes the turn verbatim, and growth comes only from turns
+    /// she ends on her own or from a cut inside the answer.
+    ThinkBudgetHit { allowance: u32 },
+}
+
+impl EmissionStop {
+    /// Classify a finished generation by where the cap fell: `hit_cap` is a
+    /// `FinishReason::Length` stop, `answer_tokens` the share of the server's count that
+    /// was not reasoning. Only a cap hit is a cut.
+    pub fn classify(hit_cap: bool, answer_tokens: u32) -> Self {
+        match (hit_cap, answer_tokens) {
+            (false, _) => Self::Landed,
+            (true, 0) => Self::CutMidThought,
+            (true, _) => Self::CutMidAnswer,
+        }
+    }
+
+    /// [`Self::classify`] with the request's reasoning budget in hand: a landed turn
+    /// whose think reached the budget is a `ThinkBudgetHit`, the rest classify as before.
+    pub fn classify_with_budget(
+        hit_cap: bool,
+        answer_tokens: u32,
+        reasoning_tokens: u32,
+        reasoning_budget: Option<u32>,
+        allowance: u32,
+    ) -> Self {
+        match reasoning_budget {
+            Some(budget) if !hit_cap && budget > 0 && reasoning_tokens >= budget => {
+                Self::ThinkBudgetHit { allowance }
+            }
+            _ => Self::classify(hit_cap, answer_tokens),
+        }
+    }
 }
 
 /// Per-persona observed turn demand for ONE core.
@@ -206,13 +430,22 @@ impl WorkingSetRegistry {
                 d.last_tokens = demand_tokens;
                 d.last_seen_ms = now_ms;
                 d.turns += 1;
+                push_recent(d, demand_tokens);
             })
-            .or_insert(PersonaDemand {
-                peak_tokens: demand_tokens,
-                last_tokens: demand_tokens,
-                last_seen_ms: now_ms,
-                turns: 1,
-                sent_peak: 0,
+            .or_insert_with(|| {
+                let mut d = PersonaDemand {
+                    peak_tokens: demand_tokens,
+                    last_tokens: demand_tokens,
+                    last_seen_ms: now_ms,
+                    turns: 1,
+                    sent_peak: 0,
+                    recent: [0; RECENT_TURNS],
+                    recent_next: 0,
+                    need_recent: [0; RECENT_TURNS],
+                    need_next: 0,
+                };
+                push_recent(&mut d, demand_tokens);
+                d
             })
     }
 
@@ -249,8 +482,44 @@ impl WorkingSetRegistry {
                 last_seen_ms: now_ms,
                 turns: 0,
                 sent_peak: sent_tokens,
+                recent: [0; RECENT_TURNS],
+                recent_next: 0,
+                need_recent: [0; RECENT_TURNS],
+                need_next: 0,
             });
         Self::save(persona, &updated);
+    }
+
+    /// Record the post-fit size of a turn the fit HELD — her need (see
+    /// [`need_sample`] for what counts). Persisted with the demand.
+    pub fn record_need(&self, persona: Uuid, need_tokens: u32, now_ms: u64) {
+        if need_tokens == 0 {
+            return;
+        }
+        let updated = self.record_need_in_memory(persona, need_tokens, now_ms);
+        Self::save(persona, &updated);
+    }
+
+    pub(crate) fn record_need_in_memory(&self, persona: Uuid, need_tokens: u32, now_ms: u64) -> PersonaDemand {
+        *self
+            .observed
+            .entry(persona)
+            .and_modify(|d| push_need(d, need_tokens))
+            .or_insert_with(|| {
+                let mut d = PersonaDemand {
+                    peak_tokens: 0,
+                    last_tokens: 0,
+                    last_seen_ms: now_ms,
+                    turns: 0,
+                    sent_peak: 0,
+                    recent: [0; RECENT_TURNS],
+                    recent_next: 0,
+                    need_recent: [0; RECENT_TURNS],
+                    need_next: 0,
+                };
+                push_need(&mut d, need_tokens);
+                d
+            })
     }
 
     /// The largest untrimmed demand among `personas` (the residents), not the whole
@@ -302,22 +571,28 @@ impl WorkingSetRegistry {
     /// Record one completed generation's measured output for `persona`.
     ///
     /// `output_tokens` is the SERVER's count (`usage.output_tokens`) — reasoning
-    /// tokens included, never an estimate. `hit_cap` marks a `FinishReason::Length`
-    /// stop: that emission was clamped by the very reserve this measurement sizes,
-    /// so it records at double (a floor on true demand, and the growth path — see
-    /// [`PersonaEmission::peak_tokens`]). Zero-token completions are the empty-
-    /// completion fault's territory, not a data point to drag the peak with.
+    /// tokens included, never an estimate; `reasoning_tokens` is the share of it the
+    /// reasoning channel took (the faculty apportions the server's count by channel
+    /// bytes), so the answer is the remainder. `stop` says where it ended
+    /// ([`EmissionStop`]): a landed generation records verbatim; a cut inside the
+    /// answer records the answer at double (a floor on true demand, and the growth
+    /// path — see [`PersonaEmission::peak_tokens`]) and the peak as the sum of the
+    /// channels; a cut inside the think records the peak verbatim and is not a need
+    /// sample. Zero-token completions
+    /// are the empty-completion fault's territory, not a data point to drag the peak with.
     pub(crate) fn record_emission(
         &self,
         persona: Uuid,
         output_tokens: u32,
-        hit_cap: bool,
+        reasoning_tokens: u32,
+        stop: EmissionStop,
         now_ms: u64,
     ) {
         if output_tokens == 0 {
             return;
         }
-        let updated = self.record_emission_in_memory(persona, output_tokens, hit_cap, now_ms);
+        let updated =
+            self.record_emission_in_memory(persona, output_tokens, reasoning_tokens, stop, now_ms);
         // Same persistence contract as demand: every observation, atomic, best-effort
         // — a restart is a pause, and a mind must not re-earn its reply size per boot.
         let path = match emission_path(persona) {
@@ -345,7 +620,7 @@ impl WorkingSetRegistry {
 
     /// How much of a past peak survives each new observation (7/8).
     ///
-    /// The peak must be able to FALL, or `hit_cap`'s doubling is a one-way ratchet to the
+    /// The peak must be able to FALL, or a mid-answer cut's doubling is a one-way ratchet to the
     /// ceiling (see [`Self::record_emission_in_memory`]). 7/8 per observation is ~16 turns
     /// to forget a measurement that was never real — fast enough that a poisoned record
     /// heals within a work session, slow enough that a citizen who genuinely writes long
@@ -363,20 +638,39 @@ impl WorkingSetRegistry {
         &self,
         persona: Uuid,
         output_tokens: u32,
-        hit_cap: bool,
+        reasoning_tokens: u32,
+        stop: EmissionStop,
         now_ms: u64,
     ) -> PersonaEmission {
-        let observed = if hit_cap {
-            output_tokens.saturating_mul(2)
-        } else {
-            output_tokens
+        let reasoning = reasoning_tokens.min(output_tokens);
+        let answer = output_tokens - reasoning;
+        // The cut channel takes the growth, and the peak is the SUM of the channels as
+        // measured — never `output × 2`: a 7,000-token think cut three tokens into its
+        // answer needs 7,006, not 14,006 (see [`EmissionStop`]).
+        let (reasoning, answer) = match stop {
+            EmissionStop::Landed | EmissionStop::CutMidThought => (reasoning, answer),
+            EmissionStop::CutMidAnswer => (reasoning, answer.saturating_mul(2)),
+            // A censored think is recorded verbatim on the peak side; the need ring skips it.
+            EmissionStop::ThinkBudgetHit { .. } => (reasoning, answer),
+        };
+        let observed = reasoning.saturating_add(answer);
+        let push_need = |e: &mut PersonaEmission| {
+            // A think-only cut is not a sample of her need ([`EmissionStop::CutMidThought`]).
+            if matches!(stop, EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. }) {
+                return;
+            }
+            let slot = (e.need_turns as usize) % NEED_SAMPLES;
+            e.reasoning_samples[slot] = reasoning;
+            e.answer_samples[slot] = answer;
+            e.need_turns = e.need_turns.saturating_add(1);
         };
         *self
             .emitted
             .entry(persona)
             .and_modify(|e| {
+                push_need(&mut *e);
                 // A RECENT high-water mark, not an eternal one. `.max()` alone is a
-                // one-way ratchet: `hit_cap` records at DOUBLE, so a single truncated
+                // one-way ratchet: a mid-answer cut records its answer at DOUBLE, so a single truncated
                 // turn pins the peak at twice the cap forever, the reserve derived from
                 // it saturates at the ceiling, and — because this file is persisted so a
                 // mind "must not re-earn its reply size per boot" — the poisoned value
@@ -388,7 +682,7 @@ impl WorkingSetRegistry {
                 //
                 // Decaying by PEAK_DECAY_NUM/PEAK_DECAY_DEN each observation keeps both
                 // properties that mattered: a genuine large reply still takes the peak
-                // instantly (the growth path `hit_cap` exists for), and a peak that was
+                // instantly (the growth path `CutMidAnswer` exists for), and a peak that was
                 // never real fades on its own — so poisoned records SELF-HEAL over a few
                 // dozen turns with no migration and no operator step.
                 e.peak_tokens = observed.max(
@@ -400,17 +694,40 @@ impl WorkingSetRegistry {
                 e.last_seen_ms = now_ms;
                 e.turns += 1;
             })
-            .or_insert(PersonaEmission {
-                peak_tokens: observed,
-                last_tokens: observed,
-                last_seen_ms: now_ms,
-                turns: 1,
+            .or_insert_with(|| {
+                let mut e = PersonaEmission {
+                    peak_tokens: observed,
+                    last_tokens: observed,
+                    last_seen_ms: now_ms,
+                    turns: 1,
+                    reasoning_samples: [0; NEED_SAMPLES],
+                    answer_samples: [0; NEED_SAMPLES],
+                    need_turns: 0,
+                };
+                push_need(&mut e);
+                e
             })
     }
 
     /// This persona's observed reply size, for the reserve derivation and the glass box.
     pub(crate) fn emission_of(&self, persona: Uuid) -> Option<PersonaEmission> {
         self.emitted.get(&persona).map(|e| *e.value())
+    }
+
+    /// What ONE turn of this mind needs to generate, per channel — `None` until
+    /// [`MIN_NEED_TURNS`] turns have been measured (a legacy `emission.json` without the
+    /// rings reads `None` too). Unknown is not zero: the caller falls back to the reserve.
+    pub fn need_of(&self, persona: Uuid) -> Option<OutputNeed> {
+        let e = self.emission_of(persona)?;
+        if e.need_turns < MIN_NEED_TURNS {
+            return None;
+        }
+        let filled = (e.need_turns as usize).min(NEED_SAMPLES);
+        Some(OutputNeed {
+            reasoning: p90_with_headroom(&e.reasoning_samples[..filled]),
+            answer: p90_with_headroom(&e.answer_samples[..filled]),
+            turns: e.need_turns.min(NEED_SAMPLES as u32),
+        })
     }
 
     /// Atomic tmp+rename so a crash mid-write never leaves a torn file that would
@@ -586,6 +903,67 @@ mod tests {
     // twelve leased-in coders sending ~30k queued on it. Their prompts must pull the median
     // to what the seat actually serves; and a seat with NO local residents but leased-in
     // minds must still have a floor.
+    // what this catches (Joel 2026-09-20, "fix it, this is the bug"): the REQUIREMENT is
+    // her typical turn, not her peak. Kimi on the 5090: one 176k turn ever, ~30–60k
+    // usually — the requirement is the median of recent turns, the peak stays the
+    // peak, and a legacy record with no ring falls back to her last turn.
+    #[test]
+    fn a_minds_requirement_is_her_typical_turn_never_her_peak() {
+        let reg = WorkingSetRegistry::new();
+        let kimi = Uuid::new_v4();
+        for (i, t) in [176_154u32, 29_911, 56_057, 40_448, 45_000, 31_000, 60_000].iter().enumerate() {
+            reg.record_in_memory(kimi, *t, i as u64);
+        }
+        let d = reg.demand_of(kimi).expect("recorded");
+        assert_eq!(d.peak_tokens, 176_154);
+        assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
+        assert_eq!(requirement_tokens(&d), 45_000);
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0 };
+        assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
+        let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
+        assert_eq!(typical_tokens(&ser), None);
+        // The ring is bounded: after 40 turns only the last 16 define "typical".
+        for i in 0..40u32 {
+            reg.record_in_memory(kimi, 100_000 + i, 100 + i as u64);
+        }
+        let d = reg.demand_of(kimi).expect("recorded");
+        assert!(typical_tokens(&d).expect("ring") >= 100_024, "the old small turns aged out");
+    }
+
+    // what this catches (card 70706a9e): the NEED ring learns only from turns the fit
+    // HELD. Kimi's wish (untrimmed assembly) ran 99k over a 75,776 seat her turns fitted
+    // into every time; gating on the wish × 1.25 read her as "over the grid" at her own
+    // seat. The need is the post-fit size of held turns, no headroom; a starved turn
+    // (truthful minimum did not fit) or an emptied one (framing only — the 5090's
+    // self-sealed 2048) contributes nothing, so the ring can never echo a window.
+    // Legacy JSON without the ring reads as no need known.
+    #[test]
+    fn the_need_ring_learns_only_from_held_turns_and_never_a_windows_echo() {
+        // The sample rule, pinned.
+        assert_eq!(need_sample(70_000, 3_000, true), Some(70_000), "held: what was sent is the need");
+        assert_eq!(need_sample(99_000, 3_000, false), None, "starved: no sample, never the demand");
+        assert_eq!(need_sample(828, 828, true), None, "framing only survived: the window's echo, not a turn");
+        assert_eq!(need_sample(0, 0, true), None);
+
+        let reg = WorkingSetRegistry::new();
+        let kimi = Uuid::new_v4();
+        // Wish 99k on every turn; need ~70k on the held ones.
+        for i in 0..8u32 {
+            reg.record_in_memory(kimi, 99_000 + i, i as u64);
+            reg.record_need_in_memory(kimi, 70_000 + i, i as u64);
+        }
+        let d = reg.demand_of(kimi).expect("recorded");
+        assert!(typical_tokens(&d).expect("wish ring") >= 99_000, "the wish is still the wish");
+        let need = need_tokens(&d).expect("need ring");
+        assert!((70_000..70_008).contains(&need), "the need is what held: {need}");
+        // A legacy record has no need ring: None, and the caller falls back to the wish.
+        let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
+        assert_eq!(need_tokens(&ser), None);
+        // Round-trips with the ring.
+        let back: PersonaDemand = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(need_tokens(&back), Some(need));
+    }
+
     #[test]
     fn the_typical_prompt_includes_the_prompts_a_seat_serves_for_other_nodes() {
         let reg = WorkingSetRegistry::new();
@@ -667,9 +1045,9 @@ mod tests {
     #[test]
     fn a_capped_emission_records_double_and_an_uncapped_one_verbatim() {
         let reg = WorkingSetRegistry::new();
-        reg.record_emission_in_memory(p(1), 2_500, false, 1_000);
+        reg.record_emission_in_memory(p(1), 2_500, 0, EmissionStop::Landed, 1_000);
         assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(2_500));
-        reg.record_emission_in_memory(p(1), 3_000, true, 2_000);
+        reg.record_emission_in_memory(p(1), 3_000, 0, EmissionStop::CutMidAnswer, 2_000);
         let e = reg.emission_of(p(1)).expect("observed");
         assert_eq!(
             e.peak_tokens, 6_000,
@@ -680,7 +1058,7 @@ mod tests {
         // collapse to the size of one ack (that is the tiny-talker trap the floor exists
         // for), and it must not stay pinned either (that is the ratchet that poisoned a
         // citizen's emission.json at 16,384 and left her 297 tokens of context).
-        reg.record_emission_in_memory(p(1), 40, false, 3_000);
+        reg.record_emission_in_memory(p(1), 40, 0, EmissionStop::Landed, 3_000);
         let decayed = reg
             .emission_of(p(1))
             .map(|e| e.peak_tokens)
@@ -700,7 +1078,7 @@ mod tests {
     fn a_peak_that_was_never_real_heals_itself_without_a_migration() {
         let reg = WorkingSetRegistry::new();
         // Exactly the poisoned value read off a real citizen's emission.json.
-        reg.record_emission_in_memory(p(7), 8_192, true, 1_000);
+        reg.record_emission_in_memory(p(7), 8_192, 0, EmissionStop::CutMidAnswer, 1_000);
         assert_eq!(
             reg.emission_of(p(7)).map(|e| e.peak_tokens),
             Some(16_384),
@@ -710,7 +1088,7 @@ mod tests {
         // Her actual replies are a few hundred tokens. Within a work session of them the
         // measurement must come back to something a reply-sized reserve can be built on.
         for turn in 2..=40u64 {
-            reg.record_emission_in_memory(p(7), 300, false, turn * 1_000);
+            reg.record_emission_in_memory(p(7), 300, 0, EmissionStop::Landed, turn * 1_000);
         }
         let healed = reg
             .emission_of(p(7))
@@ -730,6 +1108,50 @@ mod tests {
     // the citizens were re-strangled until they earned it back. Joel's standard for a
     // restart is a PAUSE, not a death.
     #[test]
+    // regression for the Kimi allowance ratchet (BigMama, 2026-09-26): 41% of her
+    // requests failed and the failed ones were the LARGE ones — a think-only cut
+    // doubled the need, the allowance grew to hold it, and the longer pass died at
+    // the turn deadline instead of landing. Revised on Cormac's review of #4406:
+    // halving the cut was a ratchet the other way once the loop closed, and a cut
+    // mid-answer is the write that needed room.
+    // what this catches: with the loop CLOSED (each cap is the previous need), a run
+    // of think-only cuts moves neither the need nor the peak; a mid-answer cut grows
+    // only its channel and the peak is the sum, never output × 2; classification is
+    // by channel.
+    fn a_think_only_cut_moves_nothing_and_a_mid_answer_cut_grows_only_its_channel() {
+        let reg = WorkingSetRegistry::default();
+        // Her landed shape: ~6.4k-token turns, mostly think.
+        for t in 0..MIN_NEED_TURNS as u64 {
+            reg.record_emission_in_memory(p(9), 6_448, 6_000, EmissionStop::Landed, t);
+        }
+        let landed = reg.need_of(p(9)).expect("need measured");
+        let peak_landed = reg.emission_of(p(9)).expect("recorded").peak_tokens;
+        // The closed loop: every turn is a think-only cut at the cap the last need set.
+        let mut cap = landed.total();
+        for t in 0..(NEED_SAMPLES as u64 + 4) {
+            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, 0), 100 + t);
+            let need = reg.need_of(p(9)).expect("need measured");
+            assert_eq!(need, landed, "a think-only cut is not a sample: the need does not move (turn {t})");
+            let e = reg.emission_of(p(9)).expect("recorded");
+            assert_eq!(e.last_tokens, cap, "the peak side takes the cut verbatim");
+            assert!(e.peak_tokens <= peak_landed.max(cap), "never output × 2: peak {}", e.peak_tokens);
+            cap = need.total();
+        }
+        // A cut inside the ANSWER is the growth path, on that channel only: the peak is
+        // the sum of the channels, not the whole output doubled.
+        reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, 3), 1);
+        assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 7_006, "7,006, not 14,006");
+        reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, 6_000), 1);
+        let write = reg.emission_of(p(7)).expect("recorded");
+        assert_eq!((write.peak_tokens, write.answer_samples[0], write.reasoning_samples[0]), (13_000, 12_000, 1_000));
+        // Classification is by channel; only a cap hit is a cut.
+        assert_eq!(EmissionStop::classify(false, 0), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(false, 9), EmissionStop::Landed);
+        assert_eq!(EmissionStop::classify(true, 0), EmissionStop::CutMidThought);
+        assert_eq!(EmissionStop::classify(true, 1), EmissionStop::CutMidAnswer);
+    }
+
+    #[test]
     fn a_measured_peak_survives_a_restart_so_a_reboot_is_a_pause_not_a_demotion() {
         let home = tempfile::tempdir().expect("tmp home");
         // HOME is absent at the shared policy seam; native discovery points at
@@ -739,7 +1161,7 @@ mod tests {
         let persona = p(9);
         let before = WorkingSetRegistry::new();
         before.record(persona, 24_126, 1_000);
-        before.record_emission(persona, 321, false, 1_001);
+        before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
         // A fresh process: new registry, nothing in memory.
@@ -757,12 +1179,59 @@ mod tests {
         );
 
         assert_eq!(after.emission_of(persona), before.emission_of(persona));
+        assert_eq!(
+            after.emission_of(persona).map(|e| (e.need_turns, e.reasoning_samples[0], e.answer_samples[0])),
+            Some((1, 200, 121)),
+            "the channel split rides the same file: her reasoning need is not re-earned per boot"
+        );
         assert!(home
             .path()
             .join(".continuum/personas")
             .join(persona.to_string())
             .join("working-set.json")
             .is_file());
+    }
+
+    // what this catches (the M5, 2026-09-20 20:58–21:14Z): an allowance sized in time alone
+    // (20 s × 12 tok/s = 240) cannot hold a thinking pass; Qwen3.8 ended two turns inside
+    // the reasoning channel (`think_only reasoning_len=2730`, `2112`). The need is the p90
+    // of recent turns per channel with 5/4 headroom; it is UNKNOWN (None) before three
+    // turns and for a legacy emission file; a Length stop with no answer is not a need
+    // sample; the ring keeps the last 16 so one loud turn ages out.
+    #[test]
+    fn the_reasoning_need_is_a_p90_with_headroom_and_unknown_before_it_is_measured() {
+        let reg = WorkingSetRegistry::new();
+        assert_eq!(reg.need_of(p(3)), None, "never measured: unknown, not zero");
+        reg.record_emission_in_memory(p(3), 1_000, 700, EmissionStop::Landed, 1);
+        reg.record_emission_in_memory(p(3), 1_200, 900, EmissionStop::Landed, 2);
+        assert_eq!(reg.need_of(p(3)), None, "two turns are not yet a need");
+        reg.record_emission_in_memory(p(3), 900, 600, EmissionStop::Landed, 3);
+        let need = reg.need_of(p(3)).expect("three turns measure a need");
+        assert_eq!((need.reasoning, need.answer, need.turns), (1_125, 375, 3), "p90 of 3 is the max (900, 300) × 5/4");
+        assert_eq!(need.total(), 1_500);
+        // A Length stop with NO answer cut the think: the peak takes it, the need ring
+        // does not (Cormac's review of #4406 — doubling it here was the ratchet).
+        reg.record_emission_in_memory(p(3), 768, 768, EmissionStop::CutMidThought, 4);
+        let need = reg.need_of(p(3)).expect("measured");
+        assert_eq!((need.reasoning, need.turns), (1_125, 3), "a think-only cut is not a need sample");
+        // A Length stop WITH an answer cut the answer: that channel records at double.
+        reg.record_emission_in_memory(p(3), 1_000, 600, EmissionStop::CutMidAnswer, 5);
+        assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[3]), Some(800));
+        // The ring: sixteen quiet turns age the loud one out.
+        for t in 6..=22u64 {
+            reg.record_emission_in_memory(p(3), 400, 300, EmissionStop::Landed, t);
+        }
+        let need = reg.need_of(p(3)).expect("measured");
+        assert_eq!((need.reasoning, need.answer, need.turns), (375, 125, 16));
+        // A legacy emission.json (no rings) reads as no need — never a zero need.
+        let legacy: PersonaEmission =
+            serde_json::from_str(r#"{"peak_tokens":2500,"last_tokens":2500,"last_seen_ms":1,"turns":9}"#).unwrap();
+        assert_eq!(legacy.need_turns, 0);
+        reg.emitted.insert(p(4), legacy);
+        assert_eq!(reg.need_of(p(4)), None);
+        assert_eq!(p90_with_headroom(&[]), 0);
+        assert_eq!(p90_with_headroom(&[100; 10]), 125);
+        assert_eq!(p90_with_headroom(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 12, "the 9th of ten × 5/4, rounded up");
     }
 
     // what this catches: an invented number standing in for missing data. Before any
@@ -782,4 +1251,81 @@ mod tests {
             "a zero demand must not register as data"
         );
     }
+
+    // what this catches (the M5, 2026-09-21): `placement_switch` read a mind's seat
+    // requirement as `sent_median_of(&[her]).or(node_median)` — so a mind who had sent
+    // nothing yet was judged against the median of EVERY resident's sent peak, and
+    // `seat_starves` feeds `FallHome`, so she was EVICTED on a number that was not hers.
+    //
+    // The sibling test above pins this median for lane SIZING, which is what it is for.
+    // This one pins the fact that made it wrong for ADMISSION: on a node hosting one huge
+    // prompt, the population's answer is the outlier, and it can exceed every seat on the
+    // grid while the small mind being judged fits easily. Benchy peaks ~110k; Aiko wants
+    // 22-24k and Atlas 21-35k; all three were walked off the same 75,776 seat that holds
+    // the latter two with room to spare. Size lanes with the population; admit a mind on
+    // her own demand, or on the serve floor when she has none.
+    #[test]
+    fn the_population_median_sizes_lanes_and_must_never_admit_a_mind() {
+        let reg = WorkingSetRegistry::new();
+        let benchy = Uuid::new_v4();
+        let aiko = Uuid::new_v4();
+        reg.record_sent(benchy, 110_396, 0);
+        reg.record_sent(aiko, 24_226, 0);
+
+        assert_eq!(reg.sent_median_of(&[aiko]), Some(24_226), "her own demand is hers");
+        let population = reg.sent_median_of(&[benchy, aiko]).expect("two residents");
+        assert_eq!(population, 110_396, "the population's answer IS the outlier here");
+        assert!(
+            population > 75_776 && 24_226 < 75_776,
+            "and it exceeds the widest seat on the grid while she fits it — the eviction this removes",
+        );
+    }
+    // what this catches (Cormac on #4409): with the loop CLOSED and a thinking model that
+    // thinks to whatever budget it is given, a think stopped AT the deliberation budget
+    // must not teach the need ring the budget — verbatim, the next allowance would be
+    // 5/4 × (3/4 A + answer) and contract geometrically toward max(time floor, 20 × answer);
+    // recorded at the allowance it would compound toward the reserve instead. Skipped as a
+    // sample, the allowance holds exactly at her landed shape.
+    #[test]
+    fn a_think_stopped_at_the_budget_never_contracts_the_allowance() {
+        let reg = WorkingSetRegistry::default();
+        for t in 0..MIN_NEED_TURNS as u64 {
+            reg.record_emission_in_memory(p(6), 6_448, 6_000, EmissionStop::Landed, t);
+        }
+        let landed = reg.need_of(p(6)).expect("need measured");
+        let mut allowance = landed.total();
+        let first = allowance;
+        for t in 0..(NEED_SAMPLES as u64 + 4) {
+            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(allowance))
+                .expect("an allowance large enough to budget") as u32;
+            let answer = 300u32;
+            let stop = EmissionStop::classify_with_budget(false, answer, budget, Some(budget), allowance);
+            assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
+            reg.record_emission_in_memory(p(6), budget + answer, budget, stop, 100 + t);
+            let next = reg.need_of(p(6)).expect("need measured").total();
+            // A budget-hit is not a sample: the need ring keeps her landed shape exactly,
+            // so the allowance neither contracts toward the floor nor compounds toward
+            // the reserve (recorded at the allowance it went 8k → 184k in 20 turns).
+            assert_eq!(next, first, "the allowance moved on a censored sample at turn {t}");
+            allowance = next;
+        }
+        assert_eq!(allowance, first, "over the whole loop: {first} → {allowance}");
+        // The control: the same sequence recorded verbatim contracts. The ring's p90
+        // lags a whole ring (the second-largest of the last NEED_SAMPLES), so each 15/16
+        // step shows only per ring turnover; ten turnovers make the geometric shrink
+        // toward 20 × answer unmistakable.
+        let reg2 = WorkingSetRegistry::default();
+        for t in 0..MIN_NEED_TURNS as u64 {
+            reg2.record_emission_in_memory(p(5), 6_448, 6_000, EmissionStop::Landed, t);
+        }
+        let mut a2 = reg2.need_of(p(5)).expect("need measured").total();
+        let start2 = a2;
+        for t in 0..(NEED_SAMPLES as u64 * 10) {
+            let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
+            reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, 300), 200 + t);
+            a2 = reg2.need_of(p(5)).expect("need measured").total();
+        }
+        assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
+    }
+
 }

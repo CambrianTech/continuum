@@ -22,6 +22,12 @@ pub const ACT: &str = "⚙";
 /// Outcome marks on an act receipt.
 pub const OK: &str = "✓";
 pub const FAIL: &str = "✗";
+/// Accepted, not finished — a handle came back and the work is still running.
+/// Its own mark because a tick here is a lie about work that has not happened.
+pub const RUNNING: &str = "⋯";
+/// The substrate could not read the result. Not a failure, and not a success:
+/// an absence of information, which must look like one.
+pub const UNKNOWN: &str = "·";
 
 /// Presence plane: a line whose head is a thought or an act receipt — state
 /// radiated while working, not a message to anyone.
@@ -53,13 +59,29 @@ pub fn thought_line(thought: &str, max_chars: usize) -> String {
 }
 
 /// An act receipt line: `⚙ verb object ✓`.
-pub fn act_line(verb: &str, object: &str, ok: bool) -> String {
-    format!("{ACT} {verb} {object} {}", if ok { OK } else { FAIL })
+///
+/// THREE marks, not two (card f6c50a49). A tick used to be printed for every act
+/// whose transport did not error — so `code/run` returning `ok: false` with the
+/// compiler's stderr, and `code/shell` handing back a still-RUNNING handle, both
+/// read as success in the room. An accepted call is not a finished one, and a
+/// result nobody could decode is not a success either.
+pub fn act_line(verb: &str, object: &str, verdict: crate::sdk_codegen::ActVerdict) -> String {
+    let mark = match verdict {
+        v if v.failed() => FAIL,
+        v if v.running() => RUNNING,
+        // Unprojected keeps the old tick: the command never opted in, so this line
+        // says exactly what it said before. Undecodable deliberately does NOT get a
+        // tick — the substrate could not read the result and must not claim one.
+        crate::sdk_codegen::ActVerdict::Undecodable => UNKNOWN,
+        _ => OK,
+    };
+    format!("{ACT} {verb} {object} {mark}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sdk_codegen::{ActVerdict, ToolVerdict};
 
     // what this catches (Atlas, django-16899, 2026-09-06): a long stock-take receipt
     // that keeps only its opening — the conclusion at the end is what the next turn
@@ -83,10 +105,36 @@ mod tests {
     #[test]
     fn what_the_writer_emits_the_sniff_classes_as_presence() {
         assert!(is_presence_line(&thought_line("let me look at fields.py", 240)));
-        assert!(is_presence_line(&act_line("code/read", "swe/x.py", true)));
+        assert!(is_presence_line(&act_line(
+            "code/read",
+            "swe/x.py",
+            ActVerdict::Declared(ToolVerdict::Succeeded)
+        )));
         assert!(is_presence_line("  ⚙ code/edit swe/x.py ✗"));
         assert!(!is_presence_line("Joel here — which card do you hold?"));
         assert_eq!(thought_line("abcdef", 3), "💭 a… ef");
-        assert_eq!(act_line("code/edit", "a.py", false), "⚙ code/edit a.py ✗");
+        assert_eq!(
+            act_line("code/edit", "a.py", ActVerdict::Declared(ToolVerdict::Failed)),
+            "⚙ code/edit a.py ✗"
+        );
+
+        // what this catches (card f6c50a49): the two states a BOOL could not hold.
+        // A shell handed back still running, and a result the substrate could not
+        // decode, both used to print the success tick.
+        assert_eq!(
+            act_line("code/shell", "cargo test", ActVerdict::Declared(ToolVerdict::Running)),
+            "⚙ code/shell cargo test ⋯",
+            "accepted is not finished"
+        );
+        assert_eq!(
+            act_line("code/run", "x.py", ActVerdict::Undecodable),
+            "⚙ code/run x.py ·",
+            "a result nobody could read must not claim success"
+        );
+        // A command that never opted in is UNCHANGED — still a tick.
+        assert_eq!(
+            act_line("code/read", "a.py", ActVerdict::Unprojected),
+            "⚙ code/read a.py ✓"
+        );
     }
 }

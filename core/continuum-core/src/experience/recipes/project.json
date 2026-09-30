@@ -29,7 +29,9 @@
     }
   ],
   "affordances": [],
-  "citizens": [],
+  "citizens": [
+    { "role": "coder", "requirement": { "windowTokens": 40448, "minCapability": 12 } }
+  ],
   "params": {
     "repo": {
       "default": "",

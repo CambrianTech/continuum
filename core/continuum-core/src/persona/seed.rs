@@ -391,29 +391,21 @@ pub async fn write_seed_atomic(
         })?;
     drop(file);
 
-    tokio::fs::rename(&tmp_path, path)
+    // The rename made durable on EVERY platform (`fs_portable::durable_rename`:
+    // POSIX rename + parent fsync; Windows `MoveFileExW` write-through). This used
+    // to open the parent directory as a File and `sync_all` it — the POSIX idiom —
+    // which is `AccessDenied` on Windows, where the same guarantee lives in the
+    // rename call itself (2026-09-21, the Windows grid node's seed tests). Errors
+    // are surfaced: failure to durably persist is signal, not noise.
+    let (tmp, dst) = (tmp_path.clone(), path.to_path_buf());
+    tokio::task::spawn_blocking(move || crate::fs_portable::durable_rename(&tmp, &dst))
         .await
+        .map_err(|e| PersonaSeedError::Io {
+            path: tmp_path.clone(),
+            source: std::io::Error::other(e),
+        })?
         .map_err(|source| PersonaSeedError::Io {
             path: tmp_path.clone(),
-            source,
-        })?;
-
-    // Fsync the parent dir so the rename is durable against crash.
-    // Opening dir read-only + sync_all is the standard POSIX
-    // pattern. Errors here are surfaced (the caller knows the
-    // rename happened in-memory but may not be on disk), per
-    // every-error-is-an-opportunity-to-battle-harden — failure to
-    // durably persist is signal, not noise.
-    let dir = tokio::fs::File::open(parent)
-        .await
-        .map_err(|source| PersonaSeedError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    dir.sync_all()
-        .await
-        .map_err(|source| PersonaSeedError::Io {
-            path: parent.to_path_buf(),
             source,
         })?;
 

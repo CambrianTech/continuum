@@ -295,6 +295,7 @@ async fn run_analysis(
         // Shared analysis is room-wide cognition (not attributable to one
         // persona); registry treats this seq's KV as un-attributed.
         persona_id: None,
+        turn_bound: None,
     };
 
     // Acquire the registry read lock for the duration of the call.

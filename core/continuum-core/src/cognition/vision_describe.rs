@@ -325,10 +325,8 @@ fn parse_response(text: &str) -> ParsedResponse {
 /// Top-level entry — describe an image via the best available
 /// vision-capable model.
 ///
-/// Returns `Ok(None)` when no vision model is registered or generation
-/// fails (matching the prior TS `Promise<VisionDescription | null>`
-/// contract). Returns `Err` on caller errors (malformed params,
-/// `runtime::execute_json` failure, etc.).
+/// Returns `Ok(None)` only when no vision model is available. A selected
+/// model's failed or empty generation is an error, not model unavailability.
 pub async fn describe_image(
     req: VisionDescribeRequest,
     executor: &std::sync::Arc<crate::runtime::CommandExecutor>,
@@ -351,6 +349,34 @@ pub async fn describe_image(
         }
     }
 
+    let generate_params = build_generate_params(&req, &model_id, &provider_id);
+
+    let response_value = executor
+        .execute_json("ai/generate", generate_params)
+        .await?;
+
+    let response_text = generation_text(&response_value, &model_id, &provider_id)?;
+    let parsed = parse_response(&response_text);
+
+    Ok(Some(VisionDescription {
+        description: parsed.description,
+        model_id,
+        provider: provider_id,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        objects: parsed.objects,
+        colors: parsed.colors,
+        text: parsed.text,
+        response_time_ms: start.elapsed().as_millis() as u64,
+    }))
+}
+
+// Shared by the live dispatch and its regression: preserve the multimodal payload
+// and declare the description's purpose so the gateway reserves answer room.
+fn build_generate_params(
+    req: &VisionDescribeRequest,
+    model_id: &str,
+    provider_id: &str,
+) -> serde_json::Value {
     let prompt = req
         .options
         .prompt
@@ -371,7 +397,7 @@ pub async fn describe_image(
         .map(|len| u32::max(50, len.div_ceil(4)))
         .unwrap_or(500);
 
-    let generate_params = serde_json::json!({
+    serde_json::json!({
         "messages": [{
             "role": "user",
             "content": [
@@ -387,14 +413,14 @@ pub async fn describe_image(
         }],
         "model": model_id,
         "provider": provider_id,
+        "purpose": crate::inference::request_body::VISION_DESCRIPTION_PURPOSE,
         "maxTokens": max_tokens,
         "temperature": 0.3,
-    });
+    })
+}
 
-    let response_value = executor
-        .execute_json("ai/generate", generate_params)
-        .await?;
-
+/// Keep operational failure metadata without echoing model reasoning or raw responses.
+fn generation_text<'a>(response_value: &'a serde_json::Value, model: &str, provider: &str) -> Result<std::borrow::Cow<'a, str>, String> {
     // ai/generate's wire format serializes FinishReason via Display
     // (`modules/ai_provider.rs::response_to_json`); the sentinel string
     // matches `crate::ai::types::FinishReason::Error`'s Display impl.
@@ -410,23 +436,22 @@ pub async fn describe_image(
         .unwrap_or("");
 
     if matches!(finish_reason, Some(crate::ai::types::FinishReason::Error))
-        || response_text.is_empty()
+        || response_text.trim().is_empty()
     {
-        return Ok(None);
+        return Err(format!(
+            "vision-describe: selected model {model} (provider {provider}) returned no usable description; finish_reason={finish_reason:?}, text_bytes={}. Model selection succeeded; inspect generation before retrying",
+            response_text.len()
+        ));
     }
-
-    let parsed = parse_response(response_text);
-
-    Ok(Some(VisionDescription {
-        description: parsed.description,
-        model_id,
-        provider: provider_id,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        objects: parsed.objects,
-        colors: parsed.colors,
-        text: parsed.text,
-        response_time_ms: start.elapsed().as_millis() as u64,
-    }))
+    // The frame cache and non-vision projections retain prose, not the provider
+    // envelope. Keep the limitation attached to that prose so every consumer
+    // sees it, while preserving useful partial observations and avoiding a retry.
+    if matches!(finish_reason, Some(crate::ai::types::FinishReason::Length)) {
+        return Ok(std::borrow::Cow::Owned(format!(
+            "[Incomplete vision description: generation reached its token limit. Missing details are unknown.]\n{response_text}"
+        )));
+    }
+    Ok(std::borrow::Cow::Borrowed(response_text))
 }
 
 /// The live [`FrameDescriber`](crate::media::FrameDescriber) — the sensory bridge that
@@ -528,6 +553,34 @@ mod tests {
         assert_eq!(req.mime_type, "image/png");
         assert!(req.options.detect_objects);
         assert_eq!(req.options.max_length, Some(120));
+
+        // Regression: Kimi's 2026-09-30 capture succeeded but vision/look spent
+        // the entire completion allowance without description text. Exercise the
+        // actual dispatch payload through the shared gateway budget policy.
+        for (max_length, allowance) in [(None, 500u64), (Some(120), 50), (Some(4000), 1000)] {
+            let mut request = req.clone();
+            request.options.max_length = max_length;
+            let params = build_generate_params(&request, "vision-model", "provider");
+            assert_eq!(
+                params["messages"][0]["content"][1]["image"]["base64"],
+                "aGVsbG8="
+            );
+            assert_eq!(params["maxTokens"], allowance);
+            let mut body = serde_json::json!({"max_tokens": params["maxTokens"]});
+            let budget = crate::inference::request_body::apply_reasoning_budget(
+                params["purpose"].as_str(),
+                &mut body,
+            )
+            .expect("vision descriptions must reserve answer room");
+            assert_eq!(budget, allowance - allowance / 4);
+            assert_eq!(body["reasoning_budget_tokens"], budget);
+        }
+        let mut unrelated = serde_json::json!({"max_tokens": 500});
+        assert_eq!(
+            crate::inference::request_body::apply_reasoning_budget(None, &mut unrelated),
+            None
+        );
+        assert!(unrelated.get("reasoning_budget_tokens").is_none());
     }
 
     #[test]
@@ -564,6 +617,32 @@ mod tests {
         assert!(parsed.objects.is_none());
         assert!(parsed.colors.is_none());
         assert!(parsed.text.is_none());
+    }
+
+    // Regression: failed/empty inference was reported as unavailable vision,
+    // hiding a working model selection and encouraging pointless retries.
+    #[test]
+    fn selected_generation_failure_is_not_model_unavailability() {
+        for payload in [
+            serde_json::json!({"finishReason":"error", "text":"partial output"}),
+            serde_json::json!({"finishReason":"length", "text":"", "reasoning":"private"}),
+            serde_json::json!({"finishReason":"stop", "text":"  "}),
+        ] {
+            let error = generation_text(&payload, "vision-model", "provider").expect_err("generation failed");
+            assert!(error.contains("Model selection succeeded"));
+            assert!(!error.contains("private"));
+            assert!(!error.contains("partial output"));
+        }
+        let good = serde_json::json!({"finishReason":"stop", "text":"A heading and link."});
+        assert_eq!(generation_text(&good, "vision-model", "provider").unwrap(), "A heading and link.");
+        // A nonempty length-limited response must not become a complete cached
+        // observation, and private reasoning must never enter that observation.
+        let partial = serde_json::json!({"finishReason":"length", "text":"A small line", "reasoning":"private"});
+        let marked = generation_text(&partial, "vision-model", "provider").unwrap();
+        let projected = parse_response(&marked).description;
+        assert!(projected.starts_with("[Incomplete vision description:"));
+        assert!(projected.ends_with("A small line"));
+        assert!(!projected.contains("private"));
     }
 
     // ─── select_vision_model 4-branch priority logic ──────────────────────

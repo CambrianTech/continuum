@@ -34,18 +34,17 @@ crate::action_command! {
     pub struct CodeGithubPrComment { state: Arc<CodeState> }
     name: "code/github/pr-comment",
     access: AiSafe,
-    native: false, // reachable BY NAME; never pushed into every turn (placeholder-issue spam, 2026-09-03)
+    native: true, // offered like Claude's (Joel, 2026-09-28); the 9/03 spam cause, must-use pressure, was fixed in #3684
     params: GithubPrCommentParams,
     output: GithubPrCommentResult,
     run(this, ctx, p) => {
-        super::require_operator(ctx, "code/github/pr-comment")?;
         if p.body.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/pr-comment: 'body' is required".into()));
         }
         let root = workspace_root_for(&this.state, ctx).await?;
         let args = vec![
             "pr".to_string(), "comment".to_string(), p.number.to_string(),
-            "--body".to_string(), p.body,
+            "--body".to_string(), super::attributed(p.body, ctx),
         ];
         let url = run_gh(root, args).await?;
         Ok(GithubPrCommentResult { url })

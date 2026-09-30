@@ -91,7 +91,7 @@ pub fn resolve_from_footprint(
     // `plan_serving` returns `Some` even when nothing fits (its honest-degrade path,
     // `fits_on_gpu = false`); `None` only for an empty candidate slice, which a
     // single-element slice never is — so `unwrap_or(false)` is the not-empty floor.
-    let fits = plan_serving(host, std::slice::from_ref(fp), ServingDemand::new(1, None))
+    let fits = plan_serving(&host, std::slice::from_ref(fp), &ServingDemand::new(1, None))
         .map(|p| p.fits_on_gpu)
         .unwrap_or(false);
 
@@ -172,10 +172,9 @@ pub fn select_grid_peer(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> 
                 perf_cores: 1,
             };
             plan_serving(
-                host,
+                &host,
                 std::slice::from_ref(footprint),
-                ServingDemand::new(1, None),
-            )
+                &ServingDemand::new(1, None))
             .map(|plan| plan.fits_on_gpu)
             .unwrap_or(false)
         })

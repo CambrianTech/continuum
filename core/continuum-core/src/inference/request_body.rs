@@ -43,19 +43,61 @@ pub(crate) const ACT_PURPOSE: &str = "cognition/act";
 /// closes the thinking block at the budget; other gateways ignore the field.
 pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
 
-/// Bound the reasoning channel on an ACT request. Returns whether it applied.
-pub(crate) fn apply_act_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> bool {
-    if purpose != Some(ACT_PURPOSE) {
-        return false;
+/// The purpose a deliberation (speak / pass) turn announces on its request.
+pub(crate) const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
+
+/// A sensory description needs answer text within its existing completion allowance.
+/// Keep it distinct from persona deliberation for routing and diagnostics.
+pub(crate) const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
+
+/// The share of a deliberation turn's allowance the ANSWER keeps once thinking is
+/// bounded: three quarters may be thought, one quarter is left for what she says.
+// derived-or-floor: a share of the turn's own allowance (`output_allowance`, measured need
+// under the lane's reserve), never a token count — a capable model with a large allowance
+// thinks proportionally more. The quarter is the floor the answer can never lose.
+pub(crate) const DELIBERATION_ANSWER_SHARE_DIVISOR: u64 = 4;
+
+/// Bound the reasoning channel on a DELIBERATION request from the allowance the turn
+/// already carries. Returns the budget it applied.
+///
+/// Until now only an act carried a budget, and a deliberation could spend its whole
+/// allowance thinking: the generation ended inside the reasoning channel with no answer
+/// and no call (`persona.act.think_only`, the think-only sentinel). Kimi on the 5090 lost
+/// whole turns that way on 2026-09-26 while composing an answer (`[health] think-only`);
+/// the control on the M5 the same morning showed the budget BINDS on our llama.cpp build
+/// (budget 64 → 73 completion tokens with an answer; no budget → 287 tokens, empty). The
+/// budget is derived from her own `max_tokens`, so it is not a clamp on capable models:
+/// it only guarantees the answer its share of what the turn was already allowed.
+///
+/// ONE seam for both kinds (Fable's review of #4413): an ACT thinks the fixed
+/// [`ACT_REASONING_BUDGET`] before its call; a DELIBERATION turn thinks
+/// [`deliberation_reasoning_budget`] of its own allowance, the answer keeping its share —
+/// and vision descriptions reuse that same answer share. This applies only when
+/// the body carries an allowance to derive it from. Any other purpose is
+/// left to the model. Returns the budget it applied.
+pub(crate) fn apply_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u64> {
+    let obj = body.as_object_mut()?;
+    let budget = match purpose {
+        Some(ACT_PURPOSE) => u64::from(ACT_REASONING_BUDGET),
+        Some(DELIBERATION_PURPOSE | VISION_DESCRIPTION_PURPOSE) => {
+            deliberation_reasoning_budget(obj.get("max_tokens")?.as_u64()?)?
+        }
+        _ => return None,
+    };
+    obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
+    Some(budget)
+}
+
+/// THE ONE RULE for a deliberation turn's reasoning budget, read by the request builder
+/// (to set it) and by the emission classifier (to know a think that stopped AT it was
+/// censored by it, not measured): three quarters of the allowance; `None` when the
+/// allowance is too small for the answer to keep a quarter.
+pub(crate) fn deliberation_reasoning_budget(max_tokens: u64) -> Option<u64> {
+    let answer_share = max_tokens / DELIBERATION_ANSWER_SHARE_DIVISOR;
+    if answer_share == 0 {
+        return None;
     }
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert(
-            "reasoning_budget_tokens".to_string(),
-            json!(ACT_REASONING_BUDGET),
-        );
-        return true;
-    }
-    false
+    Some(max_tokens - answer_share)
 }
 
 pub(crate) fn finish_body(
@@ -84,14 +126,23 @@ pub(crate) fn finish_body(
     if cfg.thinking == ThinkingMode::Suppress {
         apply_enable_thinking_false(body);
     }
-    // An ACT turn thinks a bounded amount before its call, whichever gateway
-    // serves it — the remote path builds this same body on the responder.
-    if apply_act_reasoning_budget(request.purpose.as_deref(), body) {
+    // The reasoning channel is bounded by the turn's kind, whichever gateway serves it
+    // — the remote path builds this same body on the responder. An ACT thinks a fixed
+    // amount before its call; a DELIBERATION turn keeps its answer's share of its own
+    // allowance, so a turn can no longer end inside the reasoning channel with nothing
+    // said.
+    if let Some(budget) = apply_reasoning_budget(request.purpose.as_deref(), body) {
+        let budget_class = match request.purpose.as_deref() {
+            Some(ACT_PURPOSE) => "delib.act.reasoning_budgeted",
+            Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
+            _ => "delib.pass.reasoning_budgeted",
+        };
         crate::probe!(
-            class = "delib.act.reasoning_budgeted",
+            class = budget_class,
             model = %model,
-            budget = ACT_REASONING_BUDGET,
-            "act turn: reasoning channel bounded before the tool call"
+            budget,
+            max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: an act's fixed budget needs no allowance; absent is said as 0
+            "reasoning channel bounded by the turn's kind — the answer keeps its room"
         );
     }
 
@@ -129,20 +180,7 @@ pub(crate) fn finish_body(
             && cfg.tool_protocol
                 == crate::model_registry::ToolProtocol::NativeFunctionCalling
         {
-            let openai_tools: Vec<Value> = tools
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema
-                        }
-                    })
-                })
-                .collect();
-            body["tools"] = json!(openai_tools);
+            body["tools"] = json!(openai_tools(tools));
 
             // Add tool_choice if specified
             if let Some(choice) = &request.tool_choice {
@@ -187,6 +225,37 @@ pub(crate) fn finish_body(
 /// reduces to clean text + no reasoning). Operates on string content (chat turns);
 /// multimodal/array content is left untouched (a follow-up can append a text part).
 /// No user message → no-op.
+/// The OpenAI `tools` param for a set of tool specs. One mapping: serving sends it,
+/// and the engine trainer sends the same list so a lived turn renders with the tool
+/// block it was served with.
+pub(crate) fn openai_tools(tools: &[crate::ai::types::NativeToolSpec]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema
+                }
+            })
+        })
+        .collect()
+}
+
+/// One tool call as the OpenAI wire carries it: arguments as a JSON string.
+pub(crate) fn wire_tool_call(id: &str, name: &str, input: &Value) -> Value {
+    json!({
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": serde_json::to_string(input).unwrap_or_default() // OpenAI wire boundary: tool-call arguments travel as a JSON string
+        }
+    })
+}
+
 pub(crate) fn apply_no_think_switch(messages: &mut [Value]) {
     for m in messages.iter_mut().rev() {
         if m.get("role").and_then(|r| r.as_str()) != Some("user") {
@@ -249,6 +318,28 @@ pub(crate) fn format_messages(
     system_prompt: Option<&str>,
     vision_native: bool,
 ) -> Vec<Value> {
+    let mut result = wire_messages(messages, system_prompt, vision_native, &cfg.provider_id);
+    // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
+    // `/no_think` soft-switch to the last user turn so the model skips its
+    // chain-of-thought and answers directly. Model-specific token, owned here at
+    // the adapter boundary; higher layers never speak `/no_think`.
+    if cfg.thinking == ThinkingMode::Suppress {
+        apply_no_think_switch(&mut result);
+    }
+    result
+}
+
+/// The wire messages for a request: the system prompt, then each message with its
+/// tool calls kept on assistant turns and its tool results split into `role: tool`
+/// messages. The one mapping serving sends and the engine trainer renders a lived
+/// call from, so a trained history is the history she was served. `provider` names
+/// the caller in the dropped-image warning.
+pub(crate) fn wire_messages(
+    messages: &[ChatMessage],
+    system_prompt: Option<&str>,
+    vision_native: bool,
+    provider: &str,
+) -> Vec<Value> {
     // Pre-size: one wire message per input message + the optional system
     // prompt. The common text path lands exactly; tool-result turns push a
     // few extra and realloc once. Runs on every inference call — no
@@ -294,14 +385,7 @@ pub(crate) fn format_messages(
                     let tool_calls: Vec<Value> = parts
                         .iter()
                         .filter_map(|p| match p {
-                            ContentPart::ToolUse { id, name, input } => Some(json!({
-                                "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": serde_json::to_string(input).unwrap_or_default()
-                                }
-                            })),
+                            ContentPart::ToolUse { id, name, input } => Some(wire_tool_call(id, name, input)),
                             _ => None,
                         })
                         .collect();
@@ -344,7 +428,7 @@ pub(crate) fn format_messages(
                                     // image_url at a text-only endpoint.
                                     tracing::warn!(
                                         target: "openai_adapter",
-                                        provider = %cfg.provider_id,
+                                        provider = %provider,
                                         "dropping image content part for a non-vision \
                                          model — the description bridge is its sight; \
                                          if this model CAN see, its catalog row must \
@@ -377,14 +461,6 @@ pub(crate) fn format_messages(
                 }
             }
         }
-    }
-
-    // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
-    // `/no_think` soft-switch to the last user turn so the model skips its
-    // chain-of-thought and answers directly. Model-specific token, owned here at
-    // the adapter boundary; higher layers never speak `/no_think`.
-    if cfg.thinking == ThinkingMode::Suppress {
-        apply_no_think_switch(&mut result);
     }
 
     result
@@ -487,20 +563,19 @@ pub(crate) fn build_base_body(
 mod tests {
     use super::*;
 
-    // what this catches: an ACT request carries the reasoning budget the
-    // responder's llama-server reads (`reasoning_budget_tokens`), and a
-    // deliberation request does not — losing the field reproduces 4k–10k-token
-    // acts (150–260 s each); applying it to message turns would truncate the
-    // thinking that answers deserve.
+    // what this catches: through the ONE seam, the ACT budget is the fixed
+    // ACT_REASONING_BUDGET count, applied to an act request and to nothing else — a
+    // deliberation derives its own from its allowance (and carries none without one),
+    // and a turn with no purpose carries none.
     #[test]
-    fn only_an_act_request_carries_the_reasoning_budget() {
+    fn the_act_budget_is_a_fixed_count_and_only_an_act_carries_it() {
         let mut act = json!({ "model": "m" });
-        assert!(apply_act_reasoning_budget(Some(ACT_PURPOSE), &mut act));
+        assert_eq!(apply_reasoning_budget(Some(ACT_PURPOSE), &mut act), Some(u64::from(ACT_REASONING_BUDGET)));
         assert_eq!(act["reasoning_budget_tokens"], json!(ACT_REASONING_BUDGET));
         let mut delib = json!({ "model": "m" });
-        assert!(!apply_act_reasoning_budget(Some("cognition/deliberation"), &mut delib));
+        assert_eq!(apply_reasoning_budget(Some("cognition/deliberation"), &mut delib), None);
         assert!(delib.get("reasoning_budget_tokens").is_none());
         let mut none = json!({ "model": "m" });
-        assert!(!apply_act_reasoning_budget(None, &mut none));
+        assert_eq!(apply_reasoning_budget(None, &mut none), None);
     }
 }

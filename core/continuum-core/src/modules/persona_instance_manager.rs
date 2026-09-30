@@ -602,20 +602,34 @@ impl ServiceModule for PersonaInstanceManagerModule {
         let runtimes: Vec<_> = self.registry.iter().collect();
         let work = async {
             let mut renewed = 0usize;
+            let now_ms = crate::modules::chat::now_ms();
             for rt in &runtimes {
-                let held = match crate::persona::airc_runtime::board_held_by(rt.airc().as_ref()).await {
-                    Ok(held) => held,
-                    Err(_) => continue,
-                };
-                for card in held {
-                    let Some(claim_id) = card.claim_id else { continue };
+                // ONE walk of the boards she stands in: everything she OWNS, whole. The seam
+                // renewal takes the live holds from it; the handoff record takes the rest
+                // (her cards in Review, the reviews she owes) — card 49b5e806, Kimi's #4.
+                let owned =
+                    match crate::persona::airc_runtime::scoped_board_owned_by(rt.airc().as_ref())
+                        .await
+                    {
+                        Ok(owned) => owned,
+                        Err(_) => continue,
+                    };
+                crate::cognition::handoff::note_owned(rt.airc().peer_id().as_uuid(), &owned, now_ms);
+                let held = crate::persona::airc_runtime::held_of_owned(owned, now_ms);
+                for (room, card) in held {
+                    let Some(claim_id) = card.claim_id else {
+                        continue;
+                    };
                     if rt
                         .airc()
-                        .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
-                            card_id: card.card_id,
-                            claim_id,
-                            ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                        })
+                        .heartbeat_work_claim_in(
+                            &room,
+                            airc_lib::HeartbeatWorkClaim {
+                                card_id: card.card_id,
+                                claim_id,
+                                ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                            },
+                        )
                         .await
                         .is_ok()
                     {

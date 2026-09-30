@@ -208,6 +208,39 @@ pub struct CitizenRecipe {
     /// `persona/role_template::RoleId`'s own serde form.
     #[ts(type = "string")]
     pub role: crate::persona::role_template::RoleId,
+    /// What one of this citizen's turns NEEDS of a lane — the grid allocator's
+    /// requirement for the role (card 10bba591; Joel: never a constant of our grid, a
+    /// declared input). Absent = unmeasured: the residents' measured typical prompt
+    /// stands as the window, any model qualifies, decode is not judged.
+    #[serde(default)]
+    #[ts(optional)]
+    pub requirement: Option<CitizenRequirement>,
+}
+
+/// A role's declared lane requirement — the recipe's word on what a seat must hold
+/// before one of its minds sits there ([`crate::cognition::grid_allocation::Requirement`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/CitizenRequirement.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct CitizenRequirement {
+    /// Tokens one turn of this role needs (a real coding turn, a chat turn).
+    pub window_tokens: u32,
+    /// The least capable model this role is competent on, on the footprint rank scale
+    /// (`ModelFootprint::capability_rank`: a measured score — the AA index, 27B ≈ 42 —
+    /// else the weights-GB proxy, +2 for tool use, capped at 40); 0 = any. A coder
+    /// activity declares its tier here: 12 = a 27B-class Q4 base (16.5 GB → 18) or a
+    /// measured score above it; a 1.5B (1 GB → 3), 7B (4.7 GB → 6) or 14B Q4 (9 GB → 11)
+    /// CPU seat never holds a coder (card ccb316a7; Cormac on #4416: the floor sits
+    /// BELOW the 27B's own proxy, or no seat holds a coder at all).
+    #[serde(default)]
+    pub min_capability: u8,
+    /// Per-stream decode below this is not a seat; absent = not judged.
+    #[serde(default)]
+    #[ts(optional)]
+    pub decode_floor_tps: Option<f32>,
 }
 
 /// The authored shape of an [`Affordance`] — the verb and its command plus the

@@ -165,15 +165,14 @@ fn stable_window_rung(window: u32) -> u32 {
 /// [`EvalLane`] handle that references it, so N concurrent eval / `agent/solve` tasks on
 /// the SAME base model share ONE lane instead of each cold-spawning a competitor that
 /// fights the others for the GPU. The llama-server process + governed VRAM lease tear
-/// down by RAII the instant the LAST handle drops — one authority, lanes lease, nothing
+/// down when the LAST handle drops; accounting waits for actual exit — one authority, nothing
 /// fights ([[resource-authority-is-a-system-concern]], #56).
 ///
 /// Named fields, NOT a positional tuple, so new lane state threads as ONE field
 /// ([[structs-by-reference-not-massive-param-lists]]).
 pub(crate) struct EvalLaneInner {
-    /// The throwaway server; kills its process on drop (#59). Declared FIRST so it drops
-    /// (kills the process, frees the physical VRAM) BEFORE `_vram_lease` releases the
-    /// accounting — same release order the pre-share struct guaranteed. `None` for a
+    /// The throwaway server requests retirement on drop (#59); its process owner
+    /// retains the governed reservation until actual child exit. `None` for a
     /// gateway-routed lane on an EXTERNAL provider (#310): the model is served by someone
     /// else's process (ds4 sidecar, cloud row) — there is nothing to spawn, hold, or kill.
     lane: Option<crate::inference::llama_server::EphemeralServingLane>,
@@ -186,11 +185,8 @@ pub(crate) struct EvalLaneInner {
     pub(crate) served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     placement: PlacementEvidence,
-    /// The governed VRAM reservation this lane holds while it runs (#56/G1). RAII:
-    /// released when the last handle drops, AFTER `lane`'s process is killed. `None` on a
-    /// CPU-spilled lane or an ungoverned node. Held so a concurrent serving tick sees the
-    /// eval's bytes as taken and won't tier up into them.
-    _vram_lease: Option<crate::resources::LeaseGuard>,
+    /// Manifest identity captured when this lane loaded its gene; never re-resolved after evaluation.
+    measured_gene: Option<crate::forge::adapter_manifest::TrainedAdapter>,
 }
 
 /// A cheap, cloneable handle to a (possibly shared) [`EvalLaneInner`]. Field reads
@@ -314,12 +310,9 @@ const LEDGER_FAIL_ANSWER_CHARS: usize = 1_200;
 /// it is NOT a conservative reserve that idles the GPU.
 const GPU_PLACEMENT_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Wall-clock TTL for the eval lane's governed VRAM lease (#56/G1). Generous — a
-/// cold 14B+ load plus a full benchmark run. RAII ([`crate::resources::LeaseGuard`])
-/// releases the bytes the instant the lane drops; this TTL is ONLY the self-healing
-/// backstop that returns the reservation to the board if the whole PROCESS is
-/// SIGKILLed mid-eval without ever running `Drop` — no stranded reservation, nothing
-/// static ([[memory-system-is-fully-dynamic-nothing-static]]).
+/// Wall-clock TTL for the eval lane's governed VRAM lease (#56/G1). Expiry
+/// makes a lease eligible for the governor's reclaim protocol; it is not proof
+/// of child exit. The process owner retains the RAII guard until actual exit.
 const EVAL_LANE_LEASE_TTL_MS: u64 = 30 * 60 * 1000;
 
 /// Where a coexisting eval lane runs + WHY. Rides out on the eval result so a CPU
@@ -581,6 +574,17 @@ fn eval_lane_memory_veto(
     Ok(())
 }
 
+fn eval_lane_request(bytes: u64) -> crate::resources::LeaseRequest {
+    crate::resources::LeaseRequest {
+        consumer_id: "eval-lane".to_string(),
+        kind: crate::resources::ResourceKind::Vram,
+        bytes,
+        ttl_ms: EVAL_LANE_LEASE_TTL_MS,
+        // The actual process owner retains this grant through observed child exit.
+        reclaim_policy: crate::resources::ReclaimPolicy::Pinned,
+    }
+}
+
 /// Ask the ONE resource authority for this eval lane's VRAM slot (#56/G1) and
 /// decide GPU/CPU from the answer. Returns `(placement, reason, held-lease,
 /// observed-free-vram)`. Split out so the acquire/refuse/ungoverned branching is
@@ -598,21 +602,10 @@ fn acquire_eval_lane_slot(
     Option<crate::resources::LeaseGuard>,
     Option<u64>,
 ) {
-    use crate::resources::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
+    use crate::resources::{LeaseError, ResourceDaemon};
     match (ResourceDaemon::global(), footprint) {
         (Some(daemon), Some(fp)) => {
-            let req = LeaseRequest {
-                consumer_id: "eval-lane".to_string(),
-                kind: ResourceKind::Vram,
-                bytes: fp,
-                ttl_ms: EVAL_LANE_LEASE_TTL_MS,
-                // A bounded, first-class measurement lane is not yanked mid-eval
-                // ([[first-class-citizens-even-during-benchmarks]]); the RAII guard
-                // returns the bytes the moment the lane finishes. Graceful yield-
-                // under-pressure (the eval negotiating early release) is the piece-3
-                // follow-up, not this slice.
-                reclaim_policy: ReclaimPolicy::Pinned,
-            };
+            let req = eval_lane_request(fp);
             match daemon.acquire_guarded(&req) {
                 Ok(guard) => {
                     let remaining = governed_vram_available();
@@ -691,18 +684,7 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
         .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
-    let entry = manifest
-        .iter()
-        .find(|a| {
-            a.alias == gene.name
-                || (!gene.path.is_empty() && a.path.to_string_lossy() == gene.path)
-        })
-        .ok_or_else(|| {
-            CommandError::NotFound(format!(
-                "gene '{}' is not in the trained-adapter manifest — train and register it before measuring its lift",
-                gene.name
-            ))
-        })?;
+    let entry = resolve_eval_gene(&manifest, &gene.name, &gene.path)?;
     let base_id = entry.base_model_id.clone();
 
     // 2. Resolve that base from the model registry — fail loud, never serve a
@@ -762,14 +744,15 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
         "loading_lane",
         &format!("cold-loading gene eval lane ({})", gene.name),
     );
-    let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
+    let lane =
+        EphemeralServingLane::spawn_with_reservation(&target, EVAL_LANE_BASE_PORT, vram_lease)
+            .await
+            .map_err(|e| {
+                CommandError::Internal(format!(
                 "could not bring up the ephemeral eval lane for gene '{}' on base '{base_id}': {e}",
                 gene.name
             ))
-        })?;
+            })?;
 
     // 5. Point a fresh adapter at the lane (NOT the global serving root — this
     //    override is what keeps the measurement off the living persona's lane).
@@ -823,9 +806,34 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
             adapter: std::sync::Arc::new(adapter),
             served_ctx,
             placement: placement_evidence,
-            _vram_lease: vram_lease,
+            measured_gene: Some(entry.clone()),
         }),
     })
+}
+
+/// Resolve the artifact before acquisition. A supplied path is authoritative;
+/// an alias alone must identify exactly one manifest entry.
+fn resolve_eval_gene<'a>(
+    manifest: &'a [crate::forge::adapter_manifest::TrainedAdapter],
+    alias: &str,
+    path: &str,
+) -> Result<&'a crate::forge::adapter_manifest::TrainedAdapter, CommandError> {
+    let mut matches = manifest.iter().filter(|entry| {
+        if path.is_empty() {
+            entry.alias == alias
+        } else {
+            entry.path.to_string_lossy() == path
+        }
+    });
+    let entry = matches.next().ok_or_else(|| CommandError::NotFound(format!(
+        "gene '{alias}' (path '{path}') is not in the trained-adapter manifest"
+    )))?;
+    if matches.next().is_some() {
+        return Err(CommandError::Invalid(format!(
+            "gene '{alias}' (path '{path}') matches multiple manifest entries; require an unambiguous artifact"
+        )));
+    }
+    Ok(entry)
 }
 
 /// Stand up an ephemeral measurement lane for a BARE base model (no gene, no LoRA) — the
@@ -897,13 +905,14 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         "loading_lane",
         &format!("cold-loading eval lane for {base_id}"),
     );
-    let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
-                "could not bring up the ephemeral eval lane for base '{base_id}': {e}"
-            ))
-        })?;
+    let lane =
+        EphemeralServingLane::spawn_with_reservation(&target, EVAL_LANE_BASE_PORT, vram_lease)
+            .await
+            .map_err(|e| {
+                CommandError::Internal(format!(
+                    "could not bring up the ephemeral eval lane for base '{base_id}': {e}"
+                ))
+            })?;
     let mut adapter =
         crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
             .with_runtime_base_url(lane.root().to_string())
@@ -918,12 +927,141 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         ))
     })?;
     Ok(EvalLaneInner {
+        measured_gene: None,
         lane: Some(lane),
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
         placement: placement_evidence,
-        _vram_lease: vram_lease,
     })
+}
+
+/// Share only an already served local base or an external provider. This does not
+/// consult or populate the cloneable warm pool used by ordinary eval callers.
+pub(crate) async fn share_teacher_lane(
+    base: &crate::model_registry::Model,
+    serving: &crate::inference::llama_server::ServingSnapshot,
+) -> Result<Option<EvalLane>, CommandError> {
+    let inner = if base.provider != crate::inference::llama_server::PROVIDER_ID {
+        Some(build_external_eval_lane_inner(base).await?)
+    } else {
+        share_live_serving_lane_from_snapshot(base, serving).await
+    };
+    Ok(inner.map(|inner| EvalLane {
+        inner: std::sync::Arc::new(inner),
+    }))
+}
+
+/// A batch-only borrower. Its process and adapter never enter WARM_EVAL_LANES;
+/// the serving owner stores this value before starting its child.
+pub(crate) struct PrivateTeacherLane {
+    lane: crate::inference::llama_server::EphemeralServingLane,
+    target: crate::inference::llama_server::ServingTarget,
+    adapter: Option<std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
+}
+
+impl PrivateTeacherLane {
+    pub(crate) async fn prepare(
+        base: &crate::model_registry::Model,
+        daemon: &std::sync::Arc<crate::resources::ResourceDaemon>,
+    ) -> Result<Option<Self>, CommandError> {
+        use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
+        if base.provider != PROVIDER_ID {
+            return Err(CommandError::Invalid(
+                "private local borrower requires a local model".into(),
+            ));
+        }
+        let footprint = eval_lane_footprint(base).ok_or_else(|| {
+            CommandError::Internal("private teacher requires a known model footprint".into())
+        })?;
+        // Same pressure/RAM veto as ordinary eval, but return the capacity refusal
+        // to the owner so it can negotiate an explicit window rather than waiting
+        // for incumbent memory that cannot free until that negotiation occurs.
+        if refuse_eval_lane_under_memory_pressure(Some(footprint)).is_err() {
+            return Ok(None);
+        }
+        let lease = match daemon.acquire_guarded(&eval_lane_request(footprint)) {
+            Ok(lease) => lease,
+            Err(crate::resources::LeaseError::InsufficientCapacity { .. }) => return Ok(None),
+            Err(error) => {
+                return Err(CommandError::Internal(format!(
+                    "private teacher admission failed: {error:?}"
+                )))
+            }
+        };
+        let placement = crate::inference::llama_server::LanePlacement::Gpu;
+        let target = ServingTarget {
+            host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
+            context_window: plan_eval_lane_ctx(base),
+            model: base.clone(),
+            lanes: 1,
+            adapters: vec![],
+            placement,
+            expert_placement: None,
+            resident_override: None,
+            vision_sidecar: false,
+        };
+        let lane = EphemeralServingLane::prepare_with_reservation(
+            &target,
+            EVAL_LANE_BASE_PORT,
+            Some(lease),
+        )
+        .await
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+        Ok(Some(Self {
+            lane,
+            target,
+            adapter: None,
+        }))
+    }
+
+    pub(crate) async fn start(&mut self) -> Result<(), CommandError> {
+        use crate::ai::adapter::AIProviderAdapter;
+
+        self.lane
+            .start_gpu(&self.target)
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
+            crate::inference::llama_server::PROVIDER_ID,
+        )
+        .with_runtime_base_url(self.lane.root().to_string())
+        .with_default_model(self.target.model.id.clone())
+        .with_dedicated_lane();
+        adapter.initialize().await.map_err(CommandError::Internal)?;
+        self.adapter = Some(std::sync::Arc::new(adapter));
+        Ok(())
+    }
+
+    pub(crate) async fn synthesize(
+        &self,
+        tasks: &[EvalTask],
+        temperature: f32,
+        max_fix_iters: u32,
+    ) -> Result<crate::commands::genome::teach::RemediationCorpus, CommandError> {
+        let adapter = self
+            .adapter
+            .as_ref()
+            .ok_or_else(|| CommandError::Internal("private teacher is not ready".into()))?;
+        crate::commands::genome::teach::synthesize_remediation_with_adapter(
+            tasks,
+            &self.target.model.id,
+            temperature,
+            max_fix_iters,
+            adapter,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn finish(
+        &mut self,
+    ) -> Result<crate::inference::llama_server::EngineRetirementStatus, CommandError> {
+        self.adapter.take();
+        self.lane
+            .finish()
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))
+    }
 }
 
 /// Measurement "lane" for a base the LIVE serving lane is ALREADY holding — the local
@@ -949,10 +1087,17 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
 /// returned handle owns nothing (`lane: None`, no lease), so dropping a measurement can
 /// never tear down the living persona's lane.
 async fn share_live_serving_lane(base: &crate::model_registry::Model) -> Option<EvalLaneInner> {
+    share_live_serving_lane_from_snapshot(base, &crate::inference::llama_server::current_serving())
+        .await
+}
+
+async fn share_live_serving_lane_from_snapshot(
+    base: &crate::model_registry::Model,
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> Option<EvalLaneInner> {
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::PROVIDER_ID;
 
-    let snap = crate::inference::llama_server::current_serving();
     // `served_context_window == 0` only ever appears on the empty/not-yet-served
     // snapshot; a lane with no known window cannot be budgeted against honestly.
     if !snap.ready
@@ -1022,6 +1167,7 @@ async fn share_live_serving_lane(base: &crate::model_registry::Model) -> Option<
         "measuring through the live lane — no second copy of these weights cold-loaded"
     );
     Some(EvalLaneInner {
+        measured_gene: None,
         // Nothing spawned here, so nothing to kill on drop — the living persona's lane
         // outlives every measurement that borrows it.
         lane: None,
@@ -1040,7 +1186,6 @@ async fn share_live_serving_lane(base: &crate::model_registry::Model) -> Option<
             free_vram_bytes: None,
             footprint_bytes: None,
         },
-        _vram_lease: None,
     })
 }
 
@@ -1087,6 +1232,7 @@ async fn build_external_eval_lane_inner(
         .await
         .unwrap_or(base.context_window);
     Ok(EvalLaneInner {
+        measured_gene: None,
         lane: None,
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
@@ -1103,7 +1249,6 @@ async fn build_external_eval_lane_inner(
             free_vram_bytes: None,
             footprint_bytes: None,
         },
-        _vram_lease: None,
     })
 }
 
@@ -2228,25 +2373,13 @@ impl CognitionEval {
         // its line number — never silently dropped. A vanished task would shrink the
         // gym and report a clean score over fewer tasks than intended: the same
         // invisible-degraded-mode as a fallback, which the resolver's fail-loud kills.
-        let parse_jsonl = |text: &str, origin: &str| -> Result<Vec<EvalTask>, CommandError> {
-            text.lines()
-                .enumerate()
-                .map(|(i, l)| (i + 1, l.trim()))
-                .filter(|(_, l)| !l.is_empty())
-                .map(|(n, l)| {
-                    serde_json::from_str::<EvalTask>(l).map_err(|e| {
-                        CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
-                    })
-                })
-                .collect()
-        };
         let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
             let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
             let (origin, text) =
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
-            parse_jsonl(&text, &origin)?
+            crate::cognition::gym::parse_tasks(&text, &origin).map_err(CommandError::Invalid)?
         };
         // Every code task grades hands. See `require_hands_for_code` — applied HERE, after both
         // load paths converge, so an inline task from a command payload obeys the same rule as a
@@ -2738,6 +2871,7 @@ impl CognitionEval {
                 p.note.as_deref(),
                 &eval_set_label,
                 _fleet_lease.as_ref().map(|_| true),
+                _eval_lane.as_ref().and_then(|lane| lane.measured_gene.as_ref()),
             );
             return Ok(result);
         }
@@ -2943,6 +3077,7 @@ impl CognitionEval {
             p.note.as_deref(),
             &eval_set_label,
             _fleet_lease.as_ref().map(|_| true),
+            None,
         );
         Ok(result)
     }
@@ -2998,7 +3133,11 @@ pub(crate) struct LessonSink {
 impl LessonSink {
     /// `None` when the living self is not resident to teach (measured but
     /// unteachable — the caller logs it once).
-    pub(crate) fn open(persona_uuid: &uuid::Uuid, room: uuid::Uuid, tasks: &[EvalTask]) -> Option<Self> {
+    pub(crate) fn open(
+        persona_uuid: &uuid::Uuid,
+        room: uuid::Uuid,
+        tasks: &[EvalTask],
+    ) -> Option<Self> {
         let answers: Vec<String> = tasks
             .iter()
             .map(|t| t.expect.clone())
@@ -3315,9 +3454,7 @@ crate::register_stateless_command!(CognitionEvalStatus);
 /// The progress-ledger directory (`~/.continuum/progress`), the ONE place
 /// [`append_progress_ledger`] writes and `cognition/eval-status` reads.
 pub(crate) fn progress_ledger_dir() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".continuum/progress"))
+    dirs::home_dir().map(|home| home.join(".continuum/progress"))
 }
 
 /// The terminal ledger row for `run_id` in a KNOWN persona's ledger, newest-first.
@@ -3565,11 +3702,11 @@ fn append_progress_ledger(
     note: Option<&str>,
     eval_set: &str,
     clean_lane: Option<bool>,
+    measured_gene: Option<&crate::forge::adapter_manifest::TrainedAdapter>,
 ) {
-    let Some(home) = std::env::var("HOME").ok() else {
+    let Some(dir) = progress_ledger_dir() else {
         return;
     };
-    let dir = std::path::PathBuf::from(home).join(".continuum/progress");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
@@ -3598,6 +3735,8 @@ fn append_progress_ledger(
         "totalDecodeMs": result.total_decode_ms,
         "totalOutputTokens": result.total_output_tokens,
         "geneId": result.gene_id,
+        "baseModelId": measured_gene.map(|gene| &gene.base_model_id),
+        "adapterPath": measured_gene.map(|gene| &gene.path),
         "basePassRate": result.base_pass_rate,
         "lift": result.lift,
         "note": note,
@@ -3793,7 +3932,15 @@ fn dod_output_is_infra(exit_code: Option<i32>, out: &str) -> bool {
 }
 
 async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> DodVerdict {
-    let mut command = tokio::process::Command::new("bash");
+    let bash = match crate::shell_portable::locate_bash() {
+        Ok(bash) => bash,
+        Err(why) => {
+            return DodVerdict::InfraError(format!(
+                "DoD `{cmd}` could not RUN (no usable shell): {why}"
+            ));
+        }
+    };
+    let mut command = tokio::process::Command::new(bash);
     command.arg("-lc").arg(cmd);
     if let Some(r) = root {
         command.current_dir(r);
@@ -4869,37 +5016,44 @@ async fn run_pass(
         let mut redrive_round = 0u32;
         if let Some(dod) = &t.dod_shell {
             loop {
-            let verdict = run_dod(task_root.map(std::path::Path::new), dod).await;
-            let (dod_ok, dod_out) = match verdict {
-                DodVerdict::Pass(m) => (true, m),
-                DodVerdict::Fail(m) => (false, m),
-                DodVerdict::InfraError(m) => {
-                    // The grader itself broke — do NOT re-drive (nothing to fix) and
-                    // do NOT score as a miss; mark it infra and leave the loop.
-                    crate::probe!(
-                        class = "eval.task.dod_infra",
-                        task = %t.id,
-                        "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
-                    );
-                    dod_infra = Some(m.clone());
-                    presettle_dod = Some((false, m));
+                let verdict = run_dod(task_root.map(std::path::Path::new), dod).await;
+                let (dod_ok, dod_out) = match verdict {
+                    DodVerdict::Pass(m) => (true, m),
+                    DodVerdict::Fail(m) => (false, m),
+                    DodVerdict::InfraError(m) => {
+                        // The grader itself broke — do NOT re-drive (nothing to fix) and
+                        // do NOT score as a miss; mark it infra and leave the loop.
+                        crate::probe!(
+                            class = "eval.task.dod_infra",
+                            task = %t.id,
+                            "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
+                        );
+                        dod_infra = Some(m.clone());
+                        presettle_dod = Some((false, m));
+                        break;
+                    }
+                };
+                if dod_ok || redrive_round >= DOD_REDRIVES {
+                    presettle_dod = Some((dod_ok, dod_out));
                     break;
                 }
-            };
-            if dod_ok || redrive_round >= DOD_REDRIVES {
-                presettle_dod = Some((dod_ok, dod_out));
-                break;
-            }
-            redrive_round += 1;
-            {
-                crate::probe!(
-                    class = "eval.task.red_build_redrive",
-                    task = %t.id,
-                    round = redrive_round as u64,
-                    "settled on a RED DoD — handing her the verdict with a bounded re-drive"
-                );
-                let tail: String = dod_out.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
-                let red_delivery = crate::persona::rag_budget::RagDelivery {
+                redrive_round += 1;
+                {
+                    crate::probe!(
+                        class = "eval.task.red_build_redrive",
+                        task = %t.id,
+                        round = redrive_round as u64,
+                        "settled on a RED DoD — handing her the verdict with a bounded re-drive"
+                    );
+                    let tail: String = dod_out
+                        .chars()
+                        .rev()
+                        .take(4000)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let red_delivery = crate::persona::rag_budget::RagDelivery {
                     source_id: "airc".to_string(),
                     items: vec![crate::persona::rag_budget::RagItem {
                         content: format!(
@@ -5333,6 +5487,22 @@ crate::register_stateless_command!(CognitionEval);
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eval_gene_path_wins_over_reused_alias_and_ambiguity_refuses() {
+        // Regression for #4504: never credit a different base selected by an alias collision.
+        use crate::forge::adapter_manifest::TrainedAdapter;
+        let manifest = vec![
+            TrainedAdapter { alias: "same".into(), path: "/old".into(), base_model_id: "a".into() },
+            TrainedAdapter { alias: "same".into(), path: "/new".into(), base_model_id: "b".into() },
+        ];
+        let selected = resolve_eval_gene(&manifest, "same", "/new").expect("explicit artifact");
+        assert_eq!(selected.base_model_id, "b");
+        assert_eq!(selected.path, std::path::Path::new("/new"));
+        assert!(resolve_eval_gene(&manifest, "same", "").is_err());
+        assert!(resolve_eval_gene(&manifest, "same", "/missing").is_err());
+        assert!(resolve_eval_gene(&manifest[..1], "same", "").is_ok());
+    }
+
     use super::*;
 
     // what this catches: defect 2's sibling (2026-08-23, MirrorCode maiden round):

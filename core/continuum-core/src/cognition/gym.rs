@@ -40,6 +40,40 @@
 
 use std::path::Path;
 
+mod content;
+
+/// Freeze an independently selected executable gym; synchronous artifact I/O.
+/// Callers must run this off the runtime thread. This does not prove held-out independence.
+pub fn publish_gym(text: &str) -> Result<String, String> {
+    publish_gym_in(&gym_cache_dir(), text)
+}
+
+/// Explicit cache-root seam for artifact owners and isolated filesystem fixtures.
+pub(crate) fn publish_gym_in(cache: &Path, text: &str) -> Result<String, String> {
+    content::publish(cache, text)
+}
+
+/// Strict immutable-reference lookup; unlike resolve_gym, legacy paths are refused.
+pub(crate) fn resolve_published_gym_in(
+    cache: &Path,
+    reference: &str,
+) -> Result<(String, String), String> {
+    content::resolve(cache, reference)
+}
+
+/// The same JSONL task parser used by cognition/eval and curriculum preparation.
+pub fn parse_tasks(text: &str, origin: &str) -> Result<Vec<super::eval::EvalTask>, String> {
+    text.lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, l.trim()))
+        .filter(|(_, l)| !l.is_empty())
+        .map(|(n, l)| {
+            serde_json::from_str(l)
+                .map_err(|e| format!("{origin} line {n}: malformed EvalTask: {e}"))
+        })
+        .collect()
+}
+
 /// Every committed gym, baked into the binary: `(basename, bytes)`. Adding a
 /// committed gym under `docs/genome/` is one `include_str!` line here — that is
 /// the single edit that makes it referenceable as an `eval_set` from any CWD or
@@ -298,6 +332,14 @@ fn fetched_gym_freshness(
 }
 
 pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
+    resolve_gym_in(reference, &gym_cache_dir())
+}
+
+fn resolve_gym_in(reference: &str, cache: &Path) -> Result<(String, String), String> {
+    // Reserved namespace fails closed before any path or embedded fallback.
+    if reference.starts_with("gym:") {
+        return resolve_published_gym_in(cache, reference);
+    }
     // (1) An existing on-disk file wins — a custom gym the operator points at.
     if Path::new(reference).is_file() {
         let text = std::fs::read_to_string(reference)
@@ -309,7 +351,7 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     // the on-disk check (an operator's explicit file still wins) and before the
     // embedded registry (a fetched suite must not be shadowed by a stale
     // committed copy of the same name).
-    let cached = gym_cache_dir().join(reference);
+    let cached = cache.join(reference);
     if cached.is_file() {
         // Freshness gate: refuse a cache the CURRENT adapter didn't produce.
         // Serving it would stage tasks under an outdated oracle (#2366's stale-
@@ -319,7 +361,11 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
             .and_then(|n| n.to_str())
             .unwrap_or(reference); // non-UTF8 reference: fall through as no-contract, same as embedded_for
         let sidecar = std::fs::read_to_string(cached.with_extension("jsonl.fingerprint")).ok();
-        fetched_gym_freshness(base, sidecar.as_deref(), fetched_fingerprint_for(base).as_deref())?;
+        fetched_gym_freshness(
+            base,
+            sidecar.as_deref(),
+            fetched_fingerprint_for(base).as_deref(),
+        )?;
         let text = std::fs::read_to_string(&cached)
             .map_err(|e| format!("fetched gym '{}' could not be read: {e}", cached.display()))?;
         return Ok((cached.display().to_string(), text));
@@ -407,6 +453,132 @@ pub fn gym_for_trait(trait_kind: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+        // what this catches: two writers publish one complete inode; neither may
+        // truncate or replace content observed by the actual gym resolver.
+        #[test]
+        fn concurrent_content_gym_publication_converges() {
+            let temp = tempfile::tempdir().expect("fixture root");
+            let barrier = std::sync::Barrier::new(2);
+            let text = r#"{"prompt":"Compute two plus two","expect":"4"}"#;
+            let references = std::thread::scope(|scope| {
+                let publish = || {
+                    barrier.wait();
+                    content::publish(temp.path(), text).expect("publish complete gym")
+                };
+                let a = scope.spawn(publish);
+                let b = scope.spawn(publish);
+                [
+                    a.join().expect("publisher A"),
+                    b.join().expect("publisher B"),
+                ]
+            });
+            assert_eq!(references[0], references[1]);
+            let (_, bytes) =
+                resolve_gym_in(&references[0], temp.path()).expect("verified complete gym");
+            assert_eq!(bytes, text);
+        }
+    }
+
+    // what this catches: candidates sharing exact gym bytes must share policy identity;
+    // the existing evaluator must consume the verified bytes, never a mutable reread.
+    #[test]
+    fn content_gym_roundtrip_is_shared_and_tamper_fails_closed() {
+        let temp = tempfile::tempdir().expect("fixture root");
+        let cache = temp.path().join("missing/nested/gym");
+        let text = "{\"id\":\"heldout\",\"prompt\":\"Return forty two\",\"expect\":\"42\"}\n";
+        let first = content::publish(&cache, text).expect("publish gym");
+        let second = content::publish(&cache, text).expect("reuse same bytes");
+        assert_eq!(
+            first, second,
+            "eval_set bucket policy is identical across publications"
+        );
+        let (origin, bytes) = resolve_gym_in(&first, &cache).expect("resolve published gym");
+        assert_eq!(origin, first);
+        assert_eq!(bytes, text);
+        let tasks = parse_tasks(&bytes, &origin).expect("actual evaluator parser");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "heldout");
+        let changed = content::publish(&cache, &text.replace("42", "43")).expect("new gym");
+        assert_ne!(
+            first, changed,
+            "changed battery must not merge into old bucket policy"
+        );
+        let path = cache.join("content/sha256").join(format!(
+            "{}.jsonl",
+            first.strip_prefix("gym:sha256:").expect("digest")
+        ));
+        std::fs::write(&path, "tampered").expect("damage fixture");
+        assert!(resolve_gym_in(&first, &cache)
+            .expect_err("tamper refused")
+            .contains("integrity mismatch"));
+        assert!(
+            content::publish(&cache, text).is_err(),
+            "publisher cannot repair by overwriting an existing identity"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("unchanged damage"),
+            "tampered"
+        );
+        std::fs::remove_file(&path).expect("missing fixture");
+        assert!(
+            resolve_gym_in(&first, &cache).is_err(),
+            "missing content cannot fall back"
+        );
+    }
+
+    // what this catches: chat train/eval splits are not executable held-out gyms,
+    // and the strict reference namespace never falls through to legacy resolution.
+    #[test]
+    fn content_gym_rejects_invalid_inputs_and_preserves_legacy_resolution() {
+        let temp = tempfile::tempdir().expect("fixture root");
+        for text in [
+            "",
+            "\n",
+            "{}",
+            "{",
+            r#"{"messages":[{"role":"assistant","content":"answer"}]}"#,
+        ] {
+            assert!(
+                content::publish(temp.path(), text).is_err(),
+                "invalid gym {text}"
+            );
+        }
+        for field in ["dod_shell", "dodShell", "test"] {
+            for blank in ["", " \n\t"] {
+                let mut row = serde_json::json!({"prompt":"solve", "expect":"42"});
+                row[field] = serde_json::json!(blank);
+                let error = publish_gym_in(temp.path(), &row.to_string())
+                    .expect_err("blank executable grader");
+                assert!(error.contains("blank"), "{error}");
+                // Legacy task parsing remains permissive; only new publication validates.
+                assert!(parse_tasks(&row.to_string(), "legacy").is_ok());
+            }
+        }
+        assert!(resolve_published_gym_in(temp.path(), "coder-eval.jsonl").is_err());
+        for reference in [
+            "gym:",
+            "gym:sha256:../coder-eval.jsonl",
+            "gym:sha256:abc",
+            "gym:md5:abc",
+        ] {
+            assert!(resolve_gym_in(reference, temp.path())
+                .expect_err("strict namespace")
+                .contains("invalid content-addressed"));
+        }
+        let custom = temp.path().join("custom.jsonl");
+        std::fs::write(&custom, "custom legacy bytes").expect("legacy fixture");
+        let (_, bytes) = resolve_gym_in(custom.to_str().expect("fixture path"), temp.path())
+            .expect("legacy file");
+        assert_eq!(bytes, "custom legacy bytes");
+        assert!(
+            resolve_gym_in("coder-eval.jsonl", temp.path()).is_ok(),
+            "embedded legacy reference"
+        );
+    }
+
     // what this catches: a committed gym referenced by its repo-relative path
     // resolves to the EMBEDDED bytes regardless of CWD — the exact reliability
     // bug found in live L3 verification (core ran from the crate dir, the
@@ -433,7 +605,10 @@ mod tests {
     fn a_stale_fetched_gym_refuses_to_resolve_and_names_the_refetch_command() {
         let current = crate::cognition::benchmark_ds1000::adapter_fingerprint();
         // deterministic: same code → same fingerprint, every call
-        assert_eq!(current, crate::cognition::benchmark_ds1000::adapter_fingerprint());
+        assert_eq!(
+            current,
+            crate::cognition::benchmark_ds1000::adapter_fingerprint()
+        );
 
         // fresh cache: sidecar matches → resolves
         assert!(fetched_gym_freshness("ds-1000.jsonl", Some(&current), Some(&current)).is_ok());
@@ -477,9 +652,18 @@ mod tests {
     fn swe_benchmark_name_points_at_dispatch_not_a_dead_end() {
         for name in ["swe-bench-verified", "swe-bench-lite", "swe-rebench"] {
             let err = resolve_gym(name).expect_err("SWE is not a gym — must fail loud");
-            assert!(err.contains("benchmark/dispatch"), "{name}: points at the right verb: {err}");
-            assert!(err.contains("RUNBOOK"), "{name}: points at the runbook: {err}");
-            assert!(!err.contains("Committed gyms:"), "{name}: NOT the generic dead-end: {err}");
+            assert!(
+                err.contains("benchmark/dispatch"),
+                "{name}: points at the right verb: {err}"
+            );
+            assert!(
+                err.contains("RUNBOOK"),
+                "{name}: points at the runbook: {err}"
+            );
+            assert!(
+                !err.contains("Committed gyms:"),
+                "{name}: NOT the generic dead-end: {err}"
+            );
         }
     }
 
@@ -528,9 +712,15 @@ mod tests {
             }
             // the grader agrees with the row's own kind
             let (silent_ok, _) = crate::cognition::eval::substring_or_silence_grade(&t, "");
-            assert_eq!(silent_ok, t.silence, "an empty answer passes iff the row wants silence");
+            assert_eq!(
+                silent_ok, t.silence,
+                "an empty answer passes iff the row wants silence"
+            );
         }
-        assert!(quiet >= 6 && asks >= 6, "both halves populated: quiet {quiet}, asks {asks}");
+        assert!(
+            quiet >= 6 && asks >= 6,
+            "both halves populated: quiet {quiet}, asks {asks}"
+        );
     }
 
     // what this catches: an existing on-disk custom gym is read from disk (step

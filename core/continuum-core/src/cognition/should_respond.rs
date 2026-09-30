@@ -221,6 +221,7 @@ pub async fn evaluate_gating(
         room_id: Some(request.context.room_id.clone()),
         purpose: Some("cognition/should-respond".to_string()),
         persona_id: Some(request.context.persona_id.clone()),
+        turn_bound: None,
     };
 
     let registry_arc = global_registry();

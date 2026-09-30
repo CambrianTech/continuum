@@ -558,10 +558,20 @@ async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegi
     for persona_id in registry.live_personas() {
         let Some(runtime) = registry.get(persona_id) else { continue };
         let Ok(held) = runtime.active_claims().await else { continue };
-        let work: Vec<(uuid::Uuid, u64)> = held
+        // BENCHMARK CARDS ONLY (2026-09-28). The one-card rule is the benchmark round's
+        // declared policy (four coders on four rounds' cards starved the deck). Applied to
+        // every card, it released Kimi's career-wrangler project card the moment she
+        // claimed a slice of that project: responsibility is durable until an explicit
+        // handoff (Joel, 2026-09-28), so a project card leaves her only by her own release,
+        // an explicit reassignment, or an activity's declared policy, never this pass.
+        let work: Vec<HeldWorkClaim> = held
             .iter()
-            .filter(|c| crate::commands::benchmark::parse_review_title(&c.title).is_none())
-            .map(|c| (c.card_id.as_uuid(), c.updated_at_ms))
+            .filter(|c| is_one_card_rule_card(&c.title))
+            .map(|c| HeldWorkClaim {
+                card_id: c.card_id.as_uuid(),
+                updated_at_ms: c.updated_at_ms,
+                provenance: c.claim_provenance.clone(),
+            })
             .collect();
         let acting = crate::cognition::persona_workspace::acting_card_of(persona_id);
         let Some((keep, release)) = surplus_holds(&work, acting) else { continue };
@@ -593,20 +603,49 @@ async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegi
     }
 }
 
-/// The pure half of the one-card rule: given her work cards `(card, updated_at_ms)`
-/// and the card her hands are on, the card she keeps and the cards she releases —
-/// or `None` when there is nothing to release.
+/// PURE: whether the one-card reconciler may act on a held card: a benchmark work card,
+/// never a review card (they ride beside it) and never an ordinary project card.
+fn is_one_card_rule_card(title: &str) -> bool {
+    crate::commands::benchmark::parse_review_title(title).is_none()
+        && crate::commands::benchmark::parse_card_title(title).is_some()
+}
+
+/// A view of the current accepted claim; provenance comes from the durable board.
+pub(crate) struct HeldWorkClaim {
+    card_id: uuid::Uuid,
+    updated_at_ms: u64,
+    provenance: Option<airc_work::model::ClaimProvenance>,
+}
+
+/// Preserve the latest explicit choice before the automatic acting-card fallback.
+/// Heartbeats refresh liveness, never the time of the citizen's choice. Older
+/// events have unknown provenance and retain the existing fallback behavior.
 pub(crate) fn surplus_holds(
-    work: &[(uuid::Uuid, u64)],
+    work: &[HeldWorkClaim],
     acting: Option<uuid::Uuid>,
 ) -> Option<(uuid::Uuid, Vec<uuid::Uuid>)> {
     if work.len() <= 1 {
         return None;
     }
-    let keep = acting
-        .filter(|a| work.iter().any(|(c, _)| c == a))
-        .or_else(|| work.iter().max_by_key(|(_, at)| *at).map(|(c, _)| *c))?;
-    let release: Vec<uuid::Uuid> = work.iter().map(|(c, _)| *c).filter(|c| *c != keep).collect();
+    let explicit = work
+        .iter()
+        .filter_map(|c| {
+            crate::persona::work_focus::explicit_choice_key(c.card_id, c.provenance.as_ref())
+        })
+        .max();
+    let keep = explicit
+        .map(|(_, id)| id)
+        .or_else(|| acting.filter(|a| work.iter().any(|c| c.card_id == *a)))
+        .or_else(|| {
+            work.iter()
+                .max_by_key(|c| (c.updated_at_ms, c.card_id))
+                .map(|c| c.card_id)
+        })?;
+    let release = work
+        .iter()
+        .map(|c| c.card_id)
+        .filter(|c| *c != keep)
+        .collect();
     Some((keep, release))
 }
 
@@ -730,6 +769,22 @@ async fn reseat_working_rounds(registry: &crate::persona::PersonaAircRuntimeRegi
 mod tests {
     use super::*;
 
+    // what this catches (2026-09-28): the benchmark one-card rule releasing a PROJECT card.
+    // Kimi claimed a slice of career-wrangler and the reconciler released her umbrella
+    // card. Only benchmark work cards are subject to it; review and project cards never.
+    #[test]
+    fn only_benchmark_work_cards_are_subject_to_the_one_card_rule() {
+        assert!(is_one_card_rule_card("[bench swe-bench] pytest-dev__pytest-10081: fix it"));
+        assert!(!is_one_card_rule_card("career-wrangler: a real product always"));
+        assert!(!is_one_card_rule_card("career-wrangler slice 1: transactional outbox"));
+        let review = crate::commands::benchmark::review_card_title(
+            uuid::Uuid::from_u128(1),
+            "pytest-dev__pytest-10081",
+            "kimi",
+        );
+        assert!(!is_one_card_rule_card(&review), "{review}");
+    }
+
     // what this catches: the reconciler taking the card she is working on instead of
     // the surplus, or "fixing" a citizen who is already at one card (2026-09-12: one
     // coder on four cards, the pull deferred for an hour behind the lane cap).
@@ -738,16 +793,48 @@ mod tests {
         let a = uuid::Uuid::from_u128(1);
         let b = uuid::Uuid::from_u128(2);
         let c = uuid::Uuid::from_u128(3);
+        let legacy = |card_id, updated_at_ms| HeldWorkClaim {
+            card_id,
+            updated_at_ms,
+            provenance: None,
+        };
         assert_eq!(surplus_holds(&[], None), None);
-        assert_eq!(surplus_holds(&[(a, 10)], None), None, "one card is the rule, not a surplus");
-        let (keep, release) = surplus_holds(&[(a, 10), (b, 30), (c, 20)], Some(c)).unwrap();
-        assert_eq!(keep, c, "her hands decide");
-        assert_eq!(release, vec![a, b]);
-        let (keep, release) = surplus_holds(&[(a, 10), (b, 30), (c, 20)], None).unwrap();
-        assert_eq!(keep, b, "no hands: the most recently touched card stays");
-        assert_eq!(release, vec![a, c]);
-        let (keep, _) = surplus_holds(&[(a, 10), (b, 30)], Some(c)).unwrap();
-        assert_eq!(keep, b, "an acting card she does not hold cannot be kept");
+        assert_eq!(surplus_holds(&[legacy(a, 10)], None), None);
+        let work = [legacy(a, 10), legacy(b, 30), legacy(c, 20)];
+        assert_eq!(surplus_holds(&work, Some(c)), Some((c, vec![a, b])));
+        assert_eq!(surplus_holds(&work, None), Some((b, vec![a, c])));
+        assert_eq!(surplus_holds(&work[..2], Some(c)), Some((b, vec![a])));
+
+        let selected = |card_id, updated_at_ms, claimed_at_ms, origin| HeldWorkClaim {
+            card_id,
+            updated_at_ms,
+            provenance: Some(airc_work::model::ClaimProvenance {
+                origin,
+                selected_at_ms: claimed_at_ms,
+            }),
+        };
+        use airc_work::ClaimOrigin::{Automatic, Explicit, Unknown};
+        // Actual failure: automatic bench work is acting and heartbeating, but
+        // she explicitly chooses the coding task. Reconciliation must keep it.
+        let work = [
+            selected(a, 1000, 10, Automatic),
+            selected(b, 30, 30, Explicit),
+        ];
+        assert_eq!(surplus_holds(&work, Some(a)), Some((b, vec![a])));
+        // An older explicit claim's heartbeat cannot supersede a newer choice.
+        let work = [
+            selected(a, 2000, 10, Explicit),
+            selected(b, 30, 30, Explicit),
+        ];
+        assert_eq!(surplus_holds(&work, Some(a)), Some((b, vec![a])));
+        // Unknown history is not invented intent, even when its event is newer.
+        let work = [
+            selected(a, 2000, 2000, Unknown),
+            selected(b, 30, 30, Explicit),
+        ];
+        assert_eq!(surplus_holds(&work, Some(a)), Some((b, vec![a])));
+        let work = [selected(a, 10, 10, Unknown), selected(b, 30, 30, Automatic)];
+        assert_eq!(surplus_holds(&work, Some(a)), Some((a, vec![b])));
     }
 }
 

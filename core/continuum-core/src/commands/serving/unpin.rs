@@ -14,9 +14,9 @@
 //!
 //! `Privileged` — it changes what dictates GPU residency on this node.
 
+use crate::modules::serving_daemon::ServingIntent;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
 use ts_rs::TS;
 
 use crate::modules::serving_pin_store::ServingPinStore;
@@ -51,7 +51,7 @@ crate::action_command! {
     /// pinned model (use serving/unload for that); if it is still the best fit it
     /// keeps serving. Idempotent when no pin was set.
     pub struct ServingUnpin {
-        pin: watch::Sender<Option<String>>,
+        intent: ServingIntent,
         /// The same store `serving/pin` writes — handed in, never resolved here.
         store: ServingPinStore,
     }
@@ -60,9 +60,8 @@ crate::action_command! {
     params: ServingUnpinParams,
     output: UnpinReport,
     run(this, _ctx, _p) => {
-        let released_model = this.pin.borrow().clone();
+        let released_model = this.intent.set_pin(None, true);
         if released_model.is_some() {
-            this.pin.send_replace(None);
             this.store.clear();
         }
         let detail = match &released_model {
@@ -95,14 +94,15 @@ mod tests {
     // which returns the planner to autonomic) and reports which model it freed.
     #[tokio::test]
     async fn release_clears_the_pin_and_names_it() {
-        let (pin, pin_rx) = watch::channel(Some("coder-14b".to_string()));
+        let intent = ServingIntent::new(Some("coder-14b".to_string()));
+        let pin_rx = intent.subscribe();
         // The store is the test's own tempdir. Before 2026-09-16 this test removed
         // the REAL machine's pin file on every `cargo test`.
         let dir = tempfile::tempdir().expect("tempdir");
         let store = ServingPinStore::under_home(dir.path());
         store.save("coder-14b");
         let report = ServingUnpin {
-            pin,
+            intent,
             store: store.clone(),
         }
         .run(&Ctx::default(), ServingUnpinParams {})
@@ -110,7 +110,7 @@ mod tests {
         .expect("unpin ok");
         assert_eq!(report.released_model.as_deref(), Some("coder-14b"));
         assert!(
-            pin_rx.borrow().is_none(),
+            pin_rx.borrow().pinned.is_none(),
             "the pin watch is cleared → autonomic again"
         );
         assert!(
@@ -123,15 +123,21 @@ mod tests {
     // says so plainly rather than misleading the caller.
     #[tokio::test]
     async fn release_with_no_pin_is_idempotent() {
-        let (pin, _pin_rx) = watch::channel(None);
+        let intent = ServingIntent::new(None);
+        let observed = intent.subscribe();
         let dir = tempfile::tempdir().expect("tempdir");
         let report = ServingUnpin {
-            pin,
+            intent,
             store: ServingPinStore::under_home(dir.path()),
         }
         .run(&Ctx::default(), ServingUnpinParams {})
         .await
         .expect("unpin ok");
         assert!(report.released_model.is_none());
+        assert_eq!(
+            observed.borrow().revision,
+            1,
+            "explicit unpin supersedes old intent even when already unset"
+        );
     }
 }

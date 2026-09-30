@@ -70,6 +70,7 @@ pub mod faculty_pulse;
 pub mod focus_policy;
 pub mod generate_recipe;
 pub mod generate_response;
+pub(crate) mod generation_drop;
 pub mod gym;
 pub mod gym_rng;
 pub mod gym_grader;
@@ -85,12 +86,16 @@ pub mod pass_intent;
 pub mod perception_facts;
 pub mod persona_tools;
 pub mod persona_workspace;
+/// The handoff record: her state at the seam, written before a stop, read first on wake
+/// (card 49b5e806).
+pub mod handoff;
 /// Bounded per-room diagnostics state, with the eviction decision CLAUDE.md
 /// requires of anything that accumulates (#3903 review).
 pub(crate) mod bounded_room_ledger;
 pub mod provenance;
 pub mod prefill_throttle;
 pub mod prompt_capture;
+pub(crate) mod prompt_prefix;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
@@ -105,7 +110,10 @@ pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;
 pub mod self_repeat;
+pub mod kv_cache_plan;
 pub mod serving_plan;
+pub mod service_rate;
+pub mod window_allocator;
 pub mod shared_analysis;
 pub mod should_respond;
 pub mod should_respond_module;

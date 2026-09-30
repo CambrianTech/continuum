@@ -3,9 +3,17 @@
 //!
 //! Joel, 2026-09-17: "It's supposed to be rust for infrastructure not shell jacks." The
 //! decision that `tools/scripts/track-canary.sh` (bash + launchd, Unix-only) makes now
-//! runs here as a `ServiceModule` — one binary, every platform. It NEVER reboots: on a
-//! deploy verdict it records a [`DeployRequest`] (the seam), and the supervisor (card
-//! 82af11f5, BigMama's lane) performs the cross-platform build + swap + re-exec.
+//! runs here as a `ServiceModule` — one binary, every platform. It never reboots IN
+//! PROCESS: on a deploy verdict it records a [`DeployRequest`] (the seam) and hands it to
+//! the [`DeployActuator`], which launches the consumer verb detached from this core and
+//! keeps the receipt — unless another owner (the bash tracker's agent, the operator
+//! switch) is installed on this node, in which case the request is left for it.
+//!
+//! The request is IDEMPOTENT BY TIP: written once when the tip first differs, left
+//! standing on every later tick (its `requested_ms` is when the deploy was first asked).
+//! Until 2026-09-20 it was re-stamped every 300 s tick, so `elapsed_ms` never passed the
+//! stranded grace and `deploy.stranded` could not fire — a dead request looked exactly
+//! like a fresh one, forever (the 5090: 214 `request_written` rows, nothing consumed).
 //!
 //! Shape (canonical `ServiceModule`): its own tick, git/gh gathered OFF the tick via
 //! `bounded_command::probe` (a launch-path probe gets a bound + a named outcome, the 9/5
@@ -16,14 +24,16 @@
 
 use std::any::Any;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
 use crate::runtime::deploy_tracker::{
-    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome,
-    TickInputs,
+    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
+    RequestOutcome, TickInputs,
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
@@ -42,6 +52,13 @@ fn running_sha() -> &'static str {
 /// attached to the same sha (a `schedule`, a `workflow_run` chained off another branch)
 /// judged something else and merely landed here.
 const OWN_SUITE_EVENTS: [&str; 3] = ["push", "pull_request", "workflow_dispatch"];
+
+/// Workflows whose check-runs are NEVER the tip's verdict, by path, whatever event started
+/// them. `promote-main` (card 7c0990b0) runs on the default branch on a schedule AND by
+/// hand (`workflow_dispatch`, an own-suite event); it moves main to canary's tip and its
+/// failure says nothing about the tip's code — a red run there must not read as a red
+/// tip and refuse every deploy on the fleet (the #4243 shape, by a different door).
+const NON_DEPLOY_WORKFLOW_PATHS: [&str; 1] = [".github/workflows/promote-main.yml"];
 
 /// The tip's verdict plus what the read excluded — the numbers a probe wants when a
 /// verdict surprises someone reading the tick.
@@ -67,7 +84,8 @@ pub struct TipChecks {
 /// all-checks read said "red", refusing every deploy on the fleet until a new tip appeared
 /// (#4243 fixed the shell copy of this rule; this is the Rust copy, the only one the
 /// Windows `deploy-consume` reads). So: the workflow runs for the sha carry the triggering
-/// event, and only check-runs from suites started by [`OWN_SUITE_EVENTS`] count. The runs
+/// event, and only check-runs from suites started by [`OWN_SUITE_EVENTS`] count — minus
+/// the suites of [`NON_DEPLOY_WORKFLOW_PATHS`], which judge nothing about the tip. The runs
 /// API answered with no such suite = unknown, never "green by absence". The runs API did
 /// not answer (`None` or not JSON) = every check counts, as before — a degraded read, not
 /// a lie. Pure over the JSON bodies so it is assertable without gh.
@@ -87,6 +105,7 @@ pub fn parse_tip_checks(check_runs_body: &str, workflow_runs_body: Option<&str>)
         .map(|runs| {
             runs.iter()
                 .filter(|r| r.get("event").and_then(|e| e.as_str()).is_some_and(|e| OWN_SUITE_EVENTS.contains(&e)))
+                .filter(|r| !r.get("path").and_then(|p| p.as_str()).is_some_and(|p| NON_DEPLOY_WORKFLOW_PATHS.contains(&p)))
                 .filter_map(|r| r.get("check_suite_id").and_then(|id| id.as_u64()))
                 .collect()
         });
@@ -277,17 +296,22 @@ pub struct DeployTrackerModule {
     /// The tip last reported as stranded, so a durable condition is said ONCE rather than
     /// every tick — the chatty-floor failure that buries the line it exists to surface.
     stranded_reported: parking_lot::Mutex<Option<String>>,
+    /// The ACTION half: launches the consumer on a request and keeps the receipt. `Arc`
+    /// so the spawn runs off the tick (`spawn_blocking`).
+    actuator: Arc<DeployActuator>,
 }
 
 impl DeployTrackerModule {
     pub fn new() -> Self {
         let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         let state_dir = root.join("state");
+        let actuator = Arc::new(DeployActuator::new(root.clone()));
         Self {
             source: Box::new(GitGhDeploySource::from_env()),
             root,
             state_dir,
             stranded_reported: parking_lot::Mutex::new(None),
+            actuator,
         }
     }
 
@@ -337,6 +361,9 @@ impl ServiceModule for DeployTrackerModule {
     }
 
     async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        // The last actuation, graded against the build now running: landed / stale /
+        // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
+        self.actuator.report_boot_outcome(running_sha(), Self::now_ms());
         Ok(())
     }
 
@@ -347,8 +374,9 @@ impl ServiceModule for DeployTrackerModule {
             Ok(None) => (None, Some("branch has no tip".to_string()), Checks::Unknown),
             Err(e) => (None, Some(e), Checks::Unknown),
         };
+        // a live owner excludes a new deploy even past its claim's expiry (card 634f644d)
         let build_in_flight =
-            crate::runtime::deploy_claim::in_flight(&self.root, now).blocks();
+            crate::runtime::deploy_claim::in_flight(&self.root, now).excludes_deploy();
         let inputs = TickInputs {
             running_sha: Some(running_sha().to_string()),
             tip_sha,
@@ -367,6 +395,9 @@ impl ServiceModule for DeployTrackerModule {
         // re-deriving by hand a comparison available from two values already in hand).
         // Both facts are right here in `inputs`; this just compares them.
         let state_dir = &self.state_dir;
+        // Whether the standing request is stranded — the only condition under which the
+        // actuator may launch the consumer a second time for one request.
+        let mut stranded = false;
         match crate::runtime::deploy_tracker::reconcile_request(
             read_deploy_request(state_dir).as_ref(),
             running_sha(),
@@ -375,6 +406,8 @@ impl ServiceModule for DeployTrackerModule {
         ) {
             RequestOutcome::Settled { tip_sha, waited_ms } => {
                 clear_deploy_request(state_dir);
+                // The measured cost of this deploy lands on the actuation that produced it.
+                self.actuator.record_settled(&tip_sha, waited_ms);
                 crate::probe!(
                     class = "deploy.settled",
                     tip = tip_sha.as_str(),
@@ -384,6 +417,7 @@ impl ServiceModule for DeployTrackerModule {
                 );
             }
             RequestOutcome::Stranded { tip_sha, elapsed_ms } => {
+                stranded = true;
                 // Once per stranded tip, not every tick: the condition is durable and the
                 // request file on disk is the standing evidence. A per-tick repeat is the
                 // chatty-floor failure that buries the line it exists to surface.
@@ -410,13 +444,92 @@ impl ServiceModule for DeployTrackerModule {
         let verdict = decide(&inputs);
         match &verdict {
             DeployVerdict::Deploy { tip_sha } => {
-                write_deploy_request(state_dir, &DeployRequest::new(tip_sha.clone(), now));
-                crate::probe!(
-                    class = "deploy.track.request_written",
-                    tip = tip_sha.as_str(),
-                    running = running_sha(),
-                    "deploy wanted — recorded a DeployRequest for the supervisor"
+                // Write ONLY when the tip changed. An unchanged tip keeps its original
+                // `requested_ms`, which is the only record of how long this deploy has been
+                // owed — re-stamping it every tick pinned `elapsed_ms` at the tick period and
+                // made every age-based decision downstream meaningless (card c48fc453). The
+                // probe follows the write, so a standing request stops repeating itself too.
+                let standing = read_deploy_request(state_dir);
+                let persisted = crate::runtime::deploy_tracker::request_to_persist(
+                    standing.as_ref(),
+                    tip_sha,
+                    now,
                 );
+                if let Some(req) = persisted.as_ref() {
+                    write_deploy_request(state_dir, req);
+                    crate::probe!(
+                        class = "deploy.track.request_written",
+                        tip = tip_sha.as_str(),
+                        running = running_sha(),
+                        "deploy wanted — recorded a DeployRequest; the actuator acts on it unless another owner is installed"
+                    );
+                }
+                // The actuator acts on the request that STANDS for this tip, freshly written
+                // or owed since an earlier tick — it bounds its own attempts, so a standing
+                // request is exactly what a retry must be judged against.
+                let req = persisted
+                    .or(standing)
+                    .unwrap_or_else(|| crate::runtime::deploy_tracker::DeployRequest::new(tip_sha, now));
+                // THE ACTION, off the tick: the actuator defers to an installed owner,
+                // launches the consumer once per request, and keeps the receipt.
+                let actuator = self.actuator.clone();
+                let outcome = tokio::task::spawn_blocking(move || actuator.on_deploy_wanted(&req, stranded, now))
+                    .await
+                    .map_err(|e| format!("deploy-actuator task join error: {e}"))?;
+                // One row says what the ACTION did this tick, so a deploy that was
+                // wanted but not taken is never silent: who owns the node instead, which
+                // attempt was launched and how, or which guard skipped it.
+                match outcome {
+                    ActuateOutcome::Deferred(owner) => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "deferred",
+                        tip = tip_sha.as_str(),
+                        owner = owner.name(),
+                        "a deploy is wanted and another owner acts on this node — the core stands down"
+                    ),
+                    ActuateOutcome::SpawnFailed { attempt, error } => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "spawn_failed",
+                        tip = tip_sha.as_str(),
+                        attempt = attempt as u64,
+                        error = error.as_str(),
+                        "the consumer could not be launched — see logs/deploy-actuate.log"
+                    ),
+                    ActuateOutcome::Skipped(decision) => crate::probe!(
+                        class = "deploy.actuate.decision",
+                        verdict = "skipped",
+                        tip = tip_sha.as_str(),
+                        decision = ?decision,
+                        "this request was not actuated again this tick — its own bound or attempt cap decided"
+                    ),
+                    ActuateOutcome::Spawned { attempt, pid, mode, child } => {
+                        crate::probe!(
+                            class = "deploy.actuate.decision",
+                            verdict = "spawned",
+                            tip = tip_sha.as_str(),
+                            attempt = attempt as u64,
+                            pid = pid.unwrap_or(0), // unwrap_or: 0 reads as "a scheduler task ran it", which returns no pid
+                            mode = mode.as_str(),
+                            "the consumer was launched detached — this core has handed off its own replacement"
+                        );
+                        if let Some(mut child) = child {
+                            // Reap the consumer off the tick and say how it exited — a consumer
+                            // that exits before its reboot stops this core is a receipt worth having
+                            // (NothingOwed, RefuseDirty, a failed build: its log names which).
+                            let tip = tip_sha.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let status = child.wait();
+                                crate::probe!(
+                                    class = "deploy.actuate.consumer_exited",
+                                    tip = tip.as_str(),
+                                    pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
+                                    status = ?status,
+                                    "the consumer this core launched has exited — see logs/deploy-actuate.log and logs/deploy-consume.log"
+                                );
+                            });
+                        }
+                    }
+                }
             }
             DeployVerdict::UpToDate => {}
             DeployVerdict::Held { reason, stale } => {
@@ -502,5 +615,32 @@ mod tests {
         assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "a failure in the tip's own suite is the tip's verdict");
         let pending = r#"{"check_runs":[{"status":"in_progress","check_suite":{"id":96068500514}},{"status":"completed","conclusion":"failure","check_suite":{"id":96070172760}}]}"#;
         assert_eq!(verdict(pending, Some(runs)), Checks::Pending, "the schedule's failure does not pre-empt the push's pending suite");
+    }
+
+    // what this catches (card 7c0990b0): the promote-main workflow runs on the default
+    // branch and can be started by hand — `workflow_dispatch`, an OWN-suite event — so the
+    // event filter alone would let its failure read as the tip's. A run of that workflow
+    // is excluded by PATH whatever its event; the push's own suites still decide, and a
+    // sha whose only own suite is promote-main's is unknown, never green by absence.
+    #[test]
+    fn a_promote_main_run_is_never_the_tips_verdict_whatever_its_event() {
+        let checks = r#"{"check_runs":[
+            {"name":"promote-main","status":"completed","conclusion":"failure","check_suite":{"id":11}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        let runs = r#"{"workflow_runs":[
+            {"id":1,"event":"workflow_dispatch","path":".github/workflows/promote-main.yml","check_suite_id":11},
+            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
+        ]}"#;
+        assert_eq!(parse_tip_checks(checks, Some(runs)), TipChecks { checks: Checks::Green, total: 2, excluded: 1, filtered: true }, "a dispatched promote-main failure is excluded by path: green");
+        let in_flight = r#"{"check_runs":[
+            {"name":"promote-main","status":"in_progress","check_suite":{"id":11}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(verdict(in_flight, Some(runs)), Checks::Green, "a promote-main run in flight is not a pending tip");
+        let only_promote = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/promote-main.yml","check_suite_id":11}]}"#;
+        assert_eq!(verdict(checks, Some(only_promote)), Checks::Unknown, "promote-main as the only suite = no own suite = wait, never green by absence");
+        let own_failure = r#"{"check_runs":[{"name":"cargo test","status":"completed","conclusion":"failure","check_suite":{"id":22}}]}"#;
+        assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "the push's own failure is still the tip's verdict");
     }
 }

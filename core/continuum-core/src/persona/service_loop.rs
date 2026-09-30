@@ -67,11 +67,11 @@ pub struct IncomingMessage {
     /// against the hosting persona's own peer_id to skip self-loop
     /// echoes.
     pub peer_id: Uuid,
-    /// The message text. The loop only forwards textual messages;
-    /// non-text events (binary attachments, control envelopes) are
-    /// filtered upstream of this projection — they should arrive as
-    /// `None` from the conversation's stream.
+    /// Caption/text of the room message.
     pub text: String,
+    /// Durable references only; decoding a message never fetches attachment bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<super::channel_items::MediaItemRequest>,
     /// The room the event ARRIVED in — the transport's `TranscriptEvent.room_id`,
     /// which is authoritative for the turn's context (A.6, the missing context
     /// axis). Nil means the source predates room stamping (scripted/test
@@ -84,12 +84,16 @@ pub struct IncomingMessage {
 }
 
 impl IncomingMessage {
+    pub(crate) fn render_content(&self) -> String {
+        crate::airc::realtime_wire::render_room_content(&self.text, &self.media)
+    }
+
     /// The same source-labelled input at inference, replay and teaching boundaries.
     /// This is rendering, not a replacement for the typed event/room identity.
     pub(crate) fn render_room_update(&self) -> String {
         format!(
             "[Room message received during this turn; room {}; peer {}; event {}]\n{}",
-            self.room_id, self.peer_id, self.event_id, self.text
+            self.room_id, self.peer_id, self.event_id, self.render_content()
         )
     }
 }
@@ -128,6 +132,13 @@ pub trait PersonaConversation: Send + Sync {
     /// persona attached — avoids replying to ancient chat just
     /// because a restart loaded them through `page_recent`.
     async fn high_water_mark(&self, limit: usize) -> Result<u64, String>;
+
+    /// The cutoff established by successful priming. Live conversations freeze
+    /// this at attach, so starting the loop does not issue another fallible RPC.
+    async fn initial_water_mark(&self, limit: usize) -> Result<u64, String> {
+        self.high_water_mark(limit).await
+    }
+
 
     /// Yield the next inbound message, or `Ok(None)` when the
     /// stream is exhausted (daemon disconnected, peer gone). On
@@ -394,6 +405,9 @@ pub async fn serve_persona_loop(
     opts: ServeOptions,
 ) -> Result<ServeOutcome, String> {
     use tracing::Instrument;
+    // Her presence reads THIS: "ready" means a loop is running, not merely that her airc
+    // runtime is up (card 7524aa5b). Held for the loop's whole life, released on any exit.
+    let _live = crate::persona::cognition_pulse::enter_loop(ctx.identity.peer_id.as_uuid());
     serve_persona_loop_inner(ctx, conversation, opts)
         .instrument(ctx.span())
         .await
@@ -416,7 +430,7 @@ async fn serve_persona_loop_inner(
     // first `next_message` returns a typed `Err("called before prime()")`
     // — fail-loud, not silently-warm.
     let mut high_water = conversation
-        .high_water_mark(opts.page_recent_limit)
+        .initial_water_mark(opts.page_recent_limit)
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
     // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
@@ -789,7 +803,9 @@ async fn serve_persona_loop_inner(
         // floor) — see `loop_dedup::defer_as_loop_filler` for the two-condition
         // trigger. Scheduling hygiene, not an output gate
         // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-        if crate::persona::loop_dedup::defer_as_loop_filler(
+        // This heuristic compares text only. Equal captions do not establish
+        // that two media-bearing messages are repeated input.
+        if msg.media.is_empty() && crate::persona::loop_dedup::defer_as_loop_filler(
             &msg.text,
             recent_inbound.make_contiguous(),
         ) {
@@ -803,7 +819,7 @@ async fn serve_persona_loop_inner(
                     .cloned()
                     .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
                 sender_type: crate::persona::types::SenderType::Persona,
-                content: msg.text.clone(),
+                content: msg.render_content(),
                 timestamp: now_ms,
                 priority: 0.5,
                 source_modality: None,
@@ -870,7 +886,11 @@ async fn serve_persona_loop_inner(
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or_default(), // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
         );
-        crate::cognition::resource_admission::note_turn_started(
+        // Held for the turn's lifetime: every exit below (`continue` on silence or
+        // error, the spoke tail) drops it, which ends the turn on the admission ledger
+        // — the in-flight mark the placement switch honours (a move lands between
+        // turns only) and the measured turn shape it derives her cooldown from.
+        let _turn_in_flight = crate::cognition::resource_admission::begin_turn(
             ctx.identity.peer_id.as_uuid(),
             crate::persona::trace::now_ms(),
         );
@@ -928,7 +948,7 @@ async fn serve_persona_loop_inner(
                 .cloned()
                 .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
             sender_type: crate::persona::types::SenderType::Persona,
-            content: msg.text.clone(),
+            content: msg.render_content(),
             timestamp: now_ms,
             priority: 0.5,
             source_modality: None,
@@ -1070,7 +1090,7 @@ async fn serve_persona_loop_inner(
             // time; the turn's `now_ms` must not be passed off as the event's time.
             Some(TriggerTurn {
                 peer_id: &msg.peer_id.to_string(),
-                content: &msg.text,
+                content: &msg.render_content(),
                 occurred_at_ms: 0,
             }),
         );
@@ -1341,7 +1361,7 @@ async fn serve_persona_loop_inner(
                     crate::persona::training_producer::TurnCreditCapture::for_turn(
                         ctx.identity.peer_id.as_uuid(),
                         &ctx.identity.agent_name,
-                        &msg.text,
+                        &msg.render_content(),
                         held_card.credit.as_ref(),
                     );
                 let turn_act_count;
@@ -1441,17 +1461,28 @@ async fn serve_persona_loop_inner(
                         // act is executed (→ Acted/ActUnfulfilled), never deferred.
                         unreachable!("live settle_step always permits its one act");
                     }
-                    crate::cognition::act_observe::SettleStep::Passed { .. } => {
+                    crate::cognition::act_observe::SettleStep::Passed { reason: pass_reason } => {
                         tracing::info!(
                             lamport = msg.lamport,
                             "persona chose silence (workspace) — substrate honors decision"
                         );
+                        // SAY WHY (Cormac, 2026-09-28: every turn his 8 citizens finished
+                        // ended "workspace-pass", 0 spoke, and the probe could not tell her
+                        // CHOICE of silence from a GATE that converted her draft into a pass,
+                        // or from no decision at all). The reason is the brain's; this line
+                        // only reports it.
+                        let (gated, pass_detail) = match pass_reason.as_deref() {
+                            Some(r) => (r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX), r),
+                            None => (false, "no-decision"),
+                        };
                         crate::probe!(
                             class = "persona.turn.silent",
                             persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
                             reason = "workspace-pass",
-                            "persona chose silence"
+                            gated = gated,
+                            pass_reason = %pass_detail.chars().take(240).collect::<String>(),
+                            "persona chose silence, or a gate converted her draft into a pass (gated) — pass_reason says which"
                         );
                         // THE ACT-QUESTION. Asked here on the PASS path and again after a spoken reply,
                         // so holding work is what makes it fire — not declining to speak.
@@ -1638,11 +1669,11 @@ async fn serve_persona_loop_inner(
             crate::persona::training_producer::produce(
                 ctx.identity.peer_id.as_uuid(),
                 ctx.identity.agent_name.clone(),
-                ctx.profile.model_id.clone(),
-                msg.text.clone(),
+                msg.render_content(),
                 response_text.clone(),
                 // Captured in the cycle arm above, at selection. `None` is an ordinary
-                // conversation and submits immediately, exactly as before.
+                // conversation: it leaves a `training.example.unverified` probe and is NOT
+                // a training example (card 8e3dd206) — only a graded turn is.
                 turn_credit,
                 turn_generation_receipts,
             );
@@ -1736,7 +1767,9 @@ const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 /// ceiling on a being's own hands, contradicting the written doctrine on the
 /// same page (an "acts-forever" persona is a fitness gap to TRAIN, never a
 /// substrate cap — ACTING-ORGANISM §4). The perception kit ([repetition],
-/// repeat-guard fact) is how a looping mind notices itself; the ONLY external
+/// actual-result fixed-point guard) is how a looping mind notices itself. Three
+/// consecutive repeats of both request and result yield the turn without declaring
+/// its work complete; changed results reset that streak. The external
 /// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
 /// clock, held by the observer, never wired into life.
 pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
@@ -2501,32 +2534,22 @@ async fn run_self_cycle(
     // hold lapsed, she looked free and pulled a second card (2026-09-05: 32 pulls
     // and 32 re-stagings for 12 cards in 15 minutes).
     crate::persona::cognition_pulse::touch(ctx.identity.peer_id.as_uuid(), now_ms);
-    // FOCUS (2026-08-22): a self-cycle with no triggering message binds to the
-    // room of her FRESHEST LIVE CLAIM when she holds one, else her home room.
-    // Home-room-always was the self-clobber engine measured tonight: a citizen
-    // holding a claim in a run room alternated home-room self-ticks with
-    // work-room turns, and every swap re-rendered the room-scoped context
-    // (kanban, steps-ledger, room speech) through her ONE pinned slot —
-    // `cached: 0` by her own hand, plus attention spent re-orienting in a room
-    // her work is not in. The institution's version: you sit at your desk
-    // until the job is done; the break room is for between jobs.
-    //
-    // Claim → room resolves through the bench-round registry (a round IS its
-    // room). A claim on an untracked card (human boards) resolves None and
-    // falls back home — never a guess. Freshest = max claim_expires_at_ms,
-    // i.e. the claim most recently taken or heartbeated.
+    // One explicit work choice drives both the room and the working checkout.
+    // Ordinary project cards are on subscribed boards, not in the benchmark
+    // registry. Lease renewal is liveness, not a new focus selection.
     let focus_room = match conversation.stream_citizen() {
-        Some(citizen) => citizen.active_claims().await.ok().and_then(|cards| {
-            let mut live: Vec<_> = cards
-                .iter()
-                .filter_map(|c| {
-                    let room = crate::cognition::bench_round::room_for_card(c.card_id.as_uuid())?;
-                    Some((c.claim_expires_at_ms.unwrap_or(0), room)) // unknown expiry sorts LEAST-fresh: it can never win focus over a known-live lease, and a lone expiry-less claim still focuses (better than home)
-                })
-                .collect();
-            live.sort_by_key(|(exp, _)| *exp);
-            live.pop().map(|(_, room)| room)
-        }),
+        Some(citizen) => match super::work_focus::focus_room(citizen.as_ref()).await {
+            Ok(room) => room,
+            Err(error) => {
+                crate::probe!(
+                    class = "persona.selftick.focus_unavailable",
+                    persona = %ctx.identity.agent_name,
+                    error = %error,
+                    "cannot resolve held work room; preserve work and retry next self-cycle",
+                );
+                return false;
+            }
+        },
         None => None,
     };
     if let Some(room) = focus_room {
@@ -3031,6 +3054,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender: me,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let long = format!(
@@ -3050,9 +3074,9 @@ mod tests {
         );
     }
 
-    // what this catches (card 7e3e8070): the no-deliverable notice narrating instead of
-    // gating. Six acts on a held card with no file change → the work turn names the two
-    // ways out; an edit receipt resets the count and the gate stays out of the way.
+    // what this catches (card 7e3e8070, reshaped by 3bd860ba): six acts on a held card
+    // with no file change surface the advisory checkpoint (a note, a blocker, who can
+    // help; never a release demand); an edit receipt resets the count and it stays away.
     #[test]
     fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
         use crate::persona::work_burst::{
@@ -3063,6 +3087,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender: me,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let looping = vec![
@@ -3077,8 +3102,11 @@ mod tests {
             acts_since_last_write(&looping, me),
             &CardProgress::default(),
         );
-        assert!(text.contains("[write or release]"), "{text}");
+        assert!(text.contains("[progress checkpoint]"), "{text}");
         assert!(text.contains("PASS: blocked"), "{text}");
+        // regression (Kimi, d33e928a, 2026-09-26): a citizen mid-diagnosis read past the
+        // one act that records progress, a note; the checkpoint names it.
+        assert!(text.contains("work/note"), "{text}");
 
         let mut edited = looping.clone();
         edited.push(row(
@@ -3091,7 +3119,7 @@ mod tests {
             "an edit resets the count"
         );
         // regression for the 2026-09-11 pull→release loop: a claim (the pull) after a
-        // governor release starts a fresh count, so the new hold is not released at once.
+        // release starts a fresh count, so the new hold opens without the checkpoint.
         let mut reclaimed = looping.clone();
         reclaimed.push(row(4, "💭 next ⚙ work/release abcd ✓"));
         reclaimed.push(row(5, "💭 pulled ⚙ work/claim ef01 ✓ ⚙ code/read c.py ✓"));
@@ -3107,8 +3135,8 @@ mod tests {
             &CardProgress::default(),
         );
         assert!(
-            !text.contains("[write or release]"),
-            "no gate after an edit: {text}"
+            !text.contains("[progress checkpoint]"),
+            "no checkpoint after an edit: {text}"
         );
         assert!(
             WRITE_OR_RELEASE_AFTER_ACTS >= 4,
@@ -3129,6 +3157,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender: me,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let rows = vec![
@@ -3150,11 +3179,27 @@ mod tests {
             vec!["MultiValueField".to_string()],
             "a search term is not a read"
         );
+        // Successful writes survive as concrete receipts; failed edits and
+        // another citizen's writes must not become her accomplishments.
+        assert_eq!(p.wrote, vec!["code/edit django/forms/fields.py"]);
+        let mut write_rows = rows.clone();
+        write_rows.push(row(5, "⚙ code/write failed.rs ✗"));
+        write_rows.push(row(6, "⚙ code/edit django/forms/fields.py ✓"));
+        write_rows.push(row(7, "⚙ work/note de33e1d6 ✓"));
+        let mut others = row(8, "⚙ code/write someone-elses.rs ✓");
+        others.sender = Uuid::new_v4();
+        write_rows.push(others);
+        let writes = card_progress(&write_rows, me);
+        assert_eq!(writes.wrote, vec!["code/edit django/forms/fields.py", "work/note de33e1d6"]);
+        let receipt = progress_line(&writes);
+        assert!(receipt.contains("Successful write receipts: code/edit django/forms/fields.py; work/note de33e1d6."));
+        assert!(!receipt.contains("failed.rs"));
+        assert!(!receipt.contains("someone-elses.rs"));
         assert_eq!(p.ran.len(), 2);
         assert!(p.ran[1].ends_with('✓'), "{:?}", p.ran);
         let block = held_work_burst_gated(&[], &[], 0, &p);
         assert!(
-            block.contains("[progress] 7 acts so far (1 writes)"),
+            block.contains("[progress] Recent work receipts:"),
             "{block}"
         );
         assert!(
@@ -3187,6 +3232,7 @@ mod tests {
             id: Uuid::new_v4(),
             sender,
             occurred_at_ms: ms,
+            media: Vec::new(),
             text: text.to_string(),
         };
         let rows = vec![
@@ -3229,6 +3275,7 @@ mod tests {
             lane_id: None,
             state: CardState::InProgress,
             owner: None,
+            claim_provenance: None,
             claim_id: None,
             claim_expires_at_ms: None,
             last_heartbeat_at_ms: None,
@@ -4503,6 +4550,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
@@ -4596,6 +4644,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
@@ -4910,6 +4959,7 @@ mod tests {
         // UnprimedConversation per [[test-fixtures-are-system-primitives]].
         let mut conversation = ScriptedConversation::new()
             .with_events(vec![Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
@@ -4949,6 +4999,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: persona_peer, // SELF
@@ -4991,6 +5042,7 @@ mod tests {
             .with_high_water(100) // pre-attach history was up to lamport=100
             .with_events(vec![
                 Ok(Some(IncomingMessage {
+                    media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 50, // BEFORE attach
                     peer_id: other_peer,
@@ -4998,6 +5050,7 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 100, // exactly at the mark — also skipped
                     peer_id: other_peer,
@@ -5005,6 +5058,7 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 101, // FRESH
                     peer_id: other_peer,
@@ -5053,6 +5107,7 @@ mod tests {
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Err("stream lag".to_string()),
             Ok(Some(IncomingMessage {
+                media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
                 peer_id: other_peer,
@@ -5210,6 +5265,7 @@ mod tests {
             lane_id: None,
             state: CardState::Claimed,
             owner: Some(crate::identity::PeerId::from_uuid(persona_peer)),
+            claim_provenance: None,
             claim_id: None,
             claim_expires_at_ms: None,
             last_heartbeat_at_ms: None,
@@ -5355,6 +5411,7 @@ mod tests {
             lane_id: None,
             state: airc_lib::CardState::Claimed,
             owner: Some(crate::identity::PeerId::from_uuid(owner)),
+            claim_provenance: None,
             claim_id: None,
             claim_expires_at_ms: None,
             last_heartbeat_at_ms: None,

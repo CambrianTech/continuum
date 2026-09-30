@@ -43,7 +43,7 @@ use crate::persona::rag_budget::{
 use crate::runtime::ready_buffer::ReadyBuffer;
 
 /// Source identifier — used by budget presets, telemetry, cursor scope checks.
-const SOURCE_ID: &str = "airc";
+pub(crate) const SOURCE_ID: &str = "airc";
 
 /// Default newest-events fetch cap when building a digest on demand (mirrors the
 /// region's). The recipe-defined grounding window slices within this.
@@ -266,26 +266,15 @@ impl AircRagSource {
     /// order among themselves) — hydrated history can therefore only ever land
     /// on the grounding side of the bookmark, never as unread. That is the #242
     /// contract: history is context, never fresh perception.
-    fn hydrated_event(room_id: uuid::Uuid, sender: uuid::Uuid, text: &str) -> TranscriptEvent {
-        use airc_core::{
-            Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,
-        };
-        let room = RoomId::from_uuid(room_id);
-        TranscriptEvent {
-            event_id: EventId::new(),
-            room_id: room,
-            peer_id: PeerId::from_uuid(sender),
-            client_id: ClientId::new(),
-            kind: TranscriptKind::Message,
-            occurred_at_ms: 0,
-            lamport: 0,
-            target: MentionTarget::Room(room),
-            headers: Headers::default(),
-            body: Some(Body::text(text)),
-            attachment: None,
-            receipt: None,
-            metadata: serde_json::Value::Null,
-        }
+    fn hydrated_event(
+        room_id: uuid::Uuid,
+        sender: uuid::Uuid,
+        line: &super::durable_history::HydratedLine,
+    ) -> TranscriptEvent {
+        super::durable_history::event_from_row(room_id, super::durable_history::RoomRow {
+            id: uuid::Uuid::parse_str(&line.message_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            sender, occurred_at_ms: 0, text: line.text.clone(), media: line.media.clone(),
+        })
     }
 
     /// Override the newest-events fetch cap used when building a digest on demand.
@@ -659,29 +648,29 @@ impl RagSource for AircRagSource {
             if let Some(history) = &self.history {
                 match history.room_tail(room_id, grounding * 2).await {
                     Ok(lines) => {
-                        // Text via the ONE room-turn decoder (both wire shapes),
+                        // Sender, text and media via the ONE room-turn decoder (both wire shapes),
                         // same as ChannelElement — content identity is the dedup
                         // key because event ids re-mint across runtime restarts.
-                        let live_bodies: std::collections::HashSet<String> = events
+                        let live_bodies: std::collections::HashSet<_> = events
                             .iter()
                             .filter(|e| e.room_id.as_uuid() == room_id)
                             .filter_map(|e| {
-                                crate::airc::realtime_wire::room_turn_from_event(e)
+                                crate::airc::realtime_wire::room_content_from_event(e)
                                     .ok()
-                                    .map(|(_, text)| text)
+                                    .map(|turn| (turn.sender, turn.text, turn.media))
                             })
                             .collect();
                         let mut hydrated = 0usize;
                         // Chronological input order; stable sort keeps it among
                         // the lamport-0 cohort. Prepend via extend + later sort.
                         for line in &lines {
-                            if live_bodies.contains(&line.text) {
-                                continue;
-                            }
                             let Ok(sender) = uuid::Uuid::parse_str(&line.sender_id) else {
                                 continue;
                             };
-                            events.push(Self::hydrated_event(room_id, sender, &line.text));
+                            if live_bodies.contains(&(sender, line.text.clone(), line.media.clone())) {
+                                continue;
+                            }
+                            events.push(Self::hydrated_event(room_id, sender, line));
                             hydrated += 1;
                         }
                         crate::probe!(
@@ -1301,9 +1290,11 @@ mod tests {
     #[tokio::test]
     async fn shallow_live_window_tops_up_from_durable_history_as_grounding() {
         let room = RoomId::new();
-        let sender = Uuid::new_v4();
         // ONE live event — the post-reboot shape.
         let live = event_in(room, Some("Hello everyone! I'm Benchy."), 5);
+        // A durable copy has the SAME sender. Equal text from different peers
+        // is a distinct message and must not be silently collapsed.
+        let sender = live.peer_id.to_string();
         let reader = Arc::new(StubReader::new(vec![live]));
         let (source, _buffer) = isolated_source(reader);
         let mut source = source;
@@ -1313,17 +1304,20 @@ mod tests {
                 crate::persona::durable_history::HydratedLine {
                     message_id: "m1".into(),
                     sender_id: sender.to_string(),
+                    media: Vec::new(),
                     text: "the wordstats tests are next".into(),
                 },
                 crate::persona::durable_history::HydratedLine {
                     message_id: "m2".into(),
                     sender_id: sender.to_string(),
                     // Duplicate of the live event — must be deduped, not doubled.
+                    media: Vec::new(),
                     text: "Hello everyone! I'm Benchy.".into(),
                 },
                 crate::persona::durable_history::HydratedLine {
                     message_id: "m3".into(),
                     sender_id: sender.to_string(),
+                    media: Vec::new(),
                     text: "Atlas claimed card 7cedd4cf".into(),
                 },
             ],

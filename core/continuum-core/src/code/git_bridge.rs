@@ -439,8 +439,11 @@ fn resolve_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, String> 
     Ok(true)
 }
 
-/// Run a git command in the workspace directory.
-fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
+/// Run a git command in the workspace directory. `pub(crate)` so the one context-clean
+/// runner (env stripped, ceiling set, no terminal prompt) is shared by every crate seam
+/// that shells to git — `persona::workspace_transfer` carries a card's branch between
+/// nodes through it — rather than each seam re-deriving the hygiene below.
+pub(crate) fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(workspace_root)
@@ -468,6 +471,10 @@ fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_PREFIX")
         .env("GIT_CEILING_DIRECTORIES", workspace_root)
+        // A headless core has no terminal: a fetch or push that would ask for
+        // credentials must FAIL (a named outcome) rather than hang the turn on a prompt
+        // nobody will answer.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
 

@@ -254,6 +254,73 @@ pub fn note_directed_lane_wait_ms(ms: u64) {
 pub fn directed_lane_wait_ms() -> (u64, u64, u32) {
     DIRECTED_LANE_WAIT_MS.p50_p90()
 }
+/// HOW LONG A LANE IS HELD HERE — each `ServingLanePermit`'s own lifetime (queue
+/// admission → release), in ms. Already probed per release as `admission.lane.released
+/// held_ms`; a probe is not a number the substrate can compute with, and this is the
+/// one the lane wait's bound is derived FROM: the lanes' measured turn time.
+static LANE_HOLD_MS: WaitRing = WaitRing::new();
+/// Record one serving-lane permit's held time. Called from the permit's `Drop`.
+fn note_lane_held_ms(ms: u64) {
+    LANE_HOLD_MS.note(ms);
+}
+/// The lanes' measured turn time as (p50 ms, samples); `samples == 0` = UNMEASURED,
+/// and the p50 is then 0 and must never be read as an instant lane.
+pub fn lane_hold_p50_ms() -> (u64, u32) {
+    LANE_HOLD_MS.p50()
+}
+/// Held-work callers queued for the non-directed budget RIGHT NOW — the depth of the
+/// queue ahead of a mind about to park at the gate.
+pub fn work_waiting_now() -> usize {
+    LANES.work_waiting()
+}
+
+/// A lane wait longer than this is not a queue, it is a starve. The CEILING on the
+/// derived bound below, and the bound used outright when the queue is UNMEASURED
+/// (a fresh boot): busy is not dead, so it is generous — but it sits well under the
+/// per-act `TICK_DEADLINE` (25 min) so a starved mind defers at HER OWN named bound
+/// with her act budget intact, instead of the act's deadline expiring on her
+/// (`residue_ms = 1,500,001` on the M5, 2026-09-20).
+pub const LANE_WAIT_CEILING: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// The FLOOR on the derived bound: no mind is told a lane is hopeless before this,
+/// however fast the lanes look. A measured p50 is a median, not a promise.
+pub const LANE_WAIT_FLOOR: std::time::Duration = std::time::Duration::from_secs(60);
+/// How many times the queue's own clearing estimate a mind will wait before she
+/// defers. The estimate is a MEDIAN — half the turns run longer — so the bound is a
+/// multiple of it, never the estimate itself.
+pub const LANE_WAIT_SLACK: u32 = 2;
+
+/// PURE: how long a mind should wait for a serving lane, derived from the QUEUE she
+/// is joining rather than from a constant.
+///
+/// `queue_ahead` is the held-work callers already parked ([`work_waiting_now`]);
+/// `lanes` the lanes serving; `hold_p50_ms` / `hold_samples` the lanes' own measured
+/// turn time ([`lane_hold_p50_ms`]). Her place in line is `queue_ahead + 1`, so the
+/// rounds of lane turnover ahead of her is `ceil((queue_ahead + 1) / lanes)` and the
+/// honest wait is that many measured turns, times [`LANE_WAIT_SLACK`], clamped into
+/// [[`LANE_WAIT_FLOOR`], [`LANE_WAIT_CEILING`]].
+///
+/// `hold_samples == 0` is UNMEASURED and returns `None`: the caller then uses
+/// [`LANE_WAIT_CEILING`], because a node that has never timed a lane may not guess a
+/// short one ([[unknown-is-not-a-quantity]]).
+pub fn lane_wait_bound(
+    queue_ahead: usize,
+    lanes: usize,
+    hold_p50_ms: u64,
+    hold_samples: u32,
+) -> Option<std::time::Duration> {
+    if hold_samples == 0 || hold_p50_ms == 0 {
+        return None;
+    }
+    let lanes = lanes.max(1);
+    let rounds = (queue_ahead + 1).div_ceil(lanes) as u64;
+    let ms = rounds
+        .saturating_mul(hold_p50_ms)
+        .saturating_mul(LANE_WAIT_SLACK as u64);
+    Some(
+        std::time::Duration::from_millis(ms)
+            .clamp(LANE_WAIT_FLOOR, LANE_WAIT_CEILING),
+    )
+}
 /// PURE: may a WORK call be lent the lane reserved for directed calls? Only while no
 /// directed line is pending for any citizen here, and only when the call's expected
 /// occupancy — prefill of its uncached prompt at the measured prefill rate plus its
@@ -273,14 +340,14 @@ pub fn reserve_lendable(
 }
 /// A bounded ring of wait samples (ms), newest kept, read as (p50, count) so an empty ring
 /// is UNMEASURED — never "0 ms". One shape for every queue a node measures about itself.
-struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
+pub struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
 /// How many waits a ring remembers. A plan window's worth.
 pub const WAIT_RING_SAMPLES: usize = 64;
 impl WaitRing {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self(std::sync::Mutex::new(std::collections::VecDeque::new()))
     }
-    fn note(&self, ms: u64) {
+    pub fn note(&self, ms: u64) {
         let mut ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
         ring.push_back(ms);
         while ring.len() > WAIT_RING_SAMPLES {
@@ -291,7 +358,7 @@ impl WaitRing {
         let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
         p50_of(ring.iter().copied())
     }
-    fn p50_p90(&self) -> (u64, u64, u32) {
+    pub fn p50_p90(&self) -> (u64, u64, u32) {
         let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
         percentiles_of(ring.iter().copied())
     }
@@ -497,6 +564,108 @@ static BOOT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
 /// Stamp that `persona` started a turn now (any kind).
 pub fn note_turn_started(persona: uuid::Uuid, now_ms: u64) {
     LAST_TURN_MS.lock().insert(persona, now_ms);
+}
+
+/// When `persona` last started a turn this boot; `None` = no turn since boot. The
+/// dormant order (card 10bba591) reads this: the mind whose last turn is oldest is the
+/// first the grid's slack owes a clip.
+pub(crate) fn last_turn_ms(persona: uuid::Uuid) -> Option<u64> {
+    LAST_TURN_MS.lock().get(&persona).copied()
+}
+
+/// The instant this core booted, ms — the age a mind with no turn yet is measured from.
+pub(crate) fn boot_ms() -> u64 {
+    *BOOT_MS
+}
+
+/// One mind's measured turn shape this boot — fed by [`begin_turn`]'s guard at every
+/// turn's end (any exit: spoke, silent, error, a `continue`), read by the placement
+/// switch (a move between turns only; a cooldown in her own units) and the dormant
+/// clip (the population's typical turn). PURE arithmetic in [`TurnShape::observe`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TurnShape {
+    /// EMA of her turn duration, ms (start → end of the service-loop turn).
+    pub turn_ms: u64,
+    /// EMA of the gap between two of her turn starts, ms — her cadence.
+    pub cadence_ms: u64,
+    pub turns: u64,
+}
+
+impl TurnShape {
+    /// Fold one finished turn in: its duration, and the gap since the previous start
+    /// (`None` for her first). An EMA with a 1/4 step — a few turns to settle, one
+    /// slow turn never the whole story; the first sample of either is taken whole.
+    pub(crate) fn observe(self, turn_ms: u64, gap_ms: Option<u64>) -> Self {
+        let ema = |old: u64, new: u64| if old == 0 { new } else { old - old / 4 + new / 4 };
+        Self {
+            turn_ms: if self.turns == 0 { turn_ms } else { ema(self.turn_ms, turn_ms) },
+            cadence_ms: match gap_ms {
+                Some(g) => ema(self.cadence_ms, g),
+                None => self.cadence_ms,
+            },
+            turns: self.turns + 1,
+        }
+    }
+}
+
+static TURN_SHAPES: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, TurnShape>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+static IN_FLIGHT: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<uuid::Uuid>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+
+/// A turn in flight for `persona`: stamps the start (as [`note_turn_started`]) and marks
+/// her IN FLIGHT until dropped — so every exit of the service-loop turn, including a
+/// `continue`, ends the turn and records its shape. The placement switch moves a mind
+/// only when this is not held (a move mid-turn is a torn turn).
+pub(crate) struct TurnInFlight {
+    persona: uuid::Uuid,
+    started: std::time::Instant,
+    previous_start_ms: Option<u64>,
+}
+
+pub(crate) fn begin_turn(persona: uuid::Uuid, now_ms: u64) -> TurnInFlight {
+    let previous_start_ms = LAST_TURN_MS.lock().insert(persona, now_ms);
+    IN_FLIGHT.lock().insert(persona);
+    TurnInFlight { persona, started: std::time::Instant::now(), previous_start_ms }
+}
+
+impl Drop for TurnInFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT.lock().remove(&self.persona);
+        let turn_ms = self.started.elapsed().as_millis() as u64;
+        let gap_ms = self
+            .previous_start_ms
+            .and_then(|prev| LAST_TURN_MS.lock().get(&self.persona).map(|start| start.saturating_sub(prev)));
+        let mut shapes = TURN_SHAPES.lock();
+        let shape = shapes.get(&self.persona).copied().unwrap_or_default().observe(turn_ms, gap_ms); // unwrap_or_default: her first turn folds into an empty shape
+        shapes.insert(self.persona, shape);
+    }
+}
+
+/// Is a turn of `persona`'s in flight right now?
+pub(crate) fn turn_in_flight(persona: uuid::Uuid) -> bool {
+    IN_FLIGHT.lock().contains(&persona)
+}
+
+/// Her measured turn shape; `None` until a turn has finished this boot.
+pub(crate) fn turn_shape_of(persona: uuid::Uuid) -> Option<TurnShape> {
+    TURN_SHAPES.lock().get(&persona).copied().filter(|s| s.turns > 0)
+}
+
+/// The TYPICAL turn among `personas`: the median of their measured turn durations.
+/// `None` when nobody has finished a turn — an absence, never a number.
+pub(crate) fn typical_turn_ms(personas: &[uuid::Uuid]) -> Option<u64> {
+    let shapes = TURN_SHAPES.lock();
+    let mut turns: Vec<u64> = personas
+        .iter()
+        .filter_map(|p| shapes.get(p).filter(|s| s.turns > 0).map(|s| s.turn_ms))
+        .collect();
+    if turns.is_empty() {
+        return None;
+    }
+    turns.sort_unstable();
+    Some(turns[turns.len() / 2])
 }
 
 /// Pure: is a mind whose last turn was `last_turn_ms` (None = none since boot) starving at `now_ms`?
@@ -717,11 +886,15 @@ pub struct ServingLanePermit {
 
 impl Drop for ServingLanePermit {
     fn drop(&mut self) {
+        let held_ms = self.granted_at.elapsed().as_millis() as u64;
+        // The measured turn time the NEXT mind's wait is bounded by (`lane_wait_bound`).
+        // One ring push per release, on a path that already probes.
+        note_lane_held_ms(held_ms);
         crate::probe!(
             class = "admission.lane.released",
             directed = self.directed,
             priority = ?self.priority,
-            held_ms = self.granted_at.elapsed().as_millis() as u64,
+            held_ms = held_ms,
             "serving-lane permit released"
         );
         // Permits drop AFTER this body (field order), so wake on the next poll: the
@@ -1958,6 +2131,105 @@ mod tests {
         }
         assert_eq!(ring.p50(), (1, WAIT_RING_SAMPLES as u32), "bounded: the window forgets");
     }
+    // what this catches (card cff534ba, S3): the lane wait being bounded by a CONSTANT
+    // instead of by the queue it is a wait on. M5, 2026-09-20 ~21:55Z (4 residents on 2
+    // lanes at 67,072): a `persona.act.pace` row read `residue_ms = 1,500,001` with
+    // `model_ms = 0` — 1500 s to the millisecond is the 25-minute per-act TICK_DEADLINE
+    // expiring at the serving gate, not work. A bound sized for an ACT is not a bound
+    // for a QUEUE. This one is `ceil((queue_ahead + 1) / lanes)` measured lane turns,
+    // times the slack, clamped — and UNMEASURED lanes get `None` so the caller uses the
+    // named ceiling rather than a short guess (busy is not dead).
+    #[test]
+    fn the_lane_wait_bound_is_derived_from_the_measured_queue_not_a_constant() {
+        use std::time::Duration;
+        // Never measured a lane: no number to derive from, so no derived bound.
+        assert_eq!(lane_wait_bound(3, 2, 0, 0), None, "unmeasured is not a fast queue");
+        assert_eq!(lane_wait_bound(3, 2, 180_000, 0), None, "zero samples is unmeasured");
+        // The M5 shape: 3 minds ahead of her on 2 lanes, lanes turning at a 120 s median.
+        // Her place in line is 4th → ceil(4/2) = 2 turns ahead → 2 × 120 s × slack.
+        assert_eq!(
+            lane_wait_bound(3, 2, 120_000, 12),
+            Some(Duration::from_secs(2 * 120 * LANE_WAIT_SLACK as u64)),
+            "two rounds of measured lane turnover, with slack"
+        );
+        // Double the queue and she waits proportionally longer — the bound MOVES with
+        // the measurement, which is the whole point of deriving it.
+        assert_eq!(
+            lane_wait_bound(7, 2, 60_000, 12),
+            Some(Duration::from_secs(4 * 60 * LANE_WAIT_SLACK as u64)),
+            "four rounds ahead of her"
+        );
+        // An empty queue on a fast node still waits the floor — a median is not a promise.
+        assert_eq!(lane_wait_bound(0, 4, 1_000, 30), Some(LANE_WAIT_FLOOR));
+        // A long queue on slow lanes is clamped: past this it is a starve, not a queue,
+        // and she defers with her act budget intact instead of burning the act deadline.
+        assert_eq!(lane_wait_bound(40, 1, 600_000, 30), Some(LANE_WAIT_CEILING));
+        assert!(
+            LANE_WAIT_CEILING < Duration::from_secs(25 * 60),
+            "the wait's own bound must trip BEFORE the per-act TICK_DEADLINE, or the act \
+             deadline is still what ends the wait (residue_ms = 1,500,001)"
+        );
+        // Zero lanes cannot divide by zero: the floor of one lane is the honest read.
+        assert!(lane_wait_bound(1, 0, 120_000, 5).is_some());
+    }
+
+    // what this catches (card ebce2ba0 — the measured families, one to one): the queue's
+    // estimate is a FLOOR under the mind's own measured turn, never a ceiling over it.
+    //
+    // The M5 2026-09-20 logged `delib.gate.lane_wait bound_secs=165 lane_hold_p50_ms=82918
+    // queue_ahead=0 lanes_serving=2` SIX times, and six generations died with the capture
+    // reading "request future dropped before a terminal response" at 165,843 / 165,844 /
+    // 165,845 / 165,856 / 165,917 / 165,982 ms — each within milliseconds of that bound,
+    // each first in line, none having reached the model. The same derivation at a later
+    // p50 gave the ~412 s (four) and ~485 s (two) families, and 60,009 ms is the floor
+    // itself. A median over TWO recorded lane holds decided how long a mind waits while
+    // the lanes were actually holding four to seven minutes.
+    #[test]
+    fn the_queues_estimate_is_a_floor_under_her_own_measured_turn_never_a_ceiling() {
+        use crate::inference::turn_bound::{effective_bound, effective_bound_with_source, from_expectation, BoundSource};
+        use std::time::Duration;
+        // The exact row: p50 82,918 ms over 2 samples, nobody ahead, 2 lanes serving.
+        let queue = lane_wait_bound(0, 2, 82_918, 2).expect("measured");
+        assert_eq!(queue, Duration::from_millis(165_836), "the 165 s the six minds waited");
+        // A mind whose own turns measure ~7 minutes on this box may not be told a lane is
+        // hopeless in 165 s. Her bound is her expectation with headroom, and it wins.
+        let hers = from_expectation(Some(Duration::from_secs(424))).expect("a measured turn");
+        let (bound, source) = effective_bound_with_source(queue, Some(hers));
+        assert_eq!(source, BoundSource::TurnBound);
+        assert_eq!(bound, hers);
+        assert!(bound > queue, "the measured turn RAISES the wait; 165 s killed healthy work");
+        // AND `LANE_WAIT_CEILING` has stopped being a ceiling on the WAIT. It still
+        // clamps the QUEUE's own estimate (a queue estimate past ten minutes is a starve,
+        // not a queue) — `lane_wait_bound(7, 1, 300_000, 30)` computes 4,800 s and returns
+        // the 600 s ceiling — but her measured turn rides ABOVE that clamp, which is the
+        // whole point: a constant may raise a wait and may never shorten one.
+        let clamped = lane_wait_bound(7, 1, 300_000, 30).expect("measured");
+        assert_eq!(clamped, LANE_WAIT_CEILING, "the queue's estimate is still clamped");
+        assert_eq!(
+            effective_bound(clamped, Some(hers)),
+            hers,
+            "her 848 s turn is NOT capped by the 600 s ceiling — the constant is a floor"
+        );
+        // …and the queue keeps its own number whenever IT is the larger of the two: a
+        // mind with a one-minute turn on a queue two rounds deep waits the queue's 480 s.
+        let deep = lane_wait_bound(3, 2, 120_000, 12).expect("measured");
+        let short = from_expectation(Some(Duration::from_secs(60))).expect("a measured turn");
+        assert_eq!(deep, Duration::from_secs(480));
+        assert_eq!(effective_bound(deep, Some(short)), deep, "the larger of the two, always");
+        // No measured turn (her first, or an unmeasured box) → the queue governs alone,
+        // exactly as before this change.
+        assert_eq!(effective_bound(queue, None), queue);
+        assert_eq!(effective_bound(queue, from_expectation(None)), queue);
+        // THE COMPOSITION INVARIANT the flat ceiling used to carry: the gate must still
+        // trip before the ACT does, now that both are derived. The act covers two turn
+        // bounds, the gate one — so the gate trips first at every measured rate.
+        let (act, _) = crate::inference::turn_bound::act_bound_with_source(
+            crate::cognition::act_observe::TICK_DEADLINE,
+            Some(Duration::from_secs(424)),
+        );
+        assert!(act > bound, "the act must outlast the lane wait it contains");
+    }
+
     // what this catches (the M5, 2026-09-20; Cormac's design word): the reserve is a WAIT
     // guarantee in seconds. A work call is lent the reserved lane only when its occupancy
     // is known and fits the directed budget and nothing directed is pending; an unknown

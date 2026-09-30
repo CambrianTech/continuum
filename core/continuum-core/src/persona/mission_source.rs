@@ -32,7 +32,7 @@ use crate::persona::rag_budget::{
 
 /// Source identifier — renders as the `[mission]` grounding block via the
 /// generic `[<source_id>]` projection.
-const SOURCE_ID: &str = "mission";
+pub(crate) const SOURCE_ID: &str = "mission";
 
 pub struct MissionSource {
     persona_id: Uuid,

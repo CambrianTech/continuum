@@ -71,7 +71,7 @@ impl OutputFilter {
     }
 }
 
-/// Inputs to `tool/output`. `handle` is required (from the preview); everything
+/// Inputs to `tool/output`. `outputId` is required (from the preview); everything
 /// else selects WHAT to pull back.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +82,11 @@ impl OutputFilter {
 pub struct ToolOutputParams {
     /// The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
     /// the spill the preview told you was saved.
+    // `outputId` on the wire, NOT `handle`: every dispatch crosses
+    // `CommandRequest::from_value`, whose own `handle: Option<HandleRef>` claims that
+    // name and refuses a string for it (`expected struct HandleRef`) — so the call the
+    // spill-recovery hint told every citizen to make could not be made (card ea28d2f6).
+    #[serde(rename = "outputId")]
     pub handle: String,
     /// A PREBUILT filter — the easy path, no regex needed: `errors` (what broke?),
     /// `warnings`, `failures` (which tests failed?), or `summary` (how did it end?).
@@ -120,7 +125,8 @@ pub struct ToolOutputParams {
     export_to = "../../../protocol/typescript/tool/ToolOutputResult.ts"
 )]
 pub struct ToolOutputResult {
-    /// Echo of the handle read.
+    /// Echo of the output id read.
+    #[serde(rename = "outputId")]
     pub handle: String,
     /// Total lines in the full spilled output.
     #[ts(type = "number")]
@@ -163,7 +169,7 @@ impl ActionCommand for ToolOutput {
         &["read_output", "grep_output", "tail_output", "search_output"];
     const DESCRIPTION: &'static str =
         "Page or grep a large tool result that was saved to disk because it was too big \
-         to show in full. Pass the `handle` from the elision marker. EASIEST: set \
+         to show in full. Pass the `outputId` from the elision marker. EASIEST: set \
          `filter` to a prebuilt preset — `errors` (what broke?), `warnings`, `failures` \
          (which tests failed?), or `summary` (how did it end?) — no regex needed. For a \
          specific hunt use `pattern` (a regex, e.g. \"error\\[E0308\\]\"). Or read an \
@@ -193,8 +199,8 @@ impl ActionCommand for ToolOutput {
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         let content = std::fs::read_to_string(&path).map_err(|_| {
             CommandError::Invalid(format!(
-                "no saved output with handle `{}` — it may have aged out, or the \
-                 handle is mistyped. Use the handle from the most recent elision marker.",
+                "no saved output with id `{}` — it may have aged out, or the id is \
+                 mistyped. Use the `outputId` from the most recent elision marker.",
                 params.handle
             ))
         })?;

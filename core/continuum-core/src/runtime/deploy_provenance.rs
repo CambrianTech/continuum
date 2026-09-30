@@ -133,8 +133,8 @@ pub fn cli_staleness_note(
          build {cli_sha}, not {expected} ({expected_source}), and nothing in this run replaced \
          it. Any lifecycle fix that lives in the CLI — `start`/`stop`/`reboot`/`deploy-verify` \
          itself — is NOT deployed on this machine. `continuum reboot` rebuilds and reinstalls \
-         it (except where cli_self_build skips the platform); do that before trusting CLI-side \
-         behaviour."
+         it; on Windows the PATH copies follow the supervisor's slot and only \
+         `continuum install` refreshes them. Do that before trusting CLI-side behaviour."
     ))
 }
 
@@ -186,10 +186,10 @@ pub fn cli_self_build(target_os: &str) -> CliSelfBuild {
     // SKIP, not silently inherit the breakage ([[fallbacks-are-illegal-fail-loud]]).
     if target_os == "windows" {
         return CliSelfBuild::Skip {
-            reason: "skipping the continuum CLI build — Windows locks a running image, and \
-                     building over it would fail the whole cargo invocation and skip the CORE \
-                     build too. The CORE is still rebuilt. A CLI-side fix is NOT deployed by \
-                     this reboot: reinstall the CLI separately (#422)."
+            reason: "Windows locks a running image: the build skips the continuum CLI only \
+                     when it would write over the image this CLI runs from (that would fail the \
+                     whole cargo invocation). The CORE is still rebuilt. Where it is skipped, a \
+                     CLI-side fix is NOT deployed by this reboot (#422)."
                 .to_string(),
         };
     }

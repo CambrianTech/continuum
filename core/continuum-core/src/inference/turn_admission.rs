@@ -16,7 +16,7 @@
 //!    priced eviction skips it. A concurrent returner can then never lease — and
 //!    restore INTO — a slot that is still decoding this turn's KV.
 //! 3. **Save/restore** now targets a guaranteed-free, non-decoding slot, so the
-//!    restore lands (~0.1s) instead of deferring behind a live decode.
+//!    restore lands at this node's measured switch cost instead of deferring behind a live decode.
 //!
 //! Before this, the slot was leased before the permit and never pinned, so a
 //! returner grabbed a still-decoding slot and its restore timed out — measured
@@ -28,7 +28,8 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPin};
+use crate::inference::llama_server::EngineProbe;
+use crate::inference::slots::{ActivityKey, KvSlotPool, SlotPermit, SlotPin};
 
 /// What a turn holds for the whole generation. Dropping it releases the concurrency
 /// permit and the slot pin (RAII). An incomplete call also invalidates local KV
@@ -39,17 +40,62 @@ pub struct TurnAdmission {
     slot: Option<u32>,
     /// The slot pin — held so eviction cannot reassign this turn's slot mid-decode.
     _pin: Option<SlotPin>,
+    /// Serializes same-slot operations even when distinct adapters admit the key.
+    _slot_permit: Option<SlotPermit>,
+    /// The pool's slot-release signal, held once this admission pins a slot: its drop raises
+    /// it after the pin is gone (see `Drop`), so a turn waiting for a slot wakes.
+    released: Option<Arc<tokio::sync::Notify>>,
+    page_confirmed: bool,
+    restored: bool,
+    saved_evictee: bool,
+    paging_in_flight: bool,
     /// Released after the pin so the next permit holder can lease the free slot.
-    _permit: OwnedSemaphorePermit,
+    /// `None` only for [`admit_transient`], which holds its slot's operation permit
+    /// instead of a lane (it serves no activity, so it takes no lane from one).
+    _permit: Option<OwnedSemaphorePermit>,
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, ActivityKey, u32)>,
+    _endpoint: crate::inference::slots::EndpointAdmission,
+    scratch: Option<u32>,
 }
 
 impl TurnAdmission {
     /// The leased slot this turn should pin `id_slot` to, if any.
     pub fn slot(&self) -> Option<u32> {
         self.slot
+    }
+
+    pub(crate) fn scratch_slot(&self) -> Option<u32> {
+        self.scratch
+    }
+
+    /// Whether this turn's KV was restored from a page before it generated — the
+    /// evidence the restore economy is judged by (`inference.restored_turn`).
+    pub(crate) fn restored(&self) -> bool {
+        self.restored
+    }
+
+    async fn page_action(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        slot: u32,
+        key: &ActivityKey,
+        action: &str,
+    ) -> Result<bool, String> {
+        self.paging_in_flight = true;
+        match kv_page_action(client, root, slot, key, action).await {
+            PageOutcome::Completed => {
+                self.paging_in_flight = false;
+                Ok(true)
+            }
+            PageOutcome::Rejected => {
+                self.paging_in_flight = false;
+                Ok(false)
+            }
+            PageOutcome::Uncertain => Err("KV paging completion unverified; endpoint quarantined until verified engine replacement".into()),
+        }
     }
 
     /// The adapter received a complete successful generation in this slot.
@@ -60,8 +106,21 @@ impl TurnAdmission {
 
 impl Drop for TurnAdmission {
     fn drop(&mut self) {
+        if self.paging_in_flight {
+            self._endpoint.quarantine_paging();
+        }
         if let Some((pool, key, slot)) = self.uncommitted.take() {
             pool.forget_resident(slot, key);
+        }
+        // Unpin BEFORE any release is announced, so a woken turn finds this lease evictable.
+        // A pin dropped with no slot permit (cancelled while awaiting it, or acquire_slot
+        // failed) has no SlotPermit drop to announce it, so it announces here (Fable on #4515).
+        let pinned_without_permit = self._pin.is_some() && self._slot_permit.is_none();
+        drop(self._pin.take());
+        if pinned_without_permit {
+            if let Some(released) = &self.released {
+                released.notify_waiters();
+            }
         }
     }
 }
@@ -75,6 +134,14 @@ impl Drop for TurnAdmission {
 /// the caller still gets the permit and places the request on scratch (or unpinned)
 /// itself. On a single-slot server the pool saves and detaches the resident before
 /// transient traffic borrows that slot; `slot()` then returns its index.
+///
+/// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
+/// loading, a transition in flight) before it is refused — the caller's bound, since
+/// only the caller knows what its request can afford: the persona adapter passes
+/// `EndpointSlots::turn_patience(turn_bound, elapsed)` — an engine replacement, capped by
+/// what the turn has left on its own bound — and a test that asserts the refusal passes
+/// zero. The hold is ONE deadline however many times the endpoint closes inside it. See `EndpointSlots::admit_when_ready`
+/// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
     concurrency: &Arc<Semaphore>,
     key: Option<ActivityKey>,
@@ -82,7 +149,52 @@ pub async fn admit_turn(
     client: &reqwest::Client,
     root: &str,
     approx_tokens: u64,
-) -> TurnAdmission {
+    patience: std::time::Duration,
+) -> Result<TurnAdmission, String> {
+    admit(concurrency, key, pool, client, root, approx_tokens, false, patience).await
+}
+
+/// Best-effort warm-ahead uses the same paging and provisional-attribution owner
+/// as a turn. No generation follows, so only proven physical warmth is committed.
+pub(crate) async fn warm_ahead(
+    concurrency: &Arc<Semaphore>,
+    key: ActivityKey,
+    pool: Arc<KvSlotPool>,
+    client: &reqwest::Client,
+    root: &str,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    // Best-effort: a closed endpoint is an instant no, never a held permit.
+    let mut admission = admit(concurrency, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
+    if admission.page_confirmed {
+        admission.uncommitted = None;
+    }
+    if let Some(slot) = admission.slot {
+        crate::probe!(
+            class = "inference.kv_warm_ahead",
+            persona = %key.persona,
+            room = %key.room,
+            slot = slot as u64,
+            saved_evictee = admission.saved_evictee,
+            restored = admission.restored,
+            confirmed = admission.page_confirmed,
+            ms = started.elapsed().as_millis() as u64,
+            "warm-ahead completed through turn paging admission",
+        );
+    }
+    Ok(())
+}
+
+async fn admit(
+    concurrency: &Arc<Semaphore>,
+    key: Option<ActivityKey>,
+    pool: Option<Arc<KvSlotPool>>,
+    client: &reqwest::Client,
+    root: &str,
+    approx_tokens: u64,
+    warm_only: bool,
+    patience: std::time::Duration,
+) -> Result<TurnAdmission, String> {
     // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
     //    semaphore is never closed over the adapter's lifetime.
     let _permit = concurrency
@@ -91,21 +203,105 @@ pub async fn admit_turn(
         .await
         .expect("adapter semaphore never closed");  // expect: the semaphore lives as long as the adapter, never closed
 
+    // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
+    //    a transition in flight) for the caller's `patience` before it is refused;
+    //    zero is the instant answer. See `EndpointSlots::admit_when_ready` for the
+    //    boot window that cost Kimi 16 turns.
+    let endpoint = crate::inference::slots::directory()
+        .endpoint(root)
+        .admit_when_ready(patience)
+        .await?;
+    // Discovery may have finished before an engine transition. Use the pool
+    // owned by the admitted generation, never that stale discovery result.
+    let pool = endpoint.pool.clone().or(pool);
     let mut admission = TurnAdmission {
         slot: None,
         _pin: None,
-        _permit,
+        _slot_permit: None,
+        released: None,
+        page_confirmed: false,
+        restored: false,
+        saved_evictee: false,
+        paging_in_flight: false,
+        _permit: Some(_permit),
         uncommitted: None,
+        scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
+        _endpoint: endpoint,
     };
 
+    if warm_only
+        && pool
+            .as_ref()
+            .is_some_and(|pool| pool.scratch_slot().is_none())
+    {
+        return Ok(admission);
+    }
     if let (Some(k), Some(pool)) = (key, pool.as_ref()) {
-        if let Some(pg) = pool.lease_paged(k).await {
-            // 2. PIN synchronously, before any await below — a permit-holding
-            //    returner leases only an UNPINNED slot, so pinning here (there are
-            //    at most lanes-1 other pinned slots while we hold a permit) makes the
-            //    slot we just leased un-evictable for the turn. No await between the
-            //    lease returning and this pin, so no other task can slip in.
-            admission._pin = pool.pin(&k);
+        // A TURN NEVER RUNS UNPINNED OVER A RESIDENT (card ff9ecfd8). When every slot is pinned
+        // by an in-flight turn, `lease` frees nothing, and a pin can also lose a race to an
+        // eviction between lease and pin. Both used to return this admission with no slot: the
+        // server then placed the turn on whichever slot freed and overwrote a resident's KV with
+        // no save (8 of 13 contended leases on the M5, 19 of 36 on the IntelMac, 2026-09-28).
+        // The server cannot run the turn before a slot frees anyway, so the turn waits for a
+        // slot release and leases again; the evictee is then saved by the paging plan below.
+        // Warm-ahead is best-effort and still gives up at once.
+        let started = std::time::Instant::now();
+        let mut waited = false;
+        let pinned = loop {
+            let released = pool.released();
+            let notified = released.notified();
+            tokio::pin!(notified);
+            // Registered BEFORE the check, so a release between the check and the wait is
+            // never missed.
+            notified.as_mut().enable();
+            if pool.lease(k).await.is_some() {
+                // Pin before waiting for the physical-slot permit: a same-activity
+                // returner must await the prior owner without permitting eviction.
+                if let Some(pinned) = pool.pin_slot(&k) {
+                    break Some(pinned);
+                }
+                if warm_only {
+                    break None;
+                }
+                // Leased, then evicted before the pin: the pool CHANGED rather than filled,
+                // and no release may ever be announced for it (the evicting worker can cancel
+                // before it pins), so retry now instead of waiting (Codex on #4515).
+                tokio::task::yield_now().await;
+                continue;
+            }
+            if warm_only {
+                break None;
+            }
+            waited = true;
+            // Never hold a lane while waiting for a slot (Fable on #4515): the lane semaphore
+            // is sized to every server slot, scratch included, so a held permit would block
+            // traffic that could run now, and a slot holder's nested call could need it.
+            admission._permit = None;
+            notified.await;
+            admission._permit = Some(
+                concurrency
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("adapter semaphore never closed"), // expect: the semaphore lives as long as the adapter, never closed
+            );
+        };
+        if waited {
+            crate::probe!(
+                class = "inference.slot_affinity.waited",
+                persona = %k.persona,
+                room = %k.room,
+                ms = started.elapsed().as_millis() as u64,
+                "every slot was pinned: the turn waited for a release instead of running unpinned over a resident"
+            );
+        }
+        if let Some((slot, pin)) = pinned {
+            admission._pin = Some(pin);
+            admission.released = Some(pool.released());
+            admission._slot_permit = Some(pool.acquire_slot(slot).await?);
+            admission._endpoint.check_ready()?;
+            let pg = pool.plan_paging(slot, k);
+            admission.page_confirmed = pg.already_resident;
             admission.uncommitted = Some((Arc::clone(pool), k, pg.slot));
 
             // 3. The context switch onto a now-free slot: page the evictee out,
@@ -115,67 +311,290 @@ pub async fn admit_turn(
                 // A failed or cancelled save may have replaced an older file.
                 // Only a completed save can make this page restorable again.
                 pool.note_page_lost(&prev);
-                if kv_page_action(client, root, pg.slot, &prev, "save").await {
+                if admission
+                    .page_action(client, root, pg.slot, &prev, "save")
+                    .await?
+                {
                     pool.note_saved(prev);
+                    admission.saved_evictee = true;
                 }
             }
-            if pg.restore && !kv_page_action(client, root, pg.slot, &k, "restore").await {
-                // Dead page (geometry swept / file missing): stop offering it; this
-                // turn re-prefills plainly.
-                pool.note_page_lost(&k);
+            if pg.restore {
+                admission.restored = admission
+                    .page_action(client, root, pg.slot, &k, "restore")
+                    .await?;
+                admission.page_confirmed = admission.restored;
+                if !admission.restored {
+                    pool.note_page_lost(&k);
+                }
             }
             // Price basis for the eviction policy (B5): this activity's current
             // prompt size — comparable across slots, which is all eviction needs.
-            pool.note_tail(&k, approx_tokens);
+            if !warm_only {
+                pool.note_tail(&k, approx_tokens);
+            }
             admission.slot = Some(pg.slot);
         }
-    } else if let Some(pool) = pool.as_ref().filter(|pool| pool.n_slots() == 1) {
-        // A single-slot server has no separate scratch slot. Preserve the
-        // resident before background/anonymous traffic borrows its physical slot.
-        // Remove attribution BEFORE the await so cancellation cannot leave the
-        // next activity treating transient KV as its own warm tail.
-        let (previous, pin) = pool.take_resident(0);
-        admission._pin = pin;
-        if let Some(previous) = previous {
-            pool.note_page_lost(&previous);
-            if kv_page_action(client, root, 0, &previous, "save").await {
-                pool.note_saved(previous);
-            }
-        }
-        admission.slot = Some(0);
+    } else if let Some(pool) = pool.as_ref().filter(|pool| pool.scratch_slot().is_none()) {
+        // A server with no scratch slot (≤2 lanes): background/anonymous traffic
+        // borrows a citizen slot THROUGH the pool — the cheapest resident is saved
+        // and detached first — and carries that slot pinned, never left to the
+        // server's own placement. The two-lane case used to fall through here
+        // unpinned (card 4deaed09: the server put it on a resident's slot by
+        // similarity and overwrote her page every turn). Remove attribution
+        // BEFORE the await so cancellation cannot leave the next activity treating
+        // transient KV as its own warm tail.
+        let slot = pool.transient_slot();
+        admission.borrow_slot_for_transient(pool, slot, client, root).await?;
+    } else if let (Some(pool), Some(scratch)) = (pool.as_ref(), admission.scratch) {
+        // Anonymous traffic lands on the SCRATCH slot, and takes its operation permit
+        // like every other slot user. Before this, every non-turn call wrote the
+        // scratch KV with no owner, so a holder of that slot (the deploy self-check's
+        // cache probe, #4392) was overwritten between its own requests and read a warm
+        // restore as cold: the M5 self-check reported `no_reuse` on 2026-09-26 03:01Z
+        // while the same round trip on an owned slot measured 658/662 reused. The
+        // server already runs one request per slot at a time, so this moves the queue
+        // into the owner, where it is visible, rather than adding any.
+        admission._slot_permit = Some(pool.acquire_slot(scratch).await?);
+        admission._endpoint.check_ready()?;
     }
 
-    admission
+    Ok(admission)
 }
 
-/// Execute one KV page action against the server (`/slots/{id}?action=save|restore`).
+impl TurnAdmission {
+    /// Borrow physical `slot` for traffic that serves no activity: wait for the slot's
+    /// operation permit (event-driven, behind any live decode), detach its resident and
+    /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
+    /// so no activity later mistakes this traffic's KV for its own.
+    async fn borrow_slot_for_transient(
+        &mut self,
+        pool: &Arc<KvSlotPool>,
+        slot: u32,
+        client: &reqwest::Client,
+        root: &str,
+    ) -> Result<(), String> {
+        self._slot_permit = Some(pool.acquire_slot(slot).await?);
+        self._endpoint.check_ready()?;
+        let (previous, pin) = pool.take_resident(slot);
+        self._pin = pin;
+        if let Some(previous) = previous {
+            pool.note_page_lost(&previous);
+            if self.page_action(client, root, slot, &previous, "save").await? {
+                pool.note_saved(previous);
+                self.saved_evictee = true;
+            }
+        }
+        self.slot = Some(slot);
+        Ok(())
+    }
+}
+
+/// Admit operator traffic — `serving/cache-probe` — onto one physical slot through the
+/// same owner as every turn, never around it. It holds no lane (it serves no activity);
+/// it holds the slot's operation permit, so it waits behind a live decode instead of
+/// queueing inside the server, and it saves and detaches the resident first.
 ///
-/// The 10s cap is a WEDGE DETECTOR, not a wait-for-the-slot: with permit-first + pin
-/// admission ([`admit_turn`]) a restore is only ever issued into an already-free
-/// slot, so it lands in ~0.1s and never defers behind a live decode. A restore
-/// taking >10s now means a wedged server. (History: pre-fix this path saw 27/27
-/// restores fail `status=0`, then 55/67 with a 90s wait; the pin removes the failure
-/// mode instead of waiting it out, so the wait is gone.)
+/// Before this the probe posted straight to the slot: on a live node it queued behind a
+/// persona's decode past its caller's patience (the M5 deploy self-check, 2026-09-25,
+/// no answer in 280 s — read as `unknown` and held the fleet's deploys), overwrote her
+/// warm KV without saving it, and restored its own filler under her attribution, so
+/// her next save wrote filler under her name. An endpoint with no slot pool (external,
+/// cloud) has no resident to protect; `slot()` is then `None`.
 ///
-/// `pub(crate)` so the spawned warm-ahead task drives the SAME seam as admission.
+/// `slot: None` asks for the pool's SCRATCH slot when the server has one: a slot no
+/// activity holds, so the probe waits behind nobody and evicts nobody (Cormac's review
+/// of #4388: behind a 7-minute turn even an admitted probe on slot 0 outwaits a 280 s
+/// caller). Without a scratch slot it borrows slot 0 and saves its resident first.
+pub(crate) async fn admit_transient(
+    client: &reqwest::Client,
+    root: &str,
+    slot: Option<u32>,
+) -> Result<TurnAdmission, String> {
+    let endpoint = crate::inference::slots::directory()
+        .endpoint(root)
+        .admit()
+        .await?;
+    let pool = endpoint.pool.clone();
+    let mut admission = TurnAdmission {
+        slot: None,
+        _pin: None,
+        _slot_permit: None,
+        released: None,
+        page_confirmed: false,
+        restored: false,
+        saved_evictee: false,
+        paging_in_flight: false,
+        _permit: None,
+        uncommitted: None,
+        scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
+        _endpoint: endpoint,
+    };
+    let Some(pool) = pool else {
+        return Ok(admission);
+    };
+    let slot = slot
+        .or_else(|| pool.scratch_slot())
+        .unwrap_or_else(|| pool.transient_slot()); // JUSTIFIED unwrap_or_else: no named slot and no scratch slot = the cheapest citizen slot, whose resident is saved and detached first
+    if slot >= pool.n_slots() {
+        return Err(format!(
+            "slot {slot} does not exist on this endpoint ({} slots)",
+            pool.n_slots()
+        ));
+    }
+    admission.borrow_slot_for_transient(&pool, slot, client, root).await?;
+    Ok(admission)
+}
+
+/// The page switches this node has completed (ms), newest kept: what a save/restore
+/// COSTS HERE, measured — the wedge bound derives from it, and the allocator reads it
+/// as the per-turn price of fewer lanes than residents on a discrete card.
+static KV_PAGE_SWITCH_MS: crate::cognition::resource_admission::WaitRing =
+    crate::cognition::resource_admission::WaitRing::new();
+
+/// Below this a switch is never called a wedge, whatever the ring says — the floor the
+/// first switch on a box is judged by (the UMA case lands in ~0.1 s; the floor is 100×).
+const KV_PAGE_WEDGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// (p50 ms, p90 ms, count) of this node's completed page switches. (0, 0, 0) = unmeasured.
+pub fn kv_page_switch_ms() -> (u64, u64, u32) {
+    KV_PAGE_SWITCH_MS.p50_p90()
+}
+
+/// The interval at which a slow page switch asks whether the engine is still alive: the
+/// floor, raised to three times this node's measured p90. Past it a switch is only a
+/// WEDGE if the engine also stops answering `/health`. Pure.
+///
+/// The bound was a flat 10 s from the day the M5 measured a restore at ~0.1 s — on
+/// unified memory the KV already lives in host RAM. On a discrete card a page is
+/// VRAM → host → file: the 5090 (2026-09-21, 26,880-token q8 pages) measured 88
+/// switches at p50 4.1 s, p90 6.8 s, **max 10,004 ms** — the flat cap was cutting a
+/// healthy switch off and calling the server wedged, and a 60k page would trip it every
+/// time. A bound sized from the work (Fable, #4277) cannot mistake a big page for a hang.
+pub fn kv_page_wedge_bound(measured_p90_ms: u64) -> std::time::Duration {
+    KV_PAGE_WEDGE_FLOOR.max(std::time::Duration::from_millis(measured_p90_ms.saturating_mul(3)))
+}
+
+/// Only a complete server receipt establishes terminal paging state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageOutcome {
+    Completed,
+    Rejected,
+    Uncertain,
+}
+
+/// How many consecutive checkpoints a switch may wait on an engine that is doing nothing
+/// else — no counter moving, no slot processing — before it is called stuck. On such an
+/// engine the queue head is the switch itself (a save/restore moves no slot counter), so
+/// "quiet" is not evidence of a stall; this caps how long quiet may last.
+// derived-or-floor: a CEILING on a wait that has no progress signal to read — the slot counters cannot see a save/restore, so the bound (itself derived from this node's measured switch p90) times this count is the patience for the engine's own queue head; it only ever ENDS a wait, never shortens one that shows progress.
+const QUIET_ENGINE_CHECKPOINTS: u32 = 8;
+
+/// A page switch's wait: [`crate::inference::llama_server::wait_while_engine_progresses`]
+/// with this module's quiet allowance, because a save/restore moves no slot counter and a
+/// quiet engine here is working the switch itself.
+async fn wait_while_engine_progresses<T, W, P, PF>(
+    work: W,
+    bound: std::time::Duration,
+    progress: P,
+    on_busy: impl FnMut(u64),
+) -> Option<T>
+where
+    W: std::future::Future<Output = T>,
+    P: FnMut() -> PF,
+    PF: std::future::Future<Output = EngineProbe>,
+{
+    crate::inference::llama_server::wait_while_engine_progresses(work, bound, QUIET_ENGINE_CHECKPOINTS, progress, on_busy).await
+}
+
+/// Execute one page action through the shared turn/warm-ahead boundary. The
+/// measured wedge bound is a progress checkpoint (see [`wait_while_engine_progresses`]):
+/// a switch queued behind a moving engine keeps waiting; a stalled or silent engine
+/// makes the outcome uncertain, and
+/// uncertainty never acknowledges remote completion — the admission owner must
+/// quarantine before releasing its lease.
 pub(crate) async fn kv_page_action(
     client: &reqwest::Client,
     root: &str,
     slot: u32,
     key: &ActivityKey,
     action: &str,
-) -> bool {
+) -> PageOutcome {
     let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
     let filename = crate::inference::slots::page_filename(key);
+    let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
+    let bound = kv_page_wedge_bound(p90_ms);
     let started = std::time::Instant::now();
-    let resp = client
+    // BUSY IS NOT DEAD. The bound is a checkpoint, never a verdict: llama-server runs
+    // slot save/restore on its task queue BETWEEN decode batches, so under a full set
+    // of lanes a healthy switch waits behind their prefill. Measured 2026-09-25 (M5,
+    // 4 lanes prefilling): a restore ran 50.8 s against a 50.8 s bound (3 × p90), was
+    // abandoned as uncertain, quarantined the endpoint and replaced the whole engine —
+    // 9 minutes with every citizen dark, back at 3 × 18.7k instead of 4 × 26k. So at
+    // each bound the engine's `/slots` work fingerprint is read: while it moves, the
+    // queue this switch sits in is moving and the switch keeps waiting. A queue that
+    // stops moving, or an engine that stops answering, turns the switch uncertain at
+    // that checkpoint, and a dead engine ends it sooner when its socket drops.
+    let send = client
         .post(&url)
-        .timeout(std::time::Duration::from_secs(10))
         .json(&json!({ "filename": filename }))
-        .send()
-        .await;
-    let ok = matches!(&resp, Ok(r) if r.status().is_success());
-    let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // 0 = transport error
+        .send();
+    let resp = wait_while_engine_progresses(
+        send,
+        bound,
+        || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
+        |busy_checkpoints| {
+            crate::probe!(
+                class = "inference.kv_page.busy_not_dead",
+                action = %action,
+                slot = slot as u64,
+                waited_ms = started.elapsed().as_millis() as u64,
+                bound_ms = bound.as_millis() as u64,
+                busy_checkpoints,
+                "a page switch outlived its bound while the engine's queue kept moving \
+                 — waiting on it, not replacing the engine",
+            );
+        },
+    )
+    .await
+    .and_then(Result::ok);
+    let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0); // JUSTIFIED unwrap_or: status 0 records transport failure or a silent engine, never success.
+
+    // Headers alone are not a terminal receipt. A disconnected waiter can leave
+    // a queued restore behind; malformed/truncated/default responses fail closed.
+    let outcome = match resp {
+        Some(response) => match response.json::<serde_json::Value>().await {
+            Ok(body)
+                if (200..300).contains(&status)
+                    && body["id_slot"].as_u64() == Some(slot as u64)
+                    && body["filename"].as_str() == Some(filename.as_str())
+                    && body[if action == "save" {
+                        "n_saved"
+                    } else {
+                        "n_restored"
+                    }]
+                    .as_u64()
+                    .is_some() =>
+            {
+                PageOutcome::Completed
+            }
+            Ok(body)
+                if status == 400
+                    && body["error"]["code"].as_u64() == Some(400)
+                    && body["error"]["type"].as_str() == Some("invalid_request_error")
+                    && body["error"]["message"].as_str().is_some() =>
+            {
+                PageOutcome::Rejected
+            }
+            _ => PageOutcome::Uncertain,
+        },
+        None => PageOutcome::Uncertain,
+    };
+    let ok = outcome == PageOutcome::Completed;
+    let ms = started.elapsed().as_millis() as u64;
+    if ok {
+        KV_PAGE_SWITCH_MS.note(ms);
+    }
     crate::probe!(
         class = "inference.kv_page.action",
         action = %action,
@@ -183,18 +602,216 @@ pub(crate) async fn kv_page_action(
         persona = %key.persona,
         room = %key.room,
         ok,
+        terminal = outcome != PageOutcome::Uncertain,
         status = status as u64,
-        ms = started.elapsed().as_millis() as u64,
+        ms,
+        bound_ms = bound.as_millis() as u64,
+        node_p50_ms = p50_ms,
+        node_p90_ms = p90_ms,
+        node_measured = measured as u64,
         "KV page context switch — save pages the evictee's state out, restore pages \
-         the returner's state in (~0.1s measured; a miss means this turn re-prefills)",
+         the returner's state in; an uncertain receipt quarantines the endpoint",
     );
-    ok
+    outcome
 }
 
 #[cfg(test)]
 mod tests {
+    // what this catches (the 5090, 2026-09-21): a page switch that costs seconds on a
+    // discrete card is not a wedge — the bound rises with this node's measured p90 and
+    // never falls below the floor; an unmeasured node is judged by the floor alone.
+    #[test]
+    fn the_wedge_bound_is_sized_from_the_nodes_measured_switches_never_a_flat_cap() {
+        use super::kv_page_wedge_bound;
+        use std::time::Duration;
+        assert_eq!(kv_page_wedge_bound(0), Duration::from_secs(10), "unmeasured: the floor");
+        assert_eq!(kv_page_wedge_bound(100), Duration::from_secs(10), "the M5's 0.1 s: the floor");
+        assert_eq!(kv_page_wedge_bound(6_835), Duration::from_millis(20_505), "the 5090's p90 × 3: a 10 s switch is a switch");
+        assert!(kv_page_wedge_bound(6_835) > Duration::from_millis(10_004), "the max this box measured is inside the bound");
+    }
+
     use super::*;
     use uuid::Uuid;
+
+    // what this catches (M5, 2026-09-25 and 2026-09-26): a slow switch on a moving engine
+    // must wait; a save on a QUIET engine (no slot processing, so no counter moves) must
+    // also wait, up to the quiet cap; a switch on an engine whose slots claim to process
+    // but whose counters never move is stuck; and a silent engine ends the wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_page_switch_waits_while_the_engine_progresses_and_ends_when_it_stalls() {
+        use crate::inference::llama_server::{EngineProbe, EngineProgress};
+        let bound = std::time::Duration::from_secs(10);
+        let slow = async {
+            tokio::time::sleep(bound * 3 + std::time::Duration::from_secs(1)).await;
+            "receipt"
+        };
+        let mut tick = 0u64;
+        let mut seen = Vec::new();
+        let got = wait_while_engine_progresses(
+            slow,
+            bound,
+            || { tick += 1; let t = tick; async move { EngineProbe::Progress(EngineProgress { fingerprint: t, any_processing: true }) } },
+            |n| seen.push(n),
+        )
+        .await;
+        assert_eq!(got, Some("receipt"), "a moving queue keeps the switch");
+        assert_eq!(seen, vec![1, 2, 3], "each bound is a reported checkpoint, not a verdict");
+
+        let quiet_save = async {
+            tokio::time::sleep(bound * 2 + std::time::Duration::from_secs(1)).await;
+            "saved"
+        };
+        let got = wait_while_engine_progresses(
+            quiet_save,
+            bound,
+            || async { EngineProbe::Progress(EngineProgress { fingerprint: 7, any_processing: false }) },
+            |_| {},
+        )
+        .await;
+        assert_eq!(got, Some("saved"), "a save on a quiet engine is the queue head, not a stall");
+
+        let endless_quiet = wait_while_engine_progresses(
+            std::future::pending::<&str>(),
+            bound,
+            || async { EngineProbe::Progress(EngineProgress { fingerprint: 7, any_processing: false }) },
+            |_| {},
+        )
+        .await;
+        assert_eq!(endless_quiet, None, "quiet is bounded: the cap ends a wait that never completes");
+
+        let stuck = wait_while_engine_progresses(
+            std::future::pending::<&str>(),
+            bound,
+            || async { EngineProbe::Progress(EngineProgress { fingerprint: 42, any_processing: true }) },
+            |_| {},
+        )
+        .await;
+        assert_eq!(stuck, None, "slots processing with nothing moving is stuck");
+
+        let gone = wait_while_engine_progresses(std::future::pending::<&str>(), bound, || async { EngineProbe::Unreachable }, |_| {}).await;
+        assert_eq!(gone, None, "an engine that is not there ends the wait");
+        // card 8c06f778: a probe that times out is the engine WORKING, not gone — the
+        // restore it cannot answer around completes, and the switch keeps it.
+        let busy_restore = async {
+            tokio::time::sleep(bound * 2 + std::time::Duration::from_secs(1)).await;
+            "restored"
+        };
+        let got = wait_while_engine_progresses(busy_restore, bound, || async { EngineProbe::Busy }, |_| {}).await;
+        assert_eq!(got, Some("restored"), "a probe timeout mid-switch is busy, never dead");
+        let endless_busy = wait_while_engine_progresses(std::future::pending::<&str>(), bound, || async { EngineProbe::Busy }, |_| {}).await;
+        assert_eq!(endless_busy, None, "busy is bounded like quiet: the cap ends a wait that never completes");
+    }
+
+    // what this catches: the fingerprint moves when any slot prefills, decodes or takes
+    // a new task, and a body that is not the /slots array reads as no answer.
+    #[test]
+    fn the_slots_fingerprint_moves_with_any_slot_work() {
+        let fp = |v: &serde_json::Value| crate::inference::llama_server::slots_progress(v).map(|p| p.fingerprint);
+        let a = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 5}]},
+                       {"id_task": 3, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0}]}]);
+        let decoded = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 6}]},
+                             {"id_task": 3, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0}]}]);
+        let new_task = json!([{"id_task": 7, "n_prompt_tokens_processed": 100, "next_token": [{"n_decoded": 5}]},
+                              {"id_task": 4, "n_prompt_tokens_processed": 0, "next_token": [{"n_decoded": 0}]}]);
+        assert_ne!(fp(&a), fp(&decoded), "a decoded token is progress");
+        assert_ne!(fp(&a), fp(&new_task), "a new task is progress");
+        assert_eq!(fp(&a), fp(&a.clone()), "no work, no change");
+        assert_eq!(fp(&json!({"error": "no slots"})), None, "not the slots array");
+    }
+
+    #[tokio::test]
+    async fn anonymous_traffic_waits_for_the_scratch_slot_its_holder_owns() {
+        // what this catches (M5, 2026-09-26 03:01Z): non-turn traffic wrote the scratch
+        // slot without its permit, so the cache probe holding that slot was overwritten
+        // between requests and the self-check held the fleet on a false `no_reuse`.
+        let pool = Arc::new(KvSlotPool::new("test://scratch-owner", 3)); // index 2 is scratch
+        let scratch = pool.scratch_slot().expect("three slots reserve a scratch slot"); // test: pool contract
+        let held = pool.acquire_slot(scratch).await.expect("test: the probe holds scratch");
+        let sem = Arc::new(Semaphore::new(4));
+        let client = reqwest::Client::new();
+        let waiting = admit_turn(&sem, None, Some(pool.clone()), &client, "test://scratch-owner", 0, std::time::Duration::ZERO);
+        tokio::pin!(waiting);
+        assert!(
+            futures::poll!(&mut waiting).is_pending(),
+            "anonymous traffic entered the scratch slot while its holder owned it"
+        );
+        drop(held);
+        let admitted = waiting.await.expect("test: admitted once the holder releases");
+        assert_eq!(admitted.scratch_slot(), Some(scratch));
+    }
+
+    // regression for card 4deaed09 (BigMama, 2026-09-26 17:47–17:59Z): a 2-lane engine
+    // has no scratch slot, and non-turn traffic went UNPINNED — the server placed it by
+    // similarity onto a resident's slot and overwrote her page; Sahar reused 0 tokens
+    // every turn while Kimi reused 44,950 on the other slot.
+    // what this catches: on a pool with no scratch slot, transient traffic borrows a
+    // citizen slot THROUGH the pool — the cheapest resident is saved and detached first
+    // and the admission carries that slot pinned — the single-slot rule generalised.
+    #[tokio::test]
+    async fn on_a_server_with_no_scratch_slot_transient_traffic_borrows_the_cheapest_citizen_slot_and_saves_its_resident() {
+        use axum::{
+            extract::{Path, Query},
+            http::StatusCode,
+            routing::post,
+            Json, Router,
+        };
+        let saves = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let app = Router::new().route(
+            "/slots/{slot}",
+            post({
+                let saves = saves.clone();
+                move |Path(slot): Path<u32>, Query(query): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>| {
+                    let saves = saves.clone();
+                    async move {
+                        let action = query.get("action").cloned().unwrap_or_default(); // unwrap_or_default: a fixture request with no action is a restore
+                        if action == "save" {
+                            saves.lock().expect("test: fixture mutex").push(slot);
+                        }
+                        let count = if action == "save" { "n_saved" } else { "n_restored" };
+                        (StatusCode::OK, Json(json!({"id_slot": slot, "filename": body["filename"], (count): 10})))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let pool = Arc::new(KvSlotPool::new(&root, 2));
+        assert!(pool.scratch_slot().is_none(), "two lanes reserve no scratch slot");
+        let sem = Arc::new(Semaphore::new(4));
+        let client = reqwest::Client::new();
+        let a = ActivityKey::new(Uuid::from_u128(1), Uuid::from_u128(2)).expect("test: non-nil ids");
+        let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).expect("test: non-nil ids");
+        // Two residents warm their slots: a large working set and a small one. Each
+        // turn COMPLETES (a dropped, uncommitted turn forgets its attribution — the
+        // cancellation rule — and would leave both slots reading as free).
+        let mut adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, &root, 20_000, std::time::Duration::ZERO)
+            .await
+            .expect("test: a admitted");
+        let slot_a = adm_a.slot().expect("test: a leased a slot");
+        adm_a.generation_completed();
+        drop(adm_a);
+        let mut adm_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, &root, 500, std::time::Duration::ZERO)
+            .await
+            .expect("test: b admitted");
+        let slot_b = adm_b.slot().expect("test: b leased a slot");
+        adm_b.generation_completed();
+        drop(adm_b);
+        assert_ne!(slot_a, slot_b);
+        assert_eq!(pool.transient_slot(), slot_b, "the cheapest page to lose is the small one");
+        // Anonymous traffic: borrowed THROUGH the pool — b's page saved, the slot carried.
+        let transient = admit_turn(&sem, None, Some(pool.clone()), &client, &root, 0, std::time::Duration::ZERO)
+            .await
+            .expect("test: transient admitted");
+        assert_eq!(transient.slot(), Some(slot_b), "pinned to the borrowed slot, never left to the server");
+        assert_eq!(
+            saves.lock().expect("test: fixture mutex").as_slice(),
+            &[slot_b],
+            "the resident was saved first, and only that one"
+        );
+        drop(transient);
+        server.abort();
+    }
 
     // what this catches: the restore-into-busy-slot bug at its source — while a turn
     // holds its admission (permit + pin), a second activity contending for the SAME
@@ -211,8 +828,18 @@ mod tests {
         let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).unwrap();  // test: non-nil ids
 
         // A is admitted: holds the permit and pins the one slot.
-        let adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, "test://admit", 100).await;
-        let slot_a = adm_a.slot().expect("A leased the slot");  // test: a 1-slot pool leases to the first admission
+        let adm_a = admit_turn(
+            &sem,
+            Some(a),
+            Some(pool.clone()),
+            &client,
+            "test://admit",
+            100,
+            std::time::Duration::ZERO,
+        )
+        .await
+        .expect("test: endpoint admitted");
+        let slot_a = adm_a.slot().expect("A leased the slot"); // test: a 1-slot pool leases to the first admission
 
         // B tries to lease while A is pinned — eviction must skip the pinned slot, so
         // B cannot take slot_a (the pool has no other slot to give).
@@ -231,7 +858,486 @@ mod tests {
             slot_a,
             "after the turn dropped, the slot must become leasable again"
         );
-        assert_eq!(after_cancel.save_first, None,
-            "an admission dropped without successful generation must not be saved as activity A");
+        assert_eq!(
+            after_cancel.save_first, None,
+            "an admission dropped without successful generation must not be saved as activity A"
+        );
+
+        // The endpoint lease is shared across adapter semaphores. A different
+        // adapter cannot enter while retirement drains this admitted turn.
+        let adm = admit_turn(&sem, Some(b), Some(pool), &client, "test://admit", 100, std::time::Duration::ZERO)
+            .await
+            .expect("test: second turn");
+        let endpoint = crate::inference::slots::directory().endpoint("test://admit");
+        let transition = endpoint.transition();
+        tokio::pin!(transition);
+        assert!(futures::poll!(&mut transition).is_pending());
+        let other_adapter = Arc::new(Semaphore::new(1));
+        assert!(
+            admit_turn(&other_adapter, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
+                .await
+                .is_err(),
+            "another adapter cannot bypass endpoint suspension"
+        );
+        drop(adm);
+        drop(transition.await);
+        assert!(
+            admit_turn(&other_adapter, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
+                .await
+                .is_err(),
+            "failed transition remains closed"
+        );
+    }
+
+    // what this catches (card ff9ecfd8): a turn that finds every slot pinned used to be
+    // admitted with NO slot, so the server placed it on whichever slot freed and overwrote a
+    // resident's KV with no save (M5 8/13, IntelMac 19/36 contended leases). It must wait,
+    // stay pending while the slot is held, and land PINNED on the freed slot once the holder
+    // drops; warm-ahead still gives up at once.
+    #[tokio::test]
+    async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() {
+        let root = "test://all-pinned";
+        let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot
+        let sem = Arc::new(Semaphore::new(2)); // lanes free: only the slot is contended
+        let client = reqwest::Client::new();
+        let a = ActivityKey::new(Uuid::from_u128(11), Uuid::from_u128(12)).unwrap(); // test: non-nil ids
+        let b = ActivityKey::new(Uuid::from_u128(13), Uuid::from_u128(14)).unwrap(); // test: non-nil ids
+        let adm_a = admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO)
+            .await
+            .expect("test: A admitted");
+        let slot_a = adm_a.slot().expect("A pinned the one slot"); // test: a 1-slot pool leases to the first admission
+
+        let warm = warm_ahead(&sem, b, pool.clone(), &client, root);
+        assert!(warm.await.is_ok(), "warm-ahead is best-effort: it gives up at once, never waits");
+
+        let turn_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+        tokio::pin!(turn_b);
+        assert!(futures::poll!(&mut turn_b).is_pending(), "B was admitted unpinned while every slot was held");
+        assert_eq!(sem.available_permits(), 1, "a turn waiting for a slot must not hold a lane permit (Fable on #4515)");
+        drop(adm_a);
+        let adm_b = tokio::time::timeout(std::time::Duration::from_secs(5), turn_b)
+            .await
+            .expect("test: B woke on the release")
+            .expect("test: B admitted");
+        assert_eq!(adm_b.slot(), Some(slot_a), "B must land PINNED on the freed slot");
+    }
+
+    // what this catches (Codex on #4515): a turn that pinned its slot and is then CANCELLED
+    // while awaiting the slot's operation permit (pin held, no permit) frees an evictable lease,
+    // and no SlotPermit drop will ever announce it; a turn parked on the all-pinned pool must
+    // still wake, lease and pin. The permit stays held by a stand-in decode throughout, so the
+    // only possible wake is the cancelled admission's own Drop.
+    #[tokio::test]
+    async fn a_cancelled_pin_holder_wakes_a_turn_parked_on_an_all_pinned_pool() {
+        let root = "test://cancelled-pin";
+        let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot, index 0
+        let sem = Arc::new(Semaphore::new(3));
+        let client = reqwest::Client::new();
+        let a = ActivityKey::new(Uuid::from_u128(21), Uuid::from_u128(22)).unwrap(); // test: non-nil ids
+        let b = ActivityKey::new(Uuid::from_u128(23), Uuid::from_u128(24)).unwrap(); // test: non-nil ids
+        // A decode is in flight on slot 0, so A leases and pins, then waits for the permit.
+        let busy = pool.acquire_slot(0).await.expect("test: the stand-in decode holds slot 0");
+        let mut turn_a = Box::pin(admit_turn(&sem, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO));
+        assert!(futures::poll!(&mut turn_a).is_pending(), "A waits for the slot permit");
+        assert!(pool.pin(&a).is_some(), "A holds its lease, pinned");
+        let turn_b = admit_turn(&sem, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+        tokio::pin!(turn_b);
+        assert!(futures::poll!(&mut turn_b).is_pending(), "every slot pinned: B parks");
+        assert!(pool.pin(&b).is_none(), "B has no lease while it is parked");
+        // Cancel A while it holds a pin and no permit.
+        drop(turn_a);
+        for _ in 0..16 {
+            let _ = futures::poll!(&mut turn_b);
+            tokio::task::yield_now().await;
+        }
+        assert!(pool.pin(&b).is_some(), "B was never woken: a cancelled pin holder announced nothing");
+        drop(busy);
+        let adm_b = tokio::time::timeout(std::time::Duration::from_secs(5), turn_b)
+            .await
+            .expect("test: B completes once the permit frees")
+            .expect("test: B admitted");
+        assert_eq!(adm_b.slot(), Some(0), "B lands pinned on the slot A gave up");
+    }
+
+    // what this catches: warm-ahead at 4fe7e312 marked a lease warm even when
+    // no restore occurred, failed, or was cancelled; later turns skipped restore.
+    #[tokio::test]
+    async fn warm_ahead_confirms_only_resident_or_successfully_restored_pages() {
+        use axum::{
+            extract::{Path, Query},
+            http::StatusCode,
+            routing::post,
+            Json, Router,
+        };
+        use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+
+        let mode = Arc::new(AtomicU8::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let finished = Arc::new(tokio::sync::Notify::new());
+        let app = Router::new().route(
+            "/slots/{slot}",
+            post({
+                let mode = mode.clone();
+                let calls = calls.clone();
+                let entered = entered.clone();
+                let release = release.clone();
+                let finished = finished.clone();
+                move |Path(slot): Path<u32>, Query(query): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>| {
+                    let mode = mode.clone();
+                    let calls = calls.clone();
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    let finished = finished.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if mode.load(Ordering::SeqCst) == 1 || (mode.load(Ordering::SeqCst) == 7 && slot == 1) {
+                            return (StatusCode::BAD_REQUEST, Json(json!({"error": {"code": 400, "type": "invalid_request_error", "message": "Unable to restore slot"}})));
+                        }
+                        if mode.load(Ordering::SeqCst) == 2 || (mode.load(Ordering::SeqCst) == 5 && slot == 1) {
+                            entered.notify_one();
+                            release.notified().await;
+                            finished.notify_one();
+                        }
+                        if mode.load(Ordering::SeqCst) == 3 || (mode.load(Ordering::SeqCst) == 6 && slot == 1) {
+                            return (StatusCode::OK, Json(json!({"unverified": true})));
+                        }
+                        let receipt_slot = if mode.load(Ordering::SeqCst) == 4 && slot == 1 { slot + 1 } else { slot };
+                        let count = if query.get("action").map(String::as_str) == Some("save") { "n_saved" } else { "n_restored" };
+                        (StatusCode::OK, Json(json!({"id_slot": receipt_slot, "filename": body["filename"], (count): 10})))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("isolated paging HTTP fixture");
+        let root = format!(
+            "http://{}",
+            listener.local_addr().expect("bound fixture address")
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let contract = crate::inference::slots::KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some("fixture-pages".into()),
+            context: 8192,
+            slots: 3,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![(
+                "fixture.gguf".into(),
+                73,
+                std::time::SystemTime::UNIX_EPOCH,
+            )]),
+        };
+        let initial = endpoint.transition().await;
+        let old = initial.start_generation().expect("initial generation");
+        initial
+            .ready(&root, &old, contract.clone())
+            .expect("initial readiness");
+        drop(initial);
+        let pool = endpoint
+            .admit()
+            .await
+            .expect("ready pool")
+            .pool
+            .expect("managed pool");
+        let sem = Arc::new(Semaphore::new(2));
+        let client = reqwest::Client::new();
+        let key = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("fixture activity");
+
+        // A discovered multi-slot pool is not sufficient: without reserved
+        // scratch, anonymous traffic can still select a speculative restore slot.
+        let small_root = format!("test://warm-two-slot-{}", Uuid::new_v4());
+        let small = crate::inference::slots::directory().ensure_pool(&small_root, 2);
+        small.note_saved(key);
+        let stale_discovery = Arc::new(KvSlotPool::new(&small_root, 3));
+        warm_ahead(&sem, key, stale_discovery, &client, &small_root)
+            .await
+            .expect("authoritative two-slot skip");
+        let cold = small.lease_paged(key).await.expect("small pool lease");
+        assert!(!cold.already_resident);
+        assert!(
+            cold.restore,
+            "skipped warm-ahead must leave the page for the actual turn"
+        );
+
+        // A cold lease has no physical KV to attribute, and must issue no HTTP.
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("cold warm-ahead");
+        let slot = pool.lease(key).await.expect("assigned physical slot");
+        assert!(pool.take_resident(slot).0.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        pool.note_saved(key);
+        mode.store(1, Ordering::SeqCst);
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("failed restore is best effort");
+        assert!(pool.take_resident(slot).0.is_none());
+        let after_failure = pool.lease_paged(key).await.expect("cold after failure");
+        assert!(!after_failure.restore, "failed page is no longer offered");
+        assert!(!after_failure.already_resident);
+        pool.forget_resident(slot, key);
+
+        pool.note_saved(key);
+        mode.store(2, Ordering::SeqCst);
+        let mut queued = {
+            let warming = warm_ahead(&sem, key, pool.clone(), &client, &root);
+            tokio::pin!(warming);
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::select! {
+                    result = &mut warming => panic!("restore completed before cancellation: {result:?}"),
+                    _ = entered.notified() => {}
+                }
+            }).await.expect("restore request reached fixture");
+            let mut queued = Box::pin(admit_turn(
+                &sem,
+                Some(key),
+                Some(pool.clone()),
+                &client,
+                &root,
+                100,
+                std::time::Duration::ZERO,
+            ));
+            assert!(futures::poll!(&mut queued).is_pending());
+            queued
+        };
+        assert!(
+            pool.take_resident(slot).0.is_none(),
+            "cancelled restore cannot leave warm attribution"
+        );
+        assert!(
+            queued.as_mut().await.is_err(),
+            "already-admitted same-slot waiter must refuse after quarantine"
+        );
+        drop(queued);
+        assert_eq!(sem.available_permits(), 2);
+        assert!(
+            warm_ahead(&sem, key, pool.clone(), &client, &root)
+                .await
+                .is_err(),
+            "retry must refuse WHILE the old backend request is blocked"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "quarantine sent no replacement request"
+        );
+        let replacement = endpoint.transition().await;
+        assert!(
+            replacement.ready(&root, &old, contract.clone()).is_err(),
+            "same-generation readiness cannot clear quarantine"
+        );
+        assert!(
+            replacement.start_generation().is_err(),
+            "actual predecessor exit still required"
+        );
+        // This acknowledges only the fixture request; local Drop does not claim
+        // that cancelling an HTTP client stops the production backend operation.
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
+            .await
+            .expect("fixture request drained");
+
+        old.observed_exit();
+        let new = replacement
+            .start_generation()
+            .expect("verified predecessor exit");
+        replacement
+            .ready(&root, &new, contract.clone())
+            .expect("new verified generation");
+        drop(replacement);
+        let pool = endpoint
+            .admit()
+            .await
+            .expect("reopened")
+            .pool
+            .expect("fresh pool");
+        mode.store(0, Ordering::SeqCst);
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("successful retry");
+        let restored_calls = calls.load(Ordering::SeqCst);
+        assert_eq!(restored_calls, 3);
+        warm_ahead(&sem, key, pool.clone(), &client, &root)
+            .await
+            .expect("already resident");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            restored_calls,
+            "confirmed residency skips redundant restore"
+        );
+        assert_eq!(pool.take_resident(slot).0, Some(key));
+
+        // Same-key admission uses the same physical-slot permit even across
+        // adapters. It cannot see or erase a prior owner's provisional holder.
+        let mut turn = admit_turn(&sem, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
+            .await
+            .expect("turn restore");
+        let other_adapter = Arc::new(Semaphore::new(2));
+        let warming = warm_ahead(&other_adapter, key, pool.clone(), &client, &root);
+        tokio::pin!(warming);
+        assert!(futures::poll!(&mut warming).is_pending());
+        turn.generation_completed();
+        drop(turn);
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut warming)
+            .await
+            .expect("slot released")
+            .expect("warm resident");
+        assert_eq!(pool.take_resident(slot).0, Some(key));
+        mode.store(3, Ordering::SeqCst);
+        assert!(
+            warm_ahead(&sem, key, pool.clone(), &client, &root)
+                .await
+                .is_err(),
+            "a status-only or malformed acknowledgement is uncertain"
+        );
+        assert!(!endpoint.is_ready());
+        assert!(pool.take_resident(slot).0.is_none());
+        // What this catches: a drained checkpoint must confirm every resident,
+        // never carry an old saved bit across a failed write or let cancellation
+        // reopen a backend request whose completion is unknown.
+        let other = ActivityKey::new(Uuid::new_v4(), Uuid::new_v4()).expect("second resident");
+        let unknown_root = format!("test://checkpoint-unknown-{}", Uuid::new_v4());
+        let unknown = crate::inference::slots::directory().endpoint(&unknown_root);
+        let mut unowned = unknown.transition().await;
+        assert!(unowned
+            .checkpoint_residents(&client, &unknown_root)
+            .await
+            .is_err());
+        drop(unowned);
+        let mut prior = new;
+        for behavior in [0, 7, 6, 4, 5] {
+            let mut checkpointing = endpoint.transition().await;
+            prior.observed_exit();
+            let generation = checkpointing
+                .start_generation()
+                .expect("fixture child replacement");
+            let before = calls.load(Ordering::SeqCst);
+            assert!(
+                checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .is_err(),
+                "a new generation cannot checkpoint its predecessor's ledger"
+            );
+            checkpointing
+                .ready(&root, &generation, contract.clone())
+                .expect("verified replacement");
+            let residents = crate::inference::slots::directory()
+                .get(&root)
+                .flatten()
+                .expect("verified pool");
+            residents.plan_paging(0, key);
+            residents.plan_paging(1, other);
+            residents.note_saved(key);
+            residents.note_saved(other);
+            assert!(checkpointing
+                .checkpoint_residents(&client, &unknown_root)
+                .await
+                .is_err());
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before,
+                "identity refusals issue no HTTP"
+            );
+            mode.store(behavior, Ordering::SeqCst);
+            if behavior == 5 {
+                {
+                    let saving = checkpointing.checkpoint_residents(&client, &root);
+                    tokio::pin!(saving);
+                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        tokio::select! {
+                            _ = &mut saving => panic!("checkpoint completed before fixture release"),
+                            _ = entered.notified() => {}
+                        }
+                    }).await.expect("second save reached fixture");
+                    assert!(
+                        endpoint.admit().await.is_err(),
+                        "writer keeps late turns closed"
+                    );
+                }
+                assert!(
+                    endpoint.paging_recovery_required(),
+                    "cancelled save quarantines"
+                );
+                assert!(checkpointing
+                    .ready(&root, &generation, contract.clone())
+                    .is_err());
+                let refused_at = calls.load(Ordering::SeqCst);
+                assert!(checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .is_err());
+                assert_eq!(calls.load(Ordering::SeqCst), refused_at);
+                release.notify_one();
+                tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
+                    .await
+                    .expect("cancelled fixture drained");
+            } else if behavior == 0 {
+                let receipt = checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .expect("both residents saved");
+                assert!(
+                    receipt.transition_for(&prior).is_err(),
+                    "receipt refuses predecessor"
+                );
+                assert!(receipt.transition_for(&generation).is_ok());
+                assert!(
+                    endpoint.admit().await.is_err(),
+                    "receipt retains closed writer"
+                );
+                generation.observed_exit();
+                assert!(
+                    receipt.transition_for(&generation).is_err(),
+                    "exit invalidates receipt"
+                );
+                drop(receipt);
+            } else {
+                assert!(checkpointing
+                    .checkpoint_residents(&client, &root)
+                    .await
+                    .is_err());
+                assert_eq!(
+                    endpoint.paging_recovery_required(),
+                    behavior != 7,
+                    "only terminal rejection proves completion"
+                );
+                assert!(
+                    !generation.has_exited(),
+                    "save refusal never retires the child"
+                );
+            }
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                before + 2,
+                "only attributed slots are saved"
+            );
+            residents.take_resident(0);
+            assert!(
+                residents.plan_paging(0, key).restore,
+                "confirmed first save survives partial failure"
+            );
+            residents.take_resident(1);
+            assert_eq!(
+                residents.plan_paging(1, other).restore,
+                behavior == 0,
+                "failed or unconfirmed overwrite invalidates previous saved eligibility"
+            );
+            drop(checkpointing);
+            assert!(
+                !endpoint.is_ready(),
+                "dropping writer never silently reopens"
+            );
+            prior = generation;
+        }
+        server.abort();
     }
 }

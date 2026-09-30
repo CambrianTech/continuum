@@ -67,7 +67,7 @@ use crate::persona::rag_budget::{
 /// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
 /// `active-work` (own claims) and `room-wall` (the wall, renamed from the
 /// misleading `room-board` in #3874).
-const SOURCE_ID: &str = "room-kanban";
+pub(crate) const SOURCE_ID: &str = "room-kanban";
 
 /// Most cards this source will render in full, per turn.
 ///
@@ -827,6 +827,7 @@ mod tests {
             lane_id: None,
             state,
             owner,
+            claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
             claim_expires_at_ms: claimed.then(|| now_unix_ms() + 60_000),
             last_heartbeat_at_ms: None,

@@ -42,13 +42,13 @@ use uuid::Uuid;
 
 use super::spill;
 use super::types::{
-    NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
+    CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
-use crate::sdk_codegen::{command_registry, AccessLevel};
+use crate::sdk_codegen::{command_registry, AccessLevel, ActVerdict};
 use continuum_client::{ClientError, Connection};
 use std::sync::Arc;
 
@@ -201,7 +201,7 @@ fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) 
         Some(r) => format!(
             "the FULL {} lines were saved as output `{}`. Find the part you need with \
              `tool/output` — easiest, jump straight to what broke with a prebuilt filter: \
-             `{{\"handle\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/\
+             `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/\
              `summary`); for a specific hunt use `\"pattern\":\"<regex>\"`, or read a line \
              range with `startLine`/`endLine`",
             r.lines, r.handle, r.handle,
@@ -271,6 +271,14 @@ pub(crate) const NAMELESS_ARGS_SENTINEL: &str = "tools/<no name given>";
 /// generation `drive_to_settle` grants starts from her own conclusions.
 pub(crate) const THINK_ONLY_SENTINEL: &str = "tools/<think-only turn>";
 
+/// Reserved pseudo-name for "the generation ended AT the output limit with text but no
+/// committed tool call" — a cut act. Same uncallable namespace and contract as its
+/// siblings: REPORTED, never executed. The deliberation faculty records what she was
+/// composing into her working memory before routing this, so the teacher below names
+/// the event and the retry starts from that record instead of re-deriving the world
+/// (Kimi, 2026-09-25: "every Length cut is a micro-deploy with no wake-up record").
+pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>";
+
 fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
@@ -296,6 +304,23 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
             .to_string();
     }
 
+    // The CUT case: she was composing an act and the generation reached the output
+    // limit before the call was committed. Nothing ran, and nothing about the world
+    // changed — the failure mode after this is replaying work that already landed, or
+    // re-composing the same oversized payload (Kimi, 2026-09-25: five near-identical
+    // notes on a closed card, cut mid-envelope twice). Name the fact, point at the
+    // record, and name the two ways out: commit the call first, and keep the payload
+    // small enough to land.
+    if attempted == CUT_AT_LIMIT_SENTINEL {
+        return "Your last generation reached the output limit before a tool call was \
+                committed, so NOTHING ran and nothing changed — the act did not land. \
+                What you were composing is noted in your working memory. Do not \
+                re-check or redo earlier work that already landed. Commit the call \
+                first, with a smaller payload: state only what changed, not the full \
+                history, or split a large note across calls."
+            .to_string();
+    }
+
     if attempted == NAMELESS_ARGS_SENTINEL {
         return format!(
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
@@ -311,6 +336,15 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The dispatched (slash) form is what the registry knows; she may have
     // emitted the underscore form, so normalize before matching/suggesting.
     let normalized = attempted.replace('_', "/");
+    // Omission from the default menu is not an authorization failure. These verbs
+    // remain discoverable; preserve the actual refusal (or transport failure) so
+    // a legitimate reviewer can recover, alongside purpose/own-work guidance.
+    if let Some(withheld) = crate::cognition::tool_dialect::withheld_from_hands(&normalized) {
+        return format!(
+            "`{normalized}` failed: {raw}\n{}\n{}",
+            withheld.why, withheld.instead
+        );
+    }
 
     // The exact how-to-call manual for a command SHE can run, rendered inline so the
     // fix rides back in THIS observation — she retries next turn with no discovery
@@ -349,6 +383,36 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
                 .map(crate::cognition::tool_dialect::resolve_wire_name)
                 .filter(|canonical| seen.insert(canonical.clone()))
                 .collect();
+        // Not a wrong verb — not a verb at all. A path or a bare symbol in the name
+        // field is the thing she was about, landed where the verb goes; did-you-mean
+        // has nothing near it, and "call `commands/help`" was the whole receipt
+        // (card b579a9c7). Name the slip and put her own arguments back in front of
+        // her, the way the nameless-args sentinel does.
+        if let Some(slip) = crate::cognition::tool_dialect::not_a_verb(attempted, !suggestions.is_empty()) {
+            crate::probe!(
+                class = "tool.name.not_a_verb",
+                slip = ?slip,
+                attempted = %attempted,
+                "the tool NAME field held something that is not a verb; the receipt names the slip"
+            );
+            return match slip {
+                crate::cognition::tool_dialect::NotAVerb::Path => format!(
+                    "`{attempted}` is a PATH, not a tool — you put the path where the tool \
+                     NAME goes, so nothing ran. A path is an argument; the verb goes first:\n\
+                     `code/read({{\"file_path\": \"{attempted}\"}})` to read it, `code/write` or \
+                     `code/edit` to change it, `code/list` for a directory, `code/shell` with \
+                     `cwd` to run a command there. Retry with the verb in front."
+                ),
+                crate::cognition::tool_dialect::NotAVerb::Identifier => format!(
+                    "`{attempted}` is not a tool, and is not near one — it reads like a symbol \
+                     from what you were working on (a field, a variable, a name) put where the \
+                     tool NAME goes, so nothing ran. The verb goes first: \
+                     `tool/name({{\"arg\": \"value\"}})`. If you were composing an edit, the \
+                     text belongs in the arguments of `code/edit` or `code/write`. Call \
+                     `commands/help` with no arguments for the verbs you can name."
+                ),
+            };
+        }
         if let (Some(best), Some(manual)) = (
             suggestions.first(),
             suggestions.first().and_then(|b| manual_for(b)),
@@ -359,9 +423,24 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = best;
+            // A bare word near a verb only by a shared token (`msg_budget` →
+            // `system/memory-budget`) may be a typo of that verb, or a symbol from what
+            // she was reading put where the verb goes. did-you-mean cannot tell them
+            // apart, so the receipt carries both lessons: the nearest verbs, and the
+            // envelope form for the case where none of them is what she meant.
+            let symbol_note = if attempted.contains('/') {
+                String::new()
+            } else {
+                format!(
+                    "\n\nIf `{attempted}` is not a verb you meant but a symbol from what you \
+                     were working on (a field, a variable, a name), the verb goes first: \
+                     `tool/name({{\"arg\": \"value\"}})` — an edit's text belongs in the \
+                     arguments of `code/edit` or `code/write`."
+                )
+            };
             return format!(
                 "`{normalized}` is not a tool you can call. Closest: {list}.\n\n\
-                 Here is how to call the first one — retry with this shape:\n{manual}"
+                 Here is how to call the first one — retry with this shape:\n{manual}{symbol_note}"
             );
         }
         return format!(
@@ -484,6 +563,7 @@ impl ToolExecutor for CommandToolExecutor {
                         );
                         Err(ClientError::Refused {
                             command: command.to_string(),
+                            outcome: None,
                             reason: format!(
                                 "you sent the manual's blank as a value for {}: the example block is a \
                                  SHAPE, and `<replace-with-…>` / a run of zeros marks a field YOU fill \
@@ -508,24 +588,64 @@ impl ToolExecutor for CommandToolExecutor {
             }
         });
 
+        // Filled by the Ok arm below, correlated by tool_use_id (never position).
+        let mut verdicts: Vec<CallVerdict> = Vec::with_capacity(calls.len());
         let results = join_all(dispatches)
             .await
             .into_iter()
             .enumerate()
             .map(|(i, (tool_use_id, outcome))| match outcome {
-                Ok(value) => {
-                    let full = value.to_string(); // owned render once; both the canvas feed and the fold read it
-                    // Canvas feed publishes from the PRE-FOLD content. It used to
-                    // hook the post-fold observation in act_observe/apply, where a
-                    // flood-sized ObserveResult had already been spilled + cut to a
-                    // preview — the JSON parse failed and the desktop went blind on
-                    // exactly the big screenshots worth watching (2026-08-23 audit's
-                    // latent canvas bug). Here the full result still exists.
+                Ok(mut value) => {
+                    // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
+                    // the FULL value. Ordering is the contract, not an accident: the
+                    // fold below can spill and truncate the rendered text, and the
+                    // old act seam re-parsed that truncated text to recover the same
+                    // facts (apply.rs, pre-#4352) — so a flood-sized result stopped
+                    // parsing and an aliased call (`bash`) never matched at all.
+                    //
+                    // The name is resolved through the SAME `tool_dialect` seam the
+                    // dispatch above and `runtime::route_command` use, so `bash` and
+                    // `code_run` reach their own command's projector.
+                    //
+                    // Three states, never two: a command that did not opt in projects
+                    // `Unprojected` and keeps its old behaviour byte for byte; a
+                    // command that DID opt in but whose own declared `Output` no
+                    // longer decodes projects `Undecodable` — schema drift, a defect,
+                    // and never silently a success (Astra, #4352 review).
+                    let canonical =
+                        crate::cognition::tool_dialect::resolve_wire_name(&calls[i].name);
+                    let (verdict, dispatch_handle) =
+                        crate::sdk_codegen::project_result(&canonical, &value);
+                    if verdict == ActVerdict::Undecodable {
+                        crate::probe!(
+                            class = "tool.call.outcome_undecodable",
+                            persona = %ctx.persona_name,
+                            command = %canonical,
+                            "a registered projector could not decode its own command's declared output — schema drift; the payload is preserved and NO outcome is claimed"
+                        );
+                    }
+                    // The human canvas consumes the original capture once; the
+                    // persona history consumes a durable reference to those bytes.
                     crate::ipc::positron_canvas_source::maybe_publish_observation(
-                        &ctx.persona_name,
-                        &calls[i].name,
-                        &full,
+                        &ctx.persona_name, &canonical, &value.to_string(),
                     );
+                    let image = match crate::media::artifact::retain_capture(&canonical, &mut value) {
+                        Ok(image) => image,
+                        Err(error) => {
+                            if let Some(object) = value.as_object_mut() {
+                                object.insert("mediaError".into(), Value::String(error));
+                            }
+                            None
+                        }
+                    };
+                    verdicts.push(CallVerdict {
+                        image,
+                        tool_use_id: tool_use_id.clone(),
+                        verdict,
+                        dispatch_handle,
+                    });
+
+                    let full = value.to_string(); // boundary: tool-result transcript now contains a durable image reference.
                     {
                         // Spill-then-bound: a flood-sized result is persisted whole
                         // (recoverable via `tool/output`) before the preview is cut;
@@ -537,19 +657,15 @@ impl ToolExecutor for CommandToolExecutor {
                         NativeToolResult {
                             tool_use_id,
                             content,
-                            is_error: None,
+                            // The bool can only carry the one question it can answer.
+                            // `Running` and `Undecodable` are NOT failures and must not
+                            // be flattened into one here — they ride the typed
+                            // `CallVerdict` to the receipt, which can say them.
+                            is_error: verdict.failed().then_some(true),
                             spill_handle,
                         }
                     }
                 }
-                // A failed tool call is NOT a batch failure — it's fed back to the
-                // model as an error result so it can recover (retry, fix args,
-                // pick another tool). Batch-level `Err` is reserved for the
-                // executor/transport itself being unavailable. Take the substrate's
-                // OWN reason (e.g. "no Rust module handles command: …") and translate
-                // it into PERSONA-actionable feedback — naming the problem AND
-                // reinforcing `commands/help`/`commands/list` — so she recovers on a
-                // message in her own paradigm, not a developer-internal one.
                 Err(e) => {
                     let raw = match e {
                         ClientError::Refused { reason, .. } => reason,
@@ -558,6 +674,15 @@ impl ToolExecutor for CommandToolExecutor {
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
                     let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
+                    // A transport failure IS a failure, and the typed carrier must
+                    // say the same thing `is_error` does — a receipt that reads one
+                    // field and a glyph that reads the other must never disagree.
+                    verdicts.push(CallVerdict {
+                        image: None,
+                        tool_use_id: tool_use_id.clone(),
+                        verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
+                        dispatch_handle: None,
+                    });
                     NativeToolResult {
                         tool_use_id,
                         content: truncate_on_boundary(
@@ -575,6 +700,7 @@ impl ToolExecutor for CommandToolExecutor {
             results,
             media: Vec::new(),
             stored_ids: Vec::new(),
+            verdicts,
         })
     }
 
@@ -683,9 +809,64 @@ mod tests {
         }
     }
 
-    // what this catches: the developer-internal unknown-command paragraph (TS-bridge
-    // fallthrough, "register a ServiceModule") must NEVER reach the persona — she gets
-    // a paradigm-native message pointing at commands/list + commands/help instead.
+    // A compact-menu omission must not erase actionable failures or falsely
+    // revoke a reviewer's discoverable command. Own-work guidance remains.
+    #[test]
+    fn a_verb_withheld_from_her_hands_preserves_failure_and_purpose() {
+        let out = persona_tool_error(
+            "work_review",
+            "an explicit activity room is required".to_string(),
+        );
+        assert!(out.contains("`work/review` failed"), "{out}");
+        assert!(out.contains("`work/get`") && out.contains("`work/submit`"), "{out}");
+        assert!(out.contains("activity room is required"), "{out}");
+        let out = persona_tool_error(
+            "work/review",
+            "[invalid] card d33e928a is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band".to_string(),
+        );
+        assert!(out.contains("not a review card") && out.contains("`work/get`"), "{out}");
+        let transport = persona_tool_error("work/review", "connection closed before response".into());
+        assert!(transport.contains("connection closed before response"), "{transport}");
+        assert!(!transport.contains("Nothing you type") && !transport.contains("did not run"), "{transport}");
+        assert!(persona_tool_error("work/submission", "x".into()).contains("`work/submit`"));
+        assert!(persona_tool_error("code/git/apply", "x".into()).contains("`code/edit`"));
+    }
+
+    // what this catches (card b579a9c7, Kimi 2026-09-26): a PATH or a bare SYMBOL in the
+    // tool NAME field is not a wrong verb, it is the thing she was about landed where the
+    // verb goes. did-you-mean has nothing near either, and the receipt was "call
+    // `commands/help`" — a turn spent with no lesson. Both of her exact strings.
+    #[test]
+    fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
+        let unknown = |name: &str| format!("no Rust module handles command: '{name}'.");
+        // Fixture 1 (19:5xZ): a Windows path with a drive letter and mixed separators.
+        let path = r"C:\Users\kimi\.airc/worktrees\d33e928a";
+        let out = persona_tool_error(path, unknown(path));
+        assert!(out.contains("is a PATH, not a tool"), "{out}");
+        assert!(out.contains(&format!("`code/read({{\"file_path\": \"{path}\"}})`")), "{out}");
+        assert!(!out.contains("commands/help"), "the manual is not the lesson here: {out}");
+        // Fixture 2 (20:0xZ): a probe field name from the code she was reading. It
+        // shares the word `budget` with a real verb, so did-you-mean has a candidate
+        // (`system/memory-budget`) — the receipt keeps that list AND names the slip.
+        let out = persona_tool_error("msg_budget", unknown("msg_budget"));
+        assert!(out.contains("Closest:"), "{out}");
+        assert!(out.contains("If `msg_budget` is not a verb you meant but a symbol"), "{out}");
+        assert!(out.contains("`code/edit`"), "{out}");
+        // A bare word near NOTHING gets the slip alone.
+        let out = persona_tool_error("frobnitz", unknown("frobnitz"));
+        assert!(out.contains("`frobnitz` is not a tool, and is not near one"), "{out}");
+        // A slashed miss never gets the symbol note — it is a verb shape.
+        assert!(!persona_tool_error("cargo/check", unknown("cargo/check")).contains("a symbol from"));
+        // A repo-relative file and a home path are paths too, whatever the separators.
+        assert!(persona_tool_error("src/main.rs", unknown("src/main.rs")).contains("is a PATH"));
+        assert!(persona_tool_error("~/.continuum", unknown("~/.continuum")).contains("is a PATH"));
+        // A NEAR miss is still a typo and keeps its did-you-mean lesson — the slip arm
+        // must not swallow it (`cargo/check` → `code/cargo/check`, same as before).
+        let out = persona_tool_error("cargo/check", unknown("cargo/check"));
+        assert!(out.contains("Closest:") && out.contains("`code/cargo/check`"), "{out}");
+        assert!(!out.contains("is a PATH") && !out.contains("not near one"), "{out}");
+    }
+
     #[test]
     fn unknown_command_feedback_is_persona_actionable_not_dev_noise() {
         let raw = "no Rust module handles command: 'frobnicate'. \
@@ -711,6 +892,20 @@ mod tests {
             out.contains("`frobnicate`"),
             "must name what she tried: {out}"
         );
+    }
+
+    #[test]
+    fn cut_act_sentinel_says_nothing_ran_and_how_to_land_the_act() {
+        // what this catches (Kimi, 2026-09-25): a cut act re-sampled with no word of the
+        // cut replays the same oversized payload and re-derives work that landed. The
+        // teacher must say the act did not land, point at the record, and name the way
+        // out — never the unknown-tool wording (she called nothing).
+        let raw = "no Rust module handles command: 'tools/<cut at the output limit>'".to_string();
+        let out = persona_tool_error(CUT_AT_LIMIT_SENTINEL, raw);
+        assert!(out.contains("NOTHING ran"), "{out}");
+        assert!(out.contains("working memory"), "{out}");
+        assert!(out.contains("smaller payload"), "{out}");
+        assert!(!out.contains("not a tool you can call"), "{out}");
     }
 
     // what this catches: the think-only sentinel gets its OWN teacher sentence — it
@@ -1050,6 +1245,192 @@ mod tests {
         /// self-registering command, dep-free). The real `for_persona` path.
         fn stateless_surface_hands() -> CommandToolExecutor {
             exec_over(Arc::new(ModuleRegistry::new()), Uuid::new_v4())
+        }
+
+        // ─────── the executor→receipt path for a projected outcome ───────
+        //
+        // Astra on #4352: "Projector-only tests cannot catch the current Running
+        // regression at the consumer." Constructing an `Observation` by hand proves
+        // the MAPPING; it proves nothing about the WIRING. These dispatch a real
+        // command through the real `execute_native_batch` and read what comes back.
+        //
+        // The command is declared HERE rather than reusing `code/run`, because
+        // `code/run` spawns a real interpreter and a CI box that lacks one would
+        // make this test a coin toss.
+
+        #[derive(Debug, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+        pub struct VerdictProbeParams {
+            /// "ok" | "fail" | "running" | "garbage"
+            pub mode: String,
+        }
+
+        #[derive(Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+        pub struct VerdictProbeResult {
+            pub ok: bool,
+            pub running: bool,
+            /// Preserved verbatim through the fold — the feedback the model needs.
+            pub stderr: String,
+            pub handle: Option<String>,
+        }
+
+        #[derive(Default)]
+        pub struct VerdictProbe;
+
+        #[async_trait::async_trait]
+        impl crate::sdk_codegen::ActionCommand for VerdictProbe {
+            const NAME: &'static str = "test/verdict-probe";
+            const ALIASES: &'static [&'static str] = &["probe_alias"];
+            const ACCESS: AccessLevel = AccessLevel::AiSafe;
+            const DESCRIPTION: &'static str = "test-only: returns a chosen outcome shape.";
+            type Params = VerdictProbeParams;
+            type Output = VerdictProbeResult;
+
+            async fn run(
+                &self,
+                _ctx: &crate::sdk_codegen::Ctx,
+                p: VerdictProbeParams,
+            ) -> Result<VerdictProbeResult, crate::sdk_codegen::CommandError> {
+                Ok(VerdictProbeResult {
+                    ok: p.mode == "ok",
+                    running: p.mode == "running",
+                    stderr: if p.mode == "fail" {
+                        "error[E0425]: cannot find value `x`".into()
+                    } else {
+                        String::new()
+                    },
+                    handle: (p.mode == "running")
+                        .then(|| "6f1a0f5e-0000-4000-8000-000000000001".to_string()),
+                })
+            }
+        }
+
+        impl crate::sdk_codegen::ProjectsOutcome for VerdictProbe {
+            fn outcome(o: &VerdictProbeResult) -> crate::sdk_codegen::ToolVerdict {
+                if o.running {
+                    crate::sdk_codegen::ToolVerdict::Running
+                } else if o.ok {
+                    crate::sdk_codegen::ToolVerdict::Succeeded
+                } else {
+                    crate::sdk_codegen::ToolVerdict::Failed
+                }
+            }
+            fn dispatch_handle(o: &VerdictProbeResult) -> Option<uuid::Uuid> {
+                o.handle.as_deref().and_then(|h| uuid::Uuid::parse_str(h).ok())
+            }
+        }
+
+        crate::register_stateless_command!(VerdictProbe);
+        crate::register_outcome!(VerdictProbe);
+
+        /// Dispatch through the REAL batch path and hand back the receipt plus the
+        /// typed carrier, correlated the way the act seam correlates them.
+        async fn dispatch_verdict(
+            mode: &str,
+            name: &str,
+        ) -> (
+            Option<bool>,
+            String,
+            crate::sdk_codegen::ActVerdict,
+            Option<uuid::Uuid>,
+        ) {
+            let exec = stateless_surface_hands();
+            let calls = vec![NativeToolCall {
+                id: "vp".to_string(),
+                name: name.to_string(),
+                input: json!({ "mode": mode }),
+            }];
+            let out = exec
+                .execute_native_batch(&calls, &ctx(), 8000)
+                .await
+                .expect("batch itself succeeds");
+            let r = out
+                .results
+                .iter()
+                .find(|r| r.tool_use_id == "vp")
+                .expect("result correlates by tool_use_id");
+            let v = out.verdicts.iter().find(|v| v.tool_use_id == "vp");
+            (
+                r.is_error,
+                r.content.clone(),
+                v.map(|v| v.verdict).unwrap_or_default(), // JUSTIFIED: absence means unprojected, which is the correct default
+                v.and_then(|v| v.dispatch_handle),
+            )
+        }
+
+        /// what this catches: THE defect, end to end. A command that reports its own
+        /// failure AS DATA takes the executor's `Ok` arm — before #4352 that arm set
+        /// `is_error: None` unconditionally and the room rendered a tick.
+        #[tokio::test]
+        async fn a_failure_returned_as_data_comes_back_flagged_and_keeps_its_stderr() {
+            let (is_error, content, verdict, handle) =
+                dispatch_verdict("fail", "test/verdict-probe").await;
+            assert_eq!(is_error, Some(true), "the command said it failed: {content}");
+            assert_eq!(
+                verdict,
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed)
+            );
+            assert!(
+                content.contains("E0425"),
+                "the stderr the model self-corrects from survives the fold: {content}"
+            );
+            assert_eq!(handle, None);
+        }
+
+        /// what this catches: Running flattened at the executor. `is_error` stays
+        /// None (not-finished is not failed) but the TYPED carrier must say running,
+        /// and the command-declared handle must ride along — that handle is what
+        /// registers the dispatch so the completion folds back into working memory.
+        #[tokio::test]
+        async fn a_running_call_carries_running_and_its_handle_not_an_error() {
+            let (is_error, _c, verdict, handle) =
+                dispatch_verdict("running", "test/verdict-probe").await;
+            assert_eq!(is_error, None, "accepted is not failed");
+            assert_eq!(
+                verdict,
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Running)
+            );
+            assert_eq!(
+                handle,
+                Some(uuid::Uuid::parse_str("6f1a0f5e-0000-4000-8000-000000000001").unwrap()), // JUSTIFIED: a literal the test itself authored
+                "the command declares its handle; the seam no longer re-parses folded text"
+            );
+        }
+
+        /// what this catches: the alias miss. The projector is keyed on the CANONICAL
+        /// name, and a model reaching for a declared alias must still get its own
+        /// command's verdict — otherwise the fix is dead for exactly the calls that
+        /// hit it most (`bash` for `code/shell`).
+        #[tokio::test]
+        async fn a_call_made_through_a_declared_alias_still_gets_its_verdict() {
+            let (is_error, _c, verdict, _h) = dispatch_verdict("fail", "probe_alias").await;
+            assert_eq!(is_error, Some(true), "the alias must reach the projector");
+            assert_eq!(
+                verdict,
+                crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed)
+            );
+        }
+
+        /// what this catches: a command that never opted in changing behaviour at the
+        /// executor. It must project `Unprojected` and leave `is_error` exactly where
+        /// it was.
+        #[tokio::test]
+        async fn an_unprojected_command_is_untouched_at_the_executor() {
+            let exec = stateless_surface_hands();
+            let calls = vec![NativeToolCall {
+                id: "u".to_string(),
+                name: "commands/list".to_string(),
+                input: json!({}),
+            }];
+            let out = exec
+                .execute_native_batch(&calls, &ctx(), 8000)
+                .await
+                .expect("batch ok");
+            assert_eq!(out.results[0].is_error, None);
+            let v = out.verdicts.iter().find(|v| v.tool_use_id == "u");
+            assert!(
+                v.is_none_or(|v| v.verdict == crate::sdk_codegen::ActVerdict::Unprojected),
+                "a command with no projector claims nothing"
+            );
         }
 
         /// Dispatch one native call and return its (is_error, content).

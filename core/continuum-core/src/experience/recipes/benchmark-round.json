@@ -84,8 +84,32 @@
       "command": "code/git/commit"
     },
     {
+      "verb": "shell-poll",
+      "command": "code/shell-poll"
+    },
+    {
+      "verb": "git-add",
+      "command": "code/git/add"
+    },
+    {
+      "verb": "git-push",
+      "command": "code/git/push"
+    },
+    {
+      "verb": "pr-create",
+      "command": "code/github/pr-create"
+    },
+    {
+      "verb": "pr-comment",
+      "command": "code/github/pr-comment"
+    },
+    {
       "verb": "claim",
       "command": "work/claim"
+    },
+    {
+      "verb": "create",
+      "command": "work/create"
     },
     {
       "verb": "state",

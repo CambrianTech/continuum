@@ -30,28 +30,35 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use continuum_client::Connection;
+use continuum_client::{ClientError, Connection};
 use continuum_core::runtime::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use continuum_core::runtime::deploy_provenance::{
-    cli_self_build, cli_staleness_note, deploy_verdict, CliSelfBuild,
+    cli_self_build, cli_staleness_note, deploy_verdict, sha_matches, CliSelfBuild,
 };
 use serde_json::Value;
 
-#[path = "continuum/owned_engines.rs"]
-mod owned_engines;
+use continuum_cli_lifecycle::owned_engines;
 use owned_engines::owned_engine_candidate;
 
 #[cfg(windows)]
-#[path = "continuum/windows_launch.rs"]
-mod windows_launch;
-#[path = "continuum/supervisor_install.rs"]
-mod supervisor_install;
-#[path = "continuum/install_cli.rs"]
-mod install_cli;
+use continuum_cli_lifecycle::windows_launch;
+use continuum_cli_lifecycle::supervisor_install;
+use continuum_cli_lifecycle::install_cli;
 
-#[path = "continuum/launchd.rs"]
-mod launchd;
+// The macOS supervisor arm. Every call site is `cfg(target_os = "macos")`, so the
+// import carries the same gate rather than an allow — a blanket allow would also hide
+// the NEXT unused import in this block.
+#[cfg(target_os = "macos")]
+use continuum_cli_lifecycle::launchd;
+
+// The teardown DECISION lives in the leaf, where it runs on every machine in seconds.
+// What stays here is the Windows half that spends the capability — gated at the
+// declaration, because every item inside needs `windows_sys`.
+#[cfg(windows)]
+#[path = "continuum/elevated_teardown.rs"]
+mod elevated_teardown;
+use continuum_cli_lifecycle::elevated_teardown::StopOptions;
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {
@@ -109,6 +116,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "install"
                 | "verify"
                 | "checkpoint"
+                | "engine"
                 | "service-host"
         ) && args
             .iter()
@@ -119,6 +127,30 @@ async fn run() -> Result<(), CliError> {
     let mut args = std::env::args().skip(1);
     let first = args.next().ok_or_else(usage)?;
     let rest: Vec<String> = args.collect();
+    // Identify this executable without contacting or starting a core.
+    if matches!(first.as_str(), "--version" | "-V" | "version") {
+        if !rest.is_empty() {
+            return Err(CliError::Command("usage: continuum --version".into()));
+        }
+        println!(
+            "continuum {} (build {}, sha {}, built {})",
+            env!("CARGO_PKG_VERSION"),
+            env!("CONTINUUM_BUILD_NUMBER"),
+            env!("CONTINUUM_BUILD_GIT_SHA"),
+            env!("CONTINUUM_BUILD_AT"),
+        );
+        return Ok(());
+    }
+    // The SHA this CLI was built from, alone on stdout — the same contract as the core's
+    // `--build-sha`, so `install` can pair the slot's CLI with its core (#4382 asked the CLI
+    // and no CLI ever answered: every install on an already-converged core failed there).
+    if first == "--build-sha" {
+        if !rest.is_empty() {
+            return Err(CliError::Command("usage: continuum --build-sha".into()));
+        }
+        println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
+        return Ok(());
+    }
     // Lifecycle verbs bypass remote command dispatch. Handle their help before
     // any checkout registration, process inspection, stop, build, or launch.
     if local_help_requested(&first, &rest) {
@@ -130,6 +162,22 @@ async fn run() -> Result<(), CliError> {
     // not mutate the checkout registry as a side effect.
     if first == "checkpoint" {
         return checkpoint(CheckpointCommand::parse(args)?).map_err(CliError::from);
+    }
+    // Engine slots (card 2c5d0ec0): offline, like checkpoint. The installers call these
+    // with the deploy lock held; exit 3 means no slot is idle and the engine build is skipped.
+    if first == "engine" {
+        use continuum_core::inference::engine_slots::{run_verb, VerbError};
+        match run_verb(&args.collect::<Vec<_>>()) {
+            Ok(out) => {
+                println!("{out}");
+                return Ok(());
+            }
+            Err(VerbError::NoIdleSlot) => {
+                eprintln!("{}", VerbError::NoIdleSlot);
+                std::process::exit(3);
+            }
+            Err(e) => return Err(CliError::Command(e.to_string())),
+        }
     }
     if first == "service-host" {
         let code = service_host(args.collect()).await?;
@@ -172,6 +220,15 @@ async fn run() -> Result<(), CliError> {
                 ));
             }
             let t = std::time::Instant::now();
+            #[cfg(windows)]
+            let out = match start(false).await {
+                Ok(()) => match verify_deployed_build(false).await {
+                    Ok(()) => Outcome::Ok("installed start path verified".into()),
+                    Err(e) => Outcome::Failed(format!("verify: {e}")),
+                },
+                Err(e) => Outcome::Failed(e),
+            };
+            #[cfg(not(windows))]
             let out = match launch_core(&[], LaunchSource::Installed).await {
                 Ok(pid) => match verify_deployed_build(false).await {
                     Ok(()) => Outcome::Ok(format!("pid {pid}, #194 verified")),
@@ -186,16 +243,16 @@ async fn run() -> Result<(), CliError> {
                     "boot plan: core launch/verify failed".into(),
                 ));
             }
-            // Repo root (dev tree) = two up from the start script; installed
+            // Resolve tools/scripts/start-server.sh through the shared layout; installed
             // users have no script and the Beside rails skip with a reason.
             let repo_root = locate_start_script()
                 .ok()
-                .and_then(|s| s.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+                .and_then(|s| continuum_core::boot_plan::repo_root_from_start_script(&s));
             continuum_core::boot_plan::run_beside_phase(&mut receipt, repo_root.as_deref());
             println!("boot complete — {} steps receipted", receipt.steps.len());
             Ok(())
         }
-        "stop" => stop().await,
+        "stop" => stop(StopOptions::parse(args)?).await,
         // The display-manager door: the core serves the built desktop itself
         // (http::desktop, always-current, browsers attach/detach freely) —
         // this verb just verifies the greeter answers and opens the browser.
@@ -579,12 +636,28 @@ fn checkpoint_plan_output(
 async fn dispatch(command: &str, args: Vec<String>) -> Result<(), CliError> {
     ensure_core_running(command).await?;
     let canonical = canonical_param_names(command).await;
-    let params = params_from_args(&args, &canonical)?;
-    let result = connection()
-        .commands()
-        .execute_value(command, params)
-        .await
-        .map_err(|e| format!("{command}: {e}"))?;
+    let params = params_from_args(command, &args, &canonical)?;
+    let result = match connection().commands().execute_value(command, params).await {
+        Ok(result) => result,
+        // A REFUSAL WITH DATA SHOWS ITS DATA (card f4d2fa49). A handler that answers
+        // `{ success: false, errorKind, nextHistoryOffset, malformed, … }` is refusing
+        // with the fields the operator needs next; the sentence alone is not enough.
+        // The typed outcome goes to stdout as JSON, the refusal line to stderr as
+        // before, and the exit code is still the refusal's.
+        Err(e) => {
+            if let ClientError::Refused {
+                outcome: Some(outcome),
+                ..
+            } = &e
+            {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(outcome).unwrap_or_else(|_| outcome.to_string()) // boundary: CLI stdout; a Value always encodes, its Display is the same JSON compact
+                );
+            }
+            return Err(format!("{command}: {e}").into());
+        }
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
@@ -614,14 +687,22 @@ async fn dispatch(command: &str, args: Vec<String>) -> Result<(), CliError> {
 /// `persona_id`. This is what makes snake_case Rust-native commands invokable by
 /// flag (regression: continuum used to blanket-camelCase every key, turning `--persona_id`
 /// into `personaId`, which the server rejected as `missing field persona_id`).
-/// Flags NOT in the schema — base `CommandParams` like userId, or commands that
-/// expose no schema (`canonical` empty) — fall back to the generic camelCase
-/// normalization, which is correct for the camelCase wire fields and is the
-/// pre-schema behavior, so nothing regresses.
+/// A flag NOT in the schema is REFUSED by name — with the command and the flags it
+/// does accept — but only when the schema is KNOWN (`canonical` non-empty). With no
+/// schema (registry unreachable, or a command that publishes no params) "unknown"
+/// is unprovable, so the historical camelCase guess still stands; refusing there
+/// would make every command the registry cannot describe uncallable. Measured
+/// 2026-09-05: `continuum ping --nonsense-flag` returned a healthy pong, exit 0 —
+/// the typo became a junk param the command ignored, and the caller got a
+/// successful-looking answer to a question nobody asked (#3724).
 ///
 /// Schema-AWARE coercion/validation (knowing each field's exact type) is the next
 /// step on the same `commands/list` schema; this canonicalizes the KEY today.
-fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, String> {
+fn params_from_args(
+    command: &str,
+    args: &[String],
+    canonical: &[String],
+) -> Result<Value, String> {
     if args.is_empty() {
         return Ok(Value::Object(Default::default()));
     }
@@ -645,10 +726,11 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
     // standard, aliases resolve). Only consulted when the raw flag is NOT itself a
     // canonical field; data-driven, so it never overrides a command's real param.
     const SYNONYMS: &[(&str, &str)] = &[("command", "cmd")];
-    let field = |raw: &str| -> String {
+    // `None` = a flag the command's KNOWN schema does not have — see the last arm.
+    let field = |raw: &str| -> Option<String> {
         let norm = normalize_key(raw);
         if let Some(c) = canon_by_norm.get(&norm) {
-            return (*c).to_string();
+            return Some((*c).to_string());
         }
         for (a, b) in SYNONYMS {
             let other = if normalize_key(a) == norm {
@@ -660,11 +742,39 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
             };
             if let Some(o) = other {
                 if let Some(c) = canon_by_norm.get(&normalize_key(o)) {
-                    return (*c).to_string();
+                    return Some((*c).to_string());
                 }
             }
         }
-        to_camel_case(raw)
+        // NOT a schema field, and not a synonym of one.
+        //
+        // When `canonical` is EMPTY we do not know the schema — the registry was
+        // unreachable, or this command publishes no params — so "unknown" is
+        // unprovable and the historical camelCase guess stands. When it is
+        // NON-empty we DO know, and a flag matching nothing is a typo the caller
+        // wants told about, not silently coerced into a junk key the command
+        // ignores. Same unset-vs-unknown ladder as #3717's room probe: refuse only
+        // where the knowledge to refuse actually exists.
+        if canon_by_norm.is_empty() {
+            return Some(to_camel_case(raw));
+        }
+        None
+    };
+    // Name the flag AND what the command actually takes. A refusal that only says
+    // "unknown" sends the caller to `--help`; one that lists the fields IS the
+    // answer they were about to look up.
+    let unknown = |k: &str| -> String {
+        let mut known: Vec<&str> = canon_by_norm.values().copied().collect();
+        known.sort_unstable();
+        format!(
+            "unknown flag `--{k}` for `{command}`.\n  accepted: {}\n  (or pass a single JSON \
+             object; `continuum {command} --help` shows types and which are required)",
+            known
+                .iter()
+                .map(|f| format!("--{f}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
     };
 
     let mut map = serde_json::Map::new();
@@ -680,17 +790,23 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
         // Splitting on the first `=` means `--filter=data/` parses to
         // {filter: "data/"} instead of a junk `{"filter=data/": true}` key.
         if let Some((k, v)) = raw_key.split_once('=') {
-            map.insert(field(k), coerce(v));
+            map.insert(field(k).ok_or_else(|| unknown(k))?, coerce(v));
             i += 1;
             continue;
         }
         // A value follows unless the next arg is another flag (or there is none).
         let has_value = args.get(i + 1).is_some_and(|n| !n.starts_with("--"));
         if has_value {
-            map.insert(field(raw_key), coerce(&args[i + 1]));
+            map.insert(
+                field(raw_key).ok_or_else(|| unknown(raw_key))?,
+                coerce(&args[i + 1]),
+            );
             i += 2;
         } else {
-            map.insert(field(raw_key), Value::Bool(true));
+            map.insert(
+                field(raw_key).ok_or_else(|| unknown(raw_key))?,
+                Value::Bool(true),
+            );
             i += 1;
         }
     }
@@ -930,8 +1046,23 @@ async fn launch_installed_core(
 struct RebootOptions {
     force: bool,
     prebuilt: Option<PathBuf>,
+    /// Install retry: validated Cargo output still needs staging into the service slot.
+    stage_prebuilt: bool,
     service: bool,
     validate_only: bool,
+    /// Is a human AT this machine, able to answer one consent prompt?
+    ///
+    /// NOT a CLI flag, and deliberately: the user-facing contract is one command,
+    /// `continuum install` (Joel, 2026-09-22), so the only caller that sets this is the
+    /// install core arm. Everything else — the deploy consumer above all — runs under
+    /// the supervisor with nobody to see a dialog, and a consent raised there would hang
+    /// the tick until it times out.
+    operator_present: bool,
+    /// Internal convergence requirement; the public command remains `install`.
+    #[cfg(windows)]
+    require_engine_receipt: bool,
+    /// Installer-to-reboot transfer binds the entire selected release.
+    service_descriptor_sha: Option<String>,
 }
 
 impl RebootOptions {
@@ -948,6 +1079,13 @@ impl RebootOptions {
                         .filter(|p| !p.is_empty() && !p.starts_with('-'))
                         .ok_or("reboot --prebuilt requires a core binary path")?;
                     options.prebuilt = Some(PathBuf::from(path));
+                }
+                "--service-descriptor-sha" if options.service_descriptor_sha.is_none() => {
+                    let sha = args
+                        .next()
+                        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .ok_or("--service-descriptor-sha requires a SHA-256 digest")?;
+                    options.service_descriptor_sha = Some(sha.to_ascii_lowercase());
                 }
                 "--force" | "--prebuilt" | "--service" | "--validate-only" => {
                     return Err(format!("duplicate reboot option {arg}"))
@@ -971,6 +1109,16 @@ impl RebootOptions {
             return Err(
                 "--validate-only requires --prebuilt and cannot combine with --force or --service"
                     .to_string(),
+            );
+        }
+        if options.service_descriptor_sha.is_some()
+            && (!cfg!(windows)
+                || !options.service
+                || options.prebuilt.is_none()
+                || options.validate_only)
+        {
+            return Err(
+                "--service-descriptor-sha requires a Windows prebuilt service handoff".into(),
             );
         }
         Ok(options)
@@ -1024,10 +1172,10 @@ impl PrebuiltCore {
     }
 }
 
-/// Free memory a warm build needs beside a serving core: rustc's codegen wants ~7 GiB
-/// (BigMama, 2026-09-05: test builds killed at 2.59 GiB free beside a 39 GiB server) —
-/// twelve leaves the server, the citizens and the build their room.
-const WARM_BUILD_MIN_FREE_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+/// The floor below which a warm build refuses: one rustc job plus the reserve kept for the
+/// citizens and the core. Between it and plenty the build takes fewer jobs
+/// ([`continuum_core::inference::llama_server::warm_build_jobs_for_memory`]).
+const WARM_BUILD_MIN_FREE_BYTES: u64 = continuum_core::inference::llama_server::WARM_BUILD_MIN_FREE_BYTES;
 
 /// The scheduler owns this foreground host and its core as one process tree.
 /// Runtime DLL/config resolution is the same as every other native CLI launch.
@@ -1040,19 +1188,47 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        if args.len() != 3 || args.iter().any(|arg| arg.is_empty()) {
-            return Err("service-host requires <core-path> <socket> <engine-path>".to_string());
+        if !(3..=4).contains(&args.len()) || args.iter().any(|arg| arg.is_empty()) {
+            return Err("service-host requires <core-path> <socket> <engine-path> [eye-root]".to_string());
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command);
+        // The engine the core runs is the slot `current` names, never an injected
+        // `LLAMA_SERVER_BIN` (the core reads that as an operator's pin and never converges it,
+        // card 2c5d0ec0). `current` is the one truth on every OS (card d5584dfc): the registered
+        // release only BOOTSTRAPS it when none is recorded, so an unattended deploy's promote and
+        // an automatic rollback survive this restart. An operator's own `LLAMA_SERVER_BIN` in the
+        // environment still passes through untouched.
         if command_env(&command, "LLAMA_SERVER_BIN").is_none_or(|value| value.is_empty()) {
             let engine = Path::new(&args[2]);
-            if !engine.is_file() {
-                return Err(format!("service-host engine missing: {}", engine.display()));
+            // A standing `current` is the engine, whatever the release still names: the release's
+            // own binary may be gone (its slot rebuilt or reclaimed) and the core must still start
+            // on the engine `current` names (Codex on #4509, card 6de412bb). Only with nothing
+            // standing does the release's engine matter, and then it must exist.
+            match continuum_core::inference::engine_slots::bootstrap_service_engine(engine) {
+                Ok(true) => eprintln!("service-host: {} is now the current engine", engine.display()),
+                Ok(false) => {}
+                // A refused bootstrap must never keep the core down (Fable on #4497): on a
+                // first-and-only machine that is a dark node. The registered engine is the one the
+                // installer verified, so it is launched as before, pinned, and the refusal is said.
+                Err(why) if !engine.is_file() => {
+                    return Err(format!("service-host engine missing and no engine is current: {} ({why})", engine.display()));
+                }
+                Err(why) => {
+                    eprintln!(
+                        "service-host: ENGINE NOT REGISTERED ({why}); launching {} pinned as LLAMA_SERVER_BIN so the core does not stay down. It will not converge until this is fixed.",
+                        engine.display()
+                    );
+                    command.env("LLAMA_SERVER_BIN", engine);
+                }
             }
-            command.env("LLAMA_SERVER_BIN", engine);
         }
         command.env("CONTINUUM_CORE_SOCKET", &args[1]);
+        // Use the effective CHILD environment, including config.env, exactly as
+        // the core listener will. Task-host environment can differ from it.
+        let tcp = command_env(&command, "CONTINUUM_CORE_TCP");
+        let endpoint = format!("tcp://127.0.0.1:{}",
+            continuum_core::ipc::endpoint_paths::tcp_port_from(tcp.as_deref().and_then(|s| s.to_str())));
         command.stdin(Stdio::null()).creation_flags(0x0800_0000);
         let mut command = tokio::process::Command::from(command);
         command.kill_on_drop(true);
@@ -1064,16 +1240,55 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
             .ok_or("service-host core exited before PID registration")?;
         std::fs::write(pidfile_for(&args[1]), pid.to_string())
             .map_err(|e| format!("service-host cannot record core PID: {e}"))?;
-        let status = child
-            .wait()
-            .await
+        if args.len() == 3 {
+            eprintln!("service-host: browser unavailable: no eyeRoot registered; reinstall to register browser assets");
+        }
+        let eye = args.get(3).and_then(|root| {
+            match continuum_core::boot_plan::start_service_eye(Path::new(root), &endpoint) {
+                Ok(eye) => {
+                    eprintln!("service-host: browser worker {} spawned for {endpoint}; registration pending", eye.id());
+                    Some(eye)
+                }
+                Err(why) => {
+                    eprintln!("service-host: browser unavailable: {why}; core remains serving");
+                    None
+                }
+            }
+        });
+        let status = if let Some(mut eye) = eye {
+            tokio::select! {
+                // Core shutdown owns the tree's lifetime, including descendants.
+                status = child.wait() => {
+                    eye.request_stop();
+                    const EYE_STOP_GRACE: Duration = Duration::from_secs(15);
+                    match tokio::time::timeout(EYE_STOP_GRACE, eye.wait()).await {
+                        Ok(Ok(_)) => {},
+                        Ok(Err(error)) => eprintln!("service-host: browser shutdown observation failed ({error}); closing owned tree"),
+                        Err(_) => eprintln!("service-host: browser shutdown grace expired; closing owned tree"),
+                    }
+                    status
+                },
+                status = eye.wait() => {
+                    match status {
+                        Ok(status) => eprintln!("service-host: browser unavailable: worker exited ({status}); core remains serving"),
+                        Err(error) => eprintln!("service-host: browser unavailable: worker exit observation failed ({error}); core remains serving"),
+                    }
+                    // Remove any surviving descendants before considering a later
+                    // recovery. Never leave a browser orphan or kill the core.
+                    drop(eye);
+                    child.wait().await
+                }
+            }
+        } else {
+            child.wait().await
+        }
             .map_err(|e| format!("service-host cannot wait for core: {e}"))?;
         Ok(status.code().unwrap_or(1))
     }
 }
 
 #[cfg(any(windows, test))]
-#[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct CoreServiceDescription {
     artifact: String,
@@ -1082,6 +1297,8 @@ struct CoreServiceDescription {
     cli: String,
     engine: String,
     log_directory: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eye_root: Option<String>,
 }
 
 #[cfg(any(windows, test))]
@@ -1097,6 +1314,18 @@ struct CoreServiceTask {
 
 #[cfg(any(windows, test))]
 impl CoreServiceTask {
+    fn validate_description_sha(&self, expected: &str) -> Result<(), String> {
+        use sha2::{Digest, Sha256};
+        let actual = format!("{:x}", Sha256::digest(self.description.as_bytes()));
+        if actual != expected {
+            return Err(
+                "installed release changed during installer-to-reboot transfer; refusing teardown"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
         let description: CoreServiceDescription =
             serde_json::from_str(&self.description).map_err(|e| {
@@ -1153,11 +1382,17 @@ impl CoreServiceTask {
                 );
             }
         }
-        let expected = format!(
+        let mut expected = format!(
             "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File \"{}\" -ExecutablePath \"{}\" -CorePath \"{}\" -SocketPath \"{}\" -EnginePath \"{}\" -LogDirectory \"{}\"",
             description.launcher, description.cli, description.artifact,
             description.socket, description.engine, description.log_directory,
         );
+        if let Some(root) = &description.eye_root {
+            if !Path::new(root).is_absolute() || root.contains(['"', '\r', '\n']) || root.ends_with('\\') {
+                return Err("ContinuumCore eyeRoot must be an absolute, quotable asset directory".into());
+            }
+            expected.push_str(&format!(" -EyeRoot \"{root}\""));
+        }
         if self.arguments != expected {
             return Err("ContinuumCore action differs from its artifact descriptor; rerun the installer before reboot".to_string());
         }
@@ -1174,6 +1409,92 @@ struct PreparedCoreService {
 }
 
 impl PreparedCoreService {
+    #[cfg(windows)]
+    async fn browser_release(repo: &Path, check: bool) -> Result<String, String> {
+        let repo = repo.to_string_lossy().replace('\'', "''");
+        let action = if check { "Get-CoreBrowserReleaseDrift" } else { "Update-CoreBrowserRelease" };
+        let script = format!(
+            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; {action} -RepoRoot '{repo}'"
+        );
+        if check {
+            Self::powershell(&script).await
+        } else {
+            // Registration/consent is a foreground install operation, not a
+            // 30-second scheduler probe. Hold the install lease until it ends.
+            Self::run_installer_script(&script)?;
+            Ok(String::new())
+        }
+    }
+
+    #[cfg(windows)]
+    fn run_installer_script(script: &str) -> Result<(), String> {
+        supervisor_install::run_installer_script(&Self::shell()?, script)
+    }
+
+    #[cfg(windows)]
+    async fn engine_drift(repo: &Path) -> Result<String, String> {
+        let task = Self::query().await?;
+        let description: CoreServiceDescription = serde_json::from_str(&task.description)
+            .map_err(|e| format!("installed service descriptor: {e}"))?;
+        // The engine the core RUNS: the slot `current` names (card d5584dfc), else, before any
+        // slot is recorded, the one the release registered.
+        let directory = match continuum_core::inference::engine_slots::active_engine_dir() {
+            Some(dir) => dir,
+            None => Path::new(&description.engine)
+                .parent()
+                .ok_or("installed engine has no directory")?
+                .to_path_buf(),
+        };
+        let repo = repo.to_string_lossy().replace('\'', "''");
+        Self::powershell(&format!(
+            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}')",
+            directory.to_string_lossy().replace('\'', "''")
+        )).await
+    }
+
+    #[cfg(windows)]
+    async fn prepare_engine(repo: &Path) -> Result<Option<(String, PathBuf)>, String> {
+        if Self::engine_drift(repo).await?.is_empty() {
+            return Ok(None);
+        }
+        warm_build_allowed(available_memory_bytes(), locate_start_script().ok())?;
+        let original = Self::query().await?.description;
+        let receipt = WarmBuildReceipt::create()?;
+        let repo_arg = repo.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'",
+            original.replace('\'', "''"), receipt.0.to_string_lossy().replace('\'', "''")
+        );
+        Self::run_installer_script(&script)?;
+        // Every engine slot is busy (lanes still relaunching onto the last engine): the core
+        // deploys on the engine it has and the next deploy builds this one (card 3f8f5754, the
+        // bash installer's exit 3). An explicit line, never an empty receipt, so a script that
+        // wrote nothing is still a failure.
+        if let Some(reason) = receipt.skipped()? {
+            deploy_note(&format!("▶ engine handoff skipped this deploy: {reason}"));
+            return Ok(None);
+        }
+        Ok(Some((original, receipt.artifact()?)))
+    }
+
+    #[cfg(windows)]
+    async fn register_engine(repo: &Path, original: &str, engine: &Path) -> Result<(), String> {
+        if Self::query().await?.description != original {
+            return Err("installed release changed before engine handoff".into());
+        }
+        let mut release: CoreServiceDescription = serde_json::from_str(original)
+            .map_err(|e| format!("installed service descriptor: {e}"))?;
+        release.engine = engine.to_string_lossy().into_owned();
+        let json = serde_json::to_string(&release) // Task Scheduler descriptor crosses the PowerShell process boundary.
+            .map_err(|e| e.to_string())?
+            .replace('\'', "''");
+        let repo = repo.to_string_lossy().replace('\'', "''");
+        Self::run_installer_script(&format!(
+            "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; $r='{json}' | ConvertFrom-Json; $drift=Get-CoreEngineDrift -Directory (Split-Path $r.engine) -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo}'); if ($drift) {{ throw $drift }}; try {{ Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' }} finally {{ Clear-Elevation }}"
+        ))?;
+        Ok(())
+    }
+
     async fn for_start(socket: &str) -> Result<Option<(Self, PrebuiltCore)>, String> {
         #[cfg(not(any(windows, target_os = "macos")))]
         {
@@ -1269,7 +1590,23 @@ impl PreparedCoreService {
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
                     let prev = to.with_extension("prev.exe");
-                    let _ = std::fs::remove_file(&prev);
+                    // `.prev.exe` is a SINGLE parking space, so staging cannot proceed
+                    // while something still holds that exact name. This used to fail
+                    // silently (`let _ = remove_file`) and the rename below then reported
+                    // its error against `to` — naming the CURRENT file for a refusal that
+                    // happened on a DIFFERENT one, which cost an hour of reading on
+                    // 2026-09-22. Report the path that actually refused and the OS's own
+                    // words for why; the cause is not inferable from here.
+                    if let Err(e) = std::fs::remove_file(&prev) {
+                        if prev.exists() {
+                            return Err(format!(
+                                "the previous artifact at {} could not be removed ({e}) and \
+                                 is still present; staging cannot move the current artifact \
+                                 aside onto an occupied name",
+                                prev.display()
+                            ));
+                        }
+                    }
                     std::fs::rename(to, &prev)
                         .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
                 }
@@ -1279,7 +1616,19 @@ impl PreparedCoreService {
             };
             move_aside_and_copy(&built.path, &slot_core)?;
             if built_cli.is_file() {
-                move_aside_and_copy(&built_cli, &slot_cli)?;
+                // The CLI beside the artifact is only this build's when it says so: a skipped
+                // CLI build leaves an OLDER one there, and staging it rolled every PATH copy
+                // back (install's CLI arm follows the slot).
+                match binary_build_sha(&built_cli).await {
+                    Ok(sha) if sha_matches(&sha, &built.build_sha) => {
+                        move_aside_and_copy(&built_cli, &slot_cli)?;
+                    }
+                    Ok(sha) => println!(
+                        "⚠ the CLI beside the warm artifact is build {sha}, not {} — not staged; the slot's CLI stays as it was",
+                        built.build_sha
+                    ),
+                    Err(e) => println!("⚠ the CLI beside the warm artifact cannot state its build ({e}) — not staged; the slot's CLI stays as it was"),
+                }
             } else {
                 println!(
                     "⚠ no CLI beside the warm artifact ({}) — the slot's CLI stays as it was",
@@ -1460,10 +1809,26 @@ fn warm_build_allowed(free_bytes: u64, script: Option<PathBuf>) -> Result<PathBu
     Ok(script)
 }
 
+/// Available system memory, through the ONE derivation the substrate already owns.
+///
+/// NOT `sysinfo::available_memory()`. That call returns **0 on macOS** while `total`
+/// and `used` are both correct — `system_resources::memory_pressure` found this, says
+/// so in so many words at its own call site, and exists as `available_from` precisely
+/// so "every reader" shares one answer. This function was not one of those readers.
+///
+/// The cost was the whole warm-build path on every Mac. `warm_build_allowed` compares
+/// this against `WARM_BUILD_MIN_FREE_BYTES` (then 12 GiB), so a permanent 0 meant the gate
+/// could never open: every deploy stopped the core first and built afterwards, and every
+/// stop cut whatever was mid-turn. Measured on the M5 2026-09-21, two consecutive
+/// deploys 35 minutes apart printed `no warm build: 0.0 GiB free` and reported
+/// `cognition (drain Incomplete { in_flight: 7 })` then `{ in_flight: 9 }` — sixteen
+/// citizen turns — while `memory.pressure`, reading `available_from` at the same
+/// moments, published `avail_mb` of 9,009 and 8,324. Two measurements of one quantity,
+/// nine gigabytes apart, and the deploy gate held the one that is always zero here.
 fn available_memory_bytes() -> u64 {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
-    sys.available_memory()
+    continuum_core::system_resources::memory_pressure::available_from(&sys)
 }
 
 /// A per-attempt receipt owned by this invocation, never a cached artifact hint.
@@ -1482,6 +1847,14 @@ impl WarmBuildReceipt {
             .open(&path)
             .map_err(|e| format!("cannot create warm-build receipt: {e}"))?;
         Ok(Self(path))
+    }
+
+    /// `Some(reason)` when the script recorded a deliberate skip (`SKIP: <reason>`) instead of an
+    /// artifact path.
+    #[cfg(windows)]
+    fn skipped(&self) -> Result<Option<String>, String> {
+        let report = std::fs::read_to_string(&self.0).map_err(|e| format!("cannot read warm-build receipt: {e}"))?;
+        Ok(report.strip_prefix("SKIP: ").map(|reason| reason.trim().to_string()))
     }
 
     fn artifact(&self) -> Result<PathBuf, String> {
@@ -1509,11 +1882,61 @@ impl Drop for WarmBuildReceipt {
     }
 }
 
+/// A warm build runs BESIDE a serving core by definition, so it yields the CPU to it: the
+/// lowest scheduling priority, inherited by cargo and every rustc it starts. At equal
+/// priority a deploy build on the IntelMac (2026-09-27, ~10 h, load 25 on 12 cores) starved
+/// its CPU-served lane: 34 of 34 generations in an hour failed their prefill bound and the
+/// citizens took no turn (Cormac's read of the captures). Background priority costs the
+/// build nothing on an idle machine and hands the cores to serving on a busy one.
+///
+/// Priority alone did not protect a CPU-served lane (card 682a5abf): nice reorders the run
+/// queue but frees no core, and cargo's default jobs (one per logical CPU) took the cores the
+/// lane decodes on. Beside a CPU-served engine the build also takes ONE job
+/// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
+/// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
+/// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
+fn yield_to_serving(cmd: &mut std::process::Command) {
+    // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
+    // the memory the serving node has left (a lane that fills memory must not stop deploys).
+    let backend = continuum_core::inference::llama_server::installed_engine_backend();
+    let cores = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref());
+    let memory = continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes());
+    let jobs = match (cores, memory) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    if let Some(jobs) = jobs {
+        cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
+    }
+    #[cfg(unix)]
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // setpriority, which is async-signal-safe; it touches no memory of the parent.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
+            libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            // The background band, also on the child itself and inherited.
+            #[cfg(target_os = "macos")]
+            libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
+            Ok(())
+        });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Children of a below-normal process inherit its class by default.
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+    }
+}
+
 async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCore, String> {
     let receipt = WarmBuildReceipt::create()?;
     cmd.env("CONTINUUM_BUILD_ONLY", "1")
         .env("CONTINUUM_BUILD_RECEIPT", &receipt.0)
         .stdin(Stdio::null());
+    yield_to_serving(&mut cmd);
     // Under the deploy consumer there is no terminal: the build's output goes to the
     // consumer's log, or a failing build leaves no reason anywhere (2026-09-19, the
     // 5090's first unattended deploy: 30 minutes of rustc, then nothing to read).
@@ -1576,7 +1999,17 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             candidate.path.display(),
             candidate.build_sha
         );
+        #[cfg(windows)]
+        println!("continuum-install-lease-protocol:1");
         return Ok(());
+    }
+    #[cfg(windows)]
+    let _install_lease = take_install_lease(&PathBuf::from(home_dir()?).join(".continuum"))?;
+    #[cfg(windows)]
+    if let Some(expected) = &options.service_descriptor_sha {
+        PreparedCoreService::query()
+            .await?
+            .validate_description_sha(expected)?;
     }
     let force = options.force;
     let socket = socket_path();
@@ -1585,7 +2018,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // one, it is prepared right after the warm build below — same check, same
     // ordering, the artifact simply comes from the build instead of a hand.
     let mut service = match (options.service, prebuilt.as_ref()) {
-        (true, Some(candidate)) => Some(PreparedCoreService::prepare(candidate, &socket).await?),
+        (true, Some(candidate)) if !options.stage_prebuilt => Some(PreparedCoreService::prepare(candidate, &socket).await?),
         _ => None,
     };
     // Training guard (task #137, Joel's consent-gate doctrine: the denial names
@@ -1722,6 +2155,35 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         .map(|p| p.build_sha.clone())
         .or_else(git_head_short_sha);
     let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
+    // UNATTENDED Windows deploy (card d5584dfc, option (b)): build the pinned engine into the idle
+    // slot and promote `current`, the same unprivileged sequence the bash installer runs, while
+    // the old core still serves. It never re-registers the scheduled task (an elevation nobody is
+    // there to answer), and an engine that does not build never fails the core deploy: the lanes
+    // keep the engine they have. `install` takes the attended path below.
+    #[cfg(windows)]
+    if options.service && !options.require_engine_receipt {
+        match std::env::current_dir() {
+            Ok(repo) => match PreparedCoreService::prepare_engine(&repo).await {
+                Ok(Some((_, engine))) => deploy_note(&format!("▶ verified engine slot promoted ({}); the next core converges its lanes onto it", engine.display())),
+                Ok(None) => {}
+                Err(e) => deploy_note(&format!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has")),
+            },
+            Err(e) => deploy_note(&format!("⚠ engine not updated this deploy (no working directory: {e})")),
+        }
+    }
+    #[cfg(windows)]
+    let prepared_engine = if options.require_engine_receipt {
+        Some(std::env::current_dir().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    let prepared_engine = match prepared_engine {
+        Some(repo) => PreparedCoreService::prepare_engine(&repo)
+            .await?
+            .map(|prepared| (repo, prepared)),
+        None => None,
+    };
     // A failed attempted warm build returns without stopping the serving core.
     // Below the headroom line the existing stop-first path remains available.
     if prebuilt.is_none() {
@@ -1732,7 +2194,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 cmd.arg(&script);
                 apply_core_runtime_env(&mut cmd);
                 if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
-                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
                 }
                 println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
                 prebuilt = Some(prepare_warm_build(cmd).await?);
@@ -1748,13 +2210,13 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 // ("does not select the requested artifact") — measured 2026-09-19
                 // 05:1xZ, the 5090's first unattended deploy: a 1,145 s build, validated,
                 // then refused at the door. Every hand deploy had done this copy by hand.
-                if options.service && service.is_none() {
-                    if let Some(built) = prebuilt.take() {
-                        let staged = PreparedCoreService::stage(&built, &socket).await?;
-                        service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
-                        prebuilt = Some(staged);
-                    }
-                }
+                //
+                // THE COPY ITSELF NOW HAPPENS AFTER THE STOP — see below. It used to run
+                // here, which made the recovery unreachable on exactly the node that needs
+                // it (Astra, 2026-09-22): a core still running from `.prev.exe` occupies
+                // the one parking space, the move-aside fails, and `reboot` returns before
+                // it ever gets to the stop that would have freed the name. You cannot free
+                // a slot a process is executing from; the teardown has to come first.
             }
             Err(why) => {
                 if options.service {
@@ -1769,11 +2231,75 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             }
         }
     }
+    #[cfg(windows)]
+    if let Some((repo, (original, engine))) = &prepared_engine {
+        if PreparedCoreService::query().await?.description != *original {
+            return Err(
+                "installed release changed during preparation; running Core preserved".into(),
+            );
+        }
+        let repo_arg = repo.to_string_lossy().replace('\'', "''");
+        let directory = engine
+            .parent()
+            .ok_or("prepared engine has no directory")?
+            .to_string_lossy()
+            .replace('\'', "''");
+        let drift = PreparedCoreService::powershell(&format!(
+            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo_arg}')"
+        )).await?;
+        if !drift.is_empty() {
+            return Err(format!("prepared engine changed before stop: {drift}"));
+        }
+        let candidate = prebuilt
+            .as_ref()
+            .ok_or("engine handoff requires a verified Core artifact")?;
+        PrebuiltCore::prepare(&candidate.path).await?;
+        // Registration can fail even after Task Scheduler accepted the new engine
+        // (Windows install, 2026-09-28). Do it while the old core is still alive:
+        // Register-CoreServiceRelease validates and registers, but never launches.
+        // An error here must not strand the node after a successful teardown.
+        PreparedCoreService::register_engine(repo, original, engine).await?;
+    }
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
     // running core, and refusing to continue would leave the node down over a module that
     // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
     // exit code carries it.
-    let _ = stop_with(true).await?;
+    // Registration may require consent and must succeed before draining the core.
+    // The unattended consumer cannot manufacture that consent; attended install
+    // converges the launcher contract even when the binary SHA is already current.
+    #[cfg(windows)]
+    if options.require_engine_receipt {
+        // Only install_core sets this flag, after entering the tracked checkout.
+        let repo = std::env::current_dir().map_err(|e| e.to_string())?;
+        PreparedCoreService::browser_release(&repo, false).await?;
+        if service.is_some() {
+            let candidate = prebuilt.as_ref().ok_or("release migration requires a verified core")?;
+            service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
+        }
+    }
+    let _ = stop_with_authority(true, options.operator_present).await?;
+    // NOW the slot is free. Staging writes the artifact the supervisor is bound to and
+    // prepares the handoff; the validation that decides whether the core should have been
+    // stopped at all already happened in `prepare_warm_build` above, so nothing is taken
+    // down for an artifact that was never good. What moved is only the COPY, and only to
+    // the side of the stop where the file it must overwrite is no longer executing.
+    if options.service && service.is_none() {
+        if let Some(built) = prebuilt.take() {
+            let staged = PreparedCoreService::stage(&built, &socket).await?;
+            service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
+            prebuilt = Some(staged);
+        }
+    }
+    #[cfg(windows)]
+    if prepared_engine.is_some() {
+        // A source build is still a Cargo artifact until the staging above. Do
+        // not mark the service prepared before that copy, or it would skip
+        // staging and compare the registered slot against the Cargo path.
+        let candidate = prebuilt
+            .as_ref()
+            .ok_or("engine handoff requires a verified Core artifact")?;
+        service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
+    }
     // Keep the launcher's wait as the honesty check that teardown actually took.
     let source = prebuilt
         .as_ref()
@@ -2162,7 +2688,7 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
                  proceeding with `{verb}`",
                 age_ms / 1000
             );
-            let _ = deploy_claim::clear(&root);
+            let _ = deploy_claim::clear(&root, pid);
             Ok(())
         }
         DeployGate::InProgress {
@@ -2181,27 +2707,87 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
     }
 }
 
+/// The installer's existing Windows exclusion, held through the reboot handoff.
+#[cfg(windows)]
+fn take_install_lease(root: &Path) -> Result<std::fs::File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::create_dir_all(root)
+        .map_err(|e| format!("cannot create install lease directory: {e}"))?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(root.join("install.lock"))
+        .map_err(|e| {
+            format!(
+                "another installer/reboot holds the install lease, or it cannot be acquired: {e}"
+            )
+        })
+}
+
 /// RAII deploy claim: published for the length of a swap, released on EVERY exit path
 /// (Ok, Err, `?`, panic-unwind). A claim that leaked past its deploy would block autostarts
 /// until its owner died, so the release cannot be a line at the end of the happy path.
 struct DeployClaimGuard {
     root: PathBuf,
+    /// This process's pid, the claim's owner: the drop releases only a claim that is still ours.
+    pid: i32,
+    /// Dropping this stops the renewer at once (its wait is a channel receive, not a sleep).
+    stop_renewing: Option<std::sync::mpsc::Sender<()>>,
+    renewer: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DeployClaimGuard {
     /// Best-effort by design: if the claim cannot be written the deploy still proceeds —
     /// losing the guard degrades to the old behaviour (which `deploy-verify` still catches),
     /// whereas refusing to deploy over an unwritable advisory file turns a hint into an outage.
+    ///
+    /// The claim RENEWS while this guard lives (card 2b226917): a thread restamps it every
+    /// `CLAIM_RENEW_EVERY_MS`, so a live deploy's claim never expires on age, however long
+    /// the build takes on a slow node (275 min on the IntelMac, 2026-09-26). A thread, not a
+    /// task: the warm build waits on a blocking `Command::status()` inside this async fn,
+    /// and the renewal must not depend on which runtime worker that blocks.
     fn take(target_sha: &str) -> Option<Self> {
-        use continuum_core::runtime::deploy_claim::{self, DeployClaim};
+        use continuum_core::runtime::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
         let root = continuum_root().ok()?;
+        let pid = std::process::id() as i32;
+        let started = now_ms();
         let claim = DeployClaim {
-            pid: std::process::id() as i32,
-            started_ms: now_ms(),
+            pid,
+            started_ms: started,
             target_sha: target_sha.to_string(),
+            renewed_ms: started,
+            progress_ms: started,
         };
         match deploy_claim::write(&root, &claim) {
-            Ok(()) => Some(Self { root }),
+            Ok(()) => {
+                let (stop_renewing, stopped) = std::sync::mpsc::channel::<()>();
+                let renew_root = root.clone();
+                let renewer = std::thread::Builder::new()
+                    .name("deploy-claim-renewer".into())
+                    .spawn(move || {
+                        // One System for the renewer's life: each refresh's cpu_usage is the
+                        // average since the previous one, i.e. over the whole renewal interval.
+                        let mut sys = sysinfo::System::new();
+                        let _ = deploy_working(&mut sys, pid); // the baseline refresh
+                        loop {
+                            match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    let working = deploy_working(&mut sys, pid);
+                                    if !deploy_claim::renew(&renew_root, pid, now_ms(), working) {
+                                        return; // no longer ours (or unwritable): stop renewing
+                                    }
+                                }
+                                // the guard dropped (Disconnected) or said stop
+                                _ => return,
+                            }
+                        }
+                    })
+                    .ok();
+                Some(Self { root, pid, stop_renewing: Some(stop_renewing), renewer })
+            }
             Err(e) => {
                 eprintln!(
                     "⚠ could not publish a deploy claim ({e}) — a concurrent command could \
@@ -2213,9 +2799,36 @@ impl DeployClaimGuard {
     }
 }
 
+/// Was the deploy working since the previous refresh of `sys`? Its process tree's CPU (the
+/// owner plus every descendant, so the rustc under cargo under this reboot counts), or a
+/// compiler busy anywhere on the host (an owner blocked on the shared cargo lock is waiting on
+/// progress). Card 80ead731.
+fn deploy_working(sys: &mut sysinfo::System, pid: i32) -> bool {
+    use continuum_core::runtime::deploy_claim;
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cpu());
+    let procs: Vec<(i32, Option<i32>, f32)> = sys
+        .processes()
+        .values()
+        .map(|p| (p.pid().as_u32() as i32, p.parent().map(|par| par.as_u32() as i32), p.cpu_usage()))
+        .collect();
+    let host_compilers: f32 = sys
+        .processes()
+        .values()
+        .filter(|p| deploy_claim::is_compiler(&p.name().to_string_lossy()))
+        .map(|p| p.cpu_usage())
+        .sum();
+    deploy_claim::deploy_working(deploy_claim::tree_cpu_percent(pid, &procs), host_compilers)
+}
+
 impl Drop for DeployClaimGuard {
     fn drop(&mut self) {
-        let _ = continuum_core::runtime::deploy_claim::clear(&self.root);
+        // Stop the renewer FIRST, so it cannot restamp a claim this drop is clearing.
+        drop(self.stop_renewing.take());
+        if let Some(renewer) = self.renewer.take() {
+            let _ = renewer.join();
+        }
+        let _ = continuum_core::runtime::deploy_claim::clear(&self.root, self.pid);
     }
 }
 
@@ -2229,6 +2842,13 @@ fn home_dir() -> Result<String, String> {
              (set CONTINUUM_CORE_BIN explicitly)"
                 .to_string()
         })
+}
+
+/// The image this CLI runs from, for `CONTINUUM_SKIP_SELF_BUILD`: the build script skips
+/// the CLI only when this IS the file it would write (a locked running image). "1" when the
+/// OS cannot say — the script's unconditional skip, never a build over a running image.
+fn running_cli_image() -> std::ffi::OsString {
+    std::env::current_exe().map_or_else(|_| "1".into(), PathBuf::into_os_string)
 }
 
 /// Ask an on-disk `continuum-core-server` artifact for its embedded build SHA
@@ -2316,15 +2936,21 @@ fn record_repo_checkout() {
 // 5090 ran whatever a hand last typed — every merged fix sat unfelt on the one seat
 // that mattered (2026-09-18: five hand deploys in a day, Fable's count).
 //
-// This verb IS that consumer, in Rust, run by its own scheduled task
-// (`ContinuumDeploy`, the supervisor's sibling): read the request → nothing owed if
-// the running build already is the tip → refuse a dirty checkout (the same law the
-// tracker's RefuseDirty applies; a consumer that stashes an operator's work is a
-// consumer that loses it) → check the tip out detached → `reboot --service`, whose
-// warm build is RAM-gated (`warm_build_allowed`, Fable's build-path rule) and whose
-// handoff goes to the ContinuumCore supervisor, never a child of this process. The
-// deploy claim it takes is what the tracker's #4187 reconcile reads; `deploy.settled`
-// on this node with no human in the loop is the receipt.
+// This verb IS that consumer, in Rust, on EVERY platform: read the request → nothing
+// owed if the running build already is the tip → refuse a dirty checkout (the same law
+// the tracker's RefuseDirty applies; a consumer that stashes an operator's work is a
+// consumer that loses it) → check the tip out detached → `reboot` (`--service` on
+// Windows, where the handoff goes to the ContinuumCore supervisor, never a child of
+// this process; on macOS a bare reboot hands the launch to a registered launchd job on
+// its own; Linux has no service arm yet), whose warm build is RAM-gated
+// (`warm_build_allowed`, Fable's build-path rule). The deploy claim it takes is what the
+// tracker's #4187 reconcile reads; `deploy.settled` on this node with no human in the
+// loop is the receipt.
+//
+// WHO RUNS IT (2026-09-20): the core's own `DeployActuator` launches it, detached, the
+// moment the tracker records a request — on Windows by firing the `ContinuumDeploy`
+// task (the supervisor's sibling, still on its ten-minute schedule as the fallback), on
+// Unix as a new process group — unless the bash tracker's agent still owns the node.
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct DeployConsumeOptions {}
@@ -2469,6 +3095,75 @@ fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Whether any running `git` might be working on `repo`, judged conservatively: a git whose
+/// cwd is inside the tree, whose command line names the tree (`--git-dir` / `--work-tree`
+/// given from elsewhere), or whose cwd cannot be read at all. Only a git positively seen
+/// working elsewhere is ruled out: an unreadable cwd (permissions, a platform without cwd
+/// inspection) is not evidence of absence (Codex on #4477).
+fn git_running_in(repo: &Path) -> bool {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cwd(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
+    );
+    let canonical = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf()); // unwrap_or_else: an uncanonicalizable root still compares as given
+    let spellings = [repo.to_string_lossy().into_owned(), canonical.to_string_lossy().into_owned()];
+    sys.processes().values().any(|p| {
+        let name = p.name().to_string_lossy();
+        if name != "git" && name != "git.exe" {
+            return false;
+        }
+        let names_repo = p
+            .cmd()
+            .iter()
+            .any(|a| spellings.iter().any(|r| a.to_string_lossy().contains(r.as_str())));
+        match p.cwd() {
+            Some(cwd) => names_repo || cwd.starts_with(&canonical) || cwd.starts_with(repo),
+            None => true, // unreadable: it may be working here
+        }
+    })
+}
+
+/// The deploy tree's `index.lock`, judged and (when stale) removed. `Ok(true)` = the tree
+/// may be deployed; `Ok(false)` = a lock that may be live stands, named in the deploy log,
+/// retried next tick without spending one of the tip's attempts.
+fn settle_index_lock(repo: &Path) -> Result<bool, String> {
+    use continuum_core::runtime::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
+    let rel = git_in(repo, &["rev-parse", "--git-path", "index.lock"])?;
+    let lock = repo.join(rel);
+    let age = std::fs::metadata(&lock)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| t.elapsed().unwrap_or_default()); // unwrap_or_default: an mtime in the future reads as brand new, never as stale
+    match index_lock_verdict(age, age.is_some() && git_running_in(repo)) {
+        IndexLock::Absent => Ok(true),
+        IndexLock::Held => {
+            deploy_note(&format!(
+                "deploy-consume: {} is locked ({} s old, a git operation may hold it) — not deploying this tick; \
+                 it is removed once it is {} s old with no git running in the tree",
+                lock.display(),
+                age.unwrap_or_default().as_secs(), // unwrap_or_default: Held always carries an age
+                STALE_INDEX_LOCK.as_secs()
+            ));
+            Ok(false)
+        }
+        IndexLock::Stale => {
+            std::fs::remove_file(&lock)
+                .map_err(|e| format!("deploy-consume: cannot remove stale {}: {e}", lock.display()))?;
+            deploy_note(&format!(
+                "deploy.tree.stale_lock_cleared: removed {} ({} s old, no git running in the tree) — a git process died mid-write",
+                lock.display(),
+                age.unwrap_or_default().as_secs() // unwrap_or_default: Stale always carries an age
+            ));
+            Ok(true)
+        }
+    }
 }
 
 async fn running_build_sha() -> Option<String> {
@@ -2650,8 +3345,25 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     // checkout from the working directory, as the consumer does before it.
     std::env::set_current_dir(&repo).map_err(|e| format!("install: cannot enter {}: {e}", repo.display()))?;
     let running = running_build_sha().await;
+    #[cfg(windows)]
+    let engine_drift = PreparedCoreService::engine_drift(&repo).await?;
+    #[cfg(not(windows))]
+    let engine_drift = String::new();
+    if !engine_drift.is_empty() {
+        println!("  engine: {engine_drift}");
+    }
+    #[cfg(windows)]
+    let browser_drift = PreparedCoreService::browser_release(&repo, true).await?;
+    #[cfg(not(windows))]
+    let browser_drift = String::new();
+    if !browser_drift.is_empty() {
+        println!("  browser release: {browser_drift}");
+    }
     match running.as_deref() {
-        Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
+        Some(r)
+            if continuum_core::runtime::deploy_tracker::same_commit(r, &head)
+                && engine_drift.is_empty() && browser_drift.is_empty() =>
+        {
             println!("✓ core: converged — running build {r} is HEAD");
             return Ok(ArmReport::converged());
         }
@@ -2665,7 +3377,67 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     // Windows hands the built core to the prepared task. macOS `reboot` implies the
     // supervisor when a launchd job exists (stage + kickstart) and builds direct when
     // none does — the same idempotent answer either way.
-    reboot(RebootOptions { service: cfg!(windows), ..Default::default() }).await?;
+    // `install` is a command a human typed, so it may spend ONE consent to borrow the
+    // teardown privilege when this caller has none over the running core — the whole
+    // reason the node in front of us cannot be replaced. Same command every time; the
+    // escalation is inside it, never a second verb the user has to discover.
+    #[cfg(windows)]
+    let prepared = prepared_install_core(&repo, &head).await?;
+    #[cfg(windows)]
+    let stage_prebuilt = prepared.is_some();
+    #[cfg(not(windows))]
+    let stage_prebuilt = false;
+    #[cfg(windows)]
+    let prebuilt = if prepared.is_some() {
+        prepared
+    } else if running
+        .as_deref()
+        .is_some_and(|r| continuum_core::runtime::deploy_tracker::same_commit(r, &head))
+    {
+        let task = PreparedCoreService::query().await?;
+        let release: CoreServiceDescription =
+            serde_json::from_str(&task.description).map_err(|e| e.to_string())?;
+        // Reuse the installed core only when the slot's CLI is from the same commit. A CLI
+        // that is older, or cannot say what it is, is not a reason to stop: it is drift the
+        // build path below converges (it rebuilds the CLI and stages the pair together).
+        match binary_build_sha(Path::new(&release.cli)).await {
+            Ok(cli_sha) if continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) => {
+                Some(PathBuf::from(release.artifact))
+            }
+            Ok(cli_sha) => {
+                println!("  core: the slot's CLI is build {cli_sha}, HEAD is {head} — rebuilding the pair");
+                None
+            }
+            Err(e) => {
+                println!("  core: the slot's CLI cannot state its build ({e}) — rebuilding the pair");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
+    let prebuilt = None;
+    let options = RebootOptions {
+        service: cfg!(windows),
+        operator_present: true,
+        stage_prebuilt,
+        prebuilt,
+        ..Default::default()
+    };
+    #[cfg(windows)]
+    let options = RebootOptions {
+        require_engine_receipt: true,
+        ..options
+    };
+    reboot(options).await?;
+    #[cfg(windows)]
+    {
+        let drift = PreparedCoreService::engine_drift(&repo).await?;
+        if !drift.is_empty() {
+            return Err(format!("install: engine handoff did not converge: {drift}"));
+        }
+    }
     let now = running_build_sha().await;
     match now.as_deref() {
         Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
@@ -2676,6 +3448,35 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
             "install: the handoff ran but the running core reports {} against HEAD {head}",
             other.unwrap_or("nothing") // unwrap_or: None = no core answering, reported as such — never a sha
         )),
+    }
+}
+
+/// An install retry can reuse the verified pair in the configured Cargo release directory. Never
+/// discover an arbitrary installed binary or silently replace uncommitted work.
+#[cfg(windows)]
+async fn prepared_install_core(repo: &Path, head: &str) -> Result<Option<PathBuf>, String> {
+    if !git_in(repo, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty() {
+        return Ok(None);
+    }
+    let target = match std::env::var("CARGO_TARGET_DIR") {
+        Ok(target) => target,
+        Err(_) => format!("{}/.continuum/cache/cargo-target", home_dir()?),
+    };
+    let cli = Path::new(&target).join("release/continuum.exe");
+    let Ok(cli_sha) = binary_build_sha(&cli).await else { return Ok(None) };
+    if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, head) {
+        return Ok(None);
+    }
+    let Some(dir) = cli.parent() else { return Ok(None) };
+    let artifact = dir.join("continuum-core-server.exe");
+    // A missing/stale candidate falls back to the normal build. The existing
+    // reboot path revalidates the selected artifact and owns claim/staging/drain.
+    match PrebuiltCore::prepare(&artifact).await {
+        Ok(candidate) => {
+            println!("  core: reusing prepared build {} beside {}", candidate.build_sha, cli.display());
+            Ok(Some(candidate.path))
+        }
+        Err(_) => Ok(None),
     }
 }
 
@@ -2994,13 +3795,14 @@ fn deploy_note(line: &str) {
     }
 }
 
+/// Whether the consumer's reboot goes through `--service`: only Windows needs the flag
+/// (the supervisor handoff); macOS promotes a bare reboot to its launchd job itself, and
+/// `reboot` refuses `--service` everywhere else. Pure over the OS name.
+fn consumer_uses_service(os: &str) -> bool {
+    os == "windows"
+}
+
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
-    if !cfg!(windows) {
-        return Err(
-            "deploy-consume is the Windows consumer; the Macs' launchd tracker owns this there"
-                .to_string(),
-        );
-    }
     let DeployConsumeOptions {} = options;
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
@@ -3014,12 +3816,28 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     let tip = read_deploy_request_tip(&request_path);
     let running = running_build_sha().await;
     let repo = tracked_repo_dir()?;
-    let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
-    // The deploy claim is the tracker's own input (`deploy_claim::in_flight`): a live
-    // owner under the ceiling blocks; an abandoned claim is swept by `reboot` itself.
-    let build_in_flight = continuum_root()
-        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()).blocks())
-        .unwrap_or(false); // unwrap_or: no root = no claim file = nothing in flight
+    // Submodule pointers are not an operator's work here: aligning them to the tip's gitlinks
+    // is this consumer's own job (below), and counting a stale one as dirt wedged the node
+    // after the first pin bump (2026-09-27: every later tip refused as "uncommitted work").
+    let dirty = !git_in(&repo, &["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"])?.is_empty();
+    // The deploy claim is the tracker's own input (`deploy_claim::in_flight`). A LIVE owner
+    // excludes this consumer whether or not its claim expired: its checkout is its own, and
+    // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
+    // claim is swept (by `reboot` itself).
+    let gate = continuum_root()
+        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()))
+        .ok(); // no root = no claim file = nothing in flight
+    if let Some(continuum_core::runtime::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
+        .as_ref()
+        .filter(|g| g.excludes_deploy())
+    {
+        deploy_note(&format!(
+            "deploy owner pid {pid} is alive but made no progress ({}s old): not checking out under \
+             it. Sample it (`sample {pid}`), then stop it, to release the deploy tree.",
+            age_ms / 1000
+        ));
+    }
+    let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
     let prior_failures = tip
         .as_deref()
@@ -3051,23 +3869,40 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         )),
         ConsumeVerdict::Deploy => {
             let tip = tip.unwrap_or_default(); // unwrap_or_default: Deploy is only returned with a tip present
+            // A lock left by a git that died mid-write refused every checkout for hours and
+            // spent the tip's attempts (card 677437fa). Judge it before the attempt: a stale
+            // one is cleared with a receipt, a possibly-live one is named and waited on.
+            if !settle_index_lock(&repo)? {
+                return Ok(());
+            }
             let attempt = async {
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
+                // A checkout moves gitlinks, not submodule trees. Without this the llama.cpp
+                // pin moved in the index while the engine source stayed at the old commit
+                // (2026-09-27, #4437: the core deployed, core/vendor/llama.cpp stayed at
+                // 965d38a90). Initialized submodules only, so a deploy never starts a fresh
+                // clone; a submodule with local changes fails this loudly instead of losing them.
+                git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
                 // The warm build locates tools/scripts/start-server.sh by walking UP FROM
                 // THE CWD, and a scheduled task starts in System32 — the same wall the
                 // Macs' launchd tracker hit ("under launchd the cwd is /; continuum reboot
                 // then finds no source"). The consumer knows the repo; it stands in it.
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
-                deploy_note(&format!("▶ deploy-consume: {} at {tip} — reboot --service", repo.display()));
-                reboot(RebootOptions { service: true, ..Default::default() }).await
+                let service = consumer_uses_service(std::env::consts::OS);
+                deploy_note(&format!(
+                    "▶ deploy-consume: {} at {tip} — reboot{}",
+                    repo.display(),
+                    if service { " --service" } else { "" }
+                ));
+                reboot(RebootOptions { service, ..Default::default() }).await
             }
             .await;
             match &attempt {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&attempts_path);
-                    deploy_note(&format!("✓ deploy-consume: {tip} handed to the supervisor"));
+                    deploy_note(&format!("✓ deploy-consume: {tip} handed off"));
                 }
                 Err(why) => {
                     write_consume_failures(&attempts_path, &tip, prior_failures + 1);
@@ -3621,21 +4456,30 @@ fn kill_pid_tree(pid: i32) {
     }
     #[cfg(windows)]
     {
-        let _ = WindowsKill::Tree(pid).command().output();
+        let _ = KillStep::Tree(pid).command().output();
     }
 }
 
-/// The distinction matters before the OS sees a kill: `/T` on a core also
-/// terminates its warm gateway, even if a later orphan sweep excludes that lane.
-#[cfg(any(windows, test))]
+/// One step of a kill plan. The distinction matters before the OS sees a kill: a
+/// TREE kill on a core also terminates its warm gateway, even if a later orphan sweep
+/// excludes that lane. Windows: `taskkill /T` vs `/PID`. Unix: the process GROUP vs the
+/// pid alone — and that arm is the one that rotted: until 2026-09-20 the Unix executor
+/// discarded `keep` (`let _ = keep;`) and sent every root a group kill, so the live
+/// llama-server — a plain child in the core's group, no `setsid` of its own — took the
+/// SIGTERM at the old core's stop on every reboot, eleven lines before "leaving serving
+/// lane(s) up for adoption" printed over it (M5 20:58:22Z pid 61259 RemovedDead 19 s
+/// later; the IntelMac's adoptee answered `/v1/models` while exiting and failed the
+/// decode probe). Every deploy was a cold prefill for every seated mind (card 59052747).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WindowsKill {
+enum KillStep {
+    /// This pid alone — its children are visited by the plan, the protected one spared.
     Process(i32),
+    /// This pid and everything under it — no protected lane in this branch.
     Tree(i32),
 }
 
-#[cfg(any(windows, test))]
-impl WindowsKill {
+impl KillStep {
+    #[cfg(any(windows, test))]
     fn command(self) -> std::process::Command {
         let mut cmd = std::process::Command::new("taskkill");
         cmd.arg("/F");
@@ -3649,16 +4493,40 @@ impl WindowsKill {
         cmd.args(["/PID", &pid.to_string()]);
         cmd
     }
+
+    #[cfg(unix)]
+    fn execute(self) {
+        match self {
+            Self::Tree(pid) => kill_pid_tree(pid),
+            Self::Process(pid) => kill_pid_alone(pid),
+        }
+    }
+}
+
+/// Unix: TERM this pid ONLY — never its group — with the same 3 s deadline then KILL as
+/// [`kill_pid_tree`]. The step a plan takes on an ancestor of a protected lane.
+#[cfg(unix)]
+fn kill_pid_alone(pid: i32) {
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if libc::kill(pid, 0) != 0 {
+                return;
+            }
+        }
+        libc::kill(pid, libc::SIGKILL);
+    }
 }
 
 /// Split only the branches containing a verified live lane. All other branches
 /// remain tree kills, so new eye/browser children are still owned by the reap.
-#[cfg(any(windows, test))]
-fn windows_kill_plan(
+/// PURE over a parent map, so both platforms execute the SAME plan.
+fn kill_plan(
     roots: &[i32],
     parents: &std::collections::HashMap<i32, i32>,
     keep: &[i32],
-) -> Vec<WindowsKill> {
+) -> Vec<KillStep> {
     let mut plan = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut pending = Vec::new();
@@ -3681,12 +4549,12 @@ fn windows_kill_plan(
                 .iter()
                 .any(|lane| descends_from(parents, *lane, &[pid]))
             {
-                plan.push(WindowsKill::Tree(pid));
+                plan.push(KillStep::Tree(pid));
                 continue;
             }
             // Stop the ancestor spawning more workers, then reap its unprotected
             // children. Killing its whole tree would cross the keep set.
-            plan.push(WindowsKill::Process(pid));
+            plan.push(KillStep::Process(pid));
             pending.extend(
                 parents
                     .iter()
@@ -3695,6 +4563,25 @@ fn windows_kill_plan(
         }
     }
     plan
+}
+
+/// THE REAPER IS NEVER IN ITS OWN PLAN. The deploy consumer is a CHILD of the core it
+/// stops — the actuator spawns `continuum deploy-consume` from the running core (in its
+/// own process group, but parentage is parentage) — so on a reboot the core's tree
+/// contains the very process walking it. Whether that process survives came down to a
+/// race: if the graceful stop had already taken the core out of the process table when
+/// sysinfo refreshed, the consumer read as init's and was untouched (IntelMac 05:16Z,
+/// staged + kickstarted + verified); if the core was still draining (4 turns in flight),
+/// the consumer read as its child, `Tree(core)` reaped it mid-handoff, and the node had
+/// no core for 40 minutes because the kickstart it owed was never issued (IntelMac
+/// 11:20Z, card 3ef0986c — the launchd `KeepAlive={Crashed}` policy correctly declines
+/// to relaunch a clean stop). Adding ourselves to the keep set gives every ancestor of
+/// the reaper a `Process` step instead of a `Tree` one — the same protection a live
+/// lane gets — so the core still dies and the hand that stops it keeps its grip.
+fn keep_with_self(keep: &[i32]) -> Vec<i32> {
+    let mut with_self = keep.to_vec();
+    with_self.push(std::process::id() as i32);
+    with_self
 }
 
 fn process_parents(sys: &sysinfo::System) -> std::collections::HashMap<i32, i32> {
@@ -3708,26 +4595,21 @@ fn process_parents(sys: &sysinfo::System) -> std::collections::HashMap<i32, i32>
 }
 
 fn kill_pid_trees_preserving(roots: &[i32], keep: &[i32]) {
-    #[cfg(windows)]
-    {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        let parents = process_parents(&sys);
-        for kill in windows_kill_plan(roots, &parents, keep) {
-            let _ = kill.command().output();
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let parents = process_parents(&sys);
+    for step in kill_plan(roots, &parents, &keep_with_self(keep)) {
+        #[cfg(windows)]
+        {
+            let _ = step.command().output();
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = keep;
-        for &pid in roots {
-            kill_pid_tree(pid);
-        }
+        #[cfg(unix)]
+        step.execute();
     }
 }
 
@@ -4108,7 +4990,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
             // Say it out loud. A skipped build that looks like a completed one is how
             // stale binaries survive a "successful" deploy — #194, one tier up.
             eprintln!("▶ {reason}");
-            cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+            cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
         }
     }
     cmd.env("CONTINUUM_CORE_SOCKET", &socket);
@@ -4333,6 +5215,9 @@ fn start_log_report(logfile: &str) -> String {
 const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// What the graceful request achieved, if anything.
+// Debug: the elevated child has no console an operator can read — its only voice is the
+// receipt file it writes beside the plan, and the drain's outcome has to reach that.
+#[derive(Debug)]
 enum GracefulStop {
     /// The core ran the broadcast and every module's state reached disk.
     Durable(String),
@@ -4386,7 +5271,189 @@ impl GracefulStop {
 ///
 /// The request travels the same socket path `ping` uses, so there is no new transport and
 /// no Windows-specific arrangement.
-async fn request_graceful_stop() -> GracefulStop {
+/// Whether a drain may BEGIN, given whether this caller can actually tear the core
+/// down afterwards. Pure so the rule is testable without an OS.
+///
+/// `system/shutdown.rs` deliberately leaves the process alive after its durable
+/// receipt — the CLI owns teardown, so a drain whose teardown will be refused
+/// strands a drained core still answering ping. Measured 2026-09-22 on Astra's
+/// node: `OpenProcess(25040, TERMINATE)` returned NULL with Win32 error 5, and the
+/// drain had already run.
+fn may_begin_shutdown(authority: Result<(), String>) -> Result<(), String> {
+    authority.map_err(|why| {
+        format!(
+            "refusing to DRAIN a core this caller cannot then tear down ({why}). \
+             The drain is not reversible: system/shutdown leaves the process alive \
+             for the CLI to end, so draining without teardown authority leaves a \
+             drained core still answering ping. No state was touched — run \
+             `continuum install` at this machine, which may spend one consent to \
+             borrow the privilege this caller does not hold"
+        )
+    })
+}
+
+/// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the
+/// OS answered.
+#[cfg(windows)]
+fn teardown_authority(pid: i32) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
+    // SAFETY: OpenProcess is a read-only capability query here; the handle is closed
+    // immediately and nothing is terminated by this call.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+    if handle.is_null() {
+        let err = std::io::Error::last_os_error();
+        // ABSENCE IS NOT REFUSAL, and Windows spells absence differently from unix: a
+        // pid that is not in the table answers ERROR_INVALID_PARAMETER here where unix
+        // answers ESRCH. Reading it as "no authority" would abandon every stop whose
+        // pidfile is merely stale — which is most of them (Astra, 2026-09-22).
+        if err.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            return Ok(());
+        }
+        return Err(format!("OpenProcess(pid {pid}, PROCESS_TERMINATE) failed: {err}"));
+    }
+    // SAFETY: handle came from a successful OpenProcess above and is closed once.
+    unsafe { CloseHandle(handle) };
+    Ok(())
+}
+
+#[cfg(unix)]
+fn teardown_authority(pid: i32) -> Result<(), String> {
+    // SAFETY: signal 0 performs the permission and existence check WITHOUT delivering
+    // a signal — the standard capability probe.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EPERM) => Err(format!("signal 0 to pid {pid} refused: {err}")),
+        // ESRCH = already gone: nothing to tear down, so nothing to refuse.
+        _ => Ok(()),
+    }
+}
+
+/// The DIRECTORY the supervisor was told to run the core out of — the parent of the
+/// `artifact` field in the `ContinuumCore` descriptor.
+///
+/// A directory and not the file, because a caller that cannot open the process cannot
+/// ask the OS which image it is executing (that is the whole reason it is escalating),
+/// and the descriptor's file name is routinely NOT that image: after a staging swap the
+/// descriptor names the new slot while the surviving core runs from the renamed
+/// predecessor beside it. The child proves the rest through its own handle.
+#[cfg(windows)]
+async fn installed_core_dir() -> Result<String, String> {
+    let task = PreparedCoreService::query().await?;
+    let description: CoreServiceDescription = serde_json::from_str(&task.description)
+        .map_err(|e| format!("the {} task's descriptor is unreadable ({e}); rerun the installer before escalating", supervisor_install::CORE_TASK))?;
+    Path::new(&description.artifact)
+        .parent()
+        .map(|d| d.display().to_string())
+        .ok_or_else(|| format!("the installed artifact {} has no directory", description.artifact))
+}
+
+/// The core pid the pidfile CLAIMS. `None` means no pidfile, or one that names nothing
+/// parseable.
+fn core_pid_for_teardown() -> Option<i32> {
+    std::fs::read_to_string(pidfile_for(&socket_path()))
+        .ok()
+        .and_then(|c| c.trim().parse::<i32>().ok())
+}
+
+/// Every core this stop would have to end.
+///
+/// THE PIDFILE IS NOT SUFFICIENT, and on the node this rail exists for it is already
+/// gone: the old `stop` removed it whether or not the kill took, so the file is absent
+/// while the process still answers ping (Astra, 2026-09-22). Preflighting only the
+/// pidfile would then find nothing to check, pass, and drain a core it cannot end —
+/// the exact failure the preflight is for. The process table is the second source, and
+/// the one that cannot be deleted by a previous mistake.
+fn cores_to_tear_down() -> Vec<i32> {
+    let mut pids: Vec<i32> = core_pid_for_teardown().into_iter().collect();
+    for pid in running_core_pids() {
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+/// Proof that the teardown authority was preflighted.
+///
+/// `request_graceful_stop` takes one, so the drain is not REACHABLE without the check:
+/// deleting the preflight does not weaken a test, it stops compiling. That is the
+/// answer to "a removed preflight call still passes all three" (Astra, 2026-09-22) —
+/// an ordering this load-bearing belongs to the type system, not to a test that has to
+/// remember to look for it.
+struct MayDrain {
+    /// The core whose teardown privilege must be BORROWED after the drain. `None` =
+    /// this caller can end every core itself.
+    borrow_authority_for: Option<i32>,
+}
+
+impl MayDrain {
+    /// The drain is authorised because a TERMINATE handle for the target is HELD OPEN
+    /// across it — capability, not intent (Astra, 2026-09-22: "operator_present is
+    /// intent, not capability"). Only the elevated child can build one of these, and
+    /// only while it is holding the handle it will terminate with.
+    #[cfg(windows)]
+    fn proven_by_held_handle() -> Self {
+        Self { borrow_authority_for: None }
+    }
+}
+
+/// The preflight decision, pure over what the OS answered.
+///
+/// A refusal with no operator present is final and returns before anything is drained.
+/// When the operator is present — `continuum install`, a command a human typed — the
+/// un-endable core is carried forward to have its teardown privilege borrowed instead.
+fn preflight_teardown(
+    pids: &[i32],
+    operator_present: bool,
+    authority: impl Fn(i32) -> Result<(), String>,
+) -> Result<MayDrain, String> {
+    for pid in pids {
+        let Err(why) = authority(*pid) else { continue };
+        if operator_present {
+            eprintln!(
+                "▶ no teardown authority over pid {pid} ({why}); one consent will be asked for after the drain"
+            );
+            return Ok(MayDrain { borrow_authority_for: Some(*pid) });
+        }
+        // Err by construction — `may_begin_shutdown` only dresses an Err in the reason
+        // the drain is being refused. The `map` is how that flows out as this signature.
+        return may_begin_shutdown(Err(why)).map(|()| MayDrain { borrow_authority_for: None });
+    }
+    Ok(MayDrain { borrow_authority_for: None })
+}
+
+/// How long a core gets to leave the process table after being asked to stop and
+/// then killed.
+const TEARDOWN_EXIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Wait, bounded, for `pid` to leave the process table.
+///
+/// NOT an immediate `pid_alive` after the kill: SIGTERM and taskkill are both
+/// asynchronous, so a perfectly healthy core is still in the table on the very next
+/// line, and an immediate probe would manufacture "the kill was refused" on every
+/// ordinary stop (Astra, 2026-09-22). Only failing to go within the deadline is
+/// evidence of anything.
+async fn exited_within(pid: i32, deadline: Duration) -> Result<(), String> {
+    let until = std::time::Instant::now() + deadline;
+    while pid_alive(pid) {
+        if std::time::Instant::now() >= until {
+            return Err(format!(
+                "core pid {pid} is still running {}s after being asked to stop and then \
+                 killed; its pidfile is left in place because the process it names still \
+                 exists, and no handoff is issued over a core that did not go",
+                deadline.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Ok(())
+}
+
+async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulStop {
     // Ask whether anything is listening BEFORE spending the stop budget on a socket
     // nobody holds. Without this, `stop` on an already-stopped node waits the full
     // graceful budget and then reports state loss — 20 seconds to be told, wrongly, that
@@ -4501,7 +5568,38 @@ async fn request_graceful_stop() -> GracefulStop {
     }
 }
 
-async fn stop() -> Result<(), String> {
+async fn stop(options: StopOptions) -> Result<(), String> {
+    // The consented child does ONE thing and returns; it never drains, never sweeps,
+    // never asks for a second consent. Everything it is allowed to do is decided by the
+    // digest on its own argv.
+    if options.elevated {
+        let (plan, sha) = match (&options.plan, &options.plan_sha) {
+            (Some(p), Some(s)) => (p.clone(), s.clone()),
+            // Unreachable: StopOptions::parse binds the three together. Stated as a
+            // refusal rather than an unwrap so the invariant fails loud if that changes.
+            _ => return Err("stop --elevated: no bound plan".to_string()),
+        };
+        #[cfg(windows)]
+        {
+            // The drain is supplied BY THE ROOT, which is where the socket and the
+            // `MayDrain` gate live — the module stays a leaf and the token stays where it
+            // can only be built by a preflight or by a held handle.
+            return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
+                format!(
+                    "{:?}",
+                    request_graceful_stop(&MayDrain::proven_by_held_handle()).await
+                )
+            })
+            .await;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (plan, sha);
+            return Err("stop --elevated is the Windows consent child; this platform's \
+                        teardown needs no borrowed privilege"
+                .to_string());
+        }
+    }
     // The operator verb answers with its EXIT CODE. `stop` returning 0 has meant only
     // "the process is gone"; it now means "the process is gone AND every module's state
     // reached disk", which is the question anyone typing `stop` before an upgrade is
@@ -4537,13 +5635,118 @@ async fn stop() -> Result<(), String> {
 /// that first"). The standalone `stop` verb keeps FULL teardown — an operator
 /// who says stop means everything.
 async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
+    // Unattended callers — the deploy consumer above all — NEVER escalate:
+    // a consent prompt needs a human at the machine, and one raised from the supervisor
+    // would hang the consumer on a dialog nobody can see until the consent times out.
+    stop_with_authority(keep_lanes, false).await
+}
+
+/// Discover receipt-acknowledged exit without beginning shutdown.
+async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::commands::system::shutdown::ShutdownTarget>, String> {
+    use continuum_core::commands::system::shutdown::ShutdownTarget;
+    let conn = connection();
+    let cmds = conn.commands();
+    let reply = tokio::time::timeout(Duration::from_secs(3), cmds.execute_value("system/shutdown-target", serde_json::json!({}))).await;
+    // Capability discovery does not drain. An older/unreachable core still goes
+    // through the existing terminate-authority preflight, never a guessed grant.
+    let Ok(Ok(value)) = reply else { return Ok(None) };
+    let target: ShutdownTarget = serde_json::from_value(value) // Decode the core process identity received over lifecycle IPC.
+        .map_err(|e| format!("invalid shutdown capability: {e}"))?;
+    if target.pid > i32::MAX as u32 || target.instance.is_empty() {
+        return Err("invalid shutdown process identity".into());
+    }
+    Ok((pids == [target.pid as i32]).then_some(target))
+}
+
+async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget) -> Result<GracefulStop, String> {
+    use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
+    let conn = connection();
+    let cmds = conn.commands();
+    let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
+        cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
+        .await.map_err(|_| "bound shutdown is still running; no exit acknowledgment sent".to_string())?
+        .map_err(|e| format!("bound shutdown failed; no exit acknowledgment sent: {e}"))?;
+    let result: ShutdownResult = serde_json::from_value(drain) // Decode the completed save receipt returned over lifecycle IPC.
+        .map_err(|e| format!("invalid shutdown receipt; no exit acknowledgment sent: {e}"))?;
+    // We HAVE the receipt before sending commit. A successful commit has no RPC
+    // reply: the core closes its own process, and OS exit is the completion proof.
+    let graceful = if result.receipt.state_is_durable() {
+        GracefulStop::Durable(result.receipt.summary())
+    } else {
+        GracefulStop::Incomplete(result.receipt.summary())
+    };
+    let pid = target.pid as i32;
+    let commit = ShutdownCommitParams {
+        target,
+        receipt_sha256: continuum_core::commands::system::shutdown::shutdown_receipt_digest(&result.receipt)
+            .map_err(|e| e.to_string())?,
+    };
+    let reply = tokio::time::timeout(TEARDOWN_EXIT_DEADLINE,
+        cmds.execute_value("system/shutdown-commit", serde_json::to_value(commit).map_err(|e| e.to_string())?)).await; // Encode the receipt acknowledgment for lifecycle IPC.
+    exited_within(pid, TEARDOWN_EXIT_DEADLINE).await.map_err(|why| {
+        format!("acknowledged shutdown did not exit: {why}; commit result: {reply:?}")
+    })?;
+    let evidence = core_process_evidence()
+        .map_err(|e| format!("cannot verify processes after acknowledged exit: {e}"))?;
+    if !evidence.core_pids.is_empty() {
+        return Err("another core is present after acknowledged exit; refusing replacement teardown".into());
+    }
+    Ok(graceful)
+}
+
+/// `stop_with`, plus whether the operator can answer a required consent prompt.
+async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
     // report what reached disk. The kill still runs afterwards either way: a core that
     // answered is already exiting and the sweep finds nothing, and a core that did not
     // answer still has to go. What changes is that the operator is told which of those
     // happened instead of reading the same success line for both.
-    let graceful = request_graceful_stop().await;
+    // PREFLIGHT THE TEARDOWN AUTHORITY BEFORE THE DRAIN (Astra, 2026-09-22): the
+    // drain is one-way, so a caller that cannot end the process must refuse here
+    // rather than leave a drained core answering ping.
+    // For older cores, any missing privilege must be obtained BEFORE the drain.
+    // New Windows cores can exit after the CLI receives their save receipt.
+    // Older builds and multi-core recovery keep the OS-capability/UAC path.
+    let pids = cores_to_tear_down();
+    let target = if cfg!(windows) && keep_lanes {
+        probe_shutdown_target(&pids).await?
+    } else {
+        None
+    };
+    let self_exited = target.as_ref().map(|target| target.pid as i32);
+    let graceful = if let Some(target) = target {
+        commit_graceful_shutdown(target).await?
+    } else {
+        let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
+        // BORROW THE PRIVILEGE BEFORE ANYTHING IS DRAINED, not after. `operator_present` is
+        // INTENT; a consent can still be declined, time out, or land on a token that does not
+        // hold the privilege either — and a drain already spent by then leaves exactly the
+        // stranded core this preflight exists to prevent (Astra, 2026-09-22). The consented
+        // child therefore owns both halves for its target: it holds a TERMINATE handle open
+        // ACROSS its own drain, so every acquisition failure lands BEFORE the drain. The
+        // terminate itself can still fail and is still reported — a held handle narrows the
+        // window, it does not abolish it. When this returns Ok the core is already down and
+        // the request below finds nothing listening, which is the correct reading of that.
+        if let Some(pid) = may_drain.borrow_authority_for {
+            #[cfg(windows)]
+            {
+                let install_dir = installed_core_dir().await?;
+                elevated_teardown::request_elevated_teardown(pid, &install_dir).await?;
+                // Gone is proven the same way every other teardown proves it: the bounded
+                // deadline, never a probe on the next line (Astra, 2026-09-22).
+                exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
+            }
+            #[cfg(not(windows))]
+            {
+                return Err(format!(
+                    "install: no teardown authority over pid {pid}, and this platform has no \
+                     consent boundary to borrow one through — the core runs as another user"
+                ));
+            }
+        }
+        request_graceful_stop(&may_drain).await
+    };
     // `keep_lanes` IS the reboot flag — see this function's doc: "`keep_lanes: true` is the
     // REBOOT path". Named `reboot` on the guard because that is the property it reasons about,
     // and passed `keep_lanes` because today the two callers are exactly reboot(true)/stop(false).
@@ -4582,12 +5785,32 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
 
     let mut pidfile_core: Option<i32> = None;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
-        if let Ok(pid) = contents.trim().parse::<i32>() {
-            kill_pid_trees_preserving(&[pid], &keep);
-            pidfile_core = Some(pid);
-            println!("stopping core (pid {pid})");
+        match contents.trim().parse::<i32>() {
+            Ok(pid) => {
+                if let Some(exited) = self_exited {
+                    if pid != exited {
+                        return Err("core PID changed after acknowledged exit; refusing to kill the replacement".into());
+                    }
+                } else {
+                    kill_pid_trees_preserving(&[pid], &keep);
+                }
+                println!("stopping core (pid {pid})");
+                // A PIDFILE IS A CLAIM THAT A PROCESS EXISTS. Removing it while the
+                // process exists is what makes every later reader wrong: the sweep
+                // below excludes the pid as handled, the handoff proceeds, and the
+                // only place the truth surfaced was a timeout blaming a slow exit.
+                // So the removal is now CONDITIONAL on the exit being observed, and a
+                // core that did not go aborts the stop with its pid still claimed.
+                exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
+                pidfile_core = Some(pid);
+                let _ = std::fs::remove_file(&pidfile);
+            }
+            // A pidfile that parses to nothing names no process, so nothing can
+            // survive it — it is stale by construction and safe to clear.
+            Err(_) => {
+                let _ = std::fs::remove_file(&pidfile);
+            }
         }
-        let _ = std::fs::remove_file(&pidfile);
     }
     let stopped = pidfile_core.is_some();
 
@@ -4624,6 +5847,9 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
         .filter(|pid| Some(*pid) != pidfile_core)
         .filter(|pid| pid_alive(*pid))
         .collect();
+    if self_exited.is_some() && !survivors.is_empty() {
+        return Err("a core appeared after acknowledged exit; refusing replacement teardown".into());
+    }
     if survivors.is_empty() {
         if !stopped {
             println!("no running core found");
@@ -4683,9 +5909,11 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
         return Ok(graceful);
     }
+    let mut unconfirmed_lanes = Vec::new();
     for outcome in continuum_core::inference::lane_registry::sweep_all() {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
+            S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(pid),
             S::ReapedLive { pid, port } => {
                 println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
             }
@@ -4706,6 +5934,9 @@ async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
         }
     }
 
+    if !unconfirmed_lanes.is_empty() {
+        return Err(format!("serving lane exit not confirmed for {unconfirmed_lanes:?}; ownership records retained, retry stop after resolving termination authority"));
+    }
     let _ = std::fs::remove_file(&socket);
     Ok(graceful)
 }
@@ -4855,13 +6086,31 @@ async fn desktop_answering() -> bool {
 /// must never have to know a port (Joel, 2026-09-05: "remembering port is
 /// bush league") — the CLI says the address, and `uu desktop` opens it.
 async fn desktop_receipt_line() -> String {
-    if desktop_answering().await {
-        format!("🖥  desktop: {}   (`uu desktop` opens it)", desktop_url())
+    // Configured = the core can find a dist: `CONTINUUM_UI_DIST` in this environment
+    // (a direct launch) or pinned in config.env (the file the core applies to itself on
+    // every boot — the only route to a supervised core). Without it, "lands in the
+    // background" was a promise nothing kept: the M5 printed it on eight consecutive
+    // deploys (2026-09-26) while the core booted `desktop.dm.unconfigured` each time.
+    let configured = std::env::var("CONTINUUM_UI_DIST").ok().filter(|v| !v.trim().is_empty()).is_some()
+        || continuum_core::config_env::read("CONTINUUM_UI_DIST").is_some();
+    desktop_receipt(desktop_answering().await, configured, desktop_port())
+}
+
+/// The receipt, pure over what was observed: answering wins; a configured dist that is
+/// not answering yet is a build in flight; no dist configured is named as such, with the
+/// verb that fixes it. Never a promise the launch path cannot keep.
+fn desktop_receipt(answering: bool, configured: bool, port: u16) -> String {
+    if answering {
+        format!("🖥  desktop: http://127.0.0.1:{port}/   (`uu desktop` opens it)")
+    } else if configured {
+        format!(
+            "🖥  desktop: not serving yet on :{port} — the web build lands in the background; \
+             `uu desktop` opens it once it does"
+        )
     } else {
         format!(
-            "🖥  desktop: not serving yet on :{} — the web build lands in the background; \
-             `uu desktop` opens it once it does",
-            desktop_port()
+            "🖥  desktop: not configured — no CONTINUUM_UI_DIST in ~/.continuum/config.env; \
+             `continuum start` from the source tree pins it and builds the web client (:{port} once it does)"
         )
     }
 }
@@ -4869,6 +6118,7 @@ async fn desktop_receipt_line() -> String {
 fn usage() -> String {
     "usage: continuum <start|reboot|stop|desktop|command> [json | --key value ...]  (uu = continuum)\n\
      \n\
+     Version: continuum --version (also -V or version); identifies this CLI offline\n\
      Lifecycle:\n  \
        continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
        continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
@@ -4882,7 +6132,10 @@ fn usage() -> String {
      \n\
      Legacy checkpoint recovery (local; no running core required):\n  \
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
-       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n\
+       continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n  \
+       continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
+       continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
+       continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
      \n\
      Desktop (the core serves it; no port to remember):\n  \
        continuum desktop               open the desktop in your browser (alias: uu desktop)\n\
@@ -4901,6 +6154,127 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (M5, 2026-09-26): the start/reboot receipt promised "the web build
+    // lands in the background" on eight consecutive supervised deploys while no dist was
+    // configured and none was being built. An unconfigured desktop must be NAMED, with the
+    // verb that fixes it; the promise is reserved for a configured dist that is still in flight.
+    #[test]
+    fn the_desktop_receipt_never_promises_a_build_the_launch_path_is_not_making() {
+        let up = super::desktop_receipt(true, false, 8975);
+        assert!(up.contains("http://127.0.0.1:8975/"), "{up}");
+        let in_flight = super::desktop_receipt(false, true, 8975);
+        assert!(in_flight.contains("lands in the background"), "{in_flight}");
+        let unconfigured = super::desktop_receipt(false, false, 8975);
+        assert!(unconfigured.contains("not configured") && unconfigured.contains("CONTINUUM_UI_DIST"), "{unconfigured}");
+        assert!(!unconfigured.contains("lands in the background"), "no promise without a dist: {unconfigured}");
+    }
+
+    // what this catches (2026-09-22, Astra's Windows node): a drain that runs even
+    // though the teardown after it will be refused. `system/shutdown.rs` deliberately
+    // leaves the process alive for the CLI to end, and `OpenProcess(25040, TERMINATE)`
+    // returned NULL/error 5 there — so draining first left a drained core still
+    // answering ping, with no way to end it. The rule must refuse BEFORE the drain and
+    // must say that nothing was touched, because an operator who reads "refused" after
+    // a drain has a different machine in front of them than one who reads it before.
+    #[test]
+    fn a_drain_is_refused_when_the_teardown_after_it_would_be() {
+        use super::may_begin_shutdown;
+        assert!(may_begin_shutdown(Ok(())).is_ok(), "authority present: the stop proceeds");
+        let refused = may_begin_shutdown(Err("OpenProcess denied".to_string()))
+            .expect_err("no teardown authority must refuse the drain");
+        assert!(refused.contains("OpenProcess denied"), "the OS's reason is carried: {refused}");
+        assert!(
+            refused.contains("No state was touched"),
+            "the refusal must say the drain did NOT run: {refused}"
+        );
+    }
+
+    // what this catches: a capability probe that refuses on a pid that is merely GONE.
+    // The pidfile routinely names a core that already exited; if absence read as "no
+    // authority", every ordinary stop would refuse before doing anything. Only an
+    // actual permission denial may refuse.
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_that_no_longer_exists_is_not_a_permission_refusal() {
+        use super::teardown_authority;
+        assert!(
+            teardown_authority(std::process::id() as i32).is_ok(),
+            "a process this caller owns is tearable down"
+        );
+        // Max pid + 1 on every supported unix: nothing can be running there.
+        assert!(
+            teardown_authority(i32::MAX).is_ok(),
+            "already gone is nothing to tear down, never a refusal"
+        );
+    }
+
+    // what this catches (Astra's review of e275378a2, 2026-09-22): tests that exercise
+    // helpers instead of the orchestration — "a removed preflight call still passes all
+    // three". This one is over the decision the stop path ACTUALLY makes, across every
+    // core it would have to end, and the call itself is now unskippable by construction:
+    // `request_graceful_stop` takes the `MayDrain` only this function produces, so
+    // deleting the preflight does not turn a test green, it stops compiling.
+    #[test]
+    fn the_drain_is_decided_over_every_core_this_stop_would_have_to_end() {
+        use super::preflight_teardown;
+        let refuse_25040 = |pid: i32| {
+            if pid == 25040 { Err("OpenProcess denied".to_string()) } else { Ok(()) }
+        };
+
+        // All endable: drain, nothing to borrow.
+        let ok = preflight_teardown(&[10, 11], false, refuse_25040).expect("owned cores drain");
+        assert!(ok.borrow_authority_for.is_none());
+
+        // THE ONE THAT MATTERS: the un-endable core is not the first in the list. A
+        // preflight that checked only the pidfile's claim — the head of this vector —
+        // would pass here and drain a core it cannot end.
+        let refused = preflight_teardown(&[10, 25040], false, refuse_25040)
+            .err()
+            .expect("a core this caller cannot end must refuse the drain");
+        assert!(refused.contains("OpenProcess denied"), "{refused}");
+        assert!(refused.contains("No state was touched"), "{refused}");
+
+        // Same observation, operator present: carried forward to be borrowed AFTER the
+        // drain rather than abandoning the stop.
+        let escalated = preflight_teardown(&[10, 25040], true, refuse_25040)
+            .expect("an operator present proceeds and borrows the privilege later");
+        assert_eq!(escalated.borrow_authority_for, Some(25040));
+
+        // Nothing running at all is not a refusal — there is no core to be unable to end.
+        assert!(preflight_teardown(&[], false, |_| Err("x".to_string()))
+            .expect("no cores, nothing to preflight")
+            .borrow_authority_for
+            .is_none());
+    }
+
+    // what this catches (Astra's second objection, 2026-09-22): deciding a kill failed
+    // by probing liveness on the next line. SIGTERM and taskkill are asynchronous, so a
+    // healthy core is still in the table immediately after — an immediate probe would
+    // have reported "kill refused" on every successful deploy. The decider is the
+    // bounded deadline: a pid still present when it expires, and only then.
+    #[tokio::test]
+    async fn only_outliving_the_deadline_is_evidence_that_a_kill_did_not_take() {
+        use super::exited_within;
+        use std::time::Duration;
+        // Our own pid cannot exit, so it stands in for a core that refused to go.
+        let me = std::process::id() as i32;
+        let refused = exited_within(me, Duration::from_millis(300))
+            .await
+            .expect_err("a pid still alive at the deadline is a failed teardown");
+        assert!(refused.contains(&me.to_string()), "the surviving pid is named: {refused}");
+        assert!(
+            refused.contains("pidfile is left in place"),
+            "the claim must survive the process it names: {refused}"
+        );
+        // And a pid that is gone returns without spending the deadline.
+        let started = std::time::Instant::now();
+        assert!(exited_within(i32::MAX, Duration::from_secs(30)).await.is_ok());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "an already-dead pid must not wait out the deadline"
+        );
+    }
+
     // what this catches (card 82af11f5, 2026-09-19): the Windows deploy consumer's
     // verdict vocabulary — no request = nothing owed; the tip already running (short
     // sha as a prefix, git's 7-char floor) = the tracker retires it, never a reboot;
@@ -4942,6 +6316,12 @@ mod tests {
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
+        // The consumer runs on every platform now (the core's actuator launches it); only
+        // Windows needs `--service` — macOS promotes a bare reboot to launchd itself, and
+        // `reboot` refuses the flag on Linux.
+        assert!(super::consumer_uses_service("windows"));
+        assert!(!super::consumer_uses_service("macos"));
+        assert!(!super::consumer_uses_service("linux"));
     }
 
     // Regression for #3929: a first upgrade must leave the legacy core available
@@ -5170,6 +6550,30 @@ mod tests {
             );
         }
         let service = parse(&["--service", "--prebuilt", "core.exe"]);
+        let digest = "a".repeat(64);
+        let bound_service = parse(&[
+            "--service",
+            "--prebuilt",
+            "core.exe",
+            "--service-descriptor-sha",
+            &digest,
+        ]);
+        if cfg!(windows) {
+            assert_eq!(
+                bound_service.unwrap().service_descriptor_sha.as_deref(),
+                Some(digest.as_str())
+            );
+        } else {
+            assert!(bound_service.is_err());
+        }
+        assert!(parse(&[
+            "--prebuilt",
+            "core.exe",
+            "--validate-only",
+            "--service-descriptor-sha",
+            &digest
+        ])
+        .is_err());
         let validate = parse(&["--prebuilt", "core.exe", "--validate-only"]).unwrap();
         assert!(validate.validate_only);
         assert!(!validate.force && !validate.service);
@@ -5191,6 +6595,15 @@ mod tests {
     fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
         let directory = tempfile::tempdir().unwrap();
         let directory = directory.path().canonicalize().unwrap();
+        #[cfg(windows)]
+        {
+            // Receipt migration and direct reboot share the installer's real
+            // exclusive file lease; release permits the next owner to proceed.
+            let lease = super::take_install_lease(&directory).unwrap();
+            assert!(super::take_install_lease(&directory).is_err());
+            drop(lease);
+            assert!(super::take_install_lease(&directory).is_ok());
+        }
         let artifact = directory.join("continuum-core-server.exe");
         let cli = directory.join("continuum.exe");
         let launcher = directory.join("run-service-hidden.ps1");
@@ -5227,6 +6640,32 @@ mod tests {
             build_sha: "123456789".to_string(),
         };
         task.validate(&candidate, &socket, &shell).unwrap();
+        // A worker root is part of the registered release, not the scheduler's
+        // cwd. Legacy releases omit it; new releases must pass it in the action.
+        let mut with_eye = description.clone();
+        with_eye["eyeRoot"] = serde_json::json!(directory);
+        task.description = with_eye.to_string();
+        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        task.arguments = format!("{arguments} -EyeRoot \"{}\"", directory.display());
+        task.validate(&candidate, &socket, &shell).unwrap();
+        with_eye["eyeRoot"] = serde_json::json!("relative/assets");
+        task.description = with_eye.to_string();
+        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        task.description = description.to_string();
+        task.arguments = arguments.clone();
+        // Engine-only migration can change the selected release without
+        // changing its Core artifact; the transfer binds the full descriptor.
+        {
+            use sha2::{Digest, Sha256};
+            let expected = format!("{:x}", Sha256::digest(task.description.as_bytes()));
+            task.validate_description_sha(&expected).unwrap();
+            let prior = task.description.clone();
+            let mut changed: serde_json::Value = serde_json::from_str(&prior).unwrap();
+            changed["engine"] = serde_json::json!(directory.join("other-engine.exe"));
+            task.description = changed.to_string();
+            assert!(task.validate_description_sha(&expected).is_err());
+            task.description = prior;
+        }
         task.arguments = arguments.replace(
             &artifact.display().to_string(),
             &stale.display().to_string(),
@@ -5588,6 +7027,20 @@ mod tests {
     }
 
     use super::*;
+
+    // what this catches: a warm build at normal priority beside a serving core, the
+    // contention that starved the IntelMac's CPU lane for ~10 h (2026-09-27). A child
+    // spawned through yield_to_serving must run at the lowest priority, where cargo and
+    // rustc inherit it.
+    #[cfg(unix)]
+    #[test]
+    fn a_warm_build_runs_at_the_lowest_priority_beside_the_serving_core() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "nice"]);
+        yield_to_serving(&mut cmd);
+        let out = cmd.output().expect("test: sh runs");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "19");
+    }
 
     // what this catches (2026-09-13): a warm build attempted without headroom (starving the
     // serving core, Joel 08-23) or without a build definition; and a refusal that does not
@@ -6062,7 +7515,7 @@ mod tests {
             (501, 500),
             (900, 1), // unrelated process: never a teardown root
         ]);
-        let command_args = |plan: Vec<WindowsKill>| {
+        let command_args = |plan: Vec<KillStep>| {
             let mut args: Vec<Vec<String>> = plan
                 .into_iter()
                 .map(|kill| {
@@ -6078,10 +7531,10 @@ mod tests {
         };
         // Duplicate/descendant roots must not produce overlapping tree kills.
         let roots = [300, 200, 100, 100, 301, 500];
-        let plan = windows_kill_plan(&roots, &parents, &[8600]);
+        let plan = kill_plan(&roots, &parents, &[8600]);
         assert_eq!(
             plan.first(),
-            Some(&WindowsKill::Process(100)),
+            Some(&KillStep::Process(100)),
             "stop the spawning core first"
         );
         assert_eq!(
@@ -6097,7 +7550,7 @@ mod tests {
         // A surviving launcher ancestor in the owned-orphan pass must ALSO be
         // killed alone, never with /T across the now-adoptable lane beneath it.
         assert_eq!(
-            command_args(windows_kill_plan(
+            command_args(kill_plan(
                 &[200, 300, 301, 400, 500, 501, 8600, 8610],
                 &parents,
                 &[8600],
@@ -6112,18 +7565,54 @@ mod tests {
         // Full stop — or no identity-verified lane record — still kills the
         // entire core tree, including the otherwise-preserved gateway.
         assert_eq!(
-            command_args(windows_kill_plan(&roots, &parents, &[])),
+            command_args(kill_plan(&roots, &parents, &[])),
             vec![vec!["/F", "/T", "/PID", "100"]]
         );
         // An old fixed 64-hop ancestry limit must not turn a deeper protected
         // branch into an apparently unprotected /T target.
         let deep: std::collections::HashMap<i32, i32> =
             (1..=80).map(|pid| (pid, pid - 1)).collect();
-        let plan = windows_kill_plan(&[1], &deep, &[80]);
+        let plan = kill_plan(&[1], &deep, &[80]);
         assert_eq!(plan.len(), 79);
         assert!(plan
             .iter()
-            .all(|kill| matches!(kill, WindowsKill::Process(_))));
+            .all(|kill| matches!(kill, KillStep::Process(_))));
+    }
+
+    // what this catches (IntelMac 2026-09-21 11:20Z, card 3ef0986c): the deploy consumer
+    // is the CORE'S CHILD, so the tree it reaps on a reboot contains itself. With the
+    // consumer in the keep set (what `keep_with_self` adds at the call site), the core
+    // gets a `Process` step — it dies alone — and no step names the consumer or its
+    // branch; without it, `Tree(core)` reaps the hand mid-handoff and the kickstart the
+    // node is owed is never issued. Both directions: the lane keep still holds beside it.
+    #[test]
+    fn the_reaper_is_never_in_its_own_plan() {
+        let (core, consumer, lane, eye) = (100, 200, 300, 400);
+        let parents = std::collections::HashMap::from([
+            (consumer, core),
+            (lane, core),
+            (eye, core),
+            (core, 1),
+        ]);
+        let plan = kill_plan(&[core], &parents, &keep_with_self_for_test(&[lane], consumer));
+        assert_eq!(plan.first(), Some(&KillStep::Process(core)), "the core dies alone, never as a tree");
+        assert!(
+            !plan.iter().any(|s| matches!(s, KillStep::Tree(p) | KillStep::Process(p) if *p == consumer)),
+            "the reaper never appears in its own plan: {plan:?}"
+        );
+        assert!(!plan.iter().any(|s| matches!(s, KillStep::Tree(p) | KillStep::Process(p) if *p == lane)), "the lane keep still holds");
+        assert!(plan.contains(&KillStep::Tree(eye)), "an unprotected sibling is still reaped: {plan:?}");
+        // The pre-fix shape, for contrast: with only the lane kept, the consumer IS in the plan.
+        let unprotected = kill_plan(&[core], &parents, &[lane]);
+        assert!(unprotected.contains(&KillStep::Tree(consumer)), "without the self keep the hand is reaped: {unprotected:?}");
+    }
+
+    /// `keep_with_self` pins the CALLER's pid, which in a test is the test binary; this
+    /// mirrors it with an explicit self so the plan can be asserted for a chosen pid.
+    fn keep_with_self_for_test(keep: &[i32], self_pid: i32) -> Vec<i32> {
+        let mut with_self = keep.to_vec();
+        with_self.push(self_pid);
+        with_self
     }
 
     /// what this catches: the actual BIGMAMA leak. llama-server pid 37148 ran
@@ -6131,6 +7620,65 @@ mod tests {
     /// resolved a chat model through that port got an EMBEDDING model. Its
     /// parent is absent from the table entirely (dead), which must read as
     /// "orphan", not as "unknown, leave it alone".
+    /// what this catches (card 59052747, 2026-09-20): the Unix executor of the kill plan
+    /// — until now `let _ = keep;` and a group kill per root, so the plan's `Process(core)`
+    /// never existed on macOS/Linux and the live lane died with the core on every reboot.
+    /// Real processes, one group: a leader and its child; a plan that protects the child
+    /// must leave it alive after the leader is gone, and the same plan with nothing
+    /// protected must take the whole group (the plain `stop`).
+    #[cfg(unix)]
+    #[test]
+    fn a_protected_child_survives_its_leaders_kill_on_unix() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        fn alive(pid: i32) -> bool {
+            unsafe { libc::kill(pid, 0) == 0 }
+        }
+        fn group(protect: bool) -> (i32, i32) {
+            // A leader that execs nothing but waits on one child in ITS group.
+            let mut leader = Command::new("sh")
+                .args(["-c", "sleep 30 & wait"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .expect("sh spawns"); // test: the shell exists on every unix CI box
+            let leader_pid = leader.id() as i32;
+            // Find the child (the sleep) under the leader.
+            let child = (0..50)
+                .find_map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let mut sys = System::new();
+                    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+                    process_parents(&sys)
+                        .into_iter()
+                        .find(|(_, parent)| *parent == leader_pid)
+                        .map(|(child, _)| child)
+                })
+                .expect("the leader's child appears"); // test: `sleep` forks within 2.5 s
+            let mut sys = System::new();
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+            let parents = process_parents(&sys);
+            let keep: Vec<i32> = if protect { vec![child] } else { vec![] };
+            let plan = kill_plan(&[leader_pid], &parents, &keep);
+            assert_eq!(plan, vec![if protect { KillStep::Process(leader_pid) } else { KillStep::Tree(leader_pid) }]);
+            for step in plan {
+                step.execute();
+            }
+            let _ = leader.wait();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            (leader_pid, child)
+        }
+        let (leader, child) = group(true);
+        assert!(!alive(leader), "the leader is gone");
+        assert!(alive(child), "the protected child in the leader's group survives its kill");
+        unsafe { libc::kill(child, libc::SIGKILL) };
+        let (leader, child) = group(false);
+        assert!(!alive(leader));
+        assert!(!alive(child), "nothing protected: the group goes with the leader (plain stop)");
+    }
+
     #[test]
     fn a_process_whose_parent_is_gone_is_an_orphan() {
         let parents = ptable(&[(37148, 37856)]); // 37856 itself not present = dead
@@ -6173,17 +7721,18 @@ mod tests {
         let no_schema: &[String] = &[];
 
         // 1. nothing → empty object
-        assert_eq!(params_from_args(&[], no_schema).unwrap(), json!({}));
+        assert_eq!(params_from_args("ping", &[], no_schema).unwrap(), json!({}));
 
         // 2. positional JSON verbatim (the AI / tool-call path)
         assert_eq!(
-            params_from_args(&[r#"{"message":"hi"}"#.to_string()], no_schema).unwrap(),
+            params_from_args("ping", &[r#"{"message":"hi"}"#.to_string()], no_schema).unwrap(),
             json!({ "message": "hi" })
         );
 
         // 3. --key value with coercion: string stays string, number→number,
         //    bool→bool; keys camelCased from kebab/snake.
         let p = params_from_args(
+            "ping",
             &[
                 "--message".into(),
                 "hi".into(),
@@ -6203,24 +7752,24 @@ mod tests {
 
         // bare flag (no value) → true
         assert_eq!(
-            params_from_args(&["--verbose".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--verbose".into()], no_schema).unwrap(),
             json!({ "verbose": true })
         );
 
         // `--key=value` form (muscle memory) — split on first `=`, NOT a junk key.
         assert_eq!(
-            params_from_args(&["--filter=data/".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--filter=data/".into()], no_schema).unwrap(),
             json!({ "filter": "data/" }),
             "--key=value splits correctly (regression: was {{\"filter=data/\": true}})"
         );
         assert_eq!(
-            params_from_args(&["--round-trip-ms=5".into()], no_schema).unwrap(),
+            params_from_args("ping", &["--round-trip-ms=5".into()], no_schema).unwrap(),
             json!({ "roundTripMs": 5 }),
             "--key=value coerces + camelCases"
         );
 
         // a non-flag, non-JSON arg is a clear error (not silently swallowed)
-        assert!(params_from_args(&["oops".into()], no_schema).is_err());
+        assert!(params_from_args("ping", &["oops".into()], no_schema).is_err());
     }
 
     // what this catches: snake_case Rust-native command fields (e.g. cognition/eval's
@@ -6240,25 +7789,61 @@ mod tests {
             "--personaId",
             "--PERSONA_ID",
         ] {
-            let p = params_from_args(&[spelling.into(), "abc".into()], &canonical).unwrap();
+            let p = params_from_args("ping", &[spelling.into(), "abc".into()], &canonical).unwrap();
             assert_eq!(p, json!({ "persona_id": "abc" }), "{spelling} → persona_id");
         }
         // `--key=value` form canonicalizes too
         assert_eq!(
-            params_from_args(&["--eval-set=x.jsonl".into()], &canonical).unwrap(),
+            params_from_args("ping", &["--eval-set=x.jsonl".into()], &canonical).unwrap(),
             json!({ "eval_set": "x.jsonl" })
         );
-        // a flag NOT in the schema falls back to camelCase (base fields — no regression)
-        assert_eq!(
-            params_from_args(&["--room-id".into(), "r1".into()], &canonical).unwrap(),
-            json!({ "roomId": "r1" }),
-            "non-schema flag → legacy camelCase"
+        // a flag NOT in a KNOWN schema is refused, not coerced (see the unknown-flag
+        // test below). Identity fields like userId are injected by the connection —
+        // no command's schema carries them (349/349 on 2026-09-20) — so there is no
+        // base-field carve-out to preserve here.
+        assert!(
+            params_from_args("ping", &["--room-id".into(), "r1".into()], &canonical).is_err(),
+            "non-schema flag against a known schema → refused"
         );
         // with no schema at all, everything is legacy camelCase
         assert_eq!(
-            params_from_args(&["--persona-id".into(), "abc".into()], &[]).unwrap(),
+            params_from_args("ping", &["--persona-id".into(), "abc".into()], &[]).unwrap(),
             json!({ "personaId": "abc" }),
             "no schema → legacy camelCase (pre-schema behavior preserved)"
+        );
+    }
+
+    // what this catches: a typo'd flag being silently coerced into a junk param the
+    // command ignores, so the caller gets a successful-looking answer to a question
+    // they did not ask. Measured 2026-09-05: `continuum ping --nonsense-flag`
+    // returned a healthy pong, exit 0. The ladder is the point: refuse ONLY when the
+    // schema is known; with no schema we cannot prove a flag is unknown, so the
+    // camelCase guess must stand or every schemaless command becomes uncallable.
+    // regression for #3724.
+    #[test]
+    fn an_unknown_flag_is_refused_by_name_only_when_the_schema_is_known() {
+        let schema = &["message".to_string()];
+        let err = params_from_args("ping", &["--nonsense-flag".into()], schema)
+            .expect_err("a flag the schema does not have must be refused, not coerced");
+        assert!(err.contains("--nonsense-flag"), "names the offending flag: {err}");
+        assert!(err.contains("`ping`"), "names the command: {err}");
+        assert!(err.contains("--message"), "lists what IS accepted: {err}");
+        // every arg shape refuses the same way: `--k=v` and `--k v`, not just bare
+        assert!(params_from_args("ping", &["--nonsense=1".into()], schema).is_err());
+        assert!(params_from_args("ping", &["--nonsense".into(), "1".into()], schema).is_err());
+
+        // A real field still parses, and still canonicalizes across separators.
+        assert_eq!(
+            params_from_args("ping", &["--message".into(), "hi".into()], schema).unwrap(),
+            json!({ "message": "hi" })
+        );
+
+        // NO schema → cannot prove unknown → the pre-schema behaviour is preserved.
+        let no_schema: &[String] = &[];
+        assert_eq!(
+            params_from_args("ping", &["--nonsense-flag".into()], no_schema).unwrap(),
+            json!({ "nonsenseFlag": true }),
+            "without a schema an unrecognised flag must NOT be refused"
         );
     }
 

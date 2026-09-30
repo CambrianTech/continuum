@@ -194,6 +194,15 @@ pub struct PersonaSpawnerModule {
     /// constructor default (single Helper, matching the embedded chat
     /// recipe) serves tests/fixtures built without recipe data.
     citizens: Vec<RoleId>,
+    /// THE GRID ALLOCATION'S ROSTER FOR THIS NODE (card 10bba591): the seats the
+    /// allocator counts here — seated + open for this owner. ONE OWNER for the lane-side
+    /// bound: once the allocator daemon has published, this is it, and the warm-slot
+    /// bound (`bounded_by_warm_slots`) is only the prior the boot draws on until then.
+    /// The identity-side bound (what the provider can yield: the population under the
+    /// hold, minus resting seats) stays the spawner's — the allocation never seats a
+    /// name the provider cannot fill. Told by the reconciler each pass
+    /// (`set_grid_roster`), never a global read on the draw path.
+    grid_roster: Option<crate::cognition::grid_allocation::GridRoster>,
 }
 
 impl PersonaSpawnerModule {
@@ -226,7 +235,14 @@ impl PersonaSpawnerModule {
             serving_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
             population: 1,
             citizens: vec![RoleId::Helper],
+            grid_roster: None,
         }
+    }
+
+    /// The grid allocation's roster for this node, as the reconciler last read it
+    /// (see the `grid_roster` field). `None` = nothing published: the warm-slot prior.
+    pub(crate) fn set_grid_roster(&mut self, roster: Option<crate::cognition::grid_allocation::GridRoster>) {
+        self.grid_roster = roster;
     }
 
     /// Inject the RECIPE-DECLARED resident roles (#430) — the default
@@ -369,7 +385,12 @@ impl PersonaSpawnerModule {
         let unbounded = seats_under(self.population, crate::persona::roster_hold::active().as_ref())
             .saturating_sub(crate::persona::resting_seat::resting().len());
         let lanes = self.warm_lanes();
-        let seats = bounded_by_warm_slots(unbounded, lanes);
+        // The allocation's seat count for this node owns the lane-side bound once
+        // published (card 10bba591); the warm-slot bound is the prior before it.
+        let seats = match self.grid_roster {
+            Some(r) => unbounded.min(r.seats() as usize),
+            None => bounded_by_warm_slots(unbounded, lanes),
+        };
         // One row when the bound CHANGES what is drawn, not one per reconcile pass.
         static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
         let shape = ((unbounded as u64) << 32) | seats as u64;
@@ -543,6 +564,7 @@ async fn draw_intents(
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
     plan: &[DesiredRole],
     hold: Option<crate::persona::roster_hold::RosterHold>,
+    already_hosted: usize,
 ) -> Result<Vec<PersonaIdentityIntent>, BootstrapPlannedError> {
     let required = plan.len();
     let mut intents: Vec<PersonaIdentityIntent> = Vec::with_capacity(required);
@@ -566,11 +588,19 @@ async fn draw_intents(
             // retry every second — zero residents until an operator intervened. The
             // identities the provider yielded ARE the roster; the plan's surplus seats are
             // the plan's business (a probe names the shortfall), not a boot failure.
-            if !intents.is_empty() {
+            // A TOP-UP THAT DRAWS NOTHING IS ALSO A PARTIAL ROSTER (IntelMac 2026-09-21
+            // 13:00:49Z, Fable's read): the guard above only knew this pass's own draw.
+            // On a reconciler pass the residents from earlier passes are the roster —
+            // `already_hosted` of them — and a plan that opened two more seats than the
+            // provider has names left drew zero at slot 0, so this returned the honest
+            // boot failure for a node that was fully staffed, and the host drained six
+            // live citizens as "partial". The shortfall is the plan's business either way.
+            if !intents.is_empty() || already_hosted > 0 {
                 crate::probe!(
                     class = "persona.host.provider_filled_fewer_seats",
                     seats = required,
                     filled = intents.len(),
+                    already_hosted,
                     drawn,
                     held = hold.is_some(),
                     "the provider ran out of identities (or the hold allows no more) — seating fewer, not failing"
@@ -610,6 +640,10 @@ async fn draw_intents(
                 continue;
             }
         }
+        crate::persona::resting_seat::note_seated(
+            &intent.agent_name,
+            chrono::Utc::now().timestamp_millis().max(0) as u64,
+        );
         intents.push(intent);
     }
     // A DERIVED hold (a working round's team) seats its names FIRST and everyone else
@@ -693,7 +727,7 @@ pub async fn bootstrap_planned(
     // PHASE 1 — draw every identity from the provider. Sequential because the
     // provider hands out one identity at a time (`&mut`), but this is CHEAP: the
     // cost is `bootstrap_one` below, not `next_persona`.
-    let intents = draw_intents(provider, &plan, crate::persona::roster_hold::active()).await?;
+    let intents = draw_intents(provider, &plan, crate::persona::roster_hold::active(), already_hosted).await?;
 
     // PHASE 2 — bootstrap ALL personas CONCURRENTLY (fork/join). The airc keypair
     // ceremony + room join + seed are INDEPENDENT per persona, so a serial loop
@@ -833,7 +867,7 @@ mod tests {
             reason: "test".to_string(),
             exclusive: true,
         };
-        let intents = draw_intents(&mut provider, &plan, Some(hold)).await.expect("draw");
+        let intents = draw_intents(&mut provider, &plan, Some(hold), 0).await.expect("draw");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Delta", "Foxtrot"]);
     }
@@ -857,6 +891,30 @@ mod tests {
         assert_eq!(missing_plan(&spawner, seats).len(), 0);
         assert_eq!(missing_plan(&spawner, 14).len(), 0);
         assert_eq!(missing_plan(&spawner, 0).len(), seats * per_seat);
+    }
+
+    // what this catches (card 10bba591): once the grid allocator has published, THIS
+    // node's seat count is the allocation's (seated + open here), not the warm-slot
+    // arithmetic — a wider grid seats more, a held or full grid seats fewer — while the
+    // identity-side bound (the population) still holds; and with nothing published the
+    // warm-slot prior stands exactly as before.
+    #[test]
+    fn a_published_allocation_owns_this_nodes_seat_count_and_the_population_still_bounds_it() {
+        use crate::cognition::grid_allocation::GridRoster;
+        let per = crate::modules::citizen_health::MINDS_PER_LANE_STARVED_ABOVE as usize;
+        let mut spawner = PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        spawner.set_population(12);
+        spawner.serving_base_model = Some("some/model".to_string());
+        spawner.serving_lanes = 2;
+        assert_eq!(spawner.seats(), 12.min(2 * per), "nothing published: the warm-slot prior");
+        spawner.set_grid_roster(Some(GridRoster { seated: 4, open: 4 }));
+        assert_eq!(spawner.seats(), 8, "the allocation counts eight seats here");
+        spawner.set_grid_roster(Some(GridRoster { seated: 1, open: 0 }));
+        assert_eq!(spawner.seats(), 1, "a held or full grid seats one");
+        spawner.set_grid_roster(Some(GridRoster { seated: 10, open: 10 }));
+        assert_eq!(spawner.seats(), 12, "never past what the provider can yield");
+        spawner.set_grid_roster(None);
+        assert_eq!(spawner.seats(), 12.min(2 * per), "unpublished again: the prior");
     }
 
     #[test]
@@ -1120,11 +1178,18 @@ mod tests {
         }
         let mut provider = Yield(["Alpha", "Bravo"].into_iter().collect());
         let plan: Vec<DesiredRole> = (0..5).map(|_| DesiredRole { role: RoleId::Helper, model_id: "m".to_string(), lanes: 1, served_context_window: 4096 }).collect();
-        let intents = draw_intents(&mut provider, &plan, None).await.expect("a shortfall is not an error");
+        let intents = draw_intents(&mut provider, &plan, None, 0).await.expect("a shortfall is not an error");
         let names: Vec<&str> = intents.iter().map(|i| i.agent_name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Bravo"], "two identities seat two of five planned seats");
         let mut empty = Yield(std::collections::VecDeque::new());
-        assert!(draw_intents(&mut empty, &plan, None).await.is_err(), "NO identity at all is still the honest failure");
+        assert!(draw_intents(&mut empty, &plan, None, 0).await.is_err(), "NO identity at all is still the honest failure");
+        // IntelMac 2026-09-21 13:00:49Z: the SAME empty provider on a TOP-UP pass — six
+        // residents live, the plan wants two more — is a partial roster of zero, never a
+        // boot failure the host would answer by draining the six.
+        let mut empty = Yield(std::collections::VecDeque::new());
+        let top_up: Vec<DesiredRole> = plan[..2].to_vec();
+        let drawn = draw_intents(&mut empty, &top_up, None, 6).await.expect("a top-up that draws nothing is a partial roster");
+        assert!(drawn.is_empty(), "nothing to seat, nothing failed");
     }
 
     // what this catches (2026-09-14): a working round's team hold shrinking the roster —

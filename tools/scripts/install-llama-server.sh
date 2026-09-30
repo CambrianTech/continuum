@@ -135,13 +135,116 @@ config_env_upsert() {
 }
 if [ "$BACKEND" = "cpu" ]; then
   config_env_upsert CONTINUUM_SERVING_PLACEMENT cpu
-  echo "serving placement: cpu (backend=$BACKEND) — recorded in ~/.continuum/config.env"
+  echo "serving placement: cpu (backend=$BACKEND) — recorded in ~/.continuum/config.env" >&2
 else
   config_env_upsert CONTINUUM_SERVING_PLACEMENT gpu
-  echo "serving placement: gpu (backend=$BACKEND) — recorded in ~/.continuum/config.env"
+  echo "serving placement: gpu (backend=$BACKEND) — recorded in ~/.continuum/config.env" >&2
 fi
 
 STAMP_WANT="$SUBMODULE_HEAD:$BACKEND"
+
+# ── engine slot (card 7a6a033a; the core half is #4491) ──────────────
+# A deploy builds the engine into the IDLE slot the core names
+# (`<home>/bin/engine-{a,b,c}`, the one no live lane runs and `current` does not name) and
+# then PROMOTES it. Nothing a running lane executes is ever replaced: on POSIX that only
+# worked because a live process keeps its unlinked inode, and on Windows it cannot work at
+# all. The core resolves `current` at every launch, and #4464's convergence relaunches the
+# lanes onto it. Windows keeps its PowerShell slot path here (`continuum install`'s engine
+# arm), which moves to the same verbs in its own half.
+#
+# VERSION SKEW: the first deploy carrying the verbs is run by the OLD deployed CLI, which does
+# not know them. Then this deploy installs the pre-slot way, says so, and the next deploy
+# (run by the new CLI) uses the slots.
+SLOT=""
+CLI="${CONTINUUM_CLI:-$(command -v continuum || true)}"
+engine_cli() { CONTINUUM_HOME="$CONTINUUM_HOME" "$CLI" engine "$@"; }
+promote_slot() {
+  engine_cli promote "$SLOT" "$STAMP_WANT" >&2 || {
+    echo "✗ FATAL: the engine in $SLOT verified but was not promoted; the lanes keep the engine they have." >&2
+    exit 1
+  }
+}
+case "$(uname -s)" in
+  Darwin|Linux)
+    if [ -z "$CLI" ] || ! "$CLI" --help 2>&1 | grep -q "continuum engine idle-slot"; then
+      echo "→ the deployed CLI has no engine slots yet: installing to $INSTALL_DIR this once; the next deploy uses the slots" >&2
+    else
+      current_slot="$(tr -d '[:space:]' < "$INSTALL_DIR/current" 2>/dev/null || true)"
+      case "$current_slot" in engine-a|engine-b|engine-c) ;; *) current_slot="" ;; esac
+      if [ "$FORCE" -eq 0 ] && [ -n "$current_slot" ] && [ -x "$INSTALL_DIR/$current_slot/llama-server" ] \
+         && [ "$(cat "$INSTALL_DIR/$current_slot/.llama-server.stamp" 2>/dev/null)" = "$STAMP_WANT" ]; then
+        echo "✓ llama-server already current in $current_slot ($STAMP_WANT)" >&2
+        echo "$INSTALL_DIR/$current_slot/llama-server"
+        exit 0
+      fi
+      # A slot that ALREADY holds this pin is promoted as is, before any build (card 6d5bacab):
+      # a build whose promotion never happened. Promotion overwrites nothing, so it needs no
+      # proof the slot is idle; with every slot populated and a lane that predates engine
+      # records, idle-slot would skip every deploy and that engine would never be used.
+      if [ "$FORCE" -eq 0 ]; then
+        for built in engine-a engine-b engine-c; do
+          [ "$built" = "$current_slot" ] && continue
+          if [ -x "$INSTALL_DIR/$built/llama-server" ] \
+             && [ "$(cat "$INSTALL_DIR/$built/.llama-server.stamp" 2>/dev/null)" = "$STAMP_WANT" ]; then
+            SLOT="$built"
+            echo "→ engine slot: $built already holds $STAMP_WANT, promoting it without a build" >&2
+            promote_slot
+            echo "$INSTALL_DIR/$built/llama-server"
+            exit 0
+          fi
+        done
+      fi
+      set +e
+      slot_dir="$(engine_cli idle-slot)"
+      rc=$?
+      set -e
+      if [ "$rc" -eq 3 ]; then
+        echo "⚠ every engine slot is current or run by a live lane: the engine build is skipped this deploy; the lanes keep their engine" >&2
+        exit 0
+      elif [ "$rc" -ne 0 ] || [ -z "$slot_dir" ]; then
+        echo "✗ FATAL: \`continuum engine idle-slot\` failed (exit $rc); no slot can be proven idle, so nothing is built." >&2
+        exit 1
+      fi
+      SLOT="$(basename "$slot_dir")"
+      LEGACY_BIN="$INSTALL_BIN"
+      LEGACY_STAMP="$STAMP_FILE"
+      INSTALL_DIR="$slot_dir"
+      INSTALL_BIN="$INSTALL_DIR/llama-server"
+      STAMP_FILE="$INSTALL_DIR/.llama-server.stamp"
+      mkdir -p "$INSTALL_DIR"
+      echo "→ engine slot: building into $SLOT (current: ${current_slot:-none})" >&2
+      # A slot that already holds this pin (built, then its promote failed) is promoted as is.
+      if [ "$FORCE" -eq 0 ] && [ -x "$INSTALL_BIN" ] && [ "$(cat "$STAMP_FILE" 2>/dev/null)" = "$STAMP_WANT" ]; then
+        promote_slot
+        echo "$INSTALL_BIN"
+        exit 0
+      fi
+      # MIGRATION without a rebuild: the pre-slot engine already verified at this pin is copied
+      # into the slot (same atomic copy + re-sign as a fresh build) and promoted. A rebuild would
+      # cost hours on a CPU-served node for a binary that is already here.
+      if [ "$FORCE" -eq 0 ] && [ -z "$current_slot" ] && [ -x "$LEGACY_BIN" ] \
+         && [ "$(cat "$LEGACY_STAMP" 2>/dev/null)" = "$STAMP_WANT" ]; then
+        rm -f "$INSTALL_BIN" "$STAMP_FILE"
+        cp "$LEGACY_BIN" "$INSTALL_BIN.tmp.$$"
+        if [ "$(uname -s)" = "Darwin" ]; then
+          codesign -s - --force "$INSTALL_BIN.tmp.$$" 2>/dev/null \
+            || echo "⚠ codesign ad-hoc re-sign failed — the version check below is the gate" >&2
+        fi
+        mv -f "$INSTALL_BIN.tmp.$$" "$INSTALL_BIN"
+        chmod +x "$INSTALL_BIN"
+        "$INSTALL_BIN" --version >/dev/null 2>&1 || {
+          echo "✗ FATAL: the copied pre-slot engine does not run from $SLOT; not promoted." >&2
+          exit 1
+        }
+        echo "$STAMP_WANT" > "$STAMP_FILE"
+        echo "→ migrated the pre-slot engine ($STAMP_WANT) into $SLOT, no rebuild" >&2
+        promote_slot
+        echo "$INSTALL_BIN"
+        exit 0
+      fi
+    fi
+    ;;
+esac
 
 # ── idempotency ──────────────────────────────────────────────────────
 if [ "$FORCE" -eq 0 ] && [ -x "$INSTALL_BIN" ] && [ -f "$STAMP_FILE" ] \
@@ -193,7 +296,9 @@ declare -a CMAKE_ARGS=(
 )
 
 # Parallelism: nproc (Linux) / sysctl (macOS), default 4.
-JOBS="$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+# A warm build beside a CPU-served lane is given one job (card 682a5abf); that budget
+# arrives as CARGO_BUILD_JOBS and holds for the engine build too.
+JOBS="${CARGO_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # A reboot may build from a different worktree. Keep incremental metadata only
 # when it belongs to this source; the native installer uses the same guard.
@@ -444,6 +549,9 @@ if [ "$BACKEND" != "cpu" ]; then
 fi
 
 echo "$STAMP_WANT" > "$STAMP_FILE"   # stamp LAST — only a verified-good binary is blessed
+# A slot build becomes the engine only now: verified, stamped, then promoted (the core
+# re-checks binary and stamp before it flips `current`).
+[ -n "$SLOT" ] && promote_slot
 
 echo "✓ llama-server installed: $INSTALL_BIN ($STAMP_WANT)" >&2
 echo "$INSTALL_BIN"

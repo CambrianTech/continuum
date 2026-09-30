@@ -202,13 +202,19 @@ pub fn claimable_by(card: &WorkCard, now_ms: u64, me: airc_core::PeerId, owner_r
 }
 
 pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
-    if refused_by_claim(card.state) {
+    claimable_hold(hold_of(card, now_ms), card.state)
+}
+
+// Board renderers and claim selection must agree even when column and lease
+// differ: an Open card with a live claim is still held.
+fn claimable_hold(hold: Hold, state: airc_work::model::CardState) -> bool {
+    if refused_by_claim(state) {
         return false;
     }
-    match hold_of(card, now_ms) {
+    match hold {
         Hold::Held => false,
         Hold::Lapsed => true,
-        Hold::Unclaimed => card.state == airc_work::model::CardState::Open,
+        Hold::Unclaimed => state == airc_work::model::CardState::Open,
     }
 }
 
@@ -287,10 +293,7 @@ impl CardHolder {
     /// Read and write must answer "can I take this" the same way, or the board
     /// is lying about what is available ([[the-compression-principle]]).
     pub fn claimable(&self, state: airc_work::model::CardState) -> bool {
-        if refused_by_claim(state) {
-            return false;
-        }
-        matches!(self.hold, Hold::Lapsed) || state == airc_work::model::CardState::Open
+        claimable_hold(self.hold, state)
     }
 
     /// The holder phrase a citizen reads on a board line. Says WHO in every
@@ -374,6 +377,7 @@ mod tests {
                 CardState::Open
             },
             owner,
+            claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
             claim_expires_at_ms: expires_ms,
             last_heartbeat_at_ms: None,
