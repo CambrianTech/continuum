@@ -31,9 +31,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use continuum_client::{ClientError, Connection};
-use continuum_core::runtime::core_bind_guard::BindDecision;
+use continuum_cli_lifecycle::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
-use continuum_core::runtime::deploy_provenance::{
+use continuum_cli_lifecycle::deploy_provenance::{
     cli_self_build, cli_staleness_note, deploy_verdict, sha_matches, CliSelfBuild,
 };
 use serde_json::Value;
@@ -944,7 +944,7 @@ async fn bind_decision() -> BindDecision {
         .into_iter()
         .filter(|p| pid_alive(*p))
         .collect();
-    continuum_core::runtime::core_bind_guard::decide(ping_ok, &running)
+    continuum_cli_lifecycle::core_bind_guard::decide(ping_ok, &running)
 }
 
 /// `continuum start` — build + run the headless Rust core (detached), wait until it
@@ -3016,7 +3016,7 @@ fn consume_verdict(
     };
     // ONE sha-equivalence rule for the fleet's deploy owner (the 7-char floor, either
     // spelling as the prefix) — the tracker's, not a second copy of it.
-    if running_sha.is_some_and(|running| continuum_core::runtime::deploy_tracker::same_commit(tip, running)) {
+    if running_sha.is_some_and(|running| continuum_cli_lifecycle::deploy_tracker::same_commit(tip, running)) {
         return ConsumeVerdict::AlreadyRunning;
     }
     if build_in_flight {
@@ -3134,7 +3134,7 @@ fn git_running_in(repo: &Path) -> bool {
 /// may be deployed; `Ok(false)` = a lock that may be live stands, named in the deploy log,
 /// retried next tick without spending one of the tip's attempts.
 fn settle_index_lock(repo: &Path) -> Result<bool, String> {
-    use continuum_core::runtime::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
+    use continuum_cli_lifecycle::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
     let rel = git_in(repo, &["rev-parse", "--git-path", "index.lock"])?;
     let lock = repo.join(rel);
     let age = std::fs::metadata(&lock)
@@ -3361,7 +3361,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     }
     match running.as_deref() {
         Some(r)
-            if continuum_core::runtime::deploy_tracker::same_commit(r, &head)
+            if continuum_cli_lifecycle::deploy_tracker::same_commit(r, &head)
                 && engine_drift.is_empty() && browser_drift.is_empty() =>
         {
             println!("✓ core: converged — running build {r} is HEAD");
@@ -3392,7 +3392,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         prepared
     } else if running
         .as_deref()
-        .is_some_and(|r| continuum_core::runtime::deploy_tracker::same_commit(r, &head))
+        .is_some_and(|r| continuum_cli_lifecycle::deploy_tracker::same_commit(r, &head))
     {
         let task = PreparedCoreService::query().await?;
         let release: CoreServiceDescription =
@@ -3401,7 +3401,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         // that is older, or cannot say what it is, is not a reason to stop: it is drift the
         // build path below converges (it rebuilds the CLI and stages the pair together).
         match binary_build_sha(Path::new(&release.cli)).await {
-            Ok(cli_sha) if continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) => {
+            Ok(cli_sha) if continuum_cli_lifecycle::deploy_tracker::same_commit(&cli_sha, &head) => {
                 Some(PathBuf::from(release.artifact))
             }
             Ok(cli_sha) => {
@@ -3440,7 +3440,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     }
     let now = running_build_sha().await;
     match now.as_deref() {
-        Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
+        Some(r) if continuum_cli_lifecycle::deploy_tracker::same_commit(r, &head) => {
             println!("✓ core: converged — running build {r} is HEAD");
             Ok(ArmReport { drift_before: 1, drift_after: 0 })
         }
@@ -3464,7 +3464,7 @@ async fn prepared_install_core(repo: &Path, head: &str) -> Result<Option<PathBuf
     };
     let cli = Path::new(&target).join("release/continuum.exe");
     let Ok(cli_sha) = binary_build_sha(&cli).await else { return Ok(None) };
-    if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, head) {
+    if !continuum_cli_lifecycle::deploy_tracker::same_commit(&cli_sha, head) {
         return Ok(None);
     }
     let Some(dir) = cli.parent() else { return Ok(None) };
