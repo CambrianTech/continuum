@@ -8195,7 +8195,12 @@ mod tests {
             // typed required inputs and nested action schemas instead of Null. This is
             // actual tool demand, including target/session recovery descriptions; keep
             // accounting for it rather than hiding schemas from the persona or budget.
-            const AGENTIC_SURFACE_CEILING: u32 = 15119;
+            // 15119 -> 15179 (CI, PR #4615): work/submit adds the optional
+            // generation_request_id selector and its exclusivity help. Kimi's
+            // inspected staging UUID expired before publication; this stable
+            // causal selector adds 60 measured guard tokens. Account for the
+            // real schema; retain whole-request budgeting and this growth guard.
+            const AGENTIC_SURFACE_CEILING: u32 = 15179;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

@@ -4124,6 +4124,133 @@ pub(crate) mod tests {
         assert_eq!(stored_credit_rows(&data, name).await[0].id, current.id);
     }
 
+    // what this catches: Kimi's inspected revision was pruned before submission;
+    // stable generation selection must survive replacement without rebinding retries.
+    #[tokio::test]
+    async fn generation_binding_survives_inspection_replacement_and_retries() {
+        use reviewed::{CreditBindingError, SubmissionSelection};
+        let home = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        let name = "generation-work-binding";
+        let mut receipts = vec![served_receipt("correction", "model-a")];
+        let (mut capture, inspected) =
+            stage_settlement_fixture(executor.clone(), persona, name, card, receipts.clone()).await;
+        let data = conn_as(executor, persona);
+        receipts.push(served_receipt("inspection", "model-a"));
+        assert!(
+            capture
+                .record(
+                    &settlement_acts(8),
+                    &receipts,
+                    Some("Inspected evidence."),
+                    true
+                )
+                .await
+        );
+        let selected = stored_credit_rows(&data, name).await.pop().unwrap();
+        assert_ne!(selected.id, inspected.id);
+        let submitted = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_uuid(Uuid::new_v4()),
+            card_id: airc_work::WorkCardId::from_uuid(card),
+            claim_id: airc_work::ClaimId::from_uuid(selected.claim_id.unwrap()),
+            instance: "ordinary-project-card".into(),
+            base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            artifact: serde_json::from_value(
+                json!({"hash":"b".repeat(64),"size_bytes":5,"mime":"text/x-diff"}),
+            )
+            .unwrap(),
+            publisher: airc_core::PeerId::from_uuid(persona),
+            submitted_at_ms: 3,
+        };
+        let old = SubmissionSelection {
+            submission_id: submitted.submission_id.as_uuid(),
+            room_id: room,
+            card_id: card,
+            claim_id: submitted.claim_id.as_uuid(),
+            staged_revision_id: inspected.id,
+            instance: submitted.instance.clone(),
+            base_sha: submitted.base_sha.clone(),
+            artifact: submitted.artifact.clone(),
+        };
+        assert!(matches!(
+            reviewed::bind_submission(&data, name, persona, old).await,
+            Err(CreditBindingError::MissingRevision(_))
+        ));
+        assert!(matches!(
+            reviewed::bind_submission_generation(&data, name, persona, room, &submitted, "missing")
+                .await,
+            Err(CreditBindingError::AmbiguousGeneration(_))
+        ));
+        let bound = reviewed::bind_submission_generation(
+            &data,
+            name,
+            persona,
+            room,
+            &submitted,
+            "correction",
+        )
+        .await
+        .unwrap();
+        assert_eq!(bound.selection.staged_revision_id, selected.id);
+        receipts.push(served_receipt("later", "model-a"));
+        assert!(
+            capture
+                .record(&settlement_acts(12), &receipts, Some("Later work."), true)
+                .await
+        );
+        let reopened = conn_as(data_runtime(), persona);
+        let retry = reviewed::bind_submission_generation(
+            &reopened,
+            name,
+            persona,
+            room,
+            &submitted,
+            "correction",
+        )
+        .await
+        .unwrap();
+        assert_eq!(retry.selection, bound.selection);
+        assert!(matches!(
+            reviewed::bind_submission_generation(
+                &reopened, name, persona, room, &submitted, "later"
+            )
+            .await,
+            Err(CreditBindingError::WrongSelection)
+        ));
+        let mut changed = submitted.clone();
+        changed.artifact.size_bytes += 1;
+        assert!(matches!(
+            reviewed::bind_submission_generation(
+                &reopened,
+                name,
+                persona,
+                room,
+                &changed,
+                "correction"
+            )
+            .await,
+            Err(CreditBindingError::ConflictingSubmission(_))
+        ));
+        changed = submitted.clone();
+        changed.submission_id = airc_work::SubmissionId::from_uuid(Uuid::new_v4());
+        assert!(reviewed::bind_submission_generation(
+            &reopened,
+            name,
+            persona,
+            room,
+            &changed,
+            "correction"
+        )
+        .await
+        .is_err());
+    }
+
     // what this catches: 6c36c24d — legacy refusal/uncertain acknowledgement
     // cannot leave generation reservations whose replaced payload is lost.
     #[tokio::test]
