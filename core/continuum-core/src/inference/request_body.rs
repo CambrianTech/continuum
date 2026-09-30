@@ -46,6 +46,10 @@ pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
 /// The purpose a deliberation (speak / pass) turn announces on its request.
 pub(crate) const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
 
+/// A sensory description needs answer text within its existing completion allowance.
+/// Keep it distinct from persona deliberation for routing and diagnostics.
+pub(crate) const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
+
 /// The share of a deliberation turn's allowance the ANSWER keeps once thinking is
 /// bounded: three quarters may be thought, one quarter is left for what she says.
 // derived-or-floor: a share of the turn's own allowance (`output_allowance`, measured need
@@ -68,13 +72,14 @@ pub(crate) const DELIBERATION_ANSWER_SHARE_DIVISOR: u64 = 4;
 /// ONE seam for both kinds (Fable's review of #4413): an ACT thinks the fixed
 /// [`ACT_REASONING_BUDGET`] before its call; a DELIBERATION turn thinks
 /// [`deliberation_reasoning_budget`] of its own allowance, the answer keeping its share —
-/// and only when the body carries an allowance to derive it from. Any other purpose is
+/// and vision descriptions reuse that same answer share. This applies only when
+/// the body carries an allowance to derive it from. Any other purpose is
 /// left to the model. Returns the budget it applied.
 pub(crate) fn apply_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u64> {
     let obj = body.as_object_mut()?;
     let budget = match purpose {
         Some(ACT_PURPOSE) => u64::from(ACT_REASONING_BUDGET),
-        Some(DELIBERATION_PURPOSE) => {
+        Some(DELIBERATION_PURPOSE | VISION_DESCRIPTION_PURPOSE) => {
             deliberation_reasoning_budget(obj.get("max_tokens")?.as_u64()?)?
         }
         _ => return None,
@@ -127,9 +132,13 @@ pub(crate) fn finish_body(
     // allowance, so a turn can no longer end inside the reasoning channel with nothing
     // said.
     if let Some(budget) = apply_reasoning_budget(request.purpose.as_deref(), body) {
-        let is_act = request.purpose.as_deref() == Some(ACT_PURPOSE);
+        let budget_class = match request.purpose.as_deref() {
+            Some(ACT_PURPOSE) => "delib.act.reasoning_budgeted",
+            Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
+            _ => "delib.pass.reasoning_budgeted",
+        };
         crate::probe!(
-            class = if is_act { "delib.act.reasoning_budgeted" } else { "delib.pass.reasoning_budgeted" },
+            class = budget_class,
             model = %model,
             budget,
             max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: an act's fixed budget needs no allowance; absent is said as 0
