@@ -108,13 +108,15 @@ pub fn retain_capture(
     command: &str,
     value: &mut serde_json::Value,
 ) -> Result<Option<ImageArtifact>, String> {
-    retain_capture_with(command, value, store)
+    let directory = store_path().with_file_name("captures");
+    retain_capture_with(command, value, store, &directory)
 }
 
 pub(crate) fn retain_capture_with(
     command: &str,
     value: &mut serde_json::Value,
     open_store: impl FnOnce() -> Result<FsStore, String>,
+    attachment_directory: &std::path::Path,
 ) -> Result<Option<ImageArtifact>, String> {
     if command == "vision/look" {
         return value
@@ -144,7 +146,31 @@ pub(crate) fn retain_capture_with(
     let Some(data) = image.get("dataUrl").and_then(|v| v.as_str()) else {
         return Ok(None);
     };
-    let artifact = ImageArtifact::from_data_url(&open_store()?, data)?;
+    let store = open_store()?;
+    let artifact = ImageArtifact::from_data_url(&store, data)?;
+    // The same capture supplies pixels AND a ready-to-use attachment. Storage
+    // layout is never a task for the resident. Reuse the declared filepath slot.
+    let bytes = artifact.read(&store)?;
+    let format = image::guess_format(&bytes).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(attachment_directory).map_err(|e| e.to_string())?;
+    let path = attachment_directory.join(format!(
+        "{}.{}", artifact.hash, format.extensions_str()[0]
+    ));
+    if std::fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+        let temporary = attachment_directory.join(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| {
+            std::fs::write(&temporary, &bytes)?;
+            std::fs::rename(&temporary, &path)
+        })();
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&temporary);
+            // A concurrent identical capture may have published this attachment.
+            if std::fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+                return Err(format!("screenshot attachment publication failed: {error}"));
+            }
+        }
+    }
+    image.insert("filepath".into(), path.to_string_lossy().into_owned().into());
     image.remove("dataUrl");
     image.insert(
         "artifact".into(),

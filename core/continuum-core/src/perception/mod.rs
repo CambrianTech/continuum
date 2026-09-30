@@ -296,6 +296,7 @@ mod tests {
         use crate::media::artifact::{retain_capture_with, ImageArtifact};
         let dir = tempfile::tempdir().unwrap();
         let open = || airc_blobs::FsStore::new(dir.path()).map_err(|e| e.to_string());
+        let attachments = dir.path().join("captures");
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(32, 24)
             .write_to(&mut bytes, image::ImageFormat::Png).unwrap();
@@ -303,17 +304,23 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(bytes.get_ref()));
         let original = serde_json::json!({"success":true,"image":{"dataUrl":data,"width":32,"height":24}});
         let mut capture = original.clone();
-        let reference = retain_capture_with("perception/observe", &mut capture, open).unwrap().unwrap();
+        let reference = retain_capture_with("perception/observe", &mut capture, open, &attachments).unwrap().unwrap();
         assert!(capture["image"].get("dataUrl").is_none());
+        let attachment = capture["image"]["filepath"].as_str().unwrap();
+        assert_eq!(std::fs::read(attachment).unwrap(), *bytes.get_ref());
+        assert!(attachment.ends_with(".png"));
+        let mut repeated = original.clone();
+        retain_capture_with("perception/observe", &mut repeated, open, &attachments).unwrap();
+        assert_eq!(repeated["image"]["filepath"], capture["image"]["filepath"]);
         assert_eq!(reference.read(&open().unwrap()).unwrap(), *bytes.get_ref());
         let restored: ImageArtifact = serde_json::from_value(capture["image"]["artifact"].clone()).unwrap();
         assert_eq!(restored.hash, reference.hash);
         assert_eq!((restored.width, restored.height), (32,24));
         let mut other = original.clone();
-        assert!(retain_capture_with("code/shell", &mut other, open).unwrap().is_none());
+        assert!(retain_capture_with("code/shell", &mut other, open, &attachments).unwrap().is_none());
         assert_eq!(other, original);
         let mut failed = original.clone();
-        assert!(retain_capture_with("perception/observe", &mut failed, || Err("disk unavailable".into())).is_err());
+        assert!(retain_capture_with("perception/observe", &mut failed, || Err("disk unavailable".into()), &attachments).is_err());
         assert_eq!(failed, original, "failed storage must not erase the only source");
         // Correct hash/size cannot authenticate a forged geometry or MIME.
         let mut bad_geometry = restored.clone();
