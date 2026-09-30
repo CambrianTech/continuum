@@ -2602,9 +2602,15 @@ pub(crate) fn state_str(s: &CardState) -> &'static str {
 /// board, an airc daemon, or a running persona — the call site is where this
 /// went wrong, and an inline `match` is not something a test can reach.
 ///
-/// Delegates to [`card_holder::hold_of`], the SAME predicate `work/list` renders
-/// through. One rule for "is someone on this card", not two in one file.
+/// Uses the shared claimability-state and lease predicates. A settled card's
+/// retained lease must not override its original claim refusal.
 fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<airc_core::PeerId> {
+    // A retained lease on settled work is not claim contention. Otherwise a
+    // refused re-claim becomes AlreadyYours and select_work_claim replaces the
+    // useful settled-state refusal with WorkClaimNotCurrent (Kimi, 2026-09-30).
+    if crate::persona::card_holder::refused_by_claim(card.state) {
+        return None;
+    }
     match crate::persona::card_holder::hold_of(card, now_ms) {
         crate::persona::card_holder::Hold::Held => card.owner,
         // Lapsed or unclaimed: whatever refused the claim, it was not a person.
@@ -3802,6 +3808,15 @@ mod tests {
             None,
             "an owner with no claim is not a live hold"
         );
+        // A future lease must not turn a settled-state refusal into an attempted
+        // claim selection, or mislabel the old owner as a competing worker.
+        for state in [CardState::Review, CardState::Merged, CardState::Closed] {
+            let mut settled = card(true, Some(now + 60_000));
+            settled.state = state;
+            let holder = live_holder(&settled, now).map(|p| p.as_uuid());
+            assert_eq!(classify_refusal(holder, Some(owner.as_uuid())), ClaimRefusal::Fault);
+            assert_eq!(classify_refusal(holder, Some(Uuid::new_v4())), ClaimRefusal::Fault);
+        }
     }
 
     // what this catches: work/claim id resolution (#161) still rescues the exact
