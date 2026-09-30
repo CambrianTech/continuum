@@ -342,6 +342,16 @@ strip = "symbols"
 # if we ever decide the last 10% is worth it.
 lto = "thin"
 
+# Local installs rebuild this large crate for both the serving and GPU-free CLI
+# feature sets. Keep incremental caches for those distinct compilations so a
+# small harness edit does not redo every unchanged codegen unit in each set.
+# Preserve release's normal 16 units explicitly: enabling incremental would
+# otherwise change the default to 256. Optimization level and thin LTO stay put.
+# CI can still disable incremental with its existing CARGO_INCREMENTAL=0.
+[profile.release.package.continuum-core]
+incremental = true
+codegen-units = 16
+
 # Hot-iter profile — fastest possible compile for inner-loop work
 # (airc work claim → cargo build → test → repeat). Slice 3 of build-time
 # doctrine card 424deb5e: a third lane between `dev` (ergonomic debug)
