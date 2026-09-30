@@ -2878,6 +2878,7 @@ dependencies = [
  "continuum-client",
  "continuum-orm-derive",
  "continuum-positron",
+ "continuum-tool-protocol",
  "crossbeam-channel",
  "csv",
  "dashmap",
@@ -2973,6 +2974,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-tool-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "ts-rs 12.0.1",
  "uuid",
 ]
