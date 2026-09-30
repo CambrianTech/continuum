@@ -41,7 +41,7 @@ use issue_create::CodeGithubIssueCreate;
 pub(crate) fn attributed(body: String, ctx: &crate::sdk_codegen::Ctx) -> String {
     use crate::routing::auth_policy::CallerSource;
     match ctx.caller.as_ref() {
-        Some(c) if matches!(c.source, CallerSource::Airc) => format!(
+        Some(c) if matches!(c.source, CallerSource::Airc | CallerSource::LocalPersona) => format!(
             "{body}\n\n---\nAuthored by Continuum citizen `{}` (posted through the operator's GitHub account).",
             c.peer_id
         ),
@@ -243,6 +243,9 @@ mod tests {
         ctx.caller = Some(CallerIdentity::airc(citizen));
         let text = attributed("body".into(), &ctx);
         assert!(text.starts_with("body") && text.contains(&citizen.to_string()), "{text}");
+        // Regression: in-process residents use LocalPersona, not the AIRC transport.
+        ctx.caller = Some(CallerIdentity::local_persona(citizen));
+        assert_eq!(attributed("body".into(), &ctx), text);
         ctx.caller = Some(CallerIdentity::local(crate::identity::PeerId::new()));
         assert_eq!(attributed("body".into(), &ctx), "body");
     }
