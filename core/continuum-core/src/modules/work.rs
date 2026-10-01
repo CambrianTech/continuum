@@ -1714,8 +1714,7 @@ pub struct WorkCreateParams {
     /// The room whose board gets the card (id or name).
     // Required: a "current room" default put project cards in #general.
     pub room: String,
-    /// owner/name; omit for your actionable held card's repo. Cards awaiting review
-    /// are not selected, so pass repo explicitly when all your cards are in review.
+    /// owner/name; defaults to actionable card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
