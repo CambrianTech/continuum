@@ -347,6 +347,7 @@ pub(crate) fn wire_messages(
     // few extra and realloc once. Runs on every inference call — no
     // grow-from-zero reallocation on the hot path.
     let mut result = Vec::with_capacity(messages.len() + usize::from(system_prompt.is_some()));
+    let mut observations = Vec::new();
 
     // Add system prompt if provided
     if let Some(sys) = system_prompt {
@@ -357,6 +358,14 @@ pub(crate) fn wire_messages(
     }
 
     for msg in messages {
+        // Keep consecutive tool replies together, including replies carried by
+        // separate input messages. User media must not interrupt their pairing.
+        let is_tool_reply = matches!(&msg.content, MessageContent::Parts(parts)
+            if parts.iter().any(|p| matches!(p, ContentPart::ToolResult { .. }))
+                && !parts.iter().any(|p| matches!(p, ContentPart::ToolUse { .. })));
+        if !is_tool_reply {
+            result.append(&mut observations);
+        }
         match &msg.content {
             MessageContent::Text(text) => {
                 result.push(json!({
@@ -413,8 +422,10 @@ pub(crate) fn wire_messages(
                             }));
                         }
                     }
-                } else {
-                    // Standard multimodal content
+                }
+                if !has_tool_use {
+                    // Tool results may carry sibling pixels/audio. Emit their
+                    // protocol replies first, then preserve the observation.
                     let content: Vec<Value> = parts
                         .iter()
                         .filter_map(|p| match p {
@@ -461,15 +472,23 @@ pub(crate) fn wire_messages(
                         })
                         .collect();
 
-                    result.push(json!({
-                        "role": msg.role,
-                        "content": content
-                    }));
+                    if !has_tool_result || !content.is_empty() {
+                        let observation = json!({
+                            "role": if has_tool_result { "user" } else { msg.role.as_str() },
+                            "content": content
+                        });
+                        if has_tool_result {
+                            observations.push(observation);
+                        } else {
+                            result.push(observation);
+                        }
+                    }
                 }
             }
         }
     }
 
+    result.append(&mut observations);
     result
 }
 
@@ -598,6 +617,38 @@ pub(crate) fn build_base_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Tool protocol results must not silently discard sibling sensory evidence.
+    #[test]
+    fn tool_result_keeps_sibling_media_after_protocol_reply() {
+        let message: ChatMessage = serde_json::from_value(json!({
+            "role": "user", "content": [
+                {"type":"tool_result", "tool_use_id":"capture-1", "content":"captured"},
+                {"type":"text", "text":"Current rendering"},
+                {"type":"image", "image":{"base64":"pixels", "mimeType":"image/png"}},
+                {"type":"audio", "audio":{"base64":"sound", "mimeType":"audio/wav"}}
+            ]
+        })).unwrap();
+        let wire = wire_messages(&[message.clone()], None, true, true, "test");
+        assert_eq!(wire.len(), 2);
+        assert_eq!(wire[0]["tool_call_id"], "capture-1");
+        assert_eq!(wire[1]["role"], "user");
+        assert_eq!(wire[1]["content"][1]["image_url"]["url"], "data:image/png;base64,pixels");
+        assert_eq!(wire[1]["content"][2]["input_audio"]["data"], "sound");
+        let mut second = message.clone();
+        if let MessageContent::Parts(parts) = &mut second.content {
+            if let ContentPart::ToolResult { tool_use_id, .. } = &mut parts[0] {
+                *tool_use_id = "capture-2".into();
+            }
+        }
+        let batch = wire_messages(&[message.clone(), second], None, true, true, "test");
+        assert_eq!(batch.iter().map(|m| m["role"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["tool", "tool", "user", "user"]);
+        assert_eq!(batch[1]["tool_call_id"], "capture-2");
+        let mut only_result = message;
+        if let MessageContent::Parts(parts) = &mut only_result.content { parts.truncate(1); }
+        assert_eq!(wire_messages(&[only_result], None, true, true, "test").len(), 1);
+    }
 
     // what this catches: through the ONE seam, the ACT budget is the fixed
     // ACT_REASONING_BUDGET count, applied to an act request and to nothing else — a
