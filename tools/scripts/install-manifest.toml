@@ -227,6 +227,20 @@ package = "cmake"
 windows = ["~/.continuum/tools/cmake/bin"]
 
 [[module]]
+id = "xz-decoder"
+order = 49
+tier = 3
+flags = ["dev"]
+platforms = ["windows"]
+accept = "xz --version"
+[module.sources.windows]
+type = "archive"
+url = "https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4-windows.zip"
+version = "5.8.4"
+sha256 = "f31af7638391ecf286d48bc8555ce6e131691a1c52a9e44303bce57069e9de56"
+extract = "preserve-tree"
+
+[[module]]
 id = "llvm-libclang"
 order = 50
 tier = 3

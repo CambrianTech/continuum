@@ -410,6 +410,48 @@ function Mod-CMake {
     else { Module-Fail 'CMake' "cmake.exe not found after extract to $dir" }
 }
 
+function Get-ManagedXzDecoder {
+    # Windows bsdtar may delegate XZ to an external decoder. Acquire that
+    # prerequisite from the manifest, in user-owned payload storage, before tar.
+    $src = (Get-ManifestModule 'xz-decoder').source
+    $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\xz'
+    $exe = Join-Path $dir 'bin_x86-64\xz.exe'
+    if (Test-Path -LiteralPath $exe) {
+        $version = (& $exe --version | Out-String)
+        if ($LASTEXITCODE -eq 0 -and $version.Contains("XZ Utils) $($src.version)")) { return $exe }
+    }
+    Write-Host "  > [XZ] acquiring archive decoder $($src.version) (no admin)"
+    $archive = Join-Path $env:TEMP "xz-$($src.version)-windows.zip"
+    if (-not (Test-Path -LiteralPath $archive) -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $src.sha256) {
+        $partial = $archive + '.download'
+        Invoke-WebRequest -Uri $src.url -OutFile $partial -UseBasicParsing
+        Assert-Sha256 -Path $partial -Expected $src.sha256 -Name 'XZ'
+        Move-Item -LiteralPath $partial -Destination $archive -Force
+    }
+    Assert-Sha256 -Path $archive -Expected $src.sha256 -Name 'XZ'
+    Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force
+    if (-not (Test-Path -LiteralPath $exe)) { throw 'XZ archive did not supply the required Windows decoder.' }
+    $version = (& $exe --version | Out-String)
+    if ($LASTEXITCODE -ne 0 -or -not $version.Contains("XZ Utils) $($src.version)")) { throw 'XZ decoder verification failed.' }
+    return $exe
+}
+
+function Expand-ManagedTarXz {
+    param([string]$Archive, [string]$Destination, [string[]]$Members)
+    $decoder = Get-ManagedXzDecoder
+    $savedPath = $env:PATH
+    $savedPreference = $ErrorActionPreference
+    try {
+        $env:PATH = (Split-Path $decoder) + ';' + $savedPath
+        # Capture native stderr in PS5 without losing the exit status. A failed
+        # decoder/extractor must never be reported as a completed prerequisite.
+        $ErrorActionPreference = 'Continue'
+        $diagnostic = @(& (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $Archive -C $Destination --strip-components=1 @Members 2>&1)
+        $code = $LASTEXITCODE
+    } finally { $env:PATH = $savedPath; $ErrorActionPreference = $savedPreference }
+    if ($code -ne 0) { throw "Archive extraction failed (exit $code): $($diagnostic -join [Environment]::NewLine)" }
+}
+
 function Mod-LLVM {
     param([switch]$ExistingOnly)
     # libclang.dll for bindgen. From LLVM's OFFICIAL release (clang+llvm
@@ -438,14 +480,18 @@ function Mod-LLVM {
     }
     Assert-Sha256 -Path $tar -Expected $src.sha256 -Name 'LLVM'
     New-Item -ItemType Directory -Force $dir | Out-Null
-    # Use Windows' bsdtar EXPLICITLY -- git-bash's MSYS /usr/bin/tar reads the C:\
-    # dest as a remote host ("cannot connect to C:") and fails. Extract only
-    # bin/libclang.dll (fast); bindgen finds system headers via the MSVC env.
-    $wtar = Join-Path $env:SystemRoot 'System32\tar.exe'
-    & $wtar -xf $tar -C $dir --strip-components=1 "*/bin/libclang.dll" 2>$null
-    if (-not (Test-Path (Join-Path $bin 'libclang.dll'))) {
-        & $wtar -xf $tar -C $dir --strip-components=1 "*/bin/*" 2>$null
-    }
+    # Stage extraction before publishing; a decoder failure must not leave a
+    # partial DLL that a rerun mistakes for an installed prerequisite.
+    if (-not $src.extract.StartsWith('members:')) { throw 'LLVM manifest must declare archive members.' }
+    $stageRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+    $stage = Join-Path $stageRoot ('continuum-llvm-' + [guid]::NewGuid().ToString('N'))
+    if (-not ([IO.Path]::GetFullPath($stage)).StartsWith($stageRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe LLVM staging directory' }
+    New-Item -ItemType Directory -Path $stage | Out-Null
+    try {
+        Expand-ManagedTarXz -Archive $tar -Destination $stage -Members $src.extract.Substring(8).Split(',')
+        if (-not (Test-Path (Join-Path $stage 'bin\libclang.dll'))) { throw 'LLVM archive did not contain libclang.dll.' }
+        Get-ChildItem -LiteralPath $stage | Copy-Item -Destination $dir -Recurse -Force -ErrorAction Stop
+    } finally { Remove-Item -LiteralPath $stage -Recurse -Force }
     # Keep the tarball cached in TEMP for fast re-runs.
     if (Test-Path (Join-Path $bin 'libclang.dll')) {
         $env:LIBCLANG_PATH = $bin
