@@ -104,6 +104,7 @@ if ($Update) {
 $installLease = Enter-ContinuumInstallLease
 try {
 . (Join-Path $LibDir 'install-common.ps1')
+if (-not $PrepareOnly) { Initialize-ElevationSession }
 . (Join-Path $LibDir 'windows-service.ps1')
 . (Join-Path $LibDir 'windows-prepared.ps1')
 if ($ResumePrepared) {
@@ -193,7 +194,7 @@ finally {
 }
 
 Write-Host ''
-} finally { $installLease.Dispose() }
+} finally { try { Clear-Elevation } finally { $installLease.Dispose() } }
 Write-Ok 'Continuum native install complete.'
 Write-Host '  Update: .\install.ps1 -Update  (fast-forward this checkout, build, verify, and hand over)'
 Write-Host '  Test:   continuum ping'

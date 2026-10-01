@@ -578,9 +578,13 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:elevationCalls = 0
         $script:elevationMode = 'failure'
         function Test-IsAdmin { $false }
-        function Ensure-Gsudo { }
+        function Ensure-Gsudo { $script:GsudoExecutable = 'gsudo' }
+        function Find-GsudoExecutable { 'gsudo' }
+        function Test-ElevationCacheAvailable { $false }
+        $script:gsudoArguments = @()
         function gsudo {
             $script:elevationCalls++
+            $script:gsudoArguments += ($args -join ' ')
             if ($script:elevationMode -eq 'failure') {
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
@@ -615,6 +619,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:elevationMode = 'cleanup-info'
         Clear-Elevation
         if ($script:ElevationWarmed -or $ErrorActionPreference -ne 'Stop') { throw 'Successful cleanup retained cache state or changed error policy' }
+        Initialize-ElevationSession
         $script:ElevationWarmed = $true
         $script:elevationMode = 'failure'
         $failure = $null
@@ -625,6 +630,99 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         function Test-IsAdmin { $true }
         Ensure-Elevated -Reason $reason
         if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Already elevated path invoked gsudo' }
+        Clear-Elevation
+
+        # Shared-installer regression: a child can be the first admin caller,
+        # but only the outer owner disposes its process-scoped cache. No global
+        # authorization, no default five-minute expiry during a build.
+        function Test-IsAdmin { $false }
+        $script:elevationMode = 'success'
+        Initialize-ElevationSession
+        $parentSession = $script:InstallElevationSession
+        $parentContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        # Real process boundaries: same-PID mocks cannot exercise ancestry.
+        $helperPath = (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1').Replace("'", "''")
+        $probe = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    . '$helperPath'
+    Initialize-ElevationSession
+    if (-not `$script:InstallElevationSession.Borrowed -or `$script:InstallElevationSession.OwnerPid -ne $PID) { throw 'Child did not borrow expected owner.' }
+    Clear-Elevation
+    if (-not `$env:CAMBRIAN_INSTALL_ELEVATION) { throw 'Child removed parent context.' }
+    Write-Output 'fixture process borrowed and released locally'
+} catch { Write-Output `$_.Exception.Message; exit 1 }
+"@
+        $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $bashExe = Get-Command git.exe -CommandType Application -All -ErrorAction Stop | ForEach-Object {
+            Join-Path (Split-Path (Split-Path $_.Source)) 'bin\bash.exe'
+        } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $bashExe) { throw 'Git Bash is required for the Windows installer ancestry regression.' }
+        foreach ($viaBash in @($false, $true)) {
+            $probeInfo = [Diagnostics.ProcessStartInfo]::new($powerShellExe)
+            $probeInfo.Arguments = "-NoProfile -NonInteractive -EncodedCommand $encodedProbe"
+            if ($viaBash) {
+                $probeInfo.FileName = $bashExe
+                $probeInfo.Arguments = '--noprofile --norc -c "powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + $encodedProbe + '"'
+            }
+            $probeInfo.UseShellExecute = $false
+            $probeInfo.CreateNoWindow = $true
+            $probeInfo.RedirectStandardOutput = $true
+            $probeInfo.RedirectStandardError = $true
+            $probeChild = [Diagnostics.Process]::Start($probeInfo)
+            try {
+                $probeOut = $probeChild.StandardOutput.ReadToEndAsync()
+                $probeErr = $probeChild.StandardError.ReadToEndAsync()
+                if (-not $probeChild.WaitForExit(120000)) { $probeChild.Kill(); $probeChild.WaitForExit(); throw 'Elevation ancestry child timed out' }
+                $probeOutput = $probeOut.Result + $probeErr.Result
+                if ($probeChild.ExitCode -ne 0 -or $probeOutput -notmatch 'fixture process borrowed and released locally') {
+                    throw "Elevation ancestry failed (Git Bash=$viaBash): $probeOutput"
+                }
+            } finally { $probeChild.Dispose() }
+        }
+        $script:InstallElevationSession = $null
+        Initialize-ElevationSession
+        if (-not $script:InstallElevationSession.Borrowed) { throw 'Nested installer claimed parent cache ownership' }
+        Ensure-Elevated -Reason 'child firewall fixture'
+        if ($script:gsudoArguments[-1] -ne "cache on -p $PID -d -1") { throw 'Cache was not bound to the installer lifetime/process' }
+        $callsBeforeChildCleanup = $script:elevationCalls
+        Clear-Elevation
+        if ($script:elevationCalls -ne $callsBeforeChildCleanup -or $env:CAMBRIAN_INSTALL_ELEVATION -ne $parentContext) {
+            throw 'Borrowed cleanup disposed or hid the outer owner context'
+        }
+        $script:InstallElevationSession = $parentSession
+        $script:ElevationWarmed = $false
+        Clear-Elevation
+        if ($script:elevationCalls -ne ($callsBeforeChildCleanup + 1) -or
+            $script:gsudoArguments[-1] -ne "cache off -p $PID" -or $env:CAMBRIAN_INSTALL_ELEVATION) {
+            throw 'Outer owner failed to close a child-acquired cache'
+        }
+        # A no-work install in an interactive shell must not clear its existing
+        # caller-owned cache, nor extend that cache when it borrows elevation.
+        function Test-ElevationCacheAvailable { $true }
+        $callsBeforeExisting = $script:elevationCalls
+        Initialize-ElevationSession
+        if (-not $script:InstallElevationSession.ExistingCache) { throw 'Pre-existing cache was claimed by installer' }
+        Clear-Elevation
+        Initialize-ElevationSession
+        Ensure-Elevated -Reason 'borrowing an existing cache'
+        if ($script:elevationCalls -ne $callsBeforeExisting) { throw 'Existing cache was reacquired or cleared by installer' }
+        function Test-ElevationCacheAvailable { $false }
+        $failure = $null
+        try { Ensure-Elevated -Reason 'expired borrowed cache' } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'pre-existing elevation cache expired') { throw 'Expired external cache silently reacquired consent' }
+        Clear-Elevation
+        if ($script:elevationCalls -ne $callsBeforeExisting) { throw 'External cache cleanup invoked gsudo' }
+        $invalid = $parentContext | ConvertFrom-Json
+        $invalid.ownerStarted = '0'
+        $env:CAMBRIAN_INSTALL_ELEVATION = $invalid | ConvertTo-Json -Compress
+        $failure = $null
+        try { Initialize-ElevationSession } catch { $failure = $_.Exception.Message }
+        Remove-Item Env:CAMBRIAN_INSTALL_ELEVATION
+        if (-not $failure -or $failure -notmatch 'owner process has changed' -or $script:InstallElevationSession) {
+            throw 'Stale inherited elevation owner was accepted'
+        }
     }
     Write-Output 'PASS: elevation failure preserves native diagnostics and phase without guessing cause'
 

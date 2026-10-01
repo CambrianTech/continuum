@@ -118,8 +118,7 @@ function Install-IfMissing {
     if ($UserScope -or (Test-IsAdmin)) {
         & winget @wingetArgs
     } else {
-        Ensure-Elevated -Reason "installing $Name"
-        & gsudo winget @wingetArgs
+        Invoke-Elevated -Reason "installing $Name" -CommandLine (@('winget') + $wingetArgs)
     }
     $code = $LASTEXITCODE
     Update-SessionPath

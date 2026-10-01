@@ -435,12 +435,27 @@ To do before merge (consolidation):
 
 `tools/scripts/lib/windows-elevation.ps1` now contains the existing Windows
 acquire/invoke/clear implementation and its PATH/admin probes. `install-common.ps1`
-imports it. The helper has no application-module or logging-library dependency;
-extracting it does not change who requests or clears the existing cache.
+imports it. The helper has no application-module or logging-library dependency.
+Package installation also uses this helper instead of invoking gsudo separately.
 
-AIRC integration remains incomplete. The next changes must export one installer
-owner context, let nested installers borrow it without disposing it, retain the
-cache across builds, and invoke the native gsudo executable through shell adapters.
+The outer installer now exports a versioned PID/start-time context. Children
+validate the owner's process identity and ancestry before borrowing it. The first
+admin operation acquires a cache scoped to that owner and its descendants; its
+idle lifetime spans builds. The outermost finally closes that process's cache,
+including child-first acquisition, and owner process exit also ends it. Child
+cleanup cannot dispose the parent's cache. No global cache setting is changed.
+
+A pre-existing caller cache is borrowed without extending or closing it. If it
+expires, setup fails explicitly instead of silently seeking another approval.
+Native executable resolution excludes aliases and Bash wrappers. Prepare-only
+installation does not initialize an elevation session.
+
+Regression coverage includes acquisition diagnostics, child-first ownership,
+borrowed cleanup, pre-existing cache preservation/expiry, stale-owner rejection,
+and real PowerShell child ancestry both directly and through Git Bash. These
+checks do not establish live UAC or public-entry installation success.
+
+AIRC integration remains incomplete, including its exact PowerShell/Bash adapter.
 Standalone AIRC must acquire a pinned, integrity-checked copy of this small artifact
 without requiring a Continuum application install. Continuum's AIRC firewall module
 must delegate AIRC's canonical policy rather than creating its own broad rule.
