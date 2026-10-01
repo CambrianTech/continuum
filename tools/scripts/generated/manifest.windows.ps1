@@ -7,6 +7,7 @@
 # ==============================================================================
 
 $script:ContinuumManifest = [ordered]@{
+  'gsudo' = @{ order = 5; tier = 0; accept = 'gsudo.exe --version'; source = @{ type = 'winget'; id = 'gerardog.gsudo'; scope = 'user' } }
   'rust' = @{ order = 10; tier = 0; accept = 'rustc --version'; source = @{ type = 'winget'; id = 'Rustlang.Rustup'; scope = 'user' } }
   'gh' = @{ order = 20; tier = 0; accept = 'gh --version'; source = @{ type = 'winget'; id = 'GitHub.cli' } }
   'gh-auth' = @{ order = 25; tier = 0; flags = @('grid'); accept = 'gh auth status'; source = @{ type = 'command'; run = 'gh auth login --hostname github.com --git-protocol https --web' } }

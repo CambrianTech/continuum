@@ -366,6 +366,9 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $fakeLib
         }
+        $fakeGenerated = Join-Path (Split-Path $fakeLib) 'generated'
+        New-Item -ItemType Directory -Path $fakeGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $fakeGenerated
         $shim = @'
 . '__SERVICE__'
 function Get-ScheduledTask { $null }
@@ -726,6 +729,30 @@ try {
     }
     Write-Output 'PASS: elevation failure preserves native diagnostics and phase without guessing cause'
 
+    # The shared helper must consume manifest data, including in standalone
+    # consumers. Missing/unsupported source data must never start acquisition.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1') -GsudoSource @{type='winget';id='fixture.package';scope='user'}
+        $script:gsudoFinds = 0
+        $script:gsudoPackageArgs = @()
+        function Find-GsudoExecutable { $script:gsudoFinds++; if ($script:gsudoFinds -gt 1) { 'fixture-native.exe' } }
+        function Update-SessionPath { }
+        function winget { $script:gsudoPackageArgs = @($args); $global:LASTEXITCODE = 0 }
+        Ensure-Gsudo
+        if ($script:GsudoExecutable -ne 'fixture-native.exe' -or
+            ($script:gsudoPackageArgs -join ' ') -notmatch '--id fixture.package --source winget' -or
+            ($script:gsudoPackageArgs -join ' ') -notmatch '--scope user') { throw 'gsudo acquisition ignored manifest source' }
+        $script:ElevationGsudoSource = @{type='winget';id='fixture.package';scope='machine'}
+        $script:gsudoFinds = 0
+        $script:gsudoPackageArgs = @()
+        $failure = $null
+        try { Ensure-Gsudo } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'per-user gsudo package source' -or $script:gsudoPackageArgs.Count) {
+            throw 'Unsupported elevation-helper acquisition was attempted'
+        }
+    }
+    Write-Output 'PASS: standalone elevation acquisition uses the shared manifest and rejects unsupported scope'
+
     $installed = Join-Path $scratch 'installed with spaces'
     $target = Join-Path $scratch 'cargo'
     New-Item -ItemType Directory -Path (Join-Path $target 'release') | Out-Null
@@ -962,6 +989,9 @@ public class SupervisorFixture {
         foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $prepareLib
         }
+        $prepareGenerated = Join-Path (Split-Path $prepareLib) 'generated'
+        New-Item -ItemType Directory -Path $prepareGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $prepareGenerated
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination (Split-Path $prepareLib)
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\start-livekit-windows.ps1') -Destination (Split-Path $prepareLib)
         $oldArtifact = Join-Path $oldSlot 'continuum-core-server.exe'

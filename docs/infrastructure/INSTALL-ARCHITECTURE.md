@@ -437,6 +437,10 @@ To do before merge (consolidation):
 acquire/invoke/clear implementation and its PATH/admin probes. `install-common.ps1`
 imports it. The helper has no application-module or logging-library dependency.
 Package installation also uses this helper instead of invoking gsudo separately.
+The gsudo package source is declared in `install-manifest.toml` and passed from
+its generated Windows projection. Standalone consumers supply that same source
+descriptor with the helper; missing or non-user acquisition scope fails before
+installing anything. The helper contains no separate package-ID choice.
 
 The outer installer now exports a versioned PID/start-time context. Children
 validate the owner's process identity and ancestry before borrowing it. The first

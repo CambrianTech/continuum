@@ -85,7 +85,8 @@ function Enter-MsvcEnv {
     Write-Ok "MSVC env loaded (VS2022, nvcc-compatible): $vsPath"
 }
 
-. (Join-Path $PSScriptRoot 'windows-elevation.ps1')
+. (Join-Path $PSScriptRoot '..\generated\manifest.windows.ps1')
+. (Join-Path $PSScriptRoot 'windows-elevation.ps1') -GsudoSource $script:ContinuumManifest['gsudo'].source
 
 #  Install-IfMissing -- idempotent, auto-updating, scope-aware 
 #

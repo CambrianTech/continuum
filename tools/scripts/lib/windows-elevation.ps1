@@ -1,5 +1,7 @@
 # Shared Windows installer elevation implementation. No application install is required.
 # Imported by Continuum; standalone artifact boundary for AIRC integration.
+param([System.Collections.IDictionary]$GsudoSource)
+$script:ElevationGsudoSource = $GsudoSource
 function Update-SessionPath {
     $machine = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
     $user    = [Environment]::GetEnvironmentVariable('PATH', 'User')
@@ -81,9 +83,13 @@ function Test-ElevationCacheAvailable {
 function Ensure-Gsudo {
     $script:GsudoExecutable = Find-GsudoExecutable
     if ($script:GsudoExecutable) { return }
+    $source = $script:ElevationGsudoSource
+    if (-not $source -or $source.type -ne 'winget' -or -not $source.id -or $source.scope -ne 'user') {
+        throw 'The shared installer manifest must supply a per-user gsudo package source.'
+    }
     Write-Host 'Installing gsudo (per-user) -- the shared elevation helper ...'
-    & winget install --id gerardog.gsudo --exact --silent `
-        --accept-package-agreements --accept-source-agreements --scope user
+    & winget install --id $source.id --source winget --exact --silent `
+        --accept-package-agreements --accept-source-agreements --scope $source.scope
     $code = $LASTEXITCODE
     if ($code -ne 0 -and $code -ne 3010) { throw "gsudo acquisition failed (winget exit $code)." }
     Update-SessionPath

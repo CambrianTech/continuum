@@ -34,6 +34,17 @@
 
 schema_version = 1
 
+[[module]]
+id = "gsudo"
+order = 5
+tier = 0
+platforms = ["windows"]
+accept = "gsudo.exe --version"
+[module.sources.windows]
+type = "winget"
+id = "gerardog.gsudo"
+scope = "user"
+
 # PDF perception is a provider runtime dependency, including non-developer installs.
 [[module]]
 id = "poppler"
