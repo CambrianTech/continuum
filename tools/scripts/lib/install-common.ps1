@@ -88,6 +88,24 @@ function Enter-MsvcEnv {
 . (Join-Path $PSScriptRoot '..\generated\manifest.windows.ps1')
 . (Join-Path $PSScriptRoot 'windows-elevation.ps1') -GsudoSource $script:ContinuumManifest['gsudo'].source
 
+function Initialize-InstallEnvironment {
+    param(
+        [System.Collections.IDictionary]$UserEnvironment = [Environment]::GetEnvironmentVariables('User'),
+        [System.Collections.IDictionary]$MachineEnvironment = [Environment]::GetEnvironmentVariables('Machine')
+    )
+    # A desktop/agent process may predate a previous installation. Restore the
+    # registered Rust homes rather than making rustup create a second toolchain
+    # in the profile. Explicit values in this process still take precedence.
+    foreach ($name in @('CARGO_HOME', 'RUSTUP_HOME')) {
+        if (-not [Environment]::GetEnvironmentVariable($name, 'Process')) {
+            $value = $UserEnvironment[$name]
+            if (-not $value) { $value = $MachineEnvironment[$name] }
+            if ($value) { Set-Item -LiteralPath "Env:$name" -Value $value }
+        }
+    }
+    Update-SessionPath
+}
+
 #  Install-IfMissing -- idempotent, auto-updating, scope-aware 
 #
 # guard -> (skip if satisfied) -> announce -> install (elevated only if machine
@@ -121,15 +139,17 @@ function Install-IfMissing {
     } else {
         Invoke-Elevated -Reason "installing $Name" -CommandLine (@('winget') + $wingetArgs)
     }
-    $code = $LASTEXITCODE
+    # Native children update the global status even when a caller has a stale
+    # local LASTEXITCODE (the same boundary used by the shared elevation helper).
+    $code = $global:LASTEXITCODE
     Update-SessionPath
 
     # winget success codes: 0 = ok; 3010 = installed, reboot required (success).
     if ($code -eq 0 -or $code -eq 3010) {
         if ($code -eq 3010) { Write-Warn2 "$Name installed -- a reboot is needed to finalize (safe to continue)." }
         if (& $TestCmd) { Module-Done $Name }
-        else { Write-Warn2 "$Name installed but its probe still fails -- likely a PATH refresh needed in a NEW shell." }
+        else { throw "$Name provisioning returned $code, but its verification probe still fails after refreshing PATH. Setup stopped before dependent builds; rerun this installer after resolving the reported prerequisite failure." }
     } else {
-        Write-Warn2 "$Name winget exited $code -- if the build later fails on this dep, install it manually and re-run."
+        throw "$Name provisioning failed: winget exited $code. Setup stopped before dependent builds; retain the vendor diagnostics above and rerun this installer after resolving the failure."
     }
 }

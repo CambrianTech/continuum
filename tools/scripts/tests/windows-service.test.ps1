@@ -9,6 +9,64 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: a long-lived desktop inherited no Rust-home settings
+    # from an earlier install, and PATH refresh discarded session-selected tools.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\install-common.ps1')
+        $savedCargo = $env:CARGO_HOME; $savedRustup = $env:RUSTUP_HOME; $savedPath = $env:PATH
+        try {
+            $env:CARGO_HOME = $null; $env:RUSTUP_HOME = $null
+            $env:PATH = 'Z:\fixture tools;z:\FIXTURE TOOLS;' + $savedPath
+            Initialize-InstallEnvironment -UserEnvironment @{CARGO_HOME='Z:\user cargo'} -MachineEnvironment @{CARGO_HOME='Z:\machine cargo';RUSTUP_HOME='Z:\machine rustup'}
+            if ($env:CARGO_HOME -cne 'Z:\user cargo' -or $env:RUSTUP_HOME -cne 'Z:\machine rustup') { throw 'Registered Rust homes were not restored with user precedence' }
+            if (-not $env:PATH.StartsWith('Z:\fixture tools;') -or @($env:PATH -split ';' | Where-Object { $_ -ieq 'Z:\fixture tools' }).Count -ne 1) { throw 'Session PATH was lost or duplicated' }
+            $firstPath = $env:PATH
+            Initialize-InstallEnvironment -UserEnvironment @{CARGO_HOME='Z:\different cargo'} -MachineEnvironment @{}
+            if ($env:CARGO_HOME -cne 'Z:\user cargo' -or $env:PATH -cne $firstPath) { throw 'Environment rerun overwrote explicit values or grew PATH' }
+            $env:CARGO_HOME = $null; $env:RUSTUP_HOME = $null
+            Initialize-InstallEnvironment -UserEnvironment @{} -MachineEnvironment @{}
+            if ($env:CARGO_HOME -or $env:RUSTUP_HOME) { throw 'Unconfigured host acquired invented Rust homes' }
+        } finally { $env:CARGO_HOME=$savedCargo; $env:RUSTUP_HOME=$savedRustup; $env:PATH=$savedPath }
+        Write-Output 'PASS: persisted Rust homes, explicit process precedence, missing settings and stable session PATH restoration'
+    }
+    # what this catches: failed prerequisite installs used to warn and continue
+    # into builds, while a caller-local status could hide the native result.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\install-common.ps1')
+        $script:prerequisiteExit = 0
+        $script:prerequisiteInstalled = $false
+        $script:prerequisiteProbePass = $false
+        $script:prerequisiteCalls = 0
+        $script:prerequisiteDone = $false
+        function winget {
+            $script:prerequisiteCalls++
+            & $env:ComSpec /d /c "exit $script:prerequisiteExit"
+            $script:prerequisiteInstalled = $true
+        }
+        function Update-SessionPath { }
+        function Module-Start { }
+        function Module-Skip { }
+        function Module-Done { $script:prerequisiteDone = $true }
+        function Write-Warn2 { }
+        $probe = { $script:prerequisiteInstalled -and $script:prerequisiteProbePass }
+        $LASTEXITCODE = 73
+        foreach ($case in @(@(1603, $false, 'winget exited 1603'), @(0, $false, 'verification probe still fails'), @(0, $true, ''), @(3010, $true, ''))) {
+            $script:prerequisiteExit = $case[0]
+            $script:prerequisiteProbePass = $case[1]
+            $script:prerequisiteInstalled = $false
+            $script:prerequisiteDone = $false
+            $failure = ''
+            try { Install-IfMissing -Name fixture -WingetId fixture.invalid -TestCmd $probe -UserScope }
+            catch { $failure = $_.Exception.Message }
+            if ($case[2]) {
+                if (-not $failure.Contains($case[2]) -or $script:prerequisiteDone) { throw "Prerequisite failure was masked: $failure" }
+            } elseif ($failure -or -not $script:prerequisiteDone) { throw "Verified prerequisite was falsely refused: $failure" }
+        }
+        $before = $script:prerequisiteCalls
+        Install-IfMissing -Name fixture -WingetId fixture.invalid -TestCmd $probe -UserScope
+        if ($script:prerequisiteCalls -ne $before) { throw 'Already healthy prerequisite was installed again' }
+        Write-Output 'PASS: native prerequisite failures and failed verification stop setup; verified success/reboot/reuse remain valid'
+    }
     # what this catches: cold-storage reruns erased unrelated config and treated
     # the installer's own quoted path as absent, rediscovering a different disk.
     & {
