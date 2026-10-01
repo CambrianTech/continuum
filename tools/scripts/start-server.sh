@@ -1085,6 +1085,8 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
     MINGW*|MSYS*|CYGWIN*)
       bash "$SCRIPT_DIR/install-livekit.sh" || exit 1
       cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release || exit 1
+      # The Rust handoff stages siblings of the core artifact, not source files.
+      cp "$SCRIPT_DIR/start-livekit-windows.ps1" "$CARGO_TARGET_DIR/release/start-livekit-windows.ps1" || exit 1
       ;;
   esac
   # The caller must launch THIS artifact, not guess our profile/target directory
