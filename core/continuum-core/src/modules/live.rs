@@ -1103,8 +1103,10 @@ impl ServiceModule for VoiceModule {
                     pcm.extend(std::iter::repeat(0i16).take(
                         (crate::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
                     ));
-                    for chunk in pcm.chunks(320) {
-                        self.state.call_manager.push_audio(&handle, chunk.to_vec()).await;
+                    for chunk in pcm.chunks(crate::audio_constants::AUDIO_FRAME_SIZE) {
+                        let mut frame = chunk.to_vec();
+                        frame.resize(crate::audio_constants::AUDIO_FRAME_SIZE, 0);
+                        self.state.call_manager.push_audio(&handle, frame).await;
                         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                     }
                     let wait = tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -1140,7 +1142,9 @@ impl ServiceModule for VoiceModule {
                     .iter()
                     .filter(|w| lower.contains(**w))
                     .count();
-                let matched = hits >= 2;
+                // A generic fragment (or leaked vocabulary IDs) is not proof
+                // that this synthesized nonce survived the audio path.
+                let matched = hits >= 2 && lower.contains(word) && !transcript.contains('\t');
                 let leg = if room_leg { "room" } else { "engine" };
                 crate::probe!(
                     class = "live.selftest",
