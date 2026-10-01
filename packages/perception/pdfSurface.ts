@@ -46,6 +46,9 @@ export class PdfSurface implements Surface {
   static async open(options: PdfSurfaceOptions): Promise<PdfSurface> {
     if (!PdfSurface.accepts(options.target)) throw new Error('PDF observation requires a local file:///...pdf URL');
     const url = new URL(options.target);
+    if (url.hostname && url.hostname !== 'localhost') {
+      throw new Error('PDF observation requires a local file, not a network file host');
+    }
     const fragment = url.hash.slice(1);
     if (url.search || (fragment && !/^page=[1-9]\d*$/.test(fragment))) {
       throw new Error('PDF target accepts only #page=N, with a one-based page number');
