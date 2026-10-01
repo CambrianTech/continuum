@@ -288,6 +288,60 @@ test_cold_storage_preserves_config() (
   ( unset CONTINUUM_STORAGE_PATH; source "$config"; assert_eq "$cold" "$CONTINUUM_STORAGE_PATH" )
 )
 
+test_cold_storage_resumes_owned_migration() (
+  source "$LIB"
+  local scratch; scratch="$(mktemp -d)" || return 1
+  scratch="$(cd "$scratch" && pwd -P)" || return 1
+  trap 'rm -rf -- "$scratch"' EXIT
+  export HOME="$scratch/home"
+  local cold="$scratch/cold" src="$HOME/.cache/huggingface" config="$HOME/.continuum/config.env"
+  mkdir -p "$src" "$HOME/.continuum" "$cold" || return 1
+  printf '%s\n' "$cold" > "$HOME/.continuum/cold-storage.pending"
+  printf '# retained until success\n' > "$config"
+  printf 'first\n' > "$src/first"; printf 'second\n' > "$src/second"
+  local fail_copy=1
+  cp() {
+    if [ "$fail_copy" = 1 ]; then command cp "$src/first" "$cold/huggingface/first"; return 42; fi
+    command cp "$@"
+  }
+  _cold_drive() { echo 'must not change drives during interrupted migration' >&2; return 1; }
+  if mod_cold_storage; then echo 'Partial copy accepted' >&2; return 1; fi
+  assert_eq '# retained until success' "$(cat "$config")" || return 1
+  [ -f "$cold/huggingface.continuum-migration" ] || return 1
+  fail_copy=0
+  mod_cold_storage || return 1
+  [ ! -e "$src" ] && [ ! -e "$HOME/.continuum/cold-storage.pending" ] || return 1
+  assert_eq first "$(cat "$cold/huggingface/first")" || return 1
+  assert_eq second "$(cat "$cold/huggingface/second")" || return 1
+  mod_cold_storage || return 1
+  src="$HOME/.continuum/genome"
+  mkdir -p "$src" "$cold/genome" || return 1
+  printf kept > "$cold/genome/unrelated"
+  if _cold_migrate "$src" "$cold/genome" "$cold"; then return 1; fi
+  assert_eq kept "$(cat "$cold/genome/unrelated")" || return 1
+  if _cold_migrate "$scratch" "$cold/genome" "$cold"; then return 1; fi
+  local overlap_error
+  if overlap_error="$(_cold_migrate "$src" "$HOME/.continuum/./genome" "$HOME/.continuum/." 2>&1)"; then return 1; fi
+  assert_contains 'overlaps source' "$overlap_error" || return 1
+  [ ! -e "$src.continuum-migration" ] || return 1
+  mkdir -p "$scratch/foreign/huggingface" || return 1
+  printf untouched > "$scratch/foreign/huggingface/keep"
+  rmdir "$HOME/.cache" || return 1
+  ln -s "$scratch/foreign" "$HOME/.cache" || return 1
+  if [ ! -L "$HOME/.cache" ]; then
+    case "$(uname -s)" in
+      MINGW*|MSYS*) echo 'SKIP: Git Bash copied symlink fixture; native junction coverage runs in windows-service.test.ps1' >&2; return 0 ;;
+      *) echo 'Symlink fixture did not create a link' >&2; return 1 ;;
+    esac
+  fi
+  mkdir "$scratch/link-case-cold" || return 1
+  if _cold_migrate "$HOME/.cache/huggingface" "$scratch/link-case-cold/huggingface" "$scratch/link-case-cold"; then return 1; fi
+  assert_eq untouched "$(cat "$scratch/foreign/huggingface/keep")" || return 1
+  rm "$HOME/.cache" || return 1
+  ln -s "$cold" "$scratch/linked-cold" || return 1
+  if _cold_migrate "$HOME/.cache/huggingface" "$scratch/linked-cold/huggingface" "$scratch/linked-cold"; then return 1; fi
+)
+
 # Permit a focused scratch-only test without executing installer tier tests.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -323,6 +377,7 @@ _run_test test_mod_docker_check_fails_loud_when_missing
 _run_test test_mod_continuum_bin_link_uses_user_space_when_no_sudo_no_tty
 _run_test test_llama_cache_tracks_source_ownership
 _run_test test_cold_storage_preserves_config
+_run_test test_cold_storage_resumes_owned_migration
 
 echo ""
 echo "------------------------------------"

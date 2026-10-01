@@ -29,6 +29,7 @@ on:
       - 'bootstrap.sh'
       - 'tools/scripts/install*.sh'
       - 'tools/scripts/lib/install-common.sh'
+      - 'tools/scripts/lib/install-common.test.sh'
       - 'docker/**'
       - 'docker-compose*.yml'
       - 'src/.dockerignore'
@@ -68,6 +69,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Smoke uses the local script directly; no need for full history.
           fetch-depth: 1
+
+      - name: Verify cold-storage preservation and interrupted migration
+        run: |
+          source tools/scripts/lib/install-common.test.sh
+          test_cold_storage_preserves_config
+          test_cold_storage_resumes_owned_migration
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
