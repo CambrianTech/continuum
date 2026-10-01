@@ -204,9 +204,45 @@ pub fn sha_matches(a: &str, b: &str) -> bool {
     credible(a) && credible(b) && (a.starts_with(b) || b.starts_with(a))
 }
 
+/// Validate the claimed source again before a warm build can stop serving.
+/// Endpoint comparison detects revision drift, not transient edit/revert races.
+pub fn warm_build_verdict(
+    claimed: Option<&str>,
+    after: Option<&str>,
+    artifact: &str,
+) -> Result<(), String> {
+    if let (Some(before), Some(after)) = (claimed, after) {
+        if sha_matches(before, after) && sha_matches(before, artifact) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "source changed or could not be verified during warm build: claimed {claimed:?}, \
+         checkout {after:?}, artifact {artifact}; refusing handoff and leaving the running \
+         core untouched. Retry install from a stable checkout"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression for the 2026-10-01 shared-checkout race: artifact and HEAD
+    // advancing together must not erase the originally claimed revision.
+    #[test]
+    fn warm_build_retains_its_original_source_identity() {
+        assert!(warm_build_verdict(Some("abc123f"), Some("abc123f00d"), "abc123f").is_ok());
+        for (before, after, artifact) in [
+            (Some("abc123f"), Some("def456a"), "def456a"),
+            (Some("abc123f"), Some("def456a"), "abc123f"),
+            (Some("abc123f"), Some("abc123f"), "def456a"),
+            (None, Some("abc123f"), "abc123f"),
+            (Some("abc123f"), None, "abc123f"),
+            (Some("unknown"), Some("unknown"), "unknown"),
+        ] {
+            assert!(warm_build_verdict(before, after, artifact).is_err());
+        }
+    }
 
     // what this catches: the #194 regression — deploy-verify passing soft. Every gap (a
     // running core that reports no buildSha = pre-#194 = stale, 'unknown' provenance, an
