@@ -1371,7 +1371,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<GenerationChunk>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<GenerationChunk>();
+        drop(rx); // A whole-response caller has no incremental consumer.
         self.generate_stream(request, tx).await
     }
 
@@ -1395,6 +1396,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        if request.native_output.as_ref().is_some_and(|v| !v.is_empty()) && !sink.is_closed() {
+            return Err("Native audio incremental transport is not implemented; use whole-response generation, not a text stream".to_string().into());
+        }
         // Only require API key for providers that need auth
         if self.config.requires_auth && self.api_key.is_none() {
             return Err(format!("{} not initialized", self.config.name).into());
@@ -1856,6 +1860,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // token/tool accumulation). The locals below are what the inline loop bound.
         let local_lane = self.targets_local_serving_lane();
         let crate::inference::sse_stream::StreamOutcome {
+            acc_parts,
             acc_content,
             acc_reasoning,
             acc_tools,
@@ -1864,14 +1869,16 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             stream_timings,
             resp_model,
             probe_persona,
-        } = crate::inference::sse_stream::consume_sse_stream(
+        } = if request.native_output.as_ref().is_some_and(|v| !v.is_empty()) {
+            crate::inference::native_output::consume_response(response, &request).await?
+        } else { crate::inference::sse_stream::consume_sse_stream(
             &self.config,
             &request,
             local_lane,
             response,
             &sink,
         )
-        .await?;
+        .await? };
         let response_time_ms = start.elapsed().as_millis() as u64;
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
@@ -1882,7 +1889,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // primary path invisible to the liveness record). It also ends any failure
         // streak. Gated on the local lane like the failure stamps above.
         let delivered_something =
-            !acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty();
+            !acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty() || !acc_parts.is_empty();
 
         // harness/memory and stripped from `text` so it can NEVER reach the room.
         let raw_content = acc_content;
@@ -2036,7 +2043,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         // Build content blocks
-        let mut content_blocks = Vec::new();
+        let mut content_blocks = acc_parts;
         if !text.is_empty() {
             content_blocks.push(ContentPart::Text { text: text.clone() });
         }
@@ -2704,8 +2711,32 @@ mod tests {
             serde_json::to_value(&output).unwrap()
         ).unwrap();
         assert_eq!(round_trip.native_output, output.native_output);
-        assert!(assemble(&round_trip, bound).unwrap_err().contains("refusing text substitution"));
+        assert!(assemble(&round_trip, bound).unwrap_err().contains("transport is not implemented"));
         assert!(TextGenerationRequest::default().require_text_output_transport("test").is_ok());
+
+        // A capable binding emits native audio intent on the existing wire, and
+        // the response preserves its exact encoded bytes. Text alone cannot pass.
+        let mut audio_request = round_trip;
+        audio_request.native_output.as_mut().unwrap().truncate(1);
+        assert!(assemble(&audio_request, bound).unwrap_err().contains("AudioOutput"));
+        let mut audio_model = bound.clone();
+        audio_model.capabilities.push(Capability::AudioOutput);
+        let wire = assemble(&audio_request, &audio_model).unwrap();
+        assert_eq!(wire["stream"], false);
+        assert!(wire.get("stream_options").is_none());
+        assert_eq!(wire["audio"], json!({"format":"wav","voice":"persona-voice"}));
+        let mut reply = json!({"model":"exotic-native","choices":[{
+            "finish_reason":"stop", "message":{"content":null,
+            "audio":{"data":"AAEC", "transcript":"native transcript"}}
+        }]});
+        let decoded = crate::inference::native_output::decode_response(&reply, &audio_request).unwrap();
+        let ContentPart::Audio { audio } = &decoded.acc_parts[0] else { panic!("native audio part missing") };
+        assert_eq!(audio.base64.as_deref(), Some("AAEC"));
+        assert_eq!(audio.mime_type.as_deref(), Some("audio/wav"));
+        reply["choices"][0]["message"]["audio"]["data"] = json!("!!!");
+        assert!(crate::inference::native_output::decode_response(&reply, &audio_request).is_err());
+        reply["choices"][0]["message"]["audio"].as_object_mut().unwrap().remove("data");
+        assert!(crate::inference::native_output::decode_response(&reply, &audio_request).err().unwrap().contains("not a substitute"));
     }
 
     // what this catches: be553169 — `live_served_window` is now the ONLY thing that stamps
@@ -2764,6 +2795,10 @@ mod tests {
                     log.push(body.to_vec());
                     log.len()
                 };
+                let input: Value = serde_json::from_slice(&body).unwrap();
+                if input.get("audio").is_some() {
+                    return (StatusCode::OK, r#"{"model":"test-model","choices":[{"finish_reason":"stop","message":{"content":null,"audio":{"data":"AAEC","transcript":"fixture native transcript"}}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#);
+                }
                 if attempt == 2 {
                     (StatusCode::SERVICE_UNAVAILABLE, "loading")
                 } else {
@@ -2788,6 +2823,12 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let mut adapter = test_adapter();
         adapter.config.base_url = format!("http://{address}");
+        adapter = adapter.with_bound_model(ModelInfo {
+            id: "test-model".into(), name: "Fixture".into(), provider: "test-gateway".into(),
+            capabilities: vec![Capability::AudioOutput], context_window: 4096, max_output_tokens: 512,
+            cost_per_1k_tokens: crate::ai::types::CostPer1kTokens { input: 0.0, output: 0.0 },
+            tokens_per_second: 1.0,
+        });
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text(
                 "user",
@@ -2866,10 +2907,32 @@ mod tests {
                 Err(message) => assert!(quoted.unwrap_err().contains(message)),
             }
         }
+        // Reuse the real HTTP lane to prove native request -> encoded response ->
+        // public content parts, without a TTS backend or a model-name special case.
+        adapter.config.single_resident_model = false;
+        let native_request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "speak")],
+            native_output: Some(vec![crate::ai::types::NativeOutputRequest::Audio {
+                mime_type: "audio/wav".into(), voice: Some("persona-native-voice".into()),
+            }]),
+            ..Default::default()
+        };
+        let native = tokio::time::timeout(std::time::Duration::from_secs(5),
+            adapter.generate_text(native_request.clone())).await.unwrap().unwrap();
+        let ContentPart::Audio { audio } = &native.content.as_ref().unwrap()[0] else {
+            panic!("native response lost its audio bytes");
+        };
+        assert_eq!(audio.base64.as_deref(), Some("AAEC"));
+        assert_eq!(native.usage.output_tokens, 2);
+        let (live_sink, _live_receiver) = tokio::sync::mpsc::unbounded_channel();
+        assert!(adapter.generate_stream(native_request, live_sink).await.unwrap_err().contains("incremental transport"));
         server.abort();
         let _ = server.await;
         let received = received.lock().expect("actual wire requests");
-        assert_eq!(received.len(), 3);
+        assert_eq!(received.len(), 4);
+        let native_wire: Value = serde_json::from_slice(&received[3]).unwrap();
+        assert_eq!(native_wire["stream"], false);
+        assert_eq!(native_wire["audio"]["voice"], "persona-native-voice");
         assert_eq!(received[1], body);
         assert_eq!(received[2], body);
         let first: Value = serde_json::from_slice(&received[0]).expect("actual adapter JSON body");

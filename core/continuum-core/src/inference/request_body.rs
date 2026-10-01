@@ -538,7 +538,6 @@ pub(crate) fn build_base_body(
     model: &str,
     bound_model: &crate::ai::types::ModelInfo,
 ) -> Result<Value, String> {
-    request.require_text_output_transport("OpenAI-compatible streaming adapter")?;
     validate_native_media(&request.messages, bound_model)?;
     let mut messages = format_messages(
         cfg,
@@ -570,6 +569,7 @@ pub(crate) fn build_base_body(
         "stream": true,
         "stream_options": { "include_usage": true }
     });
+    crate::inference::native_output::configure_body(&mut body, request, bound_model)?;
 
     // max_tokens — the MODEL owns its generation length, enforced server-side
     // by unsloth / llama.cpp / the cloud provider. We forward a ceiling ONLY

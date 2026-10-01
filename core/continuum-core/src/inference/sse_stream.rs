@@ -253,6 +253,7 @@ pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: Op
 /// Everything the stream accumulated, handed back to the caller's post-processing
 /// (reasoning split, usage, timings, the response) exactly as the inline locals were.
 pub(crate) struct StreamOutcome {
+    pub(crate) acc_parts: Vec<crate::ai::types::ContentPart>,
     pub(crate) acc_content: String,
     pub(crate) acc_reasoning: String,
     pub(crate) acc_tools: Vec<StreamToolAccum>,
@@ -820,6 +821,7 @@ pub(crate) async fn consume_sse_stream(
 
 
     Ok(StreamOutcome {
+        acc_parts: Vec::new(),
         acc_content,
         acc_reasoning,
         acc_tools,
