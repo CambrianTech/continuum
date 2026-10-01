@@ -210,6 +210,7 @@ async fn messages_handler(
     });
 
     let gen_request = TextGenerationRequest {
+        native_output: None,
         messages,
         system_prompt,
         model: spec.model.clone(),

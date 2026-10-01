@@ -1574,6 +1574,7 @@ impl LlmDeliberationFaculty {
             "the turn's output allowance — max(time × her rate, her measured think + answer), under the reserve"
         );
         TextGenerationRequest {
+            native_output: None,
             messages,
             system_prompt: Some(system_prompt),
             model: binding.model.clone(),

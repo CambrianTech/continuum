@@ -105,6 +105,12 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
     }
 
     Ok(TextGenerationRequest {
+        native_output: params
+            .get("nativeOutput")
+            .or_else(|| params.get("native_output"))
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|e| format!("Invalid native output request: {e}"))?,
         messages,
         system_prompt: p.string_opt_alias("system_prompt", "systemPrompt"),
         model: p.str_opt("model").map(String::from),
@@ -247,5 +253,34 @@ crate::action_command! {
             .live_served_window()
             .or(route.served_context_window);
         Ok(AiGenerateResult::from(response))
+    }
+}
+
+#[cfg(test)]
+mod native_output_tests {
+    use super::*;
+
+    // The command boundary must preserve native output intent and reject malformed
+    // intent, never silently default a media request into a text-only generation.
+    #[test]
+    fn native_output_intent_survives_command_parsing() {
+        for key in ["nativeOutput", "native_output"] {
+            let mut params = serde_json::json!({"prompt":"respond"});
+            params[key] = serde_json::json!([
+                {"modality":"audio","mime_type":"audio/wav","voice":null},
+                {"modality":"image","mime_type":"image/png"}
+            ]);
+            let request = parse_request(&params).unwrap();
+            assert_eq!(request.native_output.as_ref().unwrap().len(), 2);
+            assert!(request.require_text_output_transport("unwired").is_err());
+            params[key] = serde_json::json!([{"modality":"unknown"}]);
+            assert!(parse_request(&params)
+                .unwrap_err()
+                .contains("Invalid native output"));
+        }
+        assert!(parse_request(&serde_json::json!({"prompt":"text"}))
+            .unwrap()
+            .native_output
+            .is_none());
     }
 }

@@ -156,6 +156,7 @@ fn draft_request(
         _ => task_prompt.to_string(),
     };
     TextGenerationRequest {
+        native_output: None,
         messages: vec![ChatMessage::text("user", user)],
         system_prompt,
         model,

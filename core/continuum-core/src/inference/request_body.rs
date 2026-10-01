@@ -538,6 +538,7 @@ pub(crate) fn build_base_body(
     model: &str,
     bound_model: &crate::ai::types::ModelInfo,
 ) -> Result<Value, String> {
+    request.require_text_output_transport("OpenAI-compatible streaming adapter")?;
     validate_native_media(&request.messages, bound_model)?;
     let mut messages = format_messages(
         cfg,

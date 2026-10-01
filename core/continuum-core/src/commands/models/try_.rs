@@ -116,6 +116,7 @@ crate::action_command! {
 /// `models/try` is to RECORD what happened, not abort.
 async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Option<f32>, String) {
     let request = TextGenerationRequest {
+        native_output: None,
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: MessageContent::Text("Reply with the single word: ok".to_string()),
@@ -179,6 +180,7 @@ async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Op
 /// `(vision_ok, detail)`.
 async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, String) {
     let request = TextGenerationRequest {
+        native_output: None,
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: MessageContent::Parts(vec![

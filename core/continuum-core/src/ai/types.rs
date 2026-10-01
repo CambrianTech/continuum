@@ -242,6 +242,13 @@ pub struct TextGenerationRequest {
     #[ts(optional)]
     pub response_format: Option<ResponseFormat>,
 
+    /// Native media requested from this bound model. Kept separate from text
+    /// grammar constraints. An adapter must explicitly implement this transport;
+    /// ignoring it and returning text is not a successful generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub native_output: Option<Vec<NativeOutputRequest>>,
+
     // LoRA adapters
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -304,6 +311,40 @@ pub enum ResponseFormat {
     JsonObject,
     /// Plain text output (default; equivalent to omitting response_format).
     Text,
+}
+
+/// Provider-independent native output intent. Encoding and voice are explicit
+/// request data, never inferred from a model name or a stock speech backend.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/NativeOutputRequest.ts"
+)]
+#[serde(tag = "modality", rename_all = "snake_case")]
+pub enum NativeOutputRequest {
+    Image {
+        mime_type: String,
+    },
+    Audio {
+        mime_type: String,
+        /// None leaves vocal identity with the bound model and its active LoRAs.
+        /// It does not authorize choosing a replacement TTS voice.
+        voice: Option<String>,
+    },
+}
+
+impl TextGenerationRequest {
+    /// Existing text transports must refuse native output until their encoder,
+    /// decoder and consumer path implement it. Called before inference dispatch.
+    pub(crate) fn require_text_output_transport(&self, adapter: &str) -> Result<(), String> {
+        if self.native_output.as_ref().is_none_or(Vec::is_empty) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{adapter} native output transport is not implemented; refusing text substitution"
+            ))
+        }
+    }
 }
 
 /// Text generation response

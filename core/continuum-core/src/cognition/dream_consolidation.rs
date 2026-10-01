@@ -384,6 +384,7 @@ impl SemanticDistiller {
         // no per-call clamp. The distillation's faithfulness is gated by VDD
         // with a real model, not by hand-tuned sampling knobs here.
         let request = TextGenerationRequest {
+            native_output: None,
             messages: vec![ChatMessage::text("user", block)],
             system_prompt: Some(lens.system_prompt.to_string()),
             model: self.model.clone(),

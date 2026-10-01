@@ -158,6 +158,7 @@ mod tests {
 
     fn dummy_request() -> TextGenerationRequest {
         TextGenerationRequest {
+            native_output: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: MessageContent::Text("hello".to_string()),

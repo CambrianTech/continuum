@@ -373,6 +373,7 @@ pub(super) async fn run_adapter_inference(
     prompt_text: &str,
 ) -> Result<(InferenceComplete, FirstTokenEmitted), String> {
     let adapter_request = TextGenerationRequest {
+        native_output: None,
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: MessageContent::Text(prompt_text.to_string()),

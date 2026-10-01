@@ -530,6 +530,7 @@ async fn run_inference_probe(
     let prompt_text = render_prompt_text(&system_prompt, &messages);
 
     let request = TextGenerationRequest {
+        native_output: None,
         messages,
         system_prompt: Some(system_prompt),
         model: Some(model.clone()),

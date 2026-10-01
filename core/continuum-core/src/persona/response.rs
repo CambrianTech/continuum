@@ -670,6 +670,7 @@ async fn run_render(
     );
 
     let request = TextGenerationRequest {
+        native_output: None,
         messages,
         system_prompt: Some(assembled.system_message),
         model: Some(input.model.clone()),

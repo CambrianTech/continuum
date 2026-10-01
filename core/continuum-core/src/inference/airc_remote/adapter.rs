@@ -257,6 +257,9 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         mut request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, String> {
+        // Older peers deserialize unknown fields permissively. Do not send native
+        // intent until this lane has an end-to-end media output protocol.
+        request.require_text_output_transport("AIRC remote lane")?;
         // The lane serves ONE model and the peer refuses any other: a request
         // that names the caller's local model is refused there after the full
         // wait (2026-09-07 02:01Z, +186 s: "model 'Ornith…' is not the active
@@ -459,6 +462,7 @@ mod tests {
 
     fn req(text: &str) -> TextGenerationRequest {
         TextGenerationRequest {
+            native_output: None,
             messages: vec![user_msg(text)],
             system_prompt: None,
             model: None,

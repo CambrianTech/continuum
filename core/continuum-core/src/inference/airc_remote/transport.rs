@@ -991,6 +991,7 @@ mod tests {
 
     fn req(text: &str) -> RemoteInferenceRequest {
         RemoteInferenceRequest::new(TextGenerationRequest {
+            native_output: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: MessageContent::Text(text.to_string()),

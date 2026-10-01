@@ -401,6 +401,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        request.require_text_output_transport(self.provider_id())?;
         // Observer fires for substrate-side hot-path inference call
         // counts.
         if let Some(c) = &self.generate_observer {
@@ -574,6 +575,7 @@ mod tests {
 
     fn req_with(messages: Vec<ChatMessage>) -> TextGenerationRequest {
         TextGenerationRequest {
+            native_output: None,
             messages,
             system_prompt: None,
             model: Some(HEURISTIC_DEFAULT_MODEL.to_string()),

@@ -2689,6 +2689,23 @@ mod tests {
         let ContentPart::Audio { audio } = &mut parts[0] else { unreachable!() };
         audio.mime_type = Some("audio/unknown".into());
         assert!(assemble(&request, bound).unwrap_err().contains("encoding"));
+
+        // Native output intent must survive the shared request wire. Until an
+        // adapter connects a real media output transport, it cannot answer text
+        // and count that as fulfilling an audio/image request.
+        let output: TextGenerationRequest = serde_json::from_value(json!({
+            "messages": [],
+            "nativeOutput": [
+                {"modality":"audio","mime_type":"audio/wav","voice":"persona-voice"},
+                {"modality":"image","mime_type":"image/png"}
+            ]
+        })).unwrap();
+        let round_trip: TextGenerationRequest = serde_json::from_value(
+            serde_json::to_value(&output).unwrap()
+        ).unwrap();
+        assert_eq!(round_trip.native_output, output.native_output);
+        assert!(assemble(&round_trip, bound).unwrap_err().contains("refusing text substitution"));
+        assert!(TextGenerationRequest::default().require_text_output_transport("test").is_ok());
     }
 
     // what this catches: be553169 — `live_served_window` is now the ONLY thing that stamps

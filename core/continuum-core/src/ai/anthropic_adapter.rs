@@ -251,6 +251,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        request.require_text_output_transport(self.provider_id())?;
         let api_key = self
             .api_key
             .as_ref()
