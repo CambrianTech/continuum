@@ -9,7 +9,7 @@ import type { ToolChoice } from "./ToolChoice";
 /**
  * Text generation request
  */
-export type TextGenerationRequest = { messages: Array<ChatMessage>, systemPrompt?: string, model?: string, provider?: string, temperature?: number, maxTokens?: number, topP?: number, topK?: number, repeatPenalty?: number, 
+export type TextGenerationRequest = { messages: Array<ChatMessage>, systemPrompt?: string, model?: string, provider?: string, temperature?: number, maxTokens?: number, topP?: number, topK?: number, repeatPenalty?: number,
 /**
  * llama.cpp-native, UNWINDOWED repetition guard: scales each token's penalty by how
  * often it has appeared across the ENTIRE generation (unlike `repeat_penalty`, which
@@ -18,14 +18,14 @@ export type TextGenerationRequest = { messages: Array<ChatMessage>, systemPrompt
  * adapter's llama.cpp default (0.3). Joins the Model row with the other sampling
  * knobs under #76. Ignored by cloud OpenAI-compat providers.
  */
-frequencyPenalty?: number, 
+frequencyPenalty?: number,
 /**
  * Window (trailing tokens) that `repeat_penalty` scans on llama.cpp-
  * family gateways. `None` → the gateway's own default (64). Widened
  * by the substrate sampling defaults to catch loops whose span
  * exceeds 64 tokens (#181). Ignored by cloud OpenAI-compat providers.
  */
-repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, toolChoice?: ToolChoice, 
+repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, toolChoice?: ToolChoice,
 /**
  * Force the model to output a specific format (e.g. JSON object).
  * OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The
@@ -35,13 +35,13 @@ repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpe
  * mode at the source instead of papering over it with a parser
  * fallback (banned by the 'no fallbacks' directive).
  */
-responseFormat?: ResponseFormat, 
+responseFormat?: ResponseFormat,
 /**
  * Native media requested from this bound model. Kept separate from text
  * grammar constraints. An adapter must explicitly implement this transport;
  * ignoring it and returning text is not a successful generation.
  */
-nativeOutput?: Array<NativeOutputRequest>, activeAdapters?: Array<ActiveAdapterRequest>, requestId?: string, userId?: string, roomId?: string, purpose?: string, 
+nativeOutput?: Array<NativeOutputRequest>, activeAdapters?: Array<ActiveAdapterRequest>, requestId?: string, userId?: string, roomId?: string, purpose?: string,
 /**
  * Persona generating this request — the inference's "owner" for
  * per-persona resource attribution (KV cache bytes, GPU pressure,
@@ -54,7 +54,7 @@ nativeOutput?: Array<NativeOutputRequest>, activeAdapters?: Array<ActiveAdapterR
  * pressure policy can't make per-persona eviction decisions.
  * See docs/architecture/PERSONA-CONTEXT-PAGING.md §13.
  */
-personaId?: string, 
+personaId?: string,
 /**
  * The bound this turn is owed on the wire, sized from the MEASURED work: the mind's
  * expected occupancy (the uncached prompt at the box's measured prefill rate plus
