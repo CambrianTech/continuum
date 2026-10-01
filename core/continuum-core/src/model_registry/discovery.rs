@@ -115,7 +115,8 @@ struct OpenAiArchitecture {
 /// Map the authoritative fields of one OpenAI-compatible listing row to the
 /// canonical [`Capability`](crate::model_registry::types::Capability) kebab
 /// vocabulary. Reads ONLY what the API states — input `"image"`⇒`vision`,
-/// input `"audio"`⇒`audio-input`, output `"audio"`⇒`audio-output`, a
+/// input `"audio"`⇒`audio-input`, output `"audio"`⇒`audio-output`,
+/// output `"image"`⇒`image-generation`, a
 /// `"tools"` param⇒`tool-use`. Returns `None` when the provider published
 /// nothing capability-bearing (base OpenAI spec), so the catalog/static
 /// override — not a guess — supplies caps for those models.
@@ -130,6 +131,9 @@ fn capabilities_from_openai(model: &OpenAIModel) -> Option<Vec<String>> {
         }
         if arch.output_modalities.iter().any(|m| m == "audio") {
             caps.push("audio-output".to_string());
+        }
+        if arch.output_modalities.iter().any(|m| m == "image") {
+            caps.push("image-generation".to_string());
         }
     }
     if model.supported_parameters.iter().any(|p| p == "tools") {
@@ -445,7 +449,8 @@ mod tests {
 
     // what this catches: a capability-rich (OpenRouter-shape) listing row must
     // yield caps from its OWN modality/param fields — image input → vision,
-    // audio in/out → audio-input/audio-output, a "tools" param → tool-use — in
+    // audio in/out → audio-input/audio-output, image output → image-generation,
+    // a "tools" param → tool-use — in
     // the canonical kebab vocabulary so they round-trip into a Model's
     // Capability set. This is the cloud analog of mmproj hydration: the model
     // is sighted/hearing/tool-using because the API SAID SO, not because its id
@@ -453,11 +458,11 @@ mod tests {
     #[test]
     fn openai_capabilities_come_from_the_api_modality_fields() {
         let json = r#"{
-            "id":"anthropic/claude-omni",
+            "id":"arbitrary-native-model",
             "context_length":200000,
             "architecture":{
                 "input_modalities":["text","image","audio"],
-                "output_modalities":["text","audio"]
+                "output_modalities":["text","audio","image"]
             },
             "supported_parameters":["tools","temperature"]
         }"#;
@@ -466,7 +471,21 @@ mod tests {
         assert!(caps.contains(&"vision".to_string()));
         assert!(caps.contains(&"audio-input".to_string()));
         assert!(caps.contains(&"audio-output".to_string()));
+        assert!(caps.contains(&"image-generation".to_string()));
         assert!(caps.contains(&"tool-use".to_string()));
+
+        // Output support must never invent input support for the same modality.
+        let output_only: OpenAIModel = serde_json::from_str(r#"{
+            "id":"different-native-model",
+            "architecture":{"output_modalities":["image","audio"]}
+        }"#).unwrap();
+        let caps = capabilities_from_openai(&output_only).unwrap();
+        assert_eq!(caps, vec!["audio-output", "image-generation"]);
+        for cap in caps {
+            serde_json::from_value::<crate::model_registry::types::Capability>(
+                serde_json::json!(cap),
+            ).expect("discovered capabilities must round-trip through the shared type");
+        }
     }
 
     // what this catches: a plain OpenAI-spec row (no architecture block, no
