@@ -106,15 +106,13 @@ try {
 . (Join-Path $LibDir 'install-common.ps1')
 . (Join-Path $LibDir 'windows-service.ps1')
 . (Join-Path $LibDir 'windows-prepared.ps1')
-. (Join-Path $LibDir 'win-modules.ps1')
 if ($ResumePrepared) {
-    # Prepared builds defer provisioning; converge the provider runtime before handoff.
-    Mod-Poppler
     try { Resume-CorePreparedRelease -RepoRoot $RepoRoot -InstallLease $installLease }
     finally { Clear-Elevation }
     Write-Ok 'Prepared release is verified and supervised.'
     return
 }
+. (Join-Path $LibDir 'win-modules.ps1')
 
 $WantsGrid = $Grid -or ($env:CONTINUUM_GRID -eq '1')
 
