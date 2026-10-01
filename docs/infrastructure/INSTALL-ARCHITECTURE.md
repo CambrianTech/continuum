@@ -430,3 +430,25 @@ To do before merge (consolidation):
 - Add `continuum-core-cuda` CI job.
 - Add PR-gated smoke build in the workflow.
 - BigMama e2e dry-run documenting results in PR description.
+
+## Shared Windows elevation artifact (2026-10-01 repair)
+
+`tools/scripts/lib/windows-elevation.ps1` now contains the existing Windows
+acquire/invoke/clear implementation and its PATH/admin probes. `install-common.ps1`
+imports it. The helper has no application-module or logging-library dependency;
+extracting it does not change who requests or clears the existing cache.
+
+AIRC integration remains incomplete. The next changes must export one installer
+owner context, let nested installers borrow it without disposing it, retain the
+cache across builds, and invoke the native gsudo executable through shell adapters.
+Standalone AIRC must acquire a pinned, integrity-checked copy of this small artifact
+without requiring a Continuum application install. Continuum's AIRC firewall module
+must delegate AIRC's canonical policy rather than creating its own broad rule.
+Do not treat this extraction as evidence of single-consent or mesh success.
+
+The existing Windows service fixture includes the extracted file in its disposable
+installer checkouts. Hidden PS5.1 ConsoleHost on BIGGIEDESK returned exit 1 without
+redirected terminating-error text; fixture child wrappers now emit the caught
+exception and preserve exit 1. Both refusal diagnostics and exit status remain
+required. This fixture correction does not suppress installer failures or change
+host policy. Live public-entry and idempotent rerun evidence remain outstanding.

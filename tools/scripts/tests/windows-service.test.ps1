@@ -363,7 +363,7 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $fakeLib = Join-Path $fakeRepo 'tools\scripts\lib'
         New-Item -ItemType Directory -Path $fakeLib -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $fakeRepo
-        foreach ($name in @('install-common.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $fakeLib
         }
         $shim = @'
@@ -384,7 +384,11 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         Save-CorePreparedRelease -Release $selected -InstallRoot $root
         foreach ($extra in @('', ' -Update')) {
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
-            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $fakeRepo 'install.ps1') + '" -ResumePrepared' + $extra
+            # Hidden PS5 ConsoleHost can omit terminating errors from redirected
+            # stderr. Capture the exception explicitly without accepting failure.
+            $entry = (Join-Path $fakeRepo 'install.ps1').Replace("'", "''")
+            $invoke = "try { & '$entry' -ResumePrepared$extra } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.RedirectStandardOutput = $true
@@ -404,7 +408,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                         throw "Public prepared resume did not reach guarded handoff: $output"
                     }
                 } elseif ($child.ExitCode -eq 0 -or $output -notmatch 'cannot be combined with -Update' -or $output -match 'fixture register prepared') {
-                    throw 'Public resume accepted source-update mode'
+                    throw "Public resume source-update refusal failed (exit $($child.ExitCode)): $output"
                 }
             } finally { $child.Dispose() }
         }
@@ -857,7 +861,7 @@ public class SupervisorFixture {
         $oldSlot = Join-Path $prepareRoot 'bin\service-a'
         New-Item -ItemType Directory -Path $prepareLib, $oldSlot -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $prepareRepo
-        foreach ($name in @('install-common.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $prepareLib
         }
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination (Split-Path $prepareLib)
@@ -911,8 +915,11 @@ function Mod-LlamaServer {
             $missing = $missingFiles[$extra]
             if ($missing) { Remove-Item -LiteralPath $missing }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
-            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $prepareRepo 'install.ps1') + '" -PrepareOnly'
-            if (-not $missing) { $info.Arguments += $extra }
+            # Same explicit exception capture as the hidden resume fixture.
+            $entry = (Join-Path $prepareRepo 'install.ps1').Replace("'", "''")
+            $flags = if ($missing) { '' } else { $extra }
+            $invoke = "try { & '$entry' -PrepareOnly$flags } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.RedirectStandardOutput = $true
@@ -930,7 +937,7 @@ function Mod-LlamaServer {
                     if ($process.ExitCode -ne 0 -or $output -notmatch 'fixture prebuilt validated') { throw "Public preparation failed: $output" }
                 } elseif ($missing) {
                     if ($process.ExitCode -eq 0 -or $output -notmatch 'Preparation requires' -or $output -match 'Unexpected download') { throw "Missing cached toolchain did not fail before provisioning: $output" }
-                } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw 'Preparation accepted incompatible flags' }
+                } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw "Preparation flag refusal failed (exit $($process.ExitCode)): $output" }
             } finally {
                 $process.Dispose()
                 if ($missing) { Copy-Item -LiteralPath $child -Destination $missing }
