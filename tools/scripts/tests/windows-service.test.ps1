@@ -9,6 +9,45 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: cold-storage reruns erased unrelated config and treated
+    # the installer's own quoted path as absent, rediscovering a different disk.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = Join-Path $scratch 'cold-profile'
+            $config = Join-Path $env:USERPROFILE '.continuum\config.env'
+            New-Item -ItemType Directory -Force (Split-Path $config) | Out-Null
+            $cold = Join-Path $scratch ('cold cache $literal ' + [char]0x03bb)
+            New-Item -ItemType Directory -Force $cold | Out-Null
+            $unrelated = "# kept comment`r`nCUSTOM_VALUE='literal $& \value = stays'`r`nLABEL='" + [char]0x03bb + "'`r`n"
+            [IO.File]::WriteAllText($config, $unrelated + "CONTINUUM_STORAGE_PATH='old'`r`nHF_HOME='old'`r`n")
+            $acl = Get-Acl -LiteralPath $config
+            $acl.SetAccessRuleProtection($true, $true)
+            Set-Acl -LiteralPath $config -AclObject $acl
+            $originalAccess = (Get-Acl -LiteralPath $config).GetSecurityDescriptorSddlForm('Access')
+            Update-ColdStorageConfig -Path $config -ColdRoot $cold
+            $first = [IO.File]::ReadAllText($config)
+            if ((Get-Acl -LiteralPath $config).GetSecurityDescriptorSddlForm('Access') -cne $originalAccess) { throw 'Cold-storage config replacement changed explicit file access policy' }
+            if (-not $first.StartsWith($unrelated)) { throw 'Cold-storage setup erased or altered unrelated UTF-8 configuration' }
+            if (-not $first.Contains("CONTINUUM_STORAGE_PATH='$cold'")) { throw 'Cold-storage path was not preserved literally' }
+            Update-ColdStorageConfig -Path $config -ColdRoot $cold
+            if ([IO.File]::ReadAllText($config) -cne $first) { throw 'Cold-storage config rerun was not idempotent' }
+            $refused = $false
+            try { Update-ColdStorageConfig -Path $config -ColdRoot "bad'path" } catch { $refused = $true }
+            if (-not $refused -or [IO.File]::ReadAllText($config) -cne $first) { throw 'Unrepresentable path changed config' }
+            function Get-ColdDrive { throw 'Quoted existing cold-storage path triggered drive rediscovery' }
+            function Module-Skip { }
+            function Set-ColdStorageEnv { param($ColdRoot) if ($ColdRoot -cne $cold) { throw 'Rerun changed the configured path' } }
+            Mod-ColdStorage
+            [IO.File]::WriteAllText($config, '# no storage key or final newline')
+            Update-ColdStorageConfig -Path $config -ColdRoot $cold
+            if (-not ([IO.File]::ReadAllText($config)).StartsWith("# no storage key or final newline`nCONTINUUM_STORAGE_PATH=")) { throw 'Appending storage keys damaged existing final line' }
+            $entry = [IO.File]::ReadAllText((Join-Path $repo 'install.ps1'))
+            if ($entry.IndexOf('    Mod-ColdStorage') -gt $entry.IndexOf('    Test-WingetAvailable')) { throw 'Cold storage is selected after prerequisite downloads' }
+        } finally { $env:USERPROFILE = $savedProfile }
+        Write-Output 'PASS: cold-storage config preservation, quoted rerun, literal paths and early selection'
+    }
     # what this catches: Continuum must delegate firewall verification to AIRC
     # without inventing a broad rule, swallowing failure, or losing owner/path.
     & {
