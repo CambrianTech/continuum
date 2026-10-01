@@ -1940,12 +1940,39 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
     // Under the deploy consumer there is no terminal: the build's output goes to the
     // consumer's log, or a failing build leaves no reason anywhere (2026-09-19, the
     // 5090's first unattended deploy: 30 minutes of rustc, then nothing to read).
+    #[cfg(not(windows))]
     if let Some(log) = DEPLOY_LOG.get().and_then(|p| open_log_for_child(p).ok()) {
         if let Ok(err) = log.try_clone() {
             cmd.stdout(Stdio::from(log)).stderr(Stdio::from(err));
         }
     }
-    let status = cmd.status().map_err(|e| {
+    #[cfg(not(windows))]
+    let status = cmd.status();
+    #[cfg(windows)]
+    let status = {
+        // Cancelling the deploy task must cancel Bash, Cargo and rustc together.
+        // The existing job boundary assigns ownership before the first child
+        // instruction; killing only the installer left orphan compilers on the
+        // 5090 (2026-10-01), including a fallback compile after cancellation.
+        use std::os::windows::io::AsHandle;
+        let outputs = match DEPLOY_LOG.get() {
+            Some(path) => open_log_for_child(path)
+                .and_then(|out| out.try_clone().map(|err| (out, err))),
+            None => std::io::stdout().as_handle().try_clone_to_owned().and_then(|out| {
+                std::io::stderr().as_handle().try_clone_to_owned()
+                    .map(|err| (std::fs::File::from(out), std::fs::File::from(err)))
+            }),
+        };
+        match outputs.and_then(|(out, err)| {
+            continuum_cli_lifecycle::windows_launch::spawn_owned_logged(
+                &cmd, &out, &err, 0x0800_4000, // hidden, below-normal priority
+            )
+        }) {
+            Ok(tree) => tree.wait().await,
+            Err(error) => Err(error),
+        }
+    };
+    let status = status.map_err(|e| {
         format!("warm build could not start: {e}; leaving the running core untouched")
     })?;
     if !status.success() {
