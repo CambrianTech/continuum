@@ -434,6 +434,17 @@ function Mod-GhAuth {
     else { Write-Warn2 'GitHub login not completed -- re-run install to finish, or: gh auth login' }
 }
 
+function Invoke-AircSetup {
+    param([string[]]$SetupArguments = @())
+    $source = (Get-ManifestModule 'airc').source
+    $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
+        & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy RemoteSigned -File $scriptPath @SetupArguments
+        if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
+    } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
+}
+
 function Mod-AircFirewall {
     param([switch]$WantsGrid)
     # airc (the grid transport) listens for inbound PEER DIALS on an ephemeral TCP
@@ -444,9 +455,8 @@ function Mod-AircFirewall {
     # routing inference to this box) never connect. A hand-added rule is a manual
     # step that a fresh grid box won't have -- so it belongs in the installer.
     #
-    # A PROGRAM rule (allow airc.exe on ANY port) survives the daemon's ephemeral-
-    # port churn. Grid-only: local serving never needs inbound peer dials. Uses the
-    # single gsudo UAC (Ensure-Elevated) shared with the other machine-scope modules.
+    # AIRC owns its effective TCP/UDP local-subnet policy and legacy rule repair.
+    # Its public entry borrows this installer's existing elevation owner.
     if (-not $WantsGrid) { Module-Skip 'airc-firewall' 'local-only (no grid) -- no inbound peer dials'; return }
 
     # Locate the airc grid-transport binary; skip cleanly if airc isn't installed.
@@ -454,21 +464,9 @@ function Mod-AircFirewall {
     if (-not $airc) { $airc = Join-Path $env:USERPROFILE '.local\bin\airc.exe' }
     if (-not (Test-Path $airc)) { Module-Skip 'airc-firewall' 'airc not installed -- grid transport absent'; return }
 
-    $ruleName = 'airc daemon inbound (continuum grid)'
-    if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
-        Module-Skip 'airc-firewall' 'inbound rule already present'; return
-    }
-
-    Module-Start 'airc-firewall' 'allowing airc daemon inbound (peers must dial in for the grid)'
-    Ensure-Elevated -Reason 'configuring the AIRC inbound firewall rule'
-    $add = "New-NetFirewallRule -DisplayName '$ruleName' -Program '$airc' -Direction Inbound -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null"
-    Invoke-Elevated -CommandLine @('powershell', '-NoProfile', '-Command', $add)
-    if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
-        Module-Done 'airc-firewall'
-        Write-Ok "airc inbound allowed -> peers can dial this node for the grid (program rule, ephemeral-port safe)"
-    } else {
-        Write-Warn2 'airc-firewall: rule not present after add -- peers may not be able to dial in (was the UAC approved?).'
-    }
+    Module-Start 'airc-firewall' 'verifying AIRC-owned local-subnet TCP/UDP policy'
+    Invoke-AircSetup -SetupArguments @('-FirewallOnly', '-AircPath', $airc)
+    Module-Done 'airc-firewall'
 }
 
 function Mod-Airc {
@@ -480,13 +478,7 @@ function Mod-Airc {
     $candidates = @((Join-Path $canonicalBin 'airc.exe'), (Join-Path $userBin 'airc.exe'))
     $installed = if ($airc) { $airc.Source } else { $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
     if (-not $installed) {
-        $source = (Get-ManifestModule 'airc').source
-        $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
-        try {
-            Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
-            & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy RemoteSigned -File $scriptPath
-            if ($LASTEXITCODE -ne 0) { throw 'AIRC installation failed; the core was not restarted.' }
-        } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
+        Invoke-AircSetup
         $installed = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         if (-not $installed) { throw 'AIRC installer did not produce its configured CLI.' }
     }

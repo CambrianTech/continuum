@@ -9,6 +9,44 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: Continuum must delegate firewall verification to AIRC
+    # without inventing a broad rule, swallowing failure, or losing owner/path.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $binary = Join-Path $scratch "airc O'Brien.exe"
+        Set-Content -LiteralPath $binary -Value fixture
+        $script:aircSetupCalls = 0
+        $script:aircSetupFail = $false
+        $savedContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        $env:CAMBRIAN_INSTALL_ELEVATION = 'fixture-owner-preserved'
+        function Get-Command { param($Name, $ErrorAction) if ($Name -eq 'airc') { return [pscustomobject]@{Source=$binary} }; Microsoft.PowerShell.Core\Get-Command @PSBoundParameters }
+        function Module-Skip { }
+        function Module-Start { }
+        function Module-Done { }
+        function Get-ManifestModule { param($Name) if ($Name -ne 'airc') { throw 'Wrong dependency descriptor' }; @{source=@{url='https://fixture.invalid/airc/install.ps1'}} }
+        function Invoke-WebRequest {
+            param($Uri,$OutFile,[switch]$UseBasicParsing)
+            if ($Uri -ne 'https://fixture.invalid/airc/install.ps1') { throw 'Manifest URL ignored' }
+            $script:aircSetupCalls++
+            $code = @'
+param([switch]$FirewallOnly,[string]$AircPath)
+if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMBRIAN_INSTALL_ELEVATION -ne 'fixture-owner-preserved') { exit 91 }
+'@
+            if ($script:aircSetupFail) { $code += "`nexit 73" } else { $code += "`nexit 0" }
+            [IO.File]::WriteAllText($OutFile,$code)
+        }
+        try {
+            Mod-AircFirewall
+            if ($script:aircSetupCalls -ne 0) { throw 'Local-only install invoked firewall setup' }
+            Mod-AircFirewall -WantsGrid
+            if ($script:aircSetupCalls -ne 1) { throw 'Grid setup bypassed canonical AIRC entry' }
+            $script:aircSetupFail = $true
+            $rejected = $false
+            try { Mod-AircFirewall -WantsGrid } catch { $rejected = $_.Exception.Message -match 'AIRC setup failed' }
+            if (-not $rejected) { throw 'Continuum hid AIRC firewall failure' }
+        } finally { $env:CAMBRIAN_INSTALL_ELEVATION = $savedContext }
+        Write-Output 'PASS: AIRC canonical firewall delegation, manifest URL, path/owner preservation and failure propagation'
+    }
     # PDF runtime recovery: an existing but unloadable decoder must request
     # repair, rather than throwing before Mod-Poppler reaches its install path.
     & {
@@ -363,9 +401,12 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $fakeLib = Join-Path $fakeRepo 'tools\scripts\lib'
         New-Item -ItemType Directory -Path $fakeLib -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $fakeRepo
-        foreach ($name in @('install-common.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $fakeLib
         }
+        $fakeGenerated = Join-Path (Split-Path $fakeLib) 'generated'
+        New-Item -ItemType Directory -Path $fakeGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $fakeGenerated
         $shim = @'
 . '__SERVICE__'
 function Get-ScheduledTask { $null }
@@ -384,7 +425,11 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         Save-CorePreparedRelease -Release $selected -InstallRoot $root
         foreach ($extra in @('', ' -Update')) {
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
-            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $fakeRepo 'install.ps1') + '" -ResumePrepared' + $extra
+            # Hidden PS5 ConsoleHost can omit terminating errors from redirected
+            # stderr. Capture the exception explicitly without accepting failure.
+            $entry = (Join-Path $fakeRepo 'install.ps1').Replace("'", "''")
+            $invoke = "try { & '$entry' -ResumePrepared$extra } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.RedirectStandardOutput = $true
@@ -404,7 +449,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                         throw "Public prepared resume did not reach guarded handoff: $output"
                     }
                 } elseif ($child.ExitCode -eq 0 -or $output -notmatch 'cannot be combined with -Update' -or $output -match 'fixture register prepared') {
-                    throw 'Public resume accepted source-update mode'
+                    throw "Public resume source-update refusal failed (exit $($child.ExitCode)): $output"
                 }
             } finally { $child.Dispose() }
         }
@@ -565,6 +610,35 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     }
     Write-Output 'PASS: registrar rereads saved access and refuses unsupported policy before task writes'
 
+    # what this catches: caller-local status must not shadow real native cache
+    # probe/acquire/cleanup results in the shared artifact consumed by AIRC.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1')
+        $nativeHelper = Join-Path $scratch 'native-status-fixture.exe'
+        Add-Type -OutputAssembly $nativeHelper -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+public static class NativeStatusFixture {
+  public static int Main(string[] args) {
+    if (args.Length > 0 && args[0] == "status") { Console.WriteLine("false"); return 1; }
+    return 0;
+  }
+}
+'@
+        function Find-GsudoExecutable { $nativeHelper }
+        function Test-IsAdmin { $false }
+        $previousContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        $env:CAMBRIAN_INSTALL_ELEVATION = $null
+        $LASTEXITCODE = 73
+        try {
+            Initialize-ElevationSession
+            if ($script:InstallElevationSession.ExistingCache) { throw 'False native cache probe was masked' }
+            Ensure-Elevated -Reason 'native status fixture'
+            if (-not $script:ElevationWarmed) { throw 'Native successful acquisition was shadowed' }
+            Clear-Elevation
+            if ($env:CAMBRIAN_INSTALL_ELEVATION) { throw 'Native cleanup was shadowed' }
+        } finally { $env:CAMBRIAN_INSTALL_ELEVATION = $previousContext }
+        Write-Output 'PASS: real shared helper ignores caller-local stale native status'
+    }
     # Regression for e1b774b1: a native elevation failure after a successful
     # build must retain its evidence and caller phase, not invent a UAC refusal.
     # Child scope confines mocks/preferences; cmd.exe supplies real stderr/exit.
@@ -574,9 +648,13 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:elevationCalls = 0
         $script:elevationMode = 'failure'
         function Test-IsAdmin { $false }
-        function Ensure-Gsudo { }
+        function Ensure-Gsudo { $script:GsudoExecutable = 'gsudo' }
+        function Find-GsudoExecutable { 'gsudo' }
+        function Test-ElevationCacheAvailable { $false }
+        $script:gsudoArguments = @()
         function gsudo {
             $script:elevationCalls++
+            $script:gsudoArguments += ($args -join ' ')
             if ($script:elevationMode -eq 'failure') {
                 & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
@@ -611,6 +689,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:elevationMode = 'cleanup-info'
         Clear-Elevation
         if ($script:ElevationWarmed -or $ErrorActionPreference -ne 'Stop') { throw 'Successful cleanup retained cache state or changed error policy' }
+        Initialize-ElevationSession
         $script:ElevationWarmed = $true
         $script:elevationMode = 'failure'
         $failure = $null
@@ -621,8 +700,125 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         function Test-IsAdmin { $true }
         Ensure-Elevated -Reason $reason
         if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Already elevated path invoked gsudo' }
+        Clear-Elevation
+
+        # Shared-installer regression: a child can be the first admin caller,
+        # but only the outer owner disposes its process-scoped cache. No global
+        # authorization, no default five-minute expiry during a build.
+        function Test-IsAdmin { $false }
+        $script:elevationMode = 'success'
+        Initialize-ElevationSession
+        $parentSession = $script:InstallElevationSession
+        $parentContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        # Real process boundaries: same-PID mocks cannot exercise ancestry.
+        $helperPath = (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1').Replace("'", "''")
+        $probe = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    . '$helperPath'
+    Initialize-ElevationSession
+    if (-not `$script:InstallElevationSession.Borrowed -or `$script:InstallElevationSession.OwnerPid -ne $PID) { throw 'Child did not borrow expected owner.' }
+    Clear-Elevation
+    if (-not `$env:CAMBRIAN_INSTALL_ELEVATION) { throw 'Child removed parent context.' }
+    Write-Output 'fixture process borrowed and released locally'
+} catch { Write-Output `$_.Exception.Message; exit 1 }
+"@
+        $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $bashExe = Get-Command git.exe -CommandType Application -All -ErrorAction Stop | ForEach-Object {
+            Join-Path (Split-Path (Split-Path $_.Source)) 'bin\bash.exe'
+        } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $bashExe) { throw 'Git Bash is required for the Windows installer ancestry regression.' }
+        foreach ($viaBash in @($false, $true)) {
+            $probeInfo = [Diagnostics.ProcessStartInfo]::new($powerShellExe)
+            $probeInfo.Arguments = "-NoProfile -NonInteractive -EncodedCommand $encodedProbe"
+            if ($viaBash) {
+                $probeInfo.FileName = $bashExe
+                $probeInfo.Arguments = '--noprofile --norc -c "powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + $encodedProbe + '"'
+            }
+            $probeInfo.UseShellExecute = $false
+            $probeInfo.CreateNoWindow = $true
+            $probeInfo.RedirectStandardOutput = $true
+            $probeInfo.RedirectStandardError = $true
+            $probeChild = [Diagnostics.Process]::Start($probeInfo)
+            try {
+                $probeOut = $probeChild.StandardOutput.ReadToEndAsync()
+                $probeErr = $probeChild.StandardError.ReadToEndAsync()
+                if (-not $probeChild.WaitForExit(120000)) { $probeChild.Kill(); $probeChild.WaitForExit(); throw 'Elevation ancestry child timed out' }
+                $probeOutput = $probeOut.Result + $probeErr.Result
+                if ($probeChild.ExitCode -ne 0 -or $probeOutput -notmatch 'fixture process borrowed and released locally') {
+                    throw "Elevation ancestry failed (Git Bash=$viaBash): $probeOutput"
+                }
+            } finally { $probeChild.Dispose() }
+        }
+        $script:InstallElevationSession = $null
+        Initialize-ElevationSession
+        if (-not $script:InstallElevationSession.Borrowed) { throw 'Nested installer claimed parent cache ownership' }
+        Ensure-Elevated -Reason 'child firewall fixture'
+        if ($script:gsudoArguments[-1] -ne "cache on -p $PID -d -1") { throw 'Cache was not bound to the installer lifetime/process' }
+        $callsBeforeChildCleanup = $script:elevationCalls
+        Clear-Elevation
+        if ($script:elevationCalls -ne $callsBeforeChildCleanup -or $env:CAMBRIAN_INSTALL_ELEVATION -ne $parentContext) {
+            throw 'Borrowed cleanup disposed or hid the outer owner context'
+        }
+        $script:InstallElevationSession = $parentSession
+        $script:ElevationWarmed = $false
+        Clear-Elevation
+        if ($script:elevationCalls -ne ($callsBeforeChildCleanup + 1) -or
+            $script:gsudoArguments[-1] -ne "cache off -p $PID" -or $env:CAMBRIAN_INSTALL_ELEVATION) {
+            throw 'Outer owner failed to close a child-acquired cache'
+        }
+        # A no-work install in an interactive shell must not clear its existing
+        # caller-owned cache, nor extend that cache when it borrows elevation.
+        function Test-ElevationCacheAvailable { $true }
+        $callsBeforeExisting = $script:elevationCalls
+        Initialize-ElevationSession
+        if (-not $script:InstallElevationSession.ExistingCache) { throw 'Pre-existing cache was claimed by installer' }
+        Clear-Elevation
+        Initialize-ElevationSession
+        Ensure-Elevated -Reason 'borrowing an existing cache'
+        if ($script:elevationCalls -ne $callsBeforeExisting) { throw 'Existing cache was reacquired or cleared by installer' }
+        function Test-ElevationCacheAvailable { $false }
+        $failure = $null
+        try { Ensure-Elevated -Reason 'expired borrowed cache' } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'pre-existing elevation cache expired') { throw 'Expired external cache silently reacquired consent' }
+        Clear-Elevation
+        if ($script:elevationCalls -ne $callsBeforeExisting) { throw 'External cache cleanup invoked gsudo' }
+        $invalid = $parentContext | ConvertFrom-Json
+        $invalid.ownerStarted = '0'
+        $env:CAMBRIAN_INSTALL_ELEVATION = $invalid | ConvertTo-Json -Compress
+        $failure = $null
+        try { Initialize-ElevationSession } catch { $failure = $_.Exception.Message }
+        Remove-Item Env:CAMBRIAN_INSTALL_ELEVATION
+        if (-not $failure -or $failure -notmatch 'owner process has changed' -or $script:InstallElevationSession) {
+            throw 'Stale inherited elevation owner was accepted'
+        }
     }
     Write-Output 'PASS: elevation failure preserves native diagnostics and phase without guessing cause'
+
+    # The shared helper must consume manifest data, including in standalone
+    # consumers. Missing/unsupported source data must never start acquisition.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1') -GsudoSource @{type='winget';id='fixture.package';scope='user'}
+        $script:gsudoFinds = 0
+        $script:gsudoPackageArgs = @()
+        function Find-GsudoExecutable { $script:gsudoFinds++; if ($script:gsudoFinds -gt 1) { 'fixture-native.exe' } }
+        function Update-SessionPath { }
+        function winget { $script:gsudoPackageArgs = @($args); $global:LASTEXITCODE = 0 }
+        Ensure-Gsudo
+        if ($script:GsudoExecutable -ne 'fixture-native.exe' -or
+            ($script:gsudoPackageArgs -join ' ') -notmatch '--id fixture.package --source winget' -or
+            ($script:gsudoPackageArgs -join ' ') -notmatch '--scope user') { throw 'gsudo acquisition ignored manifest source' }
+        $script:ElevationGsudoSource = @{type='winget';id='fixture.package';scope='machine'}
+        $script:gsudoFinds = 0
+        $script:gsudoPackageArgs = @()
+        $failure = $null
+        try { Ensure-Gsudo } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'per-user gsudo package source' -or $script:gsudoPackageArgs.Count) {
+            throw 'Unsupported elevation-helper acquisition was attempted'
+        }
+    }
+    Write-Output 'PASS: standalone elevation acquisition uses the shared manifest and rejects unsupported scope'
 
     $installed = Join-Path $scratch 'installed with spaces'
     $target = Join-Path $scratch 'cargo'
@@ -857,9 +1053,12 @@ public class SupervisorFixture {
         $oldSlot = Join-Path $prepareRoot 'bin\service-a'
         New-Item -ItemType Directory -Path $prepareLib, $oldSlot -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $prepareRepo
-        foreach ($name in @('install-common.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $prepareLib
         }
+        $prepareGenerated = Join-Path (Split-Path $prepareLib) 'generated'
+        New-Item -ItemType Directory -Path $prepareGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $prepareGenerated
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination (Split-Path $prepareLib)
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\start-livekit-windows.ps1') -Destination (Split-Path $prepareLib)
         $oldArtifact = Join-Path $oldSlot 'continuum-core-server.exe'
@@ -911,8 +1110,11 @@ function Mod-LlamaServer {
             $missing = $missingFiles[$extra]
             if ($missing) { Remove-Item -LiteralPath $missing }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
-            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $prepareRepo 'install.ps1') + '" -PrepareOnly'
-            if (-not $missing) { $info.Arguments += $extra }
+            # Same explicit exception capture as the hidden resume fixture.
+            $entry = (Join-Path $prepareRepo 'install.ps1').Replace("'", "''")
+            $flags = if ($missing) { '' } else { $extra }
+            $invoke = "try { & '$entry' -PrepareOnly$flags } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.RedirectStandardOutput = $true
@@ -930,7 +1132,7 @@ function Mod-LlamaServer {
                     if ($process.ExitCode -ne 0 -or $output -notmatch 'fixture prebuilt validated') { throw "Public preparation failed: $output" }
                 } elseif ($missing) {
                     if ($process.ExitCode -eq 0 -or $output -notmatch 'Preparation requires' -or $output -match 'Unexpected download') { throw "Missing cached toolchain did not fail before provisioning: $output" }
-                } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw 'Preparation accepted incompatible flags' }
+                } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw "Preparation flag refusal failed (exit $($process.ExitCode)): $output" }
             } finally {
                 $process.Dispose()
                 if ($missing) { Copy-Item -LiteralPath $child -Destination $missing }
