@@ -439,16 +439,43 @@ function Get-ManagedXzDecoder {
 function Expand-ManagedTarXz {
     param([string]$Archive, [string]$Destination, [string[]]$Members)
     $decoder = Get-ManagedXzDecoder
-    $savedPath = $env:PATH
     $savedPreference = $ErrorActionPreference
+    $plainTar = Join-Path $Destination ([guid]::NewGuid().ToString('N') + '.tar')
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo.FileName = $decoder
+    $process.StartInfo.Arguments = '-d -c -- "' + $Archive + '"'
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $started = $false
     try {
-        $env:PATH = (Split-Path $decoder) + ';' + $savedPath
+        # Windows bsdtar's external-filter pipes stalled on the real LLVM
+        # archive after 64 KiB, although a tiny fixture passed. Decode to a
+        # file first; never send binary tar bytes through PowerShell's pipeline.
+        Write-Host '  > [archive] decoding XZ to temporary tar on the selected storage'
+        $output = [IO.File]::Open($plainTar, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        try {
+            $started = $process.Start()
+            if (-not $started) { throw 'Could not start XZ decoder.' }
+            $errors = $process.StandardError.ReadToEndAsync()
+            $process.StandardOutput.BaseStream.CopyTo($output)
+            $process.WaitForExit()
+            $detail = $errors.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) { throw "Archive extraction failed during XZ decode (exit $($process.ExitCode)): $detail" }
+        } finally { $output.Dispose() }
+        Write-Host '  > [archive] extracting selected members from decoded tar'
         # Capture native stderr in PS5 without losing the exit status. A failed
         # decoder/extractor must never be reported as a completed prerequisite.
         $ErrorActionPreference = 'Continue'
-        $diagnostic = @(& (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $Archive -C $Destination --strip-components=1 @Members 2>&1)
+        $diagnostic = @(& (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $plainTar -C $Destination --strip-components=1 @Members 2>&1)
         $code = $LASTEXITCODE
-    } finally { $env:PATH = $savedPath; $ErrorActionPreference = $savedPreference }
+    } finally {
+        if ($started -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+        $process.Dispose()
+        $ErrorActionPreference = $savedPreference
+        if (Test-Path -LiteralPath $plainTar) { Remove-Item -LiteralPath $plainTar -Force }
+    }
     if ($code -ne 0) { throw "Archive extraction failed (exit $code): $($diagnostic -join [Environment]::NewLine)" }
 }
 
