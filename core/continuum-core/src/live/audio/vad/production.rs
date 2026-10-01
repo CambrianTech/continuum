@@ -176,6 +176,7 @@ pub struct ProductionVAD {
     buffer: SentenceBuffer,
     initialized: bool,
     frame_count: u64,
+    pending_audio: std::collections::VecDeque<i16>,
 }
 
 impl ProductionVAD {
@@ -197,6 +198,7 @@ impl ProductionVAD {
             buffer,
             initialized: false,
             frame_count: 0,
+            pending_audio: std::collections::VecDeque::new(),
         }
     }
 
@@ -223,6 +225,20 @@ impl ProductionVAD {
                 "ProductionVAD not initialized".into(),
             ));
         }
+
+        // Transport packets are not VAD frames. LiveKit supplies 160 samples
+        // (10ms); the prefilter skips partial 240-sample chunks and Silero is
+        // trained on 512. Preserve every sample across packet boundaries.
+        self.pending_audio.extend(audio.iter().copied());
+        while let Some(frame) = take_analysis_frame(&mut self.pending_audio) {
+            if let Some(sentence) = self.process_analysis_frame(&frame)? {
+                return Ok(Some(sentence));
+            }
+        }
+        Ok(None)
+    }
+
+    fn process_analysis_frame(&mut self, audio: &[i16]) -> Result<Option<Vec<i16>>, VADError> {
 
         self.frame_count += 1;
         let max_amp = audio.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
@@ -287,9 +303,34 @@ impl Default for ProductionVAD {
     }
 }
 
+fn take_analysis_frame(pending: &mut std::collections::VecDeque<i16>) -> Option<Vec<i16>> {
+    let size = crate::audio_constants::AUDIO_FRAME_SIZE;
+    if pending.len() < size { return None; }
+    Some(pending.drain(..size).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Real WebRTC input was always silence: 160-sample packets never reached
+    // the prefilter's minimum chunk. Framing must preserve order and the tail.
+    #[test]
+    fn transport_packet_boundaries_preserve_vad_samples() {
+        let source: Vec<i16> = (0..1600).collect();
+        let mut pending = std::collections::VecDeque::new();
+        let mut emitted = Vec::new();
+        for packet in source.chunks(160) {
+            pending.extend(packet.iter().copied());
+            while let Some(frame) = take_analysis_frame(&mut pending) {
+                assert_eq!(frame.len(), 512);
+                emitted.extend(frame);
+            }
+        }
+        assert_eq!(emitted.len(), 1536);
+        emitted.extend(pending);
+        assert_eq!(emitted, source);
+    }
 
     #[test]
     fn test_sentence_buffer() {
