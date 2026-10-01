@@ -1116,15 +1116,16 @@ try {
     $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
     Set-Content -LiteralPath $fakeCli -Value @'
 if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+$payload = Get-ManagedPayloadRoot -HomeRoot $env:CONTINUUM_HOME
 if ($args[0] -eq 'engine' -and $args[1] -eq 'promote') {
     if ($env:FAKE_PROMOTE_RC) { 'refused'; exit ([int]$env:FAKE_PROMOTE_RC) }
-    Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'bin\current') -Value $args[2]
+    Set-Content -LiteralPath (Join-Path $payload 'bin\current') -Value $args[2]
     Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'promoted-with') -Value "$($args[2]) $($args[3])"
     exit 0
 }
 if ($args[0] -eq 'engine' -and $args[1] -eq 'idle-slot') {
     if ($env:FAKE_IDLE_RC) { exit ([int]$env:FAKE_IDLE_RC) }
-    Join-Path $env:CONTINUUM_HOME ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
+    Join-Path $payload ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
 }
 exit 64
 '@
@@ -1153,7 +1154,7 @@ exit 64
     } finally { $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null; $script:liveProcesses = @() }
     # The pre-verb path skips a busy deploy too: every slot live by the process table.
     $script:liveProcesses = @('engine-a', 'engine-b', 'engine-c' | ForEach-Object {
-        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed "bin\$_\llama-server.exe") } })
+        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installedPayload "bin\$_\llama-server.exe") } })
     try {
         if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -SkipIfBusy)) { throw 'The pre-verb path did not skip a busy deploy' }
         $refused = $false
