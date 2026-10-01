@@ -2526,7 +2526,8 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
     }
     let home = home_dir()?;
     let target = std::env::var("CARGO_TARGET_DIR").ok();
-    let candidates = core_artifact_candidates(&home, target.as_deref());
+    let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
+    let candidates = core_artifact_candidates(&home, &payload, target.as_deref());
     candidates
         .iter()
         .find(|p| p.is_file())
@@ -2546,7 +2547,7 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
 
 /// The ordered candidate list behind [`resolve_core_artifact`] — pure (paths in, paths out)
 /// so the shared resolution ORDER is pinned by a unit test against install-service.sh.
-fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<PathBuf> {
+fn core_artifact_candidates(home: &str, payload: &Path, cargo_target_dir: Option<&str>) -> Vec<PathBuf> {
     let exe = if cfg!(windows) {
         "continuum-core-server.exe"
     } else {
@@ -2559,7 +2560,7 @@ fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<P
     if !cfg!(windows) {
         out.push(PathBuf::from("/usr/local/bin").join(exe));
     }
-    out.push(PathBuf::from(home).join(".continuum").join("bin").join(exe));
+    out.push(payload.join("bin").join(exe));
     out.push(PathBuf::from(&target).join("release").join(exe));
     out.push(PathBuf::from(&target).join("debug").join(exe));
     out
@@ -3719,6 +3720,8 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
     }
 
     let artifact = resolve_core_artifact()?;
+    let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
+    let slot = payload.join("bin").join("continuum-core-server");
     // What launchd must carry for the exec to find its libraries: ORT and the runtime
     // library dirs, read off a Command so it is the direct launch's computation. NOT
     // config.env — the core applies that file to itself on every boot
@@ -3747,7 +3750,7 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
         );
         let _ = stop_with(true).await?;
     }
-    let job = live::install(want.clone(), &artifact, &socket, &env)?;
+    let job = live::install(want.clone(), &artifact, &slot, &socket, &env)?;
     // `resolve_core_artifact` prefers the installed slot over a fresh build, so on a node
     // that already has one this REGISTERS what is in the slot; the core arm (or `reboot`)
     // is what brings HEAD to the slot.
@@ -4708,10 +4711,14 @@ fn descends_from(parents: &std::collections::HashMap<i32, i32>, pid: i32, keep: 
 
 fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
+    let owned_root = match continuum_core::paths::continuum_home()
+        .and_then(|home| continuum_core::paths::payload_root(&home)) {
+        Ok(root) => root.join("bin"),
+        Err(error) => {
+            eprintln!("cannot establish managed engine ownership: {error}");
+            return Vec::new();
+        }
     };
-    let owned_root = home.join(".continuum").join("bin");
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -4881,7 +4888,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
         // llama-server PATH). Without it the M5 came up dark on 2026-09-16.
         (locate_start_script().ok(), None)
     } else {
-        (locate_start_script().ok(), locate_core_server_binary())
+        (locate_start_script().ok(), locate_core_server_binary()?)
     };
     let plan = plan_launch(
         policy,
@@ -6019,7 +6026,7 @@ fn reap_owned_orphans(keep: &[i32]) {
 ///   2. next to the running `continuum` executable (how an install lays out).
 ///   3. `~/.continuum/bin`.
 ///   4. `target/{release,debug}` walking up from cwd — the dev case.
-fn locate_core_server_binary() -> Option<PathBuf> {
+fn locate_core_server_binary() -> Result<Option<PathBuf>, String> {
     const BIN: &str = if cfg!(windows) {
         "continuum-core-server.exe"
     } else {
@@ -6029,7 +6036,7 @@ fn locate_core_server_binary() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("CONTINUUM_CORE_SERVER") {
         let p = PathBuf::from(&explicit);
         if p.is_file() {
-            return Some(p);
+            return Ok(Some(p));
         }
         eprintln!(
             "continuum: CONTINUUM_CORE_SERVER={explicit} is not a file — ignoring the \
@@ -6037,32 +6044,33 @@ fn locate_core_server_binary() -> Option<PathBuf> {
         );
     }
 
+    let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(BIN);
             if candidate.is_file() {
-                return Some(candidate);
+                return Ok(Some(candidate));
             }
         }
     }
 
-    if let Ok(home) = home_dir().map(PathBuf::from) {
-        let candidate = home.join(".continuum").join("bin").join(BIN);
+    {
+        let candidate = payload.join("bin").join(BIN);
         if candidate.is_file() {
-            return Some(candidate);
+            return Ok(Some(candidate));
         }
     }
 
-    let mut dir = std::env::current_dir().ok()?;
+    let mut dir = std::env::current_dir().map_err(|error| format!("cwd: {error}"))?;
     loop {
         for profile in ["release", "debug"] {
             let candidate = dir.join("target").join(profile).join(BIN);
             if candidate.is_file() {
-                return Some(candidate);
+                return Ok(Some(candidate));
             }
         }
         if !dir.pop() {
-            return None;
+            return Ok(None);
         }
     }
 }
@@ -7944,7 +7952,7 @@ mod tests {
     // "could not locate continuum-core-server" while a 2-day-old core kept serving).
     #[test]
     fn artifact_resolution_order_matches_install_service() {
-        let c = core_artifact_candidates("/home/u", None);
+        let c = core_artifact_candidates("/home/u", Path::new("/home/u/.continuum"), None);
         let shown: Vec<String> = c.iter().map(|p| p.display().to_string()).collect();
         #[cfg(not(windows))]
         assert_eq!(
@@ -7968,7 +7976,9 @@ mod tests {
             );
         }
         // explicit CARGO_TARGET_DIR overrides the default cache location
-        let c = core_artifact_candidates("/home/u", Some("/tgt"));
+        let c = core_artifact_candidates("/home/u", Path::new("/cold/payload"), Some("/tgt"));
+        assert!(c.iter().any(|p| p.starts_with("/cold/payload/bin")));
+        assert!(!c.iter().any(|p| p.starts_with("/home/u/.continuum/bin")));
         assert!(
             c.iter().any(|p| p.starts_with("/tgt/release"))
                 && c.iter().any(|p| p.starts_with("/tgt/debug")),

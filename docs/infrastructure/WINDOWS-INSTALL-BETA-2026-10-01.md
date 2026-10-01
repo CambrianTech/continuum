@@ -72,3 +72,11 @@ control-flow regressions pass in Git Bash. Final runtime compilation/tests and
 public rerun remain required. Linux CI also includes cold engine-slot and
 manifest-loader regressions.
 Public install, reboot/rerun, remote command/event and GPU proof remain OPEN.
+
+The follow-up consumer audit found additional fixed hot-home paths in Unix core
+publishing/service resolution, CLI core lookup, macOS install staging and engine
+orphan ownership. These now consume the selected payload root too; macOS receives
+the resolved slot from the CLI rather than duplicating path policy in its adapter.
+The existing artifact-order and plist tests cover a cold slot, and shell placement
+tests verify that an unavailable selected directory refuses service operations.
+This additional consumer change requires fresh CI and peer review.

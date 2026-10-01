@@ -363,6 +363,10 @@ test_managed_payload_placement() (
   case ":$PATH:" in *":$selected/cuda-fixture/lib:"*) ;; *) return 1;; esac
   printf '%s\n' "$scratch/missing" > "$home/payload-root"
   if managed_payload_root "$home"; then return 1; fi
+  # A service operation must refuse an unavailable recorded payload before
+  # touching the host supervisor or searching a stale hot-home binary.
+  if bash "$(dirname "$LIB")/../install-service.sh" status > "$scratch/service-output" 2>&1; then return 1; fi
+  grep -q 'Selected payload directory .* is unavailable' "$scratch/service-output" || return 1
 )
 
 # Permit a focused scratch-only test without executing installer tier tests.

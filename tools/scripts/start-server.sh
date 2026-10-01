@@ -116,7 +116,7 @@ fi
 if [ -z "$ORT_DYLIB_PATH" ]; then
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-      echo "⚠ ONNX Runtime not provisioned (~/.continuum/lib/onnxruntime.dll absent)." >&2
+      echo "⚠ ONNX Runtime not provisioned ($PAYLOAD_ROOT/lib/onnxruntime.dll absent)." >&2
       echo "  ort will dlopen by name and Windows will hand it System32's copy," >&2
       echo "  which Edge ships at 1.17.1 — ort needs >= 1.23.x, so voice will be" >&2
       echo "  dead with only a worker-thread panic in the start log to say so." >&2
@@ -1276,7 +1276,7 @@ echo ""
 # execs a half-written file. Non-fatal: failing to publish doesn't block this boot,
 # which runs $CORE_BIN directly either way.
 # [[managed-product-everything-self-provisions-no-operator-steps]], #194, #291
-CORE_INSTALL_DIR="$HOME/.continuum/bin"
+CORE_INSTALL_DIR="$PAYLOAD_ROOT/bin"
 if mkdir -p "$CORE_INSTALL_DIR" 2>/dev/null; then
   if cp "$CORE_BIN" "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" 2>/dev/null \
      && mv -f "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" \

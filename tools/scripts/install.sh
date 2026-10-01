@@ -329,13 +329,13 @@ install_system_deps() {
           ORT_VARIANT="linux-${ORT_ARCH}-gpu"
         fi
         local ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-${ORT_VARIANT}-${ORT_VERSION}.tgz"
-        echo -e "  Installing ONNX Runtime ${ORT_VERSION} (${ORT_VARIANT}) to ~/.continuum/lib/..."
+        echo -e "  Installing ONNX Runtime ${ORT_VERSION} (${ORT_VARIANT}) to $ORT_LIB_DIR/..."
         local ORT_TMP="/tmp/onnxruntime-install"
         rm -rf "$ORT_TMP"
         mkdir -p "$ORT_TMP" "$ORT_LIB_DIR"
         if curl -sSL "$ORT_URL" | tar xz -C "$ORT_TMP" --strip-components=1; then
           cp -a "$ORT_TMP"/lib/libonnxruntime* "$ORT_LIB_DIR/"
-          echo -e "  ${GREEN}✅ ONNX Runtime installed to ~/.continuum/lib/${NC}"
+          echo -e "  ${GREEN}✅ ONNX Runtime installed to $ORT_LIB_DIR/${NC}"
         else
           echo -e "  ${YELLOW}⚠️ ONNX Runtime download failed — VAD will be unavailable${NC}"
         fi
