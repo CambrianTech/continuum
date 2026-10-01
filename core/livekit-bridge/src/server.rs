@@ -79,6 +79,11 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                         let mut media_buf: Vec<u8> = Vec::new();
                         loop {
                             tokio::select! {
+                                // Producers enqueue MediaChannelOpened before their first
+                                // payload, but the two queues are independently ready.
+                                // Drain control first so core knows the channel before
+                                // receiving audio/video; randomized selection can drop it.
+                                biased;
                                 payload = event_rx_moved.recv() => {
                                     let Some(payload) = payload else { break };
                                     let json = match serde_json::to_vec(&payload.event) {
