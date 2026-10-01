@@ -920,6 +920,14 @@ impl FileEngine {
     /// a FILE says "use code/read", a miss says "the workspace root itself IS
     /// explorable" — so a mind re-orients instead of concluding it is stuck.
     pub fn resolve_dir(&self, relative: &str) -> Result<PathBuf, FileEngineError> {
+        // File and directory tools accept the same receipt paths. Resolve before
+        // stripping the leading slash, which would turn an absolute address into
+        // a different relative path. Canonical validation also checks symlinks.
+        if let Ok(abs) = self.security.validate_read(relative) {
+            if abs.is_dir() {
+                return Ok(abs);
+            }
+        }
         let rel = relative.trim().trim_start_matches('/');
         if rel.is_empty() || rel == "." {
             return Ok(self.security.workspace_root().to_path_buf());
@@ -935,6 +943,9 @@ impl FileEngine {
                 // fatal, so a later candidate/root can still resolve. A genuinely
                 // malicious `..` resolves to no directory and surfaces the miss error.
                 if let Ok(abs) = self.secure_join(&root, cand) {
+                    let Ok(abs) = self.security.validate_read(&abs.to_string_lossy()) else {
+                        continue;
+                    };
                     if abs.is_dir() {
                         return Ok(abs);
                     }
@@ -3717,6 +3728,17 @@ mod tests {
         );
         // SECURE: `..` traversal is blocked (the bypass the old handler joins skipped)
         assert!(engine.resolve_dir("../../etc").is_err());
+        assert_eq!(
+            engine.resolve_dir(&engine.workspace_root().join("src").to_string_lossy()).unwrap(),
+            engine.resolve_dir("src").unwrap()
+        );
+        let outside = tempfile::tempdir().unwrap();
+        assert!(engine.resolve_dir(&outside.path().to_string_lossy()).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), engine.workspace_root().join("outside-link")).unwrap();
+            assert!(engine.resolve_dir("outside-link").is_err());
+        }
     }
 
     #[test]

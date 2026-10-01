@@ -20,11 +20,29 @@ pub fn actionable(card: &WorkCard) -> bool {
     matches!(card.state, airc_work::CardState::Claimed | airc_work::CardState::InProgress)
 }
 
-/// One selection for room hands, follow-on work, and tool provisioning.
+/// Selection for scheduling new implementation work.
 pub fn focus_actionable_card<'a>(
     held: impl IntoIterator<Item = &'a WorkCard>,
 ) -> Option<&'a WorkCard> {
     focus_card(held.into_iter().filter(|card| actionable(card)))
+}
+
+/// Keep a retained review checkout available for conversation and repairs after
+/// restart, without scheduling review as new implementation work. Active work
+/// always takes precedence. The caller supplies ownership/lease-filtered claims.
+pub fn focus_workspace_card<'a>(
+    held: impl IntoIterator<Item = &'a WorkCard>,
+) -> Option<&'a WorkCard> {
+    let mut active = Vec::new();
+    let mut review = Vec::new();
+    for card in held {
+        if actionable(card) {
+            active.push(card);
+        } else if card.state == airc_work::CardState::Review {
+            review.push(card);
+        }
+    }
+    focus_card(active).or_else(|| focus_card(review))
 }
 
 /// Resolve the same actionable choice used by hands against ordinary subscribed
@@ -187,8 +205,13 @@ mod tests {
         // implementation card selected by the follow-on work gate.
         held[1].state = airc_work::CardState::Review;
         assert_eq!(focus_actionable_card(held.iter()).map(|c| c.card_id), Some(held[0].card_id));
+        assert_eq!(focus_workspace_card(held.iter()).map(|c| c.card_id), Some(held[0].card_id));
         held[0].state = airc_work::CardState::Closed;
         assert!(focus_actionable_card(held.iter()).is_none());
+        // Review must retain native hands on restart without becoming scheduled work.
+        assert_eq!(focus_workspace_card(held.iter()).map(|c| c.card_id), Some(held[1].card_id));
+        held[1].state = airc_work::CardState::Closed;
+        assert!(focus_workspace_card(held.iter()).is_none());
 
     }
 }
