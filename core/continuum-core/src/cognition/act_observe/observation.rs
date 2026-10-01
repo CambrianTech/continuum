@@ -56,10 +56,10 @@ pub enum ToolVerb {
 }
 
 impl ToolVerb {
-    /// Normalizes `_`→`/` first (models emit both forms — same as the `wrote`
-    /// computation in `apply.rs`).
+    /// Use the executor's resolver so advertised aliases and canonical commands
+    /// produce the same feedback about what the persona actually did.
     pub fn classify(name: &str) -> Self {
-        let n = name.replace('_', "/");
+        let n = crate::cognition::tool_dialect::resolve_wire_name(name);
         // exact SUBSTRING semantics preserved from the `wrote` bool so it is unchanged.
         if n.contains("write") {
             return ToolVerb::Write;
@@ -81,7 +81,8 @@ impl ToolVerb {
             "code/run" => ToolVerb::Run,
             "code/shell" => ToolVerb::Shell,
             "code/read" => ToolVerb::Read,
-            "interface/screenshot" => ToolVerb::Screenshot,
+            "interface/screenshot" | "interface/capture" | "perception/observe"
+            | "perception/look" | "vision/look" => ToolVerb::Screenshot,
             _ => ToolVerb::Other,
         }
     }
