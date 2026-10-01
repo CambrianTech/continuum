@@ -106,13 +106,15 @@ try {
 . (Join-Path $LibDir 'install-common.ps1')
 . (Join-Path $LibDir 'windows-service.ps1')
 . (Join-Path $LibDir 'windows-prepared.ps1')
+. (Join-Path $LibDir 'win-modules.ps1')
 if ($ResumePrepared) {
+    # Prepared builds defer provisioning; converge the provider runtime before handoff.
+    Mod-Poppler
     try { Resume-CorePreparedRelease -RepoRoot $RepoRoot -InstallLease $installLease }
     finally { Clear-Elevation }
     Write-Ok 'Prepared release is verified and supervised.'
     return
 }
-. (Join-Path $LibDir 'win-modules.ps1')
 
 $WantsGrid = $Grid -or ($env:CONTINUUM_GRID -eq '1')
 
@@ -150,6 +152,7 @@ try {
     Mod-GhAuth -WantsGrid:$WantsGrid
     Mod-Airc
     Mod-OrtRuntime
+    Mod-Poppler
 
     # Grid transport reachability: Windows Firewall silently drops inbound peer
     # dials to the airc daemon unless it's allowed -- an asymmetric route failure

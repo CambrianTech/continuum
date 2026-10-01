@@ -529,6 +529,62 @@ function Mod-OrtRuntime {
     }
 }
 
+function Test-PopplerRuntime {
+    param([string]$Directory, [string]$Version)
+    foreach ($name in @('pdfinfo', 'pdftotext', 'pdftoppm')) {
+        $exe = Join-Path $Directory ('Library\bin\' + $name + '.exe')
+        if (-not (Test-Path -LiteralPath $exe)) { return $false }
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = $exe
+        $start.Arguments = '-v'
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $start
+        try {
+            if (-not $process.Start()) { return $false }
+            if (-not $process.WaitForExit(5000)) { $process.Kill(); return $false }
+            $reported = $process.StandardError.ReadToEnd()
+            if ($process.ExitCode -ne 0 -or $reported -notmatch ([regex]::Escape($name + ' version ' + $Version) + '(\s|$)')) { return $false }
+        } finally { $process.Dispose() }
+    }
+    return $true
+}
+
+function Mod-Poppler {
+    $source = (Get-ManifestModule 'poppler').source
+    $version = ($source.version -split '-')[0]
+    $directory = Join-Path $env:USERPROFILE '.continuum\tools\poppler'
+    if (Test-PopplerRuntime -Directory $directory -Version $version) {
+        Module-Skip 'poppler' 'all three installed PDF decoders execute at the pinned version'
+        return
+    }
+    $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-poppler-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    try {
+        Module-Start 'poppler' 'installing checksum-pinned PDF runtime (no admin)'
+        $archive = Join-Path $scratch 'runtime.zip'
+        Invoke-WebRequest -Uri $source.url -OutFile $archive -UseBasicParsing
+        Assert-Sha256 -Path $archive -Expected $source.sha256 -Name 'poppler'
+        Expand-Archive -LiteralPath $archive -DestinationPath $scratch
+        $roots = @(Get-ChildItem -LiteralPath $scratch -Directory)
+        if ($roots.Count -ne 1 -or -not (Test-PopplerRuntime -Directory $roots[0].FullName -Version $version)) {
+            throw 'Downloaded Poppler bundle does not execute all three PDF decoders at the pinned version.'
+        }
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        Get-ChildItem -LiteralPath $roots[0].FullName | Copy-Item -Destination $directory -Recurse -Force -ErrorAction Stop
+        if (-not (Test-PopplerRuntime -Directory $directory -Version $version)) { throw 'Installed Poppler runtime validation failed.' }
+        Module-Done 'poppler'
+    } finally {
+        $resolved = [IO.Path]::GetFullPath($scratch)
+        $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        if (-not $resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            (Split-Path $resolved -Leaf) -notlike 'continuum-poppler-*') { throw 'Unsafe PDF runtime cleanup path.' }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+}
+
 function Mod-BuildCore {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     $core = Join-Path $RepoRoot 'core\continuum-core'

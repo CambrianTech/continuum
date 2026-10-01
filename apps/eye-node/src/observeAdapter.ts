@@ -18,6 +18,9 @@
  */
 
 import { PerceptionSession, PdfSurface } from '@continuum/perception';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { Percept, ProbeNode as SurfaceProbeNode } from '@continuum/perception';
 
 import type { ObserveParams } from '../../../protocol/typescript/perception/ObserveParams';
@@ -36,7 +39,13 @@ export async function observe(params: ObserveParams): Promise<ObserveResult> {
   try {
     if (PdfSurface.accepts(params.target)) {
       if (params.selector) throw new Error('PDF observation uses target #page=N, not a CSS selector');
-      const document = PerceptionSession.of(await PdfSurface.open({ target: params.target }));
+      // The scheduled service does not inherit an interactive shell's PATH.
+      // Prefer the installer-owned Windows bundle; other providers retain PATH discovery.
+      const bin = join(homedir(), '.continuum', 'tools', 'poppler', 'Library', 'bin');
+      const executables = process.platform === 'win32' && existsSync(bin)
+        ? { info: join(bin, 'pdfinfo.exe'), text: join(bin, 'pdftotext.exe'), render: join(bin, 'pdftoppm.exe') }
+        : undefined;
+      const document = PerceptionSession.of(await PdfSurface.open({ target: params.target, executables }));
       try {
         const obs = await document.observe({ viewport: params.viewport });
         return { success: true, url: obs.structure.url, title: obs.structure.title,
