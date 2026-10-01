@@ -104,6 +104,7 @@ if ($Update) {
 $installLease = Enter-ContinuumInstallLease
 try {
 . (Join-Path $LibDir 'install-common.ps1')
+Initialize-InstallEnvironment
 if (-not $PrepareOnly) { Initialize-ElevationSession }
 . (Join-Path $LibDir 'windows-service.ps1')
 . (Join-Path $LibDir 'windows-prepared.ps1')

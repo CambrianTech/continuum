@@ -3,9 +3,16 @@
 param([System.Collections.IDictionary]$GsudoSource)
 $script:ElevationGsudoSource = $GsudoSource
 function Update-SessionPath {
-    $machine = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-    $user    = [Environment]::GetEnvironmentVariable('PATH', 'User')
-    $env:PATH = "$machine;$user"
+    # Keep tools selected in this installer session, then discover newly
+    # registered tools. Repeated refreshes must not grow PATH past Windows' limit.
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($source in @($env:PATH, [Environment]::GetEnvironmentVariable('PATH', 'User'), [Environment]::GetEnvironmentVariable('PATH', 'Machine'))) {
+        foreach ($path in ($source -split ';')) {
+            if (-not [string]::IsNullOrWhiteSpace($path) -and $seen.Add($path)) { $paths.Add($path) }
+        }
+    }
+    $env:PATH = $paths -join ';'
 }
 
 function Test-IsAdmin {
