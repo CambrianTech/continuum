@@ -4187,6 +4187,48 @@ pub(crate) mod tests {
                 .await,
             Err(CreditBindingError::AmbiguousGeneration(_))
         ));
+        // A missing correlation child must not fall back to scanning every
+        // captured prompt on the card. Restore it to exercise the normal path.
+        let links = data
+            .commands()
+            .execute_value(
+                "data/list",
+                json!({
+                    "collection": StagedCreditGeneration::COLLECTION,
+                    "dbPath": format!("@persona:{name}"),
+                    "filter": {"submittedRequestId": "correction"}
+                }),
+            )
+            .await
+            .unwrap();
+        let links: crate::modules::data::DataListResult = serde_json::from_value(links).unwrap();
+        assert_eq!(links.total, 1);
+        let link: crate::orm::types::DataRecord =
+            serde_json::from_value(links.items[0].clone()).unwrap();
+        let child: StagedCreditGeneration = serde_json::from_value(link.data).unwrap();
+        let handle = format!("@persona:{name}");
+        let removed = data.commands().execute_value("data/batch", json!({
+            "dbPath": handle,
+            "operations": [{"operationType": "delete", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string()}]
+        })).await.unwrap();
+        storage_ok(&removed, "data/batch", StagedCreditGeneration::COLLECTION).unwrap();
+        assert!(matches!(
+            reviewed::bind_submission_generation(
+                &data,
+                name,
+                persona,
+                room,
+                &submitted,
+                "correction"
+            )
+            .await,
+            Err(CreditBindingError::AmbiguousGeneration(_))
+        ));
+        let restored = data.commands().execute_value("data/batch", json!({
+            "dbPath": handle,
+            "operations": [{"operationType": "create", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string(), "data": child}]
+        })).await.unwrap();
+        storage_ok(&restored, "data/batch", StagedCreditGeneration::COLLECTION).unwrap();
         let bound = reviewed::bind_submission_generation(
             &data,
             name,
