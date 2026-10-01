@@ -19,6 +19,7 @@ fixture_home="$scratch/home"
 trap 'status=$?; if [ "$status" != 0 ]; then cat "$scratch/output" "$scratch/trace" >&2; fi; rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/repo/tools/scripts/lib" "$scratch/repo/tools/scripts/shared" "$scratch/repo/core/continuum-core/src" "$scratch/home/.cargo/bin"
 cp "$script_dir/../start-server.sh" "$scratch/repo/tools/scripts/start-server.sh"
+cp "$script_dir/../lib/payload-paths.sh" "$scratch/repo/tools/scripts/lib/payload-paths.sh"
 # Media preparation belongs to warm build; startup must still be deferred.
 printf 'echo MEDIA_PREPARE >> "$FIXTURE_TRACE"\n' > "$scratch/repo/tools/scripts/install-livekit.sh"
 printf '# staged media helper\n' > "$scratch/repo/tools/scripts/start-livekit-windows.ps1"

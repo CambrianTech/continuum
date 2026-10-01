@@ -62,7 +62,13 @@ The ordinary PowerShell entry runs in a scratch profile and proves selection at
 the prerequisite boundary without acquisition. The full PS5 suite also covers
 cold prepared-release validation and engine preparation. Bigmama independently
 proved native-path cross-reading both ways between PS5 and Git Bash with spaces
-at the initial contract revision. Extended/UNC cross-reader coverage, final
-runtime compilation/tests, updated independent review and public rerun remain
-required. The Linux CI includes cold engine-slot and manifest-loader regressions.
+at the initial contract revision, including extended drive paths and unavailable
+target refusal. UNC share coverage remains unavailable. Bigmama's consumer and
+lifecycle review at `0340a6e73` found no blocker in the inspected integration;
+approval remains subject to required CI and actual installer acceptance.
+Linux CI exposed a warm-build scratch fixture missing the launcher's new shared
+helper. The fixture now copies the actual helper, and its Windows/Linux/macOS
+control-flow regressions pass in Git Bash. Final runtime compilation/tests and
+public rerun remain required. Linux CI also includes cold engine-slot and
+manifest-loader regressions.
 Public install, reboot/rerun, remote command/event and GPU proof remain OPEN.
