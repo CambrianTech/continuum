@@ -1079,6 +1079,14 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ] && [ -z "${LLAMA_SERVER_BIN:-}" ]; then
 fi
 
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
+  # Native Windows service handoff does not run this launcher again. Prepare
+  # the media artifact here; the installed supervisor starts it after handoff.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      bash "$SCRIPT_DIR/install-livekit.sh" || exit 1
+      cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release || exit 1
+      ;;
+  esac
   # The caller must launch THIS artifact, not guess our profile/target directory
   # or rerun the source launcher after stopping the old core. Publish only after
   # the build and freshness checks succeed. Older callers need no receipt.
