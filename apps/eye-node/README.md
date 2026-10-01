@@ -79,6 +79,34 @@ than fabricating an observation.
 
 ## Shape
 
+### PDF documents
+
+`perception/observe` also accepts a local `file:///.../document.pdf#page=1`
+target. Page numbers are one-based; omission selects page 1. The file must exist
+on the provider node. Remote PDF fetching and OCR are not implemented.
+
+Install Poppler on that node and make `pdfinfo`, `pdftotext`, and `pdftoppm`
+available on the **eye-node process PATH** (an interactive terminal's PATH may
+differ from its service). Missing decoders produce an explicit failure.
+
+The reusable `PdfSurface` returns page text and rendered PNG pixels from the
+same immutable snapshot, with source SHA-256, page number and total pages in
+the structure. The existing capture-retention/native-image pipeline handles
+the result unchanged. A scanned page can have an empty text layer while still
+providing its pixels; empty text is not a claim of OCR or document comprehension.
+
+Each call observes one page, caps source size at 32 MiB, text at 1 MiB, PNG at
+12 MiB, and decoder time at 30 seconds total. The viewport bounds rendering
+(aspect ratio preserved, longest side bounded by the smaller viewport dimension;
+default 1440, maximum 4096). Temporary snapshots are cleaned on close. Documents
+are read-only; selectors/CSS editing and browser interaction do not apply.
+
+Example: `continuum perception/observe --target=file:///C:/documents/resume.pdf#page=2`
+
+This is a second provider-side Surface implementation, not a new command bus or
+plugin installation system. Additional formats should implement the same Surface
+contract and use the existing command provider and evidence delivery boundaries.
+
 ```
 index.ts        entry — take the core endpoint (coreEndpoint.ts), start, stay alive
 eyeNode.ts      EyeNode — connect, provide(observe, hot-edit, interact, session-close), flush
