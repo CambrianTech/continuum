@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'payload-paths.ps1')
 # Native installer lifecycle. Two installed slots bound disk usage and keep
 # running images out of Cargo's output directory. Never overwrite an active slot.
 function ConvertTo-CoreImagePath {
@@ -183,7 +184,7 @@ function Get-CoreEngineIdleSlot {
         throw 'All installed engine slots are live or registered; refusing to overwrite an inference engine.'
     }
     if ($code -ne 0 -or -not $answer.Count) { throw "continuum engine idle-slot failed (exit $code); no slot can be proven idle." }
-    $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
+    $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $slot = ConvertTo-CoreImagePath ([string]$answer[-1]).Trim()
     if (-not @('engine-a', 'engine-b', 'engine-c' | Where-Object { [string]::Equals($slot, (Join-Path $root $_), [StringComparison]::OrdinalIgnoreCase) }).Count) {
         throw "continuum engine idle-slot answered $slot, which is not an engine slot under $root."
@@ -193,7 +194,7 @@ function Get-CoreEngineIdleSlot {
 
 function Select-CoreEngineSlot {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
-    $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
+    $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy
     if ($fromCore -eq 'BUSY') { return $null }
     if ($fromCore) {
@@ -279,7 +280,7 @@ function Prepare-CoreServiceEngine {
     # SKIP every deploy and that engine would never be used. This runs only when the current
     # engine drifts from the pin, so a matching slot is never the current one.
     $installRoot = Join-Path $env:USERPROFILE '.continuum'
-    $slotRoot = ConvertTo-CoreImagePath (Join-Path $installRoot 'bin')
+    $slotRoot = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $installRoot) 'bin')
     foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
         $built = Join-Path $slotRoot $name
         if (-not (Test-Path -LiteralPath (Join-Path $built 'llama-server.exe'))) { continue }
@@ -372,7 +373,7 @@ function New-CoreServiceRelease {
         [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'),
         [string]$TargetDirectory = $env:CARGO_TARGET_DIR
     )
-    $root = ConvertTo-CoreImagePath (Join-Path $InstallRoot 'bin')
+    $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $liveProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.Name -in @('continuum.exe', 'continuum-core-server.exe') })
     $unknownImages = @($liveProcesses | Where-Object { -not $_.ExecutablePath }).Count -gt 0

@@ -82,6 +82,63 @@ try {
         } finally { $env:USERPROFILE = $savedProfile }
         Write-Output 'PASS: interrupted cold migration resumes its owned drive, preserves data/config and refuses unrelated paths'
     }
+    # what this catches: the real public entry must persist payload placement
+    # BEFORE any prerequisite acquisition. Stop at that boundary, not at a
+    # replacement installer, and keep all state in the isolated profile.
+    & {
+        $entryRepo = Join-Path $scratch 'payload entry'
+        $entryLib = Join-Path $entryRepo 'tools\scripts\lib'
+        $entryProfile = Join-Path $scratch 'payload entry profile'
+        $entryCold = Join-Path $scratch 'payload entry cold'
+        New-Item -ItemType Directory -Path $entryLib, $entryProfile -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $entryRepo
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
+            Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $entryLib
+        }
+        $entryGenerated = Join-Path (Split-Path $entryLib) 'generated'
+        New-Item -ItemType Directory -Path $entryGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $entryGenerated
+        $modules = @'
+function Mod-ColdStorage { $env:CONTINUUM_STORAGE_PATH = '__COLD__' }
+function Test-WingetAvailable {
+    $selected = Get-ManagedPayloadRoot
+    if (-not $selected.StartsWith($env:CONTINUUM_STORAGE_PATH + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'payload entry selected the wrong root' }
+    throw 'public-payload-stop-before-prerequisites'
+}
+'@
+        $modules.Replace('__COLD__', $entryCold.Replace("'", "''")) | Set-Content -LiteralPath (Join-Path $entryLib 'win-modules.ps1')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $entryProfile
+            $ErrorActionPreference = 'Continue'
+            $output = (& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $entryRepo 'install.ps1') 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($code -eq 0 -or $output -notmatch 'public-payload-stop-before-prerequisites') { throw "Public entry did not reach the checked prerequisite boundary: $output" }
+            if (-not (Test-Path -LiteralPath (Join-Path $entryProfile '.continuum\payload-root'))) { throw 'Public entry did not persist payload placement' }
+        } finally { $env:USERPROFILE = $savedProfile; $ErrorActionPreference = 'Stop' }
+        Write-Output 'PASS: ordinary public installer selects durable cold payloads before prerequisite acquisition'
+    }
+    # what this catches: a new cold install and a legacy upgrade must persist
+    # different placement decisions; losing the cold drive must fail closed.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\payload-paths.ps1')
+        $homeRoot = Join-Path $scratch 'payload-home'
+        $cold = Join-Path $scratch 'payload-cold'
+        $selected = Initialize-ManagedPayloadRoot -HomeRoot $homeRoot -ColdRoot $cold
+        if ((Split-Path $selected) -ne (Join-Path $cold 'payloads')) { throw 'Fresh payloads did not select scoped cold storage' }
+        $other = Initialize-ManagedPayloadRoot -HomeRoot (Join-Path $scratch 'other-home') -ColdRoot $cold
+        if ($other -eq $selected) { throw 'Independent homes share installed payloads' }
+        if ((Initialize-ManagedPayloadRoot -HomeRoot $homeRoot -ColdRoot (Join-Path $scratch 'different')) -ne $selected) { throw 'Rerun moved payloads' }
+        $legacy = Join-Path $scratch 'payload-legacy'
+        New-Item -ItemType Directory -Path (Join-Path $legacy 'bin') -Force | Out-Null
+        if ((Initialize-ManagedPayloadRoot -HomeRoot $legacy -ColdRoot $cold) -ne $legacy) { throw 'Existing payloads moved implicitly' }
+        [IO.File]::WriteAllText((Join-Path $homeRoot 'payload-root'), (Join-Path $scratch 'absent-drive'))
+        $refused = $false
+        try { $null = Get-ManagedPayloadRoot -HomeRoot $homeRoot } catch { $refused = $true }
+        if (-not $refused) { throw 'Missing payload drive silently fell back' }
+        Write-Output 'PASS: fresh cold payload placement, sticky rerun, legacy preservation and missing-drive refusal'
+    }
     # what this catches: a long-lived desktop inherited no Rust-home settings
     # from an earlier install, and PATH refresh discarded session-selected tools.
     & {
@@ -489,8 +546,9 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
     & {
         function Write-Step { param($msg) }
         $resumeRoot = Join-Path $scratch 'resume installed'
-        $serviceSlot = Join-Path $resumeRoot 'bin\service-a'
-        $engineSlot = Join-Path $resumeRoot 'bin\engine-a'
+        $payload = Initialize-ManagedPayloadRoot -HomeRoot $resumeRoot -ColdRoot (Join-Path $scratch 'prepared cold')
+        $serviceSlot = Join-Path $payload 'bin\service-a'
+        $engineSlot = Join-Path $payload 'bin\engine-a'
         New-Item -ItemType Directory -Path $serviceSlot, $engineSlot, (Join-Path $resumeRoot 'logs') -Force | Out-Null
         $release = [pscustomobject]@{ artifact = (Join-Path $serviceSlot 'continuum-core-server.exe');
             cli = (Join-Path $serviceSlot 'continuum.exe'); launcher = (Join-Path $serviceSlot 'run-service-hidden.ps1');
@@ -540,7 +598,7 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $refused = $false
         try { Assert-CorePreparedRelease -Release $withEye -InstallRoot $resumeRoot } catch { $refused = $_ -match 'eyeRoot must be absolute' }
         if (-not $refused) { throw 'Relative browser root was accepted' }
-        $redirect = Join-Path $resumeRoot 'bin\service-b'
+        $redirect = Join-Path $payload 'bin\service-b'
         New-Item -ItemType Junction -Path $redirect -Target $serviceSlot | Out-Null
         try {
             $bad = $release | ConvertTo-Json | ConvertFrom-Json
@@ -571,7 +629,7 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $fakeLib = Join-Path $fakeRepo 'tools\scripts\lib'
         New-Item -ItemType Directory -Path $fakeLib -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $fakeRepo
-        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $fakeLib
         }
         $fakeGenerated = Join-Path (Split-Path $fakeLib) 'generated'
@@ -991,6 +1049,7 @@ try {
     Write-Output 'PASS: standalone elevation acquisition uses the shared manifest and rejects unsupported scope'
 
     $installed = Join-Path $scratch 'installed with spaces'
+    $installedPayload = Initialize-ManagedPayloadRoot -HomeRoot $installed -ColdRoot (Join-Path $scratch 'cold service payloads')
     $target = Join-Path $scratch 'cargo'
     New-Item -ItemType Directory -Path (Join-Path $target 'release') | Out-Null
     foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe')) {
@@ -1006,7 +1065,7 @@ try {
     foreach ($media in @('livekit-bridge.exe', 'start-livekit-windows.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $mediaSlot $media))) { throw "Missing staged media artifact: $media" }
     }
-    if ($first.artifact -ne (Join-Path $installed 'bin\service-a\continuum-core-server.exe')) { throw 'Empty install did not select first slot' }
+    if ($first.artifact -ne (Join-Path $installedPayload 'bin\service-a\continuum-core-server.exe')) { throw 'Empty install did not select first slot' }
     $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $first.artifact })
     $second = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     if ($first.artifact -eq $second.artifact) { throw 'Overwrote a live slot' }
@@ -1024,11 +1083,11 @@ try {
     if ($withEngine.artifact -ne $second.artifact) { throw 'An adopted engine blocked reuse of its core slot' }
     $savedProcesses = $script:liveProcesses
     $registeredRelease = $first | ConvertTo-Json | ConvertFrom-Json
-    $registeredRelease.engine = '\\?\' + (Join-Path $installed 'bin\engine-b\llama-server.exe')
+    $registeredRelease.engine = '\\?\' + (Join-Path $installedPayload 'bin\engine-b\llama-server.exe')
     $script:registeredTask = [pscustomobject]@{ Description = ($registeredRelease | ConvertTo-Json -Compress) }
-    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = ('\\?\' + (Join-Path $installed 'bin\engine-a\llama-server.exe')) })
+    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = ('\\?\' + (Join-Path $installedPayload 'bin\engine-a\llama-server.exe')) })
     $candidate = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
-    if ($candidate.engine -ne (Join-Path $installed 'bin\engine-c\llama-server.exe')) { throw 'Candidate overwrote a warm or registered engine' }
+    if ($candidate.engine -ne (Join-Path $installedPayload 'bin\engine-c\llama-server.exe')) { throw 'Candidate overwrote a warm or registered engine' }
     $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
     $script:liveProcesses = $savedProcesses
     $script:liveProcesses += [pscustomobject]@{ Name = 'continuum.exe'; ExecutablePath = $second.cli }
@@ -1057,15 +1116,16 @@ try {
     $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
     Set-Content -LiteralPath $fakeCli -Value @'
 if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+$payload = Get-ManagedPayloadRoot -HomeRoot $env:CONTINUUM_HOME
 if ($args[0] -eq 'engine' -and $args[1] -eq 'promote') {
     if ($env:FAKE_PROMOTE_RC) { 'refused'; exit ([int]$env:FAKE_PROMOTE_RC) }
-    Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'bin\current') -Value $args[2]
+    Set-Content -LiteralPath (Join-Path $payload 'bin\current') -Value $args[2]
     Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'promoted-with') -Value "$($args[2]) $($args[3])"
     exit 0
 }
 if ($args[0] -eq 'engine' -and $args[1] -eq 'idle-slot') {
     if ($env:FAKE_IDLE_RC) { exit ([int]$env:FAKE_IDLE_RC) }
-    Join-Path $env:CONTINUUM_HOME ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
+    Join-Path $payload ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
 }
 exit 64
 '@
@@ -1073,7 +1133,7 @@ exit 64
     try {
         $env:FAKE_IDLE_SLOT = 'engine-b'; $env:FAKE_IDLE_RC = $null
         $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli
-        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installed 'bin\engine-b'))) { throw "The core's idle slot was not used: $picked" }
+        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin\engine-b'))) { throw "The core's idle slot was not used: $picked" }
         $env:FAKE_IDLE_RC = '3'
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
@@ -1087,14 +1147,14 @@ exit 64
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'not an engine slot' }
         if (-not $refused) { throw 'An answer outside the engine slots was accepted' }
         $env:FAKE_IDLE_SLOT = 'engine-a'
-        $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed 'bin\engine-a\llama-server.exe') })
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installedPayload 'bin\engine-a\llama-server.exe') })
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'running engine executes from it' }
         if (-not $refused) { throw 'A readable live engine inside the core answer was overwritten' }
     } finally { $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null; $script:liveProcesses = @() }
     # The pre-verb path skips a busy deploy too: every slot live by the process table.
     $script:liveProcesses = @('engine-a', 'engine-b', 'engine-c' | ForEach-Object {
-        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed "bin\$_\llama-server.exe") } })
+        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installedPayload "bin\$_\llama-server.exe") } })
     try {
         if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -SkipIfBusy)) { throw 'The pre-verb path did not skip a busy deploy' }
         $refused = $false
@@ -1106,7 +1166,7 @@ exit 64
     # card d5584dfc: a drift-verified slot is promoted by the core's own verb (current is the one
     # truth), with the stamp the build wrote; a refused promote throws; a CLI without the verb
     # leaves the release registration to bootstrap, and says so.
-    $promoteSlot = Join-Path $installed 'bin\engine-c'
+    $promoteSlot = Join-Path $installedPayload 'bin\engine-c'
     New-Item -ItemType Directory -Force -Path $promoteSlot | Out-Null
     Set-Content -LiteralPath (Join-Path $promoteSlot '.llama-server.stamp') -Value 'abc1234:cuda'
     try {
@@ -1127,7 +1187,8 @@ exit 64
     # Isolated scope: every collaborator is mocked, so this proves the decision, not the build.
     & {
         $profileRoot = Join-Path $scratch 'already-built-profile'
-        $bin = Join-Path $profileRoot '.continuum\bin'
+        $payload = Initialize-ManagedPayloadRoot -HomeRoot (Join-Path $profileRoot '.continuum') -ColdRoot (Join-Path $scratch 'engine preparation cold')
+        $bin = Join-Path $payload 'bin'
         foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $bin $name) | Out-Null
             Set-Content -LiteralPath (Join-Path $bin "$name\llama-server.exe") -Value 'engine'
@@ -1223,7 +1284,7 @@ public class SupervisorFixture {
         $oldSlot = Join-Path $prepareRoot 'bin\service-a'
         New-Item -ItemType Directory -Path $prepareLib, $oldSlot -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $prepareRepo
-        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $prepareLib
         }
         $prepareGenerated = Join-Path (Split-Path $prepareLib) 'generated'

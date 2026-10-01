@@ -129,6 +129,8 @@ try {
     if (-not $PrepareOnly) {
     # Select storage before prerequisite downloads and extraction, not just cargo.
     Mod-ColdStorage
+    $payloadRoot = Initialize-ManagedPayloadRoot -ColdRoot $env:CONTINUUM_STORAGE_PATH
+    Write-Ok "installed payloads -> $payloadRoot"
     Test-WingetAvailable
     # Git + vendored submodules (llama.cpp, whisper.cpp) -- the native build needs
     # them. Per-user, no elevation.

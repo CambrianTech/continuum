@@ -37,17 +37,46 @@ scratch profiles/files and mocked elevation boundaries; they do not provision
 the machine. Before a live run, announce any expected Windows consent prompt and
 allow Joel time to approve it. Never claim a complete install from a build alone.
 
-## Installed payload boundary (peer review)
+## Payload contract under implementation (draft, no live acceptance)
 
-Bigmama confirmed that managed engine slots currently belong to
-`continuum_home/bin`: `inference/engine_slots.rs`, `llama_server.rs`, the slot CLI,
-and `windows-service.ps1` all consume or enforce that location. Existing
-`CONTINUUM_STORAGE_PATH` selects models and build cache, not engine slots.
-`LLAMA_SERVER_BIN` is an operator override and cannot substitute for managed
-placement. Relocating all of `CONTINUUM_HOME` would move hot metadata as well.
+`paths::payload_root` and the platform readers share a UTF-8 `payload-root`
+record in the hot Continuum home. Without a record, existing installs retain
+their home layout. A recorded missing/unreadable/invalid target fails closed;
+it must never become another installation on the system drive. Fresh selection
+uses a home-scoped directory under the already selected cold root. Existing
+`bin`, `tools`, `lib` or `cuda-toolkit` trees retain their original location.
+Reruns read the record rather than selecting storage again. Engine slot state
+stays together under the selected payload `bin`; identities, room/session data,
+logs and configuration remain in the hot home.
 
-The remaining repair therefore needs one managed payload-root decision shared
-by runtime/slot commands and platform installer adapters, preserving active,
-previous, verified and idle-slot behavior. Changing only the Windows copy
-destination would break startup, reboot, promotion and rollback. This is still
-OPEN; no runtime relocation or live install has been performed.
+The first source slice adds the runtime resolver, engine launch/error handling,
+`engine root` query, and platform selection/read primitives with regressions.
+Both public installers now invoke selection after cold-cache configuration and
+before prerequisites. Windows tool/library destinations, service/engine slot
+adapters, prepared-release validation, Unix engine installation, manifest runtime
+paths and direct/scripted library environments consume the record. Service-host
+bootstrap validates against the selected root and propagates registration failure
+instead of changing managed engines into an operator pin.
+
+The ordinary PowerShell entry runs in a scratch profile and proves selection at
+the prerequisite boundary without acquisition. The full PS5 suite also covers
+cold prepared-release validation and engine preparation. Bigmama independently
+proved native-path cross-reading both ways between PS5 and Git Bash with spaces
+at the initial contract revision, including extended drive paths and unavailable
+target refusal. UNC share coverage remains unavailable. Bigmama's consumer and
+lifecycle review at `0340a6e73` found no blocker in the inspected integration;
+approval remains subject to required CI and actual installer acceptance.
+Linux CI exposed a warm-build scratch fixture missing the launcher's new shared
+helper. The fixture now copies the actual helper, and its Windows/Linux/macOS
+control-flow regressions pass in Git Bash. Final runtime compilation/tests and
+public rerun remain required. Linux CI also includes cold engine-slot and
+manifest-loader regressions.
+Public install, reboot/rerun, remote command/event and GPU proof remain OPEN.
+
+The follow-up consumer audit found additional fixed hot-home paths in Unix core
+publishing/service resolution, CLI core lookup, macOS install staging and engine
+orphan ownership. These now consume the selected payload root too; macOS receives
+the resolved slot from the CLI rather than duplicating path policy in its adapter.
+The existing artifact-order and plist tests cover a cold slot, and shell placement
+tests verify that an unavailable selected directory refuses service operations.
+This additional consumer change requires fresh CI and peer review.

@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'payload-paths.ps1')
 # win-modules.ps1 -- the Continuum native-build toolchain modules (Windows).
 #
 # Dot-sourced by install.ps1 AFTER install-common.ps1. Each Mod-* is a
@@ -78,9 +79,9 @@ function Get-NvccVersion {
 # exactly what conda/pip repackage -- we skip the middleman: download NVIDIA's
 # component .zips and merge them into one toolkit dir. No conda, no Python, no
 # admin, no 3GB system installer. Blackwell (sm_120 / RTX 5090) needs >= 12.8.
-$script:CudaToolkitDir = Join-Path $env:USERPROFILE '.continuum\cuda-toolkit'
+function Get-CudaToolkitDirectory { return (Join-Path (Get-ManagedPayloadRoot) 'cuda-toolkit') }
 
-function Get-CudaToolkitNvcc { return (Join-Path $script:CudaToolkitDir 'bin\nvcc.exe') }
+function Get-CudaToolkitNvcc { return (Join-Path (Get-CudaToolkitDirectory) 'bin\nvcc.exe') }
 
 function Test-CudaBuildToolkit {
     $nvcc = Get-CudaToolkitNvcc
@@ -380,7 +381,7 @@ function Mod-CMake {
         $have = Get-CMakeVersion $onPath.Source
         if ($have -and $have -ge $pin) { Module-Skip 'CMake' "on PATH ($have >= pinned $ver)"; return }
     }
-    $dir = Join-Path $env:USERPROFILE '.continuum\tools\cmake'
+    $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\cmake'
     $bin = Join-Path $dir 'bin'
     $installedExe = Join-Path $bin 'cmake.exe'
     if (Test-Path $installedExe) {
@@ -413,7 +414,7 @@ function Mod-LLVM {
     param([switch]$ExistingOnly)
     # libclang.dll for bindgen. From LLVM's OFFICIAL release (clang+llvm
     # windows-msvc tarball), extracted per-user -- no admin, no Python.
-    $dir = Join-Path $env:USERPROFILE '.continuum\tools\llvm'
+    $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\llvm'
     $bin = Join-Path $dir 'bin'
     if (Test-Path (Join-Path $bin 'libclang.dll')) {
         $env:LIBCLANG_PATH = $bin
@@ -461,8 +462,8 @@ function Mod-CUDA {
         return
     }
     if (Test-CudaBuildToolkit) {
-        $env:CUDA_PATH = $script:CudaToolkitDir
-        Module-Skip 'CUDA' "toolkit present at $script:CudaToolkitDir"
+        $env:CUDA_PATH = (Get-CudaToolkitDirectory)
+        Module-Skip 'CUDA' "toolkit present at $(Get-CudaToolkitDirectory)"
         return
     }
     if ($ExistingOnly) { throw 'Preparation requires the CUDA build toolkit already installed; run the normal installer to provision it.' }
@@ -487,7 +488,7 @@ function Mod-CUDA {
     # cuBLAS, cuRAND (candle's RNG links curand.lib), NVRTC, CCCL headers) is DATA
     # in the manifest -- read it, don't hardcode.
     $components = $src.components
-    New-Item -ItemType Directory -Force $script:CudaToolkitDir | Out-Null
+    New-Item -ItemType Directory -Force (Get-CudaToolkitDirectory) | Out-Null
     $tmp = Join-Path $env:TEMP 'continuum-cuda-redist'
     if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
     New-Item -ItemType Directory -Force $tmp | Out-Null
@@ -504,15 +505,15 @@ function Mod-CUDA {
         # merge those into the single unified toolkit dir.
         $inner = Get-ChildItem $ext -Directory | Select-Object -First 1
         if ($inner) {
-            Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $script:CudaToolkitDir -Recurse -Force
+            Copy-Item -Path (Join-Path $inner.FullName '*') -Destination (Get-CudaToolkitDirectory) -Recurse -Force
         }
     }
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 
     if (Test-CudaBuildToolkit) {
-        $env:CUDA_PATH = $script:CudaToolkitDir
+        $env:CUDA_PATH = (Get-CudaToolkitDirectory)
         Module-Done 'CUDA'
-        Write-Ok "CUDA_PATH -> $script:CudaToolkitDir"
+        Write-Ok "CUDA_PATH -> $(Get-CudaToolkitDirectory)"
     } else {
         Module-Fail 'CUDA' "assembled toolkit but nvcc not runnable at $(Get-CudaToolkitNvcc)"
     }
@@ -596,7 +597,7 @@ function Mod-OrtRuntime {
         if (-not (Test-Path -LiteralPath $env:ORT_DYLIB_PATH)) { throw 'Configured ORT_DYLIB_PATH does not exist.' }
         return
     }
-    $lib = Join-Path $env:USERPROFILE '.continuum\lib'
+    $lib = Join-Path (Get-ManagedPayloadRoot) 'lib'
     if (Test-Path (Join-Path $lib 'onnxruntime.dll')) { Module-Skip 'onnxruntime' 'installed runtime present'; return }
     $source = (Get-ManifestModule 'onnxruntime').source
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-ort-' + [guid]::NewGuid().ToString('N'))
@@ -651,7 +652,7 @@ function Test-PopplerRuntime {
 function Mod-Poppler {
     $source = (Get-ManifestModule 'poppler').source
     $version = ($source.version -split '-')[0]
-    $directory = Join-Path $env:USERPROFILE '.continuum\tools\poppler'
+    $directory = Join-Path (Get-ManagedPayloadRoot) 'tools\poppler'
     if (Test-PopplerRuntime -Directory $directory -Version $version) {
         Module-Skip 'poppler' 'all three installed PDF decoders execute at the pinned version'
         return
@@ -791,7 +792,7 @@ function Mod-LlamaServer {
     # tiny). The heavy CUDA build tree goes to cold storage so it doesn't bloat C:.
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [string]$InstallDirectory = (Join-Path $env:USERPROFILE '.continuum\bin'),
+        [string]$InstallDirectory = (Join-Path (Get-ManagedPayloadRoot) 'bin'),
         [switch]$RequireReceipt
     )
 
@@ -847,7 +848,7 @@ function Mod-LlamaServer {
 
     # A new core slot does not require recompiling an unchanged engine. Reuse
     # only a stamped matching build and verify its copy before publishing stamp.
-    $engineRoot = Join-Path $env:USERPROFILE '.continuum\bin'
+    $engineRoot = Join-Path (Get-ManagedPayloadRoot) 'bin'
     foreach ($sourceDir in @($engineRoot, (Join-Path $engineRoot 'engine-a'),
         (Join-Path $engineRoot 'engine-b'), (Join-Path $engineRoot 'engine-c'))) {
         if ([IO.Path]::GetFullPath($sourceDir) -eq [IO.Path]::GetFullPath($installDir)) { continue }
@@ -894,7 +895,7 @@ function Mod-LlamaServer {
     # needs zero VS integration -- the robust no-admin CUDA path. Provision ninja
     # (a single ~500KB binary, no admin) and build with it inside the vcvars env
     # (Enter-MsvcEnv puts cl.exe on PATH for nvcc's host side).
-    $ninjaDir = Join-Path $env:USERPROFILE '.continuum\tools\ninja'
+    $ninjaDir = Join-Path (Get-ManagedPayloadRoot) 'tools\ninja'
     $ninja = Join-Path $ninjaDir 'ninja.exe'
     if ($backend -eq 'cuda' -and -not (Test-Path $ninja)) {
         Write-Step '  llama-server: fetching ninja (no-admin CUDA build driver)'
@@ -957,7 +958,7 @@ function Mod-LlamaServer {
     if ($cache -notmatch '(?m)^CMAKE_MSVC_RUNTIME_LIBRARY:(STRING|UNINITIALIZED)=MultiThreaded\r?$') { throw 'Engine CRT is not static.' }
     Assert-CorePreparedPath -Path $installDir -Expected $installDir
     $runtimeNames = @()
-    if ($backend -eq 'cuda') { $runtimeNames = @(Get-ChildItem -LiteralPath (Join-Path $script:CudaToolkitDir 'bin') -File -Filter '*.dll' | ForEach-Object { $_.Name }) }
+    if ($backend -eq 'cuda') { $runtimeNames = @(Get-ChildItem -LiteralPath (Join-Path (Get-CudaToolkitDirectory) 'bin') -File -Filter '*.dll' | ForEach-Object { $_.Name }) }
     foreach ($oldDll in @(Get-ChildItem -LiteralPath $installDir -File -Filter '*.dll')) {
         if ($oldDll.Name -notin $runtimeNames) { throw "Unowned application DLL in engine slot: $($oldDll.Name)" }
     }
@@ -965,7 +966,7 @@ function Mod-LlamaServer {
     Copy-Item -Force $builtBin $installBin
     if ($backend -eq 'cuda') {
         # Pin actual installed toolkit inputs, not a claim of archive provenance.
-        $runtime = Join-Path $script:CudaToolkitDir 'bin'
+        $runtime = Join-Path (Get-CudaToolkitDirectory) 'bin'
         Assert-CorePreparedPath -Path $runtime -Expected $runtime
         $dlls = @(Get-ChildItem -LiteralPath $runtime -File -Filter '*.dll')
         if (-not $dlls.Count) { throw 'CUDA toolkit has no application runtime DLLs.' }

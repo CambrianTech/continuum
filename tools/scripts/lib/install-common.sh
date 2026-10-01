@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -o pipefail  # a failing command in a pipeline must not read as success (card aad30dee)
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/payload-paths.sh"
 # install-common.sh — shared primitives for the Continuum install scripts.
 #
 # Sourced (not executed) by both:

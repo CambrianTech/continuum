@@ -281,7 +281,7 @@ components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc"
 # zero output, the exact silent-exit we hit on the 5090. Version-agnostic globs so a CUDA
 # minor bump never rots the path. The launcher expands + prepends these to PATH before exec.
 [module.runtime_path]
-windows = ["~/.continuum/cuda-*/Library/bin"]
+windows = ["~/.continuum/cuda-*/Library/bin", "~/.continuum/cuda-toolkit/bin"]
 linux = ["~/.continuum/cuda-*/lib", "~/.continuum/cuda-*/lib64"]
 
 # ── The build itself (a module: env is data) ─────────────────────────────────
