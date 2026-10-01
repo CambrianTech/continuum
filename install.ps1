@@ -150,6 +150,7 @@ try {
     Mod-GhAuth -WantsGrid:$WantsGrid
     Mod-Airc
     Mod-OrtRuntime
+    Mod-Poppler
 
     # Grid transport reachability: Windows Firewall silently drops inbound peer
     # dials to the airc daemon unless it's allowed -- an asymmetric route failure

@@ -34,6 +34,22 @@
 
 schema_version = 1
 
+# PDF perception is a provider runtime dependency, including non-developer installs.
+[[module]]
+id = "poppler"
+order = 71
+tier = 2
+platforms = ["windows"]
+accept = "pdfinfo -v; pdftotext -v; pdftoppm -v"
+[module.sources.windows]
+type = "archive"
+url = "https://github.com/oschwartz10612/poppler-windows/releases/download/v26.09.0-0/Release-26.09.0-0.zip"
+version = "26.09.0-0"
+sha256 = "7a6f256a0ddf7536182246a5733331bf4677cbcc34f4663774947ad34556c8d0"
+extract = "strip-top-dir"
+[module.runtime_path]
+windows = ["~/.continuum/tools/poppler/Library/bin"]
+
 [[module]]
 id = "airc"
 order = 26
