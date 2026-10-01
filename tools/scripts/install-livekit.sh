@@ -15,6 +15,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$SCRIPT_DIR/install-livekit-windows.ps1")"
+    exit $?
+    ;;
+esac
+
 # Check if already installed (brew or manual)
 if command -v livekit-server &> /dev/null; then
     CURRENT_VERSION=$(livekit-server --version 2>/dev/null || echo "unknown")
