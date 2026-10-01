@@ -461,6 +461,12 @@ pub struct WorkSubmitResult {
     pub room_id: Uuid,
     #[ts(type = "string")]
     pub publisher: Uuid,
+    /// Exact published claim, not the card's current (possibly renewed) claim.
+    #[ts(type = "string")]
+    pub claim_id: Uuid,
+    /// The artifact is a patch against this base in this activity instance.
+    pub base_sha: String,
+    pub instance: String,
     pub artifact: WorkArtifactReference,
     #[ts(type = "number")]
     pub submitted_at_ms: u64,
@@ -717,6 +723,9 @@ impl ActionCommand for WorkSubmit {
             card_id: published.card_id.as_uuid(),
             room_id: room.channel.as_uuid(),
             publisher: published.publisher.as_uuid(),
+            claim_id: published.claim_id.as_uuid(),
+            base_sha: published.base_sha.to_string(),
+            instance: published.instance.clone(),
             artifact: (&published.artifact).into(),
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
@@ -1175,6 +1184,9 @@ impl ActionCommand for WorkSubmission {
                 card_id: card_uuid,
                 room_id: room.channel.as_uuid(),
                 publisher: submitted.publisher.as_uuid(),
+                claim_id: submitted.claim_id.as_uuid(),
+                base_sha: submitted.base_sha.to_string(),
+                instance: submitted.instance.clone(),
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
