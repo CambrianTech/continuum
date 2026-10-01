@@ -1438,7 +1438,7 @@ impl PreparedCoreService {
             .map_err(|e| format!("installed service descriptor: {e}"))?;
         // The engine the core RUNS: the slot `current` names (card d5584dfc), else, before any
         // slot is recorded, the one the release registered.
-        let directory = match continuum_core::inference::engine_slots::active_engine_dir() {
+        let directory = match continuum_core::inference::engine_slots::active_engine_dir()? {
             Some(dir) => dir,
             None => Path::new(&description.engine)
                 .parent()
@@ -6189,6 +6189,7 @@ fn usage() -> String {
      Legacy checkpoint recovery (local; no running core required):\n  \
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
        continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n  \
+       continuum engine root                print the managed engine root\n  \
        continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
        continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
        continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\

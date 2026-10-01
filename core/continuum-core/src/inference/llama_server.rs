@@ -1384,20 +1384,21 @@ pub fn page_dirs_of(
 /// spawn is attempted ([[fallbacks-are-illegal-fail-loud]]).
 ///
 /// [`engine_slots`]: crate::inference::engine_slots
-fn server_bin() -> String {
+fn server_bin() -> Result<String, LlamaServerError> {
     use crate::inference::engine_slots::{self as slots, Resolved};
     let over = engine_override();
     let Ok(home) = crate::commands::benchmark::continuum_home() else {
-        return over.unwrap_or_else(|| "llama-server".to_string()); // no home: only an override or PATH can name an engine
+        return Ok(over.unwrap_or_else(|| "llama-server".to_string())); // no home: only an override or PATH can name an engine
     };
-    let root = slots::root(&home);
+    if let Some(bin) = over { return Ok(bin); }
+    let root = slots::root(&home).map_err(LlamaServerError::Spawn)?;
     let as_string = |p: PathBuf| p.to_string_lossy().into_owned();
-    match slots::resolve(&root, over.as_deref(), slots::current_slot(&root)) {
+    Ok(match slots::resolve(&root, None, slots::current_slot(&root)) {
         Resolved::Operator(bin) => bin,
         Resolved::Slot(slot) => as_string(slots::slot_bin(&root, slot)),
         Resolved::Legacy(bin) => as_string(bin),
         Resolved::Path => "llama-server".to_string(),
-    }
+    })
 }
 
 /// `LLAMA_SERVER_BIN` (launch environment, then config): an operator's own engine.
@@ -1428,8 +1429,7 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     if crate::runtime::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }
-    let root = crate::inference::engine_slots::root(&home);
-    match crate::inference::engine_slots::rollback_after_failed_launch(&root) {
+    match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch(&root)) {
         Ok(Some((failed, restored))) => {
             crate::probe!(
                 class = "serving.engine.rolled_back",
@@ -1462,7 +1462,13 @@ fn mark_engine_proven(program: Option<String>) {
     let (Some(program), Ok(home)) = (program, crate::commands::benchmark::continuum_home()) else {
         return; // no launch record or no home: nothing to mark
     };
-    let root = crate::inference::engine_slots::root(&home);
+    let root = match crate::inference::engine_slots::root(&home) {
+        Ok(root) => root,
+        Err(reason) => {
+            crate::probe!(class = "serving.engine.verify_mark_failed", reason = reason.as_str(), "payload location unavailable; engine proof was not written");
+            return;
+        }
+    };
     if let Some(slot) = crate::inference::engine_slots::slot_of(&root, Path::new(&program)) {
         if let Err(reason) = crate::inference::engine_slots::mark_verified(&root, slot) {
             crate::probe!(
@@ -1496,7 +1502,7 @@ pub fn installed_engine_backend() -> Option<String> {
 
 /// The stamp install-llama-server.sh writes beside the owned engine, trimmed.
 fn installed_engine_stamp() -> Option<String> {
-    let bin = server_bin();
+    let bin = server_bin().ok()?;
     let path = std::path::Path::new(&bin);
     if !path.is_absolute() {
         return None; // a bare PATH lookup: not the owned install
@@ -5249,10 +5255,10 @@ impl LlamaServerControl for LlamaServerProcess {
 
 impl LlamaServerProcess {
     /// The engine this launch runs: [`server_bin`], resolved now (see `prepare_local_launch`).
-    fn engine_bin(&self) -> String {
+    fn engine_bin(&self) -> Result<String, LlamaServerError> {
         #[cfg(test)]
         if let Some(pin) = &self.bin_pin {
-            return pin.clone();
+            return Ok(pin.clone());
         }
         server_bin()
     }
@@ -5264,7 +5270,7 @@ impl LlamaServerProcess {
         // The engine is resolved per launch, never cached on the process: after a promote the
         // next launch must take the slot `current` now names (card 2c5d0ec0), or #4464's
         // convergence relaunches onto the binary it is trying to leave.
-        let bin = self.engine_bin();
+        let bin = self.engine_bin()?;
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
@@ -6754,7 +6760,7 @@ mod tests {
         const CHILD: &str = "CONTINUUM_ENGINE_CONTRACT_TEST_CHILD";
         const ENGINE: &str = "prepared release/engine-b/llama-server.exe";
         if std::env::var_os(CHILD).is_some() {
-            assert_eq!(super::server_bin(), ENGINE);
+            assert_eq!(super::server_bin().unwrap(), ENGINE);
             return;
         }
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -6919,7 +6925,7 @@ mod tests {
             .await
             .unwrap();
             let engine_install = crate::inference::engine_install::EngineInstallReceipt::prepare(
-                process.engine_bin(),
+                process.engine_bin().unwrap(),
             )
             .await
             .unwrap();
@@ -6935,7 +6941,7 @@ mod tests {
             );
             let prepared = Arc::new(PreparedLocalLaunch {
                 target: requested.clone(),
-                engine_program: process.engine_bin(),
+                engine_program: process.engine_bin().unwrap(),
                 endpoint: process.root.clone(),
                 invocation: invocation.clone(),
                 engine_install: engine_install.clone(),
@@ -6953,7 +6959,7 @@ mod tests {
                 &requested,
                 &invocation,
                 Some(prepared),
-                &process.engine_bin(),
+                &process.engine_bin().unwrap(),
                 11008,
                 4,
             );
@@ -7042,7 +7048,7 @@ mod tests {
         );
         invocation.constrain_to_cpu();
         let launched = invocation.clone();
-        process.record_verified_target(&generation, &launch_target, &invocation, None, &process.engine_bin(), 11008, 4);
+        process.record_verified_target(&generation, &launch_target, &invocation, None, &process.engine_bin().unwrap(), 11008, 4);
         // A later resolved choice cannot mutate the already verified generation.
         invocation.args.push("--different-future-policy".into());
         let recorded = process
@@ -7051,7 +7057,7 @@ mod tests {
         assert_eq!(recorded.target.context_window, launch_target.context_window);
         assert_eq!(recorded.observed_context_window, 11008);
         assert_eq!(recorded.observed_lanes, 4);
-        assert_eq!(recorded.engine_program, process.engine_bin());
+        assert_eq!(recorded.engine_program, process.engine_bin().unwrap());
         assert_eq!(recorded.invocation, launched);
         let restore_admitted = std::sync::atomic::AtomicBool::new(false);
         let no_original = process
@@ -7104,7 +7110,7 @@ mod tests {
             kept.invocation, launched,
             "AlreadyServing keeps original resolved invocation"
         );
-        assert_eq!(kept.engine_program, process.engine_bin());
+        assert_eq!(kept.engine_program, process.engine_bin().unwrap());
         assert!(matches!(
             process.idle_if_current(&|| false).await,
             Err(LlamaServerError::Superseded)
@@ -7524,7 +7530,7 @@ mod tests {
                 &prepared.target,
                 &prepared.invocation,
                 Some(prepared.clone()),
-                &process.engine_bin(),
+                &process.engine_bin().unwrap(),
                 11008,
                 4,
             );
@@ -7661,7 +7667,7 @@ mod tests {
                 &prepared.target,
                 &prepared.invocation,
                 Some(prepared.clone()),
-                &process.engine_bin(),
+                &process.engine_bin().unwrap(),
                 11008,
                 4,
             );
@@ -7678,7 +7684,7 @@ mod tests {
                         context: 11008,
                         slots: 4,
                         cache_type: Some("q8_0".into()),
-                        engine: process.engine_bin(),
+                        engine: process.engine_bin().unwrap(),
                         revisions: Some(vec![]),
                     },
                 )

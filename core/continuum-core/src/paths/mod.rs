@@ -22,6 +22,34 @@
 
 pub mod docker;
 
+/// Durable placement of installed binaries, toolchains and runtime libraries.
+/// The public installer owns this record; model/cache placement never changes
+/// it implicitly. Missing record means the pre-existing home layout. A broken
+/// record or unavailable selected drive is an error, never a second install.
+pub fn payload_root(home: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let record = home.join("payload-root");
+    let text = match std::fs::read_to_string(&record) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(home.to_path_buf()),
+        Err(error) => return Err(format!("{}: {error}", record.display())),
+    };
+    let value = text.trim_end_matches(['\r', '\n']);
+    let root = std::path::PathBuf::from(value);
+    if value.is_empty() || value.contains(['\r', '\n']) || !root.is_absolute() {
+        return Err(format!(
+            "{} must name one absolute payload directory",
+            record.display()
+        ));
+    }
+    if !root.is_dir() {
+        return Err(format!(
+            "selected payload directory {} is unavailable",
+            root.display()
+        ));
+    }
+    Ok(root)
+}
+
 /// Preserve a nonempty HOME override, then use the OS-native home discovery.
 /// Native Windows embeddings need not inherit a Unix shell environment. Never
 /// substitute the checkout/current directory for missing persistent storage.
@@ -78,6 +106,33 @@ impl Drop for NativeHomeOverride {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // What this catches: model-cache routing must not abandon existing engine
+    // slots; a missing selected drive must not silently create a second install.
+    #[test]
+    fn payload_record_preserves_legacy_layout_and_fails_closed() {
+        let home = tempfile::tempdir().unwrap();
+        let cold = tempfile::tempdir().unwrap();
+        let record = home.path().join("payload-root");
+        assert_eq!(payload_root(home.path()).unwrap(), home.path());
+        std::fs::write(
+            home.path().join("config.env"),
+            "CONTINUUM_STORAGE_PATH='/another/model/cache'\n",
+        )
+        .unwrap();
+        assert_eq!(payload_root(home.path()).unwrap(), home.path());
+        std::fs::write(&record, format!("{}\n", cold.path().display())).unwrap();
+        assert_eq!(payload_root(home.path()).unwrap(), cold.path());
+        for invalid in [
+            String::new(),
+            "relative/path\n".into(),
+            "one\ntwo\n".into(),
+            cold.path().join("missing").display().to_string(),
+        ] {
+            std::fs::write(&record, invalid).unwrap();
+            assert!(payload_root(home.path()).is_err());
+        }
+    }
 
     // What this catches (f098571b): native fallback must not replace an explicit
     // HOME override; unresolved storage must not become the current directory.

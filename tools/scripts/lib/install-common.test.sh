@@ -342,6 +342,22 @@ test_cold_storage_resumes_owned_migration() (
   if _cold_migrate "$HOME/.cache/huggingface" "$scratch/linked-cold/huggingface" "$scratch/linked-cold"; then return 1; fi
 )
 
+test_managed_payload_placement() (
+  # what this catches: model/cache placement cannot silently move a live engine.
+  source "$(dirname "$LIB")/payload-paths.sh"
+  local scratch; scratch="$(mktemp -d)"
+  trap 'rm -rf "$scratch"' EXIT
+  local home="$scratch/home" cold="$scratch/cold" selected
+  selected="$(initialize_managed_payload_root "$home" "$cold")" || return 1
+  assert_eq "$cold/payloads" "$(dirname "$selected")" || return 1
+  [ "$(initialize_managed_payload_root "$scratch/other-home" "$cold")" != "$selected" ] || return 1
+  assert_eq "$selected" "$(initialize_managed_payload_root "$home" "$scratch/other")" || return 1
+  mkdir -p "$scratch/legacy/bin"
+  assert_eq "$scratch/legacy" "$(initialize_managed_payload_root "$scratch/legacy" "$cold")" || return 1
+  printf '%s\n' "$scratch/missing" > "$home/payload-root"
+  if managed_payload_root "$home"; then return 1; fi
+)
+
 # Permit a focused scratch-only test without executing installer tier tests.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -378,6 +394,7 @@ _run_test test_mod_continuum_bin_link_uses_user_space_when_no_sudo_no_tty
 _run_test test_llama_cache_tracks_source_ownership
 _run_test test_cold_storage_preserves_config
 _run_test test_cold_storage_resumes_owned_migration
+_run_test test_managed_payload_placement
 
 echo ""
 echo "------------------------------------"

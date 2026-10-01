@@ -53,9 +53,9 @@ pub fn exe_name() -> &'static str {
     }
 }
 
-/// `<continuum_home>/bin`, where the slots and the pointer files live.
-pub fn root(continuum_home: &Path) -> PathBuf {
-    continuum_home.join("bin")
+/// Installed payload `bin`, where slots and their rollback pointers live.
+pub fn root(continuum_home: &Path) -> Result<PathBuf, String> {
+    crate::paths::payload_root(continuum_home).map(|root| root.join("bin"))
 }
 
 /// The binary inside `slot`.
@@ -202,13 +202,14 @@ impl std::fmt::Display for VerbError {
 pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
     // The same home `server_bin` resolves the engine under: one root, never two.
     let home = crate::commands::benchmark::continuum_home().map_err(|e| VerbError::Failed(e.to_string()))?;
-    let root = root(&home);
+    let root = root(&home).map_err(VerbError::Failed)?;
     let usage = || {
         VerbError::Failed(
-            "usage: continuum engine idle-slot | promote <slot> <commit:backend> | rollback <failed-slot>".into(),
+            "usage: continuum engine root | idle-slot | promote <slot> <commit:backend> | rollback <failed-slot>".into(),
         )
     };
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["root"] => Ok(root.to_string_lossy().into_owned()),
         ["idle-slot"] => {
             let live = live_lane_engines().map_err(VerbError::Failed)?;
             let slot = idle_slot(&root, current_slot(&root), previous_slot(&root), &live, |s| {
@@ -391,11 +392,12 @@ pub fn bootstrap_service_engine(engine: &Path) -> Result<bool, String> {
 /// The engine directory the core runs: the slot `current` names when it holds a stamped engine
 /// under `<continuum_home>/bin`. What the Windows deploy's drift check compares the pin against,
 /// since with `current` as the truth the registered descriptor can name an older slot.
-pub fn active_engine_dir() -> Option<PathBuf> {
-    let home = crate::commands::benchmark::continuum_home().ok()?;
-    let root = root(&home);
-    let slot = current_slot(&root)?;
-    (slot_bin(&root, slot).is_file() && slot_stamp(&root, slot).is_some()).then(|| root.join(slot))
+pub fn active_engine_dir() -> Result<Option<PathBuf>, String> {
+    let home = crate::commands::benchmark::continuum_home().map_err(|e| e.to_string())?;
+    let root = root(&home)?;
+    Ok(current_slot(&root)
+        .filter(|slot| slot_bin(&root, slot).is_file() && slot_stamp(&root, slot).is_some())
+        .map(|slot| root.join(slot)))
 }
 
 fn known(slot: &str) -> Result<&'static str, String> {
@@ -414,6 +416,32 @@ fn write_pointer(root: &Path, file: &str, slot: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // What this catches: cold payload placement must retain the SAME slot,
+    // verified, previous and rollback protocol without writing hot-home/bin.
+    #[test]
+    fn relocated_payload_keeps_engine_lifecycle() {
+        let home = tempfile::tempdir().unwrap();
+        let cold = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("payload-root"),
+            cold.path().to_str().unwrap(),
+        )
+        .unwrap();
+        let root = root(home.path()).unwrap();
+        engine(&root, "engine-a", "first:cuda");
+        promote(&root, "engine-a", "first:cuda").unwrap();
+        mark_verified(&root, "engine-a").unwrap();
+        engine(&root, "engine-b", "second:cuda");
+        promote(&root, "engine-b", "second:cuda").unwrap();
+        assert_eq!(current_slot(&root), Some("engine-b"));
+        assert_eq!(previous_slot(&root), Some("engine-a"));
+        assert!(!is_verified(&root, "engine-b"));
+        assert!(is_verified(&root, "engine-a"));
+        assert_eq!(rollback(&root, "engine-b").unwrap(), "engine-a");
+        assert_eq!(current_slot(&root), Some("engine-a"));
+        assert!(!home.path().join("bin").exists());
+    }
 
     fn engine(root: &Path, slot: &str, stamp: &str) {
         std::fs::create_dir_all(root.join(slot)).unwrap();

@@ -37,17 +37,23 @@ scratch profiles/files and mocked elevation boundaries; they do not provision
 the machine. Before a live run, announce any expected Windows consent prompt and
 allow Joel time to approve it. Never claim a complete install from a build alone.
 
-## Installed payload boundary (peer review)
+## Payload contract under implementation (not activated)
 
-Bigmama confirmed that managed engine slots currently belong to
-`continuum_home/bin`: `inference/engine_slots.rs`, `llama_server.rs`, the slot CLI,
-and `windows-service.ps1` all consume or enforce that location. Existing
-`CONTINUUM_STORAGE_PATH` selects models and build cache, not engine slots.
-`LLAMA_SERVER_BIN` is an operator override and cannot substitute for managed
-placement. Relocating all of `CONTINUUM_HOME` would move hot metadata as well.
+`paths::payload_root` and the platform readers share a UTF-8 `payload-root`
+record in the hot Continuum home. Without a record, existing installs retain
+their home layout. A recorded missing/unreadable/invalid target fails closed;
+it must never become another installation on the system drive. Fresh selection
+uses a home-scoped directory under the already selected cold root. Existing
+`bin`, `tools`, `lib` or `cuda-toolkit` trees retain their original location.
+Reruns read the record rather than selecting storage again. Engine slot state
+stays together under the selected payload `bin`; identities, room/session data,
+logs and configuration remain in the hot home.
 
-The remaining repair therefore needs one managed payload-root decision shared
-by runtime/slot commands and platform installer adapters, preserving active,
-previous, verified and idle-slot behavior. Changing only the Windows copy
-destination would break startup, reboot, promotion and rollback. This is still
-OPEN; no runtime relocation or live install has been performed.
+The first source slice adds the runtime resolver, engine launch/error handling,
+`engine root` query, and platform selection/read primitives with regressions.
+**No installer invokes the new selection primitive yet.** Before activation,
+wire Windows and Unix tool/library destinations, service/engine slot adapters,
+manifest runtime paths and direct/scripted loader environments to this contract.
+Windows extended/UNC and Git Bash native-path interoperability need explicit
+cross-reader tests. Full runtime CI and independent review remain required.
+Public install, reboot/rerun, remote command/event and GPU proof remain OPEN.

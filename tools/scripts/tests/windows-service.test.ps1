@@ -82,6 +82,26 @@ try {
         } finally { $env:USERPROFILE = $savedProfile }
         Write-Output 'PASS: interrupted cold migration resumes its owned drive, preserves data/config and refuses unrelated paths'
     }
+    # what this catches: a new cold install and a legacy upgrade must persist
+    # different placement decisions; losing the cold drive must fail closed.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\payload-paths.ps1')
+        $homeRoot = Join-Path $scratch 'payload-home'
+        $cold = Join-Path $scratch 'payload-cold'
+        $selected = Initialize-ManagedPayloadRoot -HomeRoot $homeRoot -ColdRoot $cold
+        if ((Split-Path $selected) -ne (Join-Path $cold 'payloads')) { throw 'Fresh payloads did not select scoped cold storage' }
+        $other = Initialize-ManagedPayloadRoot -HomeRoot (Join-Path $scratch 'other-home') -ColdRoot $cold
+        if ($other -eq $selected) { throw 'Independent homes share installed payloads' }
+        if ((Initialize-ManagedPayloadRoot -HomeRoot $homeRoot -ColdRoot (Join-Path $scratch 'different')) -ne $selected) { throw 'Rerun moved payloads' }
+        $legacy = Join-Path $scratch 'payload-legacy'
+        New-Item -ItemType Directory -Path (Join-Path $legacy 'bin') -Force | Out-Null
+        if ((Initialize-ManagedPayloadRoot -HomeRoot $legacy -ColdRoot $cold) -ne $legacy) { throw 'Existing payloads moved implicitly' }
+        [IO.File]::WriteAllText((Join-Path $homeRoot 'payload-root'), (Join-Path $scratch 'absent-drive'))
+        $refused = $false
+        try { $null = Get-ManagedPayloadRoot -HomeRoot $homeRoot } catch { $refused = $true }
+        if (-not $refused) { throw 'Missing payload drive silently fell back' }
+        Write-Output 'PASS: fresh cold payload placement, sticky rerun, legacy preservation and missing-drive refusal'
+    }
     # what this catches: a long-lived desktop inherited no Rust-home settings
     # from an earlier install, and PATH refresh discarded session-selected tools.
     & {
