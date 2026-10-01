@@ -88,6 +88,8 @@ mod_docker_wsl_integration
 # relocated CARGO_TARGET_DIR. No-op on single-drive machines. Reconfigurable via
 # ~/.continuum/config.env. (Windows twin: Mod-ColdStorage in win-modules.ps1.)
 mod_cold_storage
+payload_root="$(initialize_managed_payload_root "${CONTINUUM_HOME:-$HOME/.continuum}" "${CONTINUUM_STORAGE_PATH:-}")" || exit 1
+ok "installed payloads -> $payload_root"
 
 # ============================================================================
 # GPU detection
@@ -312,7 +314,8 @@ install_system_deps() {
       # ONNX Runtime — required for Silero VAD (voice activity detection)
       # Installed to ~/.continuum/lib/ (no sudo needed, user-space only)
       # The ort crate finds it via ORT_DYLIB_PATH env var (set in start scripts)
-      local ORT_LIB_DIR="$HOME/.continuum/lib"
+      local payload_root; payload_root="$(managed_payload_root)" || return 1
+      local ORT_LIB_DIR="$payload_root/lib"
       if [ ! -f "$ORT_LIB_DIR/libonnxruntime.so" ]; then
         local ORT_VERSION="1.23.0"
         local ORT_ARCH

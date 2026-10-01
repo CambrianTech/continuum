@@ -37,7 +37,7 @@ scratch profiles/files and mocked elevation boundaries; they do not provision
 the machine. Before a live run, announce any expected Windows consent prompt and
 allow Joel time to approve it. Never claim a complete install from a build alone.
 
-## Payload contract under implementation (not activated)
+## Payload contract under implementation (draft, no live acceptance)
 
 `paths::payload_root` and the platform readers share a UTF-8 `payload-root`
 record in the hot Continuum home. Without a record, existing installs retain
@@ -51,9 +51,18 @@ logs and configuration remain in the hot home.
 
 The first source slice adds the runtime resolver, engine launch/error handling,
 `engine root` query, and platform selection/read primitives with regressions.
-**No installer invokes the new selection primitive yet.** Before activation,
-wire Windows and Unix tool/library destinations, service/engine slot adapters,
-manifest runtime paths and direct/scripted loader environments to this contract.
-Windows extended/UNC and Git Bash native-path interoperability need explicit
-cross-reader tests. Full runtime CI and independent review remain required.
+Both public installers now invoke selection after cold-cache configuration and
+before prerequisites. Windows tool/library destinations, service/engine slot
+adapters, prepared-release validation, Unix engine installation, manifest runtime
+paths and direct/scripted library environments consume the record. Service-host
+bootstrap validates against the selected root and propagates registration failure
+instead of changing managed engines into an operator pin.
+
+The ordinary PowerShell entry runs in a scratch profile and proves selection at
+the prerequisite boundary without acquisition. The full PS5 suite also covers
+cold prepared-release validation and engine preparation. Bigmama independently
+proved native-path cross-reading both ways between PS5 and Git Bash with spaces
+at the initial contract revision. Extended/UNC cross-reader coverage, final
+runtime compilation/tests, updated independent review and public rerun remain
+required. The Linux CI includes cold engine-slot and manifest-loader regressions.
 Public install, reboot/rerun, remote command/event and GPU proof remain OPEN.

@@ -354,6 +354,13 @@ test_managed_payload_placement() (
   assert_eq "$selected" "$(initialize_managed_payload_root "$home" "$scratch/other")" || return 1
   mkdir -p "$scratch/legacy/bin"
   assert_eq "$scratch/legacy" "$(initialize_managed_payload_root "$scratch/legacy" "$cold")" || return 1
+  # The real scripted loader must expand manifest-relative directories at the
+  # selected payload location, preserving spaces and keeping hot-home data out.
+  mkdir -p "$selected/cuda-fixture/lib"
+  export CONTINUUM_HOME="$home"
+  uname() { printf '%s\n' Linux; }
+  source "$(dirname "$LIB")/windows-build-env.sh" || return 1
+  case ":$PATH:" in *":$selected/cuda-fixture/lib:"*) ;; *) return 1;; esac
   printf '%s\n' "$scratch/missing" > "$home/payload-root"
   if managed_payload_root "$home"; then return 1; fi
 )

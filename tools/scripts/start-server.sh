@@ -32,10 +32,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # core/continuum-core (commit 2cb63e019); cwd-independent --manifest-path so the
 # headless start works from any directory.
 CORE_MANIFEST="$REPO_ROOT/core/continuum-core/Cargo.toml"
+source "$SCRIPT_DIR/lib/payload-paths.sh"
 
 # ── PATH + config ────────────────────────────────────────────────────
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 [ -f "$HOME/.continuum/config.env" ] && { set -a; source "$HOME/.continuum/config.env"; set +a; }
+PAYLOAD_ROOT="$(managed_payload_root)" || exit 1
 
 # Locate cargo deterministically. A background task / detached shell does NOT
 # inherit the interactive PATH, so cargo (rustup at ~/.cargo/bin OR homebrew at
@@ -98,12 +100,12 @@ fi
 # the start log. Measured on BigMama 2026-09-05; the .so and .dylib arms existed
 # and the .dll arm did not, so every Windows citizen was mute by omission.
 if [ -z "$ORT_DYLIB_PATH" ]; then
-  if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+  if [ -f "$PAYLOAD_ROOT/lib/libonnxruntime.so" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/libonnxruntime.so"
   elif [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
     export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
-  elif [ -f "$HOME/.continuum/lib/onnxruntime.dll" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/onnxruntime.dll"
+  elif [ -f "$PAYLOAD_ROOT/lib/onnxruntime.dll" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/onnxruntime.dll"
   fi
 fi
 

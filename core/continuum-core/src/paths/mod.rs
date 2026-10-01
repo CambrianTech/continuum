@@ -22,6 +22,12 @@
 
 pub mod docker;
 
+/// The existing runtime home policy, exposed to the CLI without duplicating
+/// CONTINUUM_HOME/native-home precedence or the test-isolation seam.
+pub fn continuum_home() -> Result<std::path::PathBuf, String> {
+    crate::commands::benchmark::continuum_home().map_err(|error| error.to_string())
+}
+
 /// Durable placement of installed binaries, toolchains and runtime libraries.
 /// The public installer owns this record; model/cache placement never changes
 /// it implicitly. Missing record means the pre-existing home layout. A broken

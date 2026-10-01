@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'payload-paths.ps1')
 # Explicit prepared-release deployment, not a source/config cache hit.
 # Receipts capture artifact integrity at preparation, never historical build inputs.
 function Assert-CorePreparedPath {
@@ -39,13 +40,13 @@ function Assert-CorePreparedRelease {
     $slot = Split-Path $Release.artifact -Parent
     $slotName = Split-Path $slot -Leaf
     if ($slotName -notin @('service-a', 'service-b')) { throw 'Prepared release has an unknown service slot.' }
-    $expectedSlot = Join-Path $InstallRoot "bin\$slotName"
+    $expectedSlot = Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) "bin\$slotName"
     foreach ($pair in @(@('artifact', 'continuum-core-server.exe'), @('cli', 'continuum.exe'), @('launcher', 'run-service-hidden.ps1'))) {
         Assert-CorePreparedPath -Path $Release.($pair[0]) -Expected (Join-Path $expectedSlot $pair[1]) -File
     }
     $engineSlot = Split-Path (Split-Path $Release.engine -Parent) -Leaf
     if ($engineSlot -notin @('engine-a', 'engine-b', 'engine-c')) { throw 'Prepared release has an unknown engine slot.' }
-    Assert-CorePreparedPath -Path $Release.engine -Expected (Join-Path $InstallRoot "bin\$engineSlot\llama-server.exe") -File
+    Assert-CorePreparedPath -Path $Release.engine -Expected (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) "bin\$engineSlot\llama-server.exe") -File
     Assert-CorePreparedPath -Path $Release.logDirectory -Expected (Join-Path $InstallRoot 'logs')
     if ($Release.socket -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)') { throw 'Prepared release socket must be absolute.' }
     # Old installed releases have no browser root. New releases carry an explicit
