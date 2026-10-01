@@ -118,22 +118,83 @@ function Get-ColdDrive {
     } | Sort-Object SizeRemaining -Descending | Select-Object -First 1
 }
 
-# Move a cold dir to the big drive (robocopy /MOVE = copy then delete source).
-# Idempotent: skips when the source is absent or already relocated.
+function Write-ColdMigrationRecord {
+    param([string]$Path, [string]$Text)
+    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temporary, $Text, (New-Object Text.UTF8Encoding($false)))
+        # Same-directory rename publishes a complete record, refusing an owner
+        # already at the destination. Interrupted writes cannot strand data.
+        [IO.File]::Move($temporary, $Path)
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Assert-ColdMigrationPath {
+    param([string]$Path)
+    $cursor = [IO.Path]::GetFullPath($Path)
+    while ($cursor) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Cold migration path traverses a link/reparse point: $cursor"
+            }
+        }
+        $parent = Split-Path $cursor -Parent
+        if ($parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+}
+
+# An owned receipt makes a partial move resumable. A destination without that
+# receipt is never assumed to be this source's completed or interrupted copy.
 function Move-ColdDir {
-    param([string]$Src, [string]$Dst)
-    if (-not (Test-Path $Src)) { return }                       # nothing to move
-    if ((Get-Item $Src).LinkType) { return }                    # already a link/reparse
-    if (Test-Path $Dst) { Write-Step "  cold: $Dst already present -- leaving source in place"; return }
+    param([string]$Src, [string]$Dst, [Parameter(Mandatory)][string]$ColdRoot)
+    $Src = [IO.Path]::GetFullPath($Src).TrimEnd('\')
+    $Dst = [IO.Path]::GetFullPath($Dst).TrimEnd('\')
+    $cold = [IO.Path]::GetFullPath($ColdRoot).TrimEnd('\')
+    $allowed = @{}
+    foreach ($entry in @(@('.cache\huggingface','huggingface'), @('.continuum\genome','genome'), @('.continuum\cache\cargo-target','cargo-target'))) {
+        $allowed[[IO.Path]::GetFullPath((Join-Path $env:USERPROFILE $entry[0]))] = $entry[1]
+    }
+    if (-not $allowed.ContainsKey($Src) -or $Dst -ine (Join-Path $cold $allowed[$Src]) -or
+        $cold -ieq ([IO.Path]::GetPathRoot($cold)).TrimEnd('\') -or
+        $Dst.StartsWith($Src + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        $Src.StartsWith($Dst + '\', [StringComparison]::OrdinalIgnoreCase) -or $Src -ieq $Dst) {
+        throw 'Cold migration refused: source/destination are outside the selected cache roots.'
+    }
+    Assert-ColdMigrationPath $Src
+    Assert-ColdMigrationPath $Dst
+    $receipt = $Dst + '.continuum-migration'
+    Assert-ColdMigrationPath $receipt
+    $identity = "continuum-cold-migration-v1`n$Src`n$Dst`n"
+    if (Test-Path -LiteralPath $receipt) {
+        if ([IO.File]::ReadAllText($receipt) -ine $identity) { throw "Cold migration receipt names different paths: $receipt" }
+    } elseif (-not (Test-Path -LiteralPath $Src)) { return }
+    if (-not (Test-Path -LiteralPath $Src)) {
+        if (-not (Test-Path -LiteralPath $Dst -PathType Container)) { throw 'Cold migration lost both endpoints; refusing to publish storage configuration.' }
+        Remove-Item -LiteralPath $receipt -Force
+        return
+    }
+    if (-not (Test-Path -LiteralPath $receipt)) {
+        if (Test-Path -LiteralPath $Dst) { throw "Cold migration destination already exists without an ownership receipt: $Dst. No files were overwritten." }
+        New-Item -ItemType Directory -Force $cold | Out-Null
+        Write-ColdMigrationRecord -Path $receipt -Text $identity
+    }
     Write-Step "  cold: migrating $Src -> $Dst"
-    New-Item -ItemType Directory -Force (Split-Path $Dst -Parent) | Out-Null
-    # /E all subdirs incl empty, /MOVE delete source after, /NFL /NDL /NP quiet, /R:1 /W:1 fail fast
-    & robocopy $Src $Dst /E /MOVE /NFL /NDL /NP /R:1 /W:1 | Out-Null
-    # robocopy exit codes: < 8 = success (1 = files copied, 3 = copied+extra, etc.);
-    # >= 8 = real failure. Normalize the success codes to 0 so they don't leak out as
-    # a false non-zero script exit (robocopy's "1" is NOT an error).
-    if ($LASTEXITCODE -ge 8) { Write-Warn2 "cold: robocopy $Src -> $Dst returned $LASTEXITCODE (left source intact)" }
-    else { $global:LASTEXITCODE = 0 }
+    # Never traverse junctions; move symbolic links as links. Remaining source
+    # entries cause refusal below, rather than silently publishing a partial cache.
+    & robocopy $Src $Dst /E /MOVE /SL /XJ /NFL /NDL /NP /R:1 /W:1 | Out-Host
+    $code = $global:LASTEXITCODE
+    if ($code -ge 8) { throw "Cold migration failed with robocopy exit $code; the owned partial move will resume on installer rerun: $receipt" }
+    if (Test-Path -LiteralPath $Src) {
+        if (@(Get-ChildItem -LiteralPath $Src -Force).Count) { throw "Cold migration left source entries; refusing to publish partial storage: $Src" }
+        Remove-Item -LiteralPath $Src -Force
+    }
+    if (-not (Test-Path -LiteralPath $Dst -PathType Container)) { throw 'Cold migration did not produce its destination.' }
+    Remove-Item -LiteralPath $receipt -Force
+    $global:LASTEXITCODE = 0
 }
 
 # Persist + export the cold-storage env so THIS install session (Mod-BuildCore)
@@ -196,8 +257,14 @@ function Update-ColdStorageConfig {
 
 function Mod-ColdStorage {
     $configEnv = Join-Path $env:USERPROFILE '.continuum\config.env'
+    $pending = Join-Path $env:USERPROFILE '.continuum\cold-storage.pending'
+    $coldRoot = $null
+    if (Test-Path -LiteralPath $pending) {
+        $coldRoot = [IO.File]::ReadAllText($pending).TrimEnd("`r", "`n")
+        if (-not (Test-Path -LiteralPath $coldRoot -PathType Container)) { throw 'Pending cold-storage drive is unavailable; setup stopped.' }
+    }
     # Already routed to a still-present drive? Re-export env + skip (idempotent).
-    if (Test-Path $configEnv) {
+    if (-not $coldRoot -and (Test-Path $configEnv)) {
         $existing = Get-Content -LiteralPath $configEnv -Encoding UTF8 |
             Where-Object { $_ -match '^\s*CONTINUUM_STORAGE_PATH\s*=' } |
             ForEach-Object { ($_ -split '=', 2)[1].Trim() } | Select-Object -Last 1
@@ -213,23 +280,25 @@ function Mod-ColdStorage {
         }
     }
 
-    $cold = Get-ColdDrive
-    if (-not $cold) {
-        Module-Skip 'cold-storage' "no large secondary drive (>= $($script:ColdStorageMinFreeGB)GB free) -- staying on the system drive"
-        return
+    if (-not $coldRoot) {
+        $cold = Get-ColdDrive
+        if (-not $cold) {
+            Module-Skip 'cold-storage' "no large secondary drive (>= $($script:ColdStorageMinFreeGB)GB free) -- staying on the system drive"
+            return
+        }
+        $coldRoot = "$($cold.DriveLetter):\continuum-cold"
+        New-Item -ItemType Directory -Force $coldRoot, (Split-Path $pending) | Out-Null
+        Write-ColdMigrationRecord -Path $pending -Text ($coldRoot + "`n")
     }
-
-    $freeGB = [math]::Round($cold.SizeRemaining / 1GB)
-    $coldRoot = "$($cold.DriveLetter):\continuum-cold"
-    Module-Start 'cold-storage' "routing cold artifacts to $($cold.DriveLetter): ($freeGB GB free) -- auto-detected"
-    New-Item -ItemType Directory -Force $coldRoot | Out-Null
+    Module-Start 'cold-storage' "routing cold artifacts to $coldRoot"
 
     # Migrate what's already on the system drive (models cache, genome, build cache).
-    Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface')            (Join-Path $coldRoot 'huggingface')
-    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\genome')             (Join-Path $coldRoot 'genome')
-    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\cache\cargo-target') (Join-Path $coldRoot 'cargo-target')
+    Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface')            (Join-Path $coldRoot 'huggingface') -ColdRoot $coldRoot
+    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\genome')             (Join-Path $coldRoot 'genome') -ColdRoot $coldRoot
+    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\cache\cargo-target') (Join-Path $coldRoot 'cargo-target') -ColdRoot $coldRoot
 
     Set-ColdStorageEnv -ColdRoot $coldRoot
+    Remove-Item -LiteralPath $pending -Force
     Module-Done 'cold-storage'
     Write-Ok "cold storage -> $coldRoot (models, genome, build cache). Reconfigure: ~/.continuum/config.env"
 }

@@ -9,6 +9,79 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: partial robocopy failure was reported as success, and
+    # reruns skipped its existing destination then published an incomplete cache.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = Join-Path $scratch 'migration-profile'
+            $cold = Join-Path $scratch 'migration-cold'
+            $src = Join-Path $env:USERPROFILE '.cache\huggingface'
+            $dst = Join-Path $cold 'huggingface'
+            $config = Join-Path $env:USERPROFILE '.continuum\config.env'
+            $pending = Join-Path (Split-Path $config) 'cold-storage.pending'
+            New-Item -ItemType Directory -Force $src, $cold, (Split-Path $config) | Out-Null
+            [IO.File]::WriteAllText($config, '# preserve until migration succeeds')
+            [IO.File]::WriteAllText($pending, $cold + "`n")
+            Set-Content -LiteralPath (Join-Path $src 'first') -Value first
+            Set-Content -LiteralPath (Join-Path $src 'second') -Value second
+            $script:failColdCopy = $true
+            $script:coldExports = 0
+            function robocopy {
+                if ($script:failColdCopy) {
+                    New-Item -ItemType Directory -Force $args[1] | Out-Null
+                    Move-Item -LiteralPath (Join-Path $args[0] 'first') -Destination (Join-Path $args[1] 'first')
+                    & $env:ComSpec /d /c 'exit 8'
+                } else { & (Join-Path $env:SystemRoot 'System32\robocopy.exe') @args }
+            }
+            function Get-ColdDrive { throw 'An interrupted migration selected a different drive' }
+            function Module-Start { }
+            function Module-Skip { }
+            function Module-Done { }
+            function Write-Step { }
+            function Write-Ok { }
+            function Set-ColdStorageEnv { param($ColdRoot) $script:coldExports++; Update-ColdStorageConfig -Path $config -ColdRoot $ColdRoot }
+            $LASTEXITCODE = 0
+            $refused = $false
+            try { Mod-ColdStorage } catch { $refused = $_ -match 'robocopy exit 8' }
+            if (-not $refused -or $script:coldExports -ne 0 -or [IO.File]::ReadAllText($config) -cne '# preserve until migration succeeds') { throw 'Failed cold move published partial storage' }
+            if (-not (Test-Path -LiteralPath ($dst + '.continuum-migration'))) { throw 'Failed migration lost ownership receipt' }
+            $script:failColdCopy = $false
+            Mod-ColdStorage
+            if ($script:coldExports -ne 1 -or (Test-Path -LiteralPath $src) -or (Test-Path -LiteralPath $pending)) { throw 'Owned interrupted migration did not converge' }
+            foreach ($name in @('first','second')) { if ((Get-Content -LiteralPath (Join-Path $dst $name)) -ne $name) { throw 'Migration lost cache data' } }
+            Mod-ColdStorage
+            $src = Join-Path $env:USERPROFILE '.continuum\genome'; $dst = Join-Path $cold 'genome'
+            New-Item -ItemType Directory -Force $src, $dst | Out-Null
+            Set-Content -LiteralPath (Join-Path $dst 'unrelated') -Value kept
+            $refused = $false
+            try { Move-ColdDir $src $dst -ColdRoot $cold } catch { $refused = $_ -match 'without an ownership receipt' }
+            if (-not $refused -or (Get-Content -LiteralPath (Join-Path $dst 'unrelated')) -ne 'kept') { throw 'Unowned destination was overwritten or accepted' }
+            $refused = $false
+            try { Move-ColdDir $scratch $dst -ColdRoot $cold } catch { $refused = $_ -match 'outside the selected cache roots' }
+            if (-not $refused) { throw 'Migration accepted a source outside the allowed cache roots' }
+            $foreign = Join-Path $scratch 'foreign-cache'
+            New-Item -ItemType Directory -Force (Join-Path $foreign 'huggingface') | Out-Null
+            Set-Content -LiteralPath (Join-Path $foreign 'huggingface\keep') -Value untouched
+            # The earlier successful move left an empty .cache parent.
+            Remove-Item -LiteralPath (Join-Path $env:USERPROFILE '.cache') -Force
+            New-Item -ItemType Junction -Path (Join-Path $env:USERPROFILE '.cache') -Target $foreign | Out-Null
+            try {
+                $refused = $false
+                try { Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface') (Join-Path $cold 'huggingface') -ColdRoot $cold } catch { $refused = $_ -match 'traverses a link' }
+                if (-not $refused -or (Get-Content -LiteralPath (Join-Path $foreign 'huggingface\keep')) -ne 'untouched') { throw 'Linked source ancestor exposed foreign files to migration' }
+            } finally { [IO.Directory]::Delete((Join-Path $env:USERPROFILE '.cache')) }
+            $linkedCold = Join-Path $scratch 'linked-cold'
+            New-Item -ItemType Junction -Path $linkedCold -Target $cold | Out-Null
+            try {
+                $refused = $false
+                try { Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface') (Join-Path $linkedCold 'huggingface') -ColdRoot $linkedCold } catch { $refused = $_ -match 'traverses a link' }
+                if (-not $refused) { throw 'Absent source bypassed linked destination guard' }
+            } finally { [IO.Directory]::Delete($linkedCold) }
+        } finally { $env:USERPROFILE = $savedProfile }
+        Write-Output 'PASS: interrupted cold migration resumes its owned drive, preserves data/config and refuses unrelated paths'
+    }
     # what this catches: a long-lived desktop inherited no Rust-home settings
     # from an earlier install, and PATH refresh discarded session-selected tools.
     & {

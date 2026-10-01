@@ -29,10 +29,25 @@ The cold-storage repair is stacked above #4649; it does not replace that contrac
 | Windows could not reread its own single-quoted storage path; shell `xargs` could alter literal path text | Strip matching outer quotes without evaluation; retain literal spaces/backslashes/dollar signs; use last assignment like the runtime | Scratch regression passes; real configured-path rerun still required |
 | Existing Codex process lacks persisted user Rust-home variables despite AIRC installing Rust on the secondary drive | Public entry restores absent Rust-home settings from user/machine registration, preserves explicit process settings, and refreshes PATH without dropping session tools or accumulating duplicates | Scratch regression added; ordinary public-entry proof remains OPEN; no agent environment override may hide this |
 | CUDA toolkit and installed runtime payloads still target the system drive | Review existing storage policy and capacity before provisioning multi-GB payloads | OPEN; temporary-file routing alone does not prove sufficient space |
-| Existing cold-directory migration can warn on partial robocopy failure and continue | Make failure and interrupted-migration behavior explicit in the existing migration module | OPEN; no manual directory relocation |
+| Existing cold-directory migration can warn on partial robocopy failure and continue | Both adapters persist the selected pending root and own each source/destination pair before moving; failures stop configuration publication, reruns resume only owned destinations, and ancestor links/out-of-root paths are refused | Scratch partial-failure/resume and Windows junction regressions pass; POSIX symlink assertions require Unix CI (Git Bash copies link fixtures); public migration remains OPEN |
 | Bigmama remote Continuum ping timed out; no installed local Continuum CLI/core was found | Complete normal `install.ps1 -Grid`, then verify the installed receiver and actual remote command/event path | OPEN; AIRC room messaging does not prove Continuum remote execution |
 
 No live Continuum installer has run for this repair yet. Tests use isolated
 scratch profiles/files and mocked elevation boundaries; they do not provision
 the machine. Before a live run, announce any expected Windows consent prompt and
 allow Joel time to approve it. Never claim a complete install from a build alone.
+
+## Installed payload boundary (peer review)
+
+Bigmama confirmed that managed engine slots currently belong to
+`continuum_home/bin`: `inference/engine_slots.rs`, `llama_server.rs`, the slot CLI,
+and `windows-service.ps1` all consume or enforce that location. Existing
+`CONTINUUM_STORAGE_PATH` selects models and build cache, not engine slots.
+`LLAMA_SERVER_BIN` is an operator override and cannot substitute for managed
+placement. Relocating all of `CONTINUUM_HOME` would move hot metadata as well.
+
+The remaining repair therefore needs one managed payload-root decision shared
+by runtime/slot commands and platform installer adapters, preserving active,
+previous, verified and idle-slot behavior. Changing only the Windows copy
+destination would break startup, reboot, promotion and rollback. This is still
+OPEN; no runtime relocation or live install has been performed.

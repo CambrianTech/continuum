@@ -173,16 +173,70 @@ _cold_drive() {
     END { if (best!="") print best }'
 }
 
-# Migrate a cold dir to the big drive. Idempotent: skips when absent, a symlink,
-# or already relocated. mv first (fast on same fs); cp -a + rm across filesystems.
+_cold_write_record() (
+  local path="$1" temporary
+  temporary="$(mktemp "${path}.XXXXXX")" || return 1
+  trap 'rm -f -- "$temporary"' EXIT
+  printf '%s\n' "$2" > "$temporary" || return 1
+  # Publish complete bytes without replacing another owner's record.
+  ln "$temporary" "$path"
+)
+
+_cold_assert_unlinked_path() {
+  local cursor="$1"
+  while [ -n "$cursor" ] && [ "$cursor" != / ] && [ "$cursor" != . ]; do
+    [ ! -L "$cursor" ] || { echo "Cold migration path traverses a link: $cursor" >&2; return 1; }
+    cursor="$(dirname "$cursor")"
+  done
+}
+
+# Match the Windows adapter: own each source/destination pair before touching
+# data, resume only that pair, and never publish configuration after a failure.
 _cold_migrate() {
-  local src="$1" dst="$2"
-  [ -d "$src" ] || return 0
-  [ -L "$src" ] && return 0
-  if [ -e "$dst" ]; then info "  cold: $dst already present -- leaving source"; return 0; fi
-  mkdir -p "$(dirname "$dst")"
+  local src="$1" dst="$2" cold_root="$3" leaf relative home_root receipt identity
+  case "$src" in
+    "$HOME/.cache/huggingface") leaf=huggingface; relative=.cache/huggingface ;;
+    "$HOME/.continuum/genome") leaf=genome; relative=.continuum/genome ;;
+    "$HOME/.continuum/cache/cargo-target") leaf=cargo-target; relative=.continuum/cache/cargo-target ;;
+    *) echo 'Cold migration refused: source outside selected cache roots.' >&2; return 1 ;;
+  esac
+  if [ "$dst" != "$cold_root/$leaf" ] || [ "$cold_root" = / ] || [[ "$cold_root" != /* ]] ||
+     [[ "$cold_root" = *'/../'* || "$cold_root" = */.. || "$cold_root" = *$'\n'* ]]; then
+    echo 'Cold migration refused: invalid destination root.' >&2; return 1
+  fi
+  _cold_assert_unlinked_path "$src" || return 1
+  _cold_assert_unlinked_path "$dst" || return 1
+  # Normalize dot/repeated-separator aliases only AFTER refusing links. This
+  # matches Windows GetFullPath before checking actual endpoint overlap.
+  home_root="$(cd "$HOME" && pwd -P)" || return 1
+  cold_root="$(cd "$cold_root" && pwd -P)" || return 1
+  src="$home_root/$relative"; dst="$cold_root/$leaf"
+  case "$dst/" in "$src/"*) echo 'Cold migration destination overlaps source.' >&2; return 1 ;; esac
+  case "$src/" in "$dst/"*) echo 'Cold migration source overlaps destination.' >&2; return 1 ;; esac
+  receipt="$dst.continuum-migration"
+  _cold_assert_unlinked_path "$receipt" || return 1
+  identity="$(printf 'continuum-cold-migration-v1\n%s\n%s\n' "$src" "$dst")"
+  if [ -e "$receipt" ]; then
+    [ "$(cat "$receipt")" = "$identity" ] || { echo "Cold migration receipt names different paths: $receipt" >&2; return 1; }
+  elif [ ! -e "$src" ]; then return 0
+  fi
+  if [ ! -e "$src" ]; then
+    [ -d "$dst" ] || { echo 'Cold migration lost both endpoints.' >&2; return 1; }
+    rm -f -- "$receipt"; return $?
+  fi
+  [ -d "$src" ] || { echo 'Cold migration source is not a directory.' >&2; return 1; }
+  if [ ! -e "$receipt" ]; then
+    [ ! -e "$dst" ] || { echo "Cold migration destination exists without ownership receipt: $dst" >&2; return 1; }
+    mkdir -p "$cold_root" || return 1
+    _cold_write_record "$receipt" "$identity" || return 1
+  fi
   info "  cold: migrating $src -> $dst"
-  if ! mv "$src" "$dst" 2>/dev/null; then cp -a "$src" "$dst" && rm -rf "$src"; fi
+  mkdir -p "$dst" || return 1
+  # Copy success precedes source deletion. If either fails, the receipt remains
+  # and rerunning copies remaining entries into the same owned destination.
+  cp -a "$src/." "$dst/" || return 1
+  rm -rf -- "$src" || return 1
+  rm -f -- "$receipt"
 }
 
 # Persist + export the cold-storage config. config.env carries
@@ -234,8 +288,13 @@ _cold_write_config() (
 
 mod_cold_storage() {
   local config_env="$HOME/.continuum/config.env"
+  local pending="$HOME/.continuum/cold-storage.pending" cold_root=''
+  if [ -f "$pending" ]; then
+    cold_root="$(cat "$pending")" || return 1
+    [ -d "$cold_root" ] || { echo 'Pending cold-storage drive is unavailable; setup stopped.' >&2; return 1; }
+  fi
   # Already routed to a present path? re-export + skip (idempotent).
-  if [ -f "$config_env" ]; then
+  if [ -z "$cold_root" ] && [ -f "$config_env" ]; then
     # Missing keys are normal. Match the runtime's last-assignment-wins parser;
     # remove only matching outer quotes, never evaluate or shell-split the path.
     local existing; existing="$(sed -n 's/^[[:blank:]]*CONTINUUM_STORAGE_PATH[[:blank:]]*=[[:blank:]]*//p' "$config_env" | tail -1 | sed 's/[[:space:]]*$//')"
@@ -248,18 +307,22 @@ mod_cold_storage() {
       return 0
     fi
   fi
-  local mp; mp="$(_cold_drive)"
-  if [ -z "$mp" ]; then
-    module_skip "cold-storage" "no large secondary drive (>= 256GB free) -- staying on the home filesystem"
-    return 0
+  if [ -z "$cold_root" ]; then
+    local mp; mp="$(_cold_drive)"
+    if [ -z "$mp" ]; then
+      module_skip "cold-storage" "no large secondary drive (>= 256GB free) -- staying on the home filesystem"
+      return 0
+    fi
+    cold_root="$mp/continuum-cold"
+    mkdir -p "$cold_root" "$HOME/.continuum" || return 1
+    _cold_write_record "$pending" "$cold_root" || return 1
   fi
-  local cold_root="$mp/continuum-cold"
-  module_start "cold-storage" "routing cold artifacts to $mp -- auto-detected"
-  mkdir -p "$cold_root"
-  _cold_migrate "$HOME/.cache/huggingface"            "$cold_root/huggingface"
-  _cold_migrate "$HOME/.continuum/genome"             "$cold_root/genome"
-  _cold_migrate "$HOME/.continuum/cache/cargo-target" "$cold_root/cargo-target"
+  module_start "cold-storage" "routing cold artifacts to $cold_root"
+  _cold_migrate "$HOME/.cache/huggingface"            "$cold_root/huggingface" "$cold_root" || return 1
+  _cold_migrate "$HOME/.continuum/genome"             "$cold_root/genome" "$cold_root" || return 1
+  _cold_migrate "$HOME/.continuum/cache/cargo-target" "$cold_root/cargo-target" "$cold_root" || return 1
   _cold_export "$cold_root" || return 1
+  rm -f -- "$pending" || return 1
   module_done "cold-storage"
   ok "cold storage -> $cold_root (models, genome, build cache). Reconfigure: ~/.continuum/config.env"
 }
