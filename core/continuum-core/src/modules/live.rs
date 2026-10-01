@@ -179,12 +179,22 @@ async fn perception_ingest_drain(
 
         // Fan out: each viewer's PerceptionBuffer coalesces the frame + fires a gated
         // async warm; compute-once/share-many means one describe across all viewers.
+        crate::probe!(
+            class = "live.perception.admitted",
+            call_id = frame.call_id.as_str(),
+            speaker = frame.speaker_id.as_str(),
+            received_at_ms = frame.received_at_ms,
+            admission_delay_ms = crate::persona::recall_metadata::now_ms()
+                .saturating_sub(frame.received_at_ms),
+            viewers = viewers.len() as u64,
+            "bridge receipt to perception fan-out (not remote capture latency)"
+        );
         ingest.as_ref().expect("ingest built above").fan_out(
             &frame.speaker_id,
             &viewers,
             frame.jpeg,
             &frame.mime,
-            crate::persona::recall_metadata::now_ms(),
+            frame.received_at_ms,
         );
 
         fanned += 1;

@@ -95,6 +95,9 @@ impl FrameIngest {
 /// runtime. `call_id` is the airc session/room id string; `speaker_id` the airc
 /// identity of whoever the frame is of.
 pub struct IngestFrame {
+    /// Local bridge receipt time; NOT the remote camera capture time.
+    /// Preserve this across queueing so stale frames are not stamped as fresh.
+    pub received_at_ms: u64,
     pub call_id: String,
     pub speaker_id: String,
     /// The encoded frame bytes (the bridge encodes I420 → JPEG upstream at ~1 fps).
