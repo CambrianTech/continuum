@@ -459,11 +459,21 @@ borrowed cleanup, pre-existing cache preservation/expiry, stale-owner rejection,
 and real PowerShell child ancestry both directly and through Git Bash. These
 checks do not establish live UAC or public-entry installation success.
 
-AIRC integration remains incomplete, including its exact PowerShell/Bash adapter.
-Standalone AIRC must acquire a pinned, integrity-checked copy of this small artifact
-without requiring a Continuum application install. Continuum's AIRC firewall module
-must delegate AIRC's canonical policy rather than creating its own broad rule.
-Do not treat this extraction as evidence of single-consent or mesh success.
+AIRC PR #1470 now acquires immutable SHA256-verified copies of this helper and the
+generated manifest without requiring a Continuum application install. Its full
+coordinator fixture exposed an MSYS process ancestry defect missed by the shorter
+adapter test; waiting subshells preserve the native owner chain. The fix is under
+Windows CI validation, with local full-boundary regression coverage passing.
+
+Continuum's AIRC firewall module now invokes the same manifest-selected public
+installer with `-FirewallOnly -AircPath <installed executable>`. That mode acquires
+compatible setup sources and verifies/repairs AIRC's canonical policy without
+building, authenticating or restarting AIRC. Failed verification stops Continuum;
+there is no independent broad allow rule or name-only success check. The existing
+native service suite covers manifest selection, child owner/path preservation,
+local-only skip and failure propagation. AIRC's new public mode must land on
+canary before this Continuum consumer merges. Live single-consent installation,
+fresh prerequisites, idempotent rerun and two-way peer delivery remain OPEN.
 
 The existing Windows service fixture includes the extracted file in its disposable
 installer checkouts. Hidden PS5.1 ConsoleHost on BIGGIEDESK returned exit 1 without

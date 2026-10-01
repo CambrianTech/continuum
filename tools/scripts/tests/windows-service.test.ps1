@@ -9,6 +9,44 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: Continuum must delegate firewall verification to AIRC
+    # without inventing a broad rule, swallowing failure, or losing owner/path.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $binary = Join-Path $scratch "airc O'Brien.exe"
+        Set-Content -LiteralPath $binary -Value fixture
+        $script:aircSetupCalls = 0
+        $script:aircSetupFail = $false
+        $savedContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        $env:CAMBRIAN_INSTALL_ELEVATION = 'fixture-owner-preserved'
+        function Get-Command { param($Name, $ErrorAction) if ($Name -eq 'airc') { return [pscustomobject]@{Source=$binary} }; Microsoft.PowerShell.Core\Get-Command @PSBoundParameters }
+        function Module-Skip { }
+        function Module-Start { }
+        function Module-Done { }
+        function Get-ManifestModule { param($Name) if ($Name -ne 'airc') { throw 'Wrong dependency descriptor' }; @{source=@{url='https://fixture.invalid/airc/install.ps1'}} }
+        function Invoke-WebRequest {
+            param($Uri,$OutFile,[switch]$UseBasicParsing)
+            if ($Uri -ne 'https://fixture.invalid/airc/install.ps1') { throw 'Manifest URL ignored' }
+            $script:aircSetupCalls++
+            $code = @'
+param([switch]$FirewallOnly,[string]$AircPath)
+if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMBRIAN_INSTALL_ELEVATION -ne 'fixture-owner-preserved') { exit 91 }
+'@
+            if ($script:aircSetupFail) { $code += "`nexit 73" } else { $code += "`nexit 0" }
+            [IO.File]::WriteAllText($OutFile,$code)
+        }
+        try {
+            Mod-AircFirewall
+            if ($script:aircSetupCalls -ne 0) { throw 'Local-only install invoked firewall setup' }
+            Mod-AircFirewall -WantsGrid
+            if ($script:aircSetupCalls -ne 1) { throw 'Grid setup bypassed canonical AIRC entry' }
+            $script:aircSetupFail = $true
+            $rejected = $false
+            try { Mod-AircFirewall -WantsGrid } catch { $rejected = $_.Exception.Message -match 'AIRC setup failed' }
+            if (-not $rejected) { throw 'Continuum hid AIRC firewall failure' }
+        } finally { $env:CAMBRIAN_INSTALL_ELEVATION = $savedContext }
+        Write-Output 'PASS: AIRC canonical firewall delegation, manifest URL, path/owner preservation and failure propagation'
+    }
     # PDF runtime recovery: an existing but unloadable decoder must request
     # repair, rather than throwing before Mod-Poppler reaches its install path.
     & {
