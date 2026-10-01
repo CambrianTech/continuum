@@ -1109,18 +1109,23 @@ impl ServiceModule for VoiceModule {
                         self.state.call_manager.push_audio(&handle, frame).await;
                         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                     }
-                    let wait = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    let mut heard = String::new();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                         loop {
                             match transcripts.recv().await {
-                                Ok(ev) if ev.user_id == "selftest-human" => break Some(ev.text),
+                                Ok(ev) if ev.user_id == "selftest-human" => {
+                                    if !heard.is_empty() { heard.push(' '); }
+                                    heard.push_str(&ev.text);
+                                    if heard.to_lowercase().contains(word) { break; }
+                                }
                                 Ok(_) => continue,
-                                Err(_) => break None,
+                                Err(_) => break,
                             }
                         }
                     })
                     .await;
                     self.state.call_manager.leave_call(&handle).await;
-                    wait.ok().flatten().unwrap_or_default() // safe: no event = empty = red receipt
+                    heard // Partial utterances remain diagnostic evidence, never an automatic pass.
                 } else {
                     // Engine leg: samples straight to STT. This is the TDD loop.
                     match crate::live::audio::stt_service::transcribe_speech_async(
