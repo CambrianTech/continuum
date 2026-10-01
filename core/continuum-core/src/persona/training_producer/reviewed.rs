@@ -991,16 +991,16 @@ pub async fn bind_submission_generation<T: Transport>(
     // on the card can materialize tens of MiB before finding a single request.
     // Never bind from a partial result, or trust the index instead of the parent.
     let result: crate::modules::data::DataListResult =
-        serde_json::from_value(value).map_err(ClientError::from)?;
+        serde_json::from_value(value).map_err(ClientError::from)?; // Decode the data/list storage command response envelope.
     if result.items.len() != result.total as usize {
         return Err(ClientError::Transport("incomplete generation credit lookup".into()).into());
     }
     let mut selected = None;
     for value in result.items {
         let record: crate::orm::types::DataRecord =
-            serde_json::from_value(value).map_err(ClientError::from)?;
+            serde_json::from_value(value).map_err(ClientError::from)?; // Decode the storage protocol's DataRecord envelope.
         let link: StagedCreditGeneration =
-            serde_json::from_value(record.data).map_err(ClientError::from)?;
+            serde_json::from_value(record.data).map_err(ClientError::from)?; // Decode the persisted generation-index entity from its storage record.
         if link.submitted_request_id != generation {
             return Err(CreditBindingError::WrongSelection);
         }
