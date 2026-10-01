@@ -547,6 +547,10 @@ function Test-PopplerRuntime {
             if (-not $process.WaitForExit(5000)) { $process.Kill(); return $false }
             $reported = $process.StandardError.ReadToEnd()
             if ($process.ExitCode -ne 0 -or $reported -notmatch ([regex]::Escape($name + ' version ' + $Version) + '(\s|$)')) { return $false }
+        } catch {
+            # A present but corrupt/unloadable executable is drift, not a reason
+            # to abort before the installer can replace the damaged bundle.
+            return $false
         } finally { $process.Dispose() }
     }
     return $true
