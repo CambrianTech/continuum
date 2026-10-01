@@ -1714,7 +1714,7 @@ pub struct WorkCreateParams {
     /// The room whose board gets the card (id or name).
     // Required: a "current room" default put project cards in #general.
     pub room: String,
-    /// owner/name; omit for your held card's repo.
+    /// owner/name; defaults to actionable card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
@@ -1804,7 +1804,9 @@ impl WorkCreate {
                 .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
             None => held_repo(airc).await?.ok_or_else(|| {
                 CommandError::Invalid(
-                    "work/create: name the repo (owner/name); you hold no card to take it from"
+                    "work/create: name the repo (owner/name); no actionable held card supplies it. \
+                     Cards awaiting review retain their claims but are not selected here. \
+                     Pass repo explicitly; you do not need to reclaim or resubmit reviewed work."
                         .into(),
                 )
             })?,
