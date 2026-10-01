@@ -2197,7 +2197,15 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                     cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
                 }
                 println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
-                prebuilt = Some(prepare_warm_build(cmd).await?);
+                let built = prepare_warm_build(cmd).await?;
+                // A shared checkout can advance while Cargo is reading it. A binary
+                // reporting either endpoint is not proof of a coherent source tree.
+                // Refuse BEFORE staging or stopping the serving core (2026-10-01).
+                let after = git_head_short_sha();
+                continuum_cli_lifecycle::deploy_provenance::warm_build_verdict(
+                    target_sha.as_deref(), after.as_deref(), &built.build_sha,
+                )?;
+                prebuilt = Some(built);
                 println!(
                     "✓ warm artifact validated in {}s — stopping now for direct artifact handoff",
                     started.elapsed().as_secs()
