@@ -610,6 +610,35 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     }
     Write-Output 'PASS: registrar rereads saved access and refuses unsupported policy before task writes'
 
+    # what this catches: caller-local status must not shadow real native cache
+    # probe/acquire/cleanup results in the shared artifact consumed by AIRC.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1')
+        $nativeHelper = Join-Path $scratch 'native-status-fixture.exe'
+        Add-Type -OutputAssembly $nativeHelper -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+public static class NativeStatusFixture {
+  public static int Main(string[] args) {
+    if (args.Length > 0 && args[0] == "status") { Console.WriteLine("false"); return 1; }
+    return 0;
+  }
+}
+'@
+        function Find-GsudoExecutable { $nativeHelper }
+        function Test-IsAdmin { $false }
+        $previousContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        $env:CAMBRIAN_INSTALL_ELEVATION = $null
+        $LASTEXITCODE = 73
+        try {
+            Initialize-ElevationSession
+            if ($script:InstallElevationSession.ExistingCache) { throw 'False native cache probe was masked' }
+            Ensure-Elevated -Reason 'native status fixture'
+            if (-not $script:ElevationWarmed) { throw 'Native successful acquisition was shadowed' }
+            Clear-Elevation
+            if ($env:CAMBRIAN_INSTALL_ELEVATION) { throw 'Native cleanup was shadowed' }
+        } finally { $env:CAMBRIAN_INSTALL_ELEVATION = $previousContext }
+        Write-Output 'PASS: real shared helper ignores caller-local stale native status'
+    }
     # Regression for e1b774b1: a native elevation failure after a successful
     # build must retain its evidence and caller phase, not invent a UAC refusal.
     # Child scope confines mocks/preferences; cmd.exe supplies real stderr/exit.

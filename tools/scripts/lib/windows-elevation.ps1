@@ -72,7 +72,7 @@ function Test-ElevationCacheAvailable {
         $ErrorActionPreference = 'Continue'
         $PSNativeCommandUseErrorActionPreference = $false
         $answer = @(& $script:GsudoExecutable status CacheAvailable 2>&1)
-        $code = $LASTEXITCODE
+        $code = $global:LASTEXITCODE
     } finally { $ErrorActionPreference = $savedErrorPreference }
     $value = ($answer -join [Environment]::NewLine).Trim()
     if ($code -eq 0 -and $value -eq 'true') { return $true }
@@ -90,7 +90,7 @@ function Ensure-Gsudo {
     Write-Host 'Installing gsudo (per-user) -- the shared elevation helper ...'
     & winget install --id $source.id --source winget --exact --silent `
         --accept-package-agreements --accept-source-agreements --scope $source.scope
-    $code = $LASTEXITCODE
+    $code = $global:LASTEXITCODE
     if ($code -ne 0 -and $code -ne 3010) { throw "gsudo acquisition failed (winget exit $code)." }
     Update-SessionPath
     $script:GsudoExecutable = Find-GsudoExecutable
@@ -121,7 +121,7 @@ function Ensure-Elevated {
         $ErrorActionPreference = 'Continue'
         $PSNativeCommandUseErrorActionPreference = $false
         $diagnostic = @(& $script:GsudoExecutable cache on -p $script:InstallElevationSession.OwnerPid -d -1 2>&1)
-        $code = $LASTEXITCODE
+        $code = $global:LASTEXITCODE
     } finally { $ErrorActionPreference = $savedErrorPreference }
     if ($code -ne 0) {
         $detail = ($diagnostic | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
@@ -149,7 +149,7 @@ function Clear-Elevation {
                 $ErrorActionPreference = 'Continue'
                 $PSNativeCommandUseErrorActionPreference = $false
                 $diagnostic = @(& $script:GsudoExecutable cache off -p $script:InstallElevationSession.OwnerPid 2>&1)
-                $code = $LASTEXITCODE
+                $code = $global:LASTEXITCODE
             } finally { $ErrorActionPreference = $savedErrorPreference }
             if ($code -ne 0) { throw "Elevation cache cleanup failed (exit $code): $($diagnostic -join [Environment]::NewLine)" }
         } elseif ($script:ElevationWarmed) {

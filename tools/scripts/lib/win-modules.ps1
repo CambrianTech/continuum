@@ -441,7 +441,7 @@ function Invoke-AircSetup {
     try {
         Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
         & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy RemoteSigned -File $scriptPath @SetupArguments
-        if ($LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $LASTEXITCODE); the core was not restarted." }
+        if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
     } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
 }
 
