@@ -446,21 +446,38 @@ pub async fn synthesize(
                     // a provisioned local engine (Kokoro, 2026-09-02) sat
                     // skippable exactly when it was needed. Bounded by the
                     // adapter's own init; a failed wake moves on.
-                    if next.initialize().await.is_err() {
+                    if let Err(error) = next.initialize().await {
+                        crate::probe!(
+                            class = "tts.provider.failed",
+                            adapter = name,
+                            phase = "initialize",
+                            error = %error,
+                            "local speech provider could not initialize"
+                        );
                         continue;
                     }
                 }
                 let re_resolved = resolve_voice_gendered(next.as_ref(), voice, gender_hint);
-                if let Ok(mut result) = next.synthesize(text, &re_resolved).await {
-                    crate::probe!(
-                        class = "tts.fallthrough",
-                        from = adapter.name(),
-                        to = name,
-                        error = %active_err,
-                        "active TTS adapter failed — utterance served by the next local adapter"
-                    );
-                    result.voice_name = Some(re_resolved);
-                    return Ok(result);
+                match next.synthesize(text, &re_resolved).await {
+                    Ok(mut result) => {
+                        crate::probe!(
+                            class = "tts.fallthrough",
+                            from = adapter.name(),
+                            to = name,
+                            error = %active_err,
+                            "active TTS adapter failed — utterance served by the next local adapter"
+                        );
+                        result.voice_name = Some(re_resolved);
+                        return Ok(result);
+                    }
+                    Err(error) => crate::probe!(
+                        class = "tts.provider.failed",
+                        adapter = name,
+                        phase = "synthesize",
+                        voice = re_resolved.as_str(),
+                        error = %error,
+                        "local speech provider could not synthesize the utterance"
+                    ),
                 }
             }
             Err(active_err)
