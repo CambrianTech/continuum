@@ -1587,6 +1587,15 @@ impl PreparedCoreService {
             let built_cli = built
                 .path
                 .with_file_name("continuum.exe");
+            // The native launcher needs these beside the installed core. This
+            // handoff bypasses New-CoreServiceRelease in the PowerShell installer.
+            let media_files = ["livekit-bridge.exe", "start-livekit-windows.ps1"];
+            for name in media_files {
+                let source = built.path.with_file_name(name);
+                if !source.is_file() {
+                    return Err(format!("warm media artifact missing: {}; rerun continuum install", source.display()));
+                }
+            }
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
                     let prev = to.with_extension("prev.exe");
@@ -1615,6 +1624,9 @@ impl PreparedCoreService {
                     .map_err(|e| format!("cannot stage {} into {}: {e}", from.display(), to.display()))
             };
             move_aside_and_copy(&built.path, &slot_core)?;
+            for name in media_files {
+                move_aside_and_copy(&built.path.with_file_name(name), &slot_core.with_file_name(name))?;
+            }
             if built_cli.is_file() {
                 // The CLI beside the artifact is only this build's when it says so: a skipped
                 // CLI build leaves an OLDER one there, and staging it rolled every PATH copy
