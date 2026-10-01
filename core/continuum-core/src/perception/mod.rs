@@ -249,12 +249,11 @@ impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // SEE + REASON — offered natively beside interface/screenshot
     const DESCRIPTION: &'static str =
-        "Observe a UI or web page — SEE it as pixels AND read its STRUCTURE (the \
-         tree of elements with their names, text, and on-screen boxes). Use it to \
-         look at what a human or a UI is showing and reason about the layout, or to \
-         verify what your own change actually rendered before you act on it. Pass \
-         `target` (a URL for a web page); the observation comes back with an image \
-         and a structure tree.";
+        "Observe pixels AND structure: a web URL returns page elements and layout; \
+         file:///absolute/document.pdf#page=1 returns one PDF page's text and image, \
+         source hash and page count. PDF pages are one-based; the file and Poppler \
+         must exist on the provider node. Use this to inspect documents or verify \
+         your rendered changes. PDF selectors are unsupported; choose #page=N.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = ObserveParams;
     type Result = ObserveResult;

@@ -17,7 +17,7 @@
  * before the command existed — the adapter maps one onto the other HERE.
  */
 
-import { PerceptionSession } from '@continuum/perception';
+import { PerceptionSession, PdfSurface } from '@continuum/perception';
 import type { Percept, ProbeNode as SurfaceProbeNode } from '@continuum/perception';
 
 import type { ObserveParams } from '../../../protocol/typescript/perception/ObserveParams';
@@ -34,6 +34,15 @@ import type { ProbeNode as WireProbeNode } from '../../../protocol/typescript/pe
 export async function observe(params: ObserveParams): Promise<ObserveResult> {
   let session: Awaited<ReturnType<typeof PerceptionSession.openWeb>> | undefined;
   try {
+    if (PdfSurface.accepts(params.target)) {
+      if (params.selector) throw new Error('PDF observation uses target #page=N, not a CSS selector');
+      const document = PerceptionSession.of(await PdfSurface.open({ target: params.target }));
+      try {
+        const obs = await document.observe({ viewport: params.viewport });
+        return { success: true, url: obs.structure.url, title: obs.structure.title,
+          image: perceptToImage(obs.percept), structure: mapNode(obs.structure.tree) };
+      } finally { await document.close(); }
+    }
     session = await PerceptionSession.openWeb({
       url: params.target,
       viewport: params.viewport
