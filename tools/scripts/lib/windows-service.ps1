@@ -409,7 +409,7 @@ function New-CoreServiceRelease {
         # Windows denies write access to mapped executables. Copy-Item retains
         # that protection if a process starts after this non-mutating probe.
         $writable = $true
-        foreach ($file in @('continuum.exe', 'continuum-core-server.exe', 'run-service-hidden.ps1')) {
+        foreach ($file in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')) {
             $destination = Join-Path $candidate $file
             if (-not (Test-Path -LiteralPath $destination)) { continue }
             try {
@@ -424,7 +424,7 @@ function New-CoreServiceRelease {
     # The CLI this release installs is the one that knows the lane records' contract.
     $engineSlot = Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $TargetDirectory 'release\continuum.exe')
     New-Item -ItemType Directory -Force -Path $slot | Out-Null
-    foreach ($name in @('continuum.exe', 'continuum-core-server.exe')) {
+    foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe')) {
         $source = Join-Path $TargetDirectory ('release\' + $name)
         $destination = Join-Path $slot $name
         Copy-Item -LiteralPath $source -Destination $destination -Force -ErrorAction Stop
@@ -434,6 +434,7 @@ function New-CoreServiceRelease {
     }
     $launcher = Join-Path $slot 'run-service-hidden.ps1'
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1') -Destination $launcher -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1') -Destination (Join-Path $slot 'start-livekit-windows.ps1') -Force -ErrorAction Stop
     $socket = $env:CONTINUUM_CORE_SOCKET
     if (-not $socket) { $socket = Join-Path ([IO.Path]::GetTempPath()) 'continuum-core.sock' }
     return [pscustomobject]@{

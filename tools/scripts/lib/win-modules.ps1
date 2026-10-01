@@ -650,6 +650,10 @@ function Mod-BuildCore {
             & cargo build -p continuum-core --bin continuum --release --no-default-features
             $code = $LASTEXITCODE
         }
+        if ($code -eq 0) {
+            & cargo build -p livekit-bridge --bin livekit-bridge --release
+            $code = $LASTEXITCODE
+        }
     } finally { Pop-Location }
 
     if ($code -ne 0) {

@@ -19,6 +19,8 @@ fixture_home="$scratch/home"
 trap 'status=$?; if [ "$status" != 0 ]; then cat "$scratch/output" "$scratch/trace" >&2; fi; rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/repo/tools/scripts/lib" "$scratch/repo/tools/scripts/shared" "$scratch/repo/core/continuum-core/src" "$scratch/home/.cargo/bin"
 cp "$script_dir/../start-server.sh" "$scratch/repo/tools/scripts/start-server.sh"
+# Media preparation belongs to warm build; startup must still be deferred.
+printf 'echo MEDIA_PREPARE >> "$FIXTURE_TRACE"\n' > "$scratch/repo/tools/scripts/install-livekit.sh"
 # Toolchain setup is orthogonal to lifecycle; isolate it from the host machine.
 printf ':\n' > "$scratch/repo/tools/scripts/lib/windows-build-env.sh"
 printf 'CARGO_GPU_FEATURES=--no-default-features\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
@@ -110,6 +112,10 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     fi
     if [ "$failure" = 0 ]; then
       [ "$status" = 0 ]
+      if [ "$platform" = MINGW64_NT-10.0 ]; then
+        grep -q '^MEDIA_PREPARE$' "$FIXTURE_TRACE"
+        grep -q -- '--bin livekit-bridge --release' "$FIXTURE_TRACE"
+      fi
       grep -q 'warm build complete' "$scratch/output"
       artifact="$CARGO_TARGET_DIR/release/continuum-core-server"
       if [ "$platform" = MINGW64_NT-10.0 ]; then

@@ -14,6 +14,16 @@ param(
 $ErrorActionPreference = 'Stop'
 try {
     if ($PSCmdlet.ParameterSetName -eq 'Native') {
+        # Prebuilt handoff bypasses start-server.sh. Use this release's media
+        # artifacts so normal boot and Scheduler recovery start the same rail.
+        $mediaScript = Join-Path $PSScriptRoot 'start-livekit-windows.ps1'
+        $mediaBridge = Join-Path $PSScriptRoot 'livekit-bridge.exe'
+        if ((Test-Path -LiteralPath $mediaScript) -and (Test-Path -LiteralPath $mediaBridge)) {
+            try { & $mediaScript -BridgeBinary $mediaBridge }
+            catch { Write-Warning "Live media startup failed: $_" }
+        } else {
+            Write-Warning 'Installed release has no media bundle; run continuum install to prepare it.'
+        }
         $program = $ExecutablePath
         $childArguments = @('service-host', ('"' + $CorePath + '"'), ('"' + $SocketPath + '"'), ('"' + $EnginePath + '"'))
         if ($EyeRoot) { $childArguments += ('"' + $EyeRoot + '"') }

@@ -627,7 +627,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     $installed = Join-Path $scratch 'installed with spaces'
     $target = Join-Path $scratch 'cargo'
     New-Item -ItemType Directory -Path (Join-Path $target 'release') | Out-Null
-    foreach ($name in @('continuum.exe', 'continuum-core-server.exe')) {
+    foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe')) {
         Set-Content -LiteralPath (Join-Path $target "release\$name") -Value 'candidate'
     }
     $script:liveProcesses = @()
@@ -635,6 +635,11 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     function Get-CimInstance { param($ClassName, $ErrorAction) $script:liveProcesses }
     function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) $script:registeredTask }
     $first = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
+    # Prebuilt handoff bypasses start-server: media must travel with the slot.
+    $mediaSlot = Split-Path -Parent $first.artifact
+    foreach ($media in @('livekit-bridge.exe', 'start-livekit-windows.ps1')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $mediaSlot $media))) { throw "Missing staged media artifact: $media" }
+    }
     if ($first.artifact -ne (Join-Path $installed 'bin\service-a\continuum-core-server.exe')) { throw 'Empty install did not select first slot' }
     $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $first.artifact })
     $second = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
@@ -856,6 +861,7 @@ public class SupervisorFixture {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $prepareLib
         }
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination (Split-Path $prepareLib)
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\start-livekit-windows.ps1') -Destination (Split-Path $prepareLib)
         $oldArtifact = Join-Path $oldSlot 'continuum-core-server.exe'
         Set-Content -LiteralPath $oldArtifact -Value 'registered candidate must survive'
         $oldHash = (Get-FileHash -LiteralPath $oldArtifact).Hash
@@ -890,7 +896,7 @@ function Mod-BuildCore {
     $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE 'fixture-target'
     $release = Join-Path $env:CARGO_TARGET_DIR 'release'
     New-Item -ItemType Directory -Path $release -Force | Out-Null
-    foreach ($name in @('continuum.exe','continuum-core-server.exe')) { Copy-Item -LiteralPath $env:CONTINUUM_FIXTURE_CHILD -Destination (Join-Path $release $name) }
+    foreach ($name in @('continuum.exe','continuum-core-server.exe','livekit-bridge.exe')) { Copy-Item -LiteralPath $env:CONTINUUM_FIXTURE_CHILD -Destination (Join-Path $release $name) }
 }
 function Mod-LlamaServer {
     param($RepoRoot,$InstallDirectory)
@@ -946,11 +952,15 @@ function Mod-LlamaServer {
     $logs = Join-Path $scratch 'logs'
     New-Item -ItemType Directory -Path $logs | Out-Null
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $runner = Join-Path $repo 'tools\scripts\run-service-hidden.ps1'
+    $runner = Join-Path $scratch 'run-service-hidden.ps1'
+    Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination $runner
+    Copy-Item -LiteralPath $child -Destination (Join-Path $scratch 'livekit-bridge.exe')
+    Set-Content -LiteralPath (Join-Path $scratch 'start-livekit-windows.ps1') -Value 'param([string]$BridgeBinary); Set-Content -LiteralPath (Join-Path $PSScriptRoot "media-started") -Value $BridgeBinary'
     $core = Join-Path $scratch 'core with spaces.exe'
     $socket = Join-Path $scratch 'socket with spaces.sock'
     & $shell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $runner -ExecutablePath $child -CorePath $core -SocketPath $socket -EnginePath $child -LogDirectory $logs
     if ($LASTEXITCODE -ne 7) { throw "Hidden host lost child exit code: $LASTEXITCODE" }
+    if ((Get-Content -LiteralPath (Join-Path $scratch 'media-started') -Raw).Trim() -ne (Join-Path $scratch 'livekit-bridge.exe')) { throw 'Prebuilt supervisor did not start its staged media bundle' }
     if ((Get-Content (Join-Path $logs 'service.out.log') -Raw).Trim() -ne "service-host|$core|$socket|$child") { throw 'Hidden host changed argument boundaries' }
     if ((Get-Content (Join-Path $logs 'service.err.log') -Raw).Trim() -ne 'child failure receipt') { throw 'Hidden host lost stderr' }
     Write-Output 'PASS: native supervisor preserves arguments, both logs, and child exit 7'
