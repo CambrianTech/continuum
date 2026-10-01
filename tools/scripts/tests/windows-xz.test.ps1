@@ -42,3 +42,6 @@ try {
     $env:USERPROFILE = $savedProfile; $env:TEMP = $savedTemp; $env:PATH = $savedPath
     Remove-Item -LiteralPath $scratch -Recurse -Force
 }
+# GitHub's PowerShell wrapper forwards LASTEXITCODE. The deliberate corrupt
+# archive above sets it nonzero; succeed only after every assertion and cleanup.
+exit 0
