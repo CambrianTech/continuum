@@ -256,6 +256,38 @@ test_llama_cache_tracks_source_ownership() (
   [ -f "$source_a/CMakeLists.txt" ]
 )
 
+# what this catches: installing or rerunning cold-storage erased unrelated
+# configuration, while xargs changed literal paths before drive selection.
+test_cold_storage_preserves_config() (
+  source "$LIB"
+  local scratch; scratch="$(mktemp -d)" || return 1
+  trap 'rm -rf -- "$scratch"' EXIT
+  export HOME="$scratch/home"
+  local cold="$scratch/cold cache \$literal" config="$HOME/.continuum/config.env"
+  mkdir -p "$HOME/.continuum" "$cold" || return 1
+  printf "# retained\nLABEL='λ'\nCUSTOM_VALUE='literal \$value \\path = stays'\n" > "$scratch/kept"
+  cp "$scratch/kept" "$config" || return 1
+  chmod 600 "$config" || return 1
+  _cold_export "$cold" || return 1
+  head -3 "$config" > "$scratch/actual"
+  cmp "$scratch/kept" "$scratch/actual" || return 1
+  cp "$config" "$scratch/first" || return 1
+  _cold_export "$cold" || return 1
+  cmp "$config" "$scratch/first" || return 1
+  assert_eq "$cold/tmp" "$TMPDIR" || return 1
+  [ -d "$TMPDIR" ] || return 1
+  ( unset CONTINUUM_STORAGE_PATH HF_HOME; source "$config"; assert_eq "$cold" "$CONTINUUM_STORAGE_PATH" ) || return 1
+  _cold_drive() { echo 'must not rediscover quoted configured path' >&2; return 1; }
+  mod_cold_storage || return 1
+  cmp "$config" "$scratch/first" || return 1
+  if _cold_write_config "$config" "bad'path"; then return 1; fi
+  cmp "$config" "$scratch/first" || return 1
+  printf '# missing key and final newline' > "$config"
+  _cold_export "$cold" || return 1
+  assert_eq '# missing key and final newline' "$(head -1 "$config")" || return 1
+  ( unset CONTINUUM_STORAGE_PATH; source "$config"; assert_eq "$cold" "$CONTINUUM_STORAGE_PATH" )
+)
+
 # Permit a focused scratch-only test without executing installer tier tests.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -290,6 +322,7 @@ _run_test test_mod_tailscale_check_handles_missing
 _run_test test_mod_docker_check_fails_loud_when_missing
 _run_test test_mod_continuum_bin_link_uses_user_space_when_no_sudo_no_tty
 _run_test test_llama_cache_tracks_source_ownership
+_run_test test_cold_storage_preserves_config
 
 echo ""
 echo "------------------------------------"

@@ -126,6 +126,8 @@ Write-Host ''
 
 try {
     if (-not $PrepareOnly) {
+    # Select storage before prerequisite downloads and extraction, not just cargo.
+    Mod-ColdStorage
     Test-WingetAvailable
     # Git + vendored submodules (llama.cpp, whisper.cpp) -- the native build needs
     # them. Per-user, no elevation.
@@ -159,10 +161,6 @@ try {
     # UAC (shared). A fresh grid box must not need a manual firewall click.
     Mod-AircFirewall -WantsGrid:$WantsGrid
 
-    # Cold storage: auto-detect a large drive and route models + build cache there
-    # (migrating what's on the system drive) BEFORE the build, so cargo builds into
-    # the relocated cache. No-op on single-drive machines. Reconfigurable later.
-    Mod-ColdStorage
     } else {
         Write-Step 'Preparing with the existing toolchain; provisioning, elevation, startup registration, and handoff are deferred.'
         Mod-CMake -ExistingOnly
