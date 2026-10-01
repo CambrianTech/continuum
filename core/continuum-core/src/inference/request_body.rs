@@ -317,8 +317,9 @@ pub(crate) fn format_messages(
     messages: &[ChatMessage],
     system_prompt: Option<&str>,
     vision_native: bool,
+    audio_native: bool,
 ) -> Vec<Value> {
-    let mut result = wire_messages(messages, system_prompt, vision_native, &cfg.provider_id);
+    let mut result = wire_messages(messages, system_prompt, vision_native, audio_native, &cfg.provider_id);
     // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
     // `/no_think` soft-switch to the last user turn so the model skips its
     // chain-of-thought and answers directly. Model-specific token, owned here at
@@ -338,6 +339,7 @@ pub(crate) fn wire_messages(
     messages: &[ChatMessage],
     system_prompt: Option<&str>,
     vision_native: bool,
+    audio_native: bool,
     provider: &str,
 ) -> Vec<Value> {
     // Pre-size: one wire message per input message + the optional system
@@ -450,7 +452,12 @@ pub(crate) fn wire_messages(
                                     }))
                                 }
                             }
-                            _ => None,
+                            ContentPart::Audio { audio } => Some(wire_audio(audio, audio_native)),
+                            ContentPart::Video { .. } => Some(json!({
+                                "type": "text",
+                                "text": "[Video was not attached: this adapter requires decoded timestamped frames and audio. The video contents have not been perceived.]"
+                            })),
+                            ContentPart::ToolUse { .. } | ContentPart::ToolResult { .. } => None,
                         })
                         .collect();
 
@@ -466,6 +473,33 @@ pub(crate) fn wire_messages(
     result
 }
 
+/// OpenAI-compatible audio uses encoded WAV/MP3, not an image data URL.
+/// Unsupported inputs stay visible as failures rather than vanishing from the ask.
+fn wire_audio(audio: &crate::ai::types::AudioInput, native: bool) -> Value {
+    let unavailable = |reason: &str| json!({
+        "type": "text", "text": format!("[Audio was not attached: {reason}. Audio contents have not been perceived.]")
+    });
+    if !native {
+        return unavailable("the target model has no declared AudioInput capability");
+    }
+    let (mime, data) = if let Some(data) = audio.base64.as_deref() {
+        (audio.mime_type.as_deref(), data)
+    } else if let Some(url) = audio.url.as_deref() {
+        let Some((header, data)) = url.strip_prefix("data:").and_then(|s| s.split_once(";base64,")) else {
+            return unavailable("audio must be resolved to encoded bytes before request assembly");
+        };
+        (Some(header), data)
+    } else {
+        return unavailable("no encoded bytes were supplied");
+    };
+    let format = match mime {
+        Some("audio/wav" | "audio/x-wav" | "audio/wave") => "wav",
+        Some("audio/mpeg" | "audio/mp3") => "mp3",
+        _ => return unavailable("the encoding must be converted to WAV or MP3"),
+    };
+    json!({"type": "input_audio", "input_audio": {"data": data, "format": format}})
+}
+
 /// Build the base chat body: the wire messages (vision-gated, thinking-switched, tool
 /// prompt appended for JsonInPrompt gateways, trailing assistant closed), then model /
 /// temperature / stream / max_tokens / stop. `finish_body` completes it after admission.
@@ -474,6 +508,7 @@ pub(crate) fn build_base_body(
     request: &TextGenerationRequest,
     model: &str,
     vision_native: bool,
+    audio_native: bool,
 ) -> Value {
     // Build request body
     let mut messages = format_messages(
@@ -481,6 +516,7 @@ pub(crate) fn build_base_body(
         &request.messages,
         request.system_prompt.as_deref(),
         vision_native,
+        audio_native,
     );
 
     // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI

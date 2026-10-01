@@ -129,6 +129,10 @@ pub struct ToolOutput {
     #[serde(default)]
     #[ts(optional)]
     pub image: Option<crate::media::artifact::ImageArtifact>,
+    /// Additional retained frames from this call, in result order.
+    #[serde(default)]
+    #[ts(optional)]
+    pub additional_images: Option<Vec<crate::media::artifact::ImageArtifact>>,
     /// Single source of the raw payload; correlated by `tool_use_id == call.id`.
     pub result: ToolResult,
     /// Computed once via `ToolVerb::classify(call.name)`.
@@ -414,6 +418,7 @@ mod tests {
                 },
                 output: ToolOutput {
                     image: None,
+                    additional_images: None,
                     result: ToolResult {
                         tool_use_id: "c1".into(),
                         content: content.into(),

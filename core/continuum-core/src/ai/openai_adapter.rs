@@ -1427,11 +1427,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
 
         // Build the base request body — `inference::request_body` (the head of assembly).
+        let audio_native = crate::model_registry::try_global()
+            .and_then(|reg| reg.model(raw_model).map(|row| row.has(Capability::AudioInput)))
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput));
         let mut body = crate::inference::request_body::build_base_body(
             &self.config,
             &request,
             model,
             vision_native,
+            audio_native,
         );
 
         // Message content is final here; later extensions only add transport fields.
@@ -1836,7 +1840,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 prompt_tokens,
                 image_quote: (self.config.single_resident_model
                     && self.targets_local_serving_lane()
-                    && crate::inference::serving_guard::needs_image_quote(&body))
+                    && crate::inference::serving_guard::needs_media_quote(&body))
                     .then_some(crate::inference::lane_send::ImageQuote {
                         client: &self.client,
                         dedicated_lane: self.dedicated_lane,
@@ -3125,6 +3129,7 @@ mod tests {
             &image_message(),
             None,
             true,
+            false,
         );
         assert_eq!(wire.len(), 1);
         let content = wire[0]["content"].as_array().expect("multimodal array");
@@ -3135,6 +3140,25 @@ mod tests {
             content[1]["image_url"]["url"], "data:image/png;base64,QUJD",
             "raw pixels ride as a base64 data-URI — native sight, not a description"
         );
+        let mut mixed = image_message();
+        let MessageContent::Parts(parts) = &mut mixed[0].content else { unreachable!() };
+        parts.push(ContentPart::Audio { audio: crate::ai::types::AudioInput {
+            url: None, base64: Some("UklGRg==".into()), mime_type: Some("audio/wav".into()),
+        }});
+        parts.push(ContentPart::Video { video: crate::ai::types::VideoInput {
+            url: None, base64: Some("AAAA".into()), mime_type: Some("video/mp4".into()),
+        }});
+        let native = crate::inference::request_body::format_messages(
+            &test_adapter().config, &mixed, None, true, true,
+        );
+        assert_eq!(native[0]["content"][2], json!({
+            "type":"input_audio", "input_audio":{"data":"UklGRg==", "format":"wav"}
+        }));
+        assert!(native[0]["content"][3]["text"].as_str().unwrap().contains("Video was not attached"));
+        let unsupported = crate::inference::request_body::format_messages(
+            &test_adapter().config, &mixed, None, true, false,
+        );
+        assert!(unsupported[0]["content"][2]["text"].as_str().unwrap().contains("AudioInput"));
     }
 
     // what this catches (#106 bridge branch): a NON-vision target model must NOT be
@@ -3148,6 +3172,7 @@ mod tests {
             &test_adapter().config,
             &image_message(),
             None,
+            false,
             false,
         );
         assert_eq!(wire.len(), 1);

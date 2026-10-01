@@ -220,6 +220,7 @@ mod tests {
             },
             output: ToolOutput {
                 image: None,
+                additional_images: None,
                 result: ToolResult {
                     tool_use_id: "c".into(),
                     content: "ok".into(),

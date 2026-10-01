@@ -940,7 +940,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                 let bytes = decode_audio_bytes(audio)?;
                                 collected_media.push((llama::MediaKind::Audio, bytes));
                             }
-                            _ => {} // tool_use / tool_result handled by tool path, not here
+                            crate::ai::types::ContentPart::Video { .. } => {
+                                return Err("llamacpp_adapter: encoded video input is unsupported; decode it into timestamped frames and audio before model projection. No video was consumed.".into());
+                            }
+                            crate::ai::types::ContentPart::ToolUse { .. }
+                            | crate::ai::types::ContentPart::ToolResult { .. } => {} // handled by tool path
                         }
                     }
                     out

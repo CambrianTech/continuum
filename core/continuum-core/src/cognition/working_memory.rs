@@ -2181,6 +2181,7 @@ mod tests {
             },
             output: ToolOutput {
                 image: None,
+                additional_images: None,
                 result: ToolResult {
                     tool_use_id: "call-42".into(),
                     content: "match at foo.rs:42".into(),
@@ -2266,6 +2267,7 @@ mod tests {
             },
             output: ToolOutput {
                 image: None,
+                additional_images: None,
                 result: ToolResult {
                     tool_use_id: id.into(),
                     content: "same result".into(),

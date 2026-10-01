@@ -331,6 +331,24 @@ mod tests {
         let mut bad_size = restored;
         bad_size.size_bytes += 1;
         assert!(bad_size.read(&open().unwrap()).is_err());
+        // Live-call galleries must cross the SAME durable boundary, without
+        // dropping all but one participant or leaving base64 in the transcript.
+        let mut gallery = serde_json::json!({"success":true,"views":[
+            {"participant":"alice","image":original["image"]},
+            {"participant":"bob","image":original["image"]},
+            {"participant":"corrupt","image":{"dataUrl":"data:image/png;base64,invalid"}},
+            {"participant":"unavailable","error":"frame unavailable"}
+        ]});
+        let frames = crate::media::artifact::retain_captures_with(
+            "perception/look", &mut gallery, open, &attachments,
+        ).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(gallery["views"][2]["error"].is_string());
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.read(&open().unwrap()).unwrap(), *bytes.get_ref());
+            assert!(gallery["views"][index]["image"].get("dataUrl").is_none());
+            assert_eq!(gallery["views"][index]["image"]["artifact"]["hash"], frame.hash);
+        }
     }
 
     use crate::cognition::persona_tools::native_tool_specs;

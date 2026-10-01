@@ -99,7 +99,7 @@ impl RagSource for MediaPerceptionSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        Some("perception/observe")
+        Some("perception/look")
     }
 
     /// One resolved perception cell — who is visible / what is shown. A single
