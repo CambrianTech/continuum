@@ -979,6 +979,8 @@ Joel's 2026-10-01 requirement supersedes the former automatic translator policy:
 - Adapters encode and decode the bound model's native modalities. Replacing a model, including with an unfamiliar model lacking modalities, must require no consumer-specific model branches.
 - Missing capability, metadata, or native transport support is an explicit error. Never drop media, replace it with a placeholder, or invoke STT, TTS, captioning, or another model to make the operation appear successful.
 - Preserve native input bytes and native output media through the complete consumer path. A capability declaration, screenshot handle, transcript, or synthesized voice is not proof of native multimodal operation.
+- Native speech belongs to the persona's own model. Voice LoRAs must compose with the existing persona/genome binding to retain a distinct vocal identity; a stock downstream TTS voice is not equivalent. Keep artifact provenance and actual adapter support explicit rather than assuming every LoRA supports speech.
+- Embodiment serves self-directing personas with agency and persistent individuality. Personas are not pets. Their model-native expression and learned identity must survive the same lifecycle as their other abilities.
 - Verify each supported input/output modality end to end before adding translation features. Existing translator code is not authorization to select it automatically.
 
 Regression checks must exercise capability isolation between two models, native payload preservation, and rejection of unsupported requests. Documentation alone does not establish enforcement; record remaining consumers that violate this contract until repaired.
