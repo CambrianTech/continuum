@@ -9,6 +9,19 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # PDF runtime recovery: an existing but unloadable decoder must request
+    # repair, rather than throwing before Mod-Poppler reaches its install path.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $brokenRuntime = Join-Path $scratch 'broken-pdf-runtime'
+        $brokenBin = Join-Path $brokenRuntime 'Library\bin'
+        New-Item -ItemType Directory -Path $brokenBin -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $brokenBin 'pdfinfo.exe') -Value 'damaged executable'
+        if (Test-PopplerRuntime -Directory $brokenRuntime -Version '26.09.0') {
+            throw 'Unlaunchable PDF runtime was accepted as healthy.'
+        }
+        Write-Output 'PASS: corrupt PDF decoder reports drift for installer repair'
+    }
     # what this catches: binary-only updates left a legacy launcher/descriptor
     # behind even when the running core SHA matched HEAD (5090, 2026-09-29).
     $browserLauncher = Join-Path $scratch 'run-service-hidden.ps1'
