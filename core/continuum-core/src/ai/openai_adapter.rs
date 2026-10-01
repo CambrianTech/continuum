@@ -355,6 +355,23 @@ impl OpenAICompatibleAdapter {
         self
     }
 
+    /// Attach metadata when a serving owner binds a model to this adapter.
+    /// Discovery belongs to that owner; generation only borrows this value.
+    pub fn with_bound_model(mut self, model: ModelInfo) -> Self {
+        self.config.models.retain(|existing| existing.id != model.id);
+        self.config.models.push(model);
+        self
+    }
+
+    fn bound_model(&self, requested: &str, resolved: &str) -> Result<&ModelInfo, String> {
+        self.config.models.iter()
+            .find(|model| model.id == requested || model.id == resolved)
+            .ok_or_else(|| format!(
+                "Model '{requested}' has no capability binding on provider '{}'; bind model metadata before generation",
+                self.config.provider_id
+            ))
+    }
+
     /// The typed OpenAI-compatible endpoint base — the runtime override if set,
     /// else the configured base. The ONE place request URLs are built; every
     /// site calls a typed accessor ([`OpenAiBase::chat_completions`] etc.) rather
@@ -1408,35 +1425,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         };
         let model: &str = &resolved_model;
 
-        // Native vision is a MODEL fact, not a provider fact: gate image content
-        // parts on the TARGET model row's Capability::Vision (the same
-        // `sensory::route` verdict that drives the bridge-vs-native table in
-        // CLAUDE.md "Sensory Architecture"). Row present → its capability set is
-        // the truth (a vision-capable llama-server lane / gpt-4o gets raw
-        // pixels; a text row gets its images dropped and reads the description
-        // bridge). Row absent (dynamic catalogs like DMR resolve ids the
-        // registry never saw) → the provider-level scan ("any row under this
-        // provider declares Vision", already folded into `config.capabilities`)
-        // is the best available truth — same source `capabilities()` advertises.
-        let vision_native = crate::model_registry::try_global()
-            .and_then(|reg| {
-                reg.model(raw_model).map(|row| {
-                    crate::sensory::route(row, crate::sensory::Modality::ImageIn).is_native()
-                })
-            })
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
-
-        // Build the base request body — `inference::request_body` (the head of assembly).
-        let audio_native = crate::model_registry::try_global()
-            .and_then(|reg| reg.model(raw_model).map(|row| row.has(Capability::AudioInput)))
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput));
+        // The adapter owns model metadata resolved at construction. Select that
+        // existing binding, then borrow its capability struct for every modality.
+        // Never rediscover capabilities per request, or infer them from another
+        // model hosted by the same provider. A new catalog requires a new binding.
+        let bound_model = self.bound_model(raw_model, &resolved_model)?;
         let mut body = crate::inference::request_body::build_base_body(
             &self.config,
             &request,
             model,
-            vision_native,
-            audio_native,
-        );
+            bound_model,
+        )?;
 
         // Message content is final here; later extensions only add transport fields.
         // Carry this estimate through admission, overflow checks and send receipts.
@@ -2650,6 +2649,46 @@ mod tests {
             dynamic_model_catalog: false,
             llamacpp_sampling_extensions: false,
         })
+    }
+
+    #[test]
+    fn native_model_binding_is_exact_and_media_cannot_silently_degrade() {
+        use crate::ai::types::CostPer1kTokens;
+        let native = ModelInfo {
+            id: "exotic-native".into(), name: "Native".into(), provider: "test-gateway".into(),
+            capabilities: vec![Capability::Vision, Capability::AudioInput],
+            context_window: 4096, max_output_tokens: 512,
+            cost_per_1k_tokens: CostPer1kTokens { input: 0.0, output: 0.0 },
+            tokens_per_second: 1.0,
+        };
+        let mut text = native.clone();
+        text.id = "exotic-text".into();
+        text.capabilities.clear();
+        let adapter = test_adapter().with_bound_model(native).with_bound_model(text);
+        assert!(adapter.bound_model("unknown", "unknown").is_err());
+        let bound = adapter.bound_model("exotic-native", "exotic-native").unwrap();
+        assert!(std::ptr::eq(bound, adapter.bound_model("exotic-native", "exotic-native").unwrap()));
+        let mut request: TextGenerationRequest = serde_json::from_value(json!({
+            "messages": [{"role":"user", "content":[
+                {"type":"image", "image":{"base64":"QUJD", "mimeType":"image/png"}},
+                {"type":"audio", "audio":{"base64":"UklGRg==", "mimeType":"audio/wav"}}
+            ]}]
+        })).unwrap();
+        let assemble = |request: &TextGenerationRequest, model: &ModelInfo| {
+            crate::inference::request_body::build_base_body(&adapter.config, request, &model.id, model)
+        };
+        let wire = assemble(&request, bound).unwrap();
+        assert_eq!(wire["messages"][0]["content"][0]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(wire["messages"][0]["content"][1]["input_audio"]["data"], "UklGRg==");
+        let text = adapter.bound_model("exotic-text", "exotic-text").unwrap();
+        assert!(assemble(&request, text).unwrap_err().contains("Vision"));
+        let MessageContent::Parts(parts) = &mut request.messages[0].content else { unreachable!() };
+        parts.remove(0);
+        assert!(assemble(&request, text).unwrap_err().contains("AudioInput"));
+        let MessageContent::Parts(parts) = &mut request.messages[0].content else { unreachable!() };
+        let ContentPart::Audio { audio } = &mut parts[0] else { unreachable!() };
+        audio.mime_type = Some("audio/unknown".into());
+        assert!(assemble(&request, bound).unwrap_err().contains("encoding"));
     }
 
     // what this catches: be553169 — `live_served_window` is now the ONLY thing that stamps

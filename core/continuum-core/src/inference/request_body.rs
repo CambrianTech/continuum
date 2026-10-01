@@ -501,22 +501,32 @@ fn wire_audio(audio: &crate::ai::types::AudioInput, native: bool) -> Value {
     if !native {
         return unavailable("the target model has no declared AudioInput capability");
     }
+    match encoded_audio(audio) {
+        Ok((format, data)) => json!({"type": "input_audio", "input_audio": {"data": data, "format": format}}),
+        Err(reason) => unavailable(&reason),
+    }
+}
+
+fn encoded_audio(audio: &crate::ai::types::AudioInput) -> Result<(&'static str, &str), String> {
     let (mime, data) = if let Some(data) = audio.base64.as_deref() {
         (audio.mime_type.as_deref(), data)
     } else if let Some(url) = audio.url.as_deref() {
         let Some((header, data)) = url.strip_prefix("data:").and_then(|s| s.split_once(";base64,")) else {
-            return unavailable("audio must be resolved to encoded bytes before request assembly");
+            return Err("Native audio requires encoded bytes before request assembly".into());
         };
         (Some(header), data)
     } else {
-        return unavailable("no encoded bytes were supplied");
+        return Err("Native audio has no encoded bytes".into());
     };
+    if data.is_empty() {
+        return Err("Native audio has empty encoded bytes".into());
+    }
     let format = match mime {
         Some("audio/wav" | "audio/x-wav" | "audio/wave") => "wav",
         Some("audio/mpeg" | "audio/mp3") => "mp3",
-        _ => return unavailable("the encoding must be converted to WAV or MP3"),
+        _ => return Err("Native audio transport requires WAV or MP3 encoding".into()),
     };
-    json!({"type": "input_audio", "input_audio": {"data": data, "format": format}})
+    Ok((format, data))
 }
 
 /// Build the base chat body: the wire messages (vision-gated, thinking-switched, tool
@@ -526,16 +536,15 @@ pub(crate) fn build_base_body(
     cfg: &OpenAICompatibleConfig,
     request: &TextGenerationRequest,
     model: &str,
-    vision_native: bool,
-    audio_native: bool,
-) -> Value {
-    // Build request body
+    bound_model: &crate::ai::types::ModelInfo,
+) -> Result<Value, String> {
+    validate_native_media(&request.messages, bound_model)?;
     let mut messages = format_messages(
-                cfg,
+        cfg,
         &request.messages,
         request.system_prompt.as_deref(),
-        vision_native,
-        audio_native,
+        bound_model.has(crate::model_registry::Capability::Vision),
+        bound_model.has(crate::model_registry::Capability::AudioInput),
     );
 
     // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
@@ -611,7 +620,37 @@ pub(crate) fn build_base_body(
     // is omitted. llama-server inherits the same protection DMR had: the
     // forged 4B loops its `<think>` block to the token budget without it.
     //
-    body
+    Ok(body)
+}
+
+/// Refuse an unrepresentable request before admission or network I/O. A text
+/// placeholder is not successful media delivery, even if generation succeeds.
+fn validate_native_media(messages: &[ChatMessage], model: &crate::ai::types::ModelInfo) -> Result<(), String> {
+    for message in messages {
+        let MessageContent::Parts(parts) = &message.content else { continue };
+        let has_tool_use = parts.iter().any(|p| matches!(p, ContentPart::ToolUse { .. }));
+        for part in parts {
+            let reason = match part {
+                ContentPart::Image { .. } if !model.has(Capability::Vision) => Some("model does not declare Vision"),
+                ContentPart::Image { image } if image.url.as_deref().filter(|s| !s.is_empty()).is_none()
+                    && image.base64.as_deref().filter(|s| !s.is_empty()).is_none() => Some("image has no URL or encoded bytes"),
+                ContentPart::Audio { .. } if !model.has(Capability::AudioInput) => Some("model does not declare AudioInput"),
+                ContentPart::Audio { audio } => {
+                    encoded_audio(audio)?;
+                    None
+                }
+                ContentPart::Video { .. } => Some("this transport cannot encode native video"),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                return Err(format!("Native media rejected for model '{}': {reason}", model.id));
+            }
+            if has_tool_use && matches!(part, ContentPart::Image { .. } | ContentPart::Audio { .. }) {
+                return Err(format!("Native media rejected for model '{}': tool-call messages cannot encode sibling media", model.id));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

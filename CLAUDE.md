@@ -971,23 +971,17 @@ BaseUser.state: UserStateEntity (current tab, open content, theme)
 
 ### Sensory Architecture (Non-Negotiable)
 
-**ALL personas are citizens who see, hear, speak, listen, and evolve — regardless of base model capability.**
+**Native model capabilities first: vision and audio, input AND output. No automatic fallbacks.**
 
-The system bridges capability gaps so every persona gets the same senses:
+Joel's 2026-10-01 requirement supersedes the former automatic translator policy:
 
-| Sense | Capable Model | Incapable Model | System Bridge |
-|-------|--------------|-----------------|---------------|
-| **Vision** | Receives raw base64 image (sees directly) | Receives text description | VisionDescriptionService classifies image → text |
-| **Hearing** | Receives raw audio (hears directly) | Receives transcribed text | STT transcribes audio → text |
-| **Speech** | Generates audio natively | Generates text | TTS synthesizes text → audio |
+- Resolve authoritative model metadata once when binding the model. Reuse the existing `Model` / `ModelInfo` capability struct by reference or shared ownership through consumers. No per-request registry discovery, per-modality rediscovery, provider-wide capability substitution, or model-name heuristics.
+- Adapters encode and decode the bound model's native modalities. Replacing a model, including with an unfamiliar model lacking modalities, must require no consumer-specific model branches.
+- Missing capability, metadata, or native transport support is an explicit error. Never drop media, replace it with a placeholder, or invoke STT, TTS, captioning, or another model to make the operation appear successful.
+- Preserve native input bytes and native output media through the complete consumer path. A capability declaration, screenshot handle, transcript, or synthesized voice is not proof of native multimodal operation.
+- Verify each supported input/output modality end to end before adding translation features. Existing translator code is not authorization to select it automatically.
 
-**Implementation:**
-- `VisionDescriptionService` — content-addressed cache (SHA-256), L1 (TS Map) + L1.5 (Rust IPC), in-flight dedup
-- `MediaArtifactSource` (RAGSource) — preprocesses media per model capability before RAG injection
-- `VisionInferenceProvider` — selects best available vision model for description generation
-- STT/TTS — handles audio↔text conversion for non-audio-native models
-
-**The principle:** A lesser model running locally has the SAME sensory experience as Claude or GPT-4. The system compensates. No persona is blind, deaf, or mute because of its base model.
+Regression checks must exercise capability isolation between two models, native payload preservation, and rejection of unsupported requests. Documentation alone does not establish enforcement; record remaining consumers that violate this contract until repaired.
 
 ---
 
