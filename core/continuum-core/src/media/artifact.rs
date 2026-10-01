@@ -112,6 +112,53 @@ pub fn retain_capture(
     retain_capture_with(command, value, store, &directory)
 }
 
+/// A live look can return several participants. Keep every frame through the
+/// same durable image boundary used by screenshots, before transcript folding.
+pub fn retain_captures(
+    command: &str,
+    value: &mut serde_json::Value,
+) -> Result<Vec<ImageArtifact>, String> {
+    let directory = store_path().with_file_name("captures");
+    retain_captures_with(command, value, store, &directory)
+}
+
+pub(crate) fn retain_captures_with(
+    command: &str,
+    value: &mut serde_json::Value,
+    mut open_store: impl FnMut() -> Result<FsStore, String>,
+    directory: &std::path::Path,
+) -> Result<Vec<ImageArtifact>, String> {
+    if command != "perception/look" {
+        return retain_capture_with(command, value, &mut open_store, directory)
+            .map(|image| image.into_iter().collect());
+    }
+    if value.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(Vec::new());
+    }
+    let mut images = Vec::new();
+    if let Some(views) = value.get_mut("views").and_then(|v| v.as_array_mut()) {
+        for view in views {
+            if view.get("error").is_some_and(|error| !error.is_null()) {
+                continue;
+            }
+            let Some(image) = view.get_mut("image") else { continue };
+            let mut capture = serde_json::json!({"success": true, "image": image.take()});
+            let retained = retain_capture_with("perception/observe", &mut capture, &mut open_store, directory);
+            *image = capture["image"].take();
+            match retained {
+                Ok(Some(artifact)) => images.push(artifact),
+                Ok(None) => {},
+                Err(error) => {
+                    // One unavailable participant must not discard the other
+                    // participants' verified frames. Preserve the per-view fault.
+                    view["error"] = serde_json::Value::String(error);
+                }
+            }
+        }
+    }
+    Ok(images)
+}
+
 pub(crate) fn retain_capture_with(
     command: &str,
     value: &mut serde_json::Value,

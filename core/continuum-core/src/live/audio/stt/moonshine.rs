@@ -170,7 +170,7 @@ impl MoonshineStt {
             .lines()
             .map(|line| {
                 // sherpa-onnx tokens.txt format: "token id" per line — take just the token
-                if let Some(space_idx) = line.rfind(' ') {
+                if let Some(space_idx) = line.rfind([' ', '\t']) {
                     if line[space_idx + 1..].parse::<usize>().is_ok() {
                         return line[..space_idx].to_string();
                     }
@@ -626,14 +626,13 @@ mod tests {
 
     #[test]
     fn test_decode_tokens_basic() {
-        let vocab: Vec<String> = vec![
-            "<unk>".into(),  // 0
-            "<s>".into(),    // 1  (BOS)
-            "</s>".into(),   // 2  (EOS)
-            "▁Hello".into(), // 3
-            "▁world".into(), // 4
-            "!".into(),      // 5
-        ];
+        // Real sherpa downloads use tabs; token IDs must never leak into speech.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokens.txt"),
+            "<unk>\t0\n<s>\t1\n</s>\t2\n▁Hello\t3\n▁world 4\n!\t5\n",
+        ).unwrap();
+        let vocab = MoonshineStt::load_vocab(dir.path()).unwrap();
 
         let tokens = vec![3, 4, 5];
         let text = MoonshineStt::decode_tokens(&vocab, &tokens);

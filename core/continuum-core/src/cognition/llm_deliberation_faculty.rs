@@ -4483,7 +4483,8 @@ impl LlmDeliberationFaculty {
         let images: Vec<_> = wm
             .active_action_observations(seq)
             .into_iter()
-            .filter_map(|act| act.output.image)
+            .flat_map(|act| act.output.image.into_iter()
+                .chain(act.output.additional_images.into_iter().flatten()))
             .collect();
         if images.is_empty() {
             return Ok(None);
@@ -6227,6 +6228,7 @@ mod tests {
                         },
                         output: ToolOutput {
                             image: None,
+                            additional_images: None,
                             result: ToolResult {
                                 tool_use_id: call_id,
                                 content: (*report).into(),
@@ -7931,6 +7933,13 @@ mod tests {
                 png.get_ref(),
             )
             .unwrap();
+            let mut other_png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(3, 2)
+                .write_to(&mut other_png, image::ImageFormat::Png).unwrap();
+            let other_image = crate::media::artifact::ImageArtifact::retain(
+                &airc_blobs::FsStore::new(home.path().join("images")).unwrap(),
+                other_png.get_ref(),
+            ).unwrap();
             wm.record_receipt_typed(
                 &[Observation {
                     call: ToolCall {
@@ -7940,6 +7949,7 @@ mod tests {
                     },
                     output: ToolOutput {
                         image: Some(image.clone()),
+                        additional_images: Some(vec![other_image.clone()]),
                         result: ToolResult {
                             tool_use_id: "capture".into(),
                             content: grep_result.clone(),
@@ -8032,18 +8042,21 @@ mod tests {
                 seen.system.clone(), None, Some(ws.room_id), faculty.turn_kind(&ws),
             );
             let wire = crate::inference::request_body::wire_messages(
-                &request.messages, request.system_prompt.as_deref(), true, "llama-server",
+                &request.messages, request.system_prompt.as_deref(), true, false, "llama-server",
             );
             let urls: Vec<_> = wire.iter()
                 .filter_map(|m| m["content"].as_array()).flatten()
                 .filter_map(|p| p["image_url"]["url"].as_str()).collect();
-            assert_eq!(urls.len(), 1);
+            assert_eq!(urls.len(), 2, "all live-call participants must reach native model input");
             let (header, encoded) = urls[0].split_once(',').unwrap();
             assert_eq!(header, "data:image/png;base64");
             use sha2::Digest;
             let wire_bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
             assert_eq!(format!("{:x}", sha2::Sha256::digest(&wire_bytes)), image.hash);
             assert_eq!(wire_bytes.len() as u64, image.size_bytes);
+            let (_, encoded) = urls[1].split_once(',').unwrap();
+            let other_wire = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+            assert_eq!(format!("{:x}", sha2::Sha256::digest(&other_wire)), other_image.hash);
             let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
                 .await.unwrap().unwrap();
             assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));

@@ -15,6 +15,10 @@ export type ToolOutput = {
  */
 image?: ImageArtifact, 
 /**
+ * Additional retained frames from this call, in result order.
+ */
+additional_images?: Array<ImageArtifact>, 
+/**
  * Single source of the raw payload; correlated by `tool_use_id == call.id`.
  */
 result: ToolResult, 

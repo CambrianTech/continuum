@@ -1212,6 +1212,7 @@ ensure_moonshine() {
   local files=(preprocess.onnx encode.int8.onnx uncached_decode.int8.onnx cached_decode.int8.onnx tokens.txt)
   local missing=0
   for f in "${files[@]}"; do [ -s "$DIR/$f" ] || missing=1; done
+  [ -s "$CONTINUUM_MODELS_DIR/vad/silero_vad.onnx" ] || missing=1
   [ "$missing" = 0 ] && return 0
   command -v curl >/dev/null 2>&1 || { echo "  ⚠ curl missing — STT (hearing) unavailable until moonshine models are placed in $DIR" >&2; return 0; }
   echo "→ first boot: fetching the local STT model (moonshine base int8, ~286MB once)…"
@@ -1221,6 +1222,14 @@ ensure_moonshine() {
     [ -s "$DIR/$f" ] && continue
     curl -sfL -o "$DIR/$f.tmp" "$BASE/$f" && mv "$DIR/$f.tmp" "$DIR/$f" || { ok=0; rm -f "$DIR/$f.tmp"; }
   done
+  # The room path needs VAD before Moonshine ever receives an utterance.
+  # Provisioning STT alone lets direct transcription pass while calls stay deaf.
+  local VAD="$CONTINUUM_MODELS_DIR/vad/silero_vad.onnx"
+  if [ ! -s "$VAD" ]; then
+    mkdir -p "$(dirname "$VAD")"
+    curl -sfL -o "$VAD.tmp" "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx" \
+      && mv "$VAD.tmp" "$VAD" || { ok=0; rm -f "$VAD.tmp"; }
+  fi
   [ "$ok" = 1 ] && echo "  STT model ready — citizens can hear" \
     || echo "  ⚠ moonshine fetch incomplete — STT unavailable this boot (retries next boot)" >&2
 }

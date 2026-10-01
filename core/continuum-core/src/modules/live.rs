@@ -1103,22 +1103,29 @@ impl ServiceModule for VoiceModule {
                     pcm.extend(std::iter::repeat(0i16).take(
                         (crate::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
                     ));
-                    for chunk in pcm.chunks(320) {
-                        self.state.call_manager.push_audio(&handle, chunk.to_vec()).await;
+                    for chunk in pcm.chunks(crate::audio_constants::AUDIO_FRAME_SIZE) {
+                        let mut frame = chunk.to_vec();
+                        frame.resize(crate::audio_constants::AUDIO_FRAME_SIZE, 0);
+                        self.state.call_manager.push_audio(&handle, frame).await;
                         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                     }
-                    let wait = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    let mut heard = String::new();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                         loop {
                             match transcripts.recv().await {
-                                Ok(ev) if ev.user_id == "selftest-human" => break Some(ev.text),
+                                Ok(ev) if ev.user_id == "selftest-human" => {
+                                    if !heard.is_empty() { heard.push(' '); }
+                                    heard.push_str(&ev.text);
+                                    if heard.to_lowercase().contains(word) { break; }
+                                }
                                 Ok(_) => continue,
-                                Err(_) => break None,
+                                Err(_) => break,
                             }
                         }
                     })
                     .await;
                     self.state.call_manager.leave_call(&handle).await;
-                    wait.ok().flatten().unwrap_or_default() // safe: no event = empty = red receipt
+                    heard // Partial utterances remain diagnostic evidence, never an automatic pass.
                 } else {
                     // Engine leg: samples straight to STT. This is the TDD loop.
                     match crate::live::audio::stt_service::transcribe_speech_async(
@@ -1140,7 +1147,9 @@ impl ServiceModule for VoiceModule {
                     .iter()
                     .filter(|w| lower.contains(**w))
                     .count();
-                let matched = hits >= 2;
+                // A generic fragment (or leaked vocabulary IDs) is not proof
+                // that this synthesized nonce survived the audio path.
+                let matched = hits >= 2 && lower.contains(word) && !transcript.contains('\t');
                 let leg = if room_leg { "room" } else { "engine" };
                 crate::probe!(
                     class = "live.selftest",

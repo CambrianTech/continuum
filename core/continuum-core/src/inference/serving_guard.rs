@@ -41,12 +41,13 @@ impl PromptCount {
     }
 }
 
-/// Only image-bearing local requests need the projector quote. Text requests
+/// Every media-bearing local request needs the projector quote. Text requests
 /// retain their existing estimate; cloud providers do not promise this endpoint.
-pub(crate) fn needs_image_quote(body: &serde_json::Value) -> bool {
+pub(crate) fn needs_media_quote(body: &serde_json::Value) -> bool {
     body.get("messages").and_then(|v| v.as_array()).into_iter().flatten()
         .filter_map(|message| message.get("content").and_then(|v| v.as_array()))
-        .flatten().any(|part| part.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+        .flatten().any(|part| matches!(part.get("type").and_then(|v| v.as_str()),
+            Some("image_url" | "input_audio" | "input_video")))
 }
 
 fn image_quote_request(
@@ -404,9 +405,12 @@ mod tests {
         ]}]});
         assert_eq!(approx_prompt_tokens(&multipart), approx_prompt_tokens(&body(48_000)));
         assert_eq!(prompt_alone_overflows_served(approx_prompt_tokens(&multipart), 8_000), Some(16_000));
-        assert!(needs_image_quote(&multipart));
-        assert!(!needs_image_quote(&body(48_000)));
-        assert!(!needs_image_quote(&serde_json::json!({"messages":[{"content":"image_url"}]})));
+        assert!(needs_media_quote(&multipart));
+        for kind in ["input_audio", "input_video"] {
+            assert!(needs_media_quote(&serde_json::json!({"messages":[{"content":[{"type":kind}]}]})));
+        }
+        assert!(!needs_media_quote(&body(48_000)));
+        assert!(!needs_media_quote(&serde_json::json!({"messages":[{"content":"image_url"}]})));
         // The quote must preserve the final template options, media, and auth,
         // and target the same lane. It must not mutate the generation builder.
         let client = reqwest::Client::new();
