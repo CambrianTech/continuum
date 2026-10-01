@@ -80,3 +80,22 @@ the resolved slot from the CLI rather than duplicating path policy in its adapte
 The existing artifact-order and plist tests cover a cold slot, and shell placement
 tests verify that an unavailable selected directory refuses service operations.
 This additional consumer change requires fresh CI and peer review.
+
+## First public Continuum run (canary 84c18e611)
+
+After all required CI and independent review passed, Joel confirmed readiness.
+The unmodified PowerShell 5.1 `install.ps1 -Grid` selected D: cold cache/payloads,
+restored registered Rust tools, reused Visual Studio, cloned native submodules
+and installed CMake. No admin operation or consent prompt was reached.
+LLVM's 981,666,720-byte archive passed the manifest checksum, then Windows tar
+failed because its external XZ decoder was absent. The installer exited nonzero;
+no manual extraction or installation was performed.
+
+The repair declares the official Windows XZ archive and digest in the manifest,
+acquires/verifies it under managed payload storage, and supplies it only to the
+native tar invocation. Extraction checks its exit status and stages LLVM before
+publishing files. A Windows smoke test uses the actual decoder and native tar in
+an isolated profile, verifying acquisition/reuse, corrupt-archive refusal and
+PATH restoration. Public rerun and full Continuum acceptance remain required.
+The lengthy LLVM download also exposed missing useful progress in captured
+installer output; download observability remains an open usability repair.
