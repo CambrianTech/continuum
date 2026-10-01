@@ -105,15 +105,20 @@ pub const STREAM_IDLE_BOUND: Duration = Duration::from_secs(90);
 
 /// Forward one wire chunk of `stream_id` to the sink. `Some(is_final)` when the
 /// event was a chunk of THIS stream, `None` for anything else on the bus.
+/// Missing or unsupported kinds on this stream are errors, never answer text.
 fn forward_stream_chunk(
     event: &TranscriptEvent,
     stream_id: &str,
     sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
-) -> Option<bool> {
-    if event.headers.get(airc_lib::HEADER_STREAM_ID)? != stream_id {
-        return None;
+) -> Result<Option<bool>, String> {
+    if event.headers.get(airc_lib::HEADER_STREAM_ID).map(String::as_str) != Some(stream_id) {
+        return Ok(None);
     }
-    let kind = event.headers.get(airc_lib::HEADER_STREAM_KIND)?;
+    let kind = event.headers.get(airc_lib::HEADER_STREAM_KIND)
+        .ok_or_else(|| "remote stream chunk has no kind".to_string())?;
+    if !matches!(kind.as_str(), airc_lib::STREAM_KIND_TEXT_TOKEN | airc_lib::STREAM_KIND_TEXT_REASONING | crate::routing::command_handler::STREAM_KIND_PREFILL) {
+        return Err(format!("Unsupported remote stream kind '{kind}'; refusing to substitute answer text"));
+    }
     let is_final = event
         .headers
         .get(airc_lib::HEADER_STREAM_FINAL)
@@ -135,7 +140,7 @@ fn forward_stream_chunk(
             let _ = sink.send(c);
         }
     }
-    Some(is_final)
+    Ok(Some(is_final))
 }
 
 /// Closure-driven stub for unit tests. Construct with a function
@@ -583,7 +588,8 @@ impl AircInferenceTransport for AircLiveTransport {
                 r = &mut reply_fut => break r,
                 ev = next_chunk => match ev {
                     Some(Ok(event)) => {
-                        if let Some(is_final) = forward_stream_chunk(&event, &stream_id, &sink) {
+                        if let Some(is_final) = forward_stream_chunk(&event, &stream_id, &sink)
+                            .map_err(|message| RemoteInferenceError::Transport { message })? {
                             streamed += 1;
                             last_chunk_at = Some(std::time::Instant::now());
                             if streamed == 1 {
@@ -798,11 +804,11 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         assert_eq!(
             forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "fn ", false), &id, &tx),
-            Some(false)
+            Ok(Some(false))
         );
         assert_eq!(
             forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_REASONING, "hmm", false), &id, &tx),
-            Some(false)
+            Ok(Some(false))
         );
         assert_eq!(
             forward_stream_chunk(
@@ -810,19 +816,26 @@ mod tests {
                 &id,
                 &tx
             ),
-            Some(false)
+            Ok(Some(false))
         );
         assert_eq!(
             forward_stream_chunk(&chunk_event("other-stream", airc_lib::STREAM_KIND_TEXT_TOKEN, "nope", false), &id, &tx),
-            None,
+            Ok(None),
             "another stream's chunk is not ours"
         );
         let mut plain = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "x", false);
         plain.headers = airc_core::Headers::new();
-        assert_eq!(forward_stream_chunk(&plain, &id, &tx), None, "a plain message is not a chunk");
+        assert_eq!(forward_stream_chunk(&plain, &id, &tx), Ok(None), "a plain message is not a chunk");
+        // A future media/extension chunk must never become spoken answer text,
+        // nor may an unsupported final marker make the stream look complete.
+        for final_marker in [false, true] {
+            assert!(forward_stream_chunk(
+                &chunk_event(&id, "audio/encoded", "not text", final_marker), &id, &tx
+            ).unwrap_err().contains("Unsupported remote stream kind"));
+        }
         assert_eq!(
             forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", true), &id, &tx),
-            Some(true),
+            Ok(Some(true)),
             "the final marker is reported"
         );
         drop(tx);
