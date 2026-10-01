@@ -1106,7 +1106,17 @@ fi
 # serving); only live A/V is unavailable. Sidecar because it links webrtc-sys, which we
 # keep OUT of the core process ([[gpu-is-non-negotiable...]] resource isolation).
 start_livekit_rail() {
-  case "$(uname -s)" in Darwin|Linux) ;; *) return 0 ;; esac  # bridge speaks a unix-socket
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      bash "$SCRIPT_DIR/install-livekit.sh" || return 1
+      cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release || return 1
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$SCRIPT_DIR/start-livekit-windows.ps1")" \
+        -BridgeBinary "$(cygpath -w "$CARGO_TARGET_DIR/release/livekit-bridge.exe")"
+      return $?
+      ;;
+    Darwin|Linux) ;;
+    *) return 0 ;;
+  esac
   local LK_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$LK_LOG_DIR"
   local SOCK="$HOME/.continuum/sockets/livekit-bridge.sock"; mkdir -p "$(dirname "$SOCK")"
   local LK_URL="${LIVEKIT_URL:-ws://localhost:7880}"
