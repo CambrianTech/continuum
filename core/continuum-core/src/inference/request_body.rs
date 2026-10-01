@@ -413,8 +413,10 @@ pub(crate) fn wire_messages(
                             }));
                         }
                     }
-                } else {
-                    // Standard multimodal content
+                }
+                if !has_tool_use {
+                    // Tool results may carry sibling pixels/audio. Emit their
+                    // protocol replies first, then preserve the observation.
                     let content: Vec<Value> = parts
                         .iter()
                         .filter_map(|p| match p {
@@ -461,10 +463,12 @@ pub(crate) fn wire_messages(
                         })
                         .collect();
 
-                    result.push(json!({
-                        "role": msg.role,
-                        "content": content
-                    }));
+                    if !has_tool_result || !content.is_empty() {
+                        result.push(json!({
+                            "role": if has_tool_result { "user" } else { msg.role.as_str() },
+                            "content": content
+                        }));
+                    }
                 }
             }
         }
@@ -598,6 +602,28 @@ pub(crate) fn build_base_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Tool protocol results must not silently discard sibling sensory evidence.
+    #[test]
+    fn tool_result_keeps_sibling_media_after_protocol_reply() {
+        let message: ChatMessage = serde_json::from_value(json!({
+            "role": "user", "content": [
+                {"type":"tool_result", "tool_use_id":"capture-1", "content":"captured"},
+                {"type":"text", "text":"Current rendering"},
+                {"type":"image", "image":{"base64":"pixels", "mimeType":"image/png"}},
+                {"type":"audio", "audio":{"base64":"sound", "mimeType":"audio/wav"}}
+            ]
+        })).unwrap();
+        let wire = wire_messages(&[message.clone()], None, true, true, "test");
+        assert_eq!(wire.len(), 2);
+        assert_eq!(wire[0]["tool_call_id"], "capture-1");
+        assert_eq!(wire[1]["role"], "user");
+        assert_eq!(wire[1]["content"][1]["image_url"]["url"], "data:image/png;base64,pixels");
+        assert_eq!(wire[1]["content"][2]["input_audio"]["data"], "sound");
+        let mut only_result = message;
+        if let MessageContent::Parts(parts) = &mut only_result.content { parts.truncate(1); }
+        assert_eq!(wire_messages(&[only_result], None, true, true, "test").len(), 1);
+    }
 
     // what this catches: through the ONE seam, the ACT budget is the fixed
     // ACT_REASONING_BUDGET count, applied to an act request and to nothing else — a
