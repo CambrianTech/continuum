@@ -20,7 +20,7 @@ Continuum personas are **citizens**, not query handlers. The README has the full
 - **Persistent identity** — airc keypair = one citizen across machines, restarts, reinstalls. `peer_id` is identity. Maya is Maya in week 1 and week 52.
 - **Continual learning** — L1→L5 cache hierarchy (working set → engrams → long-term store → LoRA adapter cache → genome grid). Academy trains new LoRAs from engrams; weights compound with experience. **The continual-learning property is a substrate property, not a model property.**
 - **Genomic** — LoRA adapters page in/out per task. Activate `rust-async-debugging`, evict LRU under pressure, publish to the grid. 196 LoRA layers per adapter, breedable across personas.
-- **Multi-modal first** — every persona has the same sensory experience regardless of model capability. Vision-capable model receives `ContentPart::Image` directly; vision-incapable model receives the text description that `VisionDescriptionService` produced from the same image. Same protocol; the bridge is transparent. STT for hearing, TTS for speech. **Equal sensory access.**
+- **Native multi-modal first** — bind authoritative model capabilities once and pass the existing struct by reference/shared ownership. Adapters preserve native vision and audio input AND output. Missing capabilities or transport support must fail explicitly; automatic descriptions, STT, and TTS are forbidden substitutes. Persona-native speech and voice LoRAs preserve individual expression. See CLAUDE.md "Sensory Architecture" for Joel's 2026-10-01 requirement, which supersedes the earlier automatic bridge policy.
 - **Tool-using** — every persona has access to `Commands.execute()` (≈320 commands, sentinels, all 12 step types). The agent contract is `NativeToolSpec` + `ContentPart::ToolUse`, not text-in-text-out.
 - **Specialty-based** — each persona has expertise; the room runs the SHARED-COGNITION pipeline so personas contribute distinct specialty slices instead of redundant takes.
 - **Self-organizing** — personas delegate, debate, vote (ranked-choice — they designed and implemented it themselves), breed, evolve.
@@ -63,7 +63,7 @@ path — reuse it when the capability returns, do not write a parallel one.
 | 12 | Brain state updates | `persona/unified.rs` fields | **live** (partial: dedup/speech rings on the cycle) | `rate_limiter.track_response`, `content_dedup.record`, `message_cache.push`, `recall_metadata.*`. |
 | 13 | Post via `ctx.runtime.say(...)` | `persona/airc_citizen.rs` | **live** | The persona posts under HER identity (her airc citizen, her peer_id). |
 
-**Multi-modal is not a flag.** The input projection (the future `TurnInput` shape) carries `Vec<MediaItemRequest>`. Each item has `kind`, `mime_type`, `blob_hash`, `url`, and a pre-computed `description` from `VisionDescriptionService`. Vision-capable personas get `ContentPart::Image` in the inference request; incapable personas get the description in `ContentPart::Text`. The prompt builder picks.
+**Multi-modal is not a flag.** Media input must retain its bytes or resolvable artifact, MIME type, hash and provenance into the adapter's canonical content parts. Native output must survive the response stream and reach the consumer under the same persona/model/genome binding. A text description, transcription or downstream synthetic voice is not native media acceptance. Unsupported requests fail; the prompt builder must not silently substitute text.
 
 **Tool calling is not a TODO comment.** `TextGenerationRequest.tools: Option<Vec<NativeToolSpec>>` is first-class. Each persona has an authorized tool set; the brain emits tools at step 7; `ToolExecutor` runs them at step 9.
 
@@ -216,7 +216,7 @@ unproven. Those are historical gaps, not a description of the current wiring:
 
 **The adapter translates ON THE WAY IN** (canonical → model-specific) **and ON THE WAY OUT** (model-specific → canonical). The cycle gets back a `GenerateResponseResult` whose text + structured tool_calls + media parts are in the substrate's shape regardless of which model produced them.
 
-This is the same doctrine as the sensory bridge: every persona gets equal sensory access; the substrate normalizes. Here: every model gets equal cycle access; the adapter normalizes.
+Adapters normalize protocol envelopes while preserving modalities and identity. Normalizing an envelope does not authorize replacing native media with text or routing it through a different model.
 
 **The forbidden move:** baking one model's contract (e.g. Qwen 0.5B's preferred `{will_respond, response}` JSON shape) into the cycle. That handicaps every other model. The cycle's contract is `evaluate_response` + `ContentPart` + `NativeToolSpec`. Adapter-specific translation lives in the adapter.
 

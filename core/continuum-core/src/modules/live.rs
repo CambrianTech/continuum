@@ -234,9 +234,15 @@ impl ServiceModule for VoiceModule {
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         // Spawn idle watcher here (inside tokio runtime), not in VoiceState::new()
         self.state.resource_lifecycle.spawn_idle_watcher();
-        // A hosted persona's room line becomes her VOICE while the room has a
-        // live call (Joel, 2026-09-05: "they say they're talking … no output").
-        super::voice_reply_speaker::spawn(ctx.bus.clone(), self.state.clone());
+        // Room text is not native model speech. The former chat:posted listener
+        // selected an unrelated TTS backend and voice without a model binding.
+        // Native output must arrive from the bound inference adapter instead.
+        crate::probe!(
+            class = "live.native_speech.unavailable",
+            module = "live",
+            reason = "native model output transport is not connected",
+            "automatic text-to-speech substitution is disabled; native persona speech is unavailable"
+        );
         // Safety net: detect orphaned sessions (browser crash, lost WebSocket, deploy)
         self.state.resource_lifecycle.spawn_orphan_watchdog();
 
