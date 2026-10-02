@@ -114,7 +114,7 @@ pub async fn discover_airc_socket() -> Result<PathBuf, DiscoveryError> {
 
     // airc is not on PATH. SPEED IS PARAMOUNT (Joel, 2026-07-06): the boot path
     // must NEVER block on a network install (the old synchronous
-    // `auto_install_airc().await` held socket-bind for up to AUTO_INSTALL_DEADLINE
+    // `install_airc().await` held socket-bind for up to AUTO_INSTALL_DEADLINE
     // = 120s — a launchd/service boot with airc off its minimal PATH hung the
     // whole core). Kick the installer off DETACHED and fail fast: the core binds
     // its IPC socket + is responsive NOW; airc stays Unreachable (the aggregate
@@ -127,7 +127,7 @@ pub async fn discover_airc_socket() -> Result<PathBuf, DiscoveryError> {
          Set {AIRC_DISABLE_AUTOINSTALL}=1 to opt out."
     );
     tokio::spawn(async {
-        match auto_install_airc().await {
+        match install_airc().await {
             Ok(()) => info!(
                 "airc background bootstrap installed — restart the core to join airc \
                  (or wait for the self-healing re-discovery tick once that lands)"
@@ -361,7 +361,9 @@ pub async fn discover_peer_id(socket_path: &Path) -> Result<uuid::Uuid, Discover
         .map_err(|e| DiscoveryError::UnparseablePeerId(status.peer_id.clone(), e))
 }
 
-async fn auto_install_airc() -> Result<(), DiscoveryError> {
+/// Install airc through its own published installer, bounded by [`AUTO_INSTALL_DEADLINE`].
+/// Boot runs it detached; `continuum install` (the airc arm) runs it in the foreground.
+pub async fn install_airc() -> Result<(), DiscoveryError> {
     // `curl -fsSL <URL> | bash` keeps the bootstrap one-shot and matches
     // airc's own published install instructions (top of `install.sh`,
     // README quickstart). bash -c keeps the pipe in one process so we
