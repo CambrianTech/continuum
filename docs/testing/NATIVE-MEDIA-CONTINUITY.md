@@ -430,3 +430,141 @@ Core be79804c7 still serves; these newer source repairs are NOT deployed and
 CLI84a362971 remains stale. Next finish CLI check, commit validated changes, then
 supported installer acceptance/alias convergence. Native audio binding remains OPEN.
 Active CLI check session96498; resume before any new compiler. All preceding test sessions are complete.
+
+07:24 UTC: CLI typecheck96498 EXIT0 (3m15s). Validated staging repair committed
+b7fb5f974; request lifecycle/terminal repairs and receipts committeddebf89469.
+Durable checkout had independently advanced tod8b7941c6 (CUDA targeting/hidden
+Windows launch fixes), so initial fast-forward refused. Bootstrap81897 was
+mistakenly started despite that refusal; interrupted immediately, EXIT1, compiler
+inventory cleared, no installation/handoff occurred. Do not use that artifact/log
+as debf89469 evidence. Merged current durable release into owned branch, preserving
+those fixes:601fbaf5f. Durable checkout clean fast-forward to exact601fbaf5f verified.
+ONE corrected GPU-free release CLI bootstrap now session96859, shared D: target,-j2,
+log native-installer-bootstrap-601fbaf5f.log. Its purpose is to run the repaired
+installer itself; old installed CLI cannot repair its own staging code. No manual
+binary placement. After build, verify resolved executable SHA601fbaf5f and invoke
+that executable's continuum install --core --cli from durable checkout; resume
+ownership and verify aliases/core/actual consumers afterward. Do not modify pinned
+durable source while96859 compiles. Existing corebe79804c7 remains serving.
+Merged dependency revisions need final-source validation; prior focused test passes
+belong to pre-merge source. No native voice/model acceptance or completed install claimed.
+
+07:34 UTC: resumed sole bootstrap96859, still compiling merged dependencies
+(including Candle50756fc6/AIRC92a79017). Claim absent as expected for this explicit
+CLI-only bootstrap; cargo12384/10192 and rustc32452/26604 observed. Do not interpret
+absence of deploy.claim as permission to build. No duplicate compiler/install.
+Updated plan header to current committed repairs, completed tests and active96859.
+No code inputs changed in the pinned durable checkout. Runtime acceptance remains
+be79804c7 PDF pass, CLI stale, native voice unproved. Next resume96859 and verify
+its embedded revision before using its supported install path; check whether the
+running CLI's build-output path needs the installer's existing self-update path
+before rebuilding into that same path. Do not manually replace installed files.
+
+07:44 UTC: bootstrap96859 continues (rustc34972, cargo12384/10192), no deployclaim
+and no second compiler. Running ping stillbe79804c7/build5915, ok. Inspected
+prepared_install_core: it validates both prepared CLI and core against checkout,
+so CLI-only bootstrap cannot silently reuse the older core. Running the bootstrap
+from Cargo's output path risks locking its replacement during the subsequent warm
+build; use a temporary executable copy with verified identical hash/SHA as the
+installer launcher, not manual installation into PATH or service slots. The
+supported install still owns all installed writes and acceptance.
+Improved existing PDF acceptance script to record core build SHA/number directly
+and refuse a revision change between initial ping and model response. PowerShell
+parse and ping parameter shape PASS; updated full fixture run awaits new deployment.
+Feature worktree only; pinned601fbaf5f compiler inputs untouched. Next resume96859,
+then repaired install and final-source tests/adoption. Native audio remains OPEN.
+
+07:54 UTC: bootstrap96859 remains sole build; now compiling CLI binary (rustc32300,
+CPU446s at inspection), pinned durableHEAD601fbaf5f unchanged. No deployclaim,
+no duplicate build. Existing artifact is not accepted until this session exits0
+and its embedded SHA is checked. Resume96859, then temporary verified launcher
+and supported install as above. No runtime restart or new model/training job.
+
+08:04 UTC: bootstrap96859 EXIT0,32m20s; executable build5921/601fbaf5f verified,
+SHA2566FFC23DB1DD39A6570D49D3ACF7A747783E6CF74EE61072E358E751BA56048FA.
+Temporary verified launcher installer-601fbaf5f.exe invoked supported install25563;
+EXIT1 before drain/build: merged cuda-targets.sh assumed CUDA_PATH/bin/nvcc.exe,
+but selected tree has Library/bin/nvcc.exe and native Windows CUDA_PATH syntax.
+Corebe79804c7 remained responding. Shared resolver now normalizes native paths,
+checks conventional and Library/bin layouts within selected tree only, refuses
+missing compiler instead of falling back to PATH. Existing CUDA test script PASS
+including spaced native-path/Library layout and missing-tree refusal. Commit7d432d161.
+Durable clean checkout FF7d432d161; compiler inventory empty/deployclaim absent.
+Supported retry now session45808, claimPID35816/target7d432d161, log
+native-install-7d432d161.log. It passes real architecture preflight CMake120/PTX120
+and is warm-building core/MCP/custodian. Resume45808; do not duplicate builds or
+modify durable source. Source repairs remain not fully deployed; verify aliases,
+running revision and updated PDF receipt after successful install. Native voice OPEN.
+
+08:14 UTC: resumed install45808/claim35816 target7d432d161; core warm build active
+(rustc35200/cargo32844/32928), no duplicate compiler. Added live negative acceptance
+for recovered corebe79804c7/build5915: audio/image output requests explicitly fail
+missing active stream consumer (291/219ms); audio input fails declared AudioInput
+capability (399ms). All EXIT1, no fallback, before/after ping revision unchanged.
+Receipt native-refusal-deployed-be79804c7.json. Output cases stop before bound-model
+capability checks; this proves refusal, NOT native output delivery. No model load,
+training or runtime interruption. Plan header now names active45808. Next resume
+that install, verify all runtime/CLI aliases and updated PDF acceptance on target.
+
+08:24 UTC: active install45808/claim35816 now passed core library compilation and
+is compiling continuum_core_server34968 plus forge_custodian35996. Durable source
+still clean7d432d161; diskC95.3GiB/D8516.3GiB free. No build duplication, source
+mutation, restart or new acceptance claim. Continue existing handle to handoff;
+then verify installed CLI/core revision and the updated PDF acceptance receipt.
+
+08:34 UTC: install45808 still warm-compiling server/custodian under claim35816;
+no duplicate build or changes to pinned durable7d432d161. Independent investigation
+of known desktop failure found config.env pins CONTINUUM_UI_DIST='/c/Users/...',
+while native Rust PathBuf reads it literally. Native C:/.../apps/web/dist/index.html
+exists. Fixed start-server.sh to persist cygpath -am on Windows before config pin;
+Unix stays unchanged. Extended existing build-only fixture with fake npm/dist and
+assertion of actual persisted config for each platform. Full fixture EXIT0;
+log native-desktop-path-regression.log. Committed feature repair, not in active
+build. Do not treat built desktop files as served acceptance. Resume45808 first;
+then deploy this script correction through supported path without overwriting
+active source or manually claiming config-only repair as installer acceptance.
+
+08:44 UTC: install45808/claim35816 still compiling pinned clean7d432d161;
+server34968 and MCP16280 are current compiler owners, custodian stage advanced.
+No second build or source change in durable checkout. Feature-only desktop path
+repair is da876561d, tested but not in this install. Resume45808; preserve current
+serving lane and perform runtime/alias/PDF acceptance after handoff, then converge
+the desktop correction. No additional runtime acceptance claimed this interval.
+
+08:54 UTC: install45808 completed core/MCP/custodian release stage43m14s and now
+owns the GPU-free CLI feature build (cargo18816/26540,rustc28756). Claim35816 still
+pins7d432d161. No duplicate build, restart or source mutation. Native image output
+transport and real native audio binding are still explicit gaps; compiler success
+will not close those. Resume45808 through supported handoff and verify consumers.
+
+09:04 UTC: install45808/claim35816 continues CLI binary compilation (rustc11640),
+no second build. Strengthened PDF acceptance with optional ExpectedBuildSha checked
+BEFORE inference, in addition to before/after revision continuity and receipt SHA.
+Live negative gate deliberately requested wrong SHA: EXIT1 naming runningbe79804c7,
+no inference submitted. Committed fixture; positive target run remains due after
+handoff, explicitly pass -ExpectedBuildSha 7d432d161. Current core is not mistaken
+for target acceptance. Resume45808; desktop correction still separate da876561d.
+
+09:14 UTC: supported install45808 EXIT0. Warm build3824s, graceful shutdown65/65
+modules durable254ms (prior incomplete cognition warning absent), core restored~29s.
+Staging identical LiveKit now succeeds via shared helper; both install arms converge.
+Independent installed continuum/uu both build5922/7d432d161; deploy-verify PASS
+against durableHEAD; install --check --core --cli PASS/nothingchanged. Previous
+bootstrap-launcher stale warning was resolved by final CLI arm (verified afterward).
+Existing llama lane58057 ready, Qwen3.8-27B, context67840; no replacement model.
+Saved native-deployed-ping/inference-7d432d161.json. Desktop8975 still unavailable;
+its committed script repairda876561d is not deployed. Native voice still OPEN.
+Exact-revision PDF acceptance owns58182/native-pdf-7d432d161.log, expected7d432d161.
+After absent claim/empty compiler inventory, final merged-source stream tests own
+33479/native-final-stream-tests-7d432d161.log, shared D: cache,-j2, no-default-features.
+Resume both handles; do not duplicate builds or advance durable checkout mid-test.
+PDF acceptance58182 EXIT0 on expected7d432d161; receipt includes before/after build identity, empty text layer, image/source hashes and visual answer. Final-source test33479 remains active.
+
+09:24 UTC: final merged-source stream test33479 EXIT0 (9m22s compile),4/4 PASS.
+Exact produced binary continuum_core-75b2efccc2574868.exe then passed remote wire
+terminal validation, native media wire validation, forwarder flush/cancellation,
+and native_playback_call_preserves_generation_ownership. All zero failures;
+playback log native-final-playback-7d432d161.log. Synthetic playback is not native
+voice model acceptance. PDF receipt on7d432d161 is PASS91119ms,req-1790932539951.
+No compiler/test jobs remain. Next supported deploy carries desktop script repair
+and revision-bound acceptance fixture; no native Rust change since tested7d432d161.

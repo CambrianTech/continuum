@@ -5,13 +5,13 @@ architecture. Reuse the live WorkspaceCycle, CBAR stages, bus, admission,
 scheduling, model bindings, genome, AIRC and existing avatar/live session code.
 BIGGIEDESK installation belongs to the other Codex and is not this lane's gate.
 
-Active execution receipt (06:54 UTC): install45853 exited1 at a locked LiveKit
-previous-artifact rename after successful builds. Supported start75015 restored
-core be79804c7/build5915; CLI remains84a362971 and desktop is unavailable. This is
-partial deployment. PDF live acceptance95767 passed on the recovered core in84.8s.
-Lifecycle validation38355 found a missing Eq derive; corrected retry82580 now owns
-the shared Cargo cache. Resume82580 before starting duplicate work. The feature worktree's
-request lifecycle and remote terminal validation remain uncommitted. Historical
+Active execution receipt (09:14 UTC): supported install45808 EXIT0; core and both
+CLI aliases verified7d432d161, read-only install check converged. Shutdown saved
+all65 modules; core returned~29s with existing llama lane58057 ready. Exact-revision
+PDF acceptance58182 and merged-source stream tests33479 are running; resume those
+handles before duplicate work. Desktop native-path repairda876561d remains queued
+for deployment. Native image output and real audio binding/voice remain OPEN.
+PDF understanding previously passed on recoveredbe79804c7 in84.8s. Historical
 handles below are superseded by this receipt and the external team-proof README.
 
 ## The outcome
