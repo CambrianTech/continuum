@@ -186,17 +186,17 @@ pub fn spawn() -> Spawned {
     ))
 }
 
-/// airc's macOS login supervisor (airc `unix/register-autostart.sh`).
-#[cfg(target_os = "macos")]
-const AIRC_JOIN_LABEL: &str = "com.cambriantech.airc-join";
-
 /// Start the daemon through airc's own LaunchAgent when it is registered: `airc join`
 /// in the user's session, which provisions the daemon's token. `None` when there is no
 /// agent or launchd refused the kickstart, so the caller spawns as before.
 #[cfg(target_os = "macos")]
 fn start_through_airc_supervisor() -> Option<Spawned> {
     // SAFETY: getuid has no preconditions and cannot fail.
-    let target = format!("gui/{}/{AIRC_JOIN_LABEL}", unsafe { libc::getuid() });
+    let uid = unsafe { libc::getuid() };
+    let target = format!(
+        "gui/{uid}/{}",
+        crate::airc::discovery::AIRC_JOIN_SUPERVISOR
+    );
     let registered = crate::system_resources::bounded_command::probe(
         "launchctl",
         &["print", &target],
