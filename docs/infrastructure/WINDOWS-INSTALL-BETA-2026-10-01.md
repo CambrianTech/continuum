@@ -147,3 +147,24 @@ existing session owner. PS5 regressions exercise successful handoff and failed
 coordinator cleanup with real child processes.
 Fresh final-head CI and live consent remain required. Standalone AIRC must receive the
 released shared helper through its existing pin; a local wrapper is not a fix.
+
+### CUDA dependency validation following the llama.cpp usage audit
+
+Production LLM inference is llama.cpp. Candle remains in active LoRA/plasticity,
+GGUF utilities and speech. Astra confirmed over ordinary AIRC that her native
+media plumbing does not yet provide a validated replacement for Orpheus/custom
+voices; those components are retained.
+
+Candle fused Qwen3 MoE has no Continuum callers, but its static archive previously
+built on every CUDA build. The dependency repair makes that specialized archive
+opt-in and restores the commented Pascal FP16 atomic-add compatibility function.
+Continuum pins the reviewed dependency revision explicitly. The lock update
+changes only the six Candle source identities, not unrelated packages.
+
+Dependency receipts: CPU and compute61 CUDA candle-transformers checks pass;
+CUDA-linked optional-MoE refusal test and existing simple_grad_gpu pass; native
+half-atomic contention/neighbor/NaN test passes on all three local Pascal GPUs.
+These are development checks with an isolated D target and one build worker,
+not a supported public installer receipt. Dependency PR joelteply/candle#1 and
+its CI must complete before merging this integration. Public install/rerun and
+remote command/event plus useful grid GPU work remain OPEN.
