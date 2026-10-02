@@ -19,3 +19,19 @@ done
 caps=6.1; export CUDA_COMPUTE_CAP=120
 if configure_cuda_targets; then echo 'Accepted incompatible override' >&2; exit 1; fi
 echo 'PASS CUDA families, mixed devices and refusal cases'
+
+# Regression: installer-selected conda toolkit uses Library/bin, possibly with
+# a native Windows CUDA_PATH. Never escape the selected tree to PATH's compiler.
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/tool kit/Library/bin"
+printf '#!/usr/bin/env bash\nprintf "compute_120\\n"\n' > "$scratch/tool kit/Library/bin/nvcc.exe"
+chmod +x "$scratch/tool kit/Library/bin/nvcc.exe"
+CUDA_PATH="$scratch/tool kit"
+if command -v cygpath >/dev/null 2>&1; then CUDA_PATH="$(cygpath -w "$CUDA_PATH")"; fi
+caps=12.0; unset CUDA_COMPUTE_CAP
+configure_cuda_targets
+[[ "$CUDA_COMPUTE_CAP" == 120 ]]
+CUDA_PATH="$scratch/missing"; unset CUDA_COMPUTE_CAP
+if configure_cuda_targets; then echo 'Escaped selected toolkit to PATH' >&2; exit 1; fi
+echo 'PASS selected toolkit layout and native path'

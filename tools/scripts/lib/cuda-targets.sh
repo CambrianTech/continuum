@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Same contract as cuda-targets.ps1; platform commands are adapters, not policy.
 configure_cuda_targets() {
-    local detected supported cap arch lowest='' targets='' compiler='nvcc'
+    local detected supported cap arch root candidate lowest='' targets='' compiler='nvcc'
     detected="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader)" || { echo 'CUDA device capability query failed' >&2; return 1; }
     if [[ -n "${CUDA_PATH:-}" ]]; then
-        compiler="$CUDA_PATH/bin/nvcc"
-        [[ -x "$compiler" ]] || compiler="$CUDA_PATH/bin/nvcc.exe"
+        root="$CUDA_PATH"
+        if command -v cygpath >/dev/null 2>&1; then root="$(cygpath -u "$root")" || return 1; fi
+        compiler=''
+        for candidate in "$root/bin/nvcc" "$root/bin/nvcc.exe" "$root/Library/bin/nvcc" "$root/Library/bin/nvcc.exe"; do
+            if [[ -x "$candidate" ]]; then compiler="$candidate"; break; fi
+        done
+        [[ -n "$compiler" ]] || { echo "Selected CUDA tree has no compiler: $CUDA_PATH" >&2; return 1; }
     fi
     supported="$("$compiler" --list-gpu-arch)" || { echo 'CUDA compiler architecture query failed' >&2; return 1; }
     while IFS= read -r cap; do
