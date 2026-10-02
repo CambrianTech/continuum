@@ -277,3 +277,5 @@ expected selected/actual old, new helper PASS plus repeated-source idempotence.
 Managed payload placement and bash syntax PASS; log native-install-cuda-path-regression.log.
 No toolkit install/removal, CUDA replacement, or manual PATH workaround applied.
 Retest through supported continuum install next; native-install-d6468da7a.log retains failure.
+
+Supported retry45853 targetbe79804c7/claim17516 passes real CUDA/MSVC preflight and is warm-building from durable checkout; log native-install-be79804c7.log. D: cache,-j2; no runtime handoff yet. Resume this owner. This exercises the repaired helper through normal install, not a PATH workaround.
