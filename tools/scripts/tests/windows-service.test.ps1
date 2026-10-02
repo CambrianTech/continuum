@@ -1418,6 +1418,18 @@ public class SupervisorFixture {
         Copy-Item -LiteralPath $child -Destination (Join-Path $cmakeBin 'cmake.exe')
         Copy-Item -LiteralPath $child -Destination (Join-Path $cudaBin 'nvcc.exe')
         Set-Content -LiteralPath (Join-Path $llvmBin 'libclang.dll') -Value 'fixture'
+        & {
+            . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+            $llvmRoot = Split-Path $llvmBin
+            $source = (Get-ManifestModule 'llvm-libclang').source
+            foreach ($relative in @(Get-LlvmRequiredPaths $source)) {
+                $file = Join-Path $llvmRoot $relative
+                New-Item -ItemType Directory -Path (Split-Path $file) -Force | Out-Null
+                [IO.File]::WriteAllText($file, 'fixture')
+            }
+            $receipt = Get-LlvmStagedReceipt -Directory $llvmRoot -Source $source
+            [IO.File]::WriteAllText((Join-Path $llvmRoot 'llvm-install.json'), ($receipt | ConvertTo-Json -Depth 5))
+        }
         $shim = @'
 . '__SERVICE__'
 function Get-CimInstance { @() }
@@ -1461,7 +1473,7 @@ function Mod-LlamaServer {
         $missingFiles = @{cmake=(Join-Path $cmakeBin 'cmake.exe'); llvm=(Join-Path $llvmBin 'libclang.dll'); cuda=(Join-Path $cudaBin 'nvcc.exe')}
         foreach ($extra in @('', ' -Update', ' -Grid', ' -ResumePrepared', 'cmake', 'llvm', 'cuda')) {
             $missing = $missingFiles[$extra]
-            if ($missing) { Remove-Item -LiteralPath $missing }
+            if ($missing) { $missingBytes = [IO.File]::ReadAllBytes($missing); Remove-Item -LiteralPath $missing }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
             # Same explicit exception capture as the hidden resume fixture.
             $entry = (Join-Path $prepareRepo 'install.ps1').Replace("'", "''")
@@ -1488,7 +1500,7 @@ function Mod-LlamaServer {
                 } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw "Preparation flag refusal failed (exit $($process.ExitCode)): $output" }
             } finally {
                 $process.Dispose()
-                if ($missing) { Copy-Item -LiteralPath $child -Destination $missing }
+                if ($missing) { [IO.File]::WriteAllBytes($missing, $missingBytes) }
             }
         }
         if ((Get-FileHash -LiteralPath $oldArtifact).Hash -ne $oldHash) { throw 'Preparation overwrote the registered candidate' }
