@@ -304,6 +304,12 @@ jobs:
         if: needs.changes.outputs.installer != 'false'
         with:
           submodules: ${{ needs.changes.outputs.rust != 'false' && 'recursive' || 'false' }}
+      - name: Windows hidden installer process regression
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: |
+          ./tools/scripts/sync-windows-bootstrap.ps1 -Check
+          ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
       - name: Install Rust toolchain from rust-toolchain.toml
         if: needs.changes.outputs.rust != 'false'
         run: |
