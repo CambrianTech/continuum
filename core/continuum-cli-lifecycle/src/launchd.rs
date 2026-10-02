@@ -107,6 +107,30 @@ pub fn pid_from_launchctl_print(output: &str) -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// launchd refused to start the job's program: `job state = spawn failed` with no pid.
+/// `reason` is launchd's `last exit reason` verbatim (M5 2026-10-02:
+/// `OS_REASON_CODESIGNING` on a freshly staged core, node dark until a hand).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnFailed {
+    pub reason: Option<String>,
+}
+
+/// The spawn failure `launchctl print <target>` reports, if any. A running job (a pid)
+/// is never a spawn failure, whatever an older `last exit reason` line still says.
+pub fn spawn_failed_from_launchctl_print(output: &str) -> Option<SpawnFailed> {
+    let field = |key: &str| {
+        output
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix(key))
+            .map(|v| v.trim().to_string())
+    };
+    if pid_from_launchctl_print(output).is_some() || field("job state = ").as_deref() != Some("spawn failed") {
+        return None;
+    }
+    Some(SpawnFailed { reason: field("last exit reason = ") })
+}
+
 /// Whether launchd's own log says the domain cannot spawn on demand — the line that
 /// explained the failed receipt. Matched on the substring launchd prints, verbatim.
 pub fn domain_is_on_demand_only(launchd_log: &str) -> bool {
@@ -440,6 +464,25 @@ pub mod live {
         Ok(job.slot.clone())
     }
 
+    /// Put the build `stage` moved aside back into the slot, keeping the refused one
+    /// beside it as `.failed` for inspection. The previous build is the one that was
+    /// serving, so it is the known-good fallback when a staged build never comes up.
+    pub fn restore_previous(job: &Job) -> Result<PathBuf, String> {
+        let prev = job.slot.with_extension("prev");
+        if !prev.exists() {
+            return Err(format!("no previous build at {} to restore", prev.display()));
+        }
+        if job.slot.exists() {
+            let failed = job.slot.with_extension("failed");
+            let _ = std::fs::remove_file(&failed);
+            std::fs::rename(&job.slot, &failed)
+                .map_err(|e| format!("cannot move {} aside: {e}", job.slot.display()))?;
+        }
+        std::fs::rename(&prev, &job.slot)
+            .map_err(|e| format!("cannot restore {} into {}: {e}", prev.display(), job.slot.display()))?;
+        Ok(job.slot.clone())
+    }
+
     /// `launchctl kickstart -k`: launchd stops the running instance (SIGTERM — the core's
     /// save-and-join exit) and starts the job again from the slot. Works even on a gui
     /// domain in on-demand-only mode, which is why a deploy through it succeeds where
@@ -481,6 +524,15 @@ pub mod live {
                         ))
                     }
                 }
+            }
+            // launchd will not retry a spawn it refused, so waiting out the ceiling only
+            // keeps the node dark longer. Say so now, with launchd's own reason.
+            if let Some(failed) = launchctl_print(&job.domain).and_then(|o| spawn_failed_from_launchctl_print(&o)) {
+                return Err(format!(
+                    "launchd could not start {} ({}); job state = spawn failed",
+                    job.slot.display(),
+                    failed.reason.as_deref().unwrap_or("no exit reason given")
+                ));
             }
             if started.elapsed() >= ceiling {
                 return Err(format!(
@@ -646,6 +698,23 @@ mod tests {
         assert_eq!(pid_from_launchctl_print(running), Some(93518));
         let idle = "com.continuum.core = {\n\tstate = not running\n\tlast exit code = (never exited)\n}";
         assert_eq!(pid_from_launchctl_print(idle), None);
+    }
+
+    // what this catches (M5 2026-10-02): launchd refused a freshly staged core with
+    // OS_REASON_CODESIGNING and the deploy waited five minutes before giving up, with no
+    // rollback, so the node stayed dark. The failure is read from launchd's own lines; a
+    // job that is running is never a failure, even with a stale exit reason left over.
+    #[test]
+    fn a_spawn_failure_is_read_from_launchctl_print_and_a_running_job_is_not_one() {
+        let failed = "com.continuum.core = {\n\tstate = not running\n\truns = 2\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
+        assert_eq!(
+            spawn_failed_from_launchctl_print(failed),
+            Some(SpawnFailed { reason: Some("OS_REASON_CODESIGNING".to_string()) })
+        );
+        let running = "com.continuum.core = {\n\tstate = running\n\tpid = 93518\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
+        assert_eq!(spawn_failed_from_launchctl_print(running), None);
+        let idle = "com.continuum.core = {\n\tstate = not running\n\tjob state = exited\n}";
+        assert_eq!(spawn_failed_from_launchctl_print(idle), None);
     }
 
     // what this catches (2026-09-19 13:32Z, IntelMac): the four states a Mac can be in,
