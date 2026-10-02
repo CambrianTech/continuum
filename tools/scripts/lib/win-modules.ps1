@@ -1,4 +1,5 @@
 . (Join-Path $PSScriptRoot 'payload-paths.ps1')
+. (Join-Path $PSScriptRoot 'cuda-targets.ps1')
 # win-modules.ps1 -- the Continuum native-build toolchain modules (Windows).
 #
 # Dot-sourced by install.ps1 AFTER install-common.ps1. Each Mod-* is a
@@ -786,8 +787,7 @@ function Mod-BuildCore {
         Enter-MsvcEnv                                       # cl.exe for nvcc (nvcc-compatible VS)
         $env:CMAKE_GENERATOR = $build.cmake_generator       # match the VS nvcc supports
         $env:CMAKE_GENERATOR_PLATFORM = 'x64'
-        $env:CMAKE_CUDA_ARCHITECTURES = $build.cuda_arch    # Blackwell RTX 5090 = sm_120
-        if (-not $env:CUDA_COMPUTE_CAP) { $env:CUDA_COMPUTE_CAP = $build.cuda_arch }  # candle-kernels
+        $null = Set-CudaTargets
         if ($env:CUDA_PATH) {
             $env:CUDA_HOME = $env:CUDA_PATH
             $cudaBin = Join-Path $env:CUDA_PATH 'bin'
@@ -901,9 +901,11 @@ function Mod-LlamaServer {
     $backend = Get-CoreEngineBackend; $backendDefs = @()
     if ($backend -eq 'cuda') {
         $build = (Get-ManifestModule 'build-core').build
-        $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($build.cuda_arch)")
+        $targets = Set-CudaTargets
+        $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($targets.CMake)")
     }
     $stampWant = "${head}:${backend}"
+    if ($backend -eq 'cuda') { $stampWant += ":$($targets.CMake)" }
 
     if ((Test-Path $installBin) -and (Test-Path $stampFile) -and
         ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $stampWant)) {

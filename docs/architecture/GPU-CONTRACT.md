@@ -54,6 +54,19 @@ build.
 
 ## Per-subsystem acceptance gate (carl-install-smoke)
 
+### Local CUDA build targets
+
+GPU architecture is detected data, not a manifest pin to a developer's card.
+PowerShell and Bash adapters query every local device's `compute_cap`, normalize
+and deduplicate it, and require each target in the selected `nvcc --list-gpu-arch`.
+CMake receives all detected targets. Candle receives the minimum capability for
+its PTX, which newer devices can JIT; a supplied override must be compiler-supported
+and no higher than the least capable local GPU. Failed/empty/malformed detection
+and unsupported devices stop the build explicitly. Engine reuse stamps include
+the target set so a GPU change cannot reuse an engine for another architecture.
+This policy does not certify every model/kernel on every GPU: runtime GPU gates
+below remain required, including on mixed-device systems.
+
 The install is not "done" until each subsystem is verified **on GPU**. Any CPU
 path turns the gate red:
 

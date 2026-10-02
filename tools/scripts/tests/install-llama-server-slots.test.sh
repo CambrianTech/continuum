@@ -24,6 +24,7 @@ mkdir -p "$repo/tools/scripts" "$repo/core/vendor/llama.cpp/tools/server" "$scra
 cp "$script_dir/../install-llama-server.sh" "$repo/tools/scripts/"
 mkdir -p "$repo/tools/scripts/lib"
 cp "$script_dir/../lib/payload-paths.sh" "$repo/tools/scripts/lib/"
+cp "$script_dir/../lib/cuda-targets.sh" "$repo/tools/scripts/lib/"
 sub="$repo/core/vendor/llama.cpp"
 printf '# fixture\n' > "$sub/tools/server/CMakeLists.txt"
 git -C "$sub" init -q && git -C "$sub" -c user.email=t@t -c user.name=t add -A \
