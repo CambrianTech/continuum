@@ -20,6 +20,7 @@ trap 'status=$?; if [ "$status" != 0 ]; then cat "$scratch/output" "$scratch/tra
 mkdir -p "$scratch/repo/tools/scripts/lib" "$scratch/repo/tools/scripts/shared" "$scratch/repo/core/continuum-core/src" "$scratch/home/.cargo/bin"
 cp "$script_dir/../start-server.sh" "$scratch/repo/tools/scripts/start-server.sh"
 cp "$script_dir/../lib/payload-paths.sh" "$scratch/repo/tools/scripts/lib/payload-paths.sh"
+cp "$script_dir/../lib/cuda-targets.sh" "$scratch/repo/tools/scripts/lib/cuda-targets.sh"
 # Media preparation belongs to warm build; startup must still be deferred.
 printf 'echo MEDIA_PREPARE >> "$FIXTURE_TRACE"\n' > "$scratch/repo/tools/scripts/install-livekit.sh"
 printf '# staged media helper\n' > "$scratch/repo/tools/scripts/start-livekit-windows.ps1"
@@ -187,6 +188,10 @@ echo "PASS one cargo invocation names all four bins with one feature set"
 # runtime (cuda) gives the socket-client CLI its own GPU-free set — a SECOND line, the
 # only one, carrying `--bin continuum` alone; the other three still share one line.
 printf 'CARGO_GPU_FEATURES="--features cuda,load-dynamic-ort"\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
+printf '#!/usr/bin/env bash\necho 8.6\n' > "$fixture_home/.cargo/bin/nvidia-smi"
+printf '#!/usr/bin/env bash\necho compute_86\n' > "$fixture_home/.cargo/bin/nvcc"
+chmod +x "$fixture_home/.cargo/bin/nvidia-smi" "$fixture_home/.cargo/bin/nvcc"
+unset CUDA_PATH CUDA_COMPUTE_CAP
 : > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
 HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
   bash "$launcher" > "$scratch/output" 2>&1

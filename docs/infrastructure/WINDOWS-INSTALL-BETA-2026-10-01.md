@@ -24,20 +24,20 @@ The cold-storage repair is stacked above #4649; it does not replace that contrac
 | Finding | Repository action | Acceptance |
 |---|---|---|
 | Failed winget prerequisites only warned, suggested manual installs, and continued into dependent builds; caller-local native status could mask the result | Read actual global native status and throw on vendor failure or a failed post-install probe; retain verified success, reboot-required success, and healthy reuse | Regression added; live provisioning still required |
-| Cold storage selected only after large Windows prerequisite downloads; system drive has about 1.8 GB free while secondary drive has about 4.2 TB | Select storage before prerequisite provisioning; route temporary download/extraction files to the selected disk for this installer session, on both platform adapters | Scratch regression passes; ordinary Continuum install still required |
+| Cold storage selected only after large Windows prerequisite downloads; system drive has about 1.8 GB free while secondary drive has about 4.2 TB | Select storage before prerequisite provisioning; route temporary download/extraction files to the selected disk for this installer session, on both platform adapters | Public runs selected D cold storage before acquisition; full installation remains open |
 | Both cold-storage adapters replaced the whole `config.env`, losing unrelated settings; Windows used ASCII | Update only storage keys, retain other settings/comments/UTF-8, stage writes before replacement | Existing Windows and shell regression suites cover preservation and repeatability |
-| Windows could not reread its own single-quoted storage path; shell `xargs` could alter literal path text | Strip matching outer quotes without evaluation; retain literal spaces/backslashes/dollar signs; use last assignment like the runtime | Scratch regression passes; real configured-path rerun still required |
-| Existing Codex process lacks persisted user Rust-home variables despite AIRC installing Rust on the secondary drive | Public entry restores absent Rust-home settings from user/machine registration, preserves explicit process settings, and refreshes PATH without dropping session tools or accumulating duplicates | Scratch regression added; ordinary public-entry proof remains OPEN; no agent environment override may hide this |
-| CUDA toolkit and installed runtime payloads still target the system drive | Review existing storage policy and capacity before provisioning multi-GB payloads | OPEN; temporary-file routing alone does not prove sufficient space |
+| Windows could not reread its own single-quoted storage path; shell `xargs` could alter literal path text | Strip matching outer quotes without evaluation; retain literal spaces/backslashes/dollar signs; use last assignment like the runtime | Public reruns reused the selected cold configuration; scratch literal-path regressions also pass |
+| Existing Codex process lacks persisted user Rust-home variables despite AIRC installing Rust on the secondary drive | Public entry restores absent Rust-home settings from user/machine registration, preserves explicit process settings, and refreshes PATH without dropping session tools or accumulating duplicates | Public entry restored registered Rust/VS state without injected environment; full installation remains open |
+| CUDA toolkit and installed runtime payloads still target the system drive | Persist one managed payload-root across installer and runtime consumers | Public LLVM/CUDA/ORT acquisition used the selected D payload; final installed service/engine acceptance remains open |
 | Existing cold-directory migration can warn on partial robocopy failure and continue | Both adapters persist the selected pending root and own each source/destination pair before moving; failures stop configuration publication, reruns resume only owned destinations, and ancestor links/out-of-root paths are refused | Scratch partial-failure/resume and Windows junction regressions pass; POSIX symlink assertions require Unix CI (Git Bash copies link fixtures); public migration remains OPEN |
+| LLVM final publication copies staged files non-atomically and reuse checks only libclang.dll | Require a complete versioned publication contract and interruption recovery through the normal installer | OPEN; successful decoder extraction does not close this separate publication defect |
+| Long prerequisite downloads are silent in captured output and canceled consent lacks enough phase visibility | Add progress and consent observability in the shared installer paths | OPEN; no temporary downloader or manual consent workaround counts as repair |
 | Bigmama remote Continuum ping timed out; no installed local Continuum CLI/core was found | Complete normal `install.ps1 -Grid`, then verify the installed receiver and actual remote command/event path | OPEN; AIRC room messaging does not prove Continuum remote execution |
 
-No live Continuum installer has run for this repair yet. Tests use isolated
-scratch profiles/files and mocked elevation boundaries; they do not provision
-the machine. Before a live run, announce any expected Windows consent prompt and
+Public runs exercised prerequisite acquisition and consent, but did not complete installation. Regression tests use isolated scratch profiles and mocked elevation; those tests do not provision the machine. Before a live run, announce any expected Windows consent prompt and
 allow Joel time to approve it. Never claim a complete install from a build alone.
 
-## Payload contract under implementation (draft, no live acceptance)
+## Released payload contract and remaining live acceptance
 
 `paths::payload_root` and the platform readers share a UTF-8 `payload-root`
 record in the hot Continuum home. Without a record, existing installs retain
@@ -145,5 +145,26 @@ intended background daemon survives; failures and cancellation retain tree
 cleanup. Build jobs never perform this handoff. The gsudo cache retains its
 existing session owner. PS5 regressions exercise successful handoff and failed
 coordinator cleanup with real child processes.
-Fresh final-head CI and live consent remain required. Standalone AIRC must receive the
+PR #4658 merged after final-head CI and independent review at c40cc9cc6. Live consent remains required. Standalone AIRC must receive the
 released shared helper through its existing pin; a local wrapper is not a fix.
+
+### CUDA dependency validation following the llama.cpp usage audit
+
+Production LLM inference is llama.cpp. Candle remains in active LoRA/plasticity,
+GGUF utilities and speech. Astra confirmed over ordinary AIRC that her native
+media plumbing does not yet provide a validated replacement for Orpheus/custom
+voices; those components are retained.
+
+Candle fused Qwen3 MoE has no Continuum callers, but its static archive previously
+built on every CUDA build. The dependency repair makes that specialized archive
+opt-in and restores the commented Pascal FP16 atomic-add compatibility function.
+Continuum pins the reviewed dependency revision explicitly. The lock update
+changes only the six Candle source identities, not unrelated packages.
+
+Dependency receipts: CPU and compute61 CUDA candle-transformers checks pass;
+CUDA-linked optional-MoE refusal test and existing simple_grad_gpu pass; native
+half-atomic contention/neighbor/NaN test passes on all three local Pascal GPUs.
+These are development checks with an isolated D target and one build worker,
+not a supported public installer receipt. Dependency PR joelteply/candle#1 and
+its CI must complete before merging this integration. Public install/rerun and
+remote command/event plus useful grid GPU work remain OPEN.

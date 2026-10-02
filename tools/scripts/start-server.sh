@@ -203,6 +203,11 @@ case "$(uname -sm)" in
     ;;
 esac
 
+if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+fi
+
 # Warm builds prepare artifacts only. Runtime reconciliation belongs to launch:
 # it may reap engines or restart AIRC and must never run while the old core serves.
 if [ "${CONTINUUM_BUILD_ONLY:-}" != "1" ]; then

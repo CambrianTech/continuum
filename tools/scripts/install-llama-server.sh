@@ -112,6 +112,14 @@ else
       ;;
   esac
 fi
+if [[ "$BACKEND" == cuda ]]; then
+  if ! command -v nvcc >/dev/null 2>&1 && [[ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]]; then
+    export CUDA_PATH="$PAYLOAD_ROOT/cuda-toolkit"
+  fi
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+  BACKEND_DEFS=(-DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=$CMAKE_CUDA_ARCHITECTURES")
+fi
 # Windows binaries carry .exe — apply the suffix to the installed path now, before the
 # idempotency check and every downstream use.
 INSTALL_BIN="${INSTALL_BIN}${EXE}"
@@ -144,6 +152,7 @@ else
 fi
 
 STAMP_WANT="$SUBMODULE_HEAD:$BACKEND"
+if [[ "$BACKEND" == cuda ]]; then STAMP_WANT+=":$CMAKE_CUDA_ARCHITECTURES"; fi
 
 # ── engine slot (card 7a6a033a; the core half is #4491) ──────────────
 # A deploy builds the engine into the IDLE slot the core names

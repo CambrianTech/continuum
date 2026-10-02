@@ -167,6 +167,10 @@ fn main() {
     // CUDA on Linux
     if cfg!(feature = "cuda") && target_os == "linux" {
         cfg.define("GGML_CUDA", "ON");
+        println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
+        if let Ok(targets) = env::var("CMAKE_CUDA_ARCHITECTURES") {
+            cfg.define("CMAKE_CUDA_ARCHITECTURES", targets);
+        }
         println!("cargo:rustc-link-lib=cuda");
         println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=cublas");
