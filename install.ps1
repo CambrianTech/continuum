@@ -28,6 +28,56 @@ param(
     [switch]$PrepareOnly
 )
 
+# BEGIN GENERATED INSTALLER PROCESS - tools/scripts/sync-windows-bootstrap.ps1
+function Invoke-InstallerProcess {
+    [CmdletBinding(DefaultParameterSetName = 'Argv')]
+    param([Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
+        [Parameter(ParameterSetName = 'Argv', Position = 1)][string[]]$ArgumentList = @(),
+        # cmd.exe /c uses shell grammar rather than CommandLineToArgvW. Only
+        # fixed installer shell expressions should use this explicit boundary.
+        [Parameter(Mandatory = $true, ParameterSetName = 'Raw')][string]$RawArguments)
+    $command = Get-Command $FilePath -CommandType Application -ErrorAction Stop
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $command.Source
+    $quoted = foreach ($arg in $ArgumentList) {
+        # Windows CommandLineToArgvW quoting, including empty arguments and
+        # backslashes before quotes or a closing quote.
+        # Some tools (including gsudo) inspect the raw command line themselves.
+        # Leave simple flags bare, as native PowerShell invocation does.
+        if ($arg.Length -gt 0 -and $arg -notmatch '[\s"]') { $arg }
+        else { '"' + ([regex]::Replace([regex]::Replace($arg, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1')) + '"' }
+    }
+    $start.Arguments = if ($PSCmdlet.ParameterSetName -eq 'Raw') { $RawArguments } else { $quoted -join ' ' }
+    $start.WorkingDirectory = (Get-Location).Path
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { throw "Could not start $FilePath" }
+        $stdout = $process.StandardOutput.ReadLineAsync()
+        $stderr = $process.StandardError.ReadLineAsync()
+        while ($stdout -or $stderr) {
+            $pending = @(); if ($stdout) { $pending += $stdout }; if ($stderr) { $pending += $stderr }
+            $index = [Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$pending)
+            $finished = $pending[$index]
+            $line = $finished.GetAwaiter().GetResult()
+            if ([object]::ReferenceEquals($finished, $stdout)) {
+                if ($null -eq $line) { $stdout = $null }
+                else { Write-Output $line; $stdout = $process.StandardOutput.ReadLineAsync() }
+            } else {
+                if ($null -eq $line) { $stderr = $null }
+                else { Write-Error -Message $line -ErrorAction Continue; $stderr = $process.StandardError.ReadLineAsync() }
+            }
+        }
+        $process.WaitForExit()
+        $global:LASTEXITCODE = $process.ExitCode
+    } finally { $process.Dispose() }
+}
+# END GENERATED INSTALLER PROCESS
+
 $ErrorActionPreference = 'Stop'
 if ($ResumePrepared -and $Update) { throw '-ResumePrepared selects an existing release and cannot be combined with -Update.' }
 if ($PrepareOnly -and ($ResumePrepared -or $Update -or $Grid)) { throw '-PrepareOnly cannot be combined with -ResumePrepared, -Update, or -Grid.' }
@@ -72,13 +122,14 @@ if (-not $PSScriptRoot) {
     }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Host '  -> Installing Git (per-user) ...'
-        & winget install --id Git.Git --exact --silent --accept-package-agreements --accept-source-agreements --scope user
+        Invoke-InstallerProcess 'winget' @('install', '--id', 'Git.Git', '--exact', '--silent', '--accept-package-agreements', '--accept-source-agreements', '--scope', 'user')
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "Bootstrap Git acquisition failed (exit $LASTEXITCODE)." }
         $m = [Environment]::GetEnvironmentVariable('PATH', 'Machine'); $u = [Environment]::GetEnvironmentVariable('PATH', 'User')
         $env:PATH = "$m;$u"
     }
     $target = Join-Path $env:USERPROFILE 'continuum'
     if (-not (Test-Path (Join-Path $target '.git'))) {
-        & git clone https://github.com/CambrianTech/continuum.git $target
+        Invoke-InstallerProcess 'git' @('clone', 'https://github.com/CambrianTech/continuum.git', $target)
         if ($LASTEXITCODE -ne 0) { throw 'Repository clone failed; the installer did not run.' }
     }
     $bootArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $target 'install.ps1'))

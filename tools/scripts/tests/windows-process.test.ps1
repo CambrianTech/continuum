@@ -69,6 +69,23 @@ exit 23
         }
     }
     Write-Host 'PASS: device authentication uses hidden launch and failed login stops grid setup.'
+    # The remote entry must carry exactly the same helper before it can clone.
+    # Prove the CI check accepts the real projection and refuses a changed copy.
+    $fixtureRepo = Join-Path $scratch 'bootstrap repository'
+    $fixtureScripts = Join-Path $fixtureRepo 'tools\scripts'
+    New-Item -ItemType Directory -Path (Join-Path $fixtureScripts 'lib') -Force | Out-Null
+    Copy-Item -LiteralPath "$PSScriptRoot/../lib/windows-elevation.ps1" -Destination (Join-Path $fixtureScripts 'lib')
+    Copy-Item -LiteralPath "$PSScriptRoot/../sync-windows-bootstrap.ps1" -Destination $fixtureScripts
+    $fixtureEntry = Join-Path $fixtureRepo 'install.ps1'
+    Copy-Item -LiteralPath "$PSScriptRoot/../../../install.ps1" -Destination $fixtureEntry
+    $checkArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $fixtureScripts 'sync-windows-bootstrap.ps1'), '-Check')
+    Invoke-InstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" $checkArgs | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Canonical bootstrap projection was refused.' }
+    $changed = [IO.File]::ReadAllText($fixtureEntry).Replace('$start.CreateNoWindow = $true', '$start.CreateNoWindow = $false')
+    [IO.File]::WriteAllText($fixtureEntry, $changed)
+    Invoke-InstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" $checkArgs 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw 'Divergent bootstrap launcher passed drift check.' }
+    Write-Host 'PASS: bootstrap drift check accepts canonical source and rejects changed launcher.'
 } finally {
     # Only this test's newly-created, resolved scratch directory is removed.
     $resolved = [IO.Path]::GetFullPath($scratch)

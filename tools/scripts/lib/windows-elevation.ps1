@@ -1,5 +1,6 @@
 # Shared Windows installer elevation implementation. No application install is required.
 # Imported by Continuum; standalone artifact boundary for AIRC integration.
+# After editing the launcher, run tools/scripts/sync-windows-bootstrap.ps1.
 param([System.Collections.IDictionary]$GsudoSource)
 $script:ElevationGsudoSource = $GsudoSource
 

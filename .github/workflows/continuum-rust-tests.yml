@@ -329,7 +329,9 @@ jobs:
         run: ./tools/scripts/tests/windows-xz.test.ps1
       - name: Windows hidden installer process regression
         shell: powershell
-        run: ./tools/scripts/tests/windows-process.test.ps1
+        run: |
+          ./tools/scripts/sync-windows-bootstrap.ps1 -Check
+          ./tools/scripts/tests/windows-process.test.ps1
       - name: Warm builds preserve live services
         if: needs.changes.outputs.installer != 'false'
         shell: bash
