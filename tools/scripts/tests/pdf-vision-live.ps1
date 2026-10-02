@@ -8,6 +8,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force $root | Out-Null
+# Invalidate a previous pass before any fallible runtime call. Reusing an output
+# directory for a failed deployment check must never leave a current-looking pass.
+@{passed=$false; status='incomplete'; startedAt=[DateTime]::UtcNow.ToString('o')} |
+    ConvertTo-Json | Set-Content (Join-Path $root 'receipt.json')
 function Invoke-Core([string]$Command, [object]$Params) {
     $json = ConvertTo-Json -InputObject $Params -Depth 16 -Compress
     $raw = & $Continuum $Command $json
@@ -21,6 +25,12 @@ if ($ExpectedBuildSha -and $coreBefore.buildSha -ne $ExpectedBuildSha) {
 }
 $status = Invoke-Core 'ai/inference/status' @{}
 if (-not $status.ready -or -not $status.activeModel) { throw 'Existing bound model is not ready' }
+$binding = Invoke-Core 'ai/model-info' @{model=$status.activeModel}
+if ($binding.modelInfo.id -ne $status.activeModel -or -not $binding.provider -or
+    $binding.modelInfo.capabilities -notcontains 'vision') {
+    throw 'Exact active model metadata must declare native vision before PDF inference'
+}
+$binding | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $root 'binding.json')
 # Vector-only PDF: the text extractor cannot disclose the expected answer.
 $stream = '1 1 1 rg 0 0 400 300 re f 0 0 1 rg 55 80 90 90 re f 1 0 0 rg 315 125 m 315 150 295 170 270 170 c 245 170 225 150 225 125 c 225 100 245 80 270 80 c 295 80 315 100 315 125 c f'
 $objects = @(
@@ -50,7 +60,7 @@ $imageBytes = [Convert]::FromBase64String(($observe.image.dataUrl -split ',',2)[
 $imagePath = Join-Path $root 'page.png'
 [IO.File]::WriteAllBytes($imagePath,$imageBytes)
 $request = @{
-    model=$status.activeModel; temperature=0; maxTokens=384
+    model=$binding.modelInfo.id; provider=$binding.provider; temperature=0; maxTokens=384
     messages=@(@{role='user';content=@(
         @{type='text';text='Inspect this PDF page image. State the color and shape on the left, then the color and shape on the right. Answer only those visual facts in one sentence.'},
         @{type='image';image=@{url=$observe.image.dataUrl}}
@@ -65,6 +75,9 @@ $result | ConvertTo-Json -Depth 16 | Set-Content (Join-Path $root 'result.json')
 if (-not $result.success -or $result.text -notmatch '(?is)blue\s+square.*red\s+circle') {
     throw 'Model did not identify the left blue square and right red circle; inspect result.json'
 }
+if ($result.model -ne $binding.modelInfo.id -or $result.provider -ne $binding.provider) {
+    throw 'Visual answer came from a different model/provider than the selected binding'
+}
 $coreAfter = Invoke-Core 'ping' @{}
 if (-not $coreAfter.ok -or $coreAfter.buildSha -ne $coreBefore.buildSha -or
     $coreAfter.buildNumber -ne $coreBefore.buildNumber) {
@@ -72,6 +85,7 @@ if (-not $coreAfter.ok -or $coreAfter.buildSha -ne $coreBefore.buildSha -or
 }
 @{
     passed=$true; model=$result.model; provider=$result.provider
+    boundModel=$binding.modelInfo.id; boundCapabilities=$binding.modelInfo.capabilities
     coreBuildSha=$coreAfter.buildSha; coreBuildNumber=$coreAfter.buildNumber
     requestId=$result.requestId; elapsedMs=$clock.ElapsedMilliseconds
     sourceSha256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash

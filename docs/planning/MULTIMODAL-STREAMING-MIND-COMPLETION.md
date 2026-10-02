@@ -5,14 +5,15 @@ architecture. Reuse the live WorkspaceCycle, CBAR stages, bus, admission,
 scheduling, model bindings, genome, AIRC and existing avatar/live session code.
 BIGGIEDESK installation belongs to the other Codex and is not this lane's gate.
 
-Active execution receipt (11:54 UTC): installed core/CLI build5926/3e94ce276 verified,
-PDF visual acceptance passed, desktop served. Native SSE terminal/choice guard
-fixture97491 now PASS: existing HTTP adapter->PCM->CallManager test includes late
-PCM refusal, multiple-choice refusal, valid final usage, and cancellation. This is
-synthetic transport/playback evidence, not real native voice. Preparing supported
-installation of this tested follow-up; resume deployment handle in team README.
-Native audio, image output, and persona live output-intent/playback integration
-remain OPEN. Preserve existing bindings and use WorkspaceCycle for that connection.
+Active execution receipt (13:05 UTC): supported install20349 completed. Core and
+both CLI aliases run build5927/0839e37d1; bound-model PDF visual acceptance64407
+passed in74038ms. This proves native vision, not fast conversation or native voice.
+The installer reported one undrained cognition turn; lossless continuity is NOT
+verified. Current durable checkout moved to peer installer head d2604d832.
+Exact model-info selection and registry lock lifetime fixes passed focused test50234
+but remain undeployed follow-ups. Native audio, image output, and persona per-turn
+output-intent/playback integration remain OPEN. Use existing WorkspaceCycle and
+CallManager owners; current available model catalog declares no native audio.
 ## The outcome
 
 Kimi can see and hear Joel continuously, speak in her bound model's native voice,

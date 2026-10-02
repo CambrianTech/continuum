@@ -779,3 +779,129 @@ binary continuum_core-75b2efccc2574868.exe; log native-sse-terminal-tests.log.
 No active deploy claim/compiler and durable3e94ce276 clean before release prep.
 Native SSE guard patch ready for supported installation; all positive native
 voice/image-output and persona output-intent/playback work remains OPEN.
+Supported install now owns20349/native-install-0839e37d1.log, target0839e37d1,
+sharedD:cache,-j2, no test linker flags. Durable tree fast-forwarded clean and
+pinned; running3e94ce276 left serving during warm build. Resume20349 before any
+other compilation or deployment. Known precious-objects maintenance warning did
+not prevent commit/FF; final SHA verified. Next independent work is the existing
+persona live intent/playback connection, not another parallel media architecture.
+
+Direct Joel grid-status question: live grid/nodes returns three fresh(nonstale,
+0-7s) node advertisements: local e85a5bb3 build3e94ce276/Qwen27B, Intel5159a48b
+build137f77d7e/Qwen2.5coder1.5B, peer2f0aed7f buildd8b7941c6/Qwen27B. BIGGIEDESK
+0121d959 is absent. All three rows label trust_level=blocked, including local;
+this API field was not independently diagnosed and must not be treated as a
+verified successful cross-node dispatch. Normal AIRC inbox twice failed daemon
+readiness at machine-account scope; no fresh peer/Codex progress message read.
+No SOS fallback, trust mutation, daemon restart or parallel build performed.
+Report advertised capacity separately from peer communication and usable routing.
+
+12:05 UTC: deployed native AUDIO INPUT refusal acceptance: installed ai/generate
+with canonical audio ContentPart against boundQwen3.8-27B EXIT1, explicitly 'model
+does not declare AudioInput'. Receipt native-audio-input-refusal-3e94ce276.json.
+No transcription/substitute request returned. This proves capability rejection
+through installed command/adapter, not working audio input. Earlier audio-output
+CLI refusal covered consumer preflight only; keep these separate.
+Live integration source mapping: Workspace.token_sink already carries per-turn
+output ownership and WorkspaceCycle.current_token_sink snapshots it. Output intent
+must be attached atomically to that per-turn contract (not independently mutable
+cycle flags or a model-wide setting); ModelBinding remains adapter/model/window.
+CallManager.begin/push/finish/cancel already owns playback generations and leases.
+The presentation consumer must honor RequestBoundary per inference attempt, so
+aborting one tool-loop attempt cannot finish another's audio. No cognition edits
+made before remaining canonical reading. Install20349/claim6544 remains compiling
+0839e37d1; no competing Cargo or runtime restart issued.
+
+12:15 UTC: found and repaired another native binding boundary in feature checkout:
+ai/model-info fuzzy substring matching plus models.first fallback could return
+another model's capabilities/context. It now requires exact catalog ID, borrowing
+the selected ModelInfo then cloning only for command serialization. Existing
+commands/ai test module extended with colliding short/long IDs, different modality
+capabilities, absent/empty/case-variant IDs. Syntax/diff checks pass; test execution
+PENDING active install20349/claim6544. Existing deployed unknown-model probe refused
+at registry selection already; that negative alone did not cover catalog collisions.
+No installed provider/model or persona binding changed. Resume installer before
+running model_info_never_borrows_another_models_capabilities. Catalog aliases now
+need explicit provider resolution rather than silently borrowing another row.
+
+12:25 UTC: live catalog refresh returns51 models, sole available provider llama-server,
+zero declared AudioInput/AudioOutput models. Saved native-catalog-1225.json. Exact
+current ai/model-info resolves Qwen3.8-27B with vision/text/tool/streaming only.
+This is a current available-provider snapshot, not evidence no audio models exist
+elsewhere. Positive native voice requires a real capable binding/transport; adding
+flags to this Qwen row would fabricate capabilities and is not a fix.
+Strengthened existing PDF acceptance: resolve metadata once, require exact active
+ID+Vision, pin provider/model on submitted request, and reject result from another
+binding. Save binding.json and bound capabilities in receipt. Live validation now
+owns83850/native-pdf-binding-1225.log against running3e94ce276. Resume this handle;
+no new compiler started. Install20349/claim6544 remains pinned0839e37d1; feature-only
+model-info exact-match regression still awaits release of compiler ownership.
+
+12:25 UTC acceptance completion: session83850 EXIT0. Strengthened PDF acceptance
+passed against deployed build5926/3e94ce276 with exact bound model and provider
+assertions: ggml-org/Qwen3.8-27B-GGUF / llama-server. Empty text layer; response
+correctly identified blue square left and red circle right. Receipt:
+C:/Users/joelt/.continuum/state/team-proof-20260921/pdf-visual-acceptance/binding-3e94ce276/receipt.json
+Request req-1790943982676, elapsed60562ms. This confirms native visual understanding
+and binding attribution, not conversational latency or native audio. Previous
+11266ms fixture run is not a controlled comparison; no speedup claimed.
+Supported install20349/claim6544 still active for0839e37d1. Exact model-info source
+regression remains uncompiled pending that owner; no duplicate build started.
+
+12:35 UTC: repaired ai/model-info registry lock lifetime in the feature checkout.
+Catalog discovery previously awaited while holding the shared registry read lock,
+so a slow provider could block registry writers and binding updates. Reused the
+existing select_arc lease, with an explicit lexical lock scope ending before
+get_available_models().await. No second lookup by provider ID, new task, or manager.
+Also corrected parameter docs: registry rejects omitted provider AND model; it
+never selected an implicit default as the comment claimed. Exact-ID regression
+and this change await compilation after install20349 releases ownership.
+Compiler inspection confirms active release CLI build from durable continuum,
+Cargo6572/28768, rustc35356; claim6544 targets0839e37d1. Feature checkout remains
+separate. git diff --check passed; no compilation or deployment of these follow-ups
+claimed. Prior exact-binding PDF live acceptance83850 remains PASS on3e94ce276.
+
+12:45 UTC: repaired the existing PDF live acceptance receipt lifecycle: rerunning
+into an existing output directory now marks receipt.json passed=false/incomplete
+before the first fallible core call. Previously a failed deployment check could
+leave the previous passed=true receipt behind. Exercised a seeded old pass with
+an absent CLI: the command refused and the receipt became incomplete (PASS).
+Check artifact: C:/Users/joelt/AppData/Local/Temp/pdf-receipt-check-918a5924a2db4be5a72c68d0ab2bc320/receipt.json
+No model inference, daemon, or build was started by that negative check. Existing
+successful deployed receipt remains at binding-3e94ce276. Supported install20349
+continues release CLI compilation (rustc17304 started12:42Z), claim6544; no duplicate.
+Finished reading PERSONA-COGNITION-PIPELINE.md end to end plus cognition verb index;
+remaining canonical prerequisites still precede any cognition edits. Native persona
+output intent/playback integration remains OPEN, not satisfied by this receipt fix.
+
+12:55 UTC: supported install20349 EXIT0; core and both continuum/uu aliases verified
+build5927/0839e37d1. Serving Qwen3.8-27B reports ready=true at existing58057 endpoint,
+context67840; desktop HTTP200. Warm artifact validation3238s, core answer ~33s after
+handoff. IMPORTANT continuity limitation: installer reported cognition drain
+Incomplete { in_flight: 1 }, save Clean, and explicitly stopped WITH UNSAVED STATE.
+Do not count this as lossless turn preservation or claim the in-flight turn recovered.
+Install --check now reports checkout drift: durable checkout moved to d2604d832
+(peer installer commits #4660/#4657/#4658), while running exact intended0839e37d1.
+CLI aliases are converged. No reset, merge, or second installation of that moving
+checkout was attempted. Deployment target verified independently of current HEAD.
+New live PDF acceptance64407 owns native-pdf-0839e37d1.log and output directory
+pdf-visual-acceptance/deployed-0839e37d1. Resume it; do not duplicate inference.
+After confirming deploy.claim absent and compiler processes absent, started focused
+model_info_never_borrows_another_models_capabilities in feature checkout: session50234,
+log native-model-info-tests-1255.log, shared D Cargo cache, jobs2, test-only
+_LINK_=/DEBUG:NONE. No other Cargo launch until it finishes. Source follow-ups remain
+uncommitted and not included in0839e37d1. Native voice remains OPEN.
+
+13:05 UTC: live acceptance64407 EXIT0 on deployed0839e37d1/build5927. PDF with
+empty text layer produced correct left blue square/right red circle through exact
+Qwen3.8-27B/llama-server binding; request req-1790945756612, elapsed74038ms.
+Receipt: pdf-visual-acceptance/deployed-0839e37d1/receipt.json. Functional native
+vision is verified after this install; fast conversation is not (74s observed).
+Focused source test50234 EXIT0: model_info_never_borrows_another_models_capabilities,
+1 passed, 3m33s compile. This also compiled select_arc catalog lookup repair.
+No active deploy.claim/compiler observed after completion. Durable checkout remains
+peer installer HEAD d2604d832; do not reset or overwrite it for native follow-ups.
+The exact model-info fixes are tested source, not yet deployed. Next substantive
+integration remains per-turn output intent plus existing CallManager playback;
+real capable audio binding is still required. Prior handoff's undrained cognition
+turn remains an explicit continuity gap, unaffected by this visual acceptance.

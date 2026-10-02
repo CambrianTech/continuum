@@ -12,8 +12,8 @@ use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ModelInfo;
 use crate::ai::AdapterRegistry;
 
-/// Params for `ai/model-info`: an optional provider/model hint. Omitting both
-/// resolves the registry's default provider + that provider's default model.
+/// Params for `ai/model-info`: specify a provider or exact model ID. A provider
+/// without a model uses that adapter's default; omitting both is rejected.
 #[derive(
     Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
 )]
@@ -47,8 +47,8 @@ pub struct AiModelInfoResult {
 
 crate::action_command! {
     /// Resolve the canonical [`ModelInfo`] for a provider+model (context window,
-    /// modalities, pricing, slow-local flag, ...). Fuzzy-matches the model id
-    /// against the provider's catalog, falling back to the provider's first model.
+    /// modalities, pricing, slow-local flag, ...). Requires the exact model id
+    /// from the provider's catalog; unrelated metadata is never a substitute.
     /// Fails loud if no provider/model can be resolved. Gated `Privileged`.
     pub struct AiModelInfo { registry: Arc<RwLock<AdapterRegistry>> }
     name: "ai/model-info",
@@ -56,28 +56,30 @@ crate::action_command! {
     params: AiModelInfoParams,
     output: AiModelInfoResult,
     run(this, _ctx, p) => {
-        let registry = this.registry.read().await;
-        let (provider_id, adapter) = registry
-            .select(p.provider.as_deref(), p.model.as_deref(), InferenceDevice::default())
-            .ok_or_else(|| "No adapter available for requested provider/model".to_string())?;
+        // Lease the selected adapter before catalog I/O so a slow provider cannot
+        // retain the registry read lock and block binding updates for other users.
+        let (provider_id, adapter) = {
+            let registry = this.registry.read().await;
+            registry
+                .select_arc(p.provider.as_deref(), p.model.as_deref(), InferenceDevice::default())
+                .ok_or_else(|| "No adapter available for requested provider/model".to_string())?
+        };
 
         let models = adapter.get_available_models().await;
         let model_name = p.model.as_deref().unwrap_or_else(|| adapter.default_model());
 
-        // Fuzzy-match the requested name against the catalog (either-direction
-        // substring), else fall back to the provider's first model.
-        let info = models
-            .iter()
-            .find(|m| {
-                m.id.to_lowercase().contains(&model_name.to_lowercase())
-                    || model_name.to_lowercase().contains(&m.id.to_lowercase())
-            })
-            .or_else(|| models.first())
+        let info = exact_model_info(&models, model_name)
             .cloned()
             .ok_or_else(|| {
                 format!("No model info available for {}/{}", provider_id, model_name)
             })?;
 
-        Ok(AiModelInfoResult { provider: provider_id.to_string(), model_info: info })
+        Ok(AiModelInfoResult { provider: provider_id, model_info: info })
     }
+}
+
+/// Metadata can grant native media capabilities, so aliases require an explicit
+/// provider resolution before this boundary, never substring/catalog-order choice.
+pub(super) fn exact_model_info<'a>(models: &'a [ModelInfo], id: &str) -> Option<&'a ModelInfo> {
+    models.iter().find(|model| model.id == id)
 }
