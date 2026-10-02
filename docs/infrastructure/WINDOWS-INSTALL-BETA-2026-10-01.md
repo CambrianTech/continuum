@@ -235,3 +235,17 @@ explicit handoff on 200 while retaining that failure status, cleanup on unlisted
 23, and cancellation cleanup even with the allowlist. AIRC integration and the
 public mapping of its internal recovery outcome remain separate acceptance work.
 No live installation, daemon, firewall, or consent action was performed.
+
+### Consent acquisition evidence (2026-10-02)
+
+The cache-on boundary now reports UTC start/end, elapsed milliseconds, resolved
+helper path and file version, cache owner/caller process IDs, and the actual exit
+status (or incomplete launch/wait). Metadata lookup cannot replace acquisition
+errors. Native diagnostics and the original failure remain intact; exit 999
+alone does not identify which actor canceled. Acquisition arguments, ownership,
+retry policy and consent behavior are unchanged.
+
+The existing full Windows PowerShell 5 service suite passed with synthetic
+success, exit 999, launcher failure and unavailable metadata, plus native stderr
+and exit-status fixtures. No live gsudo consent or provisioning was performed;
+this adds evidence for the next supported attempt, not a causal fix for 999.
