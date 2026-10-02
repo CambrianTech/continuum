@@ -280,7 +280,7 @@ jobs:
       - name: Warm builds preserve live services
         if: needs.changes.outputs.installer != 'false'
         shell: bash
-        run: bash tools/scripts/tests/start-server-build-only.test.sh
+        run: bash tools/scripts/tests/start-server-build-only.test.sh --windows-adapter
       - name: Windows native cache and engine ownership regressions
         if: needs.changes.outputs.rust != 'false'
         shell: powershell
