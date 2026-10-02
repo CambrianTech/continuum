@@ -369,6 +369,38 @@ test_managed_payload_placement() (
   grep -q 'Selected payload directory .* is unavailable' "$scratch/service-output" || return 1
 )
 
+test_cuda_selection_promotes_inherited_path() (
+  # The installed CLI inherits managed paths: merely avoiding duplicates left
+  # cuda-12 ahead of the selected cuda-13 tree on a second deployment.
+  local scratch; scratch="$(mktemp -d)"
+  trap 'rm -rf "$scratch"' EXIT
+  export CONTINUUM_HOME="$scratch/home"
+  local selected="$CONTINUUM_HOME/cuda-selected" old="$CONTINUUM_HOME/cuda-old"
+  mkdir -p "$selected/Library/bin" "$selected/Library/lib/x64" "$old/bin"
+  touch "$selected/Library/bin/cublas64_13.dll" "$selected/Library/lib/x64/cuda.lib" \
+    "$selected/Library/lib/x64/curand.lib" "$old/bin/cublas64_12.dll"
+  uname() { printf '%s\n' MINGW64_NT; }
+  cl.exe() { :; } # This fixture tests PATH normalization, not host MSVC import.
+  cmake() { :; }
+  export CMAKE_GENERATOR=Ninja
+  export NVCC_PREPEND_FLAGS="" CUDA_PATH="" RUSTFLAGS=""
+  export PATH="$old/bin:$selected/Library/bin:$PATH"
+  local helper="$(dirname "$LIB")/windows-build-env.sh"
+  source "$helper" || return 1
+  local entry first="" count=0
+  local -a entries
+  IFS=: read -ra entries <<< "$PATH"
+  for entry in "${entries[@]}"; do
+    [ "$entry" != "$selected/Library/bin" ] || count=$((count + 1))
+    if [ -z "$first" ] && { [ -f "$entry/cublas64_12.dll" ] || [ -f "$entry/cublas64_13.dll" ]; }; then first="$entry"; fi
+  done
+  assert_eq "$selected/Library/bin" "$first" || return 1
+  assert_eq 1 "$count" || return 1
+  local before="$PATH"
+  source "$helper" || return 1
+  assert_eq "$before" "$PATH"
+)
+
 # Permit a focused scratch-only test without executing installer tier tests.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -406,6 +438,7 @@ _run_test test_llama_cache_tracks_source_ownership
 _run_test test_cold_storage_preserves_config
 _run_test test_cold_storage_resumes_owned_migration
 _run_test test_managed_payload_placement
+_run_test test_cuda_selection_promotes_inherited_path
 
 echo ""
 echo "------------------------------------"

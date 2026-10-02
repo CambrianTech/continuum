@@ -154,7 +154,20 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
               fi
               ;;
           esac
-          case ":$PATH:" in *":$_rp_hit:"*) ;; *) export PATH="$_rp_hit:$PATH" ;; esac
+          if [ -n "$_wbe_cuda_tree" ] && [[ "$_rp_hit" == "$_wbe_cuda_tree/"* ]]; then
+            # An installed CLI already carries managed directories on PATH.
+            # Presence does not establish precedence: promote the selected tree
+            # even when it was inherited behind an older CUDA runtime.
+            IFS=: read -ra _wbe_inherited <<< "$PATH"
+            _wbe_promoted="$_rp_hit"
+            for _wbe_entry in "${_wbe_inherited[@]}"; do
+              [ "$_wbe_entry" = "$_rp_hit" ] || _wbe_promoted="$_wbe_promoted:$_wbe_entry"
+            done
+            export PATH="$_wbe_promoted"
+            unset _wbe_inherited _wbe_promoted _wbe_entry
+          else
+            case ":$PATH:" in *":$_rp_hit:"*) ;; *) export PATH="$_rp_hit:$PATH" ;; esac
+          fi
         done
       done
     done

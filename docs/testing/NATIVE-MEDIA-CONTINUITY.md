@@ -266,3 +266,14 @@ Next resume46325, then commit/deploy this cancellation repair once validated;
 per-inference native identity/completion/model binding remains separate OPEN work.
 
 05:34 UTC46325 EXIT0: existing forwarder regression PASS0.26s, compile4m34s. Covers normal ordered flush plus abort-during-join, retained producer cancellation, late refusal and local end beacon. Claim absent, compiler inventory empty, durable checkout clean84a362971 before deployment. Cancellation patch ready for supported install; no deployed behavior claim yet.
+
+05:34 deployment attempt96330 for d6468da7a failed BEFORE build/handoff; old core
+84a362971 stayed healthy. Shared build helper selected CUDA13 but inherited CLI
+PATH put CUDA12 first; dedup skipped promoting the already-present selected path.
+This is our actual deployment failure, not a peer-install detour. Kept mismatch
+assertion. Shared windows-build-env now promotes selected CUDA entries and removes
+same-entry duplicates. Existing install-common fixture extended: old helper FAIL
+expected selected/actual old, new helper PASS plus repeated-source idempotence.
+Managed payload placement and bash syntax PASS; log native-install-cuda-path-regression.log.
+No toolkit install/removal, CUDA replacement, or manual PATH workaround applied.
+Retest through supported continuum install next; native-install-d6468da7a.log retains failure.
