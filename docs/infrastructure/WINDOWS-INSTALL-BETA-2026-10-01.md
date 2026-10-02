@@ -99,3 +99,20 @@ an isolated profile, verifying acquisition/reuse, corrupt-archive refusal and
 PATH restoration. Public rerun and full Continuum acceptance remain required.
 The lengthy LLVM download also exposed missing useful progress in captured
 installer output; download observability remains an open usability repair.
+
+The public rerun on canary `355c84833` acquired XZ automatically, then stalled
+inside Windows tar's external decoder filter. Two process samples showed tar
+fixed at 134,080 bytes read / 65,536 written and XZ at 73,728 read / zero written,
+with unchanged CPU counters and no extracted files. The follow-up avoids that
+filter: XZ reads the archive directly, its binary stdout is copied to a temporary
+tar file while stderr drains independently, then native tar reads the plain file.
+The regression now uses 2 MB of incompressible data rather than a tiny string.
+That larger smoke passes in an isolated profile using the checksum-verified
+decoder archive. Full live-archive acceptance remains open.
+
+During this run the agent environment changed to restricted permissions. CIM
+process inspection returned Access denied, so the ownership-checked stop refused
+to act; the old installer was not stopped. GitHub CLI subsequently reported its
+keyring credential unusable. No authentication reset, privilege workaround or
+second installer was attempted. Restore task access and inspect the owned process
+before any rerun; do not infer the old run has ended.
