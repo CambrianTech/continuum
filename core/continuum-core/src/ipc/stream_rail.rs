@@ -47,6 +47,33 @@ pub fn publish(delta: StreamDelta) {
     let _ = rail().send(delta);
 }
 
+/// Retire a local presentation even if its producer future is cancelled during
+/// remote publication. This is presentation closure, not inference success.
+pub(crate) struct StreamPublication {
+    end: StreamDelta,
+    closed: bool,
+}
+
+impl StreamPublication {
+    pub(crate) fn new(room_id: String, sender_id: String, stream_id: String) -> Self {
+        Self { end: StreamDelta { room_id, sender_id, stream_id, seq: 0,
+            token: String::new(), done: true }, closed: false }
+    }
+
+    pub(crate) fn send(&mut self, seq: u64, token: String, done: bool) {
+        let next = if token.is_empty() { seq } else { seq + 1 };
+        publish(StreamDelta { seq, token, done, ..self.end.clone() });
+        self.end.seq = next;
+        self.closed = done;
+    }
+}
+
+impl Drop for StreamPublication {
+    fn drop(&mut self) {
+        if !self.closed { publish(self.end.clone()); }
+    }
+}
+
 /// Subscribe a WS connection to the live token rail. Each connection gets its own
 /// receiver; dropping it (on disconnect) unsubscribes.
 pub fn subscribe() -> broadcast::Receiver<StreamDelta> {

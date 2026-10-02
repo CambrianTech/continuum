@@ -259,3 +259,5 @@ capable binding/transport before claiming native voice acceptance; source flags
 cannot manufacture support. Per-inference identity/completion must reach the
 presentation owner: the current forwarder covers a whole act/observe turn and
 channel closure alone cannot authorize successful PCM tail completion.
+
+05:24 execution override: cancellation repair source pending, sole focused validation46325. Resume README handles before any build. Turn-forwarder owner test passed; local presentation retirement extension now under test. Installed foundation remains84a362971.

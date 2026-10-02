@@ -238,3 +238,31 @@ consumer admission, so they do NOT establish native-output model capability chec
 Receipt: C:/Users/joelt/.continuum/state/team-proof-20260921/native-refusal-deployed-84a362971.json
 No build, install, model switch or serving interruption. Next: per-inference
 completion/identity to production presentation owner, then genuinely capable binding.
+
+2026-10-02 05:14 UTC concrete cancellation repair in progress: room/self-cycle
+forwarders returned bare JoinHandle; aborting their parent detached the receiver
+and could keep a retained producer alive. Reused/consolidated existing heartbeat
+and eval AbortOnDrop guard into utils/task.rs with cancellation-safe join; persona
+forwarder now owns that guard. Existing pause/order test extended to hold sender,
+drop owner, require cancellation and reject late output. No new bus/task monitor.
+Focused cargo test session55322/native-forwarder-owner.log, D: shared cache,-j2;
+claim absent and compiler inventory empty checked separately before start.
+DO NOT duplicate test/build. Source uncommitted; validation pending; NOT deployed.
+Installed84a362971 remains serving. Per-inference identity/completion and native
+model binding remain OPEN; this closes turn lifetime prerequisite only.
+
+2026-10-02 05:24 UTC resumed55322 EXIT0: forwarder lifetime regression PASS0.27s.
+Further cancellation review found local typing beacon could remain open after the
+new abort-on-drop owner cancelled its forwarder (normal final tee was unreachable).
+Added scope-owned StreamPublication on the EXISTING local stream rail: Drop emits
+presentation closure at the next published sequence; explicit completion retires
+it once. This closure is NOT inference success and never flushes stale buffered text.
+Extended SAME forwarder regression to abort while awaiting join with a sender still
+alive, require producer cancellation, reject late token, and observe correlated end.
+No new bus/process. Fresh absent claim and empty compiler inventory checked; sole
+validation46325/native-forwarder-retirement.log uses shared D: cache,-j2.
+Source uncommitted, check pending, NOT deployed; runtime84a362971 unchanged.
+Next resume46325, then commit/deploy this cancellation repair once validated;
+per-inference native identity/completion/model binding remains separate OPEN work.
+
+05:34 UTC46325 EXIT0: existing forwarder regression PASS0.26s, compile4m34s. Covers normal ordered flush plus abort-during-join, retained producer cancellation, late refusal and local end beacon. Claim absent, compiler inventory empty, durable checkout clean84a362971 before deployment. Cancellation patch ready for supported install; no deployed behavior claim yet.

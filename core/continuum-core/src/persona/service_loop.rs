@@ -1414,7 +1414,7 @@ async fn serve_persona_loop_inner(
                     }
                 }
                 cycle.set_token_sink(None);
-                let _ = forwarder.await;
+                let _ = forwarder.join().await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 // Live speed/latency on the probe stream — the model's own measured
                 // generation cost for THIS turn (decode tok/s + latency), the same
@@ -2430,13 +2430,13 @@ fn spawn_token_forwarder(
     // (room_id, sender_id) — the per-turn `stream_id` is NOT the final message id.
     room_id: Option<String>,
     sender_id: Option<String>,
-) -> tokio::task::JoinHandle<()> {
+) -> crate::utils::task::AbortOnDrop {
     // 250ms: a typing indicator does NOT need per-token frames (the durable `say`
     // is the authoritative text) — batching to ~4 frames/sec keeps the render smooth
     // to a human eye while cutting wire traffic ~6x. 50ms flooded the bus (a room of
     // personas × per-token frames killed subscribers).
     const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
-    tokio::spawn(async move {
+    crate::utils::task::AbortOnDrop(tokio::spawn(async move {
         let started = std::time::Instant::now();
         let stream_id = uuid::Uuid::new_v4().to_string();
         let mut first = true;
@@ -2449,16 +2449,12 @@ fn spawn_token_forwarder(
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Tee one flushed chunk onto the local WS rail (#170) — no-op unless this is a
         // room turn (room+sender Some) AND a browser is subscribed.
-        let tee = |seq: u64, token: String, done: bool| {
-            if let (Some(room), Some(sender)) = (&room_id, &sender_id) {
-                crate::ipc::stream_rail::publish(crate::ipc::stream_rail::StreamDelta {
-                    room_id: room.clone(),
-                    sender_id: sender.clone(),
-                    stream_id: stream_id.clone(),
-                    seq,
-                    token,
-                    done,
-                });
+        let mut publication = room_id.zip(sender_id).map(|(room, sender)| {
+            crate::ipc::stream_rail::StreamPublication::new(room, sender, stream_id.clone())
+        });
+        let mut tee = |seq: u64, token: String, done: bool| {
+            if let Some(publication) = &mut publication {
+                publication.send(seq, token, done);
             }
         };
         // START BEACON (#254 slice 1): one empty-token frame when the turn's
@@ -2526,7 +2522,7 @@ fn spawn_token_forwarder(
                 .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id.clone(), seq))
                 .await;
         }
-    })
+    }))
 }
 
 /// One intrinsic heartbeat. Returns `true` iff the cycle's INFERENCE tail (the
@@ -2921,7 +2917,7 @@ async fn run_self_cycle(
         crate::cognition::act_observe::SettleStep::from_settled(outcome)
     };
     cycle.set_token_sink(None);
-    let _ = forwarder.await;
+    let _ = forwarder.join().await;
     match step {
         crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the
@@ -3045,7 +3041,7 @@ mod tests {
         tx.send(GenerationChunk::Token("Second".into())).expect("owner alive");
         tx.send(GenerationChunk::Token("Third".into())).expect("owner alive");
         drop(tx);
-        owner.await.expect("forwarder closes cleanly");
+        owner.join().await.expect("forwarder closes cleanly");
         assert_eq!(start.stream_id, first.stream_id);
         let mut tail = String::new();
         let mut expected_seq = 1;
@@ -3061,6 +3057,24 @@ mod tests {
             expected_seq += 1;
         }
         assert_eq!(tail, "SecondThird");
+
+        // Aborting a turn used to detach its forwarder, leaving the producer
+        // alive on a retained cycle sink. The owner must drop the receiver even
+        // when a sender remains alive and no further chunks arrive.
+        let (tx, rx) = crate::ai::stream_sinks::channel();
+        let owner = spawn_token_forwarder(rx, None, "cancel-test".into(),
+            Some(room.clone()), Some("sender".into()));
+        let start = next_for_room(&mut output, &room).await;
+        let joining = tokio::spawn(owner.join());
+        tokio::task::yield_now().await;
+        joining.abort();
+        assert!(joining.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(Duration::from_secs(2), tx.closed()).await
+            .expect("turn cancellation closes its presentation consumer");
+        assert!(tx.send(GenerationChunk::Token("late".into())).is_err());
+        let end = next_for_room(&mut output, &room).await;
+        assert!(end.done && end.token.is_empty());
+        assert_eq!(end.stream_id, start.stream_id);
     }
 
     // What this catches (e731576c): publication, not a later work-turn return,
