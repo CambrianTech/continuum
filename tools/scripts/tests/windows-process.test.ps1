@@ -57,7 +57,7 @@ exit 23
     $expected = @('--probe', '', 'with spaces', 'embedded"quote', 'C:\path with spaces\', 'backslash\"quote', '$literal; & |')
     $actual = New-Object 'System.Collections.Generic.List[string]'
     $counts = @{ stdout = 0; stderr = 0 }
-    Invoke-InstallerProcess -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+    Invoke-InstallerProcess -OwnProcessTree -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -ArgumentList (@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $child) + $expected) 2>&1 |
         ForEach-Object {
             $line = $_.ToString()
@@ -73,6 +73,69 @@ exit 23
         if ($actual[$i] -cne $expected[$i]) { throw "Argument $i changed: '$($actual[$i])'." }
     }
     Write-Host 'PASS: hidden native launch, exact argv, dual-pipe draining, native failure.'
+    # A cancelled build owns its descendants, unlike intentional service launch.
+    # Both fixture generations explicitly hide their windows on operator desktops.
+    $ownedChild = Join-Path $scratch 'owned tree.ps1'
+    @'
+param($Receipt)
+$start = New-Object Diagnostics.ProcessStartInfo
+$start.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$start.Arguments = '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 120"'
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$descendant = [Diagnostics.Process]::Start($start)
+@($PID, $descendant.Id) | Set-Content -LiteralPath $Receipt
+[Console]::Out.WriteLine('READY')
+Start-Sleep -Seconds 120
+'@ | Set-Content -LiteralPath $ownedChild -Encoding UTF8
+    $receipt = Join-Path $scratch 'owned-pids.txt'
+    $caught = $false
+    try {
+        Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-NonInteractive', '-File', $ownedChild, $receipt) |
+            ForEach-Object { if ($_ -eq 'READY') { throw 'cancel fixture' } }
+    } catch {
+        if ($_.Exception.Message -notmatch 'cancel fixture') { throw }
+        $caught = $true
+    }
+    if (-not $caught -or -not (Test-Path -LiteralPath $receipt)) { throw 'Cancellation fixture did not start.' }
+    foreach ($ownedId in (Get-Content -LiteralPath $receipt)) {
+        $remaining = Get-Process -Id ([int]$ownedId) -ErrorAction SilentlyContinue
+        if ($remaining -and -not $remaining.WaitForExit(5000)) { throw "Cancelled installer left owned process $ownedId running." }
+    }
+    Write-Host 'PASS: downstream cancellation terminates owned child and grandchild.'
+    # Stopping a silent pipeline must also reach the launcher's finally block.
+    # Close the actual pipe handles (including those inherited by descendants)
+    # before waiting, so this also exercises the post-EOF process-wait path.
+    $closedPipesChild = Join-Path $scratch 'closed pipes.ps1'
+    @'
+param($Receipt)
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class PipeCloser { [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int which); [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle); }'
+[void][PipeCloser]::CloseHandle([PipeCloser]::GetStdHandle(-11))
+[void][PipeCloser]::CloseHandle([PipeCloser]::GetStdHandle(-12))
+$PID | Set-Content -LiteralPath $Receipt
+Start-Sleep -Seconds 120
+'@ | Set-Content -LiteralPath $closedPipesChild -Encoding UTF8
+    $silentReceipt = Join-Path $scratch 'silent-pids.txt'
+    $pipeline = [PowerShell]::Create()
+    try {
+        [void]$pipeline.AddScript({
+            param($Helper, $Fixture, $Receipt)
+            . $Helper
+            Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-NonInteractive', '-File', $Fixture, $Receipt)
+        }).AddArgument((Join-Path $PSScriptRoot '../lib/windows-elevation.ps1')).AddArgument($closedPipesChild).AddArgument($silentReceipt)
+        $pending = $pipeline.BeginInvoke()
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not (Test-Path -LiteralPath $silentReceipt) -and [DateTime]::UtcNow -lt $deadline -and -not $pending.IsCompleted) { Start-Sleep -Milliseconds 50 }
+        if (-not (Test-Path -LiteralPath $silentReceipt)) { throw "Silent fixture did not start: $($pipeline.Streams.Error)" }
+        $stop = $pipeline.BeginStop($null, $null)
+        if (-not $stop.AsyncWaitHandle.WaitOne(10000)) { throw 'Silent pipeline cancellation did not finish within ten seconds.' }
+        $pipeline.EndStop($stop)
+        foreach ($ownedId in (Get-Content -LiteralPath $silentReceipt)) {
+            $remaining = Get-Process -Id ([int]$ownedId) -ErrorAction SilentlyContinue
+            if ($remaining -and -not $remaining.WaitForExit(5000)) { throw "Silent cancellation left owned process $ownedId running." }
+        }
+    } finally { $pipeline.Dispose() }
+    Write-Host 'PASS: silent pipeline cancellation after pipe EOF terminates owned tree within bounded time.'
     # vcvars is a batch file. CRT argument escaping must not corrupt cmd's
     # quoted executable path or its redirection/conditional command syntax.
     $batch = Join-Path $scratch 'environment fixture.cmd'

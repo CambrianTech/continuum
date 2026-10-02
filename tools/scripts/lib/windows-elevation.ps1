@@ -10,6 +10,7 @@ function Invoke-InstallerProcess {
     [CmdletBinding(DefaultParameterSetName = 'Argv')]
     param([Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
         [Parameter(ParameterSetName = 'Argv', Position = 1)][string[]]$ArgumentList = @(),
+        [switch]$OwnProcessTree,
         # cmd.exe /c uses shell grammar rather than CommandLineToArgvW. Only
         # fixed installer shell expressions should use this explicit boundary.
         [Parameter(Mandatory = $true, ParameterSetName = 'Raw')][string]$RawArguments)
@@ -30,15 +31,102 @@ function Invoke-InstallerProcess {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    $process = New-Object Diagnostics.Process
-    $process.StartInfo = $start
+    if ($OwnProcessTree -and -not ('Continuum.Setup.OwnedProcess' -as [type])) {
+        # Bootstrap adapter for the same Windows job/explicit-handle-list contract
+        # used by continuum-cli-lifecycle/windows_launch.rs. The kernel assigns
+        # ownership before the child's first instruction, not after Process.Start.
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Continuum.Setup {
+public sealed class OwnedProcess : IDisposable {
+    [StructLayout(LayoutKind.Sequential)] struct Basic { public long User, Job; public uint Flags; public UIntPtr Min, Max; public uint Count; public UIntPtr Affinity; public uint Priority, Scheduling; }
+    [StructLayout(LayoutKind.Sequential)] struct IO { public ulong A,B,C,D,E,F; }
+    [StructLayout(LayoutKind.Sequential)] struct Limits { public Basic Basic; public IO IO; public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob; }
+    [StructLayout(LayoutKind.Sequential)] struct Startup { public uint Size; public IntPtr Reserved, Desktop, Title; public uint X,Y,Width,Height,CharsX,CharsY,Fill,Flags; public ushort Show, ReservedSize; public IntPtr ReservedBytes, Input, Output, Error; }
+    [StructLayout(LayoutKind.Sequential)] struct StartupEx { public Startup Info; public IntPtr Attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr Process, Thread; public uint Id, ThreadId; }
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr attributes, IntPtr name);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job, int kind, ref Limits limits, uint size);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
+    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessW(string application, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string directory, ref StartupEx startup, out ProcessInfo process);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+    IntPtr job, process;
+    AnonymousPipeServerStream output, error, input;
+    public StreamReader StandardOutput { get; private set; }
+    public StreamReader StandardError { get; private set; }
+    public bool HasExited { get { return WaitForSingleObject(process, 0) == 0; } }
+    public int ExitCode { get { uint code; if (!GetExitCodeProcess(process, out code)) throw new Win32Exception(); return unchecked((int)code); } }
+    public bool WaitForExit(int milliseconds) { uint result=WaitForSingleObject(process, (uint)milliseconds); if (result==0xFFFFFFFF) throw new Win32Exception(); return result==0; }
+    public void WaitForExit() { if (!WaitForExit(-1)) throw new InvalidOperationException("Process wait failed"); }
+    public static OwnedProcess Start(ProcessStartInfo start) {
+        var owned = new OwnedProcess();
+        IntPtr attributes=IntPtr.Zero, handles=IntPtr.Zero, jobs=IntPtr.Zero;
+        bool initialized=false;
+        try {
+            owned.job=CreateJobObjectW(IntPtr.Zero, IntPtr.Zero);
+            if (owned.job==IntPtr.Zero) throw new Win32Exception();
+            var limits=new Limits(); limits.Basic.Flags=0x2000; // KILL_ON_JOB_CLOSE
+            if (!SetInformationJobObject(owned.job,9,ref limits,(uint)Marshal.SizeOf(typeof(Limits)))) throw new Win32Exception();
+            owned.output=new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
+            owned.error=new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
+            owned.input=new AnonymousPipeServerStream(PipeDirection.Out, HandleInheritability.Inheritable);
+            var startup=new StartupEx(); startup.Info.Size=(uint)Marshal.SizeOf(typeof(StartupEx)); startup.Info.Flags=0x100;
+            startup.Info.Input=owned.input.ClientSafePipeHandle.DangerousGetHandle();
+            startup.Info.Output=owned.output.ClientSafePipeHandle.DangerousGetHandle();
+            startup.Info.Error=owned.error.ClientSafePipeHandle.DangerousGetHandle();
+            IntPtr bytes=IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero,2,0,ref bytes);
+            if (bytes==IntPtr.Zero) throw new Win32Exception();
+            attributes=Marshal.AllocHGlobal(bytes);
+            if (!InitializeProcThreadAttributeList(attributes,2,0,ref bytes)) throw new Win32Exception();
+            initialized=true; startup.Attributes=attributes;
+            handles=Marshal.AllocHGlobal(3*IntPtr.Size);
+            Marshal.WriteIntPtr(handles,0,startup.Info.Input); Marshal.WriteIntPtr(handles,IntPtr.Size,startup.Info.Output); Marshal.WriteIntPtr(handles,2*IntPtr.Size,startup.Info.Error);
+            jobs=Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobs,owned.job);
+            if (!UpdateProcThreadAttribute(attributes,0,new IntPtr(0x20002),handles,new IntPtr(3*IntPtr.Size),IntPtr.Zero,IntPtr.Zero) ||
+                !UpdateProcThreadAttribute(attributes,0,new IntPtr(0x2000D),jobs,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero)) throw new Win32Exception();
+            ProcessInfo info;
+            if (!CreateProcessW(start.FileName,new StringBuilder("\""+start.FileName+"\" "+start.Arguments),IntPtr.Zero,IntPtr.Zero,true,0x08080400,IntPtr.Zero,start.WorkingDirectory,ref startup,out info)) throw new Win32Exception();
+            owned.process=info.Process; CloseHandle(info.Thread);
+            owned.output.DisposeLocalCopyOfClientHandle(); owned.error.DisposeLocalCopyOfClientHandle(); owned.input.DisposeLocalCopyOfClientHandle();
+            owned.input.Dispose(); owned.input=null; // Noninteractive build/acquisition stdin EOF.
+            owned.StandardOutput=new StreamReader(owned.output,Console.OutputEncoding);
+            owned.StandardError=new StreamReader(owned.error,Console.OutputEncoding);
+            return owned;
+        } catch { owned.Dispose(); throw; }
+        finally { if (initialized) DeleteProcThreadAttributeList(attributes); if (attributes!=IntPtr.Zero) Marshal.FreeHGlobal(attributes); if (handles!=IntPtr.Zero) Marshal.FreeHGlobal(handles); if (jobs!=IntPtr.Zero) Marshal.FreeHGlobal(jobs); }
+    }
+    public void Dispose() {
+        if (job!=IntPtr.Zero) { CloseHandle(job); job=IntPtr.Zero; }
+        if (process!=IntPtr.Zero) { WaitForSingleObject(process,5000); CloseHandle(process); process=IntPtr.Zero; }
+        if (StandardOutput!=null) StandardOutput.Dispose(); else if (output!=null) output.Dispose();
+        if (StandardError!=null) StandardError.Dispose(); else if (error!=null) error.Dispose();
+        if (input!=null) input.Dispose();
+    }
+}}
+'@
+    }
+    $process = $null
     try {
-        if (-not $process.Start()) { throw "Could not start $FilePath" }
+        if ($OwnProcessTree) { $process = [Continuum.Setup.OwnedProcess]::Start($start) }
+        else { $process = [Diagnostics.Process]::Start($start) }
+        if (-not $process) { throw "Could not start $FilePath" }
         $stdout = $process.StandardOutput.ReadLineAsync()
         $stderr = $process.StandardError.ReadLineAsync()
         while ($stdout -or $stderr) {
             $pending = @(); if ($stdout) { $pending += $stdout }; if ($stderr) { $pending += $stderr }
-            $index = [Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$pending)
+            $index = [Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$pending, 200)
+            if ($index -lt 0) { continue } # Observe PowerShell cancellation even when the child is silent.
             $finished = $pending[$index]
             $line = $finished.GetAwaiter().GetResult()
             if ([object]::ReferenceEquals($finished, $stdout)) {
@@ -49,9 +137,9 @@ function Invoke-InstallerProcess {
                 else { Write-Error -Message $line -ErrorAction Continue; $stderr = $process.StandardError.ReadLineAsync() }
             }
         }
-        $process.WaitForExit()
+        while (-not $process.WaitForExit(200)) { } # Pipes may close before process exit; remain cancellable.
         $global:LASTEXITCODE = $process.ExitCode
-    } finally { $process.Dispose() }
+    } finally { if ($process) { $process.Dispose() } }
 }
 
 function Update-SessionPath {
@@ -147,7 +235,7 @@ function Ensure-Gsudo {
         throw 'The shared installer manifest must supply a per-user gsudo package source.'
     }
     Write-Host 'Installing gsudo (per-user) -- the shared elevation helper ...'
-    Invoke-InstallerProcess 'winget' @('install', '--id', $source.id, '--source', 'winget', '--exact', '--silent',
+    Invoke-InstallerProcess -OwnProcessTree 'winget' @('install', '--id', $source.id, '--source', 'winget', '--exact', '--silent',
         '--accept-package-agreements', '--accept-source-agreements', '--scope', $source.scope)
     $code = $global:LASTEXITCODE
     if ($code -ne 0 -and $code -ne 3010) { throw "gsudo acquisition failed (winget exit $code)." }

@@ -133,7 +133,13 @@ codes. Failed Git acquisition or grid authentication stops setup.
 The focused Windows PowerShell 5 regression covers no console for the direct
 child, Windows arguments (including gsudo's bare flags), concurrent output pipes,
 batch-shell environment capture, authentication refusal, and bootstrap drift.
-This does not establish arbitrary descendant behavior, cancellation ownership,
-or live consent behavior. Those checks and the full service regression remain
-required before another live installer run. Standalone AIRC must receive the
+CI at cb13f090f passed the unadapted-grandchild visibility probe and full service
+suite. Acquisition and build commands now explicitly own a Windows job assigned
+at process creation, using the same kernel ownership contract as the Rust
+lifecycle adapter. Cancellation closes that job, including descendants; both
+pipe draining and post-EOF waiting remain cancellable. PS5 regressions cover
+downstream exceptions and silent cancellation after both OS pipes close.
+Intentional daemon/service and gsudo cache lifetime boundaries retain their
+existing owners instead of joining a temporary build job.
+Fresh final-head CI and live consent remain required. Standalone AIRC must receive the
 released shared helper through its existing pin; a local wrapper is not a fix.

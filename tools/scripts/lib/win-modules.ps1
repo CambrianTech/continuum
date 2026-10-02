@@ -186,7 +186,7 @@ function Move-ColdDir {
     Write-Step "  cold: migrating $Src -> $Dst"
     # Never traverse junctions; move symbolic links as links. Remaining source
     # entries cause refusal below, rather than silently publishing a partial cache.
-    Invoke-InstallerProcess 'robocopy' @($Src, $Dst, '/E', '/MOVE', '/SL', '/XJ', '/NFL', '/NDL', '/NP', '/R:1', '/W:1') | Out-Host
+    Invoke-InstallerProcess -OwnProcessTree 'robocopy' @($Src, $Dst, '/E', '/MOVE', '/SL', '/XJ', '/NFL', '/NDL', '/NP', '/R:1', '/W:1') | Out-Host
     $code = $global:LASTEXITCODE
     if ($code -ge 8) { throw "Cold migration failed with robocopy exit $code; the owned partial move will resume on installer rerun: $receipt" }
     if (Test-Path -LiteralPath $Src) {
@@ -316,7 +316,7 @@ function Mod-Rust {
     # on first build; ensure a default toolchain exists so rustc/cargo resolve.
     if ((Get-Command rustup -ErrorAction SilentlyContinue) -and
         -not (Get-Command rustc -ErrorAction SilentlyContinue)) {
-        Invoke-InstallerProcess 'rustup' @('default', 'stable') 2>&1 | Out-Null
+        Invoke-InstallerProcess -OwnProcessTree 'rustup' @('default', 'stable') 2>&1 | Out-Null
         Update-SessionPath
     }
 }
@@ -808,16 +808,16 @@ function Mod-BuildCore {
         $buildArgs = @('build', '-p', 'continuum-core',
             '--bin', 'continuum-core-server',
             '--release', '--features', $features)
-        Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList $buildArgs
+        Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList $buildArgs -OwnProcessTree
         $code = $LASTEXITCODE
         if ($code -eq 0) {
             # The client does not serve models or render frames. Keep its launch
             # independent of GPU DLLs, including while repairing the service.
-            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'continuum-core', '--bin', 'continuum', '--release', '--no-default-features')
+            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'continuum-core', '--bin', 'continuum', '--release', '--no-default-features') -OwnProcessTree
             $code = $LASTEXITCODE
         }
         if ($code -eq 0) {
-            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'livekit-bridge', '--bin', 'livekit-bridge', '--release')
+            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'livekit-bridge', '--bin', 'livekit-bridge', '--release') -OwnProcessTree
             $code = $LASTEXITCODE
         }
     } finally { Pop-Location }
@@ -835,7 +835,7 @@ function Get-CoreEngineBackend {
 
 function Get-CoreEngineRequirement {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
-    $revision = (Invoke-InstallerProcess 'git' @('-C', $RepoRoot, 'rev-parse', 'HEAD:core/vendor/llama.cpp') 2>$null)
+    $revision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $RepoRoot, 'rev-parse', 'HEAD:core/vendor/llama.cpp') 2>$null)
     if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Cannot resolve the tracked llama.cpp gitlink.' }
     return [pscustomobject]@{ source_revision = $revision; backend = (Get-CoreEngineBackend) }
 }
@@ -883,18 +883,18 @@ function Mod-LlamaServer {
     if (-not (Test-Path $serverCMake)) {
         Module-Start 'llama-server' 'initializing core/vendor/llama.cpp submodule'
         Push-Location $RepoRoot
-        try { Invoke-InstallerProcess 'git' @('submodule', 'update', '--init', 'core/vendor/llama.cpp') } finally { Pop-Location }
+        try { Invoke-InstallerProcess -OwnProcessTree 'git' @('submodule', 'update', '--init', 'core/vendor/llama.cpp') } finally { Pop-Location }
     }
     if (-not (Test-Path $serverCMake)) {
         Module-Fail 'llama-server' "llama.cpp submodule missing at $submodule even after init"
     }
 
-    $sourceRevision = (Invoke-InstallerProcess 'git' @('-C', $submodule, 'rev-parse', 'HEAD') 2>$null)
+    $sourceRevision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', 'HEAD') 2>$null)
     if ($RequireReceipt) {
         $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
         if ($sourceRevision -cne $requirement.source_revision) { throw 'Checked-out llama.cpp differs from the tracked gitlink; refusing receipt migration.' }
     }
-    $head = (Invoke-InstallerProcess 'git' @('-C', $submodule, 'rev-parse', '--short', 'HEAD') 2>$null)
+    $head = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', '--short', 'HEAD') 2>$null)
     if (-not $head) { $head = 'unknown' }
 
     # Backend: NVIDIA -> CUDA (matches core/llama/build.rs gating), else CPU.
@@ -1003,11 +1003,11 @@ function Mod-LlamaServer {
 
     # Reboots can build from another worktree while sharing the same cache.
     # The shell installer uses this same source-ownership guard.
-    Invoke-InstallerProcess 'cmake' @("-DSOURCE_DIR=$submodule", "-DBUILD_DIR=$buildDir", '-P', (Join-Path $PSScriptRoot 'prepare-llama-build.cmake'))
+    Invoke-InstallerProcess 'cmake' @("-DSOURCE_DIR=$submodule", "-DBUILD_DIR=$buildDir", '-P', (Join-Path $PSScriptRoot 'prepare-llama-build.cmake')) -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "CMake cache ownership check failed ($LASTEXITCODE); configure aborted" }
-    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList $cmakeArgs
+    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList $cmakeArgs -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake configure failed ($LASTEXITCODE)" }
-    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList @('--build', $buildDir, '--target', 'llama-server')
+    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList @('--build', $buildDir, '--target', 'llama-server') -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake build failed ($LASTEXITCODE)" }
 
     # Ninja (single-config) emits under bin\; the VS generator would use bin\Release\.
@@ -1017,8 +1017,8 @@ function Mod-LlamaServer {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $builtBin) { Module-Fail 'llama-server' "build finished but llama-server.exe not found under $buildDir\bin" }
 
-    if ((Invoke-InstallerProcess 'git' @('-C', $submodule, 'rev-parse', 'HEAD')) -cne $sourceRevision) { throw 'Engine source revision changed during build.' }
-    if (Invoke-InstallerProcess 'git' @('-C', $submodule, 'status', '--porcelain', '--untracked-files=all')) { throw 'Engine source changed; cannot publish clean-source receipt.' }
+    if ((Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', 'HEAD')) -cne $sourceRevision) { throw 'Engine source revision changed during build.' }
+    if (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'status', '--porcelain', '--untracked-files=all')) { throw 'Engine source changed; cannot publish clean-source receipt.' }
     # Receipt capture belongs to this fresh build; never reconstruct it from a stamp.
     $cache = Get-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Raw
     foreach ($setting in @('BUILD_SHARED_LIBS:BOOL=OFF', 'GGML_BACKEND_DL:BOOL=OFF', 'GGML_BACKEND_DIR:PATH=')) {
@@ -1053,7 +1053,7 @@ function Mod-LlamaServer {
     $dumpbin = Join-Path (Split-Path $Matches[1] -Parent) 'dumpbin.exe'
     if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Configured engine dependency inspector is missing.' }
     # Imported platform DLLs remain the explicit Windows/driver contract.
-    Invoke-InstallerProcess 'cmake' @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin", "-DENGINE_DIR=$($installDir.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-P', (Join-Path $PSScriptRoot 'verify-engine-imports.cmake'))
+    Invoke-InstallerProcess 'cmake' @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin", "-DENGINE_DIR=$($installDir.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-P', (Join-Path $PSScriptRoot 'verify-engine-imports.cmake')) -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { throw 'Engine application imports could not be bounded.' }
     Save-CoreEngineReceipt -Directory $installDir -SourceRevision $sourceRevision -Backend $backend
     Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII

@@ -135,7 +135,7 @@ function Install-IfMissing {
     if ($Override)  { $wingetArgs += @('--override', $Override) }
 
     if ($UserScope -or (Test-IsAdmin)) {
-        Invoke-InstallerProcess 'winget' $wingetArgs
+        Invoke-InstallerProcess -OwnProcessTree 'winget' $wingetArgs
     } else {
         Invoke-Elevated -Reason "installing $Name" -CommandLine (@('winget') + $wingetArgs)
     }
