@@ -6,6 +6,36 @@ $ErrorActionPreference = 'Stop'
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-process-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Regression: an inherited module search path must not choose another
+    # PowerShell engine's built-ins (the public PS5 Get-Acl failure on BIGGIEDESK).
+    $foreignModules = Join-Path $scratch 'foreign-modules'
+    $foreignSecurity = Join-Path $foreignModules 'Microsoft.PowerShell.Security'
+    New-Item -ItemType Directory -Path $foreignSecurity -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $foreignSecurity 'Microsoft.PowerShell.Security.psm1'), 'function Get-Acl { throw "FOREIGN SECURITY MODULE" }; Export-ModuleMember -Function Get-Acl')
+    [IO.File]::WriteAllText((Join-Path $foreignSecurity 'Microsoft.PowerShell.Security.psd1'), "@{ RootModule='Microsoft.PowerShell.Security.psm1'; ModuleVersion='99.0'; FunctionsToExport=@('Get-Acl') }")
+    $moduleProbe = Join-Path $scratch 'module-probe.ps1'
+    @'
+param($Helper, $Foreign, $Target, $Mode)
+$ErrorActionPreference = 'Stop'
+$env:PSModulePath = $Foreign + ';' + $env:PSModulePath
+$inherited = $env:PSModulePath
+try {
+    if ($Mode -eq 'fixed') { . $Helper }
+    $null = Get-Acl -LiteralPath $Target
+    if ($Mode -ne 'fixed') { throw 'Negative control did not select the foreign module.' }
+    if ($env:PSModulePath -cne $inherited) { throw 'Installer discarded user module paths.' }
+    [Console]::WriteLine('NATIVE MODULE PASS')
+} catch {
+    if ($Mode -eq 'control' -and $_.Exception.Message -match 'FOREIGN SECURITY MODULE') { [Console]::WriteLine('FOREIGN CONTROL PASS'); exit 0 }
+    [Console]::Error.WriteLine($_.Exception.ToString()); exit 1
+}
+'@ | Set-Content -LiteralPath $moduleProbe -Encoding UTF8
+    foreach ($mode in @('control', 'fixed')) {
+        $result = @(Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-File', $moduleProbe, "$PSScriptRoot/../lib/windows-elevation.ps1", $foreignModules, $scratch, $mode))
+        $expected = if ($mode -eq 'fixed') { 'NATIVE MODULE PASS' } else { 'FOREIGN CONTROL PASS' }
+        if ($LASTEXITCODE -ne 0 -or $result -notcontains $expected) { throw "Inherited module regression failed ($mode): $result" }
+    }
+    Write-Host 'PASS: installer selects runtime built-ins without rewriting inherited module paths.'
     # Run this portion on the CI desktop only: it intentionally probes a tool
     # which launches its own child without supplying any window-hiding flags.
     # It must not be used as an experiment on an operator's active desktop.
