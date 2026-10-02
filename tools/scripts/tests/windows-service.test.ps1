@@ -38,9 +38,9 @@ try {
                 } else { & $nativeInstallerProcess (Join-Path $env:SystemRoot 'System32\robocopy.exe') $args }
             }
             function Invoke-InstallerProcess {
-                param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+                param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
                 if ($FilePath -eq 'robocopy') { robocopy @ArgumentList }
-                else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+                else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
             }
             function Get-ColdDrive { throw 'An interrupted migration selected a different drive' }
             function Module-Start { }
@@ -182,9 +182,9 @@ function Test-WingetAvailable {
             $script:prerequisiteInstalled = $true
         }
         function Invoke-InstallerProcess {
-            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
             if ($FilePath -eq 'winget') { winget @ArgumentList }
-            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
         }
         function Update-SessionPath { }
         function Module-Start { }
@@ -408,9 +408,9 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         function Get-CoreEngineBackend { 'cpu' }
         function git { $global:LASTEXITCODE = 0; if ($args -contains '--short') { 'aaaaaaa' } else { 'a' * 40 } }
         function Invoke-InstallerProcess {
-            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
             if ($FilePath -eq 'git') { git @ArgumentList }
-            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
         }
         function Module-Skip { }
         function Module-Start { throw 'fixture: real build branch selected' }
@@ -512,9 +512,9 @@ if (`$drift) { throw `$drift }
         $marker = Join-Path $scratch 'handoff-acquired'
         $cli = Join-Path $scratch 'handoff-cli.ps1'
         function Invoke-InstallerProcess {
-            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
             if ($FilePath -eq $cli) { & $FilePath @ArgumentList }
-            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
         }
         $core = Join-Path $scratch 'handoff-core.exe'
         [IO.File]::WriteAllText($core, 'fixture-core')
@@ -906,9 +906,9 @@ public static class NativeStatusFixture {
         function Test-ElevationCacheAvailable { $false }
         $script:gsudoArguments = @()
         function Invoke-InstallerProcess {
-            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
             if ($FilePath -eq 'gsudo') { gsudo @ArgumentList }
-            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
         }
         function gsudo {
             $script:elevationCalls++
@@ -1064,9 +1064,9 @@ try {
         function Update-SessionPath { }
         function winget { $script:gsudoPackageArgs = @($args); $global:LASTEXITCODE = 0 }
         function Invoke-InstallerProcess {
-            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
             if ($FilePath -eq 'winget') { winget @ArgumentList }
-            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
         }
         Ensure-Gsudo
         if ($script:GsudoExecutable -ne 'fixture-native.exe' -or
@@ -1150,9 +1150,9 @@ try {
     # readable live engine inside the answer refuses.
     $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
     function Invoke-InstallerProcess {
-        param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+        param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
         if ($FilePath -eq $fakeCli) { & $FilePath @ArgumentList }
-        else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+        else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
     }
     Set-Content -LiteralPath $fakeCli -Value @'
 if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
@@ -1355,9 +1355,9 @@ function Test-WingetAvailable { throw 'Unexpected provisioning' }
 function git { $global:LASTEXITCODE = 0 }
 $fixtureNativeProcess = ${function:Invoke-InstallerProcess}
 function Invoke-InstallerProcess {
-    param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+    param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
     if ($FilePath -eq 'git') { $global:LASTEXITCODE = 0 }
-    else { & $fixtureNativeProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree }
+    else { & $fixtureNativeProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
 }
 '@
         $shim.Replace('__SERVICE__', (Join-Path $repo 'tools\scripts\lib\windows-service.ps1').Replace("'", "''")) |

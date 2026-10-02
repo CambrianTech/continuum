@@ -136,6 +136,42 @@ Start-Sleep -Seconds 120
         }
     } finally { $pipeline.Dispose() }
     Write-Host 'PASS: silent pipeline cancellation after pipe EOF terminates owned tree within bounded time.'
+    # Full install coordinators may adopt a daemon only on success. Keep a
+    # process handle to this fixture child so cleanup cannot target a reused PID.
+    $handoff = Join-Path $scratch 'handoff.ps1'
+    @'
+param($Receipt, [int]$Code)
+Add-Type -TypeDefinition @"
+using System; using System.Text; using System.ComponentModel; using System.Runtime.InteropServices;
+public static class HandoffChild {
+ [StructLayout(LayoutKind.Sequential)] struct SI { public uint cb; public IntPtr a,b,c; public uint d,e,f,g,h,i,j,k; public ushort l,m; public IntPtr n,o,p,q; }
+ [StructLayout(LayoutKind.Sequential)] struct PI { public IntPtr process,thread; public uint id,tid; }
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string exe,StringBuilder command,IntPtr pa,IntPtr ta,bool inherit,uint flags,IntPtr env,string cwd,ref SI si,out PI pi);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+ public static uint Start(string exe) { var si=new SI(); si.cb=(uint)Marshal.SizeOf(typeof(SI)); PI pi;
+ if(!CreateProcessW(exe,new StringBuilder("\""+exe+"\" -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 30\""),IntPtr.Zero,IntPtr.Zero,false,0x08000000,IntPtr.Zero,null,ref si,out pi)) throw new Win32Exception();
+ CloseHandle(pi.thread); CloseHandle(pi.process); return pi.id; }
+}
+"@
+# Like AIRC's daemon, this child has no inherited installer output handles.
+$childId=[HandoffChild]::Start((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+$childId | Set-Content -LiteralPath $Receipt
+[Console]::Out.WriteLine('HANDOFF:' + $childId)
+exit $Code
+'@ | Set-Content -LiteralPath $handoff -Encoding UTF8
+    foreach ($code in @(0, 23)) {
+        $adopted = $null
+        try {
+            Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile','-NonInteractive','-File',$handoff,$receipt,"$code") |
+                ForEach-Object { if ($_ -match '^HANDOFF:(\d+)$') { $adopted = Get-Process -Id ([int]$Matches[1]); $null = $adopted.Handle } }
+            if ($LASTEXITCODE -ne $code -or -not $adopted) { throw 'Handoff fixture did not report its child and exit.' }
+            if ($code -eq 0 -and $adopted.HasExited) { throw 'Successful coordinator killed its adopted daemon.' }
+            if ($code -ne 0 -and -not $adopted.WaitForExit(5000)) { throw 'Failed coordinator preserved its child.' }
+        } finally {
+            if ($adopted) { if (-not $adopted.HasExited) { $adopted.Kill(); $adopted.WaitForExit() }; $adopted.Dispose() }
+        }
+    }
+    Write-Host 'PASS: only successful coordinators hand off children; failed coordinators retain kill ownership.'
     # vcvars is a batch file. CRT argument escaping must not corrupt cmd's
     # quoted executable path or its redirection/conditional command syntax.
     $batch = Join-Path $scratch 'environment fixture.cmd'

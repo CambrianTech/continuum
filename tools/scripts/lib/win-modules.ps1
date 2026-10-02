@@ -614,7 +614,7 @@ function Invoke-AircSetup {
     $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
-        Invoke-InstallerProcess (Get-Process -Id $PID).Path (@('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $scriptPath) + $SetupArguments)
+        Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path (@('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $scriptPath) + $SetupArguments)
         if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
     } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
 }

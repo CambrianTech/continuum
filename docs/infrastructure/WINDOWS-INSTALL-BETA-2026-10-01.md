@@ -139,7 +139,11 @@ at process creation, using the same kernel ownership contract as the Rust
 lifecycle adapter. Cancellation closes that job, including descendants; both
 pipe draining and post-EOF waiting remain cancellable. PS5 regressions cover
 downstream exceptions and silent cancellation after both OS pipes close.
-Intentional daemon/service and gsudo cache lifetime boundaries retain their
-existing owners instead of joining a temporary build job.
+Installer coordinators own their descendants until successful completion. Only
+after exit zero and drained output may a coordinator clear kill-on-close so an
+intended background daemon survives; failures and cancellation retain tree
+cleanup. Build jobs never perform this handoff. The gsudo cache retains its
+existing session owner. PS5 regressions exercise successful handoff and failed
+coordinator cleanup with real child processes.
 Fresh final-head CI and live consent remain required. Standalone AIRC must receive the
 released shared helper through its existing pin; a local wrapper is not a fix.

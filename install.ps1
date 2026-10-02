@@ -34,9 +34,11 @@ function Invoke-InstallerProcess {
     param([Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
         [Parameter(ParameterSetName = 'Argv', Position = 1)][string[]]$ArgumentList = @(),
         [switch]$OwnProcessTree,
+        [switch]$PreserveChildrenOnSuccess,
         # cmd.exe /c uses shell grammar rather than CommandLineToArgvW. Only
         # fixed installer shell expressions should use this explicit boundary.
         [Parameter(Mandatory = $true, ParameterSetName = 'Raw')][string]$RawArguments)
+    if ($PreserveChildrenOnSuccess -and -not $OwnProcessTree) { throw 'Successful daemon handoff requires an owned process tree.' }
     $command = Get-Command $FilePath -CommandType Application -ErrorAction Stop
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $command.Source
@@ -91,6 +93,11 @@ public sealed class OwnedProcess : IDisposable {
     public int ExitCode { get { uint code; if (!GetExitCodeProcess(process, out code)) throw new Win32Exception(); return unchecked((int)code); } }
     public bool WaitForExit(int milliseconds) { uint result=WaitForSingleObject(process, (uint)milliseconds); if (result==0xFFFFFFFF) throw new Win32Exception(); return result==0; }
     public void WaitForExit() { if (!WaitForExit(-1)) throw new InvalidOperationException("Process wait failed"); }
+    public void CompleteHandoff() {
+        if (!HasExited || ExitCode!=0) throw new InvalidOperationException("Only a successful coordinator may hand off its children");
+        var limits=new Limits();
+        if (!SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf(typeof(Limits)))) throw new Win32Exception();
+    }
     public static OwnedProcess Start(ProcessStartInfo start) {
         var owned = new OwnedProcess();
         IntPtr attributes=IntPtr.Zero, handles=IntPtr.Zero, jobs=IntPtr.Zero;
@@ -162,6 +169,9 @@ public sealed class OwnedProcess : IDisposable {
         }
         while (-not $process.WaitForExit(200)) { } # Pipes may close before process exit; remain cancellable.
         $global:LASTEXITCODE = $process.ExitCode
+        # Until a complete successful coordinator return, cancellation owns all
+        # work. Build commands never transfer their descendants' lifetime.
+        if ($PreserveChildrenOnSuccess -and $process.ExitCode -eq 0) { $process.CompleteHandoff() }
     } finally { if ($process) { $process.Dispose() } }
 }
 # END GENERATED INSTALLER PROCESS
@@ -224,7 +234,7 @@ if (-not $PSScriptRoot) {
     if ($Grid) { $bootArgs += '-Grid' }
     . (Join-Path $target 'tools\scripts\lib\windows-elevation.ps1')
     if ($Update) { Update-ContinuumCheckout -RepoRoot $target }
-    Invoke-InstallerProcess (Get-Process -Id $PID).Path $bootArgs
+    Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path $bootArgs
     exit $LASTEXITCODE
 }
 
@@ -240,7 +250,7 @@ if ($Update) {
     Update-ContinuumCheckout -RepoRoot $RepoRoot
     $updatedArgs = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', (Join-Path $RepoRoot 'install.ps1'))
     if ($Grid) { $updatedArgs += '-Grid' }
-    Invoke-InstallerProcess (Get-Process -Id $PID).Path $updatedArgs
+    Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path $updatedArgs
     exit $LASTEXITCODE
 }
 
