@@ -39,6 +39,20 @@ function Initialize-InstallerPowerShell {
     }
 }
 
+function Invoke-InstallerEntryPoint {
+    param([Parameter(Mandatory = $true)][scriptblock]$Action)
+    try {
+        & $Action 2>&1 | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) {
+                [Console]::Error.WriteLine($_.ToString())
+            } else { Write-Output $_ }
+        }
+    } catch {
+        [Console]::Error.WriteLine($_.ToString())
+        exit 1
+    }
+}
+
 function Invoke-InstallerProcess {
     [CmdletBinding(DefaultParameterSetName = 'Argv')]
     param([Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
@@ -184,8 +198,10 @@ public sealed class OwnedProcess : IDisposable {
         if ($PreserveChildrenOnSuccess -and $process.ExitCode -eq 0) { $process.CompleteHandoff() }
     } finally { if ($process) { $process.Dispose() } }
 }
-Initialize-InstallerPowerShell
 # END GENERATED INSTALLER PROCESS
+
+Invoke-InstallerEntryPoint {
+Initialize-InstallerPowerShell
 
 $ErrorActionPreference = 'Stop'
 if ($ResumePrepared -and $Update) { throw '-ResumePrepared selects an existing release and cannot be combined with -Update.' }
@@ -364,3 +380,5 @@ Write-Ok 'Continuum native install complete.'
 Write-Host '  Update: .\install.ps1 -Update  (fast-forward this checkout, build, verify, and hand over)'
 Write-Host '  Test:   continuum ping'
 Write-Host ''
+
+} # Installer entry: preserve diagnostics across hidden PowerShell process boundaries.
