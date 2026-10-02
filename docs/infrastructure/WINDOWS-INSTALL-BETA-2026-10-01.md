@@ -297,3 +297,31 @@ step took 7 seconds, so this is duplicate scenario reduction, not a claim of
 minutes saved. Separate PowerShell/Bash CUDA adapter coverage remains intact.
 Engine-slot shell contracts run once in the required Linux job for PR/push;
 standalone manually dispatched Carl smoke keeps its own slot proof.
+### 2026-10-02 — LLVM publication completeness (OPEN live acceptance)
+
+The DLL-only reuse guard could accept an interrupted copy before resource
+headers reached the managed payload directory. LLVM now writes an owned pending
+marker before copying, verifies every staged DLL/resource file by SHA256 against
+a manifest-bound receipt, and atomically publishes the receipt before clearing
+pending. Normal setup repairs missing, damaged, interrupted or differently
+pinned installs; ExistingOnly refuses them. Unrelated destination files remain
+untouched. LLVM receipts are separate from inference-engine lifecycle records.
+
+The existing XZ fixture now forces failure after the first destination copy and
+checks rerun recovery, missing/corrupt receipts, modified resource headers,
+source-pin changes, unchanged reruns, literal cold paths and unrelated data.
+Real PS5 publication checks pass with an explicitly preseeded, checksum-verified
+scratch decoder; this does NOT prove PS5 decoder acquisition. Full decoder
+acquisition plus the same LLVM cases pass under PS7. The full PS5 service suite,
+including public preparation using complete synthetic LLVM files, passes.
+No real LLVM download/extraction, user environment registration, UAC, Rust build,
+or live installer changes were used for this follow-up.
+
+Separate OPEN evidence: the initial full PS5 XZ fixture (session8691) remained
+at unchanged decoder Expand-Archive acquisition for over 90 seconds, with only
+the verified 1099395-byte ZIP and payload-root present, no decoder executable.
+The exact scratch test owner PID31236/child348 was verified and stopped; no
+public installer was stopped. Decoder acquisition is not repaired by this patch.
+The service fixture initially selected Codex's Git without Bash; selecting the
+installed Git for Windows in that test process's PATH allowed its existing
+ancestry regression to run. No global PATH or setup policy was changed.
