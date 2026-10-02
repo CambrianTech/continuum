@@ -220,3 +220,18 @@ Existing cancellation, successful child handoff, argv, dual-pipe and bootstrap
 projection checks pass. No build, live installer, UAC, or daemon was run. AIRC must
 consume the released shared helper and wrap its public entry in a follow-up;
 this change does not claim to fix unmodified external PowerShell scripts.
+### Verified recovery handoff (2026-10-02)
+
+A whole-update coordinator can restore and verify the previous daemon yet must
+return a failing update status. The shared launcher now accepts an explicit
+`PreserveChildrenOnExitCode` list for such completed outcomes. The default is
+empty; existing success-only behavior is unchanged. The option requires owned
+process-tree cleanup, never changes the native exit status, and never applies
+to interruption or cancellation. Callers must select the outcome only after
+verifying recovery; ordinary failures must remain outside the list.
+
+Actual hidden PS5 child/grandchild fixtures verify default refusal of exit 200,
+explicit handoff on 200 while retaining that failure status, cleanup on unlisted
+23, and cancellation cleanup even with the allowlist. AIRC integration and the
+public mapping of its internal recovery outcome remain separate acceptance work.
+No live installation, daemon, firewall, or consent action was performed.

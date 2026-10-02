@@ -176,7 +176,7 @@ Start-Sleep -Seconds 120
     $receipt = Join-Path $scratch 'owned-pids.txt'
     $caught = $false
     try {
-        Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-NonInteractive', '-File', $ownedChild, $receipt) |
+        Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnExitCode @(0,200) "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-NonInteractive', '-File', $ownedChild, $receipt) |
             ForEach-Object { if ($_ -eq 'READY') { throw 'cancel fixture' } }
     } catch {
         if ($_.Exception.Message -notmatch 'cancel fixture') { throw }
@@ -221,7 +221,13 @@ Start-Sleep -Seconds 120
         }
     } finally { $pipeline.Dispose() }
     Write-Host 'PASS: silent pipeline cancellation after pipe EOF terminates owned tree within bounded time.'
-    # Full install coordinators may adopt a daemon only on success. Keep a
+    $rejected = $false
+    try { Invoke-InstallerProcess -PreserveChildrenOnExitCode @(200) 'must-not-launch.exe' } catch {
+        if ($_.Exception.Message -notmatch 'requires an owned process tree') { throw }
+        $rejected = $true
+    }
+    if (-not $rejected) { throw 'Completed outcome accepted without process ownership.' }
+    # Coordinators may hand off only explicitly accepted completed outcomes. Keep a
     # process handle to this fixture child so cleanup cannot target a reused PID.
     $handoff = Join-Path $scratch 'handoff.ps1'
     @'
@@ -244,19 +250,20 @@ $childId | Set-Content -LiteralPath $Receipt
 [Console]::Out.WriteLine('HANDOFF:' + $childId)
 exit $Code
 '@ | Set-Content -LiteralPath $handoff -Encoding UTF8
-    foreach ($code in @(0, 23)) {
+    foreach ($case in @(@{ Code=0; Allow=@(); Survives=$true }, @{ Code=23; Allow=@(); Survives=$false }, @{ Code=200; Allow=@(); Survives=$false }, @{ Code=200; Allow=@(200); Survives=$true }, @{ Code=23; Allow=@(200); Survives=$false })) {
+        $code = $case.Code
         $adopted = $null
         try {
-            Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile','-NonInteractive','-File',$handoff,$receipt,"$code") |
+            Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess -PreserveChildrenOnExitCode $case.Allow "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile','-NonInteractive','-File',$handoff,$receipt,"$code") |
                 ForEach-Object { if ($_ -match '^HANDOFF:(\d+)$') { $adopted = Get-Process -Id ([int]$Matches[1]); $null = $adopted.Handle } }
             if ($LASTEXITCODE -ne $code -or -not $adopted) { throw 'Handoff fixture did not report its child and exit.' }
-            if ($code -eq 0 -and $adopted.HasExited) { throw 'Successful coordinator killed its adopted daemon.' }
-            if ($code -ne 0 -and -not $adopted.WaitForExit(5000)) { throw 'Failed coordinator preserved its child.' }
+            if ($case.Survives -and $adopted.HasExited) { throw 'Successful coordinator killed its adopted daemon.' }
+            if (-not $case.Survives -and -not $adopted.WaitForExit(5000)) { throw 'Failed coordinator preserved its child.' }
         } finally {
             if ($adopted) { if (-not $adopted.HasExited) { $adopted.Kill(); $adopted.WaitForExit() }; $adopted.Dispose() }
         }
     }
-    Write-Host 'PASS: only successful coordinators hand off children; failed coordinators retain kill ownership.'
+    Write-Host 'PASS: explicit completed outcomes preserve children and native failures; unlisted failures retain kill ownership.'
     # vcvars is a batch file. CRT argument escaping must not corrupt cmd's
     # quoted executable path or its redirection/conditional command syntax.
     $batch = Join-Path $scratch 'environment fixture.cmd'
