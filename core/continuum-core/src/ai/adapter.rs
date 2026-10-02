@@ -370,6 +370,8 @@ pub enum ApiStyle {
 pub enum GenerationChunk {
     /// A fragment of the user-facing answer, emitted as the model decodes it.
     Token(String),
+    /// Native media, reference-counted across the bounded stream ring.
+    Media(std::sync::Arc<crate::ai::stream_sinks::MediaChunk>),
     /// A fragment of the model's private reasoning (`<think>` / `reasoning_content`).
     /// Surfaced on its OWN variant so a consumer can show "thinking…" live without
     /// ever leaking chain-of-thought into the room — the answer/reasoning split is
@@ -388,6 +390,16 @@ pub enum GenerationChunk {
         total: u64,
         cached: u64,
     },
+}
+
+impl GenerationChunk {
+    pub fn byte_len(&self) -> usize {
+        match self {
+            Self::Token(s) | Self::Reasoning(s) => s.len(),
+            Self::Media(media) => media.data.len(),
+            Self::Prefill { .. } => std::mem::size_of::<Self>(),
+        }
+    }
 }
 
 /// The universal AI provider adapter trait
@@ -525,7 +537,7 @@ pub trait AIProviderAdapter: Send + Sync {
     async fn generate_stream_checked(
         &self,
         request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         self.generate_stream(request, sink)
             .await
@@ -546,35 +558,17 @@ pub trait AIProviderAdapter: Send + Sync {
     /// blocking [`generate_text`] is the drain over this: await the whole answer
     /// when you don't need the tokens live.
     ///
-    /// `sink` is an unbounded channel so a slow consumer never stalls token
-    /// decode; a consumer that only wants the final answer passes a sink it
-    /// drops/ignores (the chunks are cheap to discard).
+    /// `sink` is the shared bounded ring. Loss of continuity is an explicit
+    /// failure; disconnect cancels inference. Text-only drains are explicit.
     ///
-    /// Default impl: a NON-incremental adapter (a cloud one-shot endpoint, the
-    /// heuristic test adapter) genuinely has nothing to stream — it produces the
-    /// whole answer at once. It honestly emits that as a single trailing chunk
-    /// then returns the same response. This is a capability statement, not a
-    /// fallback that hides a failure: there is no partial output to deliver.
-    /// Streaming backends (OpenAI-compatible / llama-server) override this with a
-    /// real token-by-token stream and reimplement `generate_text` on top of it.
+    /// Adapters must implement their real incremental wire. A completed response
+    /// emitted as one trailing chunk is not streaming, including for text.
     async fn generate_stream(
         &self,
-        request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        _request: TextGenerationRequest,
+        _sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, String> {
-        let response = self.generate_text(request).await?;
-        if sink.is_closed() {
-            return Ok(response); // No observer: keep the result without cloning discarded chunks.
-        }
-        if let Some(reasoning) = response.reasoning.as_ref() {
-            if !reasoning.is_empty() {
-                let _ = sink.send(GenerationChunk::Reasoning(reasoning.clone()));
-            }
-        }
-        if !response.text.is_empty() {
-            let _ = sink.send(GenerationChunk::Token(response.text.clone()));
-        }
-        Ok(response)
+        Err(format!("{} has no incremental inference transport; batch substitution is forbidden", self.name()))
     }
 
     // ─── Embeddings (optional) ──────────────────────────────────────────────

@@ -76,25 +76,13 @@ pub trait AircInferenceTransport: Send + Sync {
     /// end. INFERENCE IS A STREAM, NOT A PROMISE: on the live wire the requester's
     /// liveness is the next chunk, not one deadline for the whole answer.
     ///
-    /// Default: a transport with no live wire (the stub, the local-adapter loopback)
-    /// has nothing to stream — it answers whole and honestly emits that as a single
-    /// trailing chunk, the same capability statement `AIProviderAdapter::generate_stream`
-    /// makes for a one-shot backend.
+    /// No implicit whole-response substitute for a continuous channel.
     async fn send_request_streaming(
         &self,
-        request: RemoteInferenceRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        _request: RemoteInferenceRequest,
+        _sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
-        let response = self.send_request(request).await?;
-        if !sink.is_closed() {
-            if let Some(r) = response.text_response.reasoning.as_ref().filter(|r| !r.is_empty()) {
-                let _ = sink.send(GenerationChunk::Reasoning(r.clone()));
-            }
-            if !response.text_response.text.is_empty() {
-                let _ = sink.send(GenerationChunk::Token(response.text_response.text.clone()));
-            }
-        }
-        Ok(response)
+        Err(RemoteInferenceError::Transport { message: "Transport has no incremental inference wire; batch substitution is forbidden".into() })
     }
 }
 
@@ -109,36 +97,56 @@ pub const STREAM_IDLE_BOUND: Duration = Duration::from_secs(90);
 fn forward_stream_chunk(
     event: &TranscriptEvent,
     stream_id: &str,
-    sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    sink: &crate::ai::stream_sinks::GenerationSink,
+    expected_sequence: u64,
 ) -> Result<Option<bool>, String> {
     if event.headers.get(airc_lib::HEADER_STREAM_ID).map(String::as_str) != Some(stream_id) {
         return Ok(None);
     }
+    let sequence = event.headers.get(airc_lib::HEADER_STREAM_SEQ)
+        .ok_or_else(|| "remote stream chunk has no sequence".to_string())?
+        .parse::<u64>().map_err(|_| "remote stream sequence is invalid".to_string())?;
+    if sequence != expected_sequence {
+        return Err(format!("remote stream continuity lost: expected sequence {expected_sequence}, received {sequence}"));
+    }
     let kind = event.headers.get(airc_lib::HEADER_STREAM_KIND)
         .ok_or_else(|| "remote stream chunk has no kind".to_string())?;
-    if !matches!(kind.as_str(), airc_lib::STREAM_KIND_TEXT_TOKEN | airc_lib::STREAM_KIND_TEXT_REASONING | crate::routing::command_handler::STREAM_KIND_PREFILL) {
+    if !matches!(kind.as_str(), airc_lib::STREAM_KIND_TEXT_TOKEN | airc_lib::STREAM_KIND_TEXT_REASONING | crate::routing::command_handler::STREAM_KIND_PREFILL | crate::inference::media_wire::KIND) {
         return Err(format!("Unsupported remote stream kind '{kind}'; refusing to substitute answer text"));
     }
-    let is_final = event
-        .headers
-        .get(airc_lib::HEADER_STREAM_FINAL)
-        .is_some_and(|v| v == "true");
-    let text = event.body.as_ref().and_then(|b| b.as_text()).unwrap_or_default(); // unwrap_or_default: a final marker carries no text; an empty fragment forwards nothing below
+    let is_final = match event.headers.get(airc_lib::HEADER_STREAM_FINAL).map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => return Err("remote stream terminal marker is invalid".into()),
+    };
+    if kind == crate::inference::media_wire::KIND {
+        if is_final { return Err("Native media chunk cannot replace stream terminal marker".into()); }
+        let media = crate::inference::media_wire::decode(&event.headers, event.body.as_ref())?;
+        sink.send(GenerationChunk::Media(Arc::new(media)))?;
+        return Ok(Some(false));
+    }
+    let text = match event.body.as_ref() {
+        Some(body) => body.as_text().ok_or_else(|| "remote text stream carries a non-text body".to_string())?,
+        None if is_final => "",
+        None => return Err("remote stream chunk has no body".into()),
+    };
     if !text.is_empty() {
         let chunk = match kind.as_str() {
-            airc_lib::STREAM_KIND_TEXT_REASONING => Some(GenerationChunk::Reasoning(text.to_string())),
-            crate::routing::command_handler::STREAM_KIND_PREFILL => serde_json::from_str::<serde_json::Value>(text)
-                .ok()
-                .map(|v| GenerationChunk::Prefill {
-                    processed: v["processed"].as_u64().unwrap_or(0), // unwrap_or: a malformed progress frame reads as no progress, never as a token
-                    total: v["total"].as_u64().unwrap_or(0),
-                    cached: v["cached"].as_u64().unwrap_or(0),
-                }),
-            _ => Some(GenerationChunk::Token(text.to_string())),
+            airc_lib::STREAM_KIND_TEXT_REASONING => GenerationChunk::Reasoning(text.to_string()),
+            crate::routing::command_handler::STREAM_KIND_PREFILL => {
+                let value: serde_json::Value = serde_json::from_str(text)
+                    .map_err(|error| format!("invalid remote prefill frame: {error}"))?;
+                let count = |field: &str| value.get(field).and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| format!("invalid remote prefill field '{field}'"));
+                GenerationChunk::Prefill {
+                    processed: count("processed")?,
+                    total: count("total")?,
+                    cached: count("cached")?,
+                }
+            }
+            _ => GenerationChunk::Token(text.to_string()),
         };
-        if let Some(c) = chunk {
-            let _ = sink.send(c);
-        }
+        sink.send(chunk)?;
     }
     Ok(Some(is_final))
 }
@@ -225,6 +233,14 @@ impl LocalAdapterTransport {
 
 #[async_trait]
 impl AircInferenceTransport for LocalAdapterTransport {
+    async fn send_request_streaming(&self, request: RemoteInferenceRequest,
+        sink: crate::ai::stream_sinks::GenerationSink) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
+        let text_response = self.adapter.generate_stream(request.text_request, sink).await
+            .map_err(|message| RemoteInferenceError::PeerAdapterFailed { message })?;
+        Ok(RemoteInferenceResponse { correlation_id: request.correlation_id,
+            served_by: self.fake_peer_id.clone(), text_response })
+    }
+
     async fn send_request(
         &self,
         request: RemoteInferenceRequest,
@@ -398,15 +414,15 @@ impl AircInferenceTransport for AircLiveTransport {
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
         // The drain: same wire, the chunks discarded (the sink is dropped, so nothing
         // is even cloned for it).
-        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-        drop(_rx);
+        let sink = crate::ai::stream_sinks::GenerationSink::discard();
+
         self.send_request_streaming(request, sink).await
     }
 
     async fn send_request_streaming(
         &self,
         request: RemoteInferenceRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
         // Stamp the send-entry instant up-front so the eventual Timeout
         // surfaces TRUE elapsed wall-clock, not a parroted copy of the
@@ -435,12 +451,15 @@ impl AircInferenceTransport for AircLiveTransport {
         // `params` as a `TextGenerationRequest`. RemoteInferenceRequest
         // is the transport-internal envelope; only its `text_request`
         // crosses the wire.
-        let params = serde_json::to_value(&request.text_request).map_err(|e| {
+        let mut params = serde_json::to_value(&request.text_request).map_err(|e| {
             RemoteInferenceError::Transport {
                 message: format!("serialize TextGenerationRequest: {e}"),
             }
         })?;
 
+        if !sink.is_closed() {
+            params[crate::inference::media_wire::ACCEPT_PARAM] = serde_json::json!(1);
+        }
         let envelope = AircCommandRequest::new(
             REMOTE_GENERATE_PATH.to_string(),
             KIND_PEER.to_string(),
@@ -463,22 +482,12 @@ impl AircInferenceTransport for AircLiveTransport {
         // Subscribe BEFORE the request leaves, or the first chunks race the
         // subscription and are lost. No filter: the daemon inverted a header filter
         // once (2026-09-04) and citizens heard only heartbeats; match on receive.
-        let mut chunks = if sink.is_closed() {
-            None
-        } else {
-            match crate::persona::airc_citizen::subscribe_every_room(&self.airc).await {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    crate::probe!(
-                        class = "remote_lane.stream_unsubscribed",
-                        peer = %target.0,
-                        error = %e,
-                        "could not subscribe for the answer's chunks — the turn still completes, whole, at the end"
-                    );
-                    None
-                }
-            }
-        };
+        // Even a text-only drain must observe stream liveness; it only discards
+        // local presentation, never switches to a whole-response network path.
+        let mut chunks = Some(crate::persona::airc_citizen::subscribe_every_room(&self.airc)
+            .await.map_err(|e| RemoteInferenceError::Transport {
+                message: format!("Inference stream subscription failed: {e}; batch substitution is forbidden"),
+            })?);
 
         // Send-side classification: airc-lib's `request()` cannot
         // surface `CommandDeadline` (the deadline only fires while
@@ -568,9 +577,16 @@ impl AircInferenceTransport for AircLiveTransport {
         // then goes silent past the idle bound is dead — no waiting out ten minutes.
         let stream_id = pending_correlation.to_string();
         let mut reply_fut = std::pin::pin!(self.airc.await_reply(pending));
+        let mut settled_reply = None;
+        let mut stream_finished = false;
         let mut streamed = 0u64;
         let mut last_chunk_at: Option<std::time::Instant> = None;
-        let awaited = loop {
+        let awaited: Result<TranscriptEvent, airc_lib::AircError> = loop {
+            // The durable reply and live stream have independent delivery queues.
+            // Completion requires both; a fast reply must not discard queued chunks.
+            if stream_finished {
+                if let Some(reply) = settled_reply.take() { break Ok(reply); }
+            }
             use futures::StreamExt;
             let idle = async {
                 match last_chunk_at {
@@ -585,10 +601,35 @@ impl AircInferenceTransport for AircLiveTransport {
                 }
             };
             tokio::select! {
-                r = &mut reply_fut => break r,
+                _ = sink.closed() => return Err(RemoteInferenceError::Transport { message: "Inference stream consumer cancelled".into() }),
+                r = &mut reply_fut, if settled_reply.is_none() => match r {
+                    Ok(reply) => {
+                        if !expected.matches(&reply) {
+                            return Err(RemoteInferenceError::Transport { message: "remote reply identity does not match bound request".into() });
+                        }
+                        if let Some(Body::Json(body)) = reply.body.as_ref() {
+                            if let Ok(AircCommandResponse::Error { message }) = serde_json::from_value(body.clone()) {
+                                return Err(RemoteInferenceError::PeerAdapterFailed { message });
+                            }
+                        }
+                        settled_reply = Some(reply);
+                    },
+                    Err(airc_lib::AircError::CommandDeadline { .. }) => return Err(RemoteInferenceError::Timeout {
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    }),
+                    Err(error) => return Err(RemoteInferenceError::Transport { message: format!("remote reply transport failed: {error}") }),
+                },
+                _ = tokio::time::sleep_until((start + deadline).into()) => return Err(RemoteInferenceError::Timeout {
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                }),
                 ev = next_chunk => match ev {
                     Some(Ok(event)) => {
-                        if let Some(is_final) = forward_stream_chunk(&event, &stream_id, &sink)
+                        if event.headers.get(airc_lib::HEADER_STREAM_ID).map(String::as_str) == Some(stream_id.as_str())
+                            && (event.peer_id != expected.responder || event.room_id != expected.room)
+                        {
+                            return Err(RemoteInferenceError::Transport { message: "remote stream sender or room does not match bound request".into() });
+                        }
+                        if let Some(is_final) = forward_stream_chunk(&event, &stream_id, &sink, streamed)
                             .map_err(|message| RemoteInferenceError::Transport { message })? {
                             streamed += 1;
                             last_chunk_at = Some(std::time::Instant::now());
@@ -605,12 +646,13 @@ impl AircInferenceTransport for AircLiveTransport {
                                 // The wire is done; the settled reply is moments behind.
                                 // Stop the idle clock — silence now is not death.
                                 last_chunk_at = None;
+                                stream_finished = true;
                                 chunks = None;
                             }
                         }
                     }
-                    Some(Err(_lag)) => continue,
-                    None => chunks = None,
+                    Some(Err(lag)) => return Err(RemoteInferenceError::Transport { message: format!("Inference stream continuity lost: {lag}") }),
+                    None => return Err(RemoteInferenceError::Transport { message: "Inference stream ended without terminal marker".into() }),
                 },
                 _ = idle => {
                     crate::probe!(
@@ -764,6 +806,79 @@ mod tests {
     use super::*;
     use continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE;
 
+    // what this catches: actual AIRC peer framing must preserve binary media,
+    // timing and stream headers, not just an in-memory TranscriptEvent.
+    #[tokio::test]
+    async fn native_media_crosses_two_airc_peers_before_terminal() {
+        use futures::StreamExt;
+        use crate::ai::stream_sinks::{channel, MediaChunk};
+        use crate::inference::media_wire;
+        let peers = airc_test_fixtures::TwoAircLoopback::new().await.unwrap();
+        let mut events = peers.peer_b().subscribe().await.unwrap();
+        let id = Uuid::new_v4().to_string();
+        let media = MediaChunk {
+            sequence: 0, presentation_time_us: 80_000,
+            mime_type: crate::inference::native_output::PCM_MIME.into(),
+            data: Arc::from([0u8, 128, 255, 127]),
+        };
+        let (mut headers, body) = media_wire::encode(&media).unwrap();
+        headers.insert(airc_lib::HEADER_STREAM_ID.into(), id.clone());
+        headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), "0".into());
+        headers.insert(airc_lib::HEADER_STREAM_KIND.into(), media_wire::KIND.into());
+        peers.peer_a().publish_with_delivery(
+            airc_lib::PublishTarget::RoomByName(peers.shared_room().into()),
+            airc_protocol::FrameKind::Event, body, headers,
+            airc_bus::DeliveryClass::StreamChunk,
+        ).await.unwrap();
+        let (sink, mut receiver) = channel();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.next().await {
+                let event = event.unwrap();
+                if event.headers.get(airc_lib::HEADER_STREAM_ID) != Some(&id) { continue; }
+                assert_eq!(event.peer_id, peers.peer_a().peer_id());
+                assert_eq!(forward_stream_chunk(&event, &id, &sink, 0), Ok(Some(false)));
+                assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::Media(Arc::new(media)));
+                return;
+            }
+            panic!("peer stream ended before native media arrived");
+        }).await.expect("native media must arrive without waiting for terminal/reply");
+    }
+
+    // what this catches: native bytes/timing survive the AIRC event boundary,
+    // while malformed frames, discontinuities and text drains cannot fake delivery.
+    #[test]
+    fn native_media_wire_preserves_bytes_and_refuses_invalid_delivery() {
+        use crate::ai::stream_sinks::{channel, GenerationSink, MediaChunk, MAX_GENERATION_CHUNK_BYTES};
+        use crate::inference::media_wire;
+        let media = MediaChunk {
+            sequence: 7, presentation_time_us: 125_000,
+            mime_type: crate::inference::native_output::PCM_MIME.into(),
+            data: Arc::from([0u8, 1, 255, 128]),
+        };
+        let id = Uuid::new_v4().to_string();
+        let (headers, body) = media_wire::encode(&media).unwrap();
+        let mut event = chunk_event(&id, media_wire::KIND, "", false);
+        event.headers.extend(headers);
+        event.body = Some(body);
+        let (tx, mut rx) = channel();
+        assert_eq!(forward_stream_chunk(&event, &id, &tx, 3), Ok(Some(false)));
+        assert_eq!(rx.try_recv().unwrap(), GenerationChunk::Media(Arc::new(media.clone())));
+        assert!(forward_stream_chunk(&event, &id, &GenerationSink::discard(), 3).is_err());
+        assert!(forward_stream_chunk(&event, &id, &tx, 4).unwrap_err().contains("continuity"));
+        let mut bad = event.clone();
+        bad.body = Some(Body::text("not native bytes"));
+        assert!(forward_stream_chunk(&bad, &id, &tx, 3).unwrap_err().contains("binary"));
+        bad.body = Some(Body::Binary(vec![0; MAX_GENERATION_CHUNK_BYTES + 1]));
+        assert!(forward_stream_chunk(&bad, &id, &tx, 3).unwrap_err().contains("budget"));
+        bad = event.clone();
+        bad.headers.insert(airc_lib::HEADER_STREAM_FINAL.into(), "true".into());
+        assert!(forward_stream_chunk(&bad, &id, &tx, 3).unwrap_err().contains("terminal"));
+        bad = event;
+        bad.headers.remove("continuum.media.presentation-us");
+        assert!(forward_stream_chunk(&bad, &id, &tx, 3).is_err());
+        assert!(rx.try_recv().is_err());
+    }
+
     // what this catches: an observed correlation is not authorization to answer
     // for another peer; recovery must enforce the same boundary as live replies.
     fn chunk_event(stream_id: &str, kind: &str, text: &str, is_final: bool) -> TranscriptEvent {
@@ -800,44 +915,69 @@ mod tests {
     #[test]
     fn wire_chunks_of_this_stream_reach_the_sink_typed_and_others_are_ignored() {
         use crate::ai::adapter::GenerationChunk;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::ai::stream_sinks::channel();
         let id = Uuid::new_v4().to_string();
         assert_eq!(
-            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "fn ", false), &id, &tx),
+            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "fn ", false), &id, &tx, 3),
             Ok(Some(false))
         );
         assert_eq!(
-            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_REASONING, "hmm", false), &id, &tx),
+            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_REASONING, "hmm", false), &id, &tx, 3),
             Ok(Some(false))
         );
         assert_eq!(
             forward_stream_chunk(
                 &chunk_event(&id, crate::routing::command_handler::STREAM_KIND_PREFILL, r#"{"processed":10,"total":40,"cached":2}"#, false),
                 &id,
-                &tx
+                &tx, 3
             ),
             Ok(Some(false))
         );
         assert_eq!(
-            forward_stream_chunk(&chunk_event("other-stream", airc_lib::STREAM_KIND_TEXT_TOKEN, "nope", false), &id, &tx),
+            forward_stream_chunk(&chunk_event("other-stream", airc_lib::STREAM_KIND_TEXT_TOKEN, "nope", false), &id, &tx, 3),
             Ok(None),
             "another stream's chunk is not ours"
         );
         let mut plain = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "x", false);
         plain.headers = airc_core::Headers::new();
-        assert_eq!(forward_stream_chunk(&plain, &id, &tx), Ok(None), "a plain message is not a chunk");
+        assert_eq!(forward_stream_chunk(&plain, &id, &tx, 3), Ok(None), "a plain message is not a chunk");
         // A future media/extension chunk must never become spoken answer text,
         // nor may an unsupported final marker make the stream look complete.
         for final_marker in [false, true] {
             assert!(forward_stream_chunk(
-                &chunk_event(&id, "audio/encoded", "not text", final_marker), &id, &tx
+                &chunk_event(&id, "audio/encoded", "not text", final_marker), &id, &tx, 3
             ).unwrap_err().contains("Unsupported remote stream kind"));
         }
         assert_eq!(
-            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", true), &id, &tx),
+            forward_stream_chunk(&chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", true), &id, &tx, 3),
             Ok(Some(true)),
             "the final marker is reported"
         );
+        // Malformed frames must not become empty text or fabricated zero progress.
+        let mut binary = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", true);
+        binary.body = Some(Body::Binary(vec![1, 2]));
+        assert!(forward_stream_chunk(&binary, &id, &tx, 3).unwrap_err().contains("non-text"));
+        let mut absent = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", false);
+        absent.body = None;
+        assert!(forward_stream_chunk(&absent, &id, &tx, 3).unwrap_err().contains("no body"));
+        for malformed in ["not json", r#"{"processed":1}"#, r#"{"processed":1,"total":2,"cached":-1}"#] {
+            assert!(forward_stream_chunk(
+                &chunk_event(&id, crate::routing::command_handler::STREAM_KIND_PREFILL, malformed, false),
+                &id, &tx, 3,
+            ).unwrap_err().contains("prefill"));
+        }
+        // Gaps, duplicates, missing sequence and malformed terminal markers fail before delivery.
+        let valid = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "must not arrive", false);
+        for expected_sequence in [2, 4] {
+            assert!(forward_stream_chunk(&valid, &id, &tx, expected_sequence)
+                .unwrap_err().contains("continuity lost"));
+        }
+        let mut missing = valid.clone();
+        missing.headers.remove(airc_lib::HEADER_STREAM_SEQ);
+        assert!(forward_stream_chunk(&missing, &id, &tx, 3).unwrap_err().contains("no sequence"));
+        let mut invalid = valid;
+        invalid.headers.insert(airc_lib::HEADER_STREAM_FINAL.into(), "yes".into());
+        assert!(forward_stream_chunk(&invalid, &id, &tx, 3).unwrap_err().contains("terminal marker"));
         drop(tx);
         let mut got = Vec::new();
         while let Ok(c) = rx.try_recv() {
@@ -853,41 +993,14 @@ mod tests {
         );
     }
 
-    // what this catches: a transport with no live wire still honours the streaming
-    // contract — the whole answer arrives as one trailing chunk, never silence.
+    // what this catches: missing continuous transport must not invoke a batch call.
     #[tokio::test]
-    async fn a_transport_without_a_wire_emits_the_whole_answer_as_one_trailing_chunk() {
-        use crate::ai::adapter::GenerationChunk;
-        let stub = StubInferenceTransport::new(|req| {
-            Ok(RemoteInferenceResponse {
-                correlation_id: req.correlation_id,
-                served_by: "stub".into(),
-                text_response: crate::ai::types::TextGenerationResponse {
-                    text: "whole answer".into(),
-                    finish_reason: crate::ai::types::FinishReason::Stop,
-                    model: "stub".into(),
-                    provider: "stub".into(),
-                    usage: Default::default(),
-                    response_time_ms: 0,
-                    request_id: "stub".into(),
-                    content: None,
-                    tool_calls: None,
-                    reasoning: None,
-                    routing: None,
-                    error: None,
-                    timing: None,
-                },
-            })
-        });
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let req = RemoteInferenceRequest::new(crate::ai::types::TextGenerationRequest {
-            messages: Vec::new(),
-            ..Default::default()
-        });
-        let out = stub.send_request_streaming(req, tx).await.expect("stub answers"); // JUSTIFIED: the invariant under test
-        assert_eq!(out.text_response.text, "whole answer");
-        assert_eq!(rx.try_recv().ok(), Some(GenerationChunk::Token("whole answer".into())));
-        assert!(rx.try_recv().is_err(), "exactly one trailing chunk");
+    async fn a_transport_without_a_wire_refuses_batch_substitution() {
+        let stub = StubInferenceTransport::new(|_| panic!("batch fallback invoked"));
+        let (tx, mut rx) = crate::ai::stream_sinks::channel();
+        let req = RemoteInferenceRequest::new(crate::ai::types::TextGenerationRequest::default());
+        assert!(stub.send_request_streaming(req, tx).await.unwrap_err().to_string().contains("batch substitution"));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

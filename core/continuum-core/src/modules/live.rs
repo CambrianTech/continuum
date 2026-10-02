@@ -119,7 +119,7 @@ impl VoiceState {
         // Sibling of the avatar-video tee. No-op if no native client is on the call.
         self.call_manager
             .push_persona_audio(call_id, user_id, display_name.unwrap_or(user_id), samples) // unwrap_or: no display name → the identity string labels the audio, honest and unique
-            .await;
+            .await?;
         Ok((num_samples, duration_ms, sample_rate))
     }
 

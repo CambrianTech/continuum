@@ -1341,7 +1341,7 @@ async fn serve_persona_loop_inner(
                 // forwards Token chunks to the room/TTS/avatar as `persona.turn.delta`.
                 // Cleared right after the turn, so a non-streamed path is byte-identical.
                 let (tok_tx, tok_rx) =
-                    tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
+                    crate::ai::stream_sinks::channel();
                 cycle.set_token_sink(Some(tok_tx));
                 // #169/#170: drain + publish this turn's streamed answer, coalesced.
                 let forwarder = spawn_token_forwarder(
@@ -2421,7 +2421,7 @@ fn burst_fingerprint(
 /// `citizen` is `None` for non-airc conversations (tests) → then this is just the
 /// first-token probe, no publishing.
 fn spawn_token_forwarder(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
+    mut rx: crate::ai::stream_sinks::GenerationReceiver,
     citizen: Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>>,
     persona: String,
     // #170: room + sender for the local WS token rail. Some on a room turn (tee to the
@@ -2474,7 +2474,7 @@ fn spawn_token_forwarder(
                 biased;
                 _ = flush.tick(), if !buf.is_empty() => false,
                 chunk = rx.recv() => match chunk {
-                    Some(crate::ai::adapter::GenerationChunk::Token(t)) if !t.is_empty() => {
+                    Ok(crate::ai::adapter::GenerationChunk::Token(t)) if !t.is_empty() => {
                         if first {
                             first = false;
                             tracing::info!(
@@ -2486,8 +2486,18 @@ fn spawn_token_forwarder(
                         buf.push_str(&t);
                         continue;
                     }
-                    Some(_) => continue,
-                    None => true,
+                    Ok(crate::ai::adapter::GenerationChunk::Media(_)) => {
+                        crate::probe!(class = "inference.consumer.unsupported_media", persona = %persona,
+                            "persona presentation consumer has no native media renderer; cancelling rather than dropping media");
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        crate::probe!(class = "inference.consumer.ring_gap", persona = %persona, skipped,
+                            "persona stream lost continuity; cancelling producer");
+                        break;
+                    },
                 },
             };
             if !buf.is_empty() {
@@ -2850,7 +2860,7 @@ async fn run_self_cycle(
     // Token chunks to the room/TTS/avatar. Cleared after the turn (byte-identical
     // when unused).
     let (tok_tx, tok_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
+        crate::ai::stream_sinks::channel();
     cycle.set_token_sink(Some(tok_tx));
     // #169/#170: self-tick (autonomic) turns do NOT broadcast a live typing stream —
     // a room doesn't need every persona's idle musing streamed token-by-token (that
@@ -3019,7 +3029,7 @@ mod tests {
 
         let room = Uuid::new_v4().to_string();
         let mut output = stream_rail::subscribe();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = crate::ai::stream_sinks::channel();
         let owner = spawn_token_forwarder(
             rx, None, "stream-test".into(), Some(room.clone()), Some("sender".into()),
         );

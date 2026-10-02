@@ -172,7 +172,7 @@ crate::action_command! {
         let registry = this.registry.read().await;
 
         let (provider_id, adapter) = registry
-            .select(
+            .select_arc(
                 request.provider.as_deref(),
                 request.model.as_deref(),
                 InferenceDevice::default(),
@@ -185,6 +185,7 @@ crate::action_command! {
                 )
             })?;
 
+        drop(registry); // The selected Arc owns the binding; never hold catalog locks across inference.
         crate::runtime::logger("ai_provider").info(&format!(
             "Using {} adapter for model {:?}",
             provider_id, request.model
@@ -217,7 +218,7 @@ crate::action_command! {
         // Preserve the serving node's receipt, model mapping and adapter metadata.
         let route = RoutingInfo::stamp(
             &mut response.routing,
-            provider_id,
+            &provider_id,
             is_local,
             "adapter_selected",
         );

@@ -108,6 +108,10 @@ pub struct ParticipantStream {
     ai_ring_write: usize,     // Write position
     ai_ring_read: usize,      // Read position
     ai_ring_available: usize, // Samples available
+    /// Active native output generation; cancellation invalidates late packets.
+    ai_generation: Option<uuid::Uuid>,
+    native_pcm: Option<super::native_playback::NativePcmPlayback>,
+    native_owner: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
 
     // === Voice Activity Detection (Production Two-Stage VAD) ===
     /// Production VAD (WebRTC → Silero, with sentence buffering)
@@ -145,6 +149,9 @@ impl ParticipantStream {
             ai_ring_write: 0,
             ai_ring_read: 0,
             ai_ring_available: 0,
+            ai_generation: None,
+            native_pcm: None,
+            native_owner: None,
             vad,
             is_speaking: false,
         }
@@ -169,6 +176,9 @@ impl ParticipantStream {
             ai_ring_write: 0,
             ai_ring_read: 0,
             ai_ring_available: 0,
+            ai_generation: None,
+            native_pcm: None,
+            native_owner: None,
             vad: None, // AI doesn't need VAD
             is_speaking: false,
         }
@@ -193,6 +203,9 @@ impl ParticipantStream {
             ai_ring_write: 0,
             ai_ring_read: 0,
             ai_ring_available: 0,
+            ai_generation: None,
+            native_pcm: None,
+            native_owner: None,
             vad: None,
             is_speaking: false,
         }
@@ -213,6 +226,113 @@ impl ParticipantStream {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Start an explicitly owned native stream; a new generation retires queued
+    /// audio from its predecessor under the mixer's existing exclusive ownership.
+    pub fn begin_ai_generation(&mut self, generation: uuid::Uuid) -> Result<(), String> {
+        if !self.is_ai || self.ai_ring_buffer.is_none() {
+            return Err("Native generation requires an AI playback ring".into());
+        }
+        if self.ai_generation == Some(generation) { return Ok(()); }
+        self.clear_ai_playback();
+        self.ai_generation = Some(generation);
+        Ok(())
+    }
+
+    pub fn push_ai_generation(&mut self, generation: uuid::Uuid, samples: Vec<i16>) -> Result<(), String> {
+        if self.ai_generation != Some(generation) {
+            return Err("Native audio belongs to an inactive generation".into());
+        }
+        if self.native_pcm.is_some() {
+            return Err("Native PCM generation requires sequenced media packets".into());
+        }
+        self.enqueue_ai_audio(samples)
+    }
+
+    /// A delayed cancellation for an old generation cannot silence its successor.
+    pub fn cancel_ai_generation(&mut self, generation: uuid::Uuid) -> bool {
+        if self.ai_generation != Some(generation) { return false; }
+        self.clear_ai_playback();
+        self.ai_generation = None;
+        true
+    }
+
+    fn clear_ai_playback(&mut self) {
+        self.native_pcm = None;
+        self.native_owner = None;
+        self.ai_ring_read = 0;
+        self.ai_ring_write = 0;
+        self.ai_ring_available = 0;
+        self.frame_len = 0;
+        self.is_speaking = false;
+    }
+
+    pub fn begin_native_pcm(&mut self, generation: uuid::Uuid, mime: &str) -> Result<super::native_playback::NativePlaybackLease, String> {
+        let decoder = super::native_playback::NativePcmPlayback::new(mime)?;
+        if self.ai_generation == Some(generation) {
+            return Err("Native playback generation already has an owner".into());
+        }
+        self.begin_ai_generation(generation)?;
+        self.native_pcm = Some(decoder);
+        let owner = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        self.native_owner = Some(owner.clone());
+        Ok(super::native_playback::NativePlaybackLease(owner))
+    }
+
+    fn apply_native_cancellation(&mut self) {
+        if self.native_owner.as_ref().is_some_and(|owner| owner.load(std::sync::atomic::Ordering::Acquire) == 1) {
+            self.clear_ai_playback();
+            self.ai_generation = None;
+        }
+    }
+
+    pub fn push_native_pcm(&mut self, generation: uuid::Uuid, packet: &crate::ai::stream_sinks::MediaChunk) -> Result<(), String> {
+        self.apply_native_cancellation();
+        if self.ai_generation != Some(generation) { return Err("Native audio belongs to an inactive generation".into()); }
+        let result = self.native_pcm.as_mut().ok_or("Native PCM was not bound".to_string())
+            .and_then(|decoder| decoder.push(packet))
+            .and_then(|samples| self.enqueue_ai_audio(samples));
+        if result.is_err() { self.cancel_ai_generation(generation); }
+        result
+    }
+
+    pub fn finish_native_pcm(&mut self, generation: uuid::Uuid) -> Result<(), String> {
+        self.apply_native_cancellation();
+        if self.ai_generation != Some(generation) { return Err("Native audio belongs to an inactive generation".into()); }
+        let result = self.native_pcm.as_mut().ok_or("Native PCM was not bound".to_string())
+            .and_then(|decoder| decoder.finish())
+            .and_then(|samples| self.enqueue_ai_audio(samples));
+        if result.is_err() { self.cancel_ai_generation(generation); }
+        else if let Some(owner) = &self.native_owner {
+            if owner.compare_exchange(0, 2, std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire).is_err() {
+                self.cancel_ai_generation(generation);
+                return Err("Native playback owner cancelled during completion".into());
+            }
+        }
+        result
+    }
+
+    /// Atomically admit a persona audio packet. Overflow must not turn a partial
+    /// utterance into reported success; refusal leaves the queue unchanged.
+    pub fn try_push_ai_audio(&mut self, samples: Vec<i16>) -> Result<(), String> {
+        if self.ai_generation.is_some() {
+            return Err("Native generation owns playback; unscoped audio refused".into());
+        }
+        self.enqueue_ai_audio(samples)
+    }
+
+    fn enqueue_ai_audio(&mut self, samples: Vec<i16>) -> Result<(), String> {
+        if !self.is_ai || self.ai_ring_buffer.is_none() {
+            return Err("Persona audio requires an AI playback ring".into());
+        }
+        let remaining = AI_RING_BUFFER_SIZE - self.ai_ring_available;
+        if samples.len() > remaining {
+            return Err(format!("Persona audio backpressure: {} samples exceed {} available", samples.len(), remaining));
+        }
+        self.push_audio(samples);
         Ok(())
     }
 
@@ -334,6 +454,7 @@ impl ParticipantStream {
     /// - Human participants: Returns current frame (set by push_audio)
     /// - AI participants: Pulls one frame from ring buffer (server-paced playback)
     pub fn get_audio(&mut self) -> &[i16] {
+        self.apply_native_cancellation();
         if self.muted {
             return &[];
         }
@@ -673,6 +794,82 @@ impl AudioMixer {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: native packets reach playback before completion, keep
+    // exact duration, and continuity faults flush queued output rather than play
+    // an unrelated or partial sentence. No model or synthesized voice fixture.
+    #[test]
+    fn native_pcm_packets_play_incrementally_and_cancel_on_gap() {
+        let mut stream = super::ParticipantStream::new_ai(
+            crate::runtime::handle::Handle::new(), "native-test".into(), "Native".into());
+        let generation = uuid::Uuid::new_v4();
+        let mime = crate::inference::native_output::PCM_MIME;
+        let lease = stream.begin_native_pcm(generation, mime).unwrap();
+        let packet = crate::ai::stream_sinks::MediaChunk {
+            sequence: 0, presentation_time_us: 0, mime_type: mime.into(),
+            data: vec![0u8; 4800 * 2].into(),
+        };
+        stream.push_native_pcm(generation, &packet).unwrap();
+        assert!(stream.ai_ring_available > 0, "playback precedes completion");
+        assert!(stream.push_ai_generation(generation, vec![1; 10]).is_err());
+        stream.finish_native_pcm(generation).unwrap();
+        drop(lease); // successful completion retains queued playback
+        assert_eq!(stream.ai_ring_available, 3200, "tail preserves 200ms duration");
+        assert!(stream.cancel_ai_generation(generation));
+        let next = uuid::Uuid::new_v4();
+        let next_lease = stream.begin_native_pcm(next, mime).unwrap();
+        stream.push_native_pcm(next, &packet).unwrap();
+        assert!(stream.push_native_pcm(generation, &packet).is_err());
+        assert!(stream.ai_ring_available > 0, "stale owner cannot flush successor");
+        assert!(stream.push_native_pcm(next, &packet).is_err(), "duplicate packet is a continuity fault");
+        assert_eq!(stream.ai_ring_available, 0);
+        assert_eq!(stream.ai_generation, None);
+        drop(next_lease);
+        let cancelled = uuid::Uuid::new_v4();
+        let lease = stream.begin_native_pcm(cancelled, mime).unwrap();
+        stream.push_native_pcm(cancelled, &packet).unwrap();
+        drop(lease); // aborted consumer: no async cleanup task required
+        assert!(stream.get_audio().is_empty());
+        assert!(stream.push_native_pcm(cancelled, &packet).is_err());
+    }
+
+    // what this catches: interruption silences queued speech, rejects delayed
+    // packets, and stale cancellation cannot flush a newer generation.
+    #[test]
+    fn native_generation_cancellation_rejects_late_audio() {
+        let mut stream = super::ParticipantStream::new_ai(
+            crate::runtime::handle::Handle::new(), "native-test".into(), "Native".into());
+        let old = uuid::Uuid::new_v4();
+        let new = uuid::Uuid::new_v4();
+        stream.begin_ai_generation(old).unwrap();
+        stream.push_ai_generation(old, vec![7; 10]).unwrap();
+        assert!(stream.try_push_ai_audio(vec![99; 10]).is_err(),
+            "legacy speech must not interleave with an owned native generation");
+        stream.begin_ai_generation(old).unwrap();
+        assert_eq!(stream.ai_ring_available, 10, "repeated admission preserves queued audio");
+        assert!(stream.cancel_ai_generation(old));
+        assert!(stream.get_audio().is_empty());
+        assert!(stream.push_ai_generation(old, vec![9; 10]).is_err());
+        stream.begin_ai_generation(new).unwrap();
+        stream.push_ai_generation(new, vec![8; 10]).unwrap();
+        assert!(!stream.cancel_ai_generation(old));
+        assert_eq!(stream.ai_ring_available, 10);
+        assert!(stream.push_ai_generation(old, vec![9; 10]).is_err());
+        assert_eq!(stream.get_audio()[0], 8);
+    }
+    // what this catches: playback overflow cannot accept a prefix and report
+    // success; rejected audio leaves all previously queued samples intact.
+    #[test]
+    fn persona_playback_refuses_overflow_without_partial_write() {
+        let mut stream = super::ParticipantStream::new_ai(
+            crate::runtime::handle::Handle::new(), "native-test".into(), "Native".into());
+        stream.try_push_ai_audio(vec![7; super::AI_RING_BUFFER_SIZE - 2]).unwrap();
+        let before = stream.ai_ring_available;
+        assert!(stream.try_push_ai_audio(vec![9; 3]).unwrap_err().contains("backpressure"));
+        assert_eq!(stream.ai_ring_available, before);
+        stream.try_push_ai_audio(vec![8; 2]).unwrap();
+        assert_eq!(stream.ai_ring_available, super::AI_RING_BUFFER_SIZE);
+        assert!(stream.get_audio().iter().all(|sample| *sample == 7));
+    }
     use super::*;
     use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::utils::audio::is_silence;

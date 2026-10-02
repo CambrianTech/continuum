@@ -64,6 +64,7 @@ pub mod measured_hold;
 pub mod slots;
 pub mod sse_stream;
 pub(crate) mod native_output;
+pub(crate) mod media_wire;
 pub mod llm_module;
 pub mod llm_module_bus;
 pub mod llm_module_service;

@@ -31,7 +31,7 @@
 //! override, so a reboot keeps it; the fall-home/return rule above then owns it.
 
 use crate::ai::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk, InferenceDevice,
+    AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice,
     LoRAAdapterInfo, LoRACapabilities,
 };
 use crate::ai::types::{
@@ -704,7 +704,7 @@ impl AIProviderAdapter for PlacementSwitch {
     async fn generate_stream_checked(
         &self,
         request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         self.current().generate_stream_checked(request, sink).await
     }
@@ -714,7 +714,7 @@ impl AIProviderAdapter for PlacementSwitch {
     async fn generate_stream(
         &self,
         request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, String> {
         self.current().generate_stream(request, sink).await
     }

@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 
 use crate::ai::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk, InferenceDevice,
+    AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice,
 };
 use crate::ai::types::{
     HealthState, HealthStatus, ModelInfo, RoutingInfo, TextGenerationRequest,
@@ -244,8 +244,8 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
         // The drain over the stream (the trait's own definition of this method).
-        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-        drop(_rx);
+        let sink = crate::ai::stream_sinks::GenerationSink::discard();
+
         self.generate_stream(request, sink).await
     }
 
@@ -255,7 +255,7 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     async fn generate_stream(
         &self,
         mut request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, String> {
         // Older peers deserialize unknown fields permissively. Do not send native
         // intent until this lane has an end-to-end media output protocol.

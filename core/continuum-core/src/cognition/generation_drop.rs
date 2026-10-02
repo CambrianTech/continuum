@@ -45,7 +45,7 @@
 
 use crate::ai::adapter::GenerationChunk;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::UnboundedReceiver;
+use crate::ai::stream_sinks::GenerationReceiver;
 
 /// What existed of a generation at the moment it was dropped.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -54,6 +54,7 @@ pub(crate) struct PartialOutput {
     pub answer_chars: usize,
     /// Chars of private reasoning (`<think>`) it had already decoded.
     pub reasoning_chars: usize,
+    pub media_bytes: usize,
     /// The last prefill progress the slot reported: tokens ingested of the prompt total.
     /// `total == 0` = the stream never reported prefill (a non-incremental adapter).
     pub prefill_processed: u64,
@@ -72,6 +73,7 @@ pub(crate) fn partial_from_chunks(
     let mut out = PartialOutput::default();
     for chunk in chunks {
         match chunk {
+            GenerationChunk::Media(media) => out.media_bytes += media.data.len(),
             GenerationChunk::Token(text) => answer.push_str(&text),
             GenerationChunk::Reasoning(text) => out.reasoning_chars += text.chars().count(),
             GenerationChunk::Prefill {
@@ -108,7 +110,7 @@ pub(crate) struct InFlight {
     started: Instant,
     /// The stream, when this path owned one. `None` = the caller took the chunks (a live
     /// Speak), so this witness cannot see the output and says so rather than reporting 0.
-    chunks: Option<UnboundedReceiver<GenerationChunk>>,
+    chunks: Option<GenerationReceiver>,
     armed: bool,
 }
 
@@ -118,7 +120,7 @@ impl InFlight {
     pub fn arm(
         persona: &str,
         turn_bound: Option<Duration>,
-        chunks: Option<UnboundedReceiver<GenerationChunk>>,
+        chunks: Option<GenerationReceiver>,
     ) -> Self {
         Self {
             persona: persona.to_string(),
@@ -150,8 +152,14 @@ impl Drop for InFlight {
                 let mut chunks = Vec::new();
                 // The adapter's future (and its sender) dropped before this witness, so
                 // the channel is closed and `try_recv` drains it without blocking.
-                while let Ok(chunk) = rx.try_recv() {
-                    chunks.push(chunk);
+                loop {
+                    match rx.try_recv() {
+                        Ok(chunk) => chunks.push(chunk),
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                            crate::probe!(class = "inference.capture.ring_gap", skipped, "drop witness retains only the bounded stream tail");
+                        }
+                        Err(_) => break,
+                    }
                 }
                 partial_from_chunks(chunks)
             }
@@ -181,6 +189,7 @@ impl Drop for InFlight {
             observed = observed,
             answer_chars = partial.answer_chars as u64,
             reasoning_chars = partial.reasoning_chars as u64,
+            media_bytes = partial.media_bytes as u64,
             prefill_processed = partial.prefill_processed,
             prefill_total = partial.prefill_total,
             tool_calls_lost = partial.tool_calls.len() as u64,

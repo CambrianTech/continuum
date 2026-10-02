@@ -1103,7 +1103,7 @@ pub struct Workspace {
     /// rooms) so the output target is a per-TURN fact, not a per-cycle one. Cloneable
     /// (the sender is cheap/refcounted) so a cloned Workspace streams to the same
     /// channel; skipped by every capture/replay reader (it is live I/O, not state).
-    pub token_sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+    pub token_sink: Option<crate::ai::stream_sinks::GenerationSink>,
 }
 
 impl Workspace {
@@ -1164,7 +1164,7 @@ impl Workspace {
     /// turn it wants to stream to the room/TTS/avatar. See [`token_sink`](Self::token_sink).
     pub fn with_token_sink(
         mut self,
-        sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+        sink: Option<crate::ai::stream_sinks::GenerationSink>,
     ) -> Self {
         self.token_sink = sink;
         self
@@ -1658,7 +1658,7 @@ pub struct WorkspaceCycle {
     /// across an await. Safe: a persona's live turns are sequential, and eval runs
     /// on a SEPARATE forked cycle, so no cross-turn contention.
     token_sink: std::sync::Mutex<
-        Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+        Option<crate::ai::stream_sinks::GenerationSink>,
     >,
     /// #186 glass-box: the decaying per-axis "which faculty is firing" accumulator the
     /// vitals radiator samples (Focus/Reason/Recall/Act → the tile's live compass). The
@@ -1967,7 +1967,7 @@ impl WorkspaceCycle {
     /// living mind is shared, not owned per tick.
     pub fn set_token_sink(
         &self,
-        sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+        sink: Option<crate::ai::stream_sinks::GenerationSink>,
     ) {
         *self.token_sink.lock().unwrap() = sink;
     }
@@ -1975,7 +1975,7 @@ impl WorkspaceCycle {
     /// The per-turn streaming sink to hand this tick's Workspace, or `None`.
     fn current_token_sink(
         &self,
-    ) -> Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>> {
+    ) -> Option<crate::ai::stream_sinks::GenerationSink> {
         self.token_sink.lock().unwrap().clone()
     }
 

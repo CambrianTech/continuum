@@ -193,6 +193,8 @@ pub(crate) struct OpenAIStreamDelta {
     #[serde(default)]
     pub(crate) content: Option<String>,
     #[serde(default)]
+    pub(crate) audio: Option<serde_json::Value>,
+    #[serde(default)]
     pub(crate) reasoning_content: Option<String>,
     #[serde(default)]
     pub(crate) tool_calls: Option<Vec<OpenAIStreamToolCall>>,
@@ -324,12 +326,18 @@ pub(crate) async fn consume_sse_stream(
     request: &crate::ai::types::TextGenerationRequest,
     local_lane: bool,
     response: reqwest::Response,
-    sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    sink: &crate::ai::stream_sinks::GenerationSink,
 ) -> Result<StreamOutcome, String> {
     // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
     // Liveness is the per-token idle watchdog ([`STREAM_IDLE_TIMEOUT_SECS`]) —
     // silence means the backend died, NOT that generation is simply long.
     use futures::StreamExt;
+    let native_media = crate::inference::native_output::requested(request);
+    if native_media && !response.headers().get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("text/event-stream")) {
+        return Err("Native media transport did not return an event stream; batch response refused".into());
+    }
+    let mut audio_cursor = crate::inference::native_output::AudioCursor::default();
     let mut byte_stream = response.bytes_stream();
     // QUEUE WAIT IS NOT SILENCE. Two different things were being policed by one
     // budget. MEASURED 2026-08-13 on the live 1-slot lane: a TINY (2,237-token)
@@ -418,13 +426,17 @@ pub(crate) async fn consume_sse_stream(
     // conflation is: a 467-token prompt "prefilling" for 231s at 1 tok/s. It was
     // queued 230 of those seconds. A probe that mixes two regimes measures neither.
     let mut first_prefill_frame: Option<Instant> = None;
-    loop {
+    'stream: loop {
         let idle = crate::inference::stream_liveness::idle_budget(
             phase,
             queue_budget,
             live_budget,
         );
-        let next = match tokio::time::timeout(idle, byte_stream.next()).await {
+        let next = match tokio::select! {
+            biased;
+            _ = sink.closed() => return Err("Inference stream consumer cancelled".into()),
+            next = tokio::time::timeout(idle, byte_stream.next()) => next,
+        } {
             Ok(next) => next,
             Err(_) => {
                 // BUSY IS NOT DEAD (card 115f9a14). A lane that did real work for ANYONE
@@ -650,26 +662,25 @@ pub(crate) async fn consume_sse_stream(
         // Strip CR (0x0D) so event boundaries normalize to `\n\n`. CR never
         // appears inside a UTF-8 multibyte sequence, so this is decode-safe; we
         // buffer RAW bytes and only decode COMPLETE events (no mid-char split).
-        for b in bytes.iter() {
-            if *b != b'\r' {
-                sse_buf.push(*b);
+        for &b in bytes.iter() {
+            if b == b'\r' { continue; }
+            sse_buf.push(b);
+            if sse_buf.len() > crate::ai::stream_sinks::MAX_GENERATION_CHUNK_BYTES * 2 {
+                return Err("Inference SSE event exceeds shared stream byte budget".into());
             }
-        }
-
-        while let Some(pos) = sse_buf.windows(2).position(|w| w == b"\n\n") {
-            let event_bytes: Vec<u8> = sse_buf.drain(..pos + 2).collect();
+            if !sse_buf.ends_with(b"\n\n") { continue; }
+            let event_bytes = std::mem::take(&mut sse_buf);
             let event = String::from_utf8_lossy(&event_bytes);
             for line in event.lines() {
                 let Some(data) = line.trim_start().strip_prefix("data:") else {
                     continue;
                 };
                 let data = data.trim();
-                if data.is_empty() || data == "[DONE]" {
-                    continue;
-                }
+                if data == "[DONE]" { break 'stream; }
+                if data.is_empty() { continue; }
                 let parsed: OpenAIStreamChunk = match serde_json::from_str(data) {
                     Ok(p) => p,
-                    Err(_) => continue, // keepalive / comment / non-JSON line
+                    Err(e) => return Err(format!("Malformed inference stream event: {e}")),
                 };
                 if resp_model.is_none() && !parsed.model.is_empty() {
                     resp_model = Some(parsed.model.clone());
@@ -771,11 +782,11 @@ pub(crate) async fn consume_sse_stream(
                         if local_lane {
                             crate::inference::llama_server::note_real_prefill_progress();
                         }
-                        let _ = sink.send(GenerationChunk::Prefill {
+                        sink.send(GenerationChunk::Prefill {
                             processed: p.processed,
                             total: p.total,
                             cached: p.cache,
-                        });
+                        })?;
                     }
                 }
                 // Any REAL output (token, reasoning, tool delta, finish) means
@@ -790,21 +801,32 @@ pub(crate) async fn consume_sse_stream(
                         last_progress = Instant::now();
                     }
                     if let Some(delta) = choice.delta {
+                        if let Some(audio) = &delta.audio {
+                            if !native_media { return Err("Unrequested native audio output".into()); }
+                            if audio_cursor.push(audio, sink)? { last_progress = Instant::now(); }
+                            if let Some(transcript) = audio.get("transcript").and_then(|v| v.as_str()) {
+                                if !transcript.is_empty() {
+                                    sink.send(GenerationChunk::Token(transcript.into()))?;
+                                    acc_content.push_str(transcript);
+                                }
+                            }
+                        }
                         if let Some(c) = delta.content {
                             if !c.is_empty() {
                                 acc_content.push_str(&c);
-                                let _ = sink.send(GenerationChunk::Token(c));
+                                sink.send(GenerationChunk::Token(c))?;
                                 last_progress = Instant::now();
                             }
                         }
                         if let Some(r) = delta.reasoning_content {
                             if !r.is_empty() {
                                 acc_reasoning.push_str(&r);
-                                let _ = sink.send(GenerationChunk::Reasoning(r));
+                                sink.send(GenerationChunk::Reasoning(r))?;
                                 last_progress = Instant::now();
                             }
                         }
                         if let Some(tcs) = delta.tool_calls {
+                            if native_media && !tcs.is_empty() { return Err("Combined native audio/tool stream is not implemented".into()); }
                             for tc in tcs {
                                 accumulate_stream_tool_call(&mut acc_tools, tc);
                                 last_progress = Instant::now();
@@ -820,6 +842,7 @@ pub(crate) async fn consume_sse_stream(
     }
 
 
+    if native_media { audio_cursor.finish(finish_reason_str.as_deref())?; }
     Ok(StreamOutcome {
         acc_parts: Vec::new(),
         acc_content,

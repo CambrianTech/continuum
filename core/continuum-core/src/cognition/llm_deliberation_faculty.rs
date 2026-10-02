@@ -1477,7 +1477,7 @@ impl LlmDeliberationFaculty {
                 witness.disarm();
                 result
             } else {
-                let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+                let (sink, receiver) = crate::ai::stream_sinks::channel();
                 // The receiver is no longer thrown away: the witness holds it, so a drop
                 // can drain what the model had already produced. Nothing reads it on the
                 // healthy path — the accumulate still comes from the returned response.
@@ -9549,7 +9549,7 @@ mod tests {
             async fn generate_stream_checked(
                 &self,
                 request: TextGenerationRequest,
-                sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+                sink: crate::ai::stream_sinks::GenerationSink,
             ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>
             {
                 let rejection = self
