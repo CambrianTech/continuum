@@ -325,3 +325,44 @@ public installer was stopped. Decoder acquisition is not repaired by this patch.
 The service fixture initially selected Codex's Git without Bash; selecting the
 installed Git for Windows in that test process's PATH allowed its existing
 ancestry regression to run. No global PATH or setup policy was changed.
+
+### 2026-10-02 — Unrequested MKL dependency (OPEN public rerun)
+
+Public installer session28882 built the CUDA core server with detected compute61,
+then failed101 building the client with no default features. Cargo's saved
+intel-mkl-src diagnostic records a rustc1.95 archive parser panic: member end
+553363527 exceeds the553182720-byte archive. The dependency's build output points
+to its ocipkg cache on C; no cache was deleted or repaired by hand. The archive's
+origin of damage, if any, is not established by this panic.
+
+The resolved graph shows Pocket-TTS0.6.2 requesting native intel-mkl-src even when
+its mkl feature is disabled. The pinned fork makes that dependency optional and
+restores it explicitly through the existing mkl feature. Speech implementation
+and requested CUDA support are retained. Six Windows/Linux/Apple target feature
+graph cases pass; the Continuum locked no-default graph retains Pocket-TTS and
+removes MKL/ocipkg. This repairs unnecessary dependency acquisition, not Rust's
+archive parser. Public install/rerun and actual speech acceptance remain open.
+
+Compiler stderr was lost at a separate hidden PS5 entry boundary; its reporting
+repair is tracked independently so future native failures remain visible.
+### 2026-10-02 — Pocket-TTS candidate and model-access boundary
+
+The candidate pins fork commit `f2cb6ef9be1852db7439b6fad33229c53e21ce8c`
+consistently in the manifest and lockfile. Fork CI passed the six MKL feature-graph
+cases, Clippy and actual CLI installation on Windows/Linux/macOS, and the Docker
+build (6m26s). Its existing public-model voice-cache step is not gated parity
+proof. Docker's expired
+Bullseye package URLs were repaired with matched Bookworm build/runtime stages.
+
+The fork remains unmerged: all three model-parity jobs still fail four tests with
+HTTP 401 for gated `kyutai/pocket-tts` weights at revision
+`427e3d61b276ed69fdd03de0d185fa8a8d97fc5b`. Those tests require an `HF_TOKEN` whose
+account has model access; no repository Actions secret is configured. No tests
+were disabled and no credential or model cache was repaired locally. Passing
+40 offline unit tests and one input-parity test does not prove gated inference.
+
+A reviewed candidate may be exercised through the unchanged supported public
+installer before merge. Acceptance still requires the installed CLI/core revision,
+successful install and identical rerun, plus a real supported speech command with
+a valid nonempty audio result and observed completion. Dependency-graph checks and
+CLI packaging do not substitute for runtime speech or cross-grid command evidence.
