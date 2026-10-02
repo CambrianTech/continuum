@@ -115,6 +115,8 @@ pub enum Spawned {
     Answering,
     /// Spawned and answering within the bound.
     Started { pid: u32 },
+    /// airc's own login supervisor started it (macOS LaunchAgent): airc owns it, not us.
+    StartedByAirc,
     /// The `airc` binary is not on PATH — a transportless box (CI, a fresh clone).
     BinaryAbsent,
     /// Neither USERPROFILE nor HOME is set: the machine-account scope is unresolvable.
@@ -134,6 +136,15 @@ pub fn spawn() -> Spawned {
     if answering() {
         return Spawned::Answering;
     }
+    // M5 2026-10-02, twice: this core runs as a system LaunchDaemon, outside the user's
+    // login session. A daemon it spawned got no GitHub token (`airc join` provisions one
+    // from the user's gh; a bare `airc daemon` does not), so its registry refresh never
+    // ran and every peer aged into a ghost ten minutes later: the node was off the mesh
+    // while it looked healthy. airc's own supervisor runs in the session; use it.
+    #[cfg(target_os = "macos")]
+    if let Some(outcome) = start_through_airc_supervisor() {
+        return outcome;
+    }
     let Some(scope) = scope_home() else { return Spawned::NoHome };
     let Some(home) = scope.parent().map(|p| p.to_path_buf()) else { return Spawned::NoHome };
     if socket_path().is_none() {
@@ -143,13 +154,18 @@ pub fn spawn() -> Spawned {
                 .into(),
         );
     }
-    let child = std::process::Command::new("airc")
+    let mut command = std::process::Command::new("airc");
+    command
         .arg("daemon")
         .current_dir(&home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(daemon_log(&home));
+    // The token `airc join` would have provisioned, when this context can read it.
+    if let Some(token) = gh_token() {
+        command.env("GH_TOKEN", token);
+    }
+    let child = command.spawn();
     let child = match child {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Spawned::BinaryAbsent,
@@ -168,6 +184,64 @@ pub fn spawn() -> Spawned {
         "airc daemon (pid {pid}) spawned but never answered within {}s",
         ANSWER_BOUND.as_secs()
     ))
+}
+
+/// airc's macOS login supervisor (airc `unix/register-autostart.sh`).
+#[cfg(target_os = "macos")]
+const AIRC_JOIN_LABEL: &str = "com.cambriantech.airc-join";
+
+/// Start the daemon through airc's own LaunchAgent when it is registered: `airc join`
+/// in the user's session, which provisions the daemon's token. `None` when there is no
+/// agent or launchd refused the kickstart, so the caller spawns as before.
+#[cfg(target_os = "macos")]
+fn start_through_airc_supervisor() -> Option<Spawned> {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let target = format!("gui/{}/{AIRC_JOIN_LABEL}", unsafe { libc::getuid() });
+    let registered = crate::system_resources::bounded_command::probe(
+        "launchctl",
+        &["print", &target],
+        ENDPOINT_RESOLVE_BOUND,
+    );
+    registered.stdout_if_ok()?;
+    let kicked = crate::system_resources::bounded_command::probe(
+        "launchctl",
+        &["kickstart", "-k", &target],
+        ENDPOINT_RESOLVE_BOUND,
+    );
+    kicked.stdout_if_ok()?;
+    // `airc join` starts the daemon after it has fetched the token; give it both bounds.
+    let deadline = std::time::Instant::now() + ANSWER_BOUND * 2;
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(250));
+        if answering() {
+            return Some(Spawned::StartedByAirc);
+        }
+    }
+    Some(Spawned::Failed(format!(
+        "kickstarted {target} but no daemon answered within {}s",
+        (ANSWER_BOUND * 2).as_secs()
+    )))
+}
+
+/// The user's GitHub token from `gh`, bounded; `None` when gh is absent or cannot read
+/// its store from this context (a system service has no login keychain).
+fn gh_token() -> Option<String> {
+    let probed = crate::system_resources::bounded_command::probe("gh", &["auth", "token"], ENDPOINT_RESOLVE_BOUND);
+    let token = probed.stdout_if_ok()?.trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
+/// Where a daemon this core spawns writes its stderr: a file, so a gate that keeps
+/// skipping (no token, no route) is readable instead of going to /dev/null.
+fn daemon_log(home: &std::path::Path) -> std::process::Stdio {
+    let dir = home.join(".continuum").join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("airc-daemon.log"))
+        .map(std::process::Stdio::from)
+        .unwrap_or_else(|_| std::process::Stdio::null())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,7 +266,7 @@ pub fn restart_if_owned() -> Restart {
     std::thread::sleep(Duration::from_millis(500));
     match spawn() {
         Spawned::Started { pid } => Restart::Restarted { old, new: pid },
-        Spawned::Answering => Restart::Restarted { old, new: 0 },
+        Spawned::Answering | Spawned::StartedByAirc => Restart::Restarted { old, new: 0 },
         other => Restart::Failed(format!("{other:?}")),
     }
 }

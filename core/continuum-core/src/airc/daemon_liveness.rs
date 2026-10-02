@@ -156,6 +156,15 @@ pub fn spawn() {
                                 "the owner spawned a transport daemon and it answers"
                             );
                         }
+                        Spawned::StartedByAirc => {
+                            revived_by_us = true;
+                            crate::probe!(
+                                class = "airc.daemon.revived_by_airc",
+                                attempt = attempt,
+                                absent_s = absent_since.map(|s| s.elapsed().as_secs()).unwrap_or(0), // unwrap_or: 0 = absence start unrecorded, a legible value in the row
+                                "kickstarted airc's own login supervisor and its daemon answers"
+                            );
+                        }
                         Spawned::Answering => {
                             // Someone else brought it back between the probe and the
                             // spawn (the updater's own restart, a CLI). Next tick reads
