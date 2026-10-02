@@ -6,6 +6,8 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
+. (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1')
+$nativeInstallerProcess = ${function:Invoke-InstallerProcess}
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
@@ -32,8 +34,13 @@ try {
                 if ($script:failColdCopy) {
                     New-Item -ItemType Directory -Force $args[1] | Out-Null
                     Move-Item -LiteralPath (Join-Path $args[0] 'first') -Destination (Join-Path $args[1] 'first')
-                    & $env:ComSpec /d /c 'exit 8'
-                } else { & (Join-Path $env:SystemRoot 'System32\robocopy.exe') @args }
+                    $global:LASTEXITCODE = 8
+                } else { & $nativeInstallerProcess (Join-Path $env:SystemRoot 'System32\robocopy.exe') $args }
+            }
+            function Invoke-InstallerProcess {
+                param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+                if ($FilePath -eq 'robocopy') { robocopy @ArgumentList }
+                else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
             }
             function Get-ColdDrive { throw 'An interrupted migration selected a different drive' }
             function Module-Start { }
@@ -111,7 +118,8 @@ function Test-WingetAvailable {
         try {
             $env:USERPROFILE = $entryProfile
             $ErrorActionPreference = 'Continue'
-            $output = (& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $entryRepo 'install.ps1') 2>&1 | Out-String)
+            $entryCommand = "try { & '" + (Join-Path $entryRepo 'install.ps1').Replace("'", "''") + "' } catch { [Console]::Error.WriteLine(`$_.ToString()); exit 1 }"
+            $output = (& $nativeInstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($entryCommand))) 2>&1 | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
             $code = $LASTEXITCODE
             $ErrorActionPreference = 'Stop'
             if ($code -eq 0 -or $output -notmatch 'public-payload-stop-before-prerequisites') { throw "Public entry did not reach the checked prerequisite boundary: $output" }
@@ -170,8 +178,13 @@ function Test-WingetAvailable {
         $script:prerequisiteDone = $false
         function winget {
             $script:prerequisiteCalls++
-            & $env:ComSpec /d /c "exit $script:prerequisiteExit"
+            & $nativeInstallerProcess $env:ComSpec -RawArguments "/d /c exit $script:prerequisiteExit"
             $script:prerequisiteInstalled = $true
+        }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'winget') { winget @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
         }
         function Update-SessionPath { }
         function Module-Start { }
@@ -394,6 +407,11 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
         function Get-CoreEngineBackend { 'cpu' }
         function git { $global:LASTEXITCODE = 0; if ($args -contains '--short') { 'aaaaaaa' } else { 'a' * 40 } }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'git') { git @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
         function Module-Skip { }
         function Module-Start { throw 'fixture: real build branch selected' }
         function Module-Fail { param($Name, $Message) throw $Message }
@@ -466,10 +484,12 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
     # functions that happen to have been dot-sourced by this fixture's parent.
     $coldScript = @"
 `$ErrorActionPreference='Stop'
+try {
 . '$($repo.Replace("'", "''"))/tools/scripts/lib/windows-service.ps1'
 . '$($repo.Replace("'", "''"))/tools/scripts/lib/win-modules.ps1'
 `$drift=Get-CoreEngineDrift -Directory '$($engineFixture.Replace("'", "''"))' -Requirement ([pscustomobject]@{source_revision='$('a' * 40)';backend='cuda'})
 if (`$drift) { throw `$drift }
+} catch { [Console]::Error.WriteLine(`$_.ToString()); exit 1 }
 "@
     $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
     $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($coldScript))
@@ -491,6 +511,11 @@ if (`$drift) { throw `$drift }
         $lease = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $marker = Join-Path $scratch 'handoff-acquired'
         $cli = Join-Path $scratch 'handoff-cli.ps1'
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq $cli) { & $FilePath @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
         $core = Join-Path $scratch 'handoff-core.exe'
         [IO.File]::WriteAllText($core, 'fixture-core')
         @"
@@ -880,15 +905,20 @@ public static class NativeStatusFixture {
         function Find-GsudoExecutable { 'gsudo' }
         function Test-ElevationCacheAvailable { $false }
         $script:gsudoArguments = @()
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'gsudo') { gsudo @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
         function gsudo {
             $script:elevationCalls++
             $script:gsudoArguments += ($args -join ' ')
             if ($script:elevationMode -eq 'failure') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'exit /b 74'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c exit /b 74'
             } elseif ($script:elevationMode -eq 'cleanup-info') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo Info: Cache session closed. 1>&2 & exit /b 0'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c echo Info: Cache session closed. 1>&2 & exit /b 0'
             } else { $global:LASTEXITCODE = 0 }
         }
         $reason = 'registering the ContinuumCore startup task (before core handoff)'
@@ -1033,6 +1063,11 @@ try {
         function Find-GsudoExecutable { $script:gsudoFinds++; if ($script:gsudoFinds -gt 1) { 'fixture-native.exe' } }
         function Update-SessionPath { }
         function winget { $script:gsudoPackageArgs = @($args); $global:LASTEXITCODE = 0 }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'winget') { winget @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
         Ensure-Gsudo
         if ($script:GsudoExecutable -ne 'fixture-native.exe' -or
             ($script:gsudoPackageArgs -join ' ') -notmatch '--id fixture.package --source winget' -or
@@ -1114,6 +1149,11 @@ try {
     # path is unreadable from here). Exit 3 refuses; an answer outside the slots refuses; a
     # readable live engine inside the answer refuses.
     $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
+    function Invoke-InstallerProcess {
+        param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+        if ($FilePath -eq $fakeCli) { & $FilePath @ArgumentList }
+        else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+    }
     Set-Content -LiteralPath $fakeCli -Value @'
 if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
 $payload = Get-ManagedPayloadRoot -HomeRoot $env:CONTINUUM_HOME
@@ -1313,6 +1353,12 @@ function Invoke-Elevated { throw 'Unexpected elevation' }
 function Ensure-Elevated { throw 'Unexpected elevation' }
 function Test-WingetAvailable { throw 'Unexpected provisioning' }
 function git { $global:LASTEXITCODE = 0 }
+$fixtureNativeProcess = ${function:Invoke-InstallerProcess}
+function Invoke-InstallerProcess {
+    param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+    if ($FilePath -eq 'git') { $global:LASTEXITCODE = 0 }
+    else { & $fixtureNativeProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+}
 '@
         $shim.Replace('__SERVICE__', (Join-Path $repo 'tools\scripts\lib\windows-service.ps1').Replace("'", "''")) |
             Set-Content -LiteralPath (Join-Path $prepareLib 'windows-service.ps1')

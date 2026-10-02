@@ -1,4 +1,5 @@
 . (Join-Path $PSScriptRoot 'payload-paths.ps1')
+. (Join-Path $PSScriptRoot 'cuda-targets.ps1')
 # win-modules.ps1 -- the Continuum native-build toolchain modules (Windows).
 #
 # Dot-sourced by install.ps1 AFTER install-common.ps1. Each Mod-* is a
@@ -67,7 +68,7 @@ function Get-CargoFeatures {
 #  CUDA version probe (Blackwell / sm_120 floor is 12.8) 
 function Get-NvccVersion {
     if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) { return $null }
-    $out = & nvcc --version 2>$null
+    $out = Invoke-InstallerProcess 'nvcc' @('--version') 2>$null
     if ($out -match 'release\s+(\d+)\.(\d+)') {
         return [version]("{0}.{1}" -f $Matches[1], $Matches[2])
     }
@@ -88,7 +89,7 @@ function Test-CudaBuildToolkit {
     if (-not (Test-Path $nvcc)) { return $false }
     # Out-String: `& nvcc --version` yields a string ARRAY; `-match` on an array
     # filters and does NOT populate $Matches, so $Matches[1] would index null.
-    $out = (& $nvcc --version 2>$null | Out-String)
+    $out = (Invoke-InstallerProcess $nvcc @('--version') 2>$null | Out-String)
     if ($out -match 'release (\d+)\.(\d+)') {
         return ([version]("{0}.{1}" -f $Matches[1], $Matches[2]) -ge [version]'12.8')
     }
@@ -186,7 +187,7 @@ function Move-ColdDir {
     Write-Step "  cold: migrating $Src -> $Dst"
     # Never traverse junctions; move symbolic links as links. Remaining source
     # entries cause refusal below, rather than silently publishing a partial cache.
-    & robocopy $Src $Dst /E /MOVE /SL /XJ /NFL /NDL /NP /R:1 /W:1 | Out-Host
+    Invoke-InstallerProcess -OwnProcessTree 'robocopy' @($Src, $Dst, '/E', '/MOVE', '/SL', '/XJ', '/NFL', '/NDL', '/NP', '/R:1', '/W:1') | Out-Host
     $code = $global:LASTEXITCODE
     if ($code -ge 8) { throw "Cold migration failed with robocopy exit $code; the owned partial move will resume on installer rerun: $receipt" }
     if (Test-Path -LiteralPath $Src) {
@@ -316,7 +317,7 @@ function Mod-Rust {
     # on first build; ensure a default toolchain exists so rustc/cargo resolve.
     if ((Get-Command rustup -ErrorAction SilentlyContinue) -and
         -not (Get-Command rustc -ErrorAction SilentlyContinue)) {
-        & rustup default stable 2>&1 | Out-Null
+        Invoke-InstallerProcess -OwnProcessTree 'rustup' @('default', 'stable') 2>&1 | Out-Null
         Update-SessionPath
     }
 }
@@ -352,7 +353,7 @@ function Set-CMakeEnv {
 function Get-CMakeVersion([string]$Exe) {
     # Parse `cmake --version` -> [version], or $null when unparsable. Out-String
     # because the native call yields a string ARRAY (same trap as the nvcc probe).
-    $out = (& $Exe --version 2>$null | Out-String)
+    $out = (Invoke-InstallerProcess $Exe @('--version') 2>$null | Out-String)
     if ($out -match 'cmake version (\d+)\.(\d+)\.(\d+)') {
         return [version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $Matches[3])
     }
@@ -417,7 +418,7 @@ function Get-ManagedXzDecoder {
     $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\xz'
     $exe = Join-Path $dir 'bin_x86-64\xz.exe'
     if (Test-Path -LiteralPath $exe) {
-        $version = (& $exe --version | Out-String)
+        $version = (Invoke-InstallerProcess $exe @('--version') | Out-String)
         if ($LASTEXITCODE -eq 0 -and $version.Contains("XZ Utils) $($src.version)")) { return $exe }
     }
     Write-Host "  > [XZ] acquiring archive decoder $($src.version) (no admin)"
@@ -431,7 +432,7 @@ function Get-ManagedXzDecoder {
     Assert-Sha256 -Path $archive -Expected $src.sha256 -Name 'XZ'
     Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force
     if (-not (Test-Path -LiteralPath $exe)) { throw 'XZ archive did not supply the required Windows decoder.' }
-    $version = (& $exe --version | Out-String)
+    $version = (Invoke-InstallerProcess $exe @('--version') | Out-String)
     if ($LASTEXITCODE -ne 0 -or -not $version.Contains("XZ Utils) $($src.version)")) { throw 'XZ decoder verification failed.' }
     return $exe
 }
@@ -468,7 +469,7 @@ function Expand-ManagedTarXz {
         # Capture native stderr in PS5 without losing the exit status. A failed
         # decoder/extractor must never be reported as a completed prerequisite.
         $ErrorActionPreference = 'Continue'
-        $diagnostic = @(& (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $plainTar -C $Destination --strip-components=1 @Members 2>&1)
+        $diagnostic = @(Invoke-InstallerProcess (Join-Path $env:SystemRoot 'System32\tar.exe') (@('-xf', $plainTar, '-C', $Destination, '--strip-components=1') + $Members) 2>&1)
         $code = $LASTEXITCODE
     } finally {
         if ($started -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
@@ -599,13 +600,13 @@ function Mod-GhAuth {
     Install-IfMissing -Name 'GitHub CLI' -WingetId (Get-ManifestModule 'gh').source.id `
         -TestCmd { Get-Command gh -ErrorAction SilentlyContinue }
     if (-not $WantsGrid) { Module-Skip 'gh auth' 'local-only (no grid) -- GitHub login not required'; return }
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Write-Warn2 'gh not on PATH yet -- re-run to finish login.'; return }
-    & gh auth status 2>$null | Out-Null
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI is unavailable after provisioning; grid setup cannot continue.' }
+    Invoke-InstallerProcess 'gh' @('auth', 'status') 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { Module-Skip 'gh auth' 'already authenticated'; return }
     Module-Start 'gh auth' 'GitHub login for grid (gist rendezvous) -- device-code flow'
-    & gh auth login --hostname github.com --git-protocol https --web
+    Invoke-InstallerProcess 'gh' @('auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web')
     if ($LASTEXITCODE -eq 0) { Module-Done 'gh auth' }
-    else { Write-Warn2 'GitHub login not completed -- re-run install to finish, or: gh auth login' }
+    else { throw "GitHub login did not complete (exit $LASTEXITCODE); grid setup stopped. Rerun this installer to resume authentication." }
 }
 
 function Invoke-AircSetup {
@@ -614,7 +615,7 @@ function Invoke-AircSetup {
     $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
-        & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy RemoteSigned -File $scriptPath @SetupArguments
+        Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path (@('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $scriptPath) + $SetupArguments)
         if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
     } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
 }
@@ -786,8 +787,7 @@ function Mod-BuildCore {
         Enter-MsvcEnv                                       # cl.exe for nvcc (nvcc-compatible VS)
         $env:CMAKE_GENERATOR = $build.cmake_generator       # match the VS nvcc supports
         $env:CMAKE_GENERATOR_PLATFORM = 'x64'
-        $env:CMAKE_CUDA_ARCHITECTURES = $build.cuda_arch    # Blackwell RTX 5090 = sm_120
-        if (-not $env:CUDA_COMPUTE_CAP) { $env:CUDA_COMPUTE_CAP = $build.cuda_arch }  # candle-kernels
+        $null = Set-CudaTargets
         if ($env:CUDA_PATH) {
             $env:CUDA_HOME = $env:CUDA_PATH
             $cudaBin = Join-Path $env:CUDA_PATH 'bin'
@@ -808,16 +808,16 @@ function Mod-BuildCore {
         $buildArgs = @('build', '-p', 'continuum-core',
             '--bin', 'continuum-core-server',
             '--release', '--features', $features)
-        & cargo @buildArgs
+        Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList $buildArgs -OwnProcessTree
         $code = $LASTEXITCODE
         if ($code -eq 0) {
             # The client does not serve models or render frames. Keep its launch
             # independent of GPU DLLs, including while repairing the service.
-            & cargo build -p continuum-core --bin continuum --release --no-default-features
+            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'continuum-core', '--bin', 'continuum', '--release', '--no-default-features') -OwnProcessTree
             $code = $LASTEXITCODE
         }
         if ($code -eq 0) {
-            & cargo build -p livekit-bridge --bin livekit-bridge --release
+            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'livekit-bridge', '--bin', 'livekit-bridge', '--release') -OwnProcessTree
             $code = $LASTEXITCODE
         }
     } finally { Pop-Location }
@@ -835,7 +835,7 @@ function Get-CoreEngineBackend {
 
 function Get-CoreEngineRequirement {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
-    $revision = (& git -C $RepoRoot rev-parse 'HEAD:core/vendor/llama.cpp' 2>$null)
+    $revision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $RepoRoot, 'rev-parse', 'HEAD:core/vendor/llama.cpp') 2>$null)
     if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Cannot resolve the tracked llama.cpp gitlink.' }
     return [pscustomobject]@{ source_revision = $revision; backend = (Get-CoreEngineBackend) }
 }
@@ -883,27 +883,29 @@ function Mod-LlamaServer {
     if (-not (Test-Path $serverCMake)) {
         Module-Start 'llama-server' 'initializing core/vendor/llama.cpp submodule'
         Push-Location $RepoRoot
-        try { & git submodule update --init core/vendor/llama.cpp } finally { Pop-Location }
+        try { Invoke-InstallerProcess -OwnProcessTree 'git' @('submodule', 'update', '--init', 'core/vendor/llama.cpp') } finally { Pop-Location }
     }
     if (-not (Test-Path $serverCMake)) {
         Module-Fail 'llama-server' "llama.cpp submodule missing at $submodule even after init"
     }
 
-    $sourceRevision = (& git -C $submodule rev-parse HEAD 2>$null)
+    $sourceRevision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', 'HEAD') 2>$null)
     if ($RequireReceipt) {
         $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
         if ($sourceRevision -cne $requirement.source_revision) { throw 'Checked-out llama.cpp differs from the tracked gitlink; refusing receipt migration.' }
     }
-    $head = (& git -C $submodule rev-parse --short HEAD 2>$null)
+    $head = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', '--short', 'HEAD') 2>$null)
     if (-not $head) { $head = 'unknown' }
 
     # Backend: NVIDIA -> CUDA (matches core/llama/build.rs gating), else CPU.
     $backend = Get-CoreEngineBackend; $backendDefs = @()
     if ($backend -eq 'cuda') {
         $build = (Get-ManifestModule 'build-core').build
-        $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($build.cuda_arch)")
+        $targets = Set-CudaTargets
+        $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($targets.CMake)")
     }
     $stampWant = "${head}:${backend}"
+    if ($backend -eq 'cuda') { $stampWant += ":$($targets.CMake)" }
 
     if ((Test-Path $installBin) -and (Test-Path $stampFile) -and
         ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $stampWant)) {
@@ -1003,11 +1005,11 @@ function Mod-LlamaServer {
 
     # Reboots can build from another worktree while sharing the same cache.
     # The shell installer uses this same source-ownership guard.
-    & cmake "-DSOURCE_DIR=$submodule" "-DBUILD_DIR=$buildDir" -P (Join-Path $PSScriptRoot 'prepare-llama-build.cmake')
+    Invoke-InstallerProcess 'cmake' @("-DSOURCE_DIR=$submodule", "-DBUILD_DIR=$buildDir", '-P', (Join-Path $PSScriptRoot 'prepare-llama-build.cmake')) -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "CMake cache ownership check failed ($LASTEXITCODE); configure aborted" }
-    & cmake @cmakeArgs
+    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList $cmakeArgs -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake configure failed ($LASTEXITCODE)" }
-    & cmake --build $buildDir --target llama-server
+    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList @('--build', $buildDir, '--target', 'llama-server') -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake build failed ($LASTEXITCODE)" }
 
     # Ninja (single-config) emits under bin\; the VS generator would use bin\Release\.
@@ -1017,8 +1019,8 @@ function Mod-LlamaServer {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $builtBin) { Module-Fail 'llama-server' "build finished but llama-server.exe not found under $buildDir\bin" }
 
-    if ((& git -C $submodule rev-parse HEAD) -cne $sourceRevision) { throw 'Engine source revision changed during build.' }
-    if (& git -C $submodule status --porcelain --untracked-files=all) { throw 'Engine source changed; cannot publish clean-source receipt.' }
+    if ((Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', 'HEAD')) -cne $sourceRevision) { throw 'Engine source revision changed during build.' }
+    if (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'status', '--porcelain', '--untracked-files=all')) { throw 'Engine source changed; cannot publish clean-source receipt.' }
     # Receipt capture belongs to this fresh build; never reconstruct it from a stamp.
     $cache = Get-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Raw
     foreach ($setting in @('BUILD_SHARED_LIBS:BOOL=OFF', 'GGML_BACKEND_DL:BOOL=OFF', 'GGML_BACKEND_DIR:PATH=')) {
@@ -1053,7 +1055,7 @@ function Mod-LlamaServer {
     $dumpbin = Join-Path (Split-Path $Matches[1] -Parent) 'dumpbin.exe'
     if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Configured engine dependency inspector is missing.' }
     # Imported platform DLLs remain the explicit Windows/driver contract.
-    & cmake "-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin" "-DENGINE_DIR=$($installDir.Replace('\','/'))" "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))" -P (Join-Path $PSScriptRoot 'verify-engine-imports.cmake')
+    Invoke-InstallerProcess 'cmake' @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin", "-DENGINE_DIR=$($installDir.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-P', (Join-Path $PSScriptRoot 'verify-engine-imports.cmake')) -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { throw 'Engine application imports could not be bounded.' }
     Save-CoreEngineReceipt -Directory $installDir -SourceRevision $sourceRevision -Backend $backend
     Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII

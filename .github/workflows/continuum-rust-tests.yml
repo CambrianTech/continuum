@@ -304,6 +304,12 @@ jobs:
         if: needs.changes.outputs.installer != 'false'
         with:
           submodules: ${{ needs.changes.outputs.rust != 'false' && 'recursive' || 'false' }}
+      - name: Windows hidden installer process regression
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: |
+          ./tools/scripts/sync-windows-bootstrap.ps1 -Check
+          ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
       - name: Install Rust toolchain from rust-toolchain.toml
         if: needs.changes.outputs.rust != 'false'
         run: |
@@ -327,6 +333,12 @@ jobs:
       - name: Windows native XZ prerequisite smoke
         shell: powershell
         run: ./tools/scripts/tests/windows-xz.test.ps1
+      - name: CUDA device target selection (PowerShell)
+        shell: powershell
+        run: ./tools/scripts/tests/cuda-targets.test.ps1
+      - name: CUDA device target selection (Bash)
+        shell: bash
+        run: bash tools/scripts/tests/cuda-targets.test.sh
       - name: Warm builds preserve live services
         if: needs.changes.outputs.installer != 'false'
         shell: bash

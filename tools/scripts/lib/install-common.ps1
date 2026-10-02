@@ -54,9 +54,9 @@ function Test-WingetAvailable {
 function Test-VCTools {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path $vswhere)) { return $false }
-    $path = & $vswhere -products * -latest `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath 2>$null
+    $path = Invoke-InstallerProcess $vswhere @('-products', '*', '-latest',
+        '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+        '-property', 'installationPath') 2>$null
     return [bool]$path
 }
 
@@ -67,17 +67,17 @@ function Test-VCTools {
 function Enter-MsvcEnv {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path $vswhere)) { Write-Warn2 'vswhere not found; cannot load MSVC env for nvcc.'; return }
-    $vsPath = & $vswhere -latest -products * -version '[17.0,18.0)' `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    $vsPath = Invoke-InstallerProcess $vswhere @('-latest', '-products', '*', '-version', '[17.0,18.0)',
+        '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath') 2>$null
     if (-not $vsPath) {
-        $vsPath = & $vswhere -latest -products * `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        $vsPath = Invoke-InstallerProcess $vswhere @('-latest', '-products', '*',
+            '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath') 2>$null
     }
     if (-not $vsPath) { Write-Warn2 'no VC.Tools install found for MSVC env.'; return }
     $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
     if (-not (Test-Path $vcvars)) { Write-Warn2 "vcvars64.bat not found at $vcvars"; return }
     # Run vcvars in a child cmd and import the resulting environment variables.
-    & cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+    Invoke-InstallerProcess $env:ComSpec -RawArguments "/d /s /c `"`"$vcvars`" >nul 2>&1 && set`"" | ForEach-Object {
         if ($_ -match '^([^=]+)=(.*)$') {
             Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] -ErrorAction SilentlyContinue
         }
@@ -135,7 +135,7 @@ function Install-IfMissing {
     if ($Override)  { $wingetArgs += @('--override', $Override) }
 
     if ($UserScope -or (Test-IsAdmin)) {
-        & winget @wingetArgs
+        Invoke-InstallerProcess -OwnProcessTree 'winget' $wingetArgs
     } else {
         Invoke-Elevated -Reason "installing $Name" -CommandLine (@('winget') + $wingetArgs)
     }

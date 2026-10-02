@@ -314,7 +314,7 @@ features = "cuda,load-dynamic-ort"     # NVIDIA; non-NVIDIA -> "directml"
 profile = "release"
 crt = "static"                          # +crt-static -> /MT, to match livekit's prebuilt /MT libwebrtc
 cmake_generator = "Visual Studio 17 2022"   # match the VS2022 host nvcc supports
-cuda_arch = "120"                       # Blackwell RTX 5090 = sm_120
+# CUDA targets are detected from local devices and validated against nvcc.
 msvc_host = "vs2022"                    # Enter-MsvcEnv: cl.exe for nvcc (14.4x, nvcc-compatible)
 [module.build.macos]
 features = "metal,accelerate"           # PROVEN (M5: the daily mac build; Metal needs no toolkit)
