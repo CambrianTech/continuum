@@ -1035,6 +1035,11 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
       || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
   fi
   export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
+  # The supervisor launches native Rust without MSYS argument conversion.
+  # Persist a native path, not /c/... which Rust resolves on the wrong root.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) CONTINUUM_UI_DIST="$(cygpath -am "$CONTINUUM_UI_DIST")" || exit 1 ;;
+  esac
   # The durable pin: replace-or-append, single-quoted (the file is `source`d by
   # bash, and an unquoted path with a backslash is destroyed by it — see
   # config_env.rs). Same shape as `bin/continuum`'s config_set.

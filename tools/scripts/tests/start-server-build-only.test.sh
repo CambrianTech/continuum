@@ -62,6 +62,11 @@ for bin in "${bins[@]}"; do
 done
 SH
 chmod +x "$fixture_home/.cargo/bin/cargo"
+mkdir -p "$scratch/repo/apps/web/dist" "$scratch/repo/node_modules"
+printf '{}\n' > "$scratch/repo/apps/web/package.json"
+printf '<html>fixture</html>\n' > "$scratch/repo/apps/web/dist/index.html"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture_home/.cargo/bin/npm"
+chmod +x "$fixture_home/.cargo/bin/npm"
 # Even a suppressed command failure must leave evidence. Never call real tools.
 cat > "$scratch/forbidden" <<'SH'
 #!/usr/bin/env bash
@@ -115,6 +120,9 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     fi
     if [ "$failure" = 0 ]; then
       [ "$status" = 0 ]
+      expected_dist="$scratch/repo/apps/web/dist"
+      if [ "$platform" = MINGW64_NT-10.0 ]; then expected_dist="$(cygpath -am "$expected_dist")"; fi
+      grep -Fx "CONTINUUM_UI_DIST='$expected_dist'" "$fixture_home/.continuum/config.env"
       if [ "$platform" = MINGW64_NT-10.0 ]; then
         grep -q '^MEDIA_PREPARE$' "$FIXTURE_TRACE"
         grep -q -- '--bin livekit-bridge --release' "$FIXTURE_TRACE"
