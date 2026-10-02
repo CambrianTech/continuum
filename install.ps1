@@ -104,6 +104,8 @@ if ($Update) {
 $installLease = Enter-ContinuumInstallLease
 try {
 . (Join-Path $LibDir 'install-common.ps1')
+Initialize-InstallEnvironment
+if (-not $PrepareOnly) { Initialize-ElevationSession }
 . (Join-Path $LibDir 'windows-service.ps1')
 . (Join-Path $LibDir 'windows-prepared.ps1')
 if ($ResumePrepared) {
@@ -125,6 +127,10 @@ Write-Host ''
 
 try {
     if (-not $PrepareOnly) {
+    # Select storage before prerequisite downloads and extraction, not just cargo.
+    Mod-ColdStorage
+    $payloadRoot = Initialize-ManagedPayloadRoot -ColdRoot $env:CONTINUUM_STORAGE_PATH
+    Write-Ok "installed payloads -> $payloadRoot"
     Test-WingetAvailable
     # Git + vendored submodules (llama.cpp, whisper.cpp) -- the native build needs
     # them. Per-user, no elevation.
@@ -158,10 +164,6 @@ try {
     # UAC (shared). A fresh grid box must not need a manual firewall click.
     Mod-AircFirewall -WantsGrid:$WantsGrid
 
-    # Cold storage: auto-detect a large drive and route models + build cache there
-    # (migrating what's on the system drive) BEFORE the build, so cargo builds into
-    # the relocated cache. No-op on single-drive machines. Reconfigurable later.
-    Mod-ColdStorage
     } else {
         Write-Step 'Preparing with the existing toolchain; provisioning, elevation, startup registration, and handoff are deferred.'
         Mod-CMake -ExistingOnly
@@ -193,7 +195,7 @@ finally {
 }
 
 Write-Host ''
-} finally { $installLease.Dispose() }
+} finally { try { Clear-Elevation } finally { $installLease.Dispose() } }
 Write-Ok 'Continuum native install complete.'
 Write-Host '  Update: .\install.ps1 -Update  (fast-forward this checkout, build, verify, and hand over)'
 Write-Host '  Test:   continuum ping'

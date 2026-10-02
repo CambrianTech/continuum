@@ -34,6 +34,17 @@
 
 schema_version = 1
 
+[[module]]
+id = "gsudo"
+order = 5
+tier = 0
+platforms = ["windows"]
+accept = "gsudo.exe --version"
+[module.sources.windows]
+type = "winget"
+id = "gerardog.gsudo"
+scope = "user"
+
 # PDF perception is a provider runtime dependency, including non-developer installs.
 [[module]]
 id = "poppler"
@@ -58,7 +69,7 @@ platforms = ["windows"]
 accept = "airc --help"
 [module.sources.windows]
 type = "curl-sh"
-url = "https://raw.githubusercontent.com/CambrianTech/airc/main/install.ps1"
+url = "https://raw.githubusercontent.com/CambrianTech/airc/canary/install.ps1"
 
 [[module]]
 id = "onnxruntime"
@@ -125,8 +136,8 @@ run = "gh auth login --hostname github.com --git-protocol https --web"
 # profiles) silently DROPS inbound peer dials to the airc daemon unless it's
 # allowed -- an asymmetric route failure (outbound works, peers can't dial in)
 # that breaks cross-grid delivery + peer-dialed inference. Grid-only; needs the
-# one gsudo UAC. A PROGRAM rule survives the daemon's ephemeral-port churn. The
-# runner resolves the airc binary path (Mod-AircFirewall). Windows-only: Linux/
+# one gsudo UAC. AIRC's public setup owns effective TCP/UDP LocalSubnet policy.
+# The runner resolves the binary path (Mod-AircFirewall). Windows-only: Linux/
 # macOS LAN nodes don't drop inbound by default (add a ufw rule only if ufw is
 # active -- follow-up on the bash runner).
 [[module]]
@@ -136,11 +147,11 @@ tier = 0
 flags = ["grid"]
 applies = "has-airc"     # runner skips when the airc grid transport isn't installed
 platforms = ["windows"]
-accept = "netsh advfirewall firewall show rule name=\"airc daemon inbound (continuum grid)\""
+accept = "AIRC public setup verifies effective TCP/UDP LocalSubnet policy for the installed executable"
 [module.sources.windows]
 type = "command"
 # path resolved by the runner (Get-Command airc / ~/.local/bin/airc.exe)
-run = "New-NetFirewallRule -DisplayName 'airc daemon inbound (continuum grid)' -Direction Inbound -Action Allow -Profile Any"
+run = "AIRC install.ps1 -FirewallOnly -AircPath <installed-executable>"
 
 # ── Tier 3: build toolchain (dev / --dev; end users get prebuilt binaries) ────
 
@@ -216,6 +227,20 @@ package = "cmake"
 windows = ["~/.continuum/tools/cmake/bin"]
 
 [[module]]
+id = "xz-decoder"
+order = 49
+tier = 3
+flags = ["dev"]
+platforms = ["windows"]
+accept = "xz --version"
+[module.sources.windows]
+type = "archive"
+url = "https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4-windows.zip"
+version = "5.8.4"
+sha256 = "f31af7638391ecf286d48bc8555ce6e131691a1c52a9e44303bce57069e9de56"
+extract = "preserve-tree"
+
+[[module]]
 id = "llvm-libclang"
 order = 50
 tier = 3
@@ -270,7 +295,7 @@ components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc"
 # zero output, the exact silent-exit we hit on the 5090. Version-agnostic globs so a CUDA
 # minor bump never rots the path. The launcher expands + prepends these to PATH before exec.
 [module.runtime_path]
-windows = ["~/.continuum/cuda-*/Library/bin"]
+windows = ["~/.continuum/cuda-*/Library/bin", "~/.continuum/cuda-toolkit/bin"]
 linux = ["~/.continuum/cuda-*/lib", "~/.continuum/cuda-*/lib64"]
 
 # ── The build itself (a module: env is data) ─────────────────────────────────

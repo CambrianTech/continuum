@@ -22,6 +22,8 @@ case "$(uname -s)" in Darwin|Linux) ;; *) echo "skip: the slot path is macOS/Lin
 repo="$scratch/repo"
 mkdir -p "$repo/tools/scripts" "$repo/core/vendor/llama.cpp/tools/server" "$scratch/bin"
 cp "$script_dir/../install-llama-server.sh" "$repo/tools/scripts/"
+mkdir -p "$repo/tools/scripts/lib"
+cp "$script_dir/../lib/payload-paths.sh" "$repo/tools/scripts/lib/"
 sub="$repo/core/vendor/llama.cpp"
 printf '# fixture\n' > "$sub/tools/server/CMakeLists.txt"
 git -C "$sub" init -q && git -C "$sub" -c user.email=t@t -c user.name=t add -A \
@@ -44,15 +46,18 @@ if [ "${1:-}" = "--help" ]; then
 fi
 [ "${1:-}" = "engine" ] || exit 64
 shift
+source "$FIXTURE_PAYLOAD_LIB"
+root="$(managed_payload_root "$CONTINUUM_HOME")/bin" || exit 1
 echo "$*" >> "$FIXTURE_LOG"
 case "$1" in
-  idle-slot) [ "$IDLE_RC" = 0 ] && echo "$CONTINUUM_HOME/bin/$IDLE_SLOT"; exit "$IDLE_RC" ;;
-  promote) printf '%s\n' "$2" > "$CONTINUUM_HOME/bin/current"; exit 0 ;;
+  idle-slot) [ "$IDLE_RC" = 0 ] && echo "$root/$IDLE_SLOT"; exit "$IDLE_RC" ;;
+  promote) printf '%s\n' "$2" > "$root/current"; exit 0 ;;
 esac
 exit 64
 SH
 chmod +x "$scratch/bin/cmake" "$scratch/bin/continuum"
 export PATH="$scratch/bin:$PATH" CONTINUUM_CLI="$scratch/bin/continuum" FIXTURE_LOG="$scratch/log"
+export FIXTURE_PAYLOAD_LIB="$repo/tools/scripts/lib/payload-paths.sh"
 
 fresh_home() {
   rm -rf "$scratch/home" "$scratch/log"; : > "$scratch/log"
@@ -108,4 +113,14 @@ if IDLE_RC=1 IDLE_SLOT= run; then fail "refused: exited 0"; fi
 grep -q "no slot can be proven idle" "$scratch/err" || fail "refused: the cause is not named"
 ! grep -q promote "$scratch/log" || fail "refused: promoted"
 
-echo "install-llama-server slots: 6 cases pass"
+# A recorded cold payload owns the active engine, even with a stale legacy bin.
+fresh_home
+cold="$scratch/cold payload"
+engine_at "$cold/bin/engine-b" "$want"
+printf '%s\n' "$cold" > "$CONTINUUM_HOME/payload-root"
+echo engine-b > "$cold/bin/current"
+IDLE_RC=0 IDLE_SLOT=engine-a run || fail "cold current: exit $?"
+[ "$(cat "$scratch/out")" = "$cold/bin/engine-b/llama-server" ] || fail "cold current: wrong engine"
+[ ! -s "$scratch/log" ] || fail "cold current: rebuilt or promoted unnecessarily"
+
+echo "install-llama-server slots: legacy and cold cases pass"

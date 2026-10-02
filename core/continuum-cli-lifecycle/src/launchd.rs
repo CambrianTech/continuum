@@ -492,12 +492,6 @@ pub mod live {
         }
     }
 
-    /// The slot every install stages into: the installer's `~/.continuum/bin` location,
-    /// second in `resolve_core_artifact`'s order after `/usr/local/bin`.
-    pub fn default_slot(home: &Path) -> PathBuf {
-        home.join(".continuum").join("bin").join("continuum-core-server")
-    }
-
     fn run(cmd: &mut Command, what: &str) -> Result<String, String> {
         let out = cmd.output().map_err(|e| format!("{what}: {e}"))?;
         if !out.status.success() {
@@ -512,10 +506,10 @@ pub mod live {
     /// `System` is the LaunchDaemon: three privileged steps through `sudo` — the one
     /// consent macOS requires, the same class as the 5090's UAC (card 7b56a84b). It does
     /// NOT start the core: the caller kickstarts and waits, so the receipt is one place.
-    pub fn install(domain: Domain, artifact: &Path, socket: &str, env: &[(String, String)]) -> Result<Job, String> {
+    pub fn install(domain: Domain, artifact: &Path, slot: &Path, socket: &str, env: &[(String, String)]) -> Result<Job, String> {
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("HOME is not set")?;
         let user = std::env::var("USER").map_err(|_| "USER is not set".to_string())?;
-        let job = Job { domain, slot: default_slot(&home) };
+        let job = Job { domain, slot: slot.to_path_buf() };
         stage(&job, artifact)?;
         let data = home.join(".continuum");
         std::fs::create_dir_all(data.join("logs")).map_err(|e| format!("cannot create ~/.continuum/logs: {e}"))?;
@@ -693,7 +687,7 @@ mod tests {
     // launchd's own dict, XML-escaped, so a `&` in a value cannot break the plist.
     #[test]
     fn the_installed_plist_runs_the_binary_and_round_trips_its_slot() {
-        let slot = PathBuf::from("/Users/j/.continuum/bin/continuum-core-server");
+        let slot = PathBuf::from("/Volumes/Cold Storage/payloads/j/bin/continuum-core-server");
         let env = vec![("PATH".to_string(), "/a:/b".to_string()), ("ORT_DYLIB_PATH".to_string(), "/l/x&y.dylib".to_string())];
         let spec = |domain: &Domain| {
             render_plist(&PlistSpec { domain, slot: &slot, socket: "/tmp/continuum-core.sock", home: Path::new("/Users/j"), user: "j", env: &env })
