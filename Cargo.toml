@@ -407,6 +407,9 @@ debug = false
 # first release containing all the required fixes before removing these pins.
 # This applies to all workspace members transparently.
 [patch.crates-io]
+# Pocket-TTS 0.6.2 unconditionally pulled native MKL even when its mkl feature
+# was disabled. Keep speech support; opt into MKL only through that feature.
+pocket-tts = { git = "https://github.com/joelteply/pocket-tts.git", rev = "bf861a232412734bf2be849593ae5f5b2f6da29d" }
 candle-core = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
 candle-nn = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
 candle-transformers = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
