@@ -3737,19 +3737,18 @@ fn airc_on_path() -> Option<PathBuf> {
 fn airc_supervised() -> bool {
     #[cfg(target_os = "macos")]
     let probe = std::process::Command::new("launchctl")
-        .args(["print", &format!("gui/{}/{AIRC_JOIN_LABEL}", {
+        .args(["print", &format!("gui/{}/{}", {
             // SAFETY: getuid has no preconditions and cannot fail.
             unsafe { libc::getuid() }
-        })])
+        }, continuum_core::airc::discovery::AIRC_JOIN_SUPERVISOR)])
         .output();
     #[cfg(windows)]
-    let probe = std::process::Command::new("schtasks").args(["/Query", "/TN", "\\airc-join"]).output();
+    let probe = std::process::Command::new("schtasks")
+        .args(["/Query", "/TN", &format!("\\{}", continuum_core::airc::discovery::AIRC_JOIN_SUPERVISOR)])
+        .output();
     probe.map(|o| o.status.success()).unwrap_or(false)
 }
 
-/// airc's LaunchAgent label (`unix/register-autostart.sh`).
-#[cfg(target_os = "macos")]
-const AIRC_JOIN_LABEL: &str = "com.cambriantech.airc-join";
 
 /// Run airc's own registrar from the checkout airc was installed from.
 #[cfg(any(windows, target_os = "macos"))]
