@@ -938,6 +938,33 @@ public static class NativeStatusFixture {
         if (-not $failure -or $failure -notmatch 'exit 74' -or $failure -notmatch 'no diagnostic output') {
             throw 'Missing elevation evidence was not explicit'
         }
+        # No real consent: exercise receipts with a missing metadata path and
+        # preserve the actual exit/launch failure rather than guessing an actor.
+        $savedLauncher = ${function:Invoke-InstallerProcess}
+        $script:consentReceipt = @()
+        function Write-Host { param($Object) $script:consentReceipt += [string]$Object }
+        try {
+            function Invoke-InstallerProcess { param($FilePath, $ArgumentList) 'original consent diagnostic'; $global:LASTEXITCODE = 999 }
+            $failure = $null
+            try { Ensure-Elevated -Reason $reason } catch { $failure = $_.Exception.Message }
+            if ($failure -notmatch 'exit 999' -or $failure -notmatch 'original consent diagnostic' -or
+                $failure -notmatch 'does not establish which actor' -or $script:ElevationWarmed) { throw 'Consent status lost original evidence or inferred cancellation actor' }
+            $receipt = $script:consentReceipt -join "`n"
+            foreach ($expected in @('start: utc=', 'end: utc=', 'elapsedMs=', 'exit=999', 'gsudo=gsudo', 'fileVersion=unavailable', "ownerPid=$PID", "callerPid=$PID")) {
+                if (-not $receipt.Contains($expected)) { throw "Consent receipt missing $expected" }
+            }
+            function Invoke-InstallerProcess { param($FilePath, $ArgumentList) throw 'original launch failure' }
+            $failure = $null
+            try { Ensure-Elevated -Reason $reason } catch { $failure = $_.Exception.Message }
+            if ($failure -ne 'original launch failure' -or ($script:consentReceipt -join "`n") -notmatch 'launch-or-wait-failed') { throw 'Launch failure replaced by receipt diagnostics' }
+            function Invoke-InstallerProcess { param($FilePath, $ArgumentList) $global:LASTEXITCODE = 0 }
+            Ensure-Elevated -Reason $reason
+            if (-not $script:ElevationWarmed -or ($script:consentReceipt -join "`n") -notmatch 'exit=0') { throw 'Successful consent receipt lost status' }
+            $script:ElevationWarmed = $false
+        } finally {
+            Set-Item Function:Invoke-InstallerProcess $savedLauncher
+            Remove-Item Function:Write-Host
+        }
         $script:elevationMode = 'success'
         Ensure-Elevated -Reason $reason
         Ensure-Elevated -Reason $reason

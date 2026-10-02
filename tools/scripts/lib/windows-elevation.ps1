@@ -304,16 +304,34 @@ function Ensure-Elevated {
     Write-Host "Admin access needed for $Reason -- acquiring or reusing the installer elevation session."
     Write-Host 'gsudo is a third-party elevation helper. Windows may show its publisher in the consent prompt.'
     Write-Host 'Approval covers installer admin steps; authentication, builds and the core stay unelevated.'
+    # Evidence only: metadata failure must not prevent or replace acquisition.
+    $helperPath = $script:GsudoExecutable
+    $helperVersion = 'unavailable'
+    try {
+        $helperFile = Get-Item -LiteralPath $helperPath -ErrorAction Stop
+        $helperPath = $helperFile.FullName
+        if ($helperFile.VersionInfo.FileVersion) { $helperVersion = $helperFile.VersionInfo.FileVersion }
+    } catch { }
+    $startedUtc = [DateTime]::UtcNow.ToString('o')
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    $acquisitionStatus = 'launch-or-wait-failed'
+    Write-Host "Elevation cache acquisition start: utc=$startedUtc; gsudo=$helperPath; fileVersion=$helperVersion; ownerPid=$($script:InstallElevationSession.OwnerPid); callerPid=$PID"
     $savedErrorPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
         $PSNativeCommandUseErrorActionPreference = $false
         $diagnostic = @(Invoke-InstallerProcess $script:GsudoExecutable @('cache', 'on', '-p', $script:InstallElevationSession.OwnerPid, '-d', '-1') 2>&1)
         $code = $global:LASTEXITCODE
-    } finally { $ErrorActionPreference = $savedErrorPreference }
+        $acquisitionStatus = "exit=$code"
+    } finally {
+        $ErrorActionPreference = $savedErrorPreference
+        $elapsed.Stop()
+        Write-Host "Elevation cache acquisition end: utc=$([DateTime]::UtcNow.ToString('o')); elapsedMs=$($elapsed.ElapsedMilliseconds); $acquisitionStatus; ownerPid=$($script:InstallElevationSession.OwnerPid); callerPid=$PID"
+    }
     if ($code -ne 0) {
         $detail = ($diagnostic | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
         if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'gsudo returned no diagnostic output.' }
+        if ($code -eq 999) { $detail += [Environment]::NewLine + 'Exit 999 does not establish which actor canceled the operation.' }
         throw "Elevation failed while $Reason (gsudo cache on exit $code).$([Environment]::NewLine)$detail"
     }
     $script:ElevationWarmed = $true
