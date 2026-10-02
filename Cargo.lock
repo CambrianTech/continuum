@@ -7994,7 +7994,7 @@ dependencies = [
 [[package]]
 name = "pocket-tts"
 version = "0.6.2"
-source = "git+https://github.com/joelteply/pocket-tts.git?rev=bf861a232412734bf2be849593ae5f5b2f6da29d#bf861a232412734bf2be849593ae5f5b2f6da29d"
+source = "git+https://github.com/joelteply/pocket-tts.git?rev=f2cb6ef9be1852db7439b6fad33229c53e21ce8c#f2cb6ef9be1852db7439b6fad33229c53e21ce8c"
 dependencies = [
  "anyhow",
  "byteorder",
