@@ -2,7 +2,8 @@
 # No engine startup, model selection fallback, installation, or private documents.
 param(
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
-    [string]$Continuum = 'continuum'
+    [string]$Continuum = 'continuum',
+    [string]$ExpectedBuildSha = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($OutputDirectory)
@@ -12,6 +13,11 @@ function Invoke-Core([string]$Command, [object]$Params) {
     $raw = & $Continuum $Command $json
     if ($LASTEXITCODE -ne 0) { throw "$Command failed with exit $LASTEXITCODE" }
     return ($raw | Out-String | ConvertFrom-Json)
+}
+$coreBefore = Invoke-Core 'ping' @{}
+if (-not $coreBefore.ok -or -not $coreBefore.buildSha) { throw 'Running core did not provide build provenance' }
+if ($ExpectedBuildSha -and $coreBefore.buildSha -ne $ExpectedBuildSha) {
+    throw "Expected deployed build $ExpectedBuildSha, running $($coreBefore.buildSha); refusing acceptance against a stale core"
 }
 $status = Invoke-Core 'ai/inference/status' @{}
 if (-not $status.ready -or -not $status.activeModel) { throw 'Existing bound model is not ready' }
@@ -59,8 +65,14 @@ $result | ConvertTo-Json -Depth 16 | Set-Content (Join-Path $root 'result.json')
 if (-not $result.success -or $result.text -notmatch '(?is)blue\s+square.*red\s+circle') {
     throw 'Model did not identify the left blue square and right red circle; inspect result.json'
 }
+$coreAfter = Invoke-Core 'ping' @{}
+if (-not $coreAfter.ok -or $coreAfter.buildSha -ne $coreBefore.buildSha -or
+    $coreAfter.buildNumber -ne $coreBefore.buildNumber) {
+    throw 'Core revision changed during visual acceptance; result cannot attest one deployed build'
+}
 @{
     passed=$true; model=$result.model; provider=$result.provider
+    coreBuildSha=$coreAfter.buildSha; coreBuildNumber=$coreAfter.buildNumber
     requestId=$result.requestId; elapsedMs=$clock.ElapsedMilliseconds
     sourceSha256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
     imageSha256=(Get-FileHash -LiteralPath $imagePath -Algorithm SHA256).Hash
