@@ -287,3 +287,13 @@ cannot attempt missing scripts. No workflow or job was added; one was removed.
 Local selector tests and YAML structure validation pass. Hosted execution must
 still establish artifact reuse and the new timing; the old measured durations
 are not a claim of savings or binary installation acceptance.
+
+The follow-up fixture-ownership slice keeps all nine warm-build launcher
+scenarios and the one-compile static assertion in the Linux job. Windows runs
+the two native Windows success/refusal scenarios with real Git Bash path
+conversion, executable receipt and media-staging assertions; both modes reuse
+one scratch repository and one teardown. The earlier full Windows warm-suite
+step took 7 seconds, so this is duplicate scenario reduction, not a claim of
+minutes saved. Separate PowerShell/Bash CUDA adapter coverage remains intact.
+Engine-slot shell contracts run once in the required Linux job for PR/push;
+standalone manually dispatched Carl smoke keeps its own slot proof.
