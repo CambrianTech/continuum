@@ -9,6 +9,7 @@ try {
     @'
 Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
 if ([ConsoleProbe]::GetConsoleWindow() -ne [IntPtr]::Zero) { exit 91 }
+if ([Environment]::CommandLine.Contains('"--probe"')) { exit 92 }
 foreach ($value in $args) { [Console]::Out.WriteLine('ARG:' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value))) }
 $line = 'x' * 4096
 for ($i = 0; $i -lt 256; $i++) {
@@ -17,7 +18,7 @@ for ($i = 0; $i -lt 256; $i++) {
 }
 exit 23
 '@ | Set-Content -LiteralPath $child -Encoding UTF8
-    $expected = @('', 'with spaces', 'embedded"quote', 'C:\path with spaces\', 'backslash\"quote', '$literal; & |')
+    $expected = @('--probe', '', 'with spaces', 'embedded"quote', 'C:\path with spaces\', 'backslash\"quote', '$literal; & |')
     $actual = New-Object 'System.Collections.Generic.List[string]'
     $counts = @{ stdout = 0; stderr = 0 }
     Invoke-InstallerProcess -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `

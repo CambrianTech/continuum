@@ -15,7 +15,10 @@ function Invoke-InstallerProcess {
     $quoted = foreach ($arg in $ArgumentList) {
         # Windows CommandLineToArgvW quoting, including empty arguments and
         # backslashes before quotes or a closing quote.
-        '"' + ([regex]::Replace([regex]::Replace($arg, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1')) + '"'
+        # Some tools (including gsudo) inspect the raw command line themselves.
+        # Leave simple flags bare, as native PowerShell invocation does.
+        if ($arg.Length -gt 0 -and $arg -notmatch '[\s"]') { $arg }
+        else { '"' + ([regex]::Replace([regex]::Replace($arg, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1')) + '"' }
     }
     $start.Arguments = $quoted -join ' '
     $start.WorkingDirectory = (Get-Location).Path
@@ -123,7 +126,7 @@ function Test-ElevationCacheAvailable {
     try {
         $ErrorActionPreference = 'Continue'
         $PSNativeCommandUseErrorActionPreference = $false
-        $answer = @(& $script:GsudoExecutable status CacheAvailable 2>&1)
+        $answer = @(Invoke-InstallerProcess $script:GsudoExecutable @('status', 'CacheAvailable') 2>&1)
         $code = $global:LASTEXITCODE
     } finally { $ErrorActionPreference = $savedErrorPreference }
     $value = ($answer -join [Environment]::NewLine).Trim()
@@ -140,8 +143,8 @@ function Ensure-Gsudo {
         throw 'The shared installer manifest must supply a per-user gsudo package source.'
     }
     Write-Host 'Installing gsudo (per-user) -- the shared elevation helper ...'
-    & winget install --id $source.id --source winget --exact --silent `
-        --accept-package-agreements --accept-source-agreements --scope $source.scope
+    Invoke-InstallerProcess 'winget' @('install', '--id', $source.id, '--source', 'winget', '--exact', '--silent',
+        '--accept-package-agreements', '--accept-source-agreements', '--scope', $source.scope)
     $code = $global:LASTEXITCODE
     if ($code -ne 0 -and $code -ne 3010) { throw "gsudo acquisition failed (winget exit $code)." }
     Update-SessionPath
@@ -172,7 +175,7 @@ function Ensure-Elevated {
     try {
         $ErrorActionPreference = 'Continue'
         $PSNativeCommandUseErrorActionPreference = $false
-        $diagnostic = @(& $script:GsudoExecutable cache on -p $script:InstallElevationSession.OwnerPid -d -1 2>&1)
+        $diagnostic = @(Invoke-InstallerProcess $script:GsudoExecutable @('cache', 'on', '-p', $script:InstallElevationSession.OwnerPid, '-d', '-1') 2>&1)
         $code = $global:LASTEXITCODE
     } finally { $ErrorActionPreference = $savedErrorPreference }
     if ($code -ne 0) {
@@ -200,7 +203,7 @@ function Clear-Elevation {
             try {
                 $ErrorActionPreference = 'Continue'
                 $PSNativeCommandUseErrorActionPreference = $false
-                $diagnostic = @(& $script:GsudoExecutable cache off -p $script:InstallElevationSession.OwnerPid 2>&1)
+                $diagnostic = @(Invoke-InstallerProcess $script:GsudoExecutable @('cache', 'off', '-p', $script:InstallElevationSession.OwnerPid) 2>&1)
                 $code = $global:LASTEXITCODE
             } finally { $ErrorActionPreference = $savedErrorPreference }
             if ($code -ne 0) { throw "Elevation cache cleanup failed (exit $code): $($diagnostic -join [Environment]::NewLine)" }
@@ -218,9 +221,9 @@ function Invoke-Elevated {
         [string]$Reason = 'running the elevated installer command')
     if (Test-IsAdmin) {
         $arguments = @($CommandLine | Select-Object -Skip 1)
-        & $CommandLine[0] @arguments
+        Invoke-InstallerProcess $CommandLine[0] $arguments
         return
     }
     Ensure-Elevated -Reason $Reason
-    & $script:GsudoExecutable @CommandLine
+    Invoke-InstallerProcess $script:GsudoExecutable $CommandLine
 }

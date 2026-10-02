@@ -892,6 +892,11 @@ public static class NativeStatusFixture {
         function Find-GsudoExecutable { 'gsudo' }
         function Test-ElevationCacheAvailable { $false }
         $script:gsudoArguments = @()
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList)
+            if ($FilePath -eq 'gsudo') { gsudo @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList }
+        }
         function gsudo {
             $script:elevationCalls++
             $script:gsudoArguments += ($args -join ' ')
@@ -1045,6 +1050,11 @@ try {
         function Find-GsudoExecutable { $script:gsudoFinds++; if ($script:gsudoFinds -gt 1) { 'fixture-native.exe' } }
         function Update-SessionPath { }
         function winget { $script:gsudoPackageArgs = @($args); $global:LASTEXITCODE = 0 }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList)
+            if ($FilePath -eq 'winget') { winget @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList }
+        }
         Ensure-Gsudo
         if ($script:GsudoExecutable -ne 'fixture-native.exe' -or
             ($script:gsudoPackageArgs -join ' ') -notmatch '--id fixture.package --source winget' -or
