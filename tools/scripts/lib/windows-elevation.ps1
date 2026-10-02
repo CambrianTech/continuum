@@ -15,6 +15,23 @@ function Initialize-InstallerPowerShell {
 }
 Initialize-InstallerPowerShell
 
+# Only executable installer entries serialize errors to the OS pipe. Library
+# consumers keep normal PowerShell ErrorRecord/redirection semantics. PS5's
+# hidden console host can otherwise discard Write-Error before its native caller
+# can capture it, even though the underlying process stderr was drained.
+function Invoke-InstallerEntryPoint {
+    param([Parameter(Mandatory = $true)][scriptblock]$Action)
+    try {
+        & $Action 2>&1 | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) {
+                [Console]::Error.WriteLine($_.ToString())
+            } else { Write-Output $_ }
+        }
+    } catch {
+        [Console]::Error.WriteLine($_.ToString())
+        exit 1
+    }
+}
 # Native background commands must never allocate a console when the caller is
 # a desktop harness. Keep both pipes draining and preserve the native exit code.
 function Invoke-InstallerProcess {

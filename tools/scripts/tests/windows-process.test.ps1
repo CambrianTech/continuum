@@ -6,6 +6,46 @@ $ErrorActionPreference = 'Stop'
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-process-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Regression: hidden PS5 -File lost Cargo stderr when its host rendered
+    # unmerged ErrorRecords. Test OS pipes across two real PS5 boundaries.
+    $boundaryProbe = Join-Path $scratch 'boundary.ps1'
+    @'
+param($Helper, $Depth, $Mode)
+. $Helper
+Invoke-InstallerEntryPoint {
+    if ([int]$Depth -gt 0) {
+        Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $PSCommandPath, $Helper, ([string]([int]$Depth - 1)), $Mode)
+        exit $global:LASTEXITCODE
+    }
+    $data = @(Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\cmd.exe" -RawArguments '/d /c "echo DATA & echo DIAGNOSTIC 1>&2 & exit /b 23"')
+    if ($data.Count -ne 1 -or $data[0].Trim() -ne 'DATA') { throw 'Native stderr contaminated success data.' }
+    Write-Output $data
+    if ($Mode -eq 'throw') { throw 'TERMINATING DIAGNOSTIC' }
+    exit $global:LASTEXITCODE
+}
+'@ | Set-Content -LiteralPath $boundaryProbe -Encoding UTF8
+    foreach ($mode in @('exit', 'throw')) {
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $start.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + $boundaryProbe + '" "' + [IO.Path]::GetFullPath("$PSScriptRoot/../lib/windows-elevation.ps1") + '" 1 ' + $mode
+        $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::Start($start)
+        try {
+            $out = $process.StandardOutput.ReadToEndAsync(); $err = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'Diagnostic boundary fixture timed out.' }
+            $wanted = if ($mode -eq 'throw') { 1 } else { 23 }
+            if ($process.ExitCode -ne $wanted) { throw "Nested exit changed: $($process.ExitCode), wanted $wanted; $($err.Result)" }
+            if ($out.Result.Trim() -ne 'DATA') { throw "Success stream changed: $($out.Result)" }
+            if ([regex]::Matches($err.Result, '(?m)^DIAGNOSTIC\s*$').Count -ne 1) { throw "Missing/duplicate native diagnostic: $($err.Result)" }
+            if ([regex]::Matches($err.Result, 'TERMINATING DIAGNOSTIC').Count -ne [int]($mode -eq 'throw')) { throw "Missing/duplicate terminating diagnostic: $($err.Result)" }
+        } finally { $process.Dispose() }
+    }
+    # Public argument validation runs before any provisioning or lease writes.
+    $publicErrors = @(Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', "$PSScriptRoot/../../../install.ps1", '-PrepareOnly', '-Grid') 2>&1)
+    if ($global:LASTEXITCODE -ne 1 -or @($publicErrors | Where-Object { $_.ToString() -match 'PrepareOnly cannot be combined' }).Count -ne 1) { throw "Public entry lost its terminating error: $publicErrors" }
+    Write-Host 'PASS: hidden nested PS5 entries preserve separate diagnostics, data, and exits.'
+
     # Regression: an inherited module search path must not choose another
     # PowerShell engine's built-ins (the public PS5 Get-Acl failure on BIGGIEDESK).
     $foreignModules = Join-Path $scratch 'foreign-modules'

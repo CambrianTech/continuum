@@ -196,3 +196,27 @@ Actual PS5 loopback tests cover exact bytes, HTTP error, oversized response,
 stalled body and real downloaded child exit23. Full Windows service suite passed.
 The same manifest URL downloaded 10448 bytes in0.42seconds through the real helper
 in isolated scratch; it was not executed. Public live acceptance remains OPEN.
+
+### Hidden PS5 compiler diagnostics (2026-10-02)
+
+OPEN public acceptance: the normal Grid install completed the GPU core server
+build, then Cargo returned 101 building the CLI; the hidden coordinator displayed
+only the module failure. A tiny actual hidden PS5 `-File` reproduction proved
+native stderr was drained, but unmerged PowerShell ErrorRecords disappeared at
+the host's OS pipe boundary. The existing merged-stream launcher fixture did not
+exercise that boundary. The compiler failure itself is a separate dependency issue.
+
+The canonical shared helper now provides an executable-entry serializer; the
+public entry (including its generated pre-clone functions) uses it. Native helper
+callers retain PowerShell data/error stream semantics. Entry errors serialize once
+to OS stderr; successful values remain on the success stream, explicit native
+exit codes survive, and terminating failures exit 1 after cleanup.
+
+Validation: complete actual PS5 windows-process.test.ps1 PASS (session 7177),
+including nested hidden -File coordinators, native exit 23, terminating exit 1,
+separate data/diagnostic streams and exact single diagnostic emission. The actual
+public entry's conflicting-switch refusal is visible before any provisioning.
+Existing cancellation, successful child handoff, argv, dual-pipe and bootstrap
+projection checks pass. No build, live installer, UAC, or daemon was run. AIRC must
+consume the released shared helper and wrap its public entry in a follow-up;
+this change does not claim to fix unmodified external PowerShell scripts.
