@@ -508,6 +508,11 @@ if (`$drift) { throw `$drift }
         $lease = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $marker = Join-Path $scratch 'handoff-acquired'
         $cli = Join-Path $scratch 'handoff-cli.ps1'
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList)
+            if ($FilePath -eq $cli) { & $FilePath @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList }
+        }
         $core = Join-Path $scratch 'handoff-core.exe'
         [IO.File]::WriteAllText($core, 'fixture-core')
         @"
@@ -1141,6 +1146,11 @@ try {
     # path is unreadable from here). Exit 3 refuses; an answer outside the slots refuses; a
     # readable live engine inside the answer refuses.
     $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
+    function Invoke-InstallerProcess {
+        param($FilePath, $ArgumentList)
+        if ($FilePath -eq $fakeCli) { & $FilePath @ArgumentList }
+        else { & $nativeInstallerProcess $FilePath $ArgumentList }
+    }
     Set-Content -LiteralPath $fakeCli -Value @'
 if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
 $payload = Get-ManagedPayloadRoot -HomeRoot $env:CONTINUUM_HOME
@@ -1340,6 +1350,12 @@ function Invoke-Elevated { throw 'Unexpected elevation' }
 function Ensure-Elevated { throw 'Unexpected elevation' }
 function Test-WingetAvailable { throw 'Unexpected provisioning' }
 function git { $global:LASTEXITCODE = 0 }
+$fixtureNativeProcess = ${function:Invoke-InstallerProcess}
+function Invoke-InstallerProcess {
+    param($FilePath, $ArgumentList)
+    if ($FilePath -eq 'git') { $global:LASTEXITCODE = 0 }
+    else { & $fixtureNativeProcess $FilePath $ArgumentList }
+}
 '@
         $shim.Replace('__SERVICE__', (Join-Path $repo 'tools\scripts\lib\windows-service.ps1').Replace("'", "''")) |
             Set-Content -LiteralPath (Join-Path $prepareLib 'windows-service.ps1')

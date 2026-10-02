@@ -45,6 +45,30 @@ exit 23
     if ($LASTEXITCODE -ne 0 -or $environment -notcontains 'CONTINUUM_HIDDEN_PROCESS_FIXTURE=imported') { throw 'Hidden batch environment import failed.' }
     if ($env:CONTINUUM_HIDDEN_PROCESS_FIXTURE) { throw 'Fixture changed the caller environment.' }
     Write-Host 'PASS: hidden batch shell grammar and environment output.'
+    # An unsuccessful device login must stop grid setup, not warn and install a
+    # node that cannot join its owner's account. This fixture cannot provision.
+    & {
+        . "$PSScriptRoot/../lib/install-common.ps1"
+        . "$PSScriptRoot/../lib/win-modules.ps1"
+        function Install-IfMissing { }
+        function Get-Command { [pscustomobject]@{ Source = 'fixture-gh' } }
+        function Module-Start { }
+        function Module-Done { throw 'Failed login was marked complete.' }
+        $script:authCommands = @()
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList)
+            if ($FilePath -ne 'gh') { throw 'Unexpected acquisition.' }
+            $script:authCommands += ($ArgumentList -join ' ')
+            $global:LASTEXITCODE = if ($ArgumentList[1] -eq 'status') { 1 } else { 23 }
+        }
+        $failure = ''
+        try { Mod-GhAuth -WantsGrid } catch { $failure = $_.Exception.Message }
+        if ($failure -notmatch 'exit 23' -or $script:authCommands.Count -ne 2 -or
+            $script:authCommands[1] -cne 'auth login --hostname github.com --git-protocol https --web') {
+            throw "Grid authentication failure was bypassed: $failure"
+        }
+    }
+    Write-Host 'PASS: device authentication uses hidden launch and failed login stops grid setup.'
 } finally {
     # Only this test's newly-created, resolved scratch directory is removed.
     $resolved = [IO.Path]::GetFullPath($scratch)

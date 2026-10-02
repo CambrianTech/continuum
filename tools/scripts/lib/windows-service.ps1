@@ -1,4 +1,10 @@
 . (Join-Path $PSScriptRoot 'payload-paths.ps1')
+# The CLI also loads this file in a fresh PowerShell for slot preparation.
+# Reuse the shared native launcher there without resetting an outer installer's
+# already-loaded elevation ownership state.
+if (-not (Get-Command Invoke-InstallerProcess -CommandType Function -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'windows-elevation.ps1')
+}
 # Native installer lifecycle. Two installed slots bound disk usage and keep
 # running images out of Cargo's output directory. Never overwrite an active slot.
 function ConvertTo-CoreImagePath {
@@ -168,12 +174,12 @@ function Get-CoreEngineIdleSlot {
     # is the contract here, so read it rather than the error stream.
     $ErrorActionPreference = 'Continue'
     if (-not $Cli -or -not (Test-Path -LiteralPath $Cli)) { return $null }
-    try { $help = (& $Cli --help 2>&1 | Out-String) } catch { return $null }
+    try { $help = (Invoke-InstallerProcess $Cli @('--help') 2>&1 | Out-String) } catch { return $null }
     if ($help -notmatch 'continuum engine idle-slot') { return $null }
     $saved = $env:CONTINUUM_HOME
     try {
         $env:CONTINUUM_HOME = $InstallRoot
-        $answer = @(& $Cli engine idle-slot 2>$null)
+        $answer = @(Invoke-InstallerProcess $Cli @('engine', 'idle-slot') 2>$null)
         $code = $LASTEXITCODE
     } finally { $env:CONTINUUM_HOME = $saved }
     if ($code -eq 3) {
@@ -247,7 +253,7 @@ function Invoke-CoreEnginePromote {
         Write-Warning 'No registered CLI to promote the engine with; the release registration bootstraps it.'
         return $false
     }
-    try { $help = (& $Cli --help 2>&1 | Out-String) } catch { $help = '' }
+    try { $help = (Invoke-InstallerProcess $Cli @('--help') 2>&1 | Out-String) } catch { $help = '' }
     if ($help -notmatch 'continuum engine promote') {
         Write-Warning 'This CLI predates engine slots: the release registration bootstraps the engine this deploy.'
         return $false
@@ -257,7 +263,7 @@ function Invoke-CoreEnginePromote {
     $saved = $env:CONTINUUM_HOME
     try {
         $env:CONTINUUM_HOME = $InstallRoot
-        $said = (& $Cli engine promote $name $stamp 2>&1 | Out-String).Trim()
+        $said = (Invoke-InstallerProcess $Cli @('engine', 'promote', $name, $stamp) 2>&1 | Out-String).Trim()
         $code = $LASTEXITCODE
     } finally { $env:CONTINUUM_HOME = $saved }
     if ($code -ne 0) { throw "continuum engine promote refused $name (exit $code): $said" }
@@ -463,7 +469,7 @@ function Register-CoreServiceRelease {
     # next login will launch. A failed update must leave the old task intact.
     Push-Location $WorkingDirectory
     try {
-        & $Release.cli reboot --prebuilt $Release.artifact --validate-only
+        Invoke-InstallerProcess $Release.cli @('reboot', '--prebuilt', $Release.artifact, '--validate-only')
         if ($LASTEXITCODE -ne 0) { throw 'Candidate validation failed; startup registration and the running core were preserved.' }
     } finally { Pop-Location }
     if ($PersistPreparedReceipt -or $PrepareOnly) { Save-CorePreparedRelease -Release $Release }
@@ -554,7 +560,7 @@ function Invoke-CoreServiceRelease {
     try {
         # Saved releases can contain older CLIs. Prove this candidate implements
         # the same lease protocol while the installer still owns exclusion.
-        $validation = @(& $Release.cli reboot --prebuilt $Release.artifact --validate-only)
+        $validation = @(Invoke-InstallerProcess $Release.cli @('reboot', '--prebuilt', $Release.artifact, '--validate-only'))
         if ($LASTEXITCODE -ne 0 -or 'continuum-install-lease-protocol:1' -cnotin $validation) {
             throw 'Prepared CLI lacks the verified installation lease protocol; prepare a current release before handoff.'
         }
@@ -564,7 +570,7 @@ function Invoke-CoreServiceRelease {
         # Registration reserves the candidate slot across this transfer. Reboot
         # reacquires the same lease and validates its descriptor before stopping.
         $InstallLease.Dispose()
-        & $Release.cli reboot --prebuilt $Release.artifact --service --service-descriptor-sha $descriptorSha
+        Invoke-InstallerProcess $Release.cli @('reboot', '--prebuilt', $Release.artifact, '--service', '--service-descriptor-sha', $descriptorSha)
         if ($LASTEXITCODE -ne 0) { throw 'Guarded service handoff failed; installer did not report success.' }
     } finally { Pop-Location }
     } finally {

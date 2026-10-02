@@ -599,13 +599,13 @@ function Mod-GhAuth {
     Install-IfMissing -Name 'GitHub CLI' -WingetId (Get-ManifestModule 'gh').source.id `
         -TestCmd { Get-Command gh -ErrorAction SilentlyContinue }
     if (-not $WantsGrid) { Module-Skip 'gh auth' 'local-only (no grid) -- GitHub login not required'; return }
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Write-Warn2 'gh not on PATH yet -- re-run to finish login.'; return }
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI is unavailable after provisioning; grid setup cannot continue.' }
     Invoke-InstallerProcess 'gh' @('auth', 'status') 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { Module-Skip 'gh auth' 'already authenticated'; return }
     Module-Start 'gh auth' 'GitHub login for grid (gist rendezvous) -- device-code flow'
-    & gh auth login --hostname github.com --git-protocol https --web
+    Invoke-InstallerProcess 'gh' @('auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web')
     if ($LASTEXITCODE -eq 0) { Module-Done 'gh auth' }
-    else { Write-Warn2 'GitHub login not completed -- re-run install to finish, or: gh auth login' }
+    else { throw "GitHub login did not complete (exit $LASTEXITCODE); grid setup stopped. Rerun this installer to resume authentication." }
 }
 
 function Invoke-AircSetup {
