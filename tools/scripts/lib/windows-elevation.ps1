@@ -4,6 +4,17 @@
 param([System.Collections.IDictionary]$GsudoSource)
 $script:ElevationGsudoSource = $GsudoSource
 
+function Initialize-InstallerPowerShell {
+    # A PS7 desktop host may pass its PSModulePath to Windows PowerShell 5.
+    # Load the running engine's built-ins explicitly before autoload can select
+    # another engine's Security/Utility type data. Keep user module paths intact.
+    foreach ($name in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security')) {
+        $manifest = [IO.Path]::Combine($PSHOME, 'Modules', $name, ($name + '.psd1'))
+        Import-Module $manifest -Global -ErrorAction Stop
+    }
+}
+Initialize-InstallerPowerShell
+
 # Native background commands must never allocate a console when the caller is
 # a desktop harness. Keep both pipes draining and preserve the native exit code.
 function Invoke-InstallerProcess {

@@ -122,6 +122,16 @@ is no complete public-install or remote-command acceptance receipt yet.
 
 ## Hidden Windows installation work
 
+The subsequent public d8b7941c6 retest failed before consent in cold-storage
+configuration: Windows PowerShell 5 inherited a PowerShell 7 module path and
+autoloaded incompatible Security type data at `Get-Acl`. Earlier test callers
+normalized their module path, which missed this public-entry failure. The shared
+initializer now explicitly imports Management, Utility and Security from the
+running engine's `PSHOME`; the generated bootstrap invokes that same initializer.
+It preserves user module paths and does not change machine configuration.
+The process regression includes a foreign-module negative control and a real
+helper positive case. A fresh public installer receipt is still required.
+
 The installer process launcher is authored in `tools/scripts/lib/windows-elevation.ps1`.
 The remote, pre-clone entry cannot source that file yet, so its bounded generated
 region is synchronized by `tools/scripts/sync-windows-bootstrap.ps1`. Run that
