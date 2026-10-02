@@ -178,3 +178,21 @@ These are development checks with an isolated D target and one build worker,
 not a supported public installer receipt. Dependency PR joelteply/candle#1 and
 its CI must complete before merging this integration. Public install/rerun and
 remote command/event plus useful grid GPU work remain OPEN.
+
+### 2026-10-02 — bounded AIRC entry acquisition
+
+Public canary d2604d832 passed native module initialization and all cached
+prerequisites, then stalled before launching the AIRC firewall child: PS5
+Invoke-WebRequest consumed 206 CPU seconds in roughly four minutes while its
+10448-byte entry destination remained empty. No gsudo/UAC or build had started.
+The exact owned public installer PID18224/parent30308 was verified and stopped;
+exec68330 ended -1. No downloaded installer was substituted or run manually.
+
+Invoke-AircSetup now uses a bounded HttpClient acquisition for its small entry
+script (60-second complete-response deadline, 1 MiB maximum). Script bytes are
+written only after a complete successful response. Existing manifest URL,
+hidden child ownership, arguments, exit propagation and cleanup are preserved.
+Actual PS5 loopback tests cover exact bytes, HTTP error, oversized response,
+stalled body and real downloaded child exit23. Full Windows service suite passed.
+The same manifest URL downloaded 10448 bytes in0.42seconds through the real helper
+in isolated scratch; it was not executed. Public live acceptance remains OPEN.
