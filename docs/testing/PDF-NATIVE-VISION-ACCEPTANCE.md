@@ -41,3 +41,18 @@ not a demonstrated optimization; no runtime change occurred between runs.
 
 Next: trace latency and carry native media through
 the existing persona activity and model binding without substituting text.
+
+07:04 UTC: live PDF acceptance95767 EXIT0 on runningbe79804c7/build5915.
+Vector-only page, empty text layer: bound llama-server Qwen3.8-27B answered
+'On the left is a blue square, and on the right is a red circle.'
+Request req-1790924147738,84820ms; source8D502094C7348F74F0054BEA96F0C45C68354244980477F6DB5FF199387E6D7E,
+image03ACAF6E65083234F09DFF096B5E4761C7112EBA486464C73DF68DEA9DAACE7F.
+Receipt pdf-visual-acceptance/deployed-be79804c7/receipt.json. This proves recovered
+core PDF visual understanding, not natural latency/native audio or full install.
+No controlled comparison with earlier22s request: concurrent compile/load differs.
+Lifecycle validation38355 EXIT101: GenerationChunk derives Eq but RequestPhase
+and its FinishReason payload did not. Added Eq derives to both closed enums;
+no wire/type shape changes. Claim absent/compiler inventory empty before retry.
+Sole focused retry82580 owns native-request-lifecycle-0704.log, D: shared cache,-j2.
+Resume82580 before any build; then run remote wire regressions. CLI84a362971 and
+locked identical LiveKit staging repair remain OPEN; no second deploy started.

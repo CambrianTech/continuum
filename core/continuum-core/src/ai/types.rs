@@ -437,7 +437,7 @@ pub struct GenerationTiming {
 }
 
 /// Finish reason for generation
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/FinishReason.ts")]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {

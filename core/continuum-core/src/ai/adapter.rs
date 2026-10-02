@@ -368,6 +368,11 @@ pub enum ApiStyle {
 /// that don't need the tokens live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenerationChunk {
+    /// One model attempt inside a turn; presentation closure is not this receipt.
+    RequestBoundary {
+        request_id: std::sync::Arc<str>,
+        phase: crate::ai::stream_sinks::RequestPhase,
+    },
     /// A fragment of the user-facing answer, emitted as the model decodes it.
     Token(String),
     /// Native media, reference-counted across the bounded stream ring.
@@ -395,6 +400,7 @@ pub enum GenerationChunk {
 impl GenerationChunk {
     pub fn byte_len(&self) -> usize {
         match self {
+            Self::RequestBoundary { request_id, .. } => request_id.len(),
             Self::Token(s) | Self::Reasoning(s) => s.len(),
             Self::Media(media) => media.data.len(),
             Self::Prefill { .. } => std::mem::size_of::<Self>(),

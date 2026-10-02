@@ -279,3 +279,154 @@ No toolkit install/removal, CUDA replacement, or manual PATH workaround applied.
 Retest through supported continuum install next; native-install-d6468da7a.log retains failure.
 
 Supported retry45853 targetbe79804c7/claim17516 passes real CUDA/MSVC preflight and is warm-building from durable checkout; log native-install-be79804c7.log. D: cache,-j2; no runtime handoff yet. Resume this owner. This exercises the repaired helper through normal install, not a PATH workaround.
+
+05:44 UTC install45853/claim17516 still warm-building pinnedbe79804c7;
+no duplicate build and no changes to its durable source tree. Independent native
+terminal review found remote forwarding accepted final=true on reasoning/prefill,
+allowing progress to settle a media stream. Responder emits text-token end kind.
+Feature worktree now explicitly refuses non-text-token terminal markers before
+forwarding. Extended existing wire-chunk regression for empty final reasoning and
+prefill; native-media final refusal retained. Diff check PASS; compiled validation
+pending until active deployment finishes. Source uncommitted, not deployed.
+Next resume45853 first; then run wire_chunks_of_this_stream_reach_the_sink_typed_and_others_are_ignored
+and native_media_wire_preserves_bytes_and_refuses_invalid_delivery against this patch.
+
+05:54 UTC concrete per-inference identity implementation in feature worktree:
+GenerationChunk now carries typed RequestBoundary (submitted Arc<str> identity,
+Started/Finished(FinishReason)/Aborted) on the existing bounded ring. Shared
+GenerationSink::run_request owns the attempt through future drop; cognition wraps
+its actual bound adapter call with the already-assigned request_id. FinishReason
+is preserved (Length is not Stop); provider response IDs cannot replace submission.
+An aborted attempt does not close the whole turn sink. Added existing-module
+regression for pending future drop followed by Length and Stop attempts on same
+sink, distinct provider ID, and no duplicate terminal event. Salvage ignores control
+metadata; unnegotiated nested remote lifecycle refuses explicitly. Current persona
+text forwarder still ignores these control events and refuses media: native playback
+binding remains OPEN. Diff check PASS; compilation pending active install45853,
+which continues pinnedbe79804c7 from separate durable checkout. No second build.
+After45853: run request_boundaries_survive_abort_and_keep_submitted_identity plus
+pending wire terminal regressions; compile exhaustive consumers before commit.
+
+06:04 UTC: resumed install45853; claim17516 still owns be79804c7 and Cargo/rustc
+children remain active. Release library warning summary is not install completion.
+No duplicate compilation or changes to the pinned durable checkout.
+Feature worktree request lifecycle now races the existing consumer cancellation
+watch against the bound generation future. A quiet provider waiting for its next
+packet is dropped when presentation disconnects, without waiting for a token or
+adding a task/bus. Extended the existing request-boundary regression to disconnect
+after Started while generation remains pending; bounded join must return error.
+Diff check PASS. Compilation and behavioral validation remain pending the active
+install; source remains uncommitted and is not included in be79804c7 deployment.
+Next: resume45853, verify installed/running revision and consumer behavior, then
+run request_boundaries_survive_abort_and_keep_submitted_identity and the queued
+wire terminal regressions. Native voice model binding and playback remain OPEN.
+
+06:14 UTC: install45853 remains sole owner (claim PID17516, targetbe79804c7).
+Compiler inventory now shows rustc29976 compiling continuum_core_server; no second
+build started. Installed ping responds ok, build5911/84a362971, roundTripMs0:
+serving core remains available, new deployment has not handed off yet.
+Extended existing request-boundary regression with a provider error after partial
+text: Started -> partial -> Aborted, no successful completion and no diagnostic
+text emitted into presentation. This complements future-drop and receiver-drop
+cases without a new fixture or background task. Diff check PASS; compiled test
+still pending45853 completion. No claim of native voice acceptance or deployment
+of the uncommitted lifecycle patch. Resume45853, then pending targeted tests and
+running-revision/consumer acceptance as recorded above.
+
+06:24 UTC: sole supported install45853 progressed: core release completed43m55s;
+GPU-free CLI feature build now compiling (cargo25200/17520, cl31616/30560 at
+inspection). Claim17516 remains targetbe79804c7; no duplicate build/handoff claim.
+Feature code now guards request attribution on each shared ring with an atomic
+owner shared by sink clones. Overlapping run_request attempts fail before polling
+provider or emitting Started; retirement publishes before releasing ownership.
+Independent model streams remain concurrent. Extended existing lifecycle test to
+reject overlap while first provider is pending, then prove subsequent attempts
+can use the same ring after abort/success. Diff check PASS; compile remains pending.
+Updated plan header to supersede obsolete baseline build handles explicitly.
+Not deployed: per-request lifecycle/terminal validation. Native voice acceptance
+and actual model binding remain OPEN. Next resume45853, verify runtime/adoption,
+then run queued lifecycle and wire regressions using the shared Cargo target.
+
+06:34 UTC: install45853 still owns claim17516/be79804c7; CLI compilation continues
+(rustc31820, cargo25200/17520). No new compiler or shared-cache contender started.
+Ran non-mutating rustfmt parser over all six modified Rust files: PASS; diff
+check PASS. This is syntax validation only, not type checking or test execution.
+Reviewed lifecycle ownership limits: run_request rejects overlapping attempts,
+but raw sink clones are still publication-capable. Do not enable native playback
+on the assumption that boundaries alone revoke delayed producer clones. A scoped
+producer lifetime or per-chunk request attribution must be integrated before that
+consumer gate opens. Existing media refusal remains intact. Pending compiled
+regressions and deployed acceptance are unchanged; resume45853 first.
+
+06:44 UTC: install45853 still active, claim17516/be79804c7; CLI rustc24876 at
+inspection after its library compile. No duplicate build. Implemented the reviewed
+producer-lifetime repair in the feature worktree: run_request now constructs the
+adapter future with a scoped producer. All provider clones share retirement;
+send holds a short watch read guard through synchronous ring publication, and
+retirement takes the write side before the terminal boundary. No guard crosses
+await. closed() also wakes on per-request retirement. Abort/error/success revoke
+producer clones without closing the turn ring; overlapping/nested owners refuse.
+Cognition passes the scoped producer to its bound adapter. Existing regression now
+retains a provider clone through abort and checks late-send refusal plus wakeup.
+Rust parser and diff checks PASS; type/behavior validation still pending install.
+This source is uncommitted, NOT deployed and native persona media remains refused.
+Next resume45853 for handoff/adoption, then queued lifecycle/wire regressions.
+
+06:44 handoff FAILURE and recovery: install45853 exited1 after warm build4044s
+(core43m55s, CLI23m16s). It stopped core34124; cognition drain Incomplete1/saveClean
+again reported unsaved state. Staging copied new core but failed on locked
+service-b/livekit-bridge.prev.exe before copying CLI. Serving lanes were preserved.
+Supported continuum start session75015 exited0, restored core in ~32s, verified
+be79804c7/build5915; ping ok/roundTripMs0. CLI remains84a362971 (reported stale).
+Desktop8975 remains unserved. This is PARTIAL deployment, not clean install success.
+No livekit process killed, no artifact deleted, no parallel core started.
+Investigation: staging unconditionally renames even identical helper binaries.
+Get-FileHash confirms built and installed livekit-bridge.exe are byte-identical:
+A7A8177CCFD80CF4B734851BD691782BE73173BA9A651B3CA3C196079A8DBEFB.
+Repair shared staging to preserve identical artifacts and validate before stopping;
+finish CLI convergence through supported installer. No manual copy counts as acceptance.
+New request-lifecycle source remains uncommitted/uncompiled; queued tests can now
+run after checking claim/compiler inventory because45853 has finished.
+
+06:54 UTC: deploy claim absent, compiler inventory empty before starting ONE
+shared-cache focused test: session38355, native-request-lifecycle-0654.log,
+cargo test -p continuum-core --no-default-features --lib
+request_boundaries_survive_abort_and_keep_submitted_identity -j2, targetD:.
+Do not duplicate or edit its Rust inputs while compiling. Lifecycle/source pending.
+Live deployed PDF acceptance on be79804c7 separately owns session95767,
+native-pdf-be79804c7.log and pdf-visual-acceptance/deployed-be79804c7.
+This uses the existing serving binding, no model load/restart or new training.
+Install45853 is finished EXIT1; recovery75015 EXIT0; do not resume them as active.
+CLI/desktop/staging repair remain outstanding as described in preceding receipt.
+
+07:04 UTC: live PDF acceptance95767 EXIT0 on runningbe79804c7/build5915.
+Vector-only page, empty text layer: bound llama-server Qwen3.8-27B answered
+'On the left is a blue square, and on the right is a red circle.'
+Request req-1790924147738,84820ms; source8D502094C7348F74F0054BEA96F0C45C68354244980477F6DB5FF199387E6D7E,
+image03ACAF6E65083234F09DFF096B5E4761C7112EBA486464C73DF68DEA9DAACE7F.
+Receipt pdf-visual-acceptance/deployed-be79804c7/receipt.json. This proves recovered
+core PDF visual understanding, not natural latency/native audio or full install.
+No controlled comparison with earlier22s request: concurrent compile/load differs.
+Lifecycle validation38355 EXIT101: GenerationChunk derives Eq but RequestPhase
+and its FinishReason payload did not. Added Eq derives to both closed enums;
+no wire/type shape changes. Claim absent/compiler inventory empty before retry.
+Sole focused retry82580 owns native-request-lifecycle-0704.log, D: shared cache,-j2.
+Resume82580 before any build; then run remote wire regressions. CLI84a362971 and
+locked identical LiveKit staging repair remain OPEN; no second deploy started.
+
+07:14 UTC: lifecycle test82580 EXIT0; request_boundaries regression PASS. Exact
+produced test binary continuum_core-923786718f26728d.exe then passed both queued
+wire terminal and native-media framing regressions without rebuilding.
+Repaired observed install failure in shared continuum-cli-lifecycle::install_cli:
+stage_artifact hashes source/destination, preserves identical installed files,
+retains refusal for changed bytes with occupied previous name, verifies copy hash.
+Windows CLI staging now calls that shared helper. Existing module regression
+covers occupied previous path + identical bytes, changed refusal preserving current,
+then successful changed rotation. Focused lifecycle-crate test EXIT0; log
+native-stage-identical-0714.log. No bridge/process/file workaround on the machine.
+CLI caller typecheck started next with shared D: target,-j2; log
+native-stage-cli-check-0714.log. Record returned session below; no duplicate build.
+Core be79804c7 still serves; these newer source repairs are NOT deployed and
+CLI84a362971 remains stale. Next finish CLI check, commit validated changes, then
+supported installer acceptance/alias convergence. Native audio binding remains OPEN.
+Active CLI check session96498; resume before any new compiler. All preceding test sessions are complete.

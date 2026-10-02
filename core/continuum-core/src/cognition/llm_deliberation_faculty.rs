@@ -1470,10 +1470,10 @@ impl LlmDeliberationFaculty {
                 // the chunks and reports `observed = false` rather than a false zero.
                 let mut witness =
                     crate::cognition::generation_drop::InFlight::arm(&self.persona_name, turn_bound, None);
-                let result = binding
-                    .adapter
-                    .generate_stream_checked(request, sink.clone())
-                    .await;
+                let result = sink.run_request(
+                    request_id.clone().into(),
+                    |producer| binding.adapter.generate_stream_checked(request, producer),
+                ).await;
                 witness.disarm();
                 result
             } else {

@@ -16,6 +16,7 @@
 //! sender the command never took is dropped with the guard, which closes the
 //! receiver the hop is draining.
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::DashMap;
 use tokio::sync::broadcast;
@@ -25,6 +26,33 @@ use tokio::sync::watch;
 // at publication; lag is explicit at receipt, never a silent partial answer.
 pub const GENERATION_RING_CAPACITY: usize = 256;
 pub const MAX_GENERATION_CHUNK_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestPhase {
+    Started,
+    Finished(crate::ai::types::FinishReason),
+    Aborted,
+}
+
+struct RequestOwner<'a> {
+    sink: &'a GenerationSink,
+    request_id: std::sync::Arc<str>,
+    finished: bool,
+    retired: watch::Sender<bool>,
+}
+
+impl Drop for RequestOwner<'_> {
+    fn drop(&mut self) {
+        self.retired.send_replace(true);
+        if !self.finished {
+            let _ = self.sink.send(GenerationChunk::RequestBoundary {
+                request_id: self.request_id.clone(), phase: RequestPhase::Aborted,
+            });
+        }
+        // Publish retirement before allowing a successor to start on this ring.
+        self.sink.request_active.store(false, Ordering::Release);
+    }
+}
 
 /// A packet in the existing inference stream. Timing is media time, not wall time.
 /// The session/stream ID is owned by the enclosing sink and AIRC headers.
@@ -41,6 +69,8 @@ pub struct GenerationSink {
     tx: broadcast::Sender<GenerationChunk>,
     cancelled: watch::Sender<bool>,
     observing: bool,
+    request_active: std::sync::Arc<AtomicBool>,
+    retired: Option<watch::Sender<bool>>,
 }
 
 pub struct GenerationReceiver {
@@ -51,11 +81,54 @@ pub struct GenerationReceiver {
 pub fn channel() -> (GenerationSink, GenerationReceiver) {
     let (tx, rx) = broadcast::channel(GENERATION_RING_CAPACITY);
     let cancelled = watch::channel(false).0;
-    (GenerationSink { tx, cancelled: cancelled.clone(), observing: true },
+    (GenerationSink { tx, cancelled: cancelled.clone(), observing: true,
+        request_active: std::sync::Arc::new(AtomicBool::new(false)), retired: None },
      GenerationReceiver { rx, cancelled })
 }
 
 impl GenerationSink {
+    /// Attribute one model attempt on the existing ring, including future drop.
+    /// The turn may keep this sink alive for subsequent act/observe requests.
+    pub async fn run_request<F, Make>(&self, request_id: std::sync::Arc<str>, make_generation: Make)
+        -> Result<crate::ai::types::TextGenerationResponse, crate::ai::inference_error::InferenceError>
+    where F: std::future::Future<Output = Result<crate::ai::types::TextGenerationResponse,
+        crate::ai::inference_error::InferenceError>>,
+        Make: FnOnce(GenerationSink) -> F,
+    {
+        // Boundary-framed chunks have one attribution owner per ring. Parallel
+        // model attempts use independent sinks; interleaving here loses identity.
+        if self.retired.is_some() {
+            return Err("Nested request ownership is not supported".to_string().into());
+        }
+        self.request_active.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "Inference stream already has an active request".to_string())?;
+        let retired = watch::channel(false).0;
+        let mut owner = RequestOwner { sink: self, request_id, finished: true, retired: retired.clone() };
+        self.send(GenerationChunk::RequestBoundary {
+            request_id: owner.request_id.clone(), phase: RequestPhase::Started,
+        })?;
+        owner.finished = false;
+        let mut producer = self.clone();
+        producer.retired = Some(retired);
+        let generation = make_generation(producer);
+        // The shared boundary owns cancellation even when a provider is waiting
+        // for its next packet and has not attempted another sink publication.
+        let result = tokio::select! {
+            biased;
+            _ = self.closed() => Err("Inference stream consumer cancelled".to_string().into()),
+            result = generation => result,
+        };
+        // Revoke every provider clone before the terminal boundary is published.
+        owner.retired.send_replace(true);
+        if let Ok(response) = &result {
+            self.send(GenerationChunk::RequestBoundary {
+                request_id: owner.request_id.clone(),
+                phase: RequestPhase::Finished(response.finish_reason),
+            })?;
+            owner.finished = true;
+        }
+        result
+    }
     /// Explicit text-only drain; never selects a different provider wire mode.
     pub fn discard() -> Self {
         let (mut sink, receiver) = channel();
@@ -63,12 +136,31 @@ impl GenerationSink {
         drop(receiver);
         sink
     }
-    pub fn is_closed(&self) -> bool { !self.observing || *self.cancelled.borrow() }
+    pub fn is_closed(&self) -> bool {
+        !self.observing || *self.cancelled.borrow()
+            || self.retired.as_ref().is_some_and(|state| *state.borrow())
+    }
     pub async fn closed(&self) {
-        if self.observing { let mut state = self.cancelled.subscribe(); let _ = state.wait_for(|cancelled| *cancelled).await; }
+        if self.observing {
+            let mut state = self.cancelled.subscribe();
+            let retired = async {
+                match &self.retired {
+                    Some(state) => { let mut state = state.subscribe(); let _ = state.wait_for(|closed| *closed).await; }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! { _ = state.wait_for(|cancelled| *cancelled) => {}, _ = retired => {} }
+        }
         else { std::future::pending::<()>().await }
     }
     pub fn send(&self, chunk: GenerationChunk) -> Result<(), String> {
+        // Keep the read guard until publication ends. Retirement obtains the
+        // write guard before emitting the boundary, so stale chunks cannot race
+        // past that boundary. Neither side holds this guard across an await.
+        let retired = self.retired.as_ref().map(|state| state.borrow());
+        if retired.as_ref().is_some_and(|state| **state) {
+            return Err("Inference request producer retired".into());
+        }
         if !self.observing {
             return if matches!(chunk, GenerationChunk::Media(_)) {
                 Err("Native media requires an observing stream consumer; text-only drain cannot discard it".into())
@@ -204,6 +296,89 @@ mod tests {
         };
         assert!(sink.send(GenerationChunk::Media(std::sync::Arc::new(media)))
             .unwrap_err().contains("observing stream consumer"));
+    }
+
+    // A turn retains its sink across multiple attempts. Dropping one attempt
+    // cannot imply successful completion or borrow a provider's response ID.
+    #[tokio::test]
+    async fn request_boundaries_survive_abort_and_keep_submitted_identity() {
+        use crate::ai::types::{FinishReason, TextGenerationResponse};
+        let (sink, mut receiver) = channel();
+        let first: std::sync::Arc<str> = "submitted-first".into();
+        let mut stale_producer = None;
+        let mut attempt = Box::pin(sink.run_request(first.clone(), |producer| {
+            stale_producer = Some(producer);
+            std::future::pending()
+        }));
+        tokio::select! {
+            event = receiver.recv() => assert_eq!(event.unwrap(), GenerationChunk::RequestBoundary {
+                request_id: first.clone(), phase: RequestPhase::Started,
+            }),
+            _ = &mut attempt => panic!("pending model cannot complete"),
+        }
+        let clone = sink.clone();
+        let overlap = clone.run_request("overlapping-attempt".into(), |_| async {
+            panic!("an overlapping provider must not be polled");
+        }).await;
+        assert!(overlap.is_err(), "cloned sinks share request attribution ownership");
+        assert!(receiver.try_recv().is_err(), "rejected attempt cannot alter the live stream");
+        drop(attempt);
+        let stale_producer = stale_producer.unwrap();
+        assert!(stale_producer.is_closed(), "attempt drop revokes retained provider clones");
+        assert!(stale_producer.send(GenerationChunk::Token("late first attempt".into())).is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(1), stale_producer.closed())
+            .await.expect("retirement wakes retained producer waiters");
+        assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::RequestBoundary {
+            request_id: first, phase: RequestPhase::Aborted,
+        });
+        for reason in [FinishReason::Length, FinishReason::Stop] {
+            let id: std::sync::Arc<str> = uuid::Uuid::new_v4().to_string().into();
+            sink.run_request(id.clone(), |_| async { Ok(TextGenerationResponse {
+                text: String::new(), finish_reason: reason, model: "fixture".into(),
+                provider: "fixture".into(), usage: Default::default(), response_time_ms: 0,
+                request_id: "different-provider-id".into(), content: None, tool_calls: None,
+                reasoning: None, routing: None, error: None, timing: None,
+            }) }).await.unwrap();
+            assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::RequestBoundary {
+                request_id: id.clone(), phase: RequestPhase::Started,
+            });
+            assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::RequestBoundary {
+                request_id: id, phase: RequestPhase::Finished(reason),
+            });
+        }
+        assert!(receiver.try_recv().is_err(), "no duplicate abort after completion");
+        assert!(!sink.is_closed(), "attempt closure is not turn closure");
+
+        // Provider failure must retire this attempt without leaking diagnostics
+        // into presentation or marking the partial answer as successful.
+        let failed_id: std::sync::Arc<str> = "provider-failed".into();
+        let result = sink.run_request(failed_id.clone(), |producer| async move {
+            producer.send(GenerationChunk::Token("partial".into()))?;
+            Err("provider diagnostic must not become speech".to_string().into())
+        }).await;
+        assert!(result.is_err());
+        assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::RequestBoundary {
+            request_id: failed_id.clone(), phase: RequestPhase::Started,
+        });
+        assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::Token("partial".into()));
+        assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::RequestBoundary {
+            request_id: failed_id, phase: RequestPhase::Aborted,
+        });
+        assert!(receiver.try_recv().is_err(), "no success or diagnostic content after failure");
+
+        // A quiet provider must release its future when presentation disappears;
+        // waiting for the next token to discover cancellation can take minutes.
+        let cancelled = sink.run_request("consumer-gone".into(), |_| std::future::pending());
+        let disconnect = async {
+            assert_eq!(receiver.recv().await.unwrap(), GenerationChunk::RequestBoundary {
+                request_id: "consumer-gone".into(), phase: RequestPhase::Started,
+            });
+            drop(receiver);
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(cancelled, disconnect)
+        }).await.expect("consumer cancellation must wake a quiet provider");
+        assert!(result.is_err());
     }
 
 }

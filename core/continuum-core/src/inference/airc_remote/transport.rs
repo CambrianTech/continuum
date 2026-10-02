@@ -119,6 +119,11 @@ fn forward_stream_chunk(
         Some("true") => true,
         Some(_) => return Err("remote stream terminal marker is invalid".into()),
     };
+    // Only the responder's text end marker settles this stream. Progress or
+    // reasoning marked final must not authorize completion ahead of queued media.
+    if is_final && kind != airc_lib::STREAM_KIND_TEXT_TOKEN {
+        return Err("Remote stream terminal marker must use the text-token end kind".into());
+    }
     if kind == crate::inference::media_wire::KIND {
         if is_final { return Err("Native media chunk cannot replace stream terminal marker".into()); }
         let media = crate::inference::media_wire::decode(&event.headers, event.body.as_ref())?;
@@ -954,6 +959,13 @@ mod tests {
             "the final marker is reported"
         );
         // Malformed frames must not become empty text or fabricated zero progress.
+        for kind in [airc_lib::STREAM_KIND_TEXT_REASONING,
+            crate::routing::command_handler::STREAM_KIND_PREFILL] {
+            assert!(forward_stream_chunk(
+                &chunk_event(&id, kind, "", true), &id, &tx, 3,
+            ).unwrap_err().contains("terminal marker"),
+                "progress/reasoning cannot settle an unfinished media stream");
+        }
         let mut binary = chunk_event(&id, airc_lib::STREAM_KIND_TEXT_TOKEN, "", true);
         binary.body = Some(Body::Binary(vec![1, 2]));
         assert!(forward_stream_chunk(&binary, &id, &tx, 3).unwrap_err().contains("non-text"));

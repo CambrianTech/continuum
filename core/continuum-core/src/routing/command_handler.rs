@@ -748,6 +748,9 @@ impl StreamPublisher {
             }
             if let Ok(Ok(chunk)) = next {
                 match chunk {
+                    GenerationChunk::RequestBoundary { .. } => {
+                        return Err("Nested request lifecycle is not negotiated on this remote stream".into());
+                    }
                     GenerationChunk::Media(media) => {
                         if !self.media_enabled {
                             return Err(format!("Remote media consumer not negotiated for {}", media.mime_type));

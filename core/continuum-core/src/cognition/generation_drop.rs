@@ -73,6 +73,7 @@ pub(crate) fn partial_from_chunks(
     let mut out = PartialOutput::default();
     for chunk in chunks {
         match chunk {
+            GenerationChunk::RequestBoundary { .. } => {},
             GenerationChunk::Media(media) => out.media_bytes += media.data.len(),
             GenerationChunk::Token(text) => answer.push_str(&text),
             GenerationChunk::Reasoning(text) => out.reasoning_chars += text.chars().count(),

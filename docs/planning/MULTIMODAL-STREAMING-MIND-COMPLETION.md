@@ -5,6 +5,15 @@ architecture. Reuse the live WorkspaceCycle, CBAR stages, bus, admission,
 scheduling, model bindings, genome, AIRC and existing avatar/live session code.
 BIGGIEDESK installation belongs to the other Codex and is not this lane's gate.
 
+Active execution receipt (06:54 UTC): install45853 exited1 at a locked LiveKit
+previous-artifact rename after successful builds. Supported start75015 restored
+core be79804c7/build5915; CLI remains84a362971 and desktop is unavailable. This is
+partial deployment. PDF live acceptance95767 passed on the recovered core in84.8s.
+Lifecycle validation38355 found a missing Eq derive; corrected retry82580 now owns
+the shared Cargo cache. Resume82580 before starting duplicate work. The feature worktree's
+request lifecycle and remote terminal validation remain uncommitted. Historical
+handles below are superseded by this receipt and the external team-proof README.
+
 ## The outcome
 
 Kimi can see and hear Joel continuously, speak in her bound model's native voice,
@@ -19,7 +28,7 @@ Two acceptance levels must stay distinct:
 2. A real bound model and deployed consumers demonstrate the conversation.
    A synthetic transport fixture or an advertised capability cannot pass level 2.
 
-## Baseline — evidence, not inferred completion
+## Historical baseline — evidence, not inferred completion
 
 - PDF -> native image -> ai/generate passed twice on installed build84c18e611.
   Empty text layer, correct visual facts. Wall times 165/110 seconds: functional
@@ -261,3 +270,5 @@ presentation owner: the current forwarder covers a whole act/observe turn and
 channel closure alone cannot authorize successful PCM tail completion.
 
 05:24 execution override: cancellation repair source pending, sole focused validation46325. Resume README handles before any build. Turn-forwarder owner test passed; local presentation retirement extension now under test. Installed foundation remains84a362971.
+
+05:54 source advance: per-attempt request boundaries now wrap bound cognition calls on the shared ring; tests pending install45853 completion. Presentation media binding and negotiated remote lifecycle remain OPEN. Do not infer success from presentation closure.
