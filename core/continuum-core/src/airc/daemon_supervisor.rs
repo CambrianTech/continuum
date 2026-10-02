@@ -117,6 +117,10 @@ pub enum Spawned {
     Started { pid: u32 },
     /// airc's own login supervisor started it (macOS LaunchAgent): airc owns it, not us.
     StartedByAirc,
+    /// Spawned and answering, but without a GitHub token: local IPC works, while the
+    /// registry refresh cannot run and every peer ages out within ten minutes. Never
+    /// reported as healthy.
+    StartedWithoutToken { pid: u32 },
     /// The `airc` binary is not on PATH — a transportless box (CI, a fresh clone).
     BinaryAbsent,
     /// Neither USERPROFILE nor HOME is set: the machine-account scope is unresolvable.
@@ -141,9 +145,10 @@ pub fn spawn() -> Spawned {
     // from the user's gh; a bare `airc daemon` does not), so its registry refresh never
     // ran and every peer aged into a ghost ten minutes later: the node was off the mesh
     // while it looked healthy. airc's own supervisor runs in the session; use it.
-    #[cfg(target_os = "macos")]
-    if let Some(outcome) = start_through_airc_supervisor() {
-        return outcome;
+    match start_route(&airc_supervisor_state()) {
+        StartRoute::ThroughSupervisor => return start_through_airc_supervisor(),
+        StartRoute::Refuse(why) => return Spawned::Failed(why),
+        StartRoute::SpawnDirect => {}
     }
     let Some(scope) = scope_home() else { return Spawned::NoHome };
     let Some(home) = scope.parent().map(|p| p.to_path_buf()) else { return Spawned::NoHome };
@@ -162,7 +167,8 @@ pub fn spawn() -> Spawned {
         .stdout(std::process::Stdio::null())
         .stderr(daemon_log(&home));
     // The token `airc join` would have provisioned, when this context can read it.
-    if let Some(token) = gh_token() {
+    let token = gh_token();
+    if let Some(token) = &token {
         command.env("GH_TOKEN", token);
     }
     let child = command.spawn();
@@ -177,7 +183,7 @@ pub fn spawn() -> Spawned {
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(250));
         if answering() {
-            return Spawned::Started { pid };
+            return if token.is_some() { Spawned::Started { pid } } else { Spawned::StartedWithoutToken { pid } };
         }
     }
     Spawned::Failed(format!(
@@ -186,41 +192,97 @@ pub fn spawn() -> Spawned {
     ))
 }
 
-/// Start the daemon through airc's own LaunchAgent when it is registered: `airc join`
-/// in the user's session, which provisions the daemon's token. `None` when there is no
-/// agent or launchd refused the kickstart, so the caller spawns as before.
+/// The whole of one [`spawn`], on every path: the supervisor route's two launchctl
+/// probes plus its wait, or the direct route's token probe plus its wait. A caller that
+/// bounds `spawn` uses this, so a slow but successful start is never reported failed
+/// while its work goes on unobserved.
+pub const SPAWN_BUDGET: Duration = Duration::from_secs(40);
+
+/// What can be read about airc's own login supervisor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupervisorState {
+    /// None registered (or this OS has none): the core starts the daemon itself.
+    Absent,
+    /// Registered: only it may start the daemon, because it provisions the token.
+    Registered,
+    /// launchd could not be asked (timed out, not runnable): neither route is known safe.
+    Unreadable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartRoute {
+    ThroughSupervisor,
+    SpawnDirect,
+    Refuse(String),
+}
+
+/// The pure rule. A registered supervisor is never bypassed: if it cannot start the
+/// daemon, that failure is the answer, not a tokenless spawn behind its back.
+pub fn start_route(state: &SupervisorState) -> StartRoute {
+    match state {
+        SupervisorState::Absent => StartRoute::SpawnDirect,
+        SupervisorState::Registered => StartRoute::ThroughSupervisor,
+        SupervisorState::Unreadable(why) => StartRoute::Refuse(format!(
+            "cannot tell whether airc's login supervisor is registered ({why}); not starting a daemon around it"
+        )),
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn start_through_airc_supervisor() -> Option<Spawned> {
+fn airc_supervisor_target() -> String {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
-    let target = format!(
-        "gui/{uid}/{}",
-        crate::airc::discovery::AIRC_JOIN_SUPERVISOR
-    );
-    let registered = crate::system_resources::bounded_command::probe(
-        "launchctl",
-        &["print", &target],
-        ENDPOINT_RESOLVE_BOUND,
-    );
-    registered.stdout_if_ok()?;
-    let kicked = crate::system_resources::bounded_command::probe(
-        "launchctl",
-        &["kickstart", "-k", &target],
-        ENDPOINT_RESOLVE_BOUND,
-    );
-    kicked.stdout_if_ok()?;
-    // `airc join` starts the daemon after it has fetched the token; give it both bounds.
-    let deadline = std::time::Instant::now() + ANSWER_BOUND * 2;
-    while std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(250));
-        if answering() {
-            return Some(Spawned::StartedByAirc);
+    format!("gui/{uid}/{}", crate::airc::discovery::AIRC_JOIN_SUPERVISOR)
+}
+
+fn airc_supervisor_state() -> SupervisorState {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::system_resources::bounded_command::{probe, Probed};
+        match probe("launchctl", &["print", &airc_supervisor_target()], ENDPOINT_RESOLVE_BOUND) {
+            Probed::Exited { success: true, .. } => SupervisorState::Registered,
+            Probed::Exited { success: false, .. } => SupervisorState::Absent,
+            other => SupervisorState::Unreadable(format!("launchctl print: {}", other.outcome())),
         }
     }
-    Some(Spawned::Failed(format!(
-        "kickstarted {target} but no daemon answered within {}s",
-        (ANSWER_BOUND * 2).as_secs()
-    )))
+    #[cfg(not(target_os = "macos"))]
+    {
+        SupervisorState::Absent
+    }
+}
+
+/// Start the daemon through airc's registered LaunchAgent: `airc join` in the user's
+/// session, which provisions the daemon's token. Every failure is returned as one.
+fn start_through_airc_supervisor() -> Spawned {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::system_resources::bounded_command::{probe, Probed};
+        let target = airc_supervisor_target();
+        match probe("launchctl", &["kickstart", "-k", &target], ENDPOINT_RESOLVE_BOUND) {
+            Probed::Exited { success: true, .. } => {}
+            other => {
+                return Spawned::Failed(format!(
+                    "{target} is registered but launchd did not start it ({})",
+                    other.outcome()
+                ))
+            }
+        }
+        // The answering probe, `launchctl print` and this kickstart each spend up to
+        // one resolve bound before the wait starts.
+        let wait = SPAWN_BUDGET - ENDPOINT_RESOLVE_BOUND * 3;
+        let deadline = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            if answering() {
+                return Spawned::StartedByAirc;
+            }
+        }
+        Spawned::Failed(format!("kickstarted {target} but no daemon answered within {}s", wait.as_secs()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Spawned::Failed("airc's login supervisor route exists only on macOS".into())
+    }
 }
 
 /// The user's GitHub token from `gh`, bounded; `None` when gh is absent or cannot read
@@ -266,6 +328,9 @@ pub fn restart_if_owned() -> Restart {
     std::thread::sleep(Duration::from_millis(500));
     match spawn() {
         Spawned::Started { pid } => Restart::Restarted { old, new: pid },
+        Spawned::StartedWithoutToken { pid } => Restart::Failed(format!(
+            "restarted (pid {pid}) without a GitHub token; peers will age out"
+        )),
         Spawned::Answering | Spawned::StartedByAirc => Restart::Restarted { old, new: 0 },
         other => Restart::Failed(format!("{other:?}")),
     }
@@ -289,6 +354,32 @@ mod tests {
         assert_eq!(resolved_endpoint(Some("\n")), None);
         assert_eq!(resolved_endpoint(Some("")), None);
         assert_eq!(resolved_endpoint(None), None);
+    }
+
+    // what this catches (review of #4672): a registered supervisor that could not start
+    // the daemon fell through to the tokenless spawn the change exists to prevent, and an
+    // unreadable launchd was treated as "no supervisor".
+    #[test]
+    fn a_registered_supervisor_is_never_bypassed_and_an_unreadable_one_refuses() {
+        assert_eq!(start_route(&SupervisorState::Registered), StartRoute::ThroughSupervisor);
+        assert_eq!(start_route(&SupervisorState::Absent), StartRoute::SpawnDirect);
+        assert!(matches!(
+            start_route(&SupervisorState::Unreadable("timed_out".into())),
+            StartRoute::Refuse(_)
+        ));
+    }
+
+    // what this catches (review of #4672): the supervisor route waited 30 s inside a
+    // caller bounded at 17 s, so a slow successful start read as failed and its result
+    // was lost. Every route must fit the one budget the caller uses.
+    #[test]
+    fn every_start_route_fits_the_budget_its_caller_waits() {
+        // answering probe + launchctl print + kickstart, then the wait
+        let supervisor_route = ENDPOINT_RESOLVE_BOUND * 3 + (SPAWN_BUDGET - ENDPOINT_RESOLVE_BOUND * 3);
+        // answering probe + launchctl print + socket resolve + gh token, then the wait
+        let direct_route = ENDPOINT_RESOLVE_BOUND * 4 + ANSWER_BOUND;
+        assert!(supervisor_route <= SPAWN_BUDGET);
+        assert!(direct_route <= SPAWN_BUDGET);
     }
 
     #[test]

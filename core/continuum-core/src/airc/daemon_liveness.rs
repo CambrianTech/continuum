@@ -136,7 +136,7 @@ pub fn spawn() {
                 Decision::Revive { attempt } => {
                     last_attempt = Some(Instant::now());
                     let outcome = match tokio::time::timeout(
-                        daemon_supervisor::ANSWER_BOUND + Duration::from_secs(2),
+                        daemon_supervisor::SPAWN_BUDGET + Duration::from_secs(2),
                         tokio::task::spawn_blocking(daemon_supervisor::spawn),
                     )
                     .await
@@ -163,6 +163,15 @@ pub fn spawn() {
                                 attempt = attempt,
                                 absent_s = absent_since.map(|s| s.elapsed().as_secs()).unwrap_or(0), // unwrap_or: 0 = absence start unrecorded, a legible value in the row
                                 "kickstarted airc's own login supervisor and its daemon answers"
+                            );
+                        }
+                        Spawned::StartedWithoutToken { pid } => {
+                            failed_attempts = failed_attempts.saturating_add(1);
+                            crate::probe!(
+                                class = "airc.daemon.started_without_token",
+                                pid = pid,
+                                attempt = attempt,
+                                "spawned a daemon with no GitHub token: local IPC answers, but its registry refresh cannot run and peers will age out — register airc's supervisor with `continuum install --airc`"
                             );
                         }
                         Spawned::Answering => {
