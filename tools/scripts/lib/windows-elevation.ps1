@@ -16,7 +16,7 @@ function Invoke-InstallerProcess {
         # fixed installer shell expressions should use this explicit boundary.
         [Parameter(Mandatory = $true, ParameterSetName = 'Raw')][string]$RawArguments)
     if ($PreserveChildrenOnSuccess -and -not $OwnProcessTree) { throw 'Successful daemon handoff requires an owned process tree.' }
-    $command = Get-Command $FilePath -CommandType Application -ErrorAction Stop
+    $command = Get-Command $FilePath -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $command.Source
     $quoted = foreach ($arg in $ArgumentList) {

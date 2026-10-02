@@ -73,6 +73,21 @@ exit 23
         if ($actual[$i] -cne $expected[$i]) { throw "Argument $i changed: '$($actual[$i])'." }
     }
     Write-Host 'PASS: hidden native launch, exact argv, dual-pipe draining, native failure.'
+    # What this catches: Get-Command -CommandType Application returns multiple
+    # matches when desktop harnesses and the user both supply the same tool.
+    $savedPath = $env:PATH
+    try {
+        $firstTool = Join-Path $scratch 'first'
+        $secondTool = Join-Path $scratch 'second'
+        New-Item -ItemType Directory -Path $firstTool,$secondTool | Out-Null
+        foreach ($directory in @($firstTool,$secondTool)) {
+            Copy-Item -LiteralPath $env:ComSpec -Destination (Join-Path $directory 'duplicate-tool.exe')
+        }
+        $env:PATH = "$firstTool;$secondTool;$savedPath"
+        Invoke-InstallerProcess -OwnProcessTree 'duplicate-tool.exe' -RawArguments '/d /c exit 19'
+        if ($LASTEXITCODE -ne 19) { throw 'Duplicate PATH matches broke native command resolution.' }
+    } finally { $env:PATH = $savedPath }
+    Write-Host 'PASS: duplicate native PATH candidates use the first command.'
     # A cancelled build owns its descendants, unlike intentional service launch.
     # Both fixture generations explicitly hide their windows on operator desktops.
     $ownedChild = Join-Path $scratch 'owned tree.ps1'
