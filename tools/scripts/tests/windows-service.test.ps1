@@ -264,8 +264,8 @@ function Test-WingetAvailable {
         function Module-Start { }
         function Module-Done { }
         function Get-ManifestModule { param($Name) if ($Name -ne 'airc') { throw 'Wrong dependency descriptor' }; @{source=@{url='https://fixture.invalid/airc/install.ps1'}} }
-        function Invoke-WebRequest {
-            param($Uri,$OutFile,[switch]$UseBasicParsing)
+        function Save-InstallerEntryScript {
+            param($Uri,$OutFile)
             if ($Uri -ne 'https://fixture.invalid/airc/install.ps1') { throw 'Manifest URL ignored' }
             $script:aircSetupCalls++
             $code = @'

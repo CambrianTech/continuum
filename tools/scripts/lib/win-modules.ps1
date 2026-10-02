@@ -609,12 +609,28 @@ function Mod-GhAuth {
     else { throw "GitHub login did not complete (exit $LASTEXITCODE); grid setup stopped. Rerun this installer to resume authentication." }
 }
 
+function Save-InstallerEntryScript {
+    param([string]$Uri, [string]$OutFile, [int]$TimeoutSeconds = 60)
+    # This boundary downloads a small entry script, never a toolchain archive.
+    # Bound the complete response; PS5's legacy web response processing can spin
+    # indefinitely even for this small download, before any child is launched.
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object Net.Http.HttpClient
+    try {
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+        $client.MaxResponseContentBufferSize = 1048576
+        $bytes = $client.GetByteArrayAsync($Uri).GetAwaiter().GetResult()
+        [IO.File]::WriteAllBytes($OutFile, $bytes)
+    } finally { $client.Dispose() }
+}
+
 function Invoke-AircSetup {
     param([string[]]$SetupArguments = @())
     $source = (Get-ManifestModule 'airc').source
     $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
-        Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
+        Write-Host '  + acquiring AIRC setup entry (bounded download)'
+        Save-InstallerEntryScript -Uri $source.url -OutFile $scriptPath
         Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path (@('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $scriptPath) + $SetupArguments)
         if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
     } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
