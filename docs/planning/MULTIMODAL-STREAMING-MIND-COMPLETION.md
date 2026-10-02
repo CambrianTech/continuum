@@ -206,14 +206,18 @@ consumer has exercised it. Record the source revision, embedded/runtime revision
 consumer result and limits. A successful source test or a staged executable is
 not delivery. Keep incomplete milestones OPEN, including native conversation.
 
-Current execution: stream drain, binary AIRC peer transfer, mixer overflow and
-generation cancellation checks passed. CallManager now admits, feeds and cancels
-generation-owned native playback in the existing mixer; its focused check is in
-flight. Next connect the explicit native PCM format boundary and presentation
-consumer, then deploy and exercise the running path. The cognition request still
-sets `native_output: None`; that binding must be implemented before claiming
-native persona speech. Model/engine support investigation must identify any hard
-feasibility gap early; do not hide it behind renderer work.
+Current execution (2026-10-02 05:04 UTC): PCM format boundary, stateful resampler,
+CallManager ownership and future-drop cancellation are implemented; focused tests
+passed. Foundation deployed through continuum install as84a362971/build5911,
+core and CLI aliases verified. Real PDF visual understanding passed on that build.
+No active build/install/test handle remains. Deployed whole-response native output
+refuses missing streaming ownership; undeclared AudioInput refuses before generation.
+These refusals prevent substitution; they do not prove native audio generation.
+Next implement per-inference identity/completion delivery to the persona presentation
+owner and explicitly supported native model binding. The cognition request still
+sets `native_output: None`; real native voice acceptance remains OPEN. No local
+exposed native-audio model was established. Do not bypass the forwarder's media
+refusal or interpret whole-turn channel closure as successful inference completion.
 
 ## CBAR temporal assembly clarification (Joel, 2026-10-02)
 

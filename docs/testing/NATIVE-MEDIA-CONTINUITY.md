@@ -228,3 +228,13 @@ Peer Candle coordination during build: canonical AIRC question e46c7836; reply
 c115c2e0 explains no validated Orpheus replacement, preserve active Candle speech
 and LoRA training. Gating uncalled fused Qwen3 MoE archive is peer-owned. Reply
 queued with3 live peers, no acknowledgment established. No peer installer takeover.
+
+2026-10-02 05:04 UTC deployed negative acceptance, core5911/84a362971:
+- ai/generate native audio output refused missing active streaming consumer in277ms.
+- Native image output likewise refused whole-response transport in271ms.
+- Native audio input refused bound model missing AudioInput in216ms.
+Each exited1 with explicit error, no text/TTS substitute. Output cases stop at
+consumer admission, so they do NOT establish native-output model capability checks.
+Receipt: C:/Users/joelt/.continuum/state/team-proof-20260921/native-refusal-deployed-84a362971.json
+No build, install, model switch or serving interruption. Next: per-inference
+completion/identity to production presentation owner, then genuinely capable binding.
