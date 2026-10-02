@@ -407,9 +407,9 @@ debug = false
 # first release containing all the required fixes before removing these pins.
 # This applies to all workspace members transparently.
 [patch.crates-io]
-candle-core = { git = "https://github.com/joelteply/candle.git", rev = "b26cef440cc9e83e04f68e8a4e0fe6d3fdf82fbb" }
-candle-nn = { git = "https://github.com/joelteply/candle.git", rev = "b26cef440cc9e83e04f68e8a4e0fe6d3fdf82fbb" }
-candle-transformers = { git = "https://github.com/joelteply/candle.git", rev = "b26cef440cc9e83e04f68e8a4e0fe6d3fdf82fbb" }
+candle-core = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-nn = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-transformers = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
 
 [workspace.package]
 edition = "2021"
