@@ -194,3 +194,37 @@ finish. Old lease cannot affect successor state. CallManager returns must-use
 lease; existing tests retain it and regression exercises abort/drop plus successful
 drain. Focused native-playback-lease.log check started with D: cache after separate
 absent claim/empty compiler checks. Persona forwarder binding remains OPEN.
+
+## Deployed acceptance — 2026-10-02
+Joel authorized deployment. Commit6fa715ad8 carries native incremental streaming,
+shared resampling, owned PCM playback and cancellation; merge84a36297109366b4fd4daadddb10c02669e044ea
+preserves release137f77d7e. Durable checkout fast-forwarded cleanly to that merge.
+Supported installed CLI `continuum install --core --cli`, session43578, exited0.
+Shared target D:/continuum-cold/cargo-target; no duplicate build or manual binary copy.
+Server/MCP/custodian release43m23s; separate GPU-free CLI release25m36s; warm
+artifact validation4177s. Second library compilation is an observed build bottleneck.
+Supervisor service-b now runs84a362971/build5911. CLI continuum and uu report
+84a362971; deploy-verify PASS; install --check --core --cli PASS/nothing changed.
+Core answered approximately25s after handoff. Serving lane58057 adopted, same
+Qwen3.8-27B-GGUF, ready and vision_ready, no degraded reason.
+Handoff caveat: cognition drain Incomplete(in_flight1), save Clean; installer
+reported UNSAVED STATE for1/65 modules. Lossless in-flight continuity NOT proven.
+Desktop dist build succeeded but port8975 not listening; desktop acceptance OPEN.
+
+Actual installed PDF -> PNG -> bound-model acceptance PASS request
+req-1790917381335,22260ms, empty text layer, correct left blue square/right red
+circle. SourceSHA2568D502094C7348F74F0054BEA96F0C45C68354244980477F6DB5FF199387E6D7E;
+imageSHA25603ACAF6E65083234F09DFF096B5E4761C7112EBA486464C73DF68DEA9DAACE7F.
+Evidence under C:/Users/joelt/.continuum/state/team-proof-20260921:
+native-install-84a362971.log, native-deployed-ping-84a362971.json,
+native-deployed-inference-84a362971.json,
+pdf-visual-acceptance/deployed-84a362971/receipt.json.
+22.26s is one live measurement, not a controlled speedup or natural conversation.
+Native PCM stream/call ownership/adapter tests passed before deployment; no real
+native voice binding or production persona media consumer has been validated.
+Those remain OPEN. Deployment ships these primitives, not complete native speech.
+
+Peer Candle coordination during build: canonical AIRC question e46c7836; reply
+c115c2e0 explains no validated Orpheus replacement, preserve active Candle speech
+and LoRA training. Gating uncalled fused Qwen3 MoE archive is peer-owned. Reply
+queued with3 live peers, no acknowledgment established. No peer installer takeover.
