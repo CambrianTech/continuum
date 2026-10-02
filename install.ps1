@@ -47,12 +47,12 @@ function Update-ContinuumCheckout {
     try {
     # Never reset, stash, switch branches, or discard a developer's changes.
     # Pull the selected branch's configured upstream, not an invented channel.
-    $dirty = @(& git -C $RepoRoot status --porcelain --untracked-files=no)
+    $dirty = @(Invoke-InstallerProcess 'git' @('-C', $RepoRoot, 'status', '--porcelain', '--untracked-files=no'))
     if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect checkout before update.' }
     if ($dirty.Count -ne 0) { throw 'Update refused: tracked checkout changes must be committed or resolved first.' }
-    & git -C $RepoRoot rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'
+    Invoke-InstallerProcess 'git' @('-C', $RepoRoot, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}')
     if ($LASTEXITCODE -ne 0) { throw 'Update refused: the selected branch has no upstream. Configure its intended tracking branch first.' }
-    & git -C $RepoRoot pull --ff-only
+    Invoke-InstallerProcess 'git' @('-C', $RepoRoot, 'pull', '--ff-only')
     if ($LASTEXITCODE -ne 0) { throw 'Update did not fast-forward. Resolve the upstream/network error without discarding local work, then rerun the same installer.' }
     } finally { $lease.Dispose() }
 }
@@ -83,21 +83,25 @@ if (-not $PSScriptRoot) {
     }
     $bootArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $target 'install.ps1'))
     if ($Grid) { $bootArgs += '-Grid' }
+    . (Join-Path $target 'tools\scripts\lib\windows-elevation.ps1')
     if ($Update) { Update-ContinuumCheckout -RepoRoot $target }
-    & (Get-Process -Id $PID).Path @bootArgs
+    Invoke-InstallerProcess (Get-Process -Id $PID).Path $bootArgs
     exit $LASTEXITCODE
 }
 
 #  From-checkout path 
 $RepoRoot = $PSScriptRoot
 $LibDir = Join-Path $RepoRoot 'tools\scripts\lib'
+# Update runs before install-common loads manifest-backed elevation state.
+# Import the same launch primitive without acquiring an elevation session.
+. (Join-Path $LibDir 'windows-elevation.ps1')
 if ($Update) {
     # Reload the installer after updating: the currently parsed script and its
     # modules still contain the previous checkout's instructions.
     Update-ContinuumCheckout -RepoRoot $RepoRoot
     $updatedArgs = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', (Join-Path $RepoRoot 'install.ps1'))
     if ($Grid) { $updatedArgs += '-Grid' }
-    & (Get-Process -Id $PID).Path @updatedArgs
+    Invoke-InstallerProcess (Get-Process -Id $PID).Path $updatedArgs
     exit $LASTEXITCODE
 }
 
@@ -140,7 +144,7 @@ try {
     if (Get-Command git -ErrorAction SilentlyContinue) {
         Push-Location $RepoRoot
         try {
-            & git submodule update --init --recursive
+            Invoke-InstallerProcess 'git' @('submodule', 'update', '--init', '--recursive')
             if ($LASTEXITCODE -ne 0) { throw 'Required submodule initialization failed; refusing to build an incomplete checkout.' }
         } finally { Pop-Location }
     }

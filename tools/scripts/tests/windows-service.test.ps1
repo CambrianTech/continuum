@@ -177,8 +177,13 @@ function Test-WingetAvailable {
         $script:prerequisiteDone = $false
         function winget {
             $script:prerequisiteCalls++
-            & $env:ComSpec /d /c "exit $script:prerequisiteExit"
+            & $nativeInstallerProcess $env:ComSpec -RawArguments "/d /c exit $script:prerequisiteExit"
             $script:prerequisiteInstalled = $true
+        }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList)
+            if ($FilePath -eq 'winget') { winget @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList }
         }
         function Update-SessionPath { }
         function Module-Start { }
@@ -901,11 +906,11 @@ public static class NativeStatusFixture {
             $script:elevationCalls++
             $script:gsudoArguments += ($args -join ' ')
             if ($script:elevationMode -eq 'failure') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'exit /b 74'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c exit /b 74'
             } elseif ($script:elevationMode -eq 'cleanup-info') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo Info: Cache session closed. 1>&2 & exit /b 0'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c echo Info: Cache session closed. 1>&2 & exit /b 0'
             } else { $global:LASTEXITCODE = 0 }
         }
         $reason = 'registering the ContinuumCore startup task (before core handoff)'

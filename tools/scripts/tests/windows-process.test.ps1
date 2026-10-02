@@ -37,6 +37,14 @@ exit 23
         if ($actual[$i] -cne $expected[$i]) { throw "Argument $i changed: '$($actual[$i])'." }
     }
     Write-Host 'PASS: hidden native launch, exact argv, dual-pipe draining, native failure.'
+    # vcvars is a batch file. CRT argument escaping must not corrupt cmd's
+    # quoted executable path or its redirection/conditional command syntax.
+    $batch = Join-Path $scratch 'environment fixture.cmd'
+    '@set CONTINUUM_HIDDEN_PROCESS_FIXTURE=imported' | Set-Content -LiteralPath $batch -Encoding ASCII
+    $environment = @(Invoke-InstallerProcess $env:ComSpec -RawArguments "/d /s /c `"`"$batch`" >nul 2>&1 && set CONTINUUM_HIDDEN_PROCESS_FIXTURE`"")
+    if ($LASTEXITCODE -ne 0 -or $environment -notcontains 'CONTINUUM_HIDDEN_PROCESS_FIXTURE=imported') { throw 'Hidden batch environment import failed.' }
+    if ($env:CONTINUUM_HIDDEN_PROCESS_FIXTURE) { throw 'Fixture changed the caller environment.' }
+    Write-Host 'PASS: hidden batch shell grammar and environment output.'
 } finally {
     # Only this test's newly-created, resolved scratch directory is removed.
     $resolved = [IO.Path]::GetFullPath($scratch)

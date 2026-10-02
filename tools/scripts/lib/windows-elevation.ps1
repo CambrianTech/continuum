@@ -6,9 +6,12 @@ $script:ElevationGsudoSource = $GsudoSource
 # Native background commands must never allocate a console when the caller is
 # a desktop harness. Keep both pipes draining and preserve the native exit code.
 function Invoke-InstallerProcess {
-    [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$FilePath,
-        [string[]]$ArgumentList = @())
+    [CmdletBinding(DefaultParameterSetName = 'Argv')]
+    param([Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
+        [Parameter(ParameterSetName = 'Argv', Position = 1)][string[]]$ArgumentList = @(),
+        # cmd.exe /c uses shell grammar rather than CommandLineToArgvW. Only
+        # fixed installer shell expressions should use this explicit boundary.
+        [Parameter(Mandatory = $true, ParameterSetName = 'Raw')][string]$RawArguments)
     $command = Get-Command $FilePath -CommandType Application -ErrorAction Stop
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $command.Source
@@ -20,7 +23,7 @@ function Invoke-InstallerProcess {
         if ($arg.Length -gt 0 -and $arg -notmatch '[\s"]') { $arg }
         else { '"' + ([regex]::Replace([regex]::Replace($arg, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1')) + '"' }
     }
-    $start.Arguments = $quoted -join ' '
+    $start.Arguments = if ($PSCmdlet.ParameterSetName -eq 'Raw') { $RawArguments } else { $quoted -join ' ' }
     $start.WorkingDirectory = (Get-Location).Path
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
