@@ -335,12 +335,15 @@ jobs:
         run: ./tools/scripts/tests/windows-service.test.ps1
 
       - name: Windows native XZ prerequisite smoke
+        if: needs.changes.outputs.installer != 'false'
         shell: powershell
         run: ./tools/scripts/tests/windows-xz.test.ps1
       - name: CUDA device target selection (PowerShell)
+        if: needs.changes.outputs.installer != 'false'
         shell: powershell
         run: ./tools/scripts/tests/cuda-targets.test.ps1
       - name: CUDA device target selection (Bash)
+        if: needs.changes.outputs.installer != 'false'
         shell: bash
         run: bash tools/scripts/tests/cuda-targets.test.sh
       - name: Warm builds preserve live services
