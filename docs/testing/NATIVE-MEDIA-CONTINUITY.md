@@ -941,3 +941,67 @@ Committing stream registration ownership repair, grid contract and these receipt
 No install/build remains active from this lane. Next: integrate follow-ups with
 current durable checkout without discarding peer installer changes, then supported
 install and acceptance. Native persona output wiring remains OPEN.
+
+13:45 UTC: integrated current durable peer installer head03e9a7f11 into native
+feature branch without conflicts, producing ba56443ad. Its installer changes are
+preserved. Verified durable checkout clean/detached, no deploy claim or compiler;
+fast-forwarded it from03e9a7f11 toba56443ad (no reset/force). Started supported
+installed continuum.exe install --core --cli with shared D Cargo cache/jobs2.
+Owner session95398; log native-install-ba56443ad.log. Resume this one installer;
+keep durable source pinned, no duplicate build. Prior source checks: exact model
+metadata regression1/1, stream ownership regression1/1, two-peer command tests3/3.
+This target includes89f15bfe9 and1e97c4e92; no claim of adoption until running SHA,
+CLI aliases and consumer acceptance verify. Native voice and lossless cognition
+drain remain OPEN. Existing precious-objects maintenance error did not prevent
+verified merge/fast-forward; no pack deletion attempted.
+
+13:55 UTC independent command-path review: all3 green two-peer tests exercise
+AIRC command routing but their existing TestInferenceModule calls generate_text
+and never takes the registered stream sink. Therefore those tests do NOT prove
+incremental native media reaches a remote command consumer, or exercise the sink
+ownership repair through a taking command. Production on_envelope does call
+process_request_streaming; this is a fixture coverage gap, not proof production
+bypasses streams. Existing stream ownership unit regression remains valid.
+Next acceptance must extend this same fixture's handler to take streamId and feed
+its injected adapter through generate_stream, with receiver assertions, rather
+than claiming batch text roundtrip as live media. Heuristic adapter currently has
+no generate_stream override; do not count its default whole-response path as native
+streaming. Real native voice still requires capable binding and playback wiring.
+Install95398/claim33200 continues targetba56443ad warm build. Durable source remains
+pinned; no competing Cargo or restart launched. Read project promise and command
+namespace relevant sections while tracing the command/consumer boundary.
+
+14:06 UTC: extended existing two-peer command fixture at the received-envelope
+boundary. It now reserves and takes the correlation's stream, submits a duplicate
+through actual process_request_streaming, requires active-owner refusal before
+normal dispatch, then releases the guard and executes the original command.
+This covers the shared registry repair through the real command handler instead
+of only its unit helper. It still does NOT prove incremental native media or voice.
+Compilation pending active install95398/claim33200 (targetba56443ad); no parallel
+Cargo started. Also corrected review detail: default generate_stream explicitly
+refuses missing incremental transport; it is not a batch-stream substitution.
+
+AIRC repair 14:10 UTC (Joel explicitly directed repair, not ignore): doctor --health
+reports IPC Access denied yet labels daemon not running. PID file identifies25236;
+CIM sees airc25236 but denies owner/path to normal token. A separate normal-user
+join29912 exists; no second daemon launched. Log shows saturated routed queue and
+unacknowledged forwards to2f0aed7f; these are distinct from local IPC failure.
+Doctor --fix made no recovery. Key+ORM identity present. No keys/trust/socket deleted.
+Prepared airc-recover-1410.ps1 under team-proof: elevated execution verifies exact
+PID25236, joelt owner and installed executable before supported airc stop; refuses
+changed ownership and never force-kills. Started via normal Windows RunAs/UAC,
+hidden window, session2521 awaiting consent/completion. No elevated receipt yet.
+Resume2521 and inspect airc-recovery-1410.txt, then normal-user airc join only after
+confirmed stop. Do not launch another UAC or daemon. Active Continuum install95398
+preserved. Repair remains OPEN; peer message still unacknowledged. Need shared
+Windows IPC/doctor fix after ownership verified; manual restart alone not closure.
+
+23:33 UTC resumed validation8027 completed EXIT0. The preserved handler-level
+stream ownership regression passed in all three existing two-peer scenarios
+(adapter dispatch, adapter failure, missing module). Test execution1.01s;
+dev-fast compilation14m48s despite shared target configuration. Log:
+C:/Users/joelt/.continuum/state/team-proof-20260921/native-grid-resume-2314.log.
+This is command/correlation ownership evidence only: the existing fixture still
+uses batch heuristic output and cannot establish native media generation/playback.
+Build time demonstrates an unresolved cache/profile reuse cost; do not call it a
+speed improvement. No additional compiler or installer is owned by this run.

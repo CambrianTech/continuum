@@ -288,3 +288,9 @@ channel closure alone cannot authorize successful PCM tail completion.
 05:24 execution override: cancellation repair source pending, sole focused validation46325. Resume README handles before any build. Turn-forwarder owner test passed; local presentation retirement extension now under test. Installed foundation remains84a362971.
 
 05:54 source advance: per-attempt request boundaries now wrap bound cognition calls on the shared ring; tests pending install45853 completion. Presentation media binding and negotiated remote lifecycle remain OPEN. Do not infer success from presentation closure.
+
+## Fleet placement and native perception acceptance (Joel, 22:12 UTC)
+
+Distributability belongs to the existing typed command contract; the existing governor owns placement. Nodes including the 1080 Ti can serve LLM and non-LLM work according to actual capabilities, resident state and available capacity. Measure whole-fleet latency, throughput, memory pressure, transfer and warm-up cost. Use stable feedback/hysteresis to avoid relocation churn; preserve active-session continuity. Do not assign permanent hardware roles or add a parallel scheduler.
+
+Native audio acceptance must distinguish user speech from television/background dialogue, including overlap and interruptions, and produce speech through the bound model. Transcripts and stock TTS are not substitutes. Refreshed installed ai/models/list at22:12 UTC returned51 models with no audio/speech declaration observed; native-models-current.json preserves the response. This is a current catalog limitation, not proof that hardware cannot run native audio. Resolve/provision a capable binding explicitly before native voice acceptance. Existing dirty remote-inference test and NATIVE-MEDIA-CONTINUITY edits are preserved; no duplicate build started.

@@ -247,6 +247,22 @@ async fn spawn_substrate_responder(
             if hint != body_hint_filter {
                 continue;
             }
+            // Regression: a command with an already-owned correlation ID must
+            // fail before dispatch, even after its original sink was taken.
+            // Exercise the actual handler on this received peer envelope.
+            let parsed = CommandRequestHandler::parse_envelope(&event).expect("peer envelope");
+            let (reserved, _consumer) = continuum_core::ai::stream_sinks::channel();
+            let guard = continuum_core::ai::stream_sinks::register(parsed.correlation_id, reserved)
+                .expect("reserve request stream");
+            let producer = continuum_core::ai::stream_sinks::take(parsed.correlation_id)
+                .expect("original producer owns stream");
+            let duplicate = handler.process_request_streaming(&parsed).await;
+            assert!(matches!(duplicate,
+                continuum_core::routing::AircCommandResponse::Error { ref message }
+                    if message.contains("already has an active owner")),
+                "duplicate command must not replace the active stream");
+            drop(producer);
+            drop(guard);
             // SAME entry point a productized airc adapter-registry
             // dispatch loop would call. The handler internally goes
             // parse_envelope -> process_request -> send_reply.
