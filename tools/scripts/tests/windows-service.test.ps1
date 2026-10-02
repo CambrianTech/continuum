@@ -1081,6 +1081,55 @@ try {
     }
     Write-Output 'PASS: elevation failure preserves native diagnostics and phase without guessing cause'
 
+    # A nested install can register gsudo without updating its parent's PATH.
+    # Use a real scratch executable; the registry boundary alone is synthetic.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1')
+        $registeredBin = Join-Path $scratch 'registered-gsudo'
+        New-Item -ItemType Directory $registeredBin | Out-Null
+        $registeredExe = Join-Path $registeredBin 'gsudo.exe'
+        Add-Type -OutputAssembly $registeredExe -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+public static class RegisteredGsudoFixture {
+    public static int Main(string[] args) {
+        if (args.Length != 1 || args[0] != "--version") return 91;
+        var version = Environment.GetEnvironmentVariable("GSUDO_FIXTURE_VERSION") ?? "gsudo v2.6.1";
+        if (version == "nonzero") { Console.WriteLine("gsudo v2.6.1 failed probe"); return 17; }
+        Console.WriteLine(version);
+        return 0;
+    }
+}
+'@
+        $savedPath = $env:PATH
+        $savedVersion = $env:GSUDO_FIXTURE_VERSION
+        $script:registeredRefreshes = 0
+        function Update-SessionPath { $script:registeredRefreshes++; $env:PATH = $registeredBin }
+        try {
+            $env:PATH = Join-Path $scratch 'empty-path'
+            Ensure-Gsudo
+            if ($script:GsudoExecutable -ne $registeredExe -or $script:registeredRefreshes -ne 1) {
+                throw 'Registered native helper was not reused from stale caller PATH'
+            }
+            # No winget exists in either fixture PATH: a redundant acquisition
+            # fails this test. Repeated discovery must execute/verify the tool.
+            Ensure-Gsudo
+            if ($script:registeredRefreshes -ne 1) { throw 'Registered helper reuse unnecessarily refreshed PATH' }
+            $env:GSUDO_FIXTURE_VERSION = 'nonzero'
+            $failure = $null
+            try { Ensure-Gsudo } catch { $failure = $_.Exception.Message }
+            if ($failure -notmatch 'exit 17' -or $failure -notmatch 'failed probe') {
+                throw 'Failed native version probe was accepted or its diagnostic lost'
+            }
+            $env:GSUDO_FIXTURE_VERSION = 'unexpected executable'
+            $failure = $null
+            try { Ensure-Gsudo } catch { $failure = $_.Exception.Message }
+            if ($failure -notmatch 'failed version verification' -or $failure -notmatch 'unexpected executable') {
+                throw 'Unverified registered executable was accepted or its diagnostic lost'
+            }
+        } finally { $env:PATH = $savedPath; $env:GSUDO_FIXTURE_VERSION = $savedVersion }
+    }
+    Write-Output 'PASS: stale caller PATH reuses the registered executable with native version proof'
+
     # The shared helper must consume manifest data, including in standalone
     # consumers. Missing/unsupported source data must never start acquisition.
     & {

@@ -250,7 +250,21 @@ function Initialize-ElevationSession {
 function Find-GsudoExecutable {
     # An alias, PowerShell function or Git Bash wrapper can break cache ancestry.
     $command = Get-Command gsudo.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($command -and [IO.Path]::IsPathRooted($command.Source) -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) { return $command.Source }
+    if (-not $command) {
+        # A child installer can register its tool after this caller inherited
+        # PATH. Reuse the registered installation before requesting acquisition.
+        Update-SessionPath
+        $command = Get-Command gsudo.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if ($command -and [IO.Path]::IsPathRooted($command.Source) -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+        $version = @(Invoke-InstallerProcess $command.Source @('--version') 2>&1)
+        $code = $global:LASTEXITCODE
+        $detail = ($version | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        if ($code -ne 0 -or $detail -notmatch '(?im)^\s*gsudo\s+v?\d+\.\d+') {
+            throw "Registered gsudo failed version verification at $($command.Source) (exit $code): $detail"
+        }
+        return $command.Source
+    }
 }
 
 # Probe only; never starts or extends someone else's credential cache.
