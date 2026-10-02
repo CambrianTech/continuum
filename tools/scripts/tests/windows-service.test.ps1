@@ -118,7 +118,8 @@ function Test-WingetAvailable {
         try {
             $env:USERPROFILE = $entryProfile
             $ErrorActionPreference = 'Continue'
-            $output = (& $nativeInstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $entryRepo 'install.ps1')) 2>&1 | Out-String)
+            $entryCommand = "try { & '" + (Join-Path $entryRepo 'install.ps1').Replace("'", "''") + "' } catch { [Console]::Error.WriteLine(`$_.ToString()); exit 1 }"
+            $output = (& $nativeInstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($entryCommand))) 2>&1 | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
             $code = $LASTEXITCODE
             $ErrorActionPreference = 'Stop'
             if ($code -eq 0 -or $output -notmatch 'public-payload-stop-before-prerequisites') { throw "Public entry did not reach the checked prerequisite boundary: $output" }
