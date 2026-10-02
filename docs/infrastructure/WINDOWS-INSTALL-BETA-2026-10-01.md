@@ -265,3 +265,25 @@ synthetic registered-PATH boundary: stale caller discovery/reuse, a second reuse
 without acquisition, and wrong-version refusal. No live winget, UAC, account or
 firewall changes were performed. AIRC must consume the released helper pin;
 public installation acceptance remains separate.
+
+### CI consolidation evidence (2026-10-02)
+
+[Helper repair run 37057570374](https://github.com/CambrianTech/continuum/actions/runs/37057570374)
+spent 21m06s in Windows checks (16m39s compiling Rust), 18m47s in Linux library
+and handoff checks, and another 10m16s in the separate documentation-guard job.
+That last job compiled the core for 7m33s to execute two compile-fail guards whose
+reported execution took 4.07s. The Linux handoff step also compiled the normal
+core library with the same dev-fast profile. Three subsequent runs showed the
+same separate doc job taking 9m35s to 10m54s.
+
+The existing Linux job now executes those same two documentation guards after
+the handoff tests, sharing their compiled artifacts. The exact two-test assertion,
+Postgres tests, binding checks and required status contexts remain. Narrow known
+Windows helper changes select the existing Windows installer tests without an
+unrelated Rust build; unknown, dependency and workflow changes retain full gates.
+The XZ/CUDA test conditions now match their checkout condition, so docs-only runs
+cannot attempt missing scripts. No workflow or job was added; one was removed.
+
+Local selector tests and YAML structure validation pass. Hosted execution must
+still establish artifact reuse and the new timing; the old measured durations
+are not a claim of savings or binary installation acceptance.
