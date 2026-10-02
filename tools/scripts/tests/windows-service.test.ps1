@@ -6,6 +6,8 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
+. (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1')
+$nativeInstallerProcess = ${function:Invoke-InstallerProcess}
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
@@ -32,8 +34,13 @@ try {
                 if ($script:failColdCopy) {
                     New-Item -ItemType Directory -Force $args[1] | Out-Null
                     Move-Item -LiteralPath (Join-Path $args[0] 'first') -Destination (Join-Path $args[1] 'first')
-                    & $env:ComSpec /d /c 'exit 8'
-                } else { & (Join-Path $env:SystemRoot 'System32\robocopy.exe') @args }
+                    $global:LASTEXITCODE = 8
+                } else { & $nativeInstallerProcess (Join-Path $env:SystemRoot 'System32\robocopy.exe') $args }
+            }
+            function Invoke-InstallerProcess {
+                param($FilePath, $ArgumentList)
+                if ($FilePath -eq 'robocopy') { robocopy @ArgumentList }
+                else { & $nativeInstallerProcess $FilePath $ArgumentList }
             }
             function Get-ColdDrive { throw 'An interrupted migration selected a different drive' }
             function Module-Start { }
@@ -394,6 +401,11 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
         function Get-CoreEngineBackend { 'cpu' }
         function git { $global:LASTEXITCODE = 0; if ($args -contains '--short') { 'aaaaaaa' } else { 'a' * 40 } }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList)
+            if ($FilePath -eq 'git') { git @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList }
+        }
         function Module-Skip { }
         function Module-Start { throw 'fixture: real build branch selected' }
         function Module-Fail { param($Name, $Message) throw $Message }

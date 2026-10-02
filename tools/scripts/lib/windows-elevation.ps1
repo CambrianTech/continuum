@@ -2,6 +2,51 @@
 # Imported by Continuum; standalone artifact boundary for AIRC integration.
 param([System.Collections.IDictionary]$GsudoSource)
 $script:ElevationGsudoSource = $GsudoSource
+
+# Native background commands must never allocate a console when the caller is
+# a desktop harness. Keep both pipes draining and preserve the native exit code.
+function Invoke-InstallerProcess {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @())
+    $command = Get-Command $FilePath -CommandType Application -ErrorAction Stop
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $command.Source
+    $quoted = foreach ($arg in $ArgumentList) {
+        # Windows CommandLineToArgvW quoting, including empty arguments and
+        # backslashes before quotes or a closing quote.
+        '"' + ([regex]::Replace([regex]::Replace($arg, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1')) + '"'
+    }
+    $start.Arguments = $quoted -join ' '
+    $start.WorkingDirectory = (Get-Location).Path
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { throw "Could not start $FilePath" }
+        $stdout = $process.StandardOutput.ReadLineAsync()
+        $stderr = $process.StandardError.ReadLineAsync()
+        while ($stdout -or $stderr) {
+            $pending = @(); if ($stdout) { $pending += $stdout }; if ($stderr) { $pending += $stderr }
+            $index = [Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$pending)
+            $finished = $pending[$index]
+            $line = $finished.GetAwaiter().GetResult()
+            if ([object]::ReferenceEquals($finished, $stdout)) {
+                if ($null -eq $line) { $stdout = $null }
+                else { Write-Output $line; $stdout = $process.StandardOutput.ReadLineAsync() }
+            } else {
+                if ($null -eq $line) { $stderr = $null }
+                else { Write-Error -Message $line -ErrorAction Continue; $stderr = $process.StandardError.ReadLineAsync() }
+            }
+        }
+        $process.WaitForExit()
+        $global:LASTEXITCODE = $process.ExitCode
+    } finally { $process.Dispose() }
+}
+
 function Update-SessionPath {
     # Keep tools selected in this installer session, then discover newly
     # registered tools. Repeated refreshes must not grow PATH past Windows' limit.
