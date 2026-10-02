@@ -2,7 +2,7 @@
 # against the selected compiler, build CMake fat binaries and minimum-capability
 # Candle PTX (forward-compatible with newer devices). Never assume a GPU model.
 function Get-CudaTargets {
-    $caps = @(& nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>&1)
+    $caps = @(Invoke-InstallerProcess -OwnProcessTree 'nvidia-smi' @('--query-gpu=compute_cap', '--format=csv,noheader') 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "CUDA device capability query failed: $caps" }
     $architectures = @($caps | ForEach-Object {
         $value = "$_".Trim()
@@ -11,7 +11,7 @@ function Get-CudaTargets {
     } | Sort-Object -Unique)
     if (-not $architectures.Count) { throw 'No CUDA device capabilities detected.' }
     $compiler = if ($env:CUDA_PATH) { Join-Path $env:CUDA_PATH 'bin\nvcc.exe' } else { 'nvcc' }
-    $supported = @(& $compiler --list-gpu-arch 2>&1)
+    $supported = @(Invoke-InstallerProcess -OwnProcessTree $compiler @('--list-gpu-arch') 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "CUDA compiler architecture query failed: $supported" }
     foreach ($arch in $architectures) {
         if ($supported.Trim() -notcontains "compute_$arch") {

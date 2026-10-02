@@ -5,6 +5,13 @@ try {
     $env:CUDA_PATH = ''; $env:CUDA_COMPUTE_CAP = ''
     function nvidia-smi { $global:LASTEXITCODE = 0; $script:caps }
     function nvcc { $global:LASTEXITCODE = 0; 'compute_61','compute_75','compute_86','compute_89','compute_120' }
+    function Invoke-InstallerProcess {
+        param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+        if (-not $OwnProcessTree) { throw 'CUDA setup probes must use owned hidden launch.' }
+        if ($FilePath -eq 'nvidia-smi') { nvidia-smi }
+        elseif ($FilePath -eq 'nvcc') { nvcc }
+        else { throw "Unexpected CUDA probe: $FilePath" }
+    }
     # Regression: GTX1080Ti/1070, RTX20/3090/40/5090 and mixed fleets must not
     # inherit one developer's GPU. Minimum PTX, all distinct CMake architectures.
     foreach ($case in @(
