@@ -2775,6 +2775,20 @@ mod tests {
                     log.len()
                 };
                 let input: Value = serde_json::from_slice(&body).unwrap();
+                if input["messages"][0]["content"] == "multiple-native-fixture" {
+                    let choice = json!({"delta":{"audio":{"data":"AAA="}}});
+                    let frame = format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[choice.clone(), choice]}));
+                    return axum::response::Response::builder().header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(frame)).unwrap();
+                }
+                if input["messages"][0]["content"] == "late-native-fixture" {
+                    return axum::response::Response::builder().header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(concat!(
+                            "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"AAA=\"}}}]}\n\n",
+                            "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"AgM=\"}}}]}\n\n",
+                            "data: [DONE]\n\n"))).unwrap();
+                }
                 if input.get("audio").is_some() {
                     use futures::StreamExt;
                     let first = futures::stream::once(async {
@@ -2789,7 +2803,8 @@ mod tests {
                         Ok::<_, std::io::Error>(concat!(
                             "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"AgM=\"}}}]}\n\n",
                             "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"tool_call\\\":{\\\"name\\\":\\\"quoted_only\\\",\\\"arguments\\\":{}}}\"}}]}\n\n",
-                            "data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+                            "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
                             "data: [DONE]\n\n").to_string())
                     });
                     return axum::response::Response::builder().header("content-type", "text/event-stream")
@@ -2961,7 +2976,7 @@ mod tests {
         // Drop the consumer after headers/first media while the server is stalled.
         // Cancellation must interrupt the existing body read, not await its watchdog.
         let (sink, mut receiver) = crate::ai::stream_sinks::channel();
-        let generation = adapter.generate_stream(native_request, sink);
+        let generation = adapter.generate_stream(native_request.clone(), sink);
         tokio::pin!(generation);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::select! {
@@ -2972,10 +2987,28 @@ mod tests {
         drop(receiver);
         assert!(tokio::time::timeout(std::time::Duration::from_secs(1), &mut generation)
             .await.unwrap().unwrap_err().contains("consumer cancelled"));
+        // what this catches: a provider's stop marker must fence native bytes,
+        // even if a later PCM delta arrives before the SSE [DONE] marker.
+        let mut late_request = native_request.clone();
+        late_request.messages = vec![ChatMessage::text("user", "late-native-fixture")];
+        let (sink, mut receiver) = crate::ai::stream_sinks::channel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5),
+            adapter.generate_stream(late_request, sink)).await.unwrap().unwrap_err();
+        assert!(error.contains("after terminal completion"), "{error}");
+        assert!(matches!(receiver.try_recv(), Ok(GenerationChunk::Media(_))));
+        assert!(receiver.try_recv().is_err(), "late PCM must not reach presentation");
+        // Multiple alternatives cannot silently choose a voice or drop media.
+        let mut multiple_request = native_request;
+        multiple_request.messages = vec![ChatMessage::text("user", "multiple-native-fixture")];
+        let (sink, mut receiver) = crate::ai::stream_sinks::channel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5),
+            adapter.generate_stream(multiple_request, sink)).await.unwrap().unwrap_err();
+        assert!(error.contains("requires one choice"), "{error}");
+        assert!(receiver.try_recv().is_err(), "ambiguous voice bytes must not be presented");
         server.abort();
         let _ = server.await;
         let received = received.lock().expect("actual wire requests");
-        assert_eq!(received.len(), 5);
+        assert_eq!(received.len(), 7);
         let native_wire: Value = serde_json::from_slice(&received[3]).unwrap();
         assert_eq!(native_wire["stream"], true);
         assert_eq!(native_wire["audio"]["voice"], "persona-native-voice");

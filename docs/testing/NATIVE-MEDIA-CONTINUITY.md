@@ -682,3 +682,100 @@ acceptance. Process-local /DEBUG:NONE resolved test linker failure without globa
 configuration changes. Current core stillc26892ac4 responds; durable tree clean,
 no deploy claim and no compiler process before preparing supported deployment.
 Earlier crash root cause and all real native audio/image-output gates stay OPEN.
+Supported follow-up install now owns50199/native-install-3e94ce276.log targeting
+3e94ce276. Durable checkout fast-forwarded clean, pinned for this build; feature
+commit contains tested recovery repair. Existing runningc26892ac4 remains serving
+during warm build. SharedD:cache,-j2; no test-only linker override inherited.
+Resume50199 before further compilation/deploy. Git commit/FF succeeded despite
+previously known precious-objects geometric-maintenance warning; no pack deletion.
+
+10:54 UTC: install50199 still owns claim36712 targeting3e94ce276; cargo36016/31632
+and rustc21480 active. No new build or pinned-source mutation. Running core3280
+still answersc26892ac4. Llama process changed from32112 to33968(parent3280) since
+previous observation; this agent did not stop/start it. Saved inference status
+native-inference-1054.json; continued adoption of the exact old PID is NOT claimed.
+Independent native SSE review identified an unclosed boundary: after a choice
+sets finish_reason, subsequent choice audio deltas are still forwarded before
+[DONE]/EOF. Final AudioCursor.finish only checks reason/nonempty samples, so a
+provider's media-after-terminal is not rejected. Next bounded repair should reject
+native choice payloads after completion while permitting ordinary final usage
+frames, with the existing HTTP streaming fixture covering stop->late PCM and
+normal PCM->stop->usage->DONE. No new transport or per-request capability lookup
+is needed. This is a source finding, not an observed provider failure; no native
+voice acceptance is claimed. Keep active release source stable; resume50199.
+
+11:04 UTC: implemented native SSE terminal fencing in feature checkout only.
+After finish_reason, another native choice now fails before any media/token reaches
+presentation; usage-only choices=[] frames still pass. Extended the EXISTING HTTP
+adapter fixture with PCM->stop->latePCM->DONE rejection and asserts only first
+media reached the consumer. Normal fixture now sends separate final usage frame
+after stop. This preserves shared binding and event stream; no replacement bus,
+model lookup or voice substitute. Rustfmt syntax parse/diff whitespace checks pass;
+compilation/regression execution PENDING behind installer50199/claim36712, target
+3e94ce276. Do not modify its pinned durable checkout or start duplicate Cargo.
+Next test after release lane: structured_overflow_survives_adapter_and_prepared_transport_retry
+(existing native streaming/CallManager fixture), then deploy only after it passes.
+
+11:14 UTC: extended pending native SSE repair to reject multiple choice alternatives
+before forwarding audio. Previously into_iter().next() silently discarded another
+choice; no implicit choice of voice/media is acceptable. Existing HTTP fixture now
+covers two native choices and asserts zero delivered chunks, in addition to late
+PCM rejection and valid usage-after-stop. Syntax parse and diff check PASS;
+execution still PENDING, do not claim model acceptance. Installer50199 remains
+active, target3e94ce276, cargo36016/31632,rustc29360/31924; no duplicate build.
+Runningc26892ac4 core still answers. All edits remain in feature checkout and are
+excluded from pinned deployment. Resume installer, then run the named existing
+adapter fixture from11:04 before committing this follow-up.
+
+11:24 UTC: deployed negative acceptance through installed CLI: ai/generate with
+explicit nativeOutput audio is rejected with 'Native media requires an active
+streaming consumer; whole-response media generation is forbidden'. Recorded
+native-output-refusal-c26892ac4.json. No text/TTS fallback returned. This proves
+consumer preflight only, NOT the selected model's AudioOutput or positive voice.
+Refreshed serving status now ready=true,Qwen3.8-27B,context67840; core3280 still
+c26892ac4. Earlier saved1054 status was ready=false during model lifecycle, so
+continuous serving availability must not be inferred from core pings. Current
+llama20312 was created11:02Z by core; no restart issued by this agent.
+Installer50199/claim36712 now CLI compilation,cargo33540/21632,rustc34828. Keep
+source pinned3e94ce276. Pending native SSE repairs remain feature-only and await
+the existing adapter fixture after current install; no duplicate build launched.
+
+11:34 UTC: reviewed the remaining native conversation handoff against current
+source. llm_deliberation_faculty.rs request construction still sets native_output:
+None; persona/service_loop.rs token forwarder explicitly cancels Media, while
+CallManager already exposes generation-scoped begin/push/finish/cancel playback.
+Thus transport success cannot be promoted to persona speech. Next substantive
+connection must carry explicit live output intent through the existing cognition
+request and route media under that request's playback lease, preserving text-only
+room behavior and rejecting absent capability/consumer. Read canonical persona
+pipeline before editing those files; do not bolt on a second mind or stock TTS.
+SSE late/multiple-choice patch is still untested feature-only work; finish its
+existing HTTP fixture first. Install50199 still active in CLI compile, claim36712,
+cargo33540/21632,rustc36212,target3e94ce276. No second compiler or restart started.
+
+11:44 UTC: supported install50199 EXIT0. Core+continuum+uu independently match
+build5926/3e94ce276; deploy-verify and install --check --core --cli PASS. Desktop
+HTTP200, existing boundQwen ready/context67840. Exact-revision PDF acceptance85660
+EXIT0,11266ms,req-1790941548307; empty text layer and expected visual answer, same
+source/image hashes. Receipt pdf-visual-acceptance/deployed-3e94ce276/receipt.json.
+Repeated fixture timing is not a controlled performance improvement or natural
+conversation acceptance. Core still answers after inference. Remote recovery code
+is installed; loopback regression passed earlier, but no real peer disconnect was
+injected into resident work. Native voice/image-output completion remains OPEN.
+After absent claim/empty compiler inventory, existing adapter HTTP fixture now
+owns97491/native-sse-terminal-tests.log, sharedD:cache,-j2, --lib --no-default-features,
+filter structured_overflow_survives_adapter_and_prepared_transport_retry, process
+local _LINK_=/DEBUG:NONE. Resume97491; do not duplicate jobs or edit compiled source.
+Native terminal/choice guards are still feature-only pending this test. Began
+canonical persona-pipeline read for next live intent/playback integration; no
+cognition changes made. Remaining prerequisite documents must be read before edit.
+
+11:54 UTC: existing native adapter fixture97491 EXIT0. Compile8m45s, test1.08s.
+Actual adapter HTTP->PCM stream->CallManager playback fixture passes, including
+consumer cancellation, final usage after stop, refusal of late PCM after stop,
+and refusal of multiple native choices before media emission. Synthetic fixture
+only: does not prove a real voice model or persona live conversation. Exact test
+binary continuum_core-75b2efccc2574868.exe; log native-sse-terminal-tests.log.
+No active deploy claim/compiler and durable3e94ce276 clean before release prep.
+Native SSE guard patch ready for supported installation; all positive native
+voice/image-output and persona output-intent/playback work remains OPEN.

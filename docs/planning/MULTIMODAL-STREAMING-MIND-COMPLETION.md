@@ -5,15 +5,14 @@ architecture. Reuse the live WorkspaceCycle, CBAR stages, bus, admission,
 scheduling, model bindings, genome, AIRC and existing avatar/live session code.
 BIGGIEDESK installation belongs to the other Codex and is not this lane's gate.
 
-Active execution receipt (10:44 UTC): running core and both CLI aliases verified
-build5925/c26892ac4; actual desktop renders and exact-revision visual-only PDF
-acceptance passed in36.6s. Core remains responsive after earlier recovery; crash
-root cause remains OPEN. Remote recovery patch passed existing two-peer integration
-suite68185:2/2 tests, both publication orders and correlated non-response recovery,
-with actual streamed Token assertion. Test-only MSVC flag /DEBUG:NONE resolved PDB
-limit (do not use /PDB:NONE, which creates a literal file). Preparing supported
-install of this tested follow-up; not yet deployed. Native audio and image output
-remain OPEN. Resume deployment owner in team README before new compilation.
+Active execution receipt (11:54 UTC): installed core/CLI build5926/3e94ce276 verified,
+PDF visual acceptance passed, desktop served. Native SSE terminal/choice guard
+fixture97491 now PASS: existing HTTP adapter->PCM->CallManager test includes late
+PCM refusal, multiple-choice refusal, valid final usage, and cancellation. This is
+synthetic transport/playback evidence, not real native voice. Preparing supported
+installation of this tested follow-up; resume deployment handle in team README.
+Native audio, image output, and persona live output-intent/playback integration
+remain OPEN. Preserve existing bindings and use WorkspaceCycle for that connection.
 ## The outcome
 
 Kimi can see and hear Joel continuously, speak in her bound model's native voice,

@@ -795,7 +795,15 @@ pub(crate) async fn consume_sse_stream(
                 // repeating a phase assignment at each of the four — one decision,
                 // one place, and a new output kind cannot forget to declare itself.
                 let progress_before_output = last_progress;
+                if native_media && parsed.choices.len() > 1 {
+                    return Err("Native audio stream requires one choice; interleaved voices are unsupported".into());
+                }
                 if let Some(choice) = parsed.choices.into_iter().next() {
+                    // Usage-only frames have no choices and remain valid after stop.
+                    // Native output must never emit another payload after completion.
+                    if native_media && finish_reason_str.is_some() {
+                        return Err("Native audio choice arrived after terminal completion".into());
+                    }
                     if let Some(fr) = choice.finish_reason {
                         finish_reason_str = Some(fr);
                         last_progress = Instant::now();
