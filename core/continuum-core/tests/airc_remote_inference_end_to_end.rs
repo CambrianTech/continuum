@@ -422,36 +422,12 @@ async fn end_to_end_missing_module_returns_typed_error() {
         .await
         .expect_err("missing module must produce a typed error");
 
-    // What we OBSERVE today: CommandExecutor doesn't shortcut on a
-    // missing Rust module — it tries the TypeScript bridge at
-    // `/tmp/jtag-command-router.sock` (legacy router for unmigrated
-    // commands). The bridge isn't running in tests, so the caller
-    // sees the connect failure verbatim.
-    //
-    // Architecturally this is a `[[no-fallbacks-ever]]` violation —
-    // a Rust-only deployment should hard-error with the missing
-    // module name immediately, not silently route to TS-land. Filed
-    // as task #219.
-    //
-    // Per R1 round 1 on PR #1563: pin EXACTLY the current
-    // bridge-passthrough surface — NOT a permissive OR over plausible
-    // future error shapes. When task #219 lands, this test SHOULD
-    // fail loudly with "actual" not matching "commandrouterserver",
-    // forcing the test author to update to the new typed
-    // missing-module error AND verify the substrate fix actually
-    // produces it. A permissive assertion would silently stay green
-    // and let either a good fix (typed error) or a bad regression
-    // (200 on nothing) pass undetected.
-    let lower = err.to_lowercase();
+    // Regression for task #219: the executor now refuses missing Rust modules
+    // before attempting the legacy TS bridge. Preserve that refusal across AIRC.
     assert!(
-        lower.contains("commandrouterserver") || lower.contains("jtag-command-router"),
-        "expected the TS-bridge connect-failure surface — the substrate \
-         currently falls through to /tmp/jtag-command-router.sock on \
-         missing Rust modules. If THIS assertion fired because task #219 \
-         landed and CommandExecutor now hard-errors on missing modules, \
-         update the assertion to pin the new typed-error surface and \
-         verify the substrate change. Got: {err:?}"
+        err.contains("no Rust module handles command: 'ai/generate'")
+            && err.contains("implicit TS-bridge fallthrough is disabled"),
+        "expected the explicit missing-module refusal across the grid, got: {err:?}"
     );
-
     responder.await.expect("responder task joined");
 }

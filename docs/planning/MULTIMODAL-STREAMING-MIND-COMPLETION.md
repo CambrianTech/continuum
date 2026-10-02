@@ -14,6 +14,22 @@ Exact model-info selection and registry lock lifetime fixes passed focused test5
 but remain undeployed follow-ups. Native audio, image output, and persona per-turn
 output-intent/playback integration remain OPEN. Use existing WorkspaceCycle and
 CallManager owners; current available model catalog declares no native audio.
+## Grid execution contract (Joel, 13:15 UTC)
+
+Each distributable operation uses the existing typed command executor and AIRC
+routing. Placement respects declared model/transport capabilities, data locality,
+authorization and persona/model/genome ownership. Media and progress travel as
+correlated events; cancellation and completion retain the same operation owner.
+Do not add a separate grid orchestrator or make local audio/render deadlines wait
+for remote work. Timestamped remote results join the existing local stream at a
+valid boundary; unsupported routing or native capabilities fail explicitly.
+
+The shared stream registry must reject duplicate correlation IDs both before and
+after a consumer takes the sink, until its request guard releases ownership.
+This prevents concurrent remote commands from replacing each other's output.
+Focused regression82009 passed; command-path integration is being validated in
+the existing airc_remote_inference_end_to_end fixture (see team README).
+
 ## The outcome
 
 Kimi can see and hear Joel continuously, speak in her bound model's native voice,

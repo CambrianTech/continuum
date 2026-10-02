@@ -196,8 +196,8 @@ use crate::ai::adapter::GenerationChunk;
 /// The params key a hop stamps so the command streams into its registered sink.
 pub const STREAM_ID_PARAM: &str = "streamId";
 
-fn sinks() -> &'static DashMap<Uuid, GenerationSink> {
-    static SINKS: OnceLock<DashMap<Uuid, GenerationSink>> = OnceLock::new();
+fn sinks() -> &'static DashMap<Uuid, Option<GenerationSink>> {
+    static SINKS: OnceLock<DashMap<Uuid, Option<GenerationSink>>> = OnceLock::new();
     SINKS.get_or_init(DashMap::new)
 }
 
@@ -215,15 +215,23 @@ impl Drop for StreamSinkGuard {
 
 /// Register the sink a command should stream into when its params carry
 /// `streamId == stream_id`. Held for the life of the call.
-pub fn register(stream_id: Uuid, sink: GenerationSink) -> StreamSinkGuard {
-    sinks().insert(stream_id, sink);
-    StreamSinkGuard { stream_id }
+pub fn register(stream_id: Uuid, sink: GenerationSink) -> Result<StreamSinkGuard, String> {
+    match sinks().entry(stream_id) {
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(Some(sink));
+            Ok(StreamSinkGuard { stream_id })
+        }
+        dashmap::mapref::entry::Entry::Occupied(_) =>
+            Err("Inference stream ID already has an active owner".into()),
+    }
 }
 
 /// The sink registered for `stream_id`, taken exactly once — the command that
 /// generates is the one consumer. `None` when no hop registered (a plain call).
 pub fn take(stream_id: Uuid) -> Option<GenerationSink> {
-    sinks().remove(&stream_id).map(|(_, s)| s)
+    // Keep the reservation until the request guard drops. Otherwise a duplicate
+    // could reuse the ID after take, and the first guard would remove its sink.
+    sinks().get_mut(&stream_id).and_then(|mut sink| sink.take())
 }
 
 /// The stream id a caller stamped on the params, if any.
@@ -246,19 +254,25 @@ mod tests {
     fn a_registered_sink_is_taken_once_and_a_dropped_guard_clears_it() {
         let id = Uuid::new_v4();
         let (tx, mut rx) = channel();
-        let guard = register(id, tx);
+        let guard = register(id, tx).unwrap();
+        let (duplicate, _) = channel();
+        assert!(register(id, duplicate).is_err(), "cannot replace an untaken sink");
         assert_eq!(stream_id_of(&serde_json::json!({ "streamId": id.to_string() })), Some(id));
         assert_eq!(stream_id_of(&serde_json::json!({ "model": "qwen" })), None);
         let taken = take(id).expect("registered"); // JUSTIFIED: the invariant under test
         assert!(take(id).is_none(), "taken exactly once");
+        let (duplicate, _) = channel();
+        assert!(register(id, duplicate).is_err(), "taken sink still owns its ID");
         taken.send(GenerationChunk::Token("hi".into())).expect("receiver open"); // JUSTIFIED: the invariant under test
         drop(taken);
         assert_eq!(rx.try_recv().ok(), Some(GenerationChunk::Token("hi".into())));
         drop(guard);
+        let (successor, _) = channel();
+        drop(register(id, successor).expect("released ID can be reused"));
 
         let id2 = Uuid::new_v4();
         let (tx2, mut rx2) = channel();
-        let guard2 = register(id2, tx2);
+        let guard2 = register(id2, tx2).unwrap();
         drop(guard2);
         assert!(take(id2).is_none(), "the guard cleared the untaken entry");
         assert!(

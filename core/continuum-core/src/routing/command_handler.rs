@@ -289,7 +289,10 @@ impl CommandRequestHandler {
         }
         let (tx, rx) = crate::ai::stream_sinks::channel();
         let stream_id = parsed.correlation_id;
-        let guard = crate::ai::stream_sinks::register(stream_id, tx);
+        let guard = match crate::ai::stream_sinks::register(stream_id, tx) {
+            Ok(guard) => guard,
+            Err(message) => return AircCommandResponse::Error { message },
+        };
         let mut streamed = parsed.clone();
         if let Some(obj) = streamed.request.params.as_object_mut() {
             obj.insert(

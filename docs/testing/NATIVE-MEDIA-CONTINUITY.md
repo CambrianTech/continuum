@@ -905,3 +905,39 @@ The exact model-info fixes are tested source, not yet deployed. Next substantive
 integration remains per-turn output intent plus existing CallManager playback;
 real capable audio binding is still required. Prior handoff's undrained cognition
 turn remains an explicit continuity gap, unaffected by this visual acceptance.
+
+13:15 UTC: repaired shared inference stream registration ownership. register()
+previously overwrote any active sink with the same correlation ID; take() removed
+its reservation, allowing another owner whose sink the old guard could delete.
+The existing DashMap now retains an Option tombstone after take until guard drop,
+rejects duplicate registration atomically, and the AIRC command handler returns
+an explicit error before dispatch. No new bus/task/registry. Extended the existing
+single-consumption test with duplicate-before-take, duplicate-after-take and reuse
+after guard release cases. Focused test82009 active; log native-stream-owner-tests-1315.log,
+shared D Cargo cache/jobs2/test-only /DEBUG:NONE. Claim/compiler checks were empty
+before launch. Resume82009, do not duplicate compilation. These new edits and prior
+89f15bfe9 remain undeployed; running verified target is0839e37d1. No runtime restart.
+
+13:25 UTC: stream ownership regression82009 EXIT0 (1 passed,3m29s compile).
+Recorded Joel's explicit distribution requirement in completion plan: typed
+commands through existing executor/AIRC, capability/locality/identity-aware
+placement, correlated stream lifecycle, no remote wait in audio/render deadline.
+Started existing airc_remote_inference_end_to_end integration to exercise command
+routing after the registry change. First invocation refused before compiling because
+it requires test-fixtures; corrected invocation explicitly enables that feature.
+Log native-grid-command-fixture-tests-1325.log; shared D cache/jobs2, test-only
+/DEBUG:NONE. This is synthetic two-peer integration, not deployed grid/native voice.
+No deploy claim/compiler existed before launch; do not start another build.
+
+13:35 UTC: integration93472 completed 2 PASS/1 FAIL. Failure was a stale task#219
+expectation of implicit TS-bridge socket fallback. Inspected current executor:
+missing ai/generate explicitly returns no-Rust-module refusal before TS routing.
+Updated the existing assertion to require that exact command refusal plus disabled
+implicit fallback; no permissive OR and no runtime fallback restored. Retry90152
+EXIT0: all3 two-peer tests PASS (dispatch, adapter failure, missing module),1.07s
+execution. Log native-grid-command-tests-1335.log. Ownership regression82009 also
+PASS; this is synthetic grid command evidence, not live deployed native audio.
+Committing stream registration ownership repair, grid contract and these receipts.
+No install/build remains active from this lane. Next: integrate follow-ups with
+current durable checkout without discarding peer installer changes, then supported
+install and acceptance. Native persona output wiring remains OPEN.
