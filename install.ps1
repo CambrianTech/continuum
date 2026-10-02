@@ -29,6 +29,16 @@ param(
 )
 
 # BEGIN GENERATED INSTALLER PROCESS - tools/scripts/sync-windows-bootstrap.ps1
+function Initialize-InstallerPowerShell {
+    # A PS7 desktop host may pass its PSModulePath to Windows PowerShell 5.
+    # Load the running engine's built-ins explicitly before autoload can select
+    # another engine's Security/Utility type data. Keep user module paths intact.
+    foreach ($name in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security')) {
+        $manifest = [IO.Path]::Combine($PSHOME, 'Modules', $name, ($name + '.psd1'))
+        Import-Module $manifest -Global -ErrorAction Stop
+    }
+}
+
 function Invoke-InstallerProcess {
     [CmdletBinding(DefaultParameterSetName = 'Argv')]
     param([Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
@@ -174,6 +184,7 @@ public sealed class OwnedProcess : IDisposable {
         if ($PreserveChildrenOnSuccess -and $process.ExitCode -eq 0) { $process.CompleteHandoff() }
     } finally { if ($process) { $process.Dispose() } }
 }
+Initialize-InstallerPowerShell
 # END GENERATED INSTALLER PROCESS
 
 $ErrorActionPreference = 'Stop'

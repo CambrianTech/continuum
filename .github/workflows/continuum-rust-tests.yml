@@ -310,6 +310,10 @@ jobs:
         run: |
           ./tools/scripts/sync-windows-bootstrap.ps1 -Check
           ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
+      - name: Windows bounded AIRC entry download
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: ./tools/scripts/tests/windows-airc-download.test.ps1
       - name: Install Rust toolchain from rust-toolchain.toml
         if: needs.changes.outputs.rust != 'false'
         run: |

@@ -122,6 +122,16 @@ is no complete public-install or remote-command acceptance receipt yet.
 
 ## Hidden Windows installation work
 
+The subsequent public d8b7941c6 retest failed before consent in cold-storage
+configuration: Windows PowerShell 5 inherited a PowerShell 7 module path and
+autoloaded incompatible Security type data at `Get-Acl`. Earlier test callers
+normalized their module path, which missed this public-entry failure. The shared
+initializer now explicitly imports Management, Utility and Security from the
+running engine's `PSHOME`; the generated bootstrap invokes that same initializer.
+It preserves user module paths and does not change machine configuration.
+The process regression includes a foreign-module negative control and a real
+helper positive case. A fresh public installer receipt is still required.
+
 The installer process launcher is authored in `tools/scripts/lib/windows-elevation.ps1`.
 The remote, pre-clone entry cannot source that file yet, so its bounded generated
 region is synchronized by `tools/scripts/sync-windows-bootstrap.ps1`. Run that
@@ -168,3 +178,21 @@ These are development checks with an isolated D target and one build worker,
 not a supported public installer receipt. Dependency PR joelteply/candle#1 and
 its CI must complete before merging this integration. Public install/rerun and
 remote command/event plus useful grid GPU work remain OPEN.
+
+### 2026-10-02 — bounded AIRC entry acquisition
+
+Public canary d2604d832 passed native module initialization and all cached
+prerequisites, then stalled before launching the AIRC firewall child: PS5
+Invoke-WebRequest consumed 206 CPU seconds in roughly four minutes while its
+10448-byte entry destination remained empty. No gsudo/UAC or build had started.
+The exact owned public installer PID18224/parent30308 was verified and stopped;
+exec68330 ended -1. No downloaded installer was substituted or run manually.
+
+Invoke-AircSetup now uses a bounded HttpClient acquisition for its small entry
+script (60-second complete-response deadline, 1 MiB maximum). Script bytes are
+written only after a complete successful response. Existing manifest URL,
+hidden child ownership, arguments, exit propagation and cleanup are preserved.
+Actual PS5 loopback tests cover exact bytes, HTTP error, oversized response,
+stalled body and real downloaded child exit23. Full Windows service suite passed.
+The same manifest URL downloaded 10448 bytes in0.42seconds through the real helper
+in isolated scratch; it was not executed. Public live acceptance remains OPEN.
