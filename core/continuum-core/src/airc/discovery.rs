@@ -60,6 +60,10 @@ const AUTO_INSTALL_DEADLINE: Duration = Duration::from_secs(120);
 const AIRC_INSTALL_URL: &str =
     "https://raw.githubusercontent.com/CambrianTech/airc/main/install.sh";
 
+/// airc's mesh supervisor, which runs `airc join` from login: the launchd label on
+/// macOS (airc `unix/register-autostart.sh`) and the Task Scheduler task on Windows.
+pub const AIRC_JOIN_SUPERVISOR: &str = "airc-join";
+
 /// Opt-out env var. Set to `1` to suppress auto-install (CI, hermetic
 /// builds, distros that vendor airc themselves). When set, discovery
 /// returns an error instead of running the installer.
