@@ -3257,18 +3257,13 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
             }
         };
         if options.runs(Arm::Supervisor) {
-            take(Arm::Supervisor, install_supervisor_macos(check, options.user).await);
+            take(Arm::Supervisor, install_supervisor_macos(check, options.user, options.runs(Arm::Core)).await);
         }
         if options.runs(Arm::Core) {
             take(Arm::Core, install_core(check).await);
         }
         if options.runs(Arm::Cli) {
-            // The macOS CLI arm (PATH copies follow the slot's CLI) is owed: on this OS the
-            // slot carries no CLI descriptor yet. Said, never counted as converged.
-            if options.cli {
-                return Err("install --cli: the macOS CLI arm is not in the binary yet (the slot carries no CLI descriptor on this OS)".to_string());
-            }
-            println!("  cli: the macOS arm is owed — skipped, not counted");
+            take(Arm::Cli, install_cli_macos(check).await);
         }
         return finish_install(check, &reports, &failed);
     }
@@ -3669,6 +3664,83 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
     }
 }
 
+/// The macOS CLI arm: `~/.local/bin/continuum` is the CLI of the build the core runs,
+/// `uu` is a symlink to it, and `~/.local/bin` is on PATH for a login shell. Runs after
+/// the core arm, so the source is the release CLI that same build produced.
+#[cfg(target_os = "macos")]
+async fn install_cli_macos(check: bool) -> Result<supervisor_install::ArmReport, String> {
+    use install_cli::CliDrift;
+    use supervisor_install::ArmReport;
+    let home = home_dir()?;
+    let Some(running) = running_build_sha().await else {
+        println!("  cli: no core answering — the CLI follows the running build, so there is nothing to follow yet");
+        return Ok(ArmReport::read_only(1));
+    };
+    let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| format!("{home}/.continuum/cache/cargo-target"));
+    let source = PathBuf::from(target).join("release").join("continuum");
+    let built = if source.is_file() { binary_build_sha(&source).await.ok() } else { None };
+    if !built.as_deref().is_some_and(|b| sha_matches(b, &running)) {
+        println!(
+            "  cli: no release CLI of the running build {running} at {} (found {}); `continuum install` with the core arm builds it",
+            source.display(),
+            built.as_deref().unwrap_or("none")
+        );
+        return Ok(ArmReport::read_only(1));
+    }
+    let dir = install_cli::cli_dir(Path::new(&home));
+    let path = std::env::var("PATH").unwrap_or_default();
+    let drift = install_cli::cli_drift(&source, &dir, &path)?;
+    if drift.is_empty() {
+        println!("✓ cli: converged — {} is build {running}, uu points at it", dir.join("continuum").display());
+        return Ok(ArmReport::converged());
+    }
+    for d in &drift {
+        println!("  cli: {d:?}");
+    }
+    if check {
+        println!("✗ cli: drifted; `continuum install` refreshes continuum, points uu at it and puts the dir on PATH");
+        return Ok(ArmReport::read_only(drift.len()));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("install: cannot create {}: {e}", dir.display()))?;
+    let primary = dir.join("continuum");
+    // A new file renamed over the old, never a write into it: macOS kills a binary
+    // whose pages changed under a cached signature (the same rule `launchd::stage` keeps).
+    if drift.iter().any(|d| matches!(d, CliDrift::Missing(n) | CliDrift::Stale(n) if n == "continuum")) {
+        let staged = dir.join(".continuum.install");
+        std::fs::copy(&source, &staged).map_err(|e| format!("install: cannot stage {}: {e}", staged.display()))?;
+        std::fs::rename(&staged, &primary).map_err(|e| format!("install: cannot replace {}: {e}", primary.display()))?;
+        println!("  cli: refreshed {} to build {running}", primary.display());
+    }
+    let alias = dir.join("uu");
+    let points_home = std::fs::read_link(&alias).map(|t| t == primary).unwrap_or(false);
+    if !points_home {
+        let _ = std::fs::remove_file(&alias);
+        std::os::unix::fs::symlink(&primary, &alias)
+            .map_err(|e| format!("install: cannot link {} -> {}: {e}", alias.display(), primary.display()))?;
+        println!("  cli: {} -> {}", alias.display(), primary.display());
+    }
+    if drift.iter().any(|d| matches!(d, CliDrift::NotOnPath(_))) {
+        let profile = PathBuf::from(&home).join(".zprofile");
+        let line = "export PATH=\"$HOME/.local/bin:$PATH\"  # continuum install";
+        let existing = std::fs::read_to_string(&profile).unwrap_or_default();
+        if !existing.lines().any(|l| l.trim() == line) {
+            let mut text = existing;
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(line);
+            text.push('\n');
+            std::fs::write(&profile, text).map_err(|e| format!("install: cannot write {}: {e}", profile.display()))?;
+        }
+        println!("  cli: {} is on PATH for new login shells ({})", dir.display(), profile.display());
+    }
+    let after = install_cli::cli_drift(&source, &dir, &format!("{}:{path}", dir.display()))?;
+    if !after.is_empty() {
+        return Err(format!("the CLI on PATH still differs after install: {after:?}"));
+    }
+    Ok(ArmReport { drift_before: drift.len(), drift_after: 0 })
+}
+
 /// The macOS supervisor arm of `continuum install` (card a1bd8b58): READ the registered
 /// supervision against the contract ([`launchd::mac_drift`]), and on drift — unless
 /// `--check` — WRITE: stop any core on the socket through the save rail, register with
@@ -3676,7 +3748,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
 /// bound to the consent by its digest; `--user` = the agent), hand it the launch, and
 /// refuse a core launchd does not own. Then read again: the report is what remains.
 #[cfg(target_os = "macos")]
-async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_install::ArmReport, String> {
+async fn install_supervisor_macos(check: bool, user: bool, core_follows: bool) -> Result<supervisor_install::ArmReport, String> {
     use launchd::{live, mac_drift, Domain, MacDrift};
     use supervisor_install::ArmReport;
     let socket = socket_path();
@@ -3710,6 +3782,24 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
     if before.is_empty() {
         println!("✓ supervisor: converged — {} owns the core, binary as the command, lanes survive a kickstart", want.target());
         return Ok(ArmReport::converged());
+    }
+    // Registered right, nothing running: a start, never a re-registration (no root).
+    // The core arm stages HEAD and starts it; alone, this arm starts the slot as is.
+    if before == [MacDrift::NotRunning] {
+        if check {
+            println!("✗ supervisor: {} is registered but no core runs; `continuum install` starts it (no sudo)", want.target());
+            return Ok(ArmReport::read_only(1));
+        }
+        if core_follows {
+            println!("✓ supervisor: {} is registered; no core runs — the core arm starts it", want.target());
+            return Ok(ArmReport { drift_before: 1, drift_after: 0 });
+        }
+        let job = live::job()?.ok_or("the launchd job disappeared while installing")?;
+        live::kickstart(&job.domain)?;
+        let core_pid = || live::serving_core_pid(&socket);
+        let pid = live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await?;
+        println!("✓ supervisor: started the registered core under {} (pid {pid})", want.target());
+        return Ok(ArmReport { drift_before: 1, drift_after: 0 });
     }
     for d in &before {
         println!("  supervisor: {d:?}");
