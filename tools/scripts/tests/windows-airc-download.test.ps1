@@ -52,14 +52,17 @@ try {
         Save-InstallerEntryScript -Uri $server.Url -OutFile $path
         if ([IO.File]::ReadAllText($path) -cne $body) { throw 'Downloaded entry bytes changed.' }
     } finally { $server.Dispose() }
-    foreach ($case in @(@(404,0,-1), @(200,0,1048577), @(200,2000,20))) {
+    foreach ($case in @(@(404,0,-1), @(200,0,1048577), @(200,3000,-1))) {
         Remove-Item -LiteralPath $path -Force
         $server = New-Object InstallerHttpFixture($case[0], 'bad', $case[1], $case[2])
         try {
             $failed = $false
+            $elapsed = [Diagnostics.Stopwatch]::StartNew()
             try { Save-InstallerEntryScript -Uri $server.Url -OutFile $path -TimeoutSeconds 1 }
             catch { $failed = $true }
+            $elapsed.Stop()
             if (-not $failed -or (Test-Path -LiteralPath $path)) { throw 'Failed/incomplete response was published.' }
+            if ($case[1] -gt 0 -and $elapsed.Elapsed.TotalSeconds -ge 2.5) { throw 'Body timeout did not bound the complete response.' }
         } finally { $server.Dispose() }
         # Keep each next case's cleanup deterministic without accepting partial data.
         [IO.File]::WriteAllText($path, 'fixture')
