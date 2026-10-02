@@ -2,6 +2,11 @@
 # and preserve failures without allocating a console in desktop harnesses.
 param([switch]$CheckDescendants)
 $ErrorActionPreference = 'Stop'
+# A long-lived host may have loaded the previous helper ABI already. The new
+# launcher must not bind its completed-exit call to that cached zero-arg type.
+if (-not ('Continuum.Setup.OwnedProcess' -as [type])) {
+    Add-Type -TypeDefinition 'namespace Continuum.Setup { public sealed class OwnedProcess { public void CompleteHandoff() {} } }'
+}
 . "$PSScriptRoot/../lib/windows-elevation.ps1"
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-process-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null

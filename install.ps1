@@ -83,7 +83,7 @@ function Invoke-InstallerProcess {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    if ($OwnProcessTree -and -not ('Continuum.Setup.OwnedProcess' -as [type])) {
+    if ($OwnProcessTree -and -not ('Continuum.Setup.OwnedProcessV2' -as [type])) {
         # Bootstrap adapter for the same Windows job/explicit-handle-list contract
         # used by continuum-cli-lifecycle/windows_launch.rs. The kernel assigns
         # ownership before the child's first instruction, not after Process.Start.
@@ -96,7 +96,7 @@ using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 namespace Continuum.Setup {
-public sealed class OwnedProcess : IDisposable {
+public sealed class OwnedProcessV2 : IDisposable {
     [StructLayout(LayoutKind.Sequential)] struct Basic { public long User, Job; public uint Flags; public UIntPtr Min, Max; public uint Count; public UIntPtr Affinity; public uint Priority, Scheduling; }
     [StructLayout(LayoutKind.Sequential)] struct IO { public ulong A,B,C,D,E,F; }
     [StructLayout(LayoutKind.Sequential)] struct Limits { public Basic Basic; public IO IO; public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob; }
@@ -125,8 +125,8 @@ public sealed class OwnedProcess : IDisposable {
         var limits=new Limits();
         if (!SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf(typeof(Limits)))) throw new Win32Exception();
     }
-    public static OwnedProcess Start(ProcessStartInfo start) {
-        var owned = new OwnedProcess();
+    public static OwnedProcessV2 Start(ProcessStartInfo start) {
+        var owned = new OwnedProcessV2();
         IntPtr attributes=IntPtr.Zero, handles=IntPtr.Zero, jobs=IntPtr.Zero;
         bool initialized=false;
         try {
@@ -175,7 +175,7 @@ public sealed class OwnedProcess : IDisposable {
     }
     $process = $null
     try {
-        if ($OwnProcessTree) { $process = [Continuum.Setup.OwnedProcess]::Start($start) }
+        if ($OwnProcessTree) { $process = [Continuum.Setup.OwnedProcessV2]::Start($start) }
         else { $process = [Diagnostics.Process]::Start($start) }
         if (-not $process) { throw "Could not start $FilePath" }
         $stdout = $process.StandardOutput.ReadLineAsync()
