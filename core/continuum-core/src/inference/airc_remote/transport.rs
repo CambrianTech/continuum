@@ -581,16 +581,93 @@ impl AircInferenceTransport for AircLiveTransport {
         // stream is what proves the lane alive meanwhile. A stream that started and
         // then goes silent past the idle bound is dead — no waiting out ten minutes.
         let stream_id = pending_correlation.to_string();
-        let mut reply_fut = std::pin::pin!(self.airc.await_reply(pending));
+        // Recover durable replies inside the polled future so media keeps draining.
+        // The outer select still owns cancellation, idle detection and the deadline.
+        let mut reply_fut = std::pin::pin!(async {
+            let reply = match self.airc.await_reply(pending).await {
+                Ok(reply) if expected.matches(&reply) => reply,
+                // The generic bus can return the first correlated event. Never
+                // accept an unrelated responder; recover the intended answer.
+                Ok(_) => self
+                    .recover_reply_from_store(&room, &expected, start, deadline)
+                    .await
+                    .ok_or_else(|| {
+                        crate::inference::turn_bound::probe_tripped(
+                            "remote_deadline",
+                            &bound_name,
+                            deadline,
+                            deadline_source,
+                            turn_bound,
+                        );
+                        RemoteInferenceError::Timeout {
+                            elapsed_ms: start.elapsed().as_millis() as u64,
+                        }
+                    })?,
+                Err(airc_lib::AircError::CommandDeadline { .. })
+                    if reply_stream_ended_early(start.elapsed(), deadline) =>
+                {
+                    // airc's `await_reply` reports a closed reply stream as a
+                    // deadline (`Ok(None)` → `CommandDeadline`), and the per-request
+                    // stream closes whenever the daemon re-subscribes this handle
+                    // (a room join, a restart). Measured 2026-09-07 02:0xZ: nine
+                    // "timeouts" in 200 s under a 600 s deadline, tripping the
+                    // breaker three times while the peer's answers sat in the
+                    // store. The reply is a durable event — recover it from there.
+                    crate::probe!(
+                        class = "remote_lane.reply_stream_ended",
+                        peer = %target.0,
+                        correlation = %pending_correlation,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "reply stream closed before the deadline; recovering the reply from the store"
+                    );
+                    match self
+                        .recover_reply_from_store(&room, &expected, start, deadline)
+                        .await
+                    {
+                        Some(reply) => reply,
+                        None => {
+                            crate::inference::turn_bound::probe_tripped(
+                                "remote_deadline",
+                                &bound_name,
+                                deadline,
+                                deadline_source,
+                                turn_bound,
+                            );
+                            return Err(RemoteInferenceError::Timeout {
+                                elapsed_ms: start.elapsed().as_millis() as u64,
+                            });
+                        }
+                    }
+                }
+                Err(airc_lib::AircError::CommandDeadline { .. }) => {
+                    crate::inference::turn_bound::probe_tripped(
+                        "remote_deadline",
+                        &bound_name,
+                        deadline,
+                        deadline_source,
+                        turn_bound,
+                    );
+                    return Err(RemoteInferenceError::Timeout {
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    });
+                }
+                Err(other) => {
+                    return Err(RemoteInferenceError::Transport {
+                        message: format!("{other}"),
+                    });
+                }
+            };
+            Ok::<_, RemoteInferenceError>(reply)
+        });
         let mut settled_reply = None;
         let mut stream_finished = false;
         let mut streamed = 0u64;
         let mut last_chunk_at: Option<std::time::Instant> = None;
-        let awaited: Result<TranscriptEvent, airc_lib::AircError> = loop {
+        let reply = loop {
             // The durable reply and live stream have independent delivery queues.
             // Completion requires both; a fast reply must not discard queued chunks.
             if stream_finished {
-                if let Some(reply) = settled_reply.take() { break Ok(reply); }
+                if let Some(reply) = settled_reply.take() { break reply; }
             }
             use futures::StreamExt;
             let idle = async {
@@ -619,10 +696,7 @@ impl AircInferenceTransport for AircLiveTransport {
                         }
                         settled_reply = Some(reply);
                     },
-                    Err(airc_lib::AircError::CommandDeadline { .. }) => return Err(RemoteInferenceError::Timeout {
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                    }),
-                    Err(error) => return Err(RemoteInferenceError::Transport { message: format!("remote reply transport failed: {error}") }),
+                    Err(error) => return Err(error),
                 },
                 _ = tokio::time::sleep_until((start + deadline).into()) => return Err(RemoteInferenceError::Timeout {
                     elapsed_ms: start.elapsed().as_millis() as u64,
@@ -685,80 +759,6 @@ impl AircInferenceTransport for AircLiveTransport {
                 "the remote answer arrived as chunks; settling on the reply"
             );
         }
-        let reply = match awaited {
-            Ok(reply) if expected.matches(&reply) => reply,
-            // The generic bus can return the first correlated event. Never
-            // accept an unrelated responder; recover the intended answer.
-            Ok(_) => self
-                .recover_reply_from_store(&room, &expected, start, deadline)
-                .await
-                .ok_or_else(|| {
-                    crate::inference::turn_bound::probe_tripped(
-                        "remote_deadline",
-                        &bound_name,
-                        deadline,
-                        deadline_source,
-                        turn_bound,
-                    );
-                    RemoteInferenceError::Timeout {
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                    }
-                })?,
-            Err(airc_lib::AircError::CommandDeadline { .. })
-                if reply_stream_ended_early(start.elapsed(), deadline) =>
-            {
-                // airc's `await_reply` reports a closed reply stream as a
-                // deadline (`Ok(None)` → `CommandDeadline`), and the per-request
-                // stream closes whenever the daemon re-subscribes this handle
-                // (a room join, a restart). Measured 2026-09-07 02:0xZ: nine
-                // "timeouts" in 200 s under a 600 s deadline, tripping the
-                // breaker three times while the peer's answers sat in the
-                // store. The reply is a durable event — recover it from there.
-                crate::probe!(
-                    class = "remote_lane.reply_stream_ended",
-                    peer = %target.0,
-                    correlation = %pending_correlation,
-                    elapsed_ms = start.elapsed().as_millis() as u64,
-                    "reply stream closed before the deadline; recovering the reply from the store"
-                );
-                match self
-                    .recover_reply_from_store(&room, &expected, start, deadline)
-                    .await
-                {
-                    Some(reply) => reply,
-                    None => {
-                        crate::inference::turn_bound::probe_tripped(
-                            "remote_deadline",
-                            &bound_name,
-                            deadline,
-                            deadline_source,
-                            turn_bound,
-                        );
-                        return Err(RemoteInferenceError::Timeout {
-                            elapsed_ms: start.elapsed().as_millis() as u64,
-                        });
-                    }
-                }
-            }
-            Err(airc_lib::AircError::CommandDeadline { .. }) => {
-                crate::inference::turn_bound::probe_tripped(
-                    "remote_deadline",
-                    &bound_name,
-                    deadline,
-                    deadline_source,
-                    turn_bound,
-                );
-                return Err(RemoteInferenceError::Timeout {
-                    elapsed_ms: start.elapsed().as_millis() as u64,
-                });
-            }
-            Err(other) => {
-                return Err(RemoteInferenceError::Transport {
-                    message: format!("{other}"),
-                });
-            }
-        };
-
         let responding_peer = reply.peer_id.0.to_string();
         let reply_body = reply.body.ok_or_else(|| RemoteInferenceError::Transport {
             message: "remote replied with no body".to_string(),

@@ -568,3 +568,117 @@ playback log native-final-playback-7d432d161.log. Synthetic playback is not nati
 voice model acceptance. PDF receipt on7d432d161 is PASS91119ms,req-1790932539951.
 No compiler/test jobs remain. Next supported deploy carries desktop script repair
 and revision-bound acceptance fixture; no native Rust change since tested7d432d161.
+Next supported install owns session74310/native-install-c26892ac4.log, targetc26892ac4, shared D: cache,-j2; durable tree clean. Carries desktop native-path correction and PDF revision guard. Resume before any build; serving7d432d161 preserved during warm build.
+
+09:34 UTC REGRESSION: core ping no longer answers; no continuum-core-server
+process exists, ContinuumCore task Ready with LastTaskResult3221226505. Deploy
+consumer observed running=none already09:24, before this warm build. Serving
+llama-server32112 remains. Service.err.log contains 1.259GB CPU allocation failure
+and 'Rust cannot catch foreign exceptions, aborting', but log timestamp09:11 means
+causal attribution to09:19 core disappearance is NOT established. Current free
+physical~43.8GiB/virtual~27.5GiB. No unsupported model startup or kill performed.
+Supported continuum start attempted after confirming absent core; refused because
+active deployclaim15748/c26892ac4 protects the handoff. Did not bypass that guard
+or launch a second daemon. Install74310 remains compiling pinned target, so service
+is currently unavailable until supported handoff/recovery. Need verify crash cause
+and continued health after handoff, not merely one startup ping. Prior PDF pass
+and successful install remain historical receipts, not proof of current availability.
+
+09:44 UTC: read-only Windows Application Event 1000 identifies the stopped core:
+2026-10-02T09:18:45.0214532Z, PID29720 (0x7418), service-b executable, exception
+0xc0000409, fault offset0x654ca70, reportbfe4959a-59a7-4ee6-821b-b7934c42ae3c.
+Event1001 at09:19:22 records BEX64/P9=7. This dates the failure before current
+install74310. WER archive enumeration returned Access denied; no permission or
+lifecycle bypass attempted. Exception code alone does not establish root cause.
+Claim15748 remains fresh targetingc26892ac4; cargo11256/34204 and rustc13932/23036
+own compilation. Core absent, existing llama32112 alive. No duplicate jobs.
+Independent source review of inference/airc_remote/transport.rs found the reply
+select arm returns immediately on CommandDeadline, while the later awaited-match
+retains durable-store recovery for early CommandDeadline. That recovery is now
+unreachable: the loop only breaks with Ok(reply). A daemon resubscription can thus
+lose the existing recovery behavior. Repair must recover inside the reply future
+while stream draining/cancellation/deadline continue; merely breaking Err would
+skip the terminal barrier and serialize recovery against media. Add deterministic
+both-order/reply-resubscription regression using existing two-peer fixtures once
+the shared build owner releases. No native completion or current availability is
+claimed. Resume74310 and verify sustained deployed health before closing outage.
+
+09:54 UTC: implemented the remote durable-reply recovery repair in the owned
+feature checkout only. Existing identity/deadline/store-recovery classification
+now runs inside the reply future polled alongside media; terminal AND durable
+reply remain mandatory. Recovery does not block cancellation, media drain, idle
+watch or the absolute deadline. Removed the unreachable post-loop classifier.
+Rustfmt parser accepted the file; this is syntax-only, NOT compiled/tested or
+installed acceptance. Both-order/recovery regressions remain required. Active
+install74310 still owns shared cache and pinned durablec26892ac4 (claim15748,
+cargo11256/34204, rustc23036). No parallel Cargo job was started. Core outage is
+unchanged; resume deployment and verify sustained runtime health before compiling
+this follow-up. Feature changes intentionally excluded from the active install.
+
+10:04 UTC: extended existing airc_remote_inference_roundtrip fixture (no new
+fixture framework) to publish actual text and terminal frames, and run both
+publication orders: durable reply before stream, and stream before durable reply.
+Both cases also exercise the existing correlated-non-response recovery scenario.
+Consumer now calls generate_stream, requires retained Token output and bounds
+completion to15s; a batch reply alone no longer passes this fixture. Publication
+ordering is controlled; network delivery scheduling is not asserted deterministic.
+Rustfmt syntax parsing and git diff --check PASS. Compilation/execution remain
+PENDING behind active install74310; do not mistake prepared regression for a pass.
+Install advanced to CLI stage: cargo6592/12568 and rustc20048, claim15748 fresh,
+targetc26892ac4. Core still absent and llama32112 preserved. No duplicate build.
+Next: resume install, verify deployed health/desktop/PDF, then compile and run the
+owned remote recovery patch with the updated existing integration tests.
+
+10:14 UTC: supported install74310 EXIT0. Core3280 and both CLI aliases independently
+verified build5925/c26892ac4; deploy-verify and install --check --core --cli PASS.
+Claim released and compiler inventory empty before next test start. Existing
+llama32112 preserved. Desktop native-path installer repair now accepted: HTTP200
+and real browser rendered academy, live node/resources, rooms and citizen roster.
+No UI interaction or changes to Kimi's activity. Core remains answering after PDF.
+Exact-revision PDF acceptance92435 EXIT0: vector-only/empty text layer, blue square
+left/red circle right,36642ms,requestreq-1790936143840, Qwen3.8-27B llama-server.
+Receipt: pdf-visual-acceptance/deployed-c26892ac4/receipt.json, same source/image
+hashes as prior fixture. This demonstrates deployed visual understanding, not
+natural conversation latency or native voice. Recovery observed; prior0xc0000409
+root cause and sustained reliability remain OPEN, no claim crash fixed.
+Follow-up remote recovery integration tests now own31080, log
+native-remote-recovery-tests.log, feature checkout, sharedD:cache,-j2,
+--no-default-features --features test-fixtures --test airc_remote_inference_roundtrip.
+Resume31080; do not start duplicate compilation. Recovery source patch is NOT
+in runningc26892ac4. Native audio input/output and image output remain OPEN.
+
+10:24 UTC: recovery test31080 EXIT1 at MSVC DLL link, LNK1140 program-database
+size limit; Rust compiled through code generation, but NO test ran. This is not
+a passing regression. Confirmed absent deploy.claim and compiler inventory before
+retry. Test-only retry13912 uses same sharedD:cache,-j2 and existing integration
+command, with process-local _LINK_=/PDB:NONE as linker diagnostic prescribes;
+no release flags, running binaries or global settings changed. Log:
+native-remote-recovery-tests-nopdb.log. Resume13912, do not duplicate compilation.
+Runtime acceptance extended: same core3280 (CIM creation05:11:13 local), ping
+build5925/c26892ac4 still OK, no matching Event1000 after10:12Z. Get-Process could
+not expose StartTime for this service; CIM supplies it. Earlier crash root cause
+remains unknown; this observation is continued availability, not a crash repair.
+Reviewed native_output shared boundary: still explicitly audio-only PCM streaming;
+image/mixed output is refused and no real voice binding is verified. No capability
+was fabricated to bypass these remaining delivery gates.
+
+10:34 UTC: retry13912 EXIT1. /PDB:NONE is NOT debug suppression in this MSVC:
+link.exe interpreted NONE as a literal shared PDB path; parallel binary links hit
+LNK1201. Removed only that generated691MB NONE file from the feature checkout.
+Inspected installed link.exe /?; supported suppression is /DEBUG:NONE. Disk space
+was ample(C:95.9GB,D:9.1TB), so no unrelated cache deletion was done. After absent
+claim/empty compilers, retry68185 now owns same Cargo command/shared cache with
+process-local _LINK_=/DEBUG:NONE, log native-remote-recovery-tests-debugnone.log.
+No release configuration or service binary changed. Tests have not passed yet;
+resume68185. Source diff whitespace check PASS; deployed core3280 still answers
+build5925/c26892ac4. This fixes the test invocation, not a native model capability.
+
+10:44 UTC: regression68185 EXIT0,47.27s build and3.82s execution. Existing two-peer
+integration suite2/2 PASS, each exercises both reply/stream publication orders;
+correlated non-response recovers the valid durable answer while stream drains.
+Actual Token output asserted, terminal barrier retained. This validates the owned
+remote recovery patch through real loopback AIRC peers, not native voice/model
+acceptance. Process-local /DEBUG:NONE resolved test linker failure without global
+configuration changes. Current core stillc26892ac4 responds; durable tree clean,
+no deploy claim and no compiler process before preparing supported deployment.
+Earlier crash root cause and all real native audio/image-output gates stay OPEN.

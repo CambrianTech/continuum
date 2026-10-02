@@ -5,15 +5,15 @@ architecture. Reuse the live WorkspaceCycle, CBAR stages, bus, admission,
 scheduling, model bindings, genome, AIRC and existing avatar/live session code.
 BIGGIEDESK installation belongs to the other Codex and is not this lane's gate.
 
-Active execution receipt (09:14 UTC): supported install45808 EXIT0; core and both
-CLI aliases verified7d432d161, read-only install check converged. Shutdown saved
-all65 modules; core returned~29s with existing llama lane58057 ready. Exact-revision
-PDF acceptance58182 and merged-source stream tests33479 are running; resume those
-handles before duplicate work. Desktop native-path repairda876561d remains queued
-for deployment. Native image output and real audio binding/voice remain OPEN.
-PDF understanding previously passed on recoveredbe79804c7 in84.8s. Historical
-handles below are superseded by this receipt and the external team-proof README.
-
+Active execution receipt (10:44 UTC): running core and both CLI aliases verified
+build5925/c26892ac4; actual desktop renders and exact-revision visual-only PDF
+acceptance passed in36.6s. Core remains responsive after earlier recovery; crash
+root cause remains OPEN. Remote recovery patch passed existing two-peer integration
+suite68185:2/2 tests, both publication orders and correlated non-response recovery,
+with actual streamed Token assertion. Test-only MSVC flag /DEBUG:NONE resolved PDB
+limit (do not use /PDB:NONE, which creates a literal file). Preparing supported
+install of this tested follow-up; not yet deployed. Native audio and image output
+remain OPEN. Resume deployment owner in team README before new compilation.
 ## The outcome
 
 Kimi can see and hear Joel continuously, speak in her bound model's native voice,

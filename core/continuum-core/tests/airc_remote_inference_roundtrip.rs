@@ -79,6 +79,8 @@ async fn spawn_ai_generate_responder(
     canned: TextGenerationResponse,
     ready: Arc<tokio::sync::Notify>,
     inject_non_response: bool,
+    reply_first: bool,
+    room_name: String,
 ) -> tokio::task::JoinHandle<()> {
     let self_id = peer_a.peer_id();
     tokio::spawn(async move {
@@ -180,10 +182,27 @@ async fn spawn_ai_generate_responder(
                     .await
                     .expect("correlated non-response");
             }
-            handler
-                .send_reply(&parsed, &response)
-                .await
-                .expect("substrate send_reply");
+            if reply_first {
+                handler.send_reply(&parsed, &response).await.expect("early durable reply");
+            }
+            // Exercise the real stream contract, including chunks arriving AFTER
+            // the durable response. A response must not bypass the terminal gate.
+            for (sequence, text, final_chunk) in [(0u64, canned.text.as_str(), false), (1, "", true)] {
+                let mut headers = airc_core::Headers::new();
+                headers.insert(airc_lib::HEADER_STREAM_ID.into(), parsed.correlation_id.to_string());
+                headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), sequence.to_string());
+                headers.insert(airc_lib::HEADER_STREAM_KIND.into(), airc_lib::STREAM_KIND_TEXT_TOKEN.into());
+                headers.insert(airc_lib::HEADER_STREAM_FINAL.into(), final_chunk.to_string());
+                peer_a.publish_with_delivery(
+                    airc_lib::PublishTarget::RoomByName(room_name.clone()),
+                    airc_protocol::FrameKind::Event,
+                    airc_core::Body::text(text), headers,
+                    airc_bus::DeliveryClass::StreamChunk,
+                ).await.expect("stream chunk publication");
+            }
+            if !reply_first {
+                handler.send_reply(&parsed, &response).await.expect("late durable reply");
+            }
             return;
         }
     })
@@ -239,17 +258,18 @@ async fn spawn_reply_header_sniffer(
 
 #[tokio::test]
 async fn airc_remote_inference_adapter_round_trips_against_substrate() {
-    round_trip(false).await;
+    // what this catches: either network queue may deliver completion first.
+    for reply_first in [false, true] { round_trip(false, reply_first).await; }
 }
 
 // what this catches: correlation-only matching accepts a non-response and
 // fails payload decoding instead of recovering the actual command answer.
 #[tokio::test]
 async fn correlated_non_response_does_not_replace_the_inference_answer() {
-    round_trip(true).await;
+    for reply_first in [false, true] { round_trip(true, reply_first).await; }
 }
 
-async fn round_trip(inject_non_response: bool) {
+async fn round_trip(inject_non_response: bool, reply_first: bool) {
     let loop_back = TwoAircLoopback::new()
         .await
         .expect("fixture setup should succeed");
@@ -286,6 +306,8 @@ async fn round_trip(inject_non_response: bool) {
         canned.clone(),
         Arc::clone(&responder_ready),
         inject_non_response,
+        reply_first,
+        loop_back.shared_room().to_string(),
     )
     .await;
 
@@ -321,10 +343,13 @@ async fn round_trip(inject_non_response: bool) {
     };
 
     let started = std::time::Instant::now();
-    let response: TextGenerationResponse = adapter
-        .generate_text(request)
-        .await
+    let (sink, mut chunks) = continuum_core::ai::stream_sinks::channel();
+    let response: TextGenerationResponse = tokio::time::timeout(
+        std::time::Duration::from_secs(15), adapter.generate_stream(request, sink),
+    ).await.expect("stream and durable reply must both settle")
         .expect("AircRemoteInferenceAdapter round-trip");
+    assert_eq!(chunks.try_recv().expect("response cannot discard streamed text"),
+        continuum_core::ai::adapter::GenerationChunk::Token(canned.text.clone()));
 
     // Body assertions.
     assert_eq!(response.text, canned.text);
