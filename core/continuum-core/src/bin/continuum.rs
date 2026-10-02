@@ -1588,33 +1588,7 @@ impl PreparedCoreService {
                     return Err(format!("warm media artifact missing: {}; rerun continuum install", source.display()));
                 }
             }
-            let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
-                if to.exists() {
-                    let prev = to.with_extension("prev.exe");
-                    // `.prev.exe` is a SINGLE parking space, so staging cannot proceed
-                    // while something still holds that exact name. This used to fail
-                    // silently (`let _ = remove_file`) and the rename below then reported
-                    // its error against `to` — naming the CURRENT file for a refusal that
-                    // happened on a DIFFERENT one, which cost an hour of reading on
-                    // 2026-09-22. Report the path that actually refused and the OS's own
-                    // words for why; the cause is not inferable from here.
-                    if let Err(e) = std::fs::remove_file(&prev) {
-                        if prev.exists() {
-                            return Err(format!(
-                                "the previous artifact at {} could not be removed ({e}) and \
-                                 is still present; staging cannot move the current artifact \
-                                 aside onto an occupied name",
-                                prev.display()
-                            ));
-                        }
-                    }
-                    std::fs::rename(to, &prev)
-                        .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
-                }
-                std::fs::copy(from, to)
-                    .map(|_| ())
-                    .map_err(|e| format!("cannot stage {} into {}: {e}", from.display(), to.display()))
-            };
+            let move_aside_and_copy = continuum_cli_lifecycle::install_cli::stage_artifact;
             move_aside_and_copy(&built.path, &slot_core)?;
             for name in media_files {
                 move_aside_and_copy(&built.path.with_file_name(name), &slot_core.with_file_name(name))?;
