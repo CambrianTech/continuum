@@ -249,3 +249,19 @@ The existing full Windows PowerShell 5 service suite passed with synthetic
 success, exit 999, launcher failure and unavailable metadata, plus native stderr
 and exit-status fixtures. No live gsudo consent or provisioning was performed;
 this adds evidence for the next supported attempt, not a causal fix for 999.
+
+### Registered elevation helper discovery (2026-10-02)
+
+A nested setup can install gsudo and register its directory while its parent
+still holds an older PATH. The parent previously attempted a second acquisition,
+then refused winget's already-installed/no-upgrade result. Shared discovery now
+refreshes the session from registered User/Machine PATH on a miss before any
+acquisition, and verifies the discovered native executable through `--version`.
+Acquisition exit failures remain failures; no exit-code blanket acceptance or
+persistent environment change was added.
+
+The full PS5 service suite passed with an actual scratch executable and a
+synthetic registered-PATH boundary: stale caller discovery/reuse, a second reuse
+without acquisition, and wrong-version refusal. No live winget, UAC, account or
+firewall changes were performed. AIRC must consume the released helper pin;
+public installation acceptance remains separate.
