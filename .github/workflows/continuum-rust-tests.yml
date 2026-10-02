@@ -331,7 +331,7 @@ jobs:
         shell: powershell
         run: |
           ./tools/scripts/sync-windows-bootstrap.ps1 -Check
-          ./tools/scripts/tests/windows-process.test.ps1
+          ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
       - name: Warm builds preserve live services
         if: needs.changes.outputs.installer != 'false'
         shell: bash

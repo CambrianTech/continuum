@@ -1,10 +1,46 @@
 # Regression: installer native commands must retain arguments, drain both pipes,
 # and preserve failures without allocating a console in desktop harnesses.
+param([switch]$CheckDescendants)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/../lib/windows-elevation.ps1"
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-process-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Run this portion on the CI desktop only: it intentionally probes a tool
+    # which launches its own child without supplying any window-hiding flags.
+    # It must not be used as an experiment on an operator's active desktop.
+    if ($CheckDescendants) {
+        if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Descendant visibility probe requires the CI desktop.' }
+        $grandchild = Join-Path $scratch 'grandchild.ps1'
+        @'
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WindowProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle); }'
+if ([WindowProbe]::IsWindowVisible([WindowProbe]::GetConsoleWindow())) { [Console]::Out.WriteLine('VISIBLE DESCENDANT'); exit 91 }
+[Console]::Out.WriteLine('HIDDEN DESCENDANT')
+'@ | Set-Content -LiteralPath $grandchild -Encoding UTF8
+        $parent = Join-Path $scratch 'parent.ps1'
+        @'
+param($Grandchild)
+$start = New-Object Diagnostics.ProcessStartInfo
+$start.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$start.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $Grandchild + '"'
+$start.UseShellExecute = $false
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+# Deliberately no CreateNoWindow or WindowStyle. This models an unadapted tool.
+$child = [Diagnostics.Process]::Start($start)
+try {
+    $stdout = $child.StandardOutput.ReadToEndAsync()
+    $stderr = $child.StandardError.ReadToEndAsync()
+    if (-not $child.WaitForExit(30000)) { $child.Kill(); throw 'Descendant probe timed out.' }
+    [Console]::Out.Write($stdout.Result)
+    [Console]::Error.Write($stderr.Result)
+    exit $child.ExitCode
+} finally { $child.Dispose() }
+'@ | Set-Content -LiteralPath $parent -Encoding UTF8
+        $visibility = @(Invoke-InstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $parent, $grandchild))
+        if ($LASTEXITCODE -ne 0 -or $visibility -notcontains 'HIDDEN DESCENDANT') { throw "Unadapted descendant was visible or failed: $visibility" }
+        Write-Host 'PASS: ordinary descendant remains hidden without its own creation flags.'
+    }
     $child = Join-Path $scratch 'native child.ps1'
     @'
 Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
