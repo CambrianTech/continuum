@@ -887,30 +887,18 @@ impl AdapterRegistry {
 
     /// Get adapter by provider ID.
     pub fn get(&self, provider_id: &str) -> Option<&dyn AIProviderAdapter> {
-        self.adapters
-            .get(provider_id)
-            .map(|a| a.as_ref())
-            .or_else(|| {
-                self.priority_order.iter().find_map(|key| {
-                    self.adapters
-                        .get(key)
-                        .filter(|adapter| adapter.provider_id() == provider_id)
-                        .map(|a| a.as_ref())
-                })
-            })
+        self.get_shared(provider_id).map(|adapter| adapter.as_ref())
     }
 
-    /// Get adapter by provider ID as `Arc` — for callers that need
-    /// to keep a reference past the registry lock's scope (cognition
-    /// layer's evaluate_response holds the Arc across the inference
-    /// call so the read lock can drop). Cheap reference count bump.
+    /// Lease an adapter past the registry lock's scope.
     pub fn get_arc(&self, provider_id: &str) -> Option<Arc<dyn AIProviderAdapter>> {
-        self.adapters.get(provider_id).cloned().or_else(|| {
+        self.get_shared(provider_id).cloned()
+    }
+
+    fn get_shared(&self, provider_id: &str) -> Option<&Arc<dyn AIProviderAdapter>> {
+        self.adapters.get(provider_id).or_else(|| {
             self.priority_order.iter().find_map(|key| {
-                self.adapters
-                    .get(key)
-                    .filter(|adapter| adapter.provider_id() == provider_id)
-                    .cloned()
+                self.adapters.get(key).filter(|adapter| adapter.provider_id() == provider_id)
             })
         })
     }
@@ -975,6 +963,29 @@ impl AdapterRegistry {
         model: Option<&str>,
         device: InferenceDevice,
     ) -> Option<(&'a str, &'a dyn AIProviderAdapter)> {
+        self.select_shared(preferred_provider, model, device)
+            .map(|(provider, adapter)| (provider, adapter.as_ref()))
+    }
+
+    /// Lease the exact selected adapter so inference does not retain a registry lock.
+    /// Provider IDs may be shared by adapters serving different models: clone the
+    /// selected Arc rather than looking it up again by provider ID.
+    pub fn select_arc(
+        &self,
+        preferred_provider: Option<&str>,
+        model: Option<&str>,
+        device: InferenceDevice,
+    ) -> Option<(String, Arc<dyn AIProviderAdapter>)> {
+        self.select_shared(preferred_provider, model, device)
+            .map(|(provider, adapter)| (provider.to_owned(), Arc::clone(adapter)))
+    }
+
+    fn select_shared<'a>(
+        &'a self,
+        preferred_provider: Option<&str>,
+        model: Option<&str>,
+        device: InferenceDevice,
+    ) -> Option<(&'a str, &'a Arc<dyn AIProviderAdapter>)> {
         // 0. No-specifier guard. Auto-discovery without ANY specifier is
         // the silent-substitution path forbidden by [[no-fallbacks-ever]].
         // Caller must say what they want.
@@ -1001,7 +1012,7 @@ impl AdapterRegistry {
                     if let Some(adapter) = self.adapters.get(key) {
                         if key == pref || adapter.provider_id() == pref {
                             if model.map_or(true, |m| adapter.supports_model(m)) {
-                                return Some((adapter.provider_id(), adapter.as_ref()));
+                                return Some((adapter.provider_id(), adapter));
                             }
                         }
                     }
@@ -1037,7 +1048,7 @@ impl AdapterRegistry {
                     let is_cloud =
                         reg.provider(&spec.provider).map(|p| p.kind) == Some(ProviderKind::Cloud);
                     if is_cloud {
-                        if let Some(adapter) = self.get(&spec.provider) {
+                        if let Some(adapter) = self.get_shared(&spec.provider) {
                             return Some((spec.provider.as_str(), adapter));
                         }
                     }
@@ -1065,7 +1076,7 @@ impl AdapterRegistry {
                 // If model specified, adapter must honestly support it.
                 // If no model specified, any adapter on the right device works.
                 if model.map_or(true, |m| adapter.supports_model(m)) {
-                    return Some((adapter.provider_id(), adapter.as_ref()));
+                    return Some((adapter.provider_id(), adapter));
                 }
             }
         }
@@ -1212,8 +1223,8 @@ mod tests {
         assert_eq!(r.available().len(), 0);
     }
 
-    #[test]
-    fn duplicate_provider_ids_remain_independently_selectable_by_model() {
+    #[tokio::test]
+    async fn duplicate_provider_ids_remain_independently_selectable_by_model() {
         let mut r = AdapterRegistry::new();
         r.register(stub_model("llamacpp-local", "qwen3.5"), 0);
         r.register(stub_model("llamacpp-local", "qwen2-vl"), 0);
@@ -1233,6 +1244,23 @@ mod tests {
             .expect("qwen2-vl adapter selected");
         assert!(qwen2.supports_model("qwen2-vl"));
         assert!(!qwen2.supports_model("qwen3.5"));
+
+        // Hold the selected model lease while the registry accepts a writer.
+        // Re-looking up the provider ID would select the wrong model here.
+        let registry = tokio::sync::RwLock::new(r);
+        let leased = {
+            let guard = registry.read().await;
+            let (_, borrowed) = guard.select(Some("local"), Some("qwen2-vl"), InferenceDevice::Gpu).unwrap();
+            let (_, leased) = guard.select_arc(Some("local"), Some("qwen2-vl"), InferenceDevice::Gpu).unwrap();
+            assert!(std::ptr::eq(borrowed, leased.as_ref()));
+            leased
+        };
+        {
+            let mut writer = registry.try_write().expect("a retained model lease must not retain the registry guard");
+            assert!(writer.deregister("llamacpp-local"));
+        }
+        assert!(leased.supports_model("qwen2-vl"), "deregistering must not invalidate in-flight work");
+        assert!(!leased.supports_model("qwen3.5"));
     }
 
     // what this catches: regression in the AIProviderAdapter default impls.

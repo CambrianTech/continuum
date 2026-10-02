@@ -6,9 +6,300 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $repo 'tools\scripts\lib\windows-service.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-prepared.ps1')
 . (Join-Path $repo 'tools\scripts\lib\windows-engine-receipt.ps1')
+. (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1')
+$nativeInstallerProcess = ${function:Invoke-InstallerProcess}
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # what this catches: partial robocopy failure was reported as success, and
+    # reruns skipped its existing destination then published an incomplete cache.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = Join-Path $scratch 'migration-profile'
+            $cold = Join-Path $scratch 'migration-cold'
+            $src = Join-Path $env:USERPROFILE '.cache\huggingface'
+            $dst = Join-Path $cold 'huggingface'
+            $config = Join-Path $env:USERPROFILE '.continuum\config.env'
+            $pending = Join-Path (Split-Path $config) 'cold-storage.pending'
+            New-Item -ItemType Directory -Force $src, $cold, (Split-Path $config) | Out-Null
+            [IO.File]::WriteAllText($config, '# preserve until migration succeeds')
+            [IO.File]::WriteAllText($pending, $cold + "`n")
+            Set-Content -LiteralPath (Join-Path $src 'first') -Value first
+            Set-Content -LiteralPath (Join-Path $src 'second') -Value second
+            $script:failColdCopy = $true
+            $script:coldExports = 0
+            function robocopy {
+                if ($script:failColdCopy) {
+                    New-Item -ItemType Directory -Force $args[1] | Out-Null
+                    Move-Item -LiteralPath (Join-Path $args[0] 'first') -Destination (Join-Path $args[1] 'first')
+                    $global:LASTEXITCODE = 8
+                } else { & $nativeInstallerProcess (Join-Path $env:SystemRoot 'System32\robocopy.exe') $args }
+            }
+            function Invoke-InstallerProcess {
+                param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+                if ($FilePath -eq 'robocopy') { robocopy @ArgumentList }
+                else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+            }
+            function Get-ColdDrive { throw 'An interrupted migration selected a different drive' }
+            function Module-Start { }
+            function Module-Skip { }
+            function Module-Done { }
+            function Write-Step { }
+            function Write-Ok { }
+            function Set-ColdStorageEnv { param($ColdRoot) $script:coldExports++; Update-ColdStorageConfig -Path $config -ColdRoot $ColdRoot }
+            $LASTEXITCODE = 0
+            $refused = $false
+            try { Mod-ColdStorage } catch { $refused = $_ -match 'robocopy exit 8' }
+            if (-not $refused -or $script:coldExports -ne 0 -or [IO.File]::ReadAllText($config) -cne '# preserve until migration succeeds') { throw 'Failed cold move published partial storage' }
+            if (-not (Test-Path -LiteralPath ($dst + '.continuum-migration'))) { throw 'Failed migration lost ownership receipt' }
+            $script:failColdCopy = $false
+            Mod-ColdStorage
+            if ($script:coldExports -ne 1 -or (Test-Path -LiteralPath $src) -or (Test-Path -LiteralPath $pending)) { throw 'Owned interrupted migration did not converge' }
+            foreach ($name in @('first','second')) { if ((Get-Content -LiteralPath (Join-Path $dst $name)) -ne $name) { throw 'Migration lost cache data' } }
+            Mod-ColdStorage
+            $src = Join-Path $env:USERPROFILE '.continuum\genome'; $dst = Join-Path $cold 'genome'
+            New-Item -ItemType Directory -Force $src, $dst | Out-Null
+            Set-Content -LiteralPath (Join-Path $dst 'unrelated') -Value kept
+            $refused = $false
+            try { Move-ColdDir $src $dst -ColdRoot $cold } catch { $refused = $_ -match 'without an ownership receipt' }
+            if (-not $refused -or (Get-Content -LiteralPath (Join-Path $dst 'unrelated')) -ne 'kept') { throw 'Unowned destination was overwritten or accepted' }
+            $refused = $false
+            try { Move-ColdDir $scratch $dst -ColdRoot $cold } catch { $refused = $_ -match 'outside the selected cache roots' }
+            if (-not $refused) { throw 'Migration accepted a source outside the allowed cache roots' }
+            $foreign = Join-Path $scratch 'foreign-cache'
+            New-Item -ItemType Directory -Force (Join-Path $foreign 'huggingface') | Out-Null
+            Set-Content -LiteralPath (Join-Path $foreign 'huggingface\keep') -Value untouched
+            # The earlier successful move left an empty .cache parent.
+            Remove-Item -LiteralPath (Join-Path $env:USERPROFILE '.cache') -Force
+            New-Item -ItemType Junction -Path (Join-Path $env:USERPROFILE '.cache') -Target $foreign | Out-Null
+            try {
+                $refused = $false
+                try { Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface') (Join-Path $cold 'huggingface') -ColdRoot $cold } catch { $refused = $_ -match 'traverses a link' }
+                if (-not $refused -or (Get-Content -LiteralPath (Join-Path $foreign 'huggingface\keep')) -ne 'untouched') { throw 'Linked source ancestor exposed foreign files to migration' }
+            } finally { [IO.Directory]::Delete((Join-Path $env:USERPROFILE '.cache')) }
+            $linkedCold = Join-Path $scratch 'linked-cold'
+            New-Item -ItemType Junction -Path $linkedCold -Target $cold | Out-Null
+            try {
+                $refused = $false
+                try { Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface') (Join-Path $linkedCold 'huggingface') -ColdRoot $linkedCold } catch { $refused = $_ -match 'traverses a link' }
+                if (-not $refused) { throw 'Absent source bypassed linked destination guard' }
+            } finally { [IO.Directory]::Delete($linkedCold) }
+        } finally { $env:USERPROFILE = $savedProfile }
+        Write-Output 'PASS: interrupted cold migration resumes its owned drive, preserves data/config and refuses unrelated paths'
+    }
+    # what this catches: the real public entry must persist payload placement
+    # BEFORE any prerequisite acquisition. Stop at that boundary, not at a
+    # replacement installer, and keep all state in the isolated profile.
+    & {
+        $entryRepo = Join-Path $scratch 'payload entry'
+        $entryLib = Join-Path $entryRepo 'tools\scripts\lib'
+        $entryProfile = Join-Path $scratch 'payload entry profile'
+        $entryCold = Join-Path $scratch 'payload entry cold'
+        New-Item -ItemType Directory -Path $entryLib, $entryProfile -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $entryRepo
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
+            Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $entryLib
+        }
+        $entryGenerated = Join-Path (Split-Path $entryLib) 'generated'
+        New-Item -ItemType Directory -Path $entryGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $entryGenerated
+        $modules = @'
+function Mod-ColdStorage { $env:CONTINUUM_STORAGE_PATH = '__COLD__' }
+function Test-WingetAvailable {
+    $selected = Get-ManagedPayloadRoot
+    if (-not $selected.StartsWith($env:CONTINUUM_STORAGE_PATH + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'payload entry selected the wrong root' }
+    throw 'public-payload-stop-before-prerequisites'
+}
+'@
+        $modules.Replace('__COLD__', $entryCold.Replace("'", "''")) | Set-Content -LiteralPath (Join-Path $entryLib 'win-modules.ps1')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $entryProfile
+            $ErrorActionPreference = 'Continue'
+            $entryCommand = "try { & '" + (Join-Path $entryRepo 'install.ps1').Replace("'", "''") + "' } catch { [Console]::Error.WriteLine(`$_.ToString()); exit 1 }"
+            $output = (& $nativeInstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($entryCommand))) 2>&1 | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($code -eq 0 -or $output -notmatch 'public-payload-stop-before-prerequisites') { throw "Public entry did not reach the checked prerequisite boundary: $output" }
+            if (-not (Test-Path -LiteralPath (Join-Path $entryProfile '.continuum\payload-root'))) { throw 'Public entry did not persist payload placement' }
+        } finally { $env:USERPROFILE = $savedProfile; $ErrorActionPreference = 'Stop' }
+        Write-Output 'PASS: ordinary public installer selects durable cold payloads before prerequisite acquisition'
+    }
+    # what this catches: a new cold install and a legacy upgrade must persist
+    # different placement decisions; losing the cold drive must fail closed.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\payload-paths.ps1')
+        $homeRoot = Join-Path $scratch 'payload-home'
+        $cold = Join-Path $scratch 'payload-cold'
+        $selected = Initialize-ManagedPayloadRoot -HomeRoot $homeRoot -ColdRoot $cold
+        if ((Split-Path $selected) -ne (Join-Path $cold 'payloads')) { throw 'Fresh payloads did not select scoped cold storage' }
+        $other = Initialize-ManagedPayloadRoot -HomeRoot (Join-Path $scratch 'other-home') -ColdRoot $cold
+        if ($other -eq $selected) { throw 'Independent homes share installed payloads' }
+        if ((Initialize-ManagedPayloadRoot -HomeRoot $homeRoot -ColdRoot (Join-Path $scratch 'different')) -ne $selected) { throw 'Rerun moved payloads' }
+        $legacy = Join-Path $scratch 'payload-legacy'
+        New-Item -ItemType Directory -Path (Join-Path $legacy 'bin') -Force | Out-Null
+        if ((Initialize-ManagedPayloadRoot -HomeRoot $legacy -ColdRoot $cold) -ne $legacy) { throw 'Existing payloads moved implicitly' }
+        [IO.File]::WriteAllText((Join-Path $homeRoot 'payload-root'), (Join-Path $scratch 'absent-drive'))
+        $refused = $false
+        try { $null = Get-ManagedPayloadRoot -HomeRoot $homeRoot } catch { $refused = $true }
+        if (-not $refused) { throw 'Missing payload drive silently fell back' }
+        Write-Output 'PASS: fresh cold payload placement, sticky rerun, legacy preservation and missing-drive refusal'
+    }
+    # what this catches: a long-lived desktop inherited no Rust-home settings
+    # from an earlier install, and PATH refresh discarded session-selected tools.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\install-common.ps1')
+        $savedCargo = $env:CARGO_HOME; $savedRustup = $env:RUSTUP_HOME; $savedPath = $env:PATH
+        try {
+            $env:CARGO_HOME = $null; $env:RUSTUP_HOME = $null
+            $env:PATH = 'Z:\fixture tools;z:\FIXTURE TOOLS;' + $savedPath
+            Initialize-InstallEnvironment -UserEnvironment @{CARGO_HOME='Z:\user cargo'} -MachineEnvironment @{CARGO_HOME='Z:\machine cargo';RUSTUP_HOME='Z:\machine rustup'}
+            if ($env:CARGO_HOME -cne 'Z:\user cargo' -or $env:RUSTUP_HOME -cne 'Z:\machine rustup') { throw 'Registered Rust homes were not restored with user precedence' }
+            if (-not $env:PATH.StartsWith('Z:\fixture tools;') -or @($env:PATH -split ';' | Where-Object { $_ -ieq 'Z:\fixture tools' }).Count -ne 1) { throw 'Session PATH was lost or duplicated' }
+            $firstPath = $env:PATH
+            Initialize-InstallEnvironment -UserEnvironment @{CARGO_HOME='Z:\different cargo'} -MachineEnvironment @{}
+            if ($env:CARGO_HOME -cne 'Z:\user cargo' -or $env:PATH -cne $firstPath) { throw 'Environment rerun overwrote explicit values or grew PATH' }
+            $env:CARGO_HOME = $null; $env:RUSTUP_HOME = $null
+            Initialize-InstallEnvironment -UserEnvironment @{} -MachineEnvironment @{}
+            if ($env:CARGO_HOME -or $env:RUSTUP_HOME) { throw 'Unconfigured host acquired invented Rust homes' }
+        } finally { $env:CARGO_HOME=$savedCargo; $env:RUSTUP_HOME=$savedRustup; $env:PATH=$savedPath }
+        Write-Output 'PASS: persisted Rust homes, explicit process precedence, missing settings and stable session PATH restoration'
+    }
+    # what this catches: failed prerequisite installs used to warn and continue
+    # into builds, while a caller-local status could hide the native result.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\install-common.ps1')
+        $script:prerequisiteExit = 0
+        $script:prerequisiteInstalled = $false
+        $script:prerequisiteProbePass = $false
+        $script:prerequisiteCalls = 0
+        $script:prerequisiteDone = $false
+        function winget {
+            $script:prerequisiteCalls++
+            & $nativeInstallerProcess $env:ComSpec -RawArguments "/d /c exit $script:prerequisiteExit"
+            $script:prerequisiteInstalled = $true
+        }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'winget') { winget @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
+        function Update-SessionPath { }
+        function Module-Start { }
+        function Module-Skip { }
+        function Module-Done { $script:prerequisiteDone = $true }
+        function Write-Warn2 { }
+        $probe = { $script:prerequisiteInstalled -and $script:prerequisiteProbePass }
+        $LASTEXITCODE = 73
+        foreach ($case in @(@(1603, $false, 'winget exited 1603'), @(0, $false, 'verification probe still fails'), @(0, $true, ''), @(3010, $true, ''))) {
+            $script:prerequisiteExit = $case[0]
+            $script:prerequisiteProbePass = $case[1]
+            $script:prerequisiteInstalled = $false
+            $script:prerequisiteDone = $false
+            $failure = ''
+            try { Install-IfMissing -Name fixture -WingetId fixture.invalid -TestCmd $probe -UserScope }
+            catch { $failure = $_.Exception.Message }
+            if ($case[2]) {
+                if (-not $failure.Contains($case[2]) -or $script:prerequisiteDone) { throw "Prerequisite failure was masked: $failure" }
+            } elseif ($failure -or -not $script:prerequisiteDone) { throw "Verified prerequisite was falsely refused: $failure" }
+        }
+        $before = $script:prerequisiteCalls
+        Install-IfMissing -Name fixture -WingetId fixture.invalid -TestCmd $probe -UserScope
+        if ($script:prerequisiteCalls -ne $before) { throw 'Already healthy prerequisite was installed again' }
+        Write-Output 'PASS: native prerequisite failures and failed verification stop setup; verified success/reboot/reuse remain valid'
+    }
+    # what this catches: cold-storage reruns erased unrelated config and treated
+    # the installer's own quoted path as absent, rediscovering a different disk.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = Join-Path $scratch 'cold-profile'
+            $config = Join-Path $env:USERPROFILE '.continuum\config.env'
+            New-Item -ItemType Directory -Force (Split-Path $config) | Out-Null
+            $cold = Join-Path $scratch ('cold cache $literal ' + [char]0x03bb)
+            New-Item -ItemType Directory -Force $cold | Out-Null
+            $unrelated = "# kept comment`r`nCUSTOM_VALUE='literal $& \value = stays'`r`nLABEL='" + [char]0x03bb + "'`r`n"
+            [IO.File]::WriteAllText($config, $unrelated + "CONTINUUM_STORAGE_PATH='old'`r`nHF_HOME='old'`r`n")
+            $acl = Get-Acl -LiteralPath $config
+            $acl.SetAccessRuleProtection($true, $true)
+            Set-Acl -LiteralPath $config -AclObject $acl
+            $originalAccess = (Get-Acl -LiteralPath $config).GetSecurityDescriptorSddlForm('Access')
+            Update-ColdStorageConfig -Path $config -ColdRoot $cold
+            $first = [IO.File]::ReadAllText($config)
+            if ((Get-Acl -LiteralPath $config).GetSecurityDescriptorSddlForm('Access') -cne $originalAccess) { throw 'Cold-storage config replacement changed explicit file access policy' }
+            if (-not $first.StartsWith($unrelated)) { throw 'Cold-storage setup erased or altered unrelated UTF-8 configuration' }
+            if (-not $first.Contains("CONTINUUM_STORAGE_PATH='$cold'")) { throw 'Cold-storage path was not preserved literally' }
+            Update-ColdStorageConfig -Path $config -ColdRoot $cold
+            if ([IO.File]::ReadAllText($config) -cne $first) { throw 'Cold-storage config rerun was not idempotent' }
+            $refused = $false
+            try { Update-ColdStorageConfig -Path $config -ColdRoot "bad'path" } catch { $refused = $true }
+            if (-not $refused -or [IO.File]::ReadAllText($config) -cne $first) { throw 'Unrepresentable path changed config' }
+            function Get-ColdDrive { throw 'Quoted existing cold-storage path triggered drive rediscovery' }
+            function Module-Skip { }
+            function Set-ColdStorageEnv { param($ColdRoot) if ($ColdRoot -cne $cold) { throw 'Rerun changed the configured path' } }
+            Mod-ColdStorage
+            [IO.File]::WriteAllText($config, '# no storage key or final newline')
+            Update-ColdStorageConfig -Path $config -ColdRoot $cold
+            if (-not ([IO.File]::ReadAllText($config)).StartsWith("# no storage key or final newline`nCONTINUUM_STORAGE_PATH=")) { throw 'Appending storage keys damaged existing final line' }
+            $entry = [IO.File]::ReadAllText((Join-Path $repo 'install.ps1'))
+            if ($entry.IndexOf('    Mod-ColdStorage') -gt $entry.IndexOf('    Test-WingetAvailable')) { throw 'Cold storage is selected after prerequisite downloads' }
+        } finally { $env:USERPROFILE = $savedProfile }
+        Write-Output 'PASS: cold-storage config preservation, quoted rerun, literal paths and early selection'
+    }
+    # what this catches: Continuum must delegate firewall verification to AIRC
+    # without inventing a broad rule, swallowing failure, or losing owner/path.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $binary = Join-Path $scratch "airc O'Brien.exe"
+        Set-Content -LiteralPath $binary -Value fixture
+        $script:aircSetupCalls = 0
+        $script:aircSetupFail = $false
+        $savedContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        $env:CAMBRIAN_INSTALL_ELEVATION = 'fixture-owner-preserved'
+        function Get-Command { param($Name, $ErrorAction) if ($Name -eq 'airc') { return [pscustomobject]@{Source=$binary} }; Microsoft.PowerShell.Core\Get-Command @PSBoundParameters }
+        function Module-Skip { }
+        function Module-Start { }
+        function Module-Done { }
+        function Get-ManifestModule { param($Name) if ($Name -ne 'airc') { throw 'Wrong dependency descriptor' }; @{source=@{url='https://fixture.invalid/airc/install.ps1'}} }
+        function Invoke-WebRequest {
+            param($Uri,$OutFile,[switch]$UseBasicParsing)
+            if ($Uri -ne 'https://fixture.invalid/airc/install.ps1') { throw 'Manifest URL ignored' }
+            $script:aircSetupCalls++
+            $code = @'
+param([switch]$FirewallOnly,[string]$AircPath)
+if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMBRIAN_INSTALL_ELEVATION -ne 'fixture-owner-preserved') { exit 91 }
+'@
+            if ($script:aircSetupFail) { $code += "`nexit 73" } else { $code += "`nexit 0" }
+            [IO.File]::WriteAllText($OutFile,$code)
+        }
+        try {
+            Mod-AircFirewall
+            if ($script:aircSetupCalls -ne 0) { throw 'Local-only install invoked firewall setup' }
+            Mod-AircFirewall -WantsGrid
+            if ($script:aircSetupCalls -ne 1) { throw 'Grid setup bypassed canonical AIRC entry' }
+            $script:aircSetupFail = $true
+            $rejected = $false
+            try { Mod-AircFirewall -WantsGrid } catch { $rejected = $_.Exception.Message -match 'AIRC setup failed' }
+            if (-not $rejected) { throw 'Continuum hid AIRC firewall failure' }
+        } finally { $env:CAMBRIAN_INSTALL_ELEVATION = $savedContext }
+        Write-Output 'PASS: AIRC canonical firewall delegation, manifest URL, path/owner preservation and failure propagation'
+    }
+    # PDF runtime recovery: an existing but unloadable decoder must request
+    # repair, rather than throwing before Mod-Poppler reaches its install path.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $brokenRuntime = Join-Path $scratch 'broken-pdf-runtime'
+        $brokenBin = Join-Path $brokenRuntime 'Library\bin'
+        New-Item -ItemType Directory -Path $brokenBin -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $brokenBin 'pdfinfo.exe') -Value 'damaged executable'
+        if (Test-PopplerRuntime -Directory $brokenRuntime -Version '26.09.0') {
+            throw 'Unlaunchable PDF runtime was accepted as healthy.'
+        }
+        Write-Output 'PASS: corrupt PDF decoder reports drift for installer repair'
+    }
     # what this catches: binary-only updates left a legacy launcher/descriptor
     # behind even when the running core SHA matched HEAD (5090, 2026-09-29).
     $browserLauncher = Join-Path $scratch 'run-service-hidden.ps1'
@@ -116,6 +407,11 @@ try {
         . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
         function Get-CoreEngineBackend { 'cpu' }
         function git { $global:LASTEXITCODE = 0; if ($args -contains '--short') { 'aaaaaaa' } else { 'a' * 40 } }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'git') { git @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
         function Module-Skip { }
         function Module-Start { throw 'fixture: real build branch selected' }
         function Module-Fail { param($Name, $Message) throw $Message }
@@ -188,10 +484,12 @@ try {
     # functions that happen to have been dot-sourced by this fixture's parent.
     $coldScript = @"
 `$ErrorActionPreference='Stop'
+try {
 . '$($repo.Replace("'", "''"))/tools/scripts/lib/windows-service.ps1'
 . '$($repo.Replace("'", "''"))/tools/scripts/lib/win-modules.ps1'
 `$drift=Get-CoreEngineDrift -Directory '$($engineFixture.Replace("'", "''"))' -Requirement ([pscustomobject]@{source_revision='$('a' * 40)';backend='cuda'})
 if (`$drift) { throw `$drift }
+} catch { [Console]::Error.WriteLine(`$_.ToString()); exit 1 }
 "@
     $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
     $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($coldScript))
@@ -213,6 +511,11 @@ if (`$drift) { throw `$drift }
         $lease = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $marker = Join-Path $scratch 'handoff-acquired'
         $cli = Join-Path $scratch 'handoff-cli.ps1'
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq $cli) { & $FilePath @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
         $core = Join-Path $scratch 'handoff-core.exe'
         [IO.File]::WriteAllText($core, 'fixture-core')
         @"
@@ -268,8 +571,9 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
     & {
         function Write-Step { param($msg) }
         $resumeRoot = Join-Path $scratch 'resume installed'
-        $serviceSlot = Join-Path $resumeRoot 'bin\service-a'
-        $engineSlot = Join-Path $resumeRoot 'bin\engine-a'
+        $payload = Initialize-ManagedPayloadRoot -HomeRoot $resumeRoot -ColdRoot (Join-Path $scratch 'prepared cold')
+        $serviceSlot = Join-Path $payload 'bin\service-a'
+        $engineSlot = Join-Path $payload 'bin\engine-a'
         New-Item -ItemType Directory -Path $serviceSlot, $engineSlot, (Join-Path $resumeRoot 'logs') -Force | Out-Null
         $release = [pscustomobject]@{ artifact = (Join-Path $serviceSlot 'continuum-core-server.exe');
             cli = (Join-Path $serviceSlot 'continuum.exe'); launcher = (Join-Path $serviceSlot 'run-service-hidden.ps1');
@@ -319,7 +623,7 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $refused = $false
         try { Assert-CorePreparedRelease -Release $withEye -InstallRoot $resumeRoot } catch { $refused = $_ -match 'eyeRoot must be absolute' }
         if (-not $refused) { throw 'Relative browser root was accepted' }
-        $redirect = Join-Path $resumeRoot 'bin\service-b'
+        $redirect = Join-Path $payload 'bin\service-b'
         New-Item -ItemType Junction -Path $redirect -Target $serviceSlot | Out-Null
         try {
             $bad = $release | ConvertTo-Json | ConvertFrom-Json
@@ -350,9 +654,12 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $fakeLib = Join-Path $fakeRepo 'tools\scripts\lib'
         New-Item -ItemType Directory -Path $fakeLib -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $fakeRepo
-        foreach ($name in @('install-common.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $fakeLib
         }
+        $fakeGenerated = Join-Path (Split-Path $fakeLib) 'generated'
+        New-Item -ItemType Directory -Path $fakeGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $fakeGenerated
         $shim = @'
 . '__SERVICE__'
 function Get-ScheduledTask { $null }
@@ -371,7 +678,11 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         Save-CorePreparedRelease -Release $selected -InstallRoot $root
         foreach ($extra in @('', ' -Update')) {
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
-            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $fakeRepo 'install.ps1') + '" -ResumePrepared' + $extra
+            # Hidden PS5 ConsoleHost can omit terminating errors from redirected
+            # stderr. Capture the exception explicitly without accepting failure.
+            $entry = (Join-Path $fakeRepo 'install.ps1').Replace("'", "''")
+            $invoke = "try { & '$entry' -ResumePrepared$extra } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.RedirectStandardOutput = $true
@@ -391,7 +702,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                         throw "Public prepared resume did not reach guarded handoff: $output"
                     }
                 } elseif ($child.ExitCode -eq 0 -or $output -notmatch 'cannot be combined with -Update' -or $output -match 'fixture register prepared') {
-                    throw 'Public resume accepted source-update mode'
+                    throw "Public resume source-update refusal failed (exit $($child.ExitCode)): $output"
                 }
             } finally { $child.Dispose() }
         }
@@ -552,6 +863,35 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     }
     Write-Output 'PASS: registrar rereads saved access and refuses unsupported policy before task writes'
 
+    # what this catches: caller-local status must not shadow real native cache
+    # probe/acquire/cleanup results in the shared artifact consumed by AIRC.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1')
+        $nativeHelper = Join-Path $scratch 'native-status-fixture.exe'
+        Add-Type -OutputAssembly $nativeHelper -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+public static class NativeStatusFixture {
+  public static int Main(string[] args) {
+    if (args.Length > 0 && args[0] == "status") { Console.WriteLine("false"); return 1; }
+    return 0;
+  }
+}
+'@
+        function Find-GsudoExecutable { $nativeHelper }
+        function Test-IsAdmin { $false }
+        $previousContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        $env:CAMBRIAN_INSTALL_ELEVATION = $null
+        $LASTEXITCODE = 73
+        try {
+            Initialize-ElevationSession
+            if ($script:InstallElevationSession.ExistingCache) { throw 'False native cache probe was masked' }
+            Ensure-Elevated -Reason 'native status fixture'
+            if (-not $script:ElevationWarmed) { throw 'Native successful acquisition was shadowed' }
+            Clear-Elevation
+            if ($env:CAMBRIAN_INSTALL_ELEVATION) { throw 'Native cleanup was shadowed' }
+        } finally { $env:CAMBRIAN_INSTALL_ELEVATION = $previousContext }
+        Write-Output 'PASS: real shared helper ignores caller-local stale native status'
+    }
     # Regression for e1b774b1: a native elevation failure after a successful
     # build must retain its evidence and caller phase, not invent a UAC refusal.
     # Child scope confines mocks/preferences; cmd.exe supplies real stderr/exit.
@@ -561,15 +901,24 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:elevationCalls = 0
         $script:elevationMode = 'failure'
         function Test-IsAdmin { $false }
-        function Ensure-Gsudo { }
+        function Ensure-Gsudo { $script:GsudoExecutable = 'gsudo' }
+        function Find-GsudoExecutable { 'gsudo' }
+        function Test-ElevationCacheAvailable { $false }
+        $script:gsudoArguments = @()
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'gsudo') { gsudo @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
         function gsudo {
             $script:elevationCalls++
+            $script:gsudoArguments += ($args -join ' ')
             if ($script:elevationMode -eq 'failure') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c echo cache fixture stdout & echo cache fixture stderr 1>&2 & exit /b 73'
             } elseif ($script:elevationMode -eq 'empty') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'exit /b 74'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c exit /b 74'
             } elseif ($script:elevationMode -eq 'cleanup-info') {
-                & "$env:SystemRoot\System32\cmd.exe" /d /c 'echo Info: Cache session closed. 1>&2 & exit /b 0'
+                & $nativeInstallerProcess $env:ComSpec -RawArguments '/d /c echo Info: Cache session closed. 1>&2 & exit /b 0'
             } else { $global:LASTEXITCODE = 0 }
         }
         $reason = 'registering the ContinuumCore startup task (before core handoff)'
@@ -598,6 +947,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $script:elevationMode = 'cleanup-info'
         Clear-Elevation
         if ($script:ElevationWarmed -or $ErrorActionPreference -ne 'Stop') { throw 'Successful cleanup retained cache state or changed error policy' }
+        Initialize-ElevationSession
         $script:ElevationWarmed = $true
         $script:elevationMode = 'failure'
         $failure = $null
@@ -608,13 +958,136 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         function Test-IsAdmin { $true }
         Ensure-Elevated -Reason $reason
         if (-not $script:ElevationWarmed -or $script:elevationCalls -ne 3) { throw 'Already elevated path invoked gsudo' }
+        Clear-Elevation
+
+        # Shared-installer regression: a child can be the first admin caller,
+        # but only the outer owner disposes its process-scoped cache. No global
+        # authorization, no default five-minute expiry during a build.
+        function Test-IsAdmin { $false }
+        $script:elevationMode = 'success'
+        Initialize-ElevationSession
+        $parentSession = $script:InstallElevationSession
+        $parentContext = $env:CAMBRIAN_INSTALL_ELEVATION
+        # Real process boundaries: same-PID mocks cannot exercise ancestry.
+        $helperPath = (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1').Replace("'", "''")
+        $probe = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    . '$helperPath'
+    Initialize-ElevationSession
+    if (-not `$script:InstallElevationSession.Borrowed -or `$script:InstallElevationSession.OwnerPid -ne $PID) { throw 'Child did not borrow expected owner.' }
+    Clear-Elevation
+    if (-not `$env:CAMBRIAN_INSTALL_ELEVATION) { throw 'Child removed parent context.' }
+    Write-Output 'fixture process borrowed and released locally'
+} catch { Write-Output `$_.Exception.Message; exit 1 }
+"@
+        $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $bashExe = Get-Command git.exe -CommandType Application -All -ErrorAction Stop | ForEach-Object {
+            Join-Path (Split-Path (Split-Path $_.Source)) 'bin\bash.exe'
+        } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $bashExe) { throw 'Git Bash is required for the Windows installer ancestry regression.' }
+        foreach ($viaBash in @($false, $true)) {
+            $probeInfo = [Diagnostics.ProcessStartInfo]::new($powerShellExe)
+            $probeInfo.Arguments = "-NoProfile -NonInteractive -EncodedCommand $encodedProbe"
+            if ($viaBash) {
+                $probeInfo.FileName = $bashExe
+                $probeInfo.Arguments = '--noprofile --norc -c "powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + $encodedProbe + '"'
+            }
+            $probeInfo.UseShellExecute = $false
+            $probeInfo.CreateNoWindow = $true
+            $probeInfo.RedirectStandardOutput = $true
+            $probeInfo.RedirectStandardError = $true
+            $probeChild = [Diagnostics.Process]::Start($probeInfo)
+            try {
+                $probeOut = $probeChild.StandardOutput.ReadToEndAsync()
+                $probeErr = $probeChild.StandardError.ReadToEndAsync()
+                if (-not $probeChild.WaitForExit(120000)) { $probeChild.Kill(); $probeChild.WaitForExit(); throw 'Elevation ancestry child timed out' }
+                $probeOutput = $probeOut.Result + $probeErr.Result
+                if ($probeChild.ExitCode -ne 0 -or $probeOutput -notmatch 'fixture process borrowed and released locally') {
+                    throw "Elevation ancestry failed (Git Bash=$viaBash): $probeOutput"
+                }
+            } finally { $probeChild.Dispose() }
+        }
+        $script:InstallElevationSession = $null
+        Initialize-ElevationSession
+        if (-not $script:InstallElevationSession.Borrowed) { throw 'Nested installer claimed parent cache ownership' }
+        Ensure-Elevated -Reason 'child firewall fixture'
+        if ($script:gsudoArguments[-1] -ne "cache on -p $PID -d -1") { throw 'Cache was not bound to the installer lifetime/process' }
+        $callsBeforeChildCleanup = $script:elevationCalls
+        Clear-Elevation
+        if ($script:elevationCalls -ne $callsBeforeChildCleanup -or $env:CAMBRIAN_INSTALL_ELEVATION -ne $parentContext) {
+            throw 'Borrowed cleanup disposed or hid the outer owner context'
+        }
+        $script:InstallElevationSession = $parentSession
+        $script:ElevationWarmed = $false
+        Clear-Elevation
+        if ($script:elevationCalls -ne ($callsBeforeChildCleanup + 1) -or
+            $script:gsudoArguments[-1] -ne "cache off -p $PID" -or $env:CAMBRIAN_INSTALL_ELEVATION) {
+            throw 'Outer owner failed to close a child-acquired cache'
+        }
+        # A no-work install in an interactive shell must not clear its existing
+        # caller-owned cache, nor extend that cache when it borrows elevation.
+        function Test-ElevationCacheAvailable { $true }
+        $callsBeforeExisting = $script:elevationCalls
+        Initialize-ElevationSession
+        if (-not $script:InstallElevationSession.ExistingCache) { throw 'Pre-existing cache was claimed by installer' }
+        Clear-Elevation
+        Initialize-ElevationSession
+        Ensure-Elevated -Reason 'borrowing an existing cache'
+        if ($script:elevationCalls -ne $callsBeforeExisting) { throw 'Existing cache was reacquired or cleared by installer' }
+        function Test-ElevationCacheAvailable { $false }
+        $failure = $null
+        try { Ensure-Elevated -Reason 'expired borrowed cache' } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'pre-existing elevation cache expired') { throw 'Expired external cache silently reacquired consent' }
+        Clear-Elevation
+        if ($script:elevationCalls -ne $callsBeforeExisting) { throw 'External cache cleanup invoked gsudo' }
+        $invalid = $parentContext | ConvertFrom-Json
+        $invalid.ownerStarted = '0'
+        $env:CAMBRIAN_INSTALL_ELEVATION = $invalid | ConvertTo-Json -Compress
+        $failure = $null
+        try { Initialize-ElevationSession } catch { $failure = $_.Exception.Message }
+        Remove-Item Env:CAMBRIAN_INSTALL_ELEVATION
+        if (-not $failure -or $failure -notmatch 'owner process has changed' -or $script:InstallElevationSession) {
+            throw 'Stale inherited elevation owner was accepted'
+        }
     }
     Write-Output 'PASS: elevation failure preserves native diagnostics and phase without guessing cause'
 
+    # The shared helper must consume manifest data, including in standalone
+    # consumers. Missing/unsupported source data must never start acquisition.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\windows-elevation.ps1') -GsudoSource @{type='winget';id='fixture.package';scope='user'}
+        $script:gsudoFinds = 0
+        $script:gsudoPackageArgs = @()
+        function Find-GsudoExecutable { $script:gsudoFinds++; if ($script:gsudoFinds -gt 1) { 'fixture-native.exe' } }
+        function Update-SessionPath { }
+        function winget { $script:gsudoPackageArgs = @($args); $global:LASTEXITCODE = 0 }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+            if ($FilePath -eq 'winget') { winget @ArgumentList }
+            else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+        }
+        Ensure-Gsudo
+        if ($script:GsudoExecutable -ne 'fixture-native.exe' -or
+            ($script:gsudoPackageArgs -join ' ') -notmatch '--id fixture.package --source winget' -or
+            ($script:gsudoPackageArgs -join ' ') -notmatch '--scope user') { throw 'gsudo acquisition ignored manifest source' }
+        $script:ElevationGsudoSource = @{type='winget';id='fixture.package';scope='machine'}
+        $script:gsudoFinds = 0
+        $script:gsudoPackageArgs = @()
+        $failure = $null
+        try { Ensure-Gsudo } catch { $failure = $_.Exception.Message }
+        if (-not $failure -or $failure -notmatch 'per-user gsudo package source' -or $script:gsudoPackageArgs.Count) {
+            throw 'Unsupported elevation-helper acquisition was attempted'
+        }
+    }
+    Write-Output 'PASS: standalone elevation acquisition uses the shared manifest and rejects unsupported scope'
+
     $installed = Join-Path $scratch 'installed with spaces'
+    $installedPayload = Initialize-ManagedPayloadRoot -HomeRoot $installed -ColdRoot (Join-Path $scratch 'cold service payloads')
     $target = Join-Path $scratch 'cargo'
     New-Item -ItemType Directory -Path (Join-Path $target 'release') | Out-Null
-    foreach ($name in @('continuum.exe', 'continuum-core-server.exe')) {
+    foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe')) {
         Set-Content -LiteralPath (Join-Path $target "release\$name") -Value 'candidate'
     }
     $script:liveProcesses = @()
@@ -622,7 +1095,12 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     function Get-CimInstance { param($ClassName, $ErrorAction) $script:liveProcesses }
     function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) $script:registeredTask }
     $first = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
-    if ($first.artifact -ne (Join-Path $installed 'bin\service-a\continuum-core-server.exe')) { throw 'Empty install did not select first slot' }
+    # Prebuilt handoff bypasses start-server: media must travel with the slot.
+    $mediaSlot = Split-Path -Parent $first.artifact
+    foreach ($media in @('livekit-bridge.exe', 'start-livekit-windows.ps1')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $mediaSlot $media))) { throw "Missing staged media artifact: $media" }
+    }
+    if ($first.artifact -ne (Join-Path $installedPayload 'bin\service-a\continuum-core-server.exe')) { throw 'Empty install did not select first slot' }
     $script:liveProcesses = @([pscustomobject]@{ Name = 'continuum-core-server.exe'; ExecutablePath = $first.artifact })
     $second = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     if ($first.artifact -eq $second.artifact) { throw 'Overwrote a live slot' }
@@ -640,11 +1118,11 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     if ($withEngine.artifact -ne $second.artifact) { throw 'An adopted engine blocked reuse of its core slot' }
     $savedProcesses = $script:liveProcesses
     $registeredRelease = $first | ConvertTo-Json | ConvertFrom-Json
-    $registeredRelease.engine = '\\?\' + (Join-Path $installed 'bin\engine-b\llama-server.exe')
+    $registeredRelease.engine = '\\?\' + (Join-Path $installedPayload 'bin\engine-b\llama-server.exe')
     $script:registeredTask = [pscustomobject]@{ Description = ($registeredRelease | ConvertTo-Json -Compress) }
-    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = ('\\?\' + (Join-Path $installed 'bin\engine-a\llama-server.exe')) })
+    $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = ('\\?\' + (Join-Path $installedPayload 'bin\engine-a\llama-server.exe')) })
     $candidate = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
-    if ($candidate.engine -ne (Join-Path $installed 'bin\engine-c\llama-server.exe')) { throw 'Candidate overwrote a warm or registered engine' }
+    if ($candidate.engine -ne (Join-Path $installedPayload 'bin\engine-c\llama-server.exe')) { throw 'Candidate overwrote a warm or registered engine' }
     $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
     $script:liveProcesses = $savedProcesses
     $script:liveProcesses += [pscustomobject]@{ Name = 'continuum.exe'; ExecutablePath = $second.cli }
@@ -671,17 +1149,23 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     # path is unreadable from here). Exit 3 refuses; an answer outside the slots refuses; a
     # readable live engine inside the answer refuses.
     $fakeCli = Join-Path $scratch 'fake-continuum-cli.ps1'
+    function Invoke-InstallerProcess {
+        param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+        if ($FilePath -eq $fakeCli) { & $FilePath @ArgumentList }
+        else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+    }
     Set-Content -LiteralPath $fakeCli -Value @'
 if ($args[0] -eq '--help') { 'continuum engine idle-slot'; 'continuum engine promote <slot> <commit:backend>'; exit 0 }
+$payload = Get-ManagedPayloadRoot -HomeRoot $env:CONTINUUM_HOME
 if ($args[0] -eq 'engine' -and $args[1] -eq 'promote') {
     if ($env:FAKE_PROMOTE_RC) { 'refused'; exit ([int]$env:FAKE_PROMOTE_RC) }
-    Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'bin\current') -Value $args[2]
+    Set-Content -LiteralPath (Join-Path $payload 'bin\current') -Value $args[2]
     Set-Content -LiteralPath (Join-Path $env:CONTINUUM_HOME 'promoted-with') -Value "$($args[2]) $($args[3])"
     exit 0
 }
 if ($args[0] -eq 'engine' -and $args[1] -eq 'idle-slot') {
     if ($env:FAKE_IDLE_RC) { exit ([int]$env:FAKE_IDLE_RC) }
-    Join-Path $env:CONTINUUM_HOME ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
+    Join-Path $payload ('bin\' + $env:FAKE_IDLE_SLOT); exit 0
 }
 exit 64
 '@
@@ -689,7 +1173,7 @@ exit 64
     try {
         $env:FAKE_IDLE_SLOT = 'engine-b'; $env:FAKE_IDLE_RC = $null
         $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli
-        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installed 'bin\engine-b'))) { throw "The core's idle slot was not used: $picked" }
+        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin\engine-b'))) { throw "The core's idle slot was not used: $picked" }
         $env:FAKE_IDLE_RC = '3'
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'All installed engine slots' }
@@ -703,14 +1187,14 @@ exit 64
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'not an engine slot' }
         if (-not $refused) { throw 'An answer outside the engine slots was accepted' }
         $env:FAKE_IDLE_SLOT = 'engine-a'
-        $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed 'bin\engine-a\llama-server.exe') })
+        $script:liveProcesses = @([pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installedPayload 'bin\engine-a\llama-server.exe') })
         $refused = $false
         try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'running engine executes from it' }
         if (-not $refused) { throw 'A readable live engine inside the core answer was overwritten' }
     } finally { $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null; $script:liveProcesses = @() }
     # The pre-verb path skips a busy deploy too: every slot live by the process table.
     $script:liveProcesses = @('engine-a', 'engine-b', 'engine-c' | ForEach-Object {
-        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installed "bin\$_\llama-server.exe") } })
+        [pscustomobject]@{ Name = 'llama-server.exe'; ExecutablePath = (Join-Path $installedPayload "bin\$_\llama-server.exe") } })
     try {
         if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -SkipIfBusy)) { throw 'The pre-verb path did not skip a busy deploy' }
         $refused = $false
@@ -722,7 +1206,7 @@ exit 64
     # card d5584dfc: a drift-verified slot is promoted by the core's own verb (current is the one
     # truth), with the stamp the build wrote; a refused promote throws; a CLI without the verb
     # leaves the release registration to bootstrap, and says so.
-    $promoteSlot = Join-Path $installed 'bin\engine-c'
+    $promoteSlot = Join-Path $installedPayload 'bin\engine-c'
     New-Item -ItemType Directory -Force -Path $promoteSlot | Out-Null
     Set-Content -LiteralPath (Join-Path $promoteSlot '.llama-server.stamp') -Value 'abc1234:cuda'
     try {
@@ -743,7 +1227,8 @@ exit 64
     # Isolated scope: every collaborator is mocked, so this proves the decision, not the build.
     & {
         $profileRoot = Join-Path $scratch 'already-built-profile'
-        $bin = Join-Path $profileRoot '.continuum\bin'
+        $payload = Initialize-ManagedPayloadRoot -HomeRoot (Join-Path $profileRoot '.continuum') -ColdRoot (Join-Path $scratch 'engine preparation cold')
+        $bin = Join-Path $payload 'bin'
         foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $bin $name) | Out-Null
             Set-Content -LiteralPath (Join-Path $bin "$name\llama-server.exe") -Value 'engine'
@@ -839,10 +1324,14 @@ public class SupervisorFixture {
         $oldSlot = Join-Path $prepareRoot 'bin\service-a'
         New-Item -ItemType Directory -Path $prepareLib, $oldSlot -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $prepareRepo
-        foreach ($name in @('install-common.ps1', 'windows-prepared.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $prepareLib
         }
+        $prepareGenerated = Join-Path (Split-Path $prepareLib) 'generated'
+        New-Item -ItemType Directory -Path $prepareGenerated | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $prepareGenerated
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination (Split-Path $prepareLib)
+        Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\start-livekit-windows.ps1') -Destination (Split-Path $prepareLib)
         $oldArtifact = Join-Path $oldSlot 'continuum-core-server.exe'
         Set-Content -LiteralPath $oldArtifact -Value 'registered candidate must survive'
         $oldHash = (Get-FileHash -LiteralPath $oldArtifact).Hash
@@ -864,6 +1353,12 @@ function Invoke-Elevated { throw 'Unexpected elevation' }
 function Ensure-Elevated { throw 'Unexpected elevation' }
 function Test-WingetAvailable { throw 'Unexpected provisioning' }
 function git { $global:LASTEXITCODE = 0 }
+$fixtureNativeProcess = ${function:Invoke-InstallerProcess}
+function Invoke-InstallerProcess {
+    param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+    if ($FilePath -eq 'git') { $global:LASTEXITCODE = 0 }
+    else { & $fixtureNativeProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+}
 '@
         $shim.Replace('__SERVICE__', (Join-Path $repo 'tools\scripts\lib\windows-service.ps1').Replace("'", "''")) |
             Set-Content -LiteralPath (Join-Path $prepareLib 'windows-service.ps1')
@@ -877,7 +1372,7 @@ function Mod-BuildCore {
     $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE 'fixture-target'
     $release = Join-Path $env:CARGO_TARGET_DIR 'release'
     New-Item -ItemType Directory -Path $release -Force | Out-Null
-    foreach ($name in @('continuum.exe','continuum-core-server.exe')) { Copy-Item -LiteralPath $env:CONTINUUM_FIXTURE_CHILD -Destination (Join-Path $release $name) }
+    foreach ($name in @('continuum.exe','continuum-core-server.exe','livekit-bridge.exe')) { Copy-Item -LiteralPath $env:CONTINUUM_FIXTURE_CHILD -Destination (Join-Path $release $name) }
 }
 function Mod-LlamaServer {
     param($RepoRoot,$InstallDirectory)
@@ -892,8 +1387,11 @@ function Mod-LlamaServer {
             $missing = $missingFiles[$extra]
             if ($missing) { Remove-Item -LiteralPath $missing }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
-            $info.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + (Join-Path $prepareRepo 'install.ps1') + '" -PrepareOnly'
-            if (-not $missing) { $info.Arguments += $extra }
+            # Same explicit exception capture as the hidden resume fixture.
+            $entry = (Join-Path $prepareRepo 'install.ps1').Replace("'", "''")
+            $flags = if ($missing) { '' } else { $extra }
+            $invoke = "try { & '$entry' -PrepareOnly$flags } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.RedirectStandardOutput = $true
@@ -911,7 +1409,7 @@ function Mod-LlamaServer {
                     if ($process.ExitCode -ne 0 -or $output -notmatch 'fixture prebuilt validated') { throw "Public preparation failed: $output" }
                 } elseif ($missing) {
                     if ($process.ExitCode -eq 0 -or $output -notmatch 'Preparation requires' -or $output -match 'Unexpected download') { throw "Missing cached toolchain did not fail before provisioning: $output" }
-                } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw 'Preparation accepted incompatible flags' }
+                } elseif ($process.ExitCode -eq 0 -or $output -notmatch 'cannot be combined') { throw "Preparation flag refusal failed (exit $($process.ExitCode)): $output" }
             } finally {
                 $process.Dispose()
                 if ($missing) { Copy-Item -LiteralPath $child -Destination $missing }
@@ -933,11 +1431,15 @@ function Mod-LlamaServer {
     $logs = Join-Path $scratch 'logs'
     New-Item -ItemType Directory -Path $logs | Out-Null
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $runner = Join-Path $repo 'tools\scripts\run-service-hidden.ps1'
+    $runner = Join-Path $scratch 'run-service-hidden.ps1'
+    Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination $runner
+    Copy-Item -LiteralPath $child -Destination (Join-Path $scratch 'livekit-bridge.exe')
+    Set-Content -LiteralPath (Join-Path $scratch 'start-livekit-windows.ps1') -Value 'param([string]$BridgeBinary); Set-Content -LiteralPath (Join-Path $PSScriptRoot "media-started") -Value $BridgeBinary'
     $core = Join-Path $scratch 'core with spaces.exe'
     $socket = Join-Path $scratch 'socket with spaces.sock'
     & $shell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $runner -ExecutablePath $child -CorePath $core -SocketPath $socket -EnginePath $child -LogDirectory $logs
     if ($LASTEXITCODE -ne 7) { throw "Hidden host lost child exit code: $LASTEXITCODE" }
+    if ((Get-Content -LiteralPath (Join-Path $scratch 'media-started') -Raw).Trim() -ne (Join-Path $scratch 'livekit-bridge.exe')) { throw 'Prebuilt supervisor did not start its staged media bundle' }
     if ((Get-Content (Join-Path $logs 'service.out.log') -Raw).Trim() -ne "service-host|$core|$socket|$child") { throw 'Hidden host changed argument boundaries' }
     if ((Get-Content (Join-Path $logs 'service.err.log') -Raw).Trim() -ne 'child failure receipt') { throw 'Hidden host lost stderr' }
     Write-Output 'PASS: native supervisor preserves arguments, both logs, and child exit 7'

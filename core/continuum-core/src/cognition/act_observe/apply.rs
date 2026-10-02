@@ -333,6 +333,7 @@ pub async fn apply_act(
             call: call.clone(),
             output: ToolOutput {
                 image: projected.and_then(|v| v.image.clone()),
+                additional_images: projected.and_then(|v| v.additional_images.clone()),
                 result: typed_result,
                 verb: ToolVerb::classify(&call.name),
                 paths: extract_paths(&call.input),
@@ -356,6 +357,7 @@ pub async fn apply_act(
                 call: call.clone(),
                 output: ToolOutput {
                     image: None,
+                    additional_images: None,
                     result: ToolResult {
                         tool_use_id: call.id.clone(),
                         content: "dispatched — running in background".to_string(),

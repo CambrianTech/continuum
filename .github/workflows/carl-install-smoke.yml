@@ -29,6 +29,9 @@ on:
       - 'bootstrap.sh'
       - 'tools/scripts/install*.sh'
       - 'tools/scripts/lib/install-common.sh'
+      - 'tools/scripts/lib/payload-paths.sh'
+      - 'tools/scripts/lib/install-common.test.sh'
+      - 'tools/scripts/tests/install-llama-server-slots.test.sh'
       - 'docker/**'
       - 'docker-compose*.yml'
       - 'src/.dockerignore'
@@ -68,6 +71,19 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Smoke uses the local script directly; no need for full history.
           fetch-depth: 1
+
+      - name: Verify cold-storage preservation and interrupted migration
+        run: |
+          source tools/scripts/lib/install-common.test.sh
+          test_cold_storage_preserves_config
+          test_cold_storage_resumes_owned_migration
+
+      - name: Check managed payload placement and engine slots
+        shell: bash
+        run: |
+          source tools/scripts/lib/install-common.test.sh
+          test_managed_payload_placement
+          bash tools/scripts/tests/install-llama-server-slots.test.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

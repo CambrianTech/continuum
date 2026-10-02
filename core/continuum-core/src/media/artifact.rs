@@ -27,12 +27,13 @@ pub struct ImageArtifact {
 }
 
 pub fn store() -> Result<FsStore, String> {
-    FsStore::new(
-        crate::modules::persona_instance_manager::resolve_continuum_root()
-            .join("media")
-            .join("blobs"),
-    )
-    .map_err(|e| e.to_string())
+    FsStore::new(store_path()).map_err(|e| e.to_string())
+}
+
+pub(crate) fn store_path() -> std::path::PathBuf {
+    crate::modules::persona_instance_manager::resolve_continuum_root()
+        .join("media")
+        .join("blobs")
 }
 
 impl ImageArtifact {
@@ -107,13 +108,62 @@ pub fn retain_capture(
     command: &str,
     value: &mut serde_json::Value,
 ) -> Result<Option<ImageArtifact>, String> {
-    retain_capture_with(command, value, store)
+    let directory = store_path().with_file_name("captures");
+    retain_capture_with(command, value, store, &directory)
+}
+
+/// A live look can return several participants. Keep every frame through the
+/// same durable image boundary used by screenshots, before transcript folding.
+pub fn retain_captures(
+    command: &str,
+    value: &mut serde_json::Value,
+) -> Result<Vec<ImageArtifact>, String> {
+    let directory = store_path().with_file_name("captures");
+    retain_captures_with(command, value, store, &directory)
+}
+
+pub(crate) fn retain_captures_with(
+    command: &str,
+    value: &mut serde_json::Value,
+    mut open_store: impl FnMut() -> Result<FsStore, String>,
+    directory: &std::path::Path,
+) -> Result<Vec<ImageArtifact>, String> {
+    if command != "perception/look" {
+        return retain_capture_with(command, value, &mut open_store, directory)
+            .map(|image| image.into_iter().collect());
+    }
+    if value.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(Vec::new());
+    }
+    let mut images = Vec::new();
+    if let Some(views) = value.get_mut("views").and_then(|v| v.as_array_mut()) {
+        for view in views {
+            if view.get("error").is_some_and(|error| !error.is_null()) {
+                continue;
+            }
+            let Some(image) = view.get_mut("image") else { continue };
+            let mut capture = serde_json::json!({"success": true, "image": image.take()});
+            let retained = retain_capture_with("perception/observe", &mut capture, &mut open_store, directory);
+            *image = capture["image"].take();
+            match retained {
+                Ok(Some(artifact)) => images.push(artifact),
+                Ok(None) => {},
+                Err(error) => {
+                    // One unavailable participant must not discard the other
+                    // participants' verified frames. Preserve the per-view fault.
+                    view["error"] = serde_json::Value::String(error);
+                }
+            }
+        }
+    }
+    Ok(images)
 }
 
 pub(crate) fn retain_capture_with(
     command: &str,
     value: &mut serde_json::Value,
     open_store: impl FnOnce() -> Result<FsStore, String>,
+    attachment_directory: &std::path::Path,
 ) -> Result<Option<ImageArtifact>, String> {
     if command == "vision/look" {
         return value
@@ -143,7 +193,31 @@ pub(crate) fn retain_capture_with(
     let Some(data) = image.get("dataUrl").and_then(|v| v.as_str()) else {
         return Ok(None);
     };
-    let artifact = ImageArtifact::from_data_url(&open_store()?, data)?;
+    let store = open_store()?;
+    let artifact = ImageArtifact::from_data_url(&store, data)?;
+    // The same capture supplies pixels AND a ready-to-use attachment. Storage
+    // layout is never a task for the resident. Reuse the declared filepath slot.
+    let bytes = artifact.read(&store)?;
+    let format = image::guess_format(&bytes).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(attachment_directory).map_err(|e| e.to_string())?;
+    let path = attachment_directory.join(format!(
+        "{}.{}", artifact.hash, format.extensions_str()[0]
+    ));
+    if std::fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+        let temporary = attachment_directory.join(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| {
+            std::fs::write(&temporary, &bytes)?;
+            std::fs::rename(&temporary, &path)
+        })();
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&temporary);
+            // A concurrent identical capture may have published this attachment.
+            if std::fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+                return Err(format!("screenshot attachment publication failed: {error}"));
+            }
+        }
+    }
+    image.insert("filepath".into(), path.to_string_lossy().into_owned().into());
     image.remove("dataUrl");
     image.insert(
         "artifact".into(),

@@ -10,14 +10,25 @@ use crate::agent::{AgentManager, EventWithPayload};
 use continuum_bridge_protocol::{BridgeCommand, BridgeResponse};
 
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use std::net::{TcpListener as UnixListener, TcpStream as UnixStream};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 /// Run the bridge IPC server.
 pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
     let _ = std::fs::remove_file(socket_path);
+    #[cfg(windows)]
+    {
+        let address: std::net::SocketAddr = socket_path.parse()?;
+        if !address.ip().is_loopback() {
+            return Err("bridge IPC must bind a loopback address".into());
+        }
+    }
     let listener = UnixListener::bind(socket_path)?;
     info!("🌉 Bridge IPC listening on {}", socket_path);
 
@@ -68,6 +79,11 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                         let mut media_buf: Vec<u8> = Vec::new();
                         loop {
                             tokio::select! {
+                                // Producers enqueue MediaChannelOpened before their first
+                                // payload, but the two queues are independently ready.
+                                // Drain control first so core knows the channel before
+                                // receiving audio/video; randomized selection can drop it.
+                                biased;
                                 payload = event_rx_moved.recv() => {
                                     let Some(payload) = payload else { break };
                                     let json = match serde_json::to_vec(&payload.event) {

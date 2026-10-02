@@ -220,6 +220,7 @@ mod tests {
             },
             output: ToolOutput {
                 image: None,
+                additional_images: None,
                 result: ToolResult {
                     tool_use_id: "c".into(),
                     content: "ok".into(),
@@ -342,6 +343,14 @@ mod tests {
         assert!(wrote_without_observation(&[w()]));
         // write then run → observed
         assert!(!wrote_without_observation(&[w(), r()]));
+        // The live schema offers aliases, not just canonical names. Reading,
+        // testing or seeing the changed page must not produce a false nag.
+        for observed in ["read_file", "bash", "run_code", "screenshot", "perception_observe"] {
+            assert!(!wrote_without_observation(&[
+                receipt(vec![act("edit_file", Some("game.rs"))]),
+                receipt(vec![act(observed, Some("game.rs"))]),
+            ]), "{observed} must count after an edit");
+        }
         // read BEFORE the write doesn't count as observing the write
         assert!(wrote_without_observation(&[read_first(), w()]));
         // a prior settled concern's write never leaks into this concern

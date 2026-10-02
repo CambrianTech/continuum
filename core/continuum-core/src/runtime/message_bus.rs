@@ -255,11 +255,10 @@ impl MessageBus {
     ///
     /// synchronous=true: handle_event() called inline during `publish(..., registry)`.
     ///
-    /// REALITY CHECK (#140 post-mortem, 2026-07-16): there is NO deferred tier.
-    /// synchronous=false subscriptions are stored but never delivered — and
-    /// `publish(..., registry)` (the only dispatching publisher) has no production
-    /// callers today; live events flow through `publish_async_only`, which feeds
-    /// ONLY the broadcast channel. A module that needs async bus events must run a
+    /// There is no runtime-owned deferred module dispatcher yet.
+    /// synchronous=false subscriptions are stored but do not invoke handle_event.
+    /// Both publication APIs feed the broadcast channel; only `publish` also
+    /// dispatches registered inline handlers. A module that needs async bus events must run a
     /// bus-receiver task (`bus.receiver()` + `tokio::spawn` from `initialize`) —
     /// see `cognition::dispatch_listener::spawn` and
     /// `modules::chat::spawn_persist_listener` for the canonical shape. This doc
@@ -305,8 +304,11 @@ impl MessageBus {
         self.sender.subscribe()
     }
 
-    /// Publish an event. Synchronous handlers are called inline.
-    /// Async handlers receive via the broadcast channel.
+    /// Publish an event to the broadcast channel, then invoke inline handlers.
+    /// Publication means the event is available, not that subscribers have completed.
+    /// A slow inline handler must not hold the event away from independent consumers.
+    /// This future still waits for inline handlers; callers needing completion of a
+    /// subscriber's operation must use that operation's handle/completion event.
     ///
     /// registry is needed to look up module instances for synchronous delivery.
     ///
@@ -325,6 +327,10 @@ impl MessageBus {
         payload: serde_json::Value,
         registry: &super::ModuleRegistry,
     ) {
+        self.note_published(event_name);
+        let payload = std::sync::Arc::new(payload);
+        self.deliver_to_receivers(event_name, payload.clone());
+
         // Synchronous tier (glob-matched event_subscriptions): collect
         // matching module names, release the DashMap borrow, then
         // dispatch.
@@ -342,7 +348,7 @@ impl MessageBus {
             .collect();
         for module_name in glob_matched {
             if let Some(module) = registry.get_by_name(module_name) {
-                if let Err(e) = module.handle_event(event_name, payload.clone()).await {
+                if let Err(e) = module.handle_event(event_name, payload.as_ref().clone()).await {
                     warn!(
                         "Event handler error: module={}, event={}, error={}",
                         module_name, event_name, e
@@ -374,7 +380,7 @@ impl MessageBus {
             .collect();
         for module_name in artifact_matched {
             if let Some(module) = registry.get_by_name(module_name) {
-                if let Err(e) = module.handle_event(event_name, payload.clone()).await {
+                if let Err(e) = module.handle_event(event_name, payload.as_ref().clone()).await {
                     warn!(
                         "Artifact handler error: module={}, key={}, error={}",
                         module_name, event_name, e
@@ -382,16 +388,6 @@ impl MessageBus {
                 }
             }
         }
-
-        self.note_published(event_name);
-        // Deferred tier: broadcast for async consumers
-        let event = BusEvent {
-            name: event_name.to_string(),
-            payload: std::sync::Arc::new(payload),
-        };
-        self.record_recent(&event);
-        // Ignore send error (no receivers is fine)
-        let _ = self.sender.send(event);
     }
 
     /// Publish without async (for use from sync code).
@@ -425,11 +421,20 @@ impl MessageBus {
             self.coalesce_tracker.insert(prefix, now);
         }
 
+        self.deliver_to_receivers(event_name, std::sync::Arc::new(payload));
+    }
+
+    /// The single delivery boundary shared by both publication entry points.
+    /// Archive and receivers see the same envelope and shared payload. Keep
+    /// filtering at admission, before this boundary; inline handlers run after it.
+    fn deliver_to_receivers(&self, event_name: &str, payload: std::sync::Arc<serde_json::Value>) {
         let event = BusEvent {
             name: event_name.to_string(),
-            payload: std::sync::Arc::new(payload),
+            payload,
         };
         self.record_recent(&event);
+        // No receivers is valid. A slow receiver gets the rail's explicit Lagged
+        // error instead of holding publication or allocating an unbounded queue.
         let _ = self.sender.send(event);
     }
 

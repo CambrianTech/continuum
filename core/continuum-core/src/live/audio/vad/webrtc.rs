@@ -109,42 +109,25 @@ impl VoiceActivityDetection for WebRtcVAD {
             return Err(VADError::InvalidAudio("Empty samples".into()));
         }
 
-        // earshot requires multiples of 240 samples (15ms @ 16kHz)
-        // If input isn't a multiple, chunk it and use majority voting
-        const CHUNK_SIZE: usize = 240;
-
-        let is_speech = if samples.len().is_multiple_of(CHUNK_SIZE) {
-            // Perfect size - process directly
-            let mut detector = self.detector.lock();
-            detector.predict_16khz(samples).map_err(|e| {
+        // Earshot's 16 kHz API specifies 160/320/480 samples. Normalize to
+        // 480 (30 ms), padding only the final partial chunk. Never classify a
+        // short transport packet as silence merely because it is short.
+        const CHUNK_SIZE: usize = 480;
+        let mut speech_chunks = 0;
+        let mut total_chunks = 0;
+        let mut detector = self.detector.lock();
+        for chunk in samples.chunks(CHUNK_SIZE) {
+            let mut frame = [0i16; CHUNK_SIZE];
+            frame[..chunk.len()].copy_from_slice(chunk);
+            let speech = detector.predict_16khz(&frame).map_err(|e| {
                 VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}"))
-            })?
-        } else {
-            // Chunk into 240-sample pieces and use majority voting
-            let mut speech_chunks = 0;
-            let mut total_chunks = 0;
-
-            for chunk in samples.chunks(CHUNK_SIZE) {
-                if chunk.len() < CHUNK_SIZE {
-                    // Skip partial chunks at the end
-                    continue;
-                }
-
-                let mut detector = self.detector.lock();
-                let chunk_is_speech = detector.predict_16khz(chunk).map_err(|e| {
-                    VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}"))
-                })?;
-
-                if chunk_is_speech {
-                    speech_chunks += 1;
-                }
-                total_chunks += 1;
-            }
-
-            // Majority voting: if > 50% of chunks are speech, return speech
-            total_chunks > 0 && speech_chunks * 2 > total_chunks
-        };
-
+            })?;
+            // Weight by real samples so a padded tail cannot outvote the
+            // full frame (e.g. Silero's 512 = 480 + 32 samples).
+            if speech { speech_chunks += chunk.len(); }
+            total_chunks += chunk.len();
+        }
+        let is_speech = speech_chunks * 2 > total_chunks;
         let confidence = self.calculate_confidence(is_speech);
 
         Ok(VADResult {
@@ -198,17 +181,14 @@ mod tests {
     fn test_supported_frame_sizes() {
         let vad = WebRtcVAD::new();
 
-        // earshot requires 240 samples (15ms at 16kHz)
-        let samples = vec![0i16; 240];
-        let result = vad.detect(&samples);
-        assert!(result.is_ok(), "240 samples should work");
-
-        // 480 samples (30ms at 16kHz) = 2x 240
-        let samples = vec![0i16; 480];
-        let result = vad.detect(&samples);
-        assert!(result.is_ok(), "480 samples should work");
+        // Regression for #4645: real 10 ms packets must reach Earshot;
+        // Silero-sized and partial packets must not be discarded either.
+        for size in [160, 240, 320, 480, 512] {
+            let samples = vec![0i16; size];
+            let result = vad.detect(&samples).expect("normalized frame should work");
+            assert!(!result.is_speech);
+        }
     }
-
     #[test]
     fn test_silence_detection() {
         let vad = WebRtcVAD::new();

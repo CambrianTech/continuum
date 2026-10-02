@@ -434,6 +434,21 @@ impl PathSecurity {
         // (which keeps the cleaned string for its receipts) costs nothing here.
         let cleaned = clean_path_arg(path);
         let trimmed = cleaned.path.as_str();
+        // Bash reports Windows drive paths as /c/..., while native receipts use
+        // C:\... . Translate spelling only; the canonical containment checks in
+        // both resolvers still decide access (including symlink destinations).
+        #[cfg(windows)]
+        {
+            let native = trimmed.replace('\\', "/");
+            let native = native.strip_prefix("//?/").unwrap_or(&native);
+            let bytes = native.as_bytes();
+            if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
+                return Ok(format!("{}:{}", (bytes[1] as char).to_ascii_uppercase(), &native[2..]));
+            }
+            if Path::new(native).is_absolute() {
+                return Ok(native.to_string());
+            }
+        }
         if !trimmed.starts_with('/') {
             return Ok(trimmed.to_string());
         }
@@ -935,6 +950,27 @@ mod tests {
         // the forgiving idiom survives: "/index.html" = workspace-relative
         let idiom = sec.resolve_for_write("/index.html").expect("slash idiom resolves");
         assert!(idiom.ends_with("index.html"));
+    }
+
+    // what this catches: shell /c paths failing native tools, without granting
+    // access to sibling workspaces or allowing writes through traversal.
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_paths_keep_workspace_boundaries() {
+        let (dir, security) = setup_workspace();
+        let root = dir.path().canonicalize().expect("root");
+        let native = root.to_string_lossy().replace('\\', "/");
+        let native = native.strip_prefix("//?/").unwrap_or(&native);
+        let shell = format!("/{}{}", native[..1].to_ascii_lowercase(), &native[2..]);
+        std::fs::write(root.join("shell.txt"), "receipt").expect("file");
+        assert_eq!(security.validate_read(&format!("{shell}/shell.txt")).expect("shell read"), root.join("shell.txt"));
+        assert_eq!(security.resolve_for_write(&format!("{shell}/new.txt")).expect("shell write"), root.join("new.txt"));
+        assert!(security.resolve_for_write(&format!("{shell}/../escape.txt")).is_err());
+        let outside = tempfile::tempdir().expect("outside");
+        let outside_file = outside.path().join("outside.txt");
+        std::fs::write(&outside_file, "outside").expect("outside file");
+        assert!(security.validate_read(&outside_file.to_string_lossy()).is_err());
+        assert!(security.resolve_for_write(&outside_file.to_string_lossy()).is_err());
     }
 
     #[test]

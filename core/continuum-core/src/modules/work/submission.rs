@@ -131,6 +131,10 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub staged_revision_id: Option<Uuid>,
+    /// Stable generation request ID from staged evidence; resolves at publish. Do not combine with staged_revision_id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub generation_request_id: Option<String>,
 }
 
 /// Where the card she named actually is, when it is not on the room she passed
@@ -457,6 +461,12 @@ pub struct WorkSubmitResult {
     pub room_id: Uuid,
     #[ts(type = "string")]
     pub publisher: Uuid,
+    /// Exact published claim, not the card's current (possibly renewed) claim.
+    #[ts(type = "string")]
+    pub claim_id: Uuid,
+    /// The artifact is a patch against this base in this activity instance.
+    pub base_sha: String,
+    pub instance: String,
     pub artifact: WorkArtifactReference,
     #[ts(type = "number")]
     pub submitted_at_ms: u64,
@@ -641,7 +651,13 @@ impl ActionCommand for WorkSubmit {
         candidate
             .validate_for_card(card)
             .map_err(|e| CommandError::Invalid(format!("submission refused: {e}")))?;
-        if let Some(revision) = p.staged_revision_id {
+        if p.staged_revision_id.is_some() && p.generation_request_id.is_some() {
+            return Err(CommandError::Invalid(
+                "select staged_revision_id or generation_request_id, not both".into(),
+            ));
+        }
+        let mut bound_staged_revision_id = None;
+        if p.staged_revision_id.is_some() || p.generation_request_id.is_some() {
             if self.registry.get(runtime.persona_id()).is_none()
                 || runtime.persona_id() != airc.peer_id().as_uuid()
             {
@@ -659,28 +675,43 @@ impl ActionCommand for WorkSubmit {
                     crate::identity::PeerId::from_uuid(runtime.persona_id()),
                 )),
             ));
-            reviewed::bind_submission(
-                &conn,
-                runtime.agent_name(),
-                runtime.persona_id(),
-                SubmissionSelection {
-                    submission_id,
-                    room_id: room.channel.as_uuid(),
-                    card_id: card_uuid,
-                    claim_id: claim_id.as_uuid(),
-                    staged_revision_id: revision,
-                    instance: candidate.instance.clone(),
-                    base_sha: candidate.base_sha.clone(),
-                    artifact: candidate.artifact.clone(),
-                },
-            )
-            .await
+            let binding = if let Some(generation) = p.generation_request_id.as_deref() {
+                reviewed::bind_submission_generation(
+                    &conn,
+                    runtime.agent_name(),
+                    runtime.persona_id(),
+                    room.channel.as_uuid(),
+                    &candidate,
+                    generation,
+                )
+                .await
+            } else if let Some(revision) = p.staged_revision_id {
+                reviewed::bind_submission(
+                    &conn,
+                    runtime.agent_name(),
+                    runtime.persona_id(),
+                    SubmissionSelection {
+                        submission_id,
+                        room_id: room.channel.as_uuid(),
+                        card_id: card_uuid,
+                        claim_id: claim_id.as_uuid(),
+                        staged_revision_id: revision,
+                        instance: candidate.instance.clone(),
+                        base_sha: candidate.base_sha.clone(),
+                        artifact: candidate.artifact.clone(),
+                    },
+                )
+                .await
+            } else {
+                unreachable!("credit selection checked above")
+            }
             .map_err(|e| match e {
                 reviewed::CreditBindingError::Storage(source) => {
                     CommandError::Internal(source.to_string())
                 }
                 other => CommandError::Invalid(other.to_string()),
             })?;
+            bound_staged_revision_id = Some(binding.selection.staged_revision_id);
         }
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
@@ -692,9 +723,12 @@ impl ActionCommand for WorkSubmit {
             card_id: published.card_id.as_uuid(),
             room_id: room.channel.as_uuid(),
             publisher: published.publisher.as_uuid(),
+            claim_id: published.claim_id.as_uuid(),
+            base_sha: published.base_sha.to_string(),
+            instance: published.instance.clone(),
             artifact: (&published.artifact).into(),
             submitted_at_ms: published.submitted_at_ms,
-            bound_staged_revision_id: p.staged_revision_id,
+            bound_staged_revision_id,
         })
     }
 }
@@ -1150,6 +1184,9 @@ impl ActionCommand for WorkSubmission {
                 card_id: card_uuid,
                 room_id: room.channel.as_uuid(),
                 publisher: submitted.publisher.as_uuid(),
+                claim_id: submitted.claim_id.as_uuid(),
+                base_sha: submitted.base_sha.to_string(),
+                instance: submitted.instance.clone(),
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),

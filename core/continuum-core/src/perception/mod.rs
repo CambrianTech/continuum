@@ -249,12 +249,11 @@ impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // SEE + REASON — offered natively beside interface/screenshot
     const DESCRIPTION: &'static str =
-        "Observe a UI or web page — SEE it as pixels AND read its STRUCTURE (the \
-         tree of elements with their names, text, and on-screen boxes). Use it to \
-         look at what a human or a UI is showing and reason about the layout, or to \
-         verify what your own change actually rendered before you act on it. Pass \
-         `target` (a URL for a web page); the observation comes back with an image \
-         and a structure tree.";
+        "Observe pixels AND structure: a web URL returns page elements and layout; \
+         file:///absolute/document.pdf#page=1 returns one PDF page's text and image, \
+         source hash and page count. PDF pages are one-based; the file and Poppler \
+         must exist on the provider node. Use this to inspect documents or verify \
+         your rendered changes. PDF selectors are unsupported; choose #page=N.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = ObserveParams;
     type Result = ObserveResult;
@@ -296,6 +295,7 @@ mod tests {
         use crate::media::artifact::{retain_capture_with, ImageArtifact};
         let dir = tempfile::tempdir().unwrap();
         let open = || airc_blobs::FsStore::new(dir.path()).map_err(|e| e.to_string());
+        let attachments = dir.path().join("captures");
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(32, 24)
             .write_to(&mut bytes, image::ImageFormat::Png).unwrap();
@@ -303,17 +303,23 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(bytes.get_ref()));
         let original = serde_json::json!({"success":true,"image":{"dataUrl":data,"width":32,"height":24}});
         let mut capture = original.clone();
-        let reference = retain_capture_with("perception/observe", &mut capture, open).unwrap().unwrap();
+        let reference = retain_capture_with("perception/observe", &mut capture, open, &attachments).unwrap().unwrap();
         assert!(capture["image"].get("dataUrl").is_none());
+        let attachment = capture["image"]["filepath"].as_str().unwrap();
+        assert_eq!(std::fs::read(attachment).unwrap(), *bytes.get_ref());
+        assert!(attachment.ends_with(".png"));
+        let mut repeated = original.clone();
+        retain_capture_with("perception/observe", &mut repeated, open, &attachments).unwrap();
+        assert_eq!(repeated["image"]["filepath"], capture["image"]["filepath"]);
         assert_eq!(reference.read(&open().unwrap()).unwrap(), *bytes.get_ref());
         let restored: ImageArtifact = serde_json::from_value(capture["image"]["artifact"].clone()).unwrap();
         assert_eq!(restored.hash, reference.hash);
         assert_eq!((restored.width, restored.height), (32,24));
         let mut other = original.clone();
-        assert!(retain_capture_with("code/shell", &mut other, open).unwrap().is_none());
+        assert!(retain_capture_with("code/shell", &mut other, open, &attachments).unwrap().is_none());
         assert_eq!(other, original);
         let mut failed = original.clone();
-        assert!(retain_capture_with("perception/observe", &mut failed, || Err("disk unavailable".into())).is_err());
+        assert!(retain_capture_with("perception/observe", &mut failed, || Err("disk unavailable".into()), &attachments).is_err());
         assert_eq!(failed, original, "failed storage must not erase the only source");
         // Correct hash/size cannot authenticate a forged geometry or MIME.
         let mut bad_geometry = restored.clone();
@@ -325,6 +331,24 @@ mod tests {
         let mut bad_size = restored;
         bad_size.size_bytes += 1;
         assert!(bad_size.read(&open().unwrap()).is_err());
+        // Live-call galleries must cross the SAME durable boundary, without
+        // dropping all but one participant or leaving base64 in the transcript.
+        let mut gallery = serde_json::json!({"success":true,"views":[
+            {"participant":"alice","image":original["image"]},
+            {"participant":"bob","image":original["image"]},
+            {"participant":"corrupt","image":{"dataUrl":"data:image/png;base64,invalid"}},
+            {"participant":"unavailable","error":"frame unavailable"}
+        ]});
+        let frames = crate::media::artifact::retain_captures_with(
+            "perception/look", &mut gallery, open, &attachments,
+        ).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(gallery["views"][2]["error"].is_string());
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.read(&open().unwrap()).unwrap(), *bytes.get_ref());
+            assert!(gallery["views"][index]["image"].get("dataUrl").is_none());
+            assert_eq!(gallery["views"][index]["image"]["artifact"]["hash"], frame.hash);
+        }
     }
 
     use crate::cognition::persona_tools::native_tool_specs;

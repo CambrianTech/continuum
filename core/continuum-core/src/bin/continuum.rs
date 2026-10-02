@@ -31,9 +31,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use continuum_client::{ClientError, Connection};
-use continuum_core::runtime::core_bind_guard::BindDecision;
+use continuum_cli_lifecycle::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
-use continuum_core::runtime::deploy_provenance::{
+use continuum_cli_lifecycle::deploy_provenance::{
     cli_self_build, cli_staleness_note, deploy_verdict, sha_matches, CliSelfBuild,
 };
 use serde_json::Value;
@@ -944,7 +944,7 @@ async fn bind_decision() -> BindDecision {
         .into_iter()
         .filter(|p| pid_alive(*p))
         .collect();
-    continuum_core::runtime::core_bind_guard::decide(ping_ok, &running)
+    continuum_cli_lifecycle::core_bind_guard::decide(ping_ok, &running)
 }
 
 /// `continuum start` — build + run the headless Rust core (detached), wait until it
@@ -1192,7 +1192,7 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
             return Err("service-host requires <core-path> <socket> <engine-path> [eye-root]".to_string());
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
-        apply_core_runtime_env(&mut command);
+        apply_core_runtime_env(&mut command)?;
         // The engine the core runs is the slot `current` names, never an injected
         // `LLAMA_SERVER_BIN` (the core reads that as an operator's pin and never converges it,
         // card 2c5d0ec0). `current` is the one truth on every OS (card d5584dfc): the registered
@@ -1205,21 +1205,13 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
             // own binary may be gone (its slot rebuilt or reclaimed) and the core must still start
             // on the engine `current` names (Codex on #4509, card 6de412bb). Only with nothing
             // standing does the release's engine matter, and then it must exist.
-            match continuum_core::inference::engine_slots::bootstrap_service_engine(engine) {
+            let home = continuum_core::paths::continuum_home()?;
+            let root = continuum_core::inference::engine_slots::root(&home)?;
+            match continuum_core::inference::engine_slots::bootstrap_service_engine(&root, engine) {
                 Ok(true) => eprintln!("service-host: {} is now the current engine", engine.display()),
                 Ok(false) => {}
-                // A refused bootstrap must never keep the core down (Fable on #4497): on a
-                // first-and-only machine that is a dark node. The registered engine is the one the
-                // installer verified, so it is launched as before, pinned, and the refusal is said.
-                Err(why) if !engine.is_file() => {
-                    return Err(format!("service-host engine missing and no engine is current: {} ({why})", engine.display()));
-                }
                 Err(why) => {
-                    eprintln!(
-                        "service-host: ENGINE NOT REGISTERED ({why}); launching {} pinned as LLAMA_SERVER_BIN so the core does not stay down. It will not converge until this is fixed.",
-                        engine.display()
-                    );
-                    command.env("LLAMA_SERVER_BIN", engine);
+                    return Err(format!("service-host cannot register managed engine {}: {why}", engine.display()));
                 }
             }
         }
@@ -1438,7 +1430,7 @@ impl PreparedCoreService {
             .map_err(|e| format!("installed service descriptor: {e}"))?;
         // The engine the core RUNS: the slot `current` names (card d5584dfc), else, before any
         // slot is recorded, the one the release registered.
-        let directory = match continuum_core::inference::engine_slots::active_engine_dir() {
+        let directory = match continuum_core::inference::engine_slots::active_engine_dir()? {
             Some(dir) => dir,
             None => Path::new(&description.engine)
                 .parent()
@@ -1587,6 +1579,15 @@ impl PreparedCoreService {
             let built_cli = built
                 .path
                 .with_file_name("continuum.exe");
+            // The native launcher needs these beside the installed core. This
+            // handoff bypasses New-CoreServiceRelease in the PowerShell installer.
+            let media_files = ["livekit-bridge.exe", "start-livekit-windows.ps1"];
+            for name in media_files {
+                let source = built.path.with_file_name(name);
+                if !source.is_file() {
+                    return Err(format!("warm media artifact missing: {}; rerun continuum install", source.display()));
+                }
+            }
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
                     let prev = to.with_extension("prev.exe");
@@ -1615,6 +1616,9 @@ impl PreparedCoreService {
                     .map_err(|e| format!("cannot stage {} into {}: {e}", from.display(), to.display()))
             };
             move_aside_and_copy(&built.path, &slot_core)?;
+            for name in media_files {
+                move_aside_and_copy(&built.path.with_file_name(name), &slot_core.with_file_name(name))?;
+            }
             if built_cli.is_file() {
                 // The CLI beside the artifact is only this build's when it says so: a skipped
                 // CLI build leaves an OLDER one there, and staging it rolled every PATH copy
@@ -1940,12 +1944,39 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
     // Under the deploy consumer there is no terminal: the build's output goes to the
     // consumer's log, or a failing build leaves no reason anywhere (2026-09-19, the
     // 5090's first unattended deploy: 30 minutes of rustc, then nothing to read).
+    #[cfg(not(windows))]
     if let Some(log) = DEPLOY_LOG.get().and_then(|p| open_log_for_child(p).ok()) {
         if let Ok(err) = log.try_clone() {
             cmd.stdout(Stdio::from(log)).stderr(Stdio::from(err));
         }
     }
-    let status = cmd.status().map_err(|e| {
+    #[cfg(not(windows))]
+    let status = cmd.status();
+    #[cfg(windows)]
+    let status = {
+        // Cancelling the deploy task must cancel Bash, Cargo and rustc together.
+        // The existing job boundary assigns ownership before the first child
+        // instruction; killing only the installer left orphan compilers on the
+        // 5090 (2026-10-01), including a fallback compile after cancellation.
+        use std::os::windows::io::AsHandle;
+        let outputs = match DEPLOY_LOG.get() {
+            Some(path) => open_log_for_child(path)
+                .and_then(|out| out.try_clone().map(|err| (out, err))),
+            None => std::io::stdout().as_handle().try_clone_to_owned().and_then(|out| {
+                std::io::stderr().as_handle().try_clone_to_owned()
+                    .map(|err| (std::fs::File::from(out), std::fs::File::from(err)))
+            }),
+        };
+        match outputs.and_then(|(out, err)| {
+            continuum_cli_lifecycle::windows_launch::spawn_owned_logged(
+                &cmd, &out, &err, 0x0800_4000, // hidden, below-normal priority
+            )
+        }) {
+            Ok(tree) => tree.wait().await,
+            Err(error) => Err(error),
+        }
+    };
+    let status = status.map_err(|e| {
         format!("warm build could not start: {e}; leaving the running core untouched")
     })?;
     if !status.success() {
@@ -2192,12 +2223,20 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 let started = std::time::Instant::now();
                 let mut cmd = std::process::Command::new(locate_bash()?);
                 cmd.arg(&script);
-                apply_core_runtime_env(&mut cmd);
+                apply_core_runtime_env(&mut cmd)?;
                 if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
                     cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
                 }
                 println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
-                prebuilt = Some(prepare_warm_build(cmd).await?);
+                let built = prepare_warm_build(cmd).await?;
+                // A shared checkout can advance while Cargo is reading it. A binary
+                // reporting either endpoint is not proof of a coherent source tree.
+                // Refuse BEFORE staging or stopping the serving core (2026-10-01).
+                let after = git_head_short_sha();
+                continuum_cli_lifecycle::deploy_provenance::warm_build_verdict(
+                    target_sha.as_deref(), after.as_deref(), &built.build_sha,
+                )?;
+                prebuilt = Some(built);
                 println!(
                     "✓ warm artifact validated in {}s — stopping now for direct artifact handoff",
                     started.elapsed().as_secs()
@@ -2487,7 +2526,8 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
     }
     let home = home_dir()?;
     let target = std::env::var("CARGO_TARGET_DIR").ok();
-    let candidates = core_artifact_candidates(&home, target.as_deref());
+    let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
+    let candidates = core_artifact_candidates(&home, &payload, target.as_deref());
     candidates
         .iter()
         .find(|p| p.is_file())
@@ -2507,7 +2547,7 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
 
 /// The ordered candidate list behind [`resolve_core_artifact`] — pure (paths in, paths out)
 /// so the shared resolution ORDER is pinned by a unit test against install-service.sh.
-fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<PathBuf> {
+fn core_artifact_candidates(home: &str, payload: &Path, cargo_target_dir: Option<&str>) -> Vec<PathBuf> {
     let exe = if cfg!(windows) {
         "continuum-core-server.exe"
     } else {
@@ -2520,7 +2560,7 @@ fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<P
     if !cfg!(windows) {
         out.push(PathBuf::from("/usr/local/bin").join(exe));
     }
-    out.push(PathBuf::from(home).join(".continuum").join("bin").join(exe));
+    out.push(payload.join("bin").join(exe));
     out.push(PathBuf::from(&target).join("release").join(exe));
     out.push(PathBuf::from(&target).join("debug").join(exe));
     out
@@ -2536,8 +2576,8 @@ fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<P
 /// identically on every platform and never depends on a shell being present.
 fn runtime_library_dirs(root: &std::path::Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    for tool in ["cmake", "llvm"] {
-        let bin = root.join("tools").join(tool).join("bin");
+    for relative in ["tools/cmake/bin", "tools/llvm/bin", "tools/poppler/Library/bin", "cuda-toolkit/bin"] {
+        let bin = root.join(relative);
         if bin.is_dir() {
             dirs.push(bin);
         }
@@ -2567,23 +2607,22 @@ fn runtime_library_dirs(root: &std::path::Path) -> Vec<PathBuf> {
 /// appended) so a provisioned toolchain wins over a stray system copy — the
 /// same precedence `windows-build-env.sh` applies for the scripted path.
 ///
-/// Non-fatal by construction: if the home dir cannot be resolved there is
-/// nothing to add and the child launches exactly as before. This can only add
-/// paths that are already on disk under the operator's own continuum root.
-fn apply_runtime_library_path(cmd: &mut std::process::Command) {
-    let Ok(root) = continuum_root() else {
-        return;
-    };
+/// A selected payload volume must be available before launching or probing the
+/// candidate. It supplies the same libraries in both paths, including cold installs.
+fn apply_runtime_library_path(cmd: &mut std::process::Command) -> Result<(), String> {
+    let home = continuum_core::paths::continuum_home()?;
+    let root = continuum_core::paths::payload_root(&home)?;
     apply_runtime_library_env_in(cmd, &root, std::env::consts::OS);
+    Ok(())
 }
 
 /// The candidate's provenance probe and the actual launch need the same loader
 /// environment. Configure only the child; never export into the calling shell.
-fn apply_core_runtime_env(cmd: &mut std::process::Command) {
+fn apply_core_runtime_env(cmd: &mut std::process::Command) -> Result<(), String> {
     for (k, v) in continuum_core::config_env::read_all() {
         cmd.env(k, v);
     }
-    apply_runtime_library_path(cmd);
+    apply_runtime_library_path(cmd)
 }
 
 /// Direct launches retain the caller's cwd and the core's positional socket
@@ -2856,7 +2895,7 @@ fn running_cli_image() -> std::ffi::OsString {
 /// that cannot state its provenance cannot anchor a deploy receipt.
 async fn binary_build_sha(artifact: &Path) -> Result<String, String> {
     let mut cmd = std::process::Command::new(artifact);
-    apply_core_runtime_env(&mut cmd);
+    apply_core_runtime_env(&mut cmd)?;
     cmd.arg("--build-sha").stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -3016,7 +3055,7 @@ fn consume_verdict(
     };
     // ONE sha-equivalence rule for the fleet's deploy owner (the 7-char floor, either
     // spelling as the prefix) — the tracker's, not a second copy of it.
-    if running_sha.is_some_and(|running| continuum_core::runtime::deploy_tracker::same_commit(tip, running)) {
+    if running_sha.is_some_and(|running| continuum_cli_lifecycle::deploy_tracker::same_commit(tip, running)) {
         return ConsumeVerdict::AlreadyRunning;
     }
     if build_in_flight {
@@ -3134,7 +3173,7 @@ fn git_running_in(repo: &Path) -> bool {
 /// may be deployed; `Ok(false)` = a lock that may be live stands, named in the deploy log,
 /// retried next tick without spending one of the tip's attempts.
 fn settle_index_lock(repo: &Path) -> Result<bool, String> {
-    use continuum_core::runtime::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
+    use continuum_cli_lifecycle::deploy_tracker::{index_lock_verdict, IndexLock, STALE_INDEX_LOCK};
     let rel = git_in(repo, &["rev-parse", "--git-path", "index.lock"])?;
     let lock = repo.join(rel);
     let age = std::fs::metadata(&lock)
@@ -3361,7 +3400,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     }
     match running.as_deref() {
         Some(r)
-            if continuum_core::runtime::deploy_tracker::same_commit(r, &head)
+            if continuum_cli_lifecycle::deploy_tracker::same_commit(r, &head)
                 && engine_drift.is_empty() && browser_drift.is_empty() =>
         {
             println!("✓ core: converged — running build {r} is HEAD");
@@ -3392,7 +3431,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         prepared
     } else if running
         .as_deref()
-        .is_some_and(|r| continuum_core::runtime::deploy_tracker::same_commit(r, &head))
+        .is_some_and(|r| continuum_cli_lifecycle::deploy_tracker::same_commit(r, &head))
     {
         let task = PreparedCoreService::query().await?;
         let release: CoreServiceDescription =
@@ -3401,7 +3440,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         // that is older, or cannot say what it is, is not a reason to stop: it is drift the
         // build path below converges (it rebuilds the CLI and stages the pair together).
         match binary_build_sha(Path::new(&release.cli)).await {
-            Ok(cli_sha) if continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, &head) => {
+            Ok(cli_sha) if continuum_cli_lifecycle::deploy_tracker::same_commit(&cli_sha, &head) => {
                 Some(PathBuf::from(release.artifact))
             }
             Ok(cli_sha) => {
@@ -3440,7 +3479,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     }
     let now = running_build_sha().await;
     match now.as_deref() {
-        Some(r) if continuum_core::runtime::deploy_tracker::same_commit(r, &head) => {
+        Some(r) if continuum_cli_lifecycle::deploy_tracker::same_commit(r, &head) => {
             println!("✓ core: converged — running build {r} is HEAD");
             Ok(ArmReport { drift_before: 1, drift_after: 0 })
         }
@@ -3464,7 +3503,7 @@ async fn prepared_install_core(repo: &Path, head: &str) -> Result<Option<PathBuf
     };
     let cli = Path::new(&target).join("release/continuum.exe");
     let Ok(cli_sha) = binary_build_sha(&cli).await else { return Ok(None) };
-    if !continuum_core::runtime::deploy_tracker::same_commit(&cli_sha, head) {
+    if !continuum_cli_lifecycle::deploy_tracker::same_commit(&cli_sha, head) {
         return Ok(None);
     }
     let Some(dir) = cli.parent() else { return Ok(None) };
@@ -3515,8 +3554,17 @@ async fn install_cli(check: bool) -> Result<supervisor_install::ArmReport, Strin
         match d {
             CliDrift::Missing(name) | CliDrift::Stale(name) => {
                 let to = dir.join(install_cli::cli_file_name(name));
-                install_cli::copy_with_retry(&slot_cli, &to, Duration::from_secs(10))?;
+                if name == "uu" {
+                    install_cli::hard_link_with_retry(&dir.join(install_cli::cli_file_name("continuum")), &to, Duration::from_secs(10))?;
+                } else {
+                    install_cli::copy_with_retry(&slot_cli, &to, Duration::from_secs(10))?;
+                }
                 println!("  cli: refreshed {}", to.display());
+            }
+            CliDrift::DuplicateAlias => {
+                let to = dir.join(install_cli::cli_file_name("uu"));
+                install_cli::hard_link_with_retry(&dir.join(install_cli::cli_file_name("continuum")), &to, Duration::from_secs(10))?;
+                println!("  cli: linked {} to continuum.exe", to.display());
             }
             CliDrift::NotOnPath(dir) => {
                 let script = format!(
@@ -3672,13 +3720,15 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
     }
 
     let artifact = resolve_core_artifact()?;
+    let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
+    let slot = payload.join("bin").join("continuum-core-server");
     // What launchd must carry for the exec to find its libraries: ORT and the runtime
     // library dirs, read off a Command so it is the direct launch's computation. NOT
     // config.env — the core applies that file to itself on every boot
     // (`config_env::apply_to_process`); frozen into the plist it would outlive an edit
     // until the next `install` (Fable, #4228 review).
     let mut probe = direct_core_command(&artifact, &socket);
-    apply_runtime_library_path(&mut probe);
+    apply_runtime_library_path(&mut probe)?;
     let mut env: Vec<(String, String)> = probe
         .get_envs()
         .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
@@ -3700,7 +3750,7 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
         );
         let _ = stop_with(true).await?;
     }
-    let job = live::install(want.clone(), &artifact, &socket, &env)?;
+    let job = live::install(want.clone(), &artifact, &slot, &socket, &env)?;
     // `resolve_core_artifact` prefers the installed slot over a fresh build, so on a node
     // that already has one this REGISTERS what is in the slot; the core arm (or `reboot`)
     // is what brings HEAD to the slot.
@@ -4661,10 +4711,14 @@ fn descends_from(parents: &std::collections::HashMap<i32, i32>, pid: i32, keep: 
 
 fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
+    let owned_root = match continuum_core::paths::continuum_home()
+        .and_then(|home| continuum_core::paths::payload_root(&home)) {
+        Ok(root) => root.join("bin"),
+        Err(error) => {
+            eprintln!("cannot establish managed engine ownership: {error}");
+            return Vec::new();
+        }
     };
-    let owned_root = home.join(".continuum").join("bin");
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -4834,7 +4888,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
         // llama-server PATH). Without it the M5 came up dark on 2026-09-16.
         (locate_start_script().ok(), None)
     } else {
-        (locate_start_script().ok(), locate_core_server_binary())
+        (locate_start_script().ok(), locate_core_server_binary()?)
     };
     let plan = plan_launch(
         policy,
@@ -4976,7 +5030,7 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
     // because a binary-only install has no repo to read — and that layout is
     // not an independent guess: it is the manifest's own `extract`
     // destination, the same contract expressed at the other end.
-    apply_core_runtime_env(&mut cmd);
+    apply_core_runtime_env(&mut cmd)?;
     // We ARE the continuum binary — may this deploy rebuild our own image?
     //
     // The guard below used to be unconditional, and that is the whole of #422: a
@@ -5972,7 +6026,7 @@ fn reap_owned_orphans(keep: &[i32]) {
 ///   2. next to the running `continuum` executable (how an install lays out).
 ///   3. `~/.continuum/bin`.
 ///   4. `target/{release,debug}` walking up from cwd — the dev case.
-fn locate_core_server_binary() -> Option<PathBuf> {
+fn locate_core_server_binary() -> Result<Option<PathBuf>, String> {
     const BIN: &str = if cfg!(windows) {
         "continuum-core-server.exe"
     } else {
@@ -5982,7 +6036,7 @@ fn locate_core_server_binary() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("CONTINUUM_CORE_SERVER") {
         let p = PathBuf::from(&explicit);
         if p.is_file() {
-            return Some(p);
+            return Ok(Some(p));
         }
         eprintln!(
             "continuum: CONTINUUM_CORE_SERVER={explicit} is not a file — ignoring the \
@@ -5990,32 +6044,33 @@ fn locate_core_server_binary() -> Option<PathBuf> {
         );
     }
 
+    let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(BIN);
             if candidate.is_file() {
-                return Some(candidate);
+                return Ok(Some(candidate));
             }
         }
     }
 
-    if let Ok(home) = home_dir().map(PathBuf::from) {
-        let candidate = home.join(".continuum").join("bin").join(BIN);
+    {
+        let candidate = payload.join("bin").join(BIN);
         if candidate.is_file() {
-            return Some(candidate);
+            return Ok(Some(candidate));
         }
     }
 
-    let mut dir = std::env::current_dir().ok()?;
+    let mut dir = std::env::current_dir().map_err(|error| format!("cwd: {error}"))?;
     loop {
         for profile in ["release", "debug"] {
             let candidate = dir.join("target").join(profile).join(BIN);
             if candidate.is_file() {
-                return Some(candidate);
+                return Ok(Some(candidate));
             }
         }
         if !dir.pop() {
-            return None;
+            return Ok(None);
         }
     }
 }
@@ -6133,6 +6188,7 @@ fn usage() -> String {
      Legacy checkpoint recovery (local; no running core required):\n  \
        continuum checkpoint inspect --source <volatile.json> --persona-id <uuid> --plan <new-file>\n                                       save an explicit digest-bound selection; no checkpoint changed\n  \
        continuum checkpoint adopt --plan <file> --legacy-writers-stopped\n                                       preserve both snapshots and adopt the selected bytes offline;\n                                       stop legacy cores and automatic launchers first; no final-flush claim\n  \
+       continuum engine root                print the managed engine root\n  \
        continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
        continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
        continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
@@ -6931,12 +6987,16 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         std::fs::create_dir_all(root.join("tools/cmake/bin")).expect("cmake bin");
+        std::fs::create_dir_all(root.join("cuda-toolkit/bin")).expect("native CUDA bin");
+        std::fs::create_dir_all(root.join("tools/poppler/Library/bin")).expect("PDF tools");
         std::fs::create_dir_all(root.join("cuda-13.2/Library/bin")).expect("cuda bin");
         // Present but NOT a runtime dir: must never be contributed.
         std::fs::create_dir_all(root.join("cuda-12.1/Library/lib")).expect("cuda lib only");
         std::fs::create_dir_all(root.join("models")).expect("models");
 
         let dirs = super::runtime_library_dirs(root);
+        assert!(dirs.contains(&root.join("cuda-toolkit/bin")));
+        assert!(dirs.contains(&root.join("tools/poppler/Library/bin")));
 
         assert!(
             dirs.contains(&root.join("tools/cmake/bin")),
@@ -7892,7 +7952,7 @@ mod tests {
     // "could not locate continuum-core-server" while a 2-day-old core kept serving).
     #[test]
     fn artifact_resolution_order_matches_install_service() {
-        let c = core_artifact_candidates("/home/u", None);
+        let c = core_artifact_candidates("/home/u", Path::new("/home/u/.continuum"), None);
         let shown: Vec<String> = c.iter().map(|p| p.display().to_string()).collect();
         #[cfg(not(windows))]
         assert_eq!(
@@ -7916,7 +7976,9 @@ mod tests {
             );
         }
         // explicit CARGO_TARGET_DIR overrides the default cache location
-        let c = core_artifact_candidates("/home/u", Some("/tgt"));
+        let c = core_artifact_candidates("/home/u", Path::new("/cold/payload"), Some("/tgt"));
+        assert!(c.iter().any(|p| p.starts_with("/cold/payload/bin")));
+        assert!(!c.iter().any(|p| p.starts_with("/home/u/.continuum/bin")));
         assert!(
             c.iter().any(|p| p.starts_with("/tgt/release"))
                 && c.iter().any(|p| p.starts_with("/tgt/debug")),

@@ -9,11 +9,7 @@
 use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-// The livekit-bridge is a Unix-socket sidecar. On Windows there is no
-// Unix-domain socket; alias to TcpStream so this client compiles unchanged.
-// `connect()` to the bridge's filesystem-path socket then fails gracefully at
-// runtime (voice/livekit is a Unix-only subsystem today). BEHAVIORAL GAP:
-// voice bridge is unavailable on Windows until a TCP endpoint is wired.
+// Same framed media protocol on both platforms: Unix socket or Windows loopback.
 #[cfg(windows)]
 use std::net::TcpStream as UnixStream;
 #[cfg(unix)]
@@ -154,12 +150,16 @@ fn pcm_le_bytes(samples: &[i16]) -> Vec<u8> {
 
 impl LiveKitAgentManager {
     pub fn new() -> Self {
+        #[cfg(unix)]
         let socket_dir = std::env::var("CONTINUUM_SOCKET_DIR").unwrap_or_else(|_| {
             dirs::home_dir()
                 .map(|h| h.join(".continuum/sockets").to_string_lossy().to_string())
                 .unwrap_or_else(|| "/tmp".to_string())
         });
+        #[cfg(unix)]
         let bridge_socket_path = format!("{}/livekit-bridge.sock", socket_dir);
+        #[cfg(windows)]
+        let bridge_socket_path = continuum_bridge_protocol::WINDOWS_BRIDGE_ADDRESS.to_string();
         let livekit_url =
             std::env::var("LIVEKIT_URL").unwrap_or_else(|_| "ws://localhost:7880".to_string());
 
@@ -919,6 +919,7 @@ fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<Pendi
                             {
                                 crate::media::perception_ingest::try_enqueue(
                                     crate::media::perception_ingest::IngestFrame {
+                                        received_at_ms: crate::persona::recall_metadata::now_ms(),
                                         call_id: binding.call_id.to_string(),
                                         speaker_id: binding.speaker_id.to_string(),
                                         jpeg: jpeg.to_vec(),
@@ -1191,6 +1192,7 @@ fn handle_bridge_event(
                     // ~2 Hz regardless of the frame rate ([[perceive-the-room-as-it-is-now]]).
                     crate::media::perception_ingest::try_enqueue(
                         crate::media::perception_ingest::IngestFrame {
+                            received_at_ms: crate::persona::recall_metadata::now_ms(),
                             call_id,
                             speaker_id,
                             jpeg: jpeg.to_vec(),

@@ -77,16 +77,26 @@ continuum stop       # stop the detached core (process-group SIGTERM)
 
 ## 5. Testing (weakness #2 — the discipline)
 
-Three layers, strictly separated by their dependency surface:
+Choose the smallest build boundary that owns the changed behavior. The local
+edit/verify loop must not require the whole core test executable.
 
-| Layer | Command | Deps | Gate |
-|---|---|---|---|
-| **Unit + integration** | `cargo test -p continuum-core` | NONE (no airc/unsloth/models/network) | CI default — must be green |
-| **Stress / concurrency** | `cargo test --features stress-tests … stress` | in-process only | opt-in; sign-off + perf curves |
-| **Live smoke** | `continuum start && continuum ping && <persona turn>` | airc + a model | manual / scheduled; never the CI default |
+| Layer | Command / procedure | What it establishes |
+|---|---|---|
+| **Component** | `cargo test -p continuum-tool-protocol --lib` (parser); `cargo test -p continuum-cli-lifecycle --lib` (CLI lifecycle) | Local contracts using existing fixtures; no core build or serving process |
+| **Composition** | `cargo check -p continuum-core --lib` after a shared interface changes | The actual core consumer compiles; not runtime integration evidence |
+| **In-process core suite** | `cargo test -p continuum-core` | Broader regression coverage, separate from each local edit; no real model/network acceptance claim |
+| **Stress / concurrency** | `cargo test --features stress-tests ... stress` | Opt-in concurrency and performance sign-off |
+| **Live integration** | Reuse the owned serving session and resident activity; verify capture -> prompt -> outgoing media -> generation -> intended tool execution -> recapture | Actual cross-component behavior, including the model and browser; unit results cannot replace this |
+
+For live integration, establish the session once and exercise successive steps
+against it. Retain request IDs and artifact hashes across steps so a result from
+another request cannot satisfy the check. A successful screenshot capture alone
+is insufficient: the resident must consume it and perform an intended action.
+Do not start a second daemon or reset a resident's activity for each assertion.
+Installation and restart remain coordinated lifecycle operations.
 
 Rules (extend, don't reinvent — these are the CLAUDE.md test rules, restated as foundation policy):
-- **Deterministic by default.** Anything depending on airc/unsloth/models/network is a *live smoke*, not a unit test. The persona→command path is proven deterministically (`cognition::tool_executor::…::persona_executes_ping_via_typed_object_path`) with no live deps — that is the pattern.
+- **Deterministic by default.** Anything depending on airc/unsloth/models/network is a *live integration test*, not a unit test. The persona→command path is proven deterministically (`cognition::tool_executor::…::persona_executes_ping_via_typed_object_path`) with no live deps — that is the pattern.
 - **One `#[cfg(test)] mod` per file**; stress behind `#[cfg(feature = "stress-tests")]`; fixtures behind `#[cfg(any(test, feature = "test-fixtures"))]`.
 - **Every test names the invariant it guards** (`// what this catches:`), and regressions link the issue/commit.
 - **Shared cargo target.** Always `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` for hand-run cargo so artifacts land in the one cache, not ghost `target/` dirs.

@@ -119,21 +119,32 @@ What is true now:
   never be quoted as evidence about production. Two different personas return
   byte-identical numbers from it, which is the tell.
 
-### The cost that came with the removal, and is still open
+### Historical recorder gap at bypass removal (2026-09-06)
+
+**Status correction, 2026-10-01:** the observations below describe the September 6
+recorder gap, not the current live capture path. `WorkspaceCycle` now produces
+prompt-capture submitted/completed records. Kimi's retained request
+`58bcb3a5-b8bb-4c69-bc02-6554c15c6e34` on build `0ecab116d` includes a native PDF
+image whose decoded SHA-256 is
+`b30c13aba0e7c9857350070a9bb71bca1e773ae7b8132e291d6b482b6256309b`.
+This proves that input reached the captured request; it does not establish every
+modality, successful learning, or lossless recovery. Inspect current capture
+receipts before diagnosing a missing recorder; do not restore the old bypass.
 
 `persona::recorder::record_turn` was called from `persona/response.rs` — i.e. from
 inside `respond()`. **When `respond()` stopped being the citizens' path, the turn
-recorder silently went with it.** Nothing re-attached it to the WorkspaceCycle.
+recorder silently went with it.** At the September 6 inspection, nothing had
+re-attached it to the WorkspaceCycle.
 
 Measured on BigMama 2026-09-06: `~/.continuum/fixtures/persona-respond/` holds 12
 records (Alpha, Beta, Helper — paths that still go through `respond()`), and ZERO
 for the live citizens, who have produced hundreds of turns. `persona-turn-frame/`
 holds 4, all synthetic smoke turns with an empty system prompt.
 
-So **no live citizen turn has ever been captured on this box**, which is why
-questions like "why does this persona re-open the same turn?" cannot currently be
-answered from evidence — there is no artifact of what she actually received. That
-is card 99801322. The fix is to record from the WorkspaceCycle path; it is NOT to
+At that inspection, **no live citizen turn had been captured on that box**, so
+questions like "why does this persona re-open the same turn?" could not be
+answered from evidence. That was card 99801322. The required fix was to record
+from the WorkspaceCycle path; it was NOT to
 re-add a `respond()` call, which would resurrect the deleted fallback this section
 just told you to keep deleted.
 
@@ -182,11 +193,14 @@ Specifically because it keeps coming up under amnesia:
 - `AircRagSource::page_recent(50)` returns the 50 newest events from the daemon in chronological order. **Validated** with the per-item trace.
 - `compose_for_turn` (on the brain) routes engram + airc through `FlexboxRagBudgetAdapter` and emits `TurnStart`/`BudgetAllocated`/`TurnEnd` capture events for replay. **Validated** with 9/9 unit tests in `unified.rs`.
 
-What is **not** real end-to-end yet (the gap this doc anchors against):
+The original June validation left the cycle, tool execution and multimodal input
+unproven. Those are historical gaps, not a description of the current wiring:
 
-- The cycle in section 2 from `service_loop`. Service_loop still calls the bypass. Task #160.
-- Multi-modal `MediaItemRequest` flowing into `ContentPart::Image/Audio/Video`. Pieces exist; not threaded through.
-- `ToolExecutor` invoked from the cycle. Module exists; not wired into service_loop.
+- `service_loop` drives `WorkspaceCycle`; the bypass is removed (section 4).
+- The live act path invokes `ToolExecutor` and retains correlated observations
+  in working memory. Follow `cognition/act_observe/apply.rs` for that boundary.
+- Native image input has concrete capture evidence above. Do not generalize that
+  result to audio/video, all adapters, or a complete edit/see/revise/deploy loop.
 
 ---
 

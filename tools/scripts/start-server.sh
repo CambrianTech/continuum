@@ -32,10 +32,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # core/continuum-core (commit 2cb63e019); cwd-independent --manifest-path so the
 # headless start works from any directory.
 CORE_MANIFEST="$REPO_ROOT/core/continuum-core/Cargo.toml"
+source "$SCRIPT_DIR/lib/payload-paths.sh"
 
 # ── PATH + config ────────────────────────────────────────────────────
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 [ -f "$HOME/.continuum/config.env" ] && { set -a; source "$HOME/.continuum/config.env"; set +a; }
+PAYLOAD_ROOT="$(managed_payload_root)" || exit 1
 
 # Locate cargo deterministically. A background task / detached shell does NOT
 # inherit the interactive PATH, so cargo (rustup at ~/.cargo/bin OR homebrew at
@@ -98,12 +100,12 @@ fi
 # the start log. Measured on BigMama 2026-09-05; the .so and .dylib arms existed
 # and the .dll arm did not, so every Windows citizen was mute by omission.
 if [ -z "$ORT_DYLIB_PATH" ]; then
-  if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+  if [ -f "$PAYLOAD_ROOT/lib/libonnxruntime.so" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/libonnxruntime.so"
   elif [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
     export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
-  elif [ -f "$HOME/.continuum/lib/onnxruntime.dll" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/onnxruntime.dll"
+  elif [ -f "$PAYLOAD_ROOT/lib/onnxruntime.dll" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/onnxruntime.dll"
   fi
 fi
 
@@ -114,7 +116,7 @@ fi
 if [ -z "$ORT_DYLIB_PATH" ]; then
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-      echo "⚠ ONNX Runtime not provisioned (~/.continuum/lib/onnxruntime.dll absent)." >&2
+      echo "⚠ ONNX Runtime not provisioned ($PAYLOAD_ROOT/lib/onnxruntime.dll absent)." >&2
       echo "  ort will dlopen by name and Windows will hand it System32's copy," >&2
       echo "  which Edge ships at 1.17.1 — ort needs >= 1.23.x, so voice will be" >&2
       echo "  dead with only a worker-thread panic in the start log to say so." >&2
@@ -200,6 +202,11 @@ case "$(uname -sm)" in
     esac
     ;;
 esac
+
+if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+fi
 
 # Warm builds prepare artifacts only. Runtime reconciliation belongs to launch:
 # it may reap engines or restart AIRC and must never run while the old core serves.
@@ -1079,6 +1086,16 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ] && [ -z "${LLAMA_SERVER_BIN:-}" ]; then
 fi
 
 if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
+  # Native Windows service handoff does not run this launcher again. Prepare
+  # the media artifact here; the installed supervisor starts it after handoff.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      bash "$SCRIPT_DIR/install-livekit.sh" || exit 1
+      cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release || exit 1
+      # The Rust handoff stages siblings of the core artifact, not source files.
+      cp "$SCRIPT_DIR/start-livekit-windows.ps1" "$CARGO_TARGET_DIR/release/start-livekit-windows.ps1" || exit 1
+      ;;
+  esac
   # The caller must launch THIS artifact, not guess our profile/target directory
   # or rerun the source launcher after stopping the old core. Publish only after
   # the build and freshness checks succeed. Older callers need no receipt.
@@ -1106,7 +1123,17 @@ fi
 # serving); only live A/V is unavailable. Sidecar because it links webrtc-sys, which we
 # keep OUT of the core process ([[gpu-is-non-negotiable...]] resource isolation).
 start_livekit_rail() {
-  case "$(uname -s)" in Darwin|Linux) ;; *) return 0 ;; esac  # bridge speaks a unix-socket
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      bash "$SCRIPT_DIR/install-livekit.sh" || return 1
+      cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release || return 1
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$SCRIPT_DIR/start-livekit-windows.ps1")" \
+        -BridgeBinary "$(cygpath -w "$CARGO_TARGET_DIR/release/livekit-bridge.exe")"
+      return $?
+      ;;
+    Darwin|Linux) ;;
+    *) return 0 ;;
+  esac
   local LK_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$LK_LOG_DIR"
   local SOCK="$HOME/.continuum/sockets/livekit-bridge.sock"; mkdir -p "$(dirname "$SOCK")"
   local LK_URL="${LIVEKIT_URL:-ws://localhost:7880}"
@@ -1212,6 +1239,7 @@ ensure_moonshine() {
   local files=(preprocess.onnx encode.int8.onnx uncached_decode.int8.onnx cached_decode.int8.onnx tokens.txt)
   local missing=0
   for f in "${files[@]}"; do [ -s "$DIR/$f" ] || missing=1; done
+  [ -s "$CONTINUUM_MODELS_DIR/vad/silero_vad.onnx" ] || missing=1
   [ "$missing" = 0 ] && return 0
   command -v curl >/dev/null 2>&1 || { echo "  ⚠ curl missing — STT (hearing) unavailable until moonshine models are placed in $DIR" >&2; return 0; }
   echo "→ first boot: fetching the local STT model (moonshine base int8, ~286MB once)…"
@@ -1221,6 +1249,14 @@ ensure_moonshine() {
     [ -s "$DIR/$f" ] && continue
     curl -sfL -o "$DIR/$f.tmp" "$BASE/$f" && mv "$DIR/$f.tmp" "$DIR/$f" || { ok=0; rm -f "$DIR/$f.tmp"; }
   done
+  # The room path needs VAD before Moonshine ever receives an utterance.
+  # Provisioning STT alone lets direct transcription pass while calls stay deaf.
+  local VAD="$CONTINUUM_MODELS_DIR/vad/silero_vad.onnx"
+  if [ ! -s "$VAD" ]; then
+    mkdir -p "$(dirname "$VAD")"
+    curl -sfL -o "$VAD.tmp" "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx" \
+      && mv "$VAD.tmp" "$VAD" || { ok=0; rm -f "$VAD.tmp"; }
+  fi
   [ "$ok" = 1 ] && echo "  STT model ready — citizens can hear" \
     || echo "  ⚠ moonshine fetch incomplete — STT unavailable this boot (retries next boot)" >&2
 }
@@ -1245,7 +1281,7 @@ echo ""
 # execs a half-written file. Non-fatal: failing to publish doesn't block this boot,
 # which runs $CORE_BIN directly either way.
 # [[managed-product-everything-self-provisions-no-operator-steps]], #194, #291
-CORE_INSTALL_DIR="$HOME/.continuum/bin"
+CORE_INSTALL_DIR="$PAYLOAD_ROOT/bin"
 if mkdir -p "$CORE_INSTALL_DIR" 2>/dev/null; then
   if cp "$CORE_BIN" "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" 2>/dev/null \
      && mv -f "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" \

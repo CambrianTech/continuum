@@ -154,12 +154,11 @@ impl AudioResourceLifecycle {
         });
     }
 
-    /// Spawn a safety-net watchdog that detects orphaned sessions.
+    /// Report a long-lived session count for lifecycle diagnostics.
     ///
-    /// If the session count has been stuck at the same non-zero value for
-    /// longer than the orphan timeout (60s), it means voice/end-session
-    /// was never called (browser crash, lost WebSocket, deploy killed the tab).
-    /// Force-reset the counter and trigger shutdown.
+    /// An unchanged count does NOT prove an orphan: a healthy call can retain
+    /// the same participants for hours. Only explicit lifecycle end events
+    /// authorize the idle watcher to unload adapters.
     pub fn spawn_orphan_watchdog(self: &Arc<Self>) {
         let lifecycle = Arc::clone(self);
         const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
@@ -185,14 +184,10 @@ impl AudioResourceLifecycle {
                     stale_ticks += 1;
                     if stale_ticks >= CHECKS_UNTIL_ORPHAN {
                         clog_warn!(
-                            "AudioResourceLifecycle: {} sessions stuck for {}s — orphaned, force-resetting session count",
+                            "AudioResourceLifecycle: {} sessions unchanged for {}s; retaining audio adapters because count stability is not proof of an orphan",
                             current,
                             stale_ticks * ORPHAN_CHECK_INTERVAL_SECS
                         );
-                        lifecycle.active_sessions.store(0, Ordering::SeqCst);
-                        Self::shutdown_all_adapters().await;
-                        // Do NOT kill the Bevy renderer — it was being destroyed
-                        // mid-conversation, freezing all animation.
                         stale_count = 0;
                         stale_ticks = 0;
                     }

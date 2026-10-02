@@ -117,6 +117,11 @@ pub struct ModelBinding {
     pub context_window: u32,
 }
 
+struct ActiveVisualFeedback {
+    seq: u64,
+    parts: Vec<(String, crate::ai::types::ContentPart)>,
+}
+
 /// A shared, wait-free model binding — the SAME [`ArcSwap`] the faculty reads on
 /// every generation and the owning
 /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the served
@@ -2434,6 +2439,16 @@ impl LlmDeliberationFaculty {
         context_window: u32,
         calibration: PromptCalibration,
     ) -> DeliberationPromptView {
+        self.prompt_view_with_visual_feedback(ws, context_window, calibration, None)
+    }
+
+    fn prompt_view_with_visual_feedback(
+        &self,
+        ws: &Workspace,
+        context_window: u32,
+        calibration: PromptCalibration,
+        visual: Option<&ActiveVisualFeedback>,
+    ) -> DeliberationPromptView {
         // Desired reply room from the existing measured-reserve policy. Below,
         // it yields to the current payload's measured floor; that planned value
         // travels with the view into `build_request_within` as `max_tokens`.
@@ -2500,9 +2515,10 @@ impl LlmDeliberationFaculty {
             ws.directed_at_self(),
             holds_live_work,
         );
-        let mut all_messages = self.messages_unfitted(
+        let mut all_messages = self.messages_with_visual_feedback(
             ws,
             (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
+            visual,
         );
 
         // Price the untruncated trailing sources separately: messages_unfitted
@@ -2966,6 +2982,15 @@ impl LlmDeliberationFaculty {
     /// unanswerable — which is precisely why the served window had to be sized by a
     /// constant instead of by demand. [`super::working_set`] measures this.
     fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
+        self.messages_with_visual_feedback(ws, trailing_framing, None)
+    }
+
+    fn messages_with_visual_feedback(
+        &self,
+        ws: &Workspace,
+        trailing_framing: Option<&str>,
+        visual: Option<&ActiveVisualFeedback>,
+    ) -> PromptMessages {
         // Required-input cache identity, not provider wire provenance. Hash
         // borrowed payload once, never JSON, optional history, or generated
         // clock/cycle/diagnostic framing. The existing source-defined minimum
@@ -3132,10 +3157,10 @@ impl LlmDeliberationFaculty {
         // working-memory contribution at `WORKING_MEMORY_SALIENCE` it competed in
         // `arbiter.focus()` top-k and was evicted whole under capacity pressure, so the
         // persona generated blind to her own grep/read output (the 0-byte SWE-bench patch).
-        // Reading it here puts no attention pass between the hands and the mind. Text, not
-        // structured tool_use/tool_result Parts: `content_text()` is blind to non-Text
-        // parts, so Parts would undercount in `fit_messages`/`messages_cost` and risk a
-        // window-edge overflow — and the live GGUF chat template renders text reliably.
+        // Reading it here puts no attention pass between the hands and the mind.
+        // Native images from this exact active receipt join its required text below.
+        // Text estimates are only a lower bound for these messages: the adapter's
+        // exact image quote admits the finalized body or returns capacity feedback.
         // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated
         // by active_action_full so it stops re-prefilling after settlement (#139/#165).
         // GROUNDING BEFORE THE RING (2026-08-24, wire-diffed on round 706215f4):
@@ -3227,7 +3252,29 @@ impl LlmDeliberationFaculty {
                     // Provenance is required input too. Hash the rendered allocation
                     // once, then move it into the request without a second encoding.
                     field(&mut input, message.as_bytes());
-                    let (head, tail) = self.split_action_result(message);
+                    let (mut head, tail) = self.split_action_result(message);
+                    if let Some(visual) = visual.filter(|visual| {
+                        visual.seq == seq && !wm.active_action_observations(seq).is_empty()
+                    }) {
+                        // Pixels are part of the required result BEFORE fitting, never
+                        // a post-fit append or an evictable history entry. The selected
+                        // engine's finalized-body quote supplies their actual token cost
+                        // to the existing capacity-feedback/refit path.
+                        let mut parts = vec![crate::ai::types::ContentPart::Text {
+                            text: head.content_text(),
+                        }];
+                        for (hash, part) in &visual.parts {
+                            field(&mut input, hash.as_bytes());
+                            match part {
+                                crate::ai::types::ContentPart::Text { text } => {
+                                    field(&mut input, text.as_bytes())
+                                }
+                                _ => field(&mut input, b"native-image"),
+                            }
+                            parts.push(part.clone());
+                        }
+                        head.content = crate::ai::types::MessageContent::Parts(parts);
+                    }
                     (Some(head), tail)
                 }
             },
@@ -3467,8 +3514,9 @@ impl LlmDeliberationFaculty {
     }
 
     fn message_cost(message: &ChatMessage) -> usize {
-        // The assembler emits Text. Borrow its bytes for every budget pass;
-        // content_text() would allocate another full payload merely to count it.
+        // Text-only lower bound, calibrated by the provider's measured prompt
+        // count. Never count base64 characters as image tokens. Native images
+        // require the finalized-body image quote before local generation.
         let tokens = match &message.content {
             crate::ai::types::MessageContent::Text(text) => est_tokens(text),
             crate::ai::types::MessageContent::Parts(_) => est_tokens(&message.content_text()),
@@ -4407,6 +4455,89 @@ impl Faculty for LlmDeliberationFaculty {
 }
 
 impl LlmDeliberationFaculty {
+    /// Materialize only the latest active typed result, once for this turn and
+    /// its capacity retry. Handles stay in memory/history; verified pixels live
+    /// only in this request projection. No browser action or model call here.
+    async fn active_visual_feedback(
+        &self,
+        binding: &ModelBinding,
+    ) -> Result<Option<ActiveVisualFeedback>, String> {
+        self.active_visual_feedback_at(binding, crate::media::artifact::store_path())
+            .await
+    }
+
+    async fn active_visual_feedback_at(
+        &self,
+        binding: &ModelBinding,
+        store_path: std::path::PathBuf,
+    ) -> Result<Option<ActiveVisualFeedback>, String> {
+        use crate::ai::types::{ContentPart, ImageInput};
+        use base64::Engine;
+
+        let Some(wm) = &self.working_memory else {
+            return Ok(None);
+        };
+        let Some((seq, _)) = wm.active_action_full() else {
+            return Ok(None);
+        };
+        let images: Vec<_> = wm
+            .active_action_observations(seq)
+            .into_iter()
+            .flat_map(|act| act.output.image.into_iter()
+                .chain(act.output.additional_images.into_iter().flatten()))
+            .collect();
+        if images.is_empty() {
+            return Ok(None);
+        }
+        let model = binding
+            .model
+            .as_deref()
+            .unwrap_or_else(|| binding.adapter.default_model()); // Omitted model selects the same provider default used by request construction.
+        let native = binding
+            .adapter
+            .model_metadata(model)
+            .is_some_and(|model| model.has(crate::model_registry::Capability::Vision));
+        if !native {
+            let parts = images.into_iter().map(|image| {
+                let text = format!(
+                    "[image {}: native pixels were not attached; model {model} has no declared Vision capability in its adapter metadata. The artifact receipt is not visual perception.]",
+                    image.hash,
+                );
+                (image.hash, ContentPart::Text { text })
+            }).collect();
+            return Ok(Some(ActiveVisualFeedback { seq, parts }));
+        }
+        // Verified CAS reads and encoding are blocking work; never perform them
+        // on the runtime executor or while holding working-memory locks.
+        let parts = tokio::task::spawn_blocking(move || {
+            let store = airc_blobs::FsStore::new(store_path).map_err(|error| error.to_string());
+            images
+                .into_iter()
+                .map(|image| {
+                    let part = match store.as_ref().map_err(Clone::clone)
+                        .and_then(|store| image.read(store)) {
+                        Ok(bytes) => ContentPart::Image {
+                            image: ImageInput {
+                                url: None,
+                                base64: Some(
+                                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                                ),
+                                mime_type: Some(image.mime),
+                            },
+                        },
+                        Err(error) => ContentPart::Text { text: format!(
+                            "[image {} could not be loaded: {error}. No pixels attached; capture or inspect the image again.]", image.hash,
+                        ) },
+                    };
+                    (image.hash, part)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|error| format!("active screenshot projection failed: {error}"))?;
+        Ok(Some(ActiveVisualFeedback { seq, parts }))
+    }
+
     async fn contribute_with_receipts(
         &self,
         ws: &Workspace,
@@ -4508,6 +4639,10 @@ impl LlmDeliberationFaculty {
             }
         };
         let (mut fit_window, mut calibration) = self.prompt_fit(&binding);
+        let visual = match self.active_visual_feedback(&binding).await {
+            Ok(visual) => visual,
+            Err(error) => return Some(Contribution::deliberation_fault(error)),
+        };
         let mut rejected_prompt_tokens = None;
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
@@ -4516,7 +4651,9 @@ impl LlmDeliberationFaculty {
         // repeated. Existing queue/header/stream deadlines still apply to each
         // attempt. The immutable workspace and captured model route stay fixed.
         let (view, resp) = loop {
-            let view = self.prompt_view_with_feedback(ws, fit_window, calibration);
+            let view = self.prompt_view_with_visual_feedback(
+                ws, fit_window, calibration, visual.as_ref(),
+            );
             if let Some(error) = view.capacity_error {
                 crate::probe!(
                     class = "delib.prompt.capacity",
@@ -6091,6 +6228,7 @@ mod tests {
                         },
                         output: ToolOutput {
                             image: None,
+                            additional_images: None,
                             result: ToolResult {
                                 tool_use_id: call_id,
                                 content: (*report).into(),
@@ -7762,10 +7900,16 @@ mod tests {
         // (every faculty bid evicted) with a live result in working memory — and asserts the
         // result still lands in the tail. A regression means the result went back through
         // the evictable path. regression for #392 / run-18057-f1
-        #[test]
-        fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
+        #[tokio::test]
+        async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
             use crate::ai::types::MessageContent;
+            use crate::ai::types::{ContentPart, ToolCall, ToolResult};
+            use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
             use crate::cognition::working_memory::WorkingMemory;
+
+            let home = tempfile::tempdir().unwrap();
+            let _native = crate::paths::NativeHomeOverride::install(home.path());
+            crate::model_registry::init_global().unwrap();
 
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -7775,17 +7919,56 @@ mod tests {
             // enough to clear the trail-head threshold so the pinned block surfaces.
             let wm = Arc::new(WorkingMemory::new(8));
             wm.set_served_window(16_384);
-            let needle =
-                "sympy/core/expr.py:123:        return self == sympify(other)  # _sympify HERE";
+            let needle = "sympy/core/expr.py:123:        return self == sympify(other)  # _sympify HERE";
             let grep_result = format!(
                 "code/search matches:\n{needle}\n{}",
                 "context line\n".repeat(200)
             );
-            wm.record_receipt(&grep_result);
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(2, 2)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .unwrap();
+            let image = crate::media::artifact::ImageArtifact::retain(
+                &airc_blobs::FsStore::new(home.path().join("images")).unwrap(),
+                png.get_ref(),
+            )
+            .unwrap();
+            let mut other_png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(3, 2)
+                .write_to(&mut other_png, image::ImageFormat::Png).unwrap();
+            let other_image = crate::media::artifact::ImageArtifact::retain(
+                &airc_blobs::FsStore::new(home.path().join("images")).unwrap(),
+                other_png.get_ref(),
+            ).unwrap();
+            wm.record_receipt_typed(
+                &[Observation {
+                    call: ToolCall {
+                        id: "capture".into(),
+                        name: "perception/observe".into(),
+                        input: json!({}),
+                    },
+                    output: ToolOutput {
+                        image: Some(image.clone()),
+                        additional_images: Some(vec![other_image.clone()]),
+                        result: ToolResult {
+                            tool_use_id: "capture".into(),
+                            content: grep_result.clone(),
+                            is_error: None,
+                            spill_handle: None,
+                        },
+                        verb: ToolVerb::classify("perception/observe"),
+                        paths: Vec::new(),
+                        verdict: Default::default(),
+                    },
+                    status: ActStatus::Executed,
+                }],
+                &grep_result,
+                None,
+            );
 
             let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter)
                 .with_context_window(8192)
-                .with_working_memory(wm);
+                .with_working_memory(wm.clone());
 
             // The deliberate failure condition: NOTHING in the broadcast. No working-memory
             // faculty bid survived attention — the exact state that dropped the grep result
@@ -7808,7 +7991,7 @@ mod tests {
             assert!(
                 in_tail,
                 "the just-fetched result must reach the prompt independent of any faculty bid \
-                 — this is the run-18057-f1 fix:\n{:#?}",
+                         — this is the run-18057-f1 fix:\n{:#?}",
                 view.messages
             );
             // And it must be a trailing USER turn (nearest generation), never the system prefix.
@@ -7816,6 +7999,88 @@ mod tests {
                 !view.system.contains(needle),
                 "the pinned result is trailing proprioception, not the cacheable system prefix"
             );
+
+            // Regression: saved screenshot handles formerly reached the prompt,
+            // but the model never received the bytes. Exercise the real CAS and
+            // provider-specific metadata, without making an inference call.
+            let binding = ModelBinding {
+                adapter: Arc::new(
+                    crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("llama-server"),
+                ),
+                model: Some("ggml-org/Qwen3.8-27B-GGUF".into()),
+                context_window: 8192,
+            };
+            let visual = faculty
+                .active_visual_feedback_at(&binding, home.path().join("images"))
+                .await
+                .unwrap()
+                .unwrap();
+            let ContentPart::Image { image: pixels } = &visual.parts[0].1 else {
+                panic!("native model must get pixels")
+            };
+            use base64::Engine;
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(pixels.base64.as_ref().unwrap())
+                    .unwrap(),
+                png.into_inner()
+            );
+            let seen = faculty.prompt_view_with_visual_feedback(
+                &ws,
+                8192,
+                PromptCalibration::default(),
+                Some(&visual),
+            );
+            assert!(seen.capacity_error.is_none());
+            assert_ne!(seen.input_identity, view.input_identity);
+            assert!(seen.messages.iter().any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, ContentPart::Image { .. })))));
+            assert!(seen.user_text().contains(needle));
+            // Follow the same message through request construction AND the
+            // final provider serializer. A Parts value alone is not wire proof.
+            let request = faculty.build_request_within(
+                &binding, seen.completion_reserve, seen.messages.clone(), None,
+                seen.system.clone(), None, Some(ws.room_id), faculty.turn_kind(&ws),
+            );
+            let wire = crate::inference::request_body::wire_messages(
+                &request.messages, request.system_prompt.as_deref(), true, false, "llama-server",
+            );
+            let urls: Vec<_> = wire.iter()
+                .filter_map(|m| m["content"].as_array()).flatten()
+                .filter_map(|p| p["image_url"]["url"].as_str()).collect();
+            assert_eq!(urls.len(), 2, "all live-call participants must reach native model input");
+            let (header, encoded) = urls[0].split_once(',').unwrap();
+            assert_eq!(header, "data:image/png;base64");
+            use sha2::Digest;
+            let wire_bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+            assert_eq!(format!("{:x}", sha2::Sha256::digest(&wire_bytes)), image.hash);
+            assert_eq!(wire_bytes.len() as u64, image.size_bytes);
+            let (_, encoded) = urls[1].split_once(',').unwrap();
+            let other_wire = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+            assert_eq!(format!("{:x}", sha2::Sha256::digest(&other_wire)), other_image.hash);
+            let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
+                .await.unwrap().unwrap();
+            assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));
+            let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing));
+            assert_ne!(failed.input_identity, seen.input_identity);
+            assert!(failed.user_text().contains("capture or inspect the image again"));
+            wm.set_scope(Some("another-workspace".into()));
+            let scoped = faculty.prompt_view_with_visual_feedback(
+                &ws,
+                8192,
+                PromptCalibration::default(),
+                Some(&visual),
+            );
+            assert!(scoped
+                .messages
+                .iter()
+                .all(|m| !matches!(&m.content, MessageContent::Parts(_))));
+            wm.set_scope(None);
+            wm.record_settlement("observed");
+            assert!(faculty
+                .active_visual_feedback(&binding)
+                .await
+                .unwrap()
+                .is_none());
         }
 
         // what this catches: progressive disclosure — the per-turn tool PAYLOAD is the
@@ -8195,7 +8460,16 @@ mod tests {
             // typed required inputs and nested action schemas instead of Null. This is
             // actual tool demand, including target/session recovery descriptions; keep
             // accounting for it rather than hiding schemas from the persona or budget.
-            const AGENTIC_SURFACE_CEILING: u32 = 15119;
+            // 15119 -> 15179 (CI, PR #4615): work/submit adds the optional
+            // generation_request_id selector and its exclusivity help. Kimi's
+            // inspected staging UUID expired before publication; this stable
+            // causal selector adds 60 measured guard tokens. Account for the
+            // real schema; retain whole-request budgeting and this growth guard.
+            // 15179 -> 15731 (CI, PR #4626): screenshot now exposes its existing
+            // selector, encoding, dimensions and delivery parameters instead of
+            // an empty schema. The real typed contract adds 552 measured guard
+            // tokens; this test ceiling is not a runtime context-budget change.
+            const AGENTIC_SURFACE_CEILING: u32 = 15731;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

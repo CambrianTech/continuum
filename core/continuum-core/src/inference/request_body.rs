@@ -317,8 +317,9 @@ pub(crate) fn format_messages(
     messages: &[ChatMessage],
     system_prompt: Option<&str>,
     vision_native: bool,
+    audio_native: bool,
 ) -> Vec<Value> {
-    let mut result = wire_messages(messages, system_prompt, vision_native, &cfg.provider_id);
+    let mut result = wire_messages(messages, system_prompt, vision_native, audio_native, &cfg.provider_id);
     // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
     // `/no_think` soft-switch to the last user turn so the model skips its
     // chain-of-thought and answers directly. Model-specific token, owned here at
@@ -338,6 +339,7 @@ pub(crate) fn wire_messages(
     messages: &[ChatMessage],
     system_prompt: Option<&str>,
     vision_native: bool,
+    audio_native: bool,
     provider: &str,
 ) -> Vec<Value> {
     // Pre-size: one wire message per input message + the optional system
@@ -345,6 +347,7 @@ pub(crate) fn wire_messages(
     // few extra and realloc once. Runs on every inference call — no
     // grow-from-zero reallocation on the hot path.
     let mut result = Vec::with_capacity(messages.len() + usize::from(system_prompt.is_some()));
+    let mut observations = Vec::new();
 
     // Add system prompt if provided
     if let Some(sys) = system_prompt {
@@ -355,6 +358,14 @@ pub(crate) fn wire_messages(
     }
 
     for msg in messages {
+        // Keep consecutive tool replies together, including replies carried by
+        // separate input messages. User media must not interrupt their pairing.
+        let is_tool_reply = matches!(&msg.content, MessageContent::Parts(parts)
+            if parts.iter().any(|p| matches!(p, ContentPart::ToolResult { .. }))
+                && !parts.iter().any(|p| matches!(p, ContentPart::ToolUse { .. })));
+        if !is_tool_reply {
+            result.append(&mut observations);
+        }
         match &msg.content {
             MessageContent::Text(text) => {
                 result.push(json!({
@@ -411,8 +422,10 @@ pub(crate) fn wire_messages(
                             }));
                         }
                     }
-                } else {
-                    // Standard multimodal content
+                }
+                if !has_tool_use {
+                    // Tool results may carry sibling pixels/audio. Emit their
+                    // protocol replies first, then preserve the observation.
                     let content: Vec<Value> = parts
                         .iter()
                         .filter_map(|p| match p {
@@ -450,20 +463,60 @@ pub(crate) fn wire_messages(
                                     }))
                                 }
                             }
-                            _ => None,
+                            ContentPart::Audio { audio } => Some(wire_audio(audio, audio_native)),
+                            ContentPart::Video { .. } => Some(json!({
+                                "type": "text",
+                                "text": "[Video was not attached: this adapter requires decoded timestamped frames and audio. The video contents have not been perceived.]"
+                            })),
+                            ContentPart::ToolUse { .. } | ContentPart::ToolResult { .. } => None,
                         })
                         .collect();
 
-                    result.push(json!({
-                        "role": msg.role,
-                        "content": content
-                    }));
+                    if !has_tool_result || !content.is_empty() {
+                        let observation = json!({
+                            "role": if has_tool_result { "user" } else { msg.role.as_str() },
+                            "content": content
+                        });
+                        if has_tool_result {
+                            observations.push(observation);
+                        } else {
+                            result.push(observation);
+                        }
+                    }
                 }
             }
         }
     }
 
+    result.append(&mut observations);
     result
+}
+
+/// OpenAI-compatible audio uses encoded WAV/MP3, not an image data URL.
+/// Unsupported inputs stay visible as failures rather than vanishing from the ask.
+fn wire_audio(audio: &crate::ai::types::AudioInput, native: bool) -> Value {
+    let unavailable = |reason: &str| json!({
+        "type": "text", "text": format!("[Audio was not attached: {reason}. Audio contents have not been perceived.]")
+    });
+    if !native {
+        return unavailable("the target model has no declared AudioInput capability");
+    }
+    let (mime, data) = if let Some(data) = audio.base64.as_deref() {
+        (audio.mime_type.as_deref(), data)
+    } else if let Some(url) = audio.url.as_deref() {
+        let Some((header, data)) = url.strip_prefix("data:").and_then(|s| s.split_once(";base64,")) else {
+            return unavailable("audio must be resolved to encoded bytes before request assembly");
+        };
+        (Some(header), data)
+    } else {
+        return unavailable("no encoded bytes were supplied");
+    };
+    let format = match mime {
+        Some("audio/wav" | "audio/x-wav" | "audio/wave") => "wav",
+        Some("audio/mpeg" | "audio/mp3") => "mp3",
+        _ => return unavailable("the encoding must be converted to WAV or MP3"),
+    };
+    json!({"type": "input_audio", "input_audio": {"data": data, "format": format}})
 }
 
 /// Build the base chat body: the wire messages (vision-gated, thinking-switched, tool
@@ -474,6 +527,7 @@ pub(crate) fn build_base_body(
     request: &TextGenerationRequest,
     model: &str,
     vision_native: bool,
+    audio_native: bool,
 ) -> Value {
     // Build request body
     let mut messages = format_messages(
@@ -481,6 +535,7 @@ pub(crate) fn build_base_body(
         &request.messages,
         request.system_prompt.as_deref(),
         vision_native,
+        audio_native,
     );
 
     // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
@@ -562,6 +617,38 @@ pub(crate) fn build_base_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Tool protocol results must not silently discard sibling sensory evidence.
+    #[test]
+    fn tool_result_keeps_sibling_media_after_protocol_reply() {
+        let message: ChatMessage = serde_json::from_value(json!({
+            "role": "user", "content": [
+                {"type":"tool_result", "tool_use_id":"capture-1", "content":"captured"},
+                {"type":"text", "text":"Current rendering"},
+                {"type":"image", "image":{"base64":"pixels", "mimeType":"image/png"}},
+                {"type":"audio", "audio":{"base64":"sound", "mimeType":"audio/wav"}}
+            ]
+        })).unwrap();
+        let wire = wire_messages(&[message.clone()], None, true, true, "test");
+        assert_eq!(wire.len(), 2);
+        assert_eq!(wire[0]["tool_call_id"], "capture-1");
+        assert_eq!(wire[1]["role"], "user");
+        assert_eq!(wire[1]["content"][1]["image_url"]["url"], "data:image/png;base64,pixels");
+        assert_eq!(wire[1]["content"][2]["input_audio"]["data"], "sound");
+        let mut second = message.clone();
+        if let MessageContent::Parts(parts) = &mut second.content {
+            if let ContentPart::ToolResult { tool_use_id, .. } = &mut parts[0] {
+                *tool_use_id = "capture-2".into();
+            }
+        }
+        let batch = wire_messages(&[message.clone(), second], None, true, true, "test");
+        assert_eq!(batch.iter().map(|m| m["role"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["tool", "tool", "user", "user"]);
+        assert_eq!(batch[1]["tool_call_id"], "capture-2");
+        let mut only_result = message;
+        if let MessageContent::Parts(parts) = &mut only_result.content { parts.truncate(1); }
+        assert_eq!(wire_messages(&[only_result], None, true, true, "test").len(), 1);
+    }
 
     // what this catches: through the ONE seam, the ACT budget is the fixed
     // ACT_REASONING_BUDGET count, applied to an act request and to nothing else — a

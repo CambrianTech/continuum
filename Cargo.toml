@@ -16,6 +16,7 @@ members = [
     # "core/archive" quarantined → legacy/quarantine/archive-worker (#424):
     # its only spawn wiring pointed at a dir that no longer exists.
     "core/continuum-cli-lifecycle",
+    "core/continuum-tool-protocol",
     "core/continuum-core",
     "core/expert-pager-policy",
     "core/source-hygiene",
@@ -341,6 +342,16 @@ strip = "symbols"
 # if we ever decide the last 10% is worth it.
 lto = "thin"
 
+# Local installs rebuild this large crate for both the serving and GPU-free CLI
+# feature sets. Keep incremental caches for those distinct compilations so a
+# small harness edit does not redo every unchanged codegen unit in each set.
+# Preserve release's normal 16 units explicitly: enabling incremental would
+# otherwise change the default to 256. Optimization level and thin LTO stay put.
+# CI can still disable incremental with its existing CARGO_INCREMENTAL=0.
+[profile.release.package.continuum-core]
+incremental = true
+codegen-units = 16
+
 # Hot-iter profile — fastest possible compile for inner-loop work
 # (airc work claim → cargo build → test → repeat). Slice 3 of build-time
 # doctrine card 424deb5e: a third lane between `dev` (ergonomic debug)
@@ -379,7 +390,9 @@ codegen-units = 256
 [profile.dev.package."*"]
 debug = false
 
-# Override crates.io candle with our fork (Metal memory fix + RoPE NEOX fix).
+# Override crates.io candle with our fork (Metal memory, RoPE NEOX and Pascal
+# half-atomic fixes). General CUDA excludes the uncalled fused-MoE archive;
+# active tensor, training and speech users keep their existing CUDA features.
 #
 # Status (2026-04-15): huggingface/candle PR #3411 — the RoPE NEOX fix
 # from this fork — was ACCEPTED AND MERGED upstream. The Metal memory
@@ -391,12 +404,12 @@ debug = false
 # a published release lets `cargo` find the fix at a version number.
 #
 # To check: `cargo search candle-core` or the candle CHANGELOG for the
-# first release >= the merge date. Graduation is a 3-line delete.
+# first release containing all the required fixes before removing these pins.
 # This applies to all workspace members transparently.
 [patch.crates-io]
-candle-core = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
-candle-nn = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
-candle-transformers = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
+candle-core = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-nn = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-transformers = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
 
 [workspace.package]
 edition = "2021"

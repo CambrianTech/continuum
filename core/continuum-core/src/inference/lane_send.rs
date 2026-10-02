@@ -84,6 +84,8 @@ pub(crate) struct ImageQuote<'a> {
     pub dedicated_lane: bool,
     pub caller: &'a str,
     pub patience: std::time::Duration,
+    pub reply: u32,
+    pub request_id: &'a str,
 }
 
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
@@ -134,10 +136,11 @@ pub(crate) async fn send_with_lane_retry(
                 quote.patience.saturating_sub(quote_started.elapsed()),
             ).await?;
             super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured(fill.prompt_tokens), quote.caller,
+                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
             ).await?;
             crate::probe!(
                 class = "inference.prompt.image_quote",
+                request_id = quote.request_id,
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
                 attempt = relaunch_retries,

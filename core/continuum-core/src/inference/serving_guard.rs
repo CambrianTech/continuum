@@ -12,17 +12,23 @@ use crate::ai::inference_error::InferenceError;
 #[derive(Clone, Copy)]
 pub(crate) enum PromptCount {
     Estimated(usize),
-    Measured(usize),
+    Measured { prompt: usize, reply: u32 },
 }
 
 impl PromptCount {
     fn tokens(self) -> usize {
-        match self { Self::Estimated(n) | Self::Measured(n) => n }
+        match self {
+            Self::Estimated(n) => n,
+            Self::Measured { prompt, reply } => prompt.saturating_add(reply as usize),
+        }
     }
 
     fn overflow(self, available: u32, provider: &str, caller: &str) -> InferenceError {
         match self {
-            Self::Measured(tokens) => match u32::try_from(tokens) {
+            // Capacity fitting calibrates PROMPT density. Reply tokens participate
+            // in admission, but must never inflate that density or shrink the
+            // reported physical window: the fitter reserves the reply separately.
+            Self::Measured { prompt, .. } => match u32::try_from(prompt) {
                 Ok(requested) => InferenceError::ContextExceeded { requested, available },
                 Err(_) => InferenceError::Protocol("measured prompt exceeds the capacity receipt's token range".into()),
             },
@@ -35,12 +41,13 @@ impl PromptCount {
     }
 }
 
-/// Only image-bearing local requests need the projector quote. Text requests
+/// Every media-bearing local request needs the projector quote. Text requests
 /// retain their existing estimate; cloud providers do not promise this endpoint.
-pub(crate) fn needs_image_quote(body: &serde_json::Value) -> bool {
+pub(crate) fn needs_media_quote(body: &serde_json::Value) -> bool {
     body.get("messages").and_then(|v| v.as_array()).into_iter().flatten()
         .filter_map(|message| message.get("content").and_then(|v| v.as_array()))
-        .flatten().any(|part| part.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+        .flatten().any(|part| matches!(part.get("type").and_then(|v| v.as_str()),
+            Some("image_url" | "input_audio" | "input_video")))
 }
 
 fn image_quote_request(
@@ -329,9 +336,9 @@ pub(crate) async fn guard_resident_model(
         // check_redundancy, validate_response, …), which the persona-scoped overshoot
         // WARN below never covered. A refused request fails LOUD naming the caller and
         // never reaches llama_decode, so the slot stays healthy. Threshold is PROMPT
-        // ALONE ≥ window (unambiguous — no room for even the prompt, let alone a
-        // reply), so a legitimately-budgeted request is never blocked. chars/4 is the
-        // same conservative estimate the overshoot alarm uses.
+        // ALONE ≥ window for estimates. Exact image measurements additionally
+        // reserve the explicit reply allowance; their refusal reports prompt
+        // tokens and the full window so the existing fitter can recalibrate.
         // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
         if let Some(prompt_tokens) =
             prompt_alone_overflows_served(prompt_count.tokens(), snap.served_context_window)
@@ -353,16 +360,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
-        let measured = PromptCount::Measured(1319).overflow(1024, "fixture", "persona");
+    fn refuses_measured_prompt_and_reply_overflow_without_pricing_base64_as_text() {
+        let measured = PromptCount::Measured { prompt: 1319, reply: 128 }.overflow(1024, "fixture", "persona");
         assert!(matches!(measured, InferenceError::ContextExceeded { requested: 1319, available: 1024 }));
         assert!(!measured.is_retryable_unchanged(), "measured overflow must refit, not replay");
         let estimated = PromptCount::Estimated(1319).overflow(1024, "fixture", "persona");
         assert!(matches!(estimated, InferenceError::Transient(_)), "a text estimate is not a provider measurement");
         if let Ok(too_large) = usize::try_from(u64::from(u32::MAX) + 1) {
-            assert!(matches!(PromptCount::Measured(too_large).overflow(1024, "fixture", "persona"),
+            assert!(matches!(PromptCount::Measured { prompt: too_large, reply: 0 }.overflow(1024, "fixture", "persona"),
                 InferenceError::Protocol(_)), "unrepresentable counts must not be silently clamped");
         }
+        let with_reply = PromptCount::Measured { prompt: 900, reply: 200 };
+        assert_eq!(prompt_alone_overflows_served(with_reply.tokens(), 1024), Some(1100));
+        assert!(matches!(with_reply.overflow(1024, "fixture", "persona"),
+            InferenceError::ContextExceeded { requested: 900, available: 1024 }));
         let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
         // Same estimate as deliberation: 48000 bytes / 3 vs an 8000-token slot.
         assert_eq!(
@@ -394,9 +405,12 @@ mod tests {
         ]}]});
         assert_eq!(approx_prompt_tokens(&multipart), approx_prompt_tokens(&body(48_000)));
         assert_eq!(prompt_alone_overflows_served(approx_prompt_tokens(&multipart), 8_000), Some(16_000));
-        assert!(needs_image_quote(&multipart));
-        assert!(!needs_image_quote(&body(48_000)));
-        assert!(!needs_image_quote(&serde_json::json!({"messages":[{"content":"image_url"}]})));
+        assert!(needs_media_quote(&multipart));
+        for kind in ["input_audio", "input_video"] {
+            assert!(needs_media_quote(&serde_json::json!({"messages":[{"content":[{"type":kind}]}]})));
+        }
+        assert!(!needs_media_quote(&body(48_000)));
+        assert!(!needs_media_quote(&serde_json::json!({"messages":[{"content":"image_url"}]})));
         // The quote must preserve the final template options, media, and auth,
         // and target the same lane. It must not mutate the generation builder.
         let client = reqwest::Client::new();

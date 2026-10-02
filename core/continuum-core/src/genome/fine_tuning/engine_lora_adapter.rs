@@ -1449,6 +1449,7 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
         &call.request.messages,
         call.request.system_prompt.as_deref(),
         false,
+        false,
         PROVIDER_ID,
     );
     // serving closes a history that ends in her own turn before she replies (a self-tick's

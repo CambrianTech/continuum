@@ -969,7 +969,7 @@ pub(crate) async fn root_at_held_card(
     // was ambiguous for a two-card holder, so her message turns kept her hands
     // at home while her work turns rooted (`persona.work.staged_ambiguous` ×2
     // after the focus cut, 2026-09-04).
-    let Some(focus) = crate::persona::work_focus::focus_actionable_card(held.iter()) else {
+    let Some(focus) = crate::persona::work_focus::focus_workspace_card(held.iter()) else {
         return HeldCardTurn::unheld();
     };
     // Stamped for the seam as the turn roots: the handoff record carries this card WHOLE

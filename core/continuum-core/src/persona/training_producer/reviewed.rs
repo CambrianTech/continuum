@@ -428,6 +428,10 @@ pub enum CreditBindingError {
     Storage(#[from] ClientError),
     #[error("staged revision {0} is absent; no publication binding was created")]
     MissingRevision(Uuid),
+    #[error(
+        "generation {0} must identify exactly one staged revision for this persona, card and claim"
+    )]
+    AmbiguousGeneration(String),
     #[error("selected credit does not belong to this persona, card and accepted claim")]
     WrongSelection,
     #[error("submission {0} is already bound to another immutable selection")]
@@ -442,6 +446,7 @@ pub async fn ensure_storage<T: Transport>(
 ) -> Result<(), ClientError> {
     for collection in [
         StagedCredit::COLLECTION,
+        StagedCreditGeneration::COLLECTION,
         CreditTransferIntent::COLLECTION,
         CreditTransferAcceptance::COLLECTION,
         WorkCreditBinding::COLLECTION,
@@ -919,6 +924,131 @@ pub async fn bind_submission<T: Transport>(
     .ok_or(CreditBindingError::MissingRevision(
         selection.staged_revision_id,
     ))?;
+    bind_snapshot(conn, persona_name, persona_id, selection, snapshot).await
+}
+
+/// Resolve stable causal evidence at publication, not a staging UUID that can
+/// disappear during the resident's intervening acts. Retries use retained intent.
+pub async fn bind_submission_generation<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    room_id: Uuid,
+    submitted: &airc_work::WorkSubmission,
+    generation: &str,
+) -> Result<WorkCreditBinding, CreditBindingError> {
+    ensure_storage(conn, persona_name).await?;
+    let selection = |revision| SubmissionSelection {
+        submission_id: submitted.submission_id.as_uuid(),
+        room_id,
+        card_id: submitted.card_id.as_uuid(),
+        claim_id: submitted.claim_id.as_uuid(),
+        staged_revision_id: revision,
+        instance: submitted.instance.clone(),
+        base_sha: submitted.base_sha.clone(),
+        artifact: submitted.artifact.clone(),
+    };
+    if submitted.publisher.as_uuid() != persona_id || generation.is_empty() {
+        return Err(CreditBindingError::WrongSelection);
+    }
+    if let Some(prior) =
+        read_one::<_, WorkCreditBinding>(conn, persona_name, &submitted.submission_id.to_string())
+            .await?
+    {
+        let expected = selection(prior.selection.staged_revision_id);
+        let prior = same_selection(prior, persona_id, &expected)?;
+        let intent = read_one::<_, CreditTransferIntent>(
+            conn,
+            persona_name,
+            &prior.transfer_intent_id.to_string(),
+        )
+        .await?
+        .ok_or(CreditBindingError::MissingRevision(
+            prior.transfer_intent_id,
+        ))?;
+        if !intent
+            .snapshot
+            .receipts
+            .iter()
+            .any(|r| r.submitted_request_id == generation)
+        {
+            return Err(CreditBindingError::WrongSelection);
+        }
+        return Ok(prior);
+    }
+    let value = conn
+        .commands()
+        .execute_value(
+            "data/list",
+            json!({
+                "collection": StagedCreditGeneration::COLLECTION,
+                "dbPath": format!("@persona:{persona_name}"),
+                "filter": {"submittedRequestId": generation},
+            }),
+        )
+        .await?;
+    // The child index exists precisely for this join. Loading every lived turn
+    // on the card can materialize tens of MiB before finding a single request.
+    // Never bind from a partial result, or trust the index instead of the parent.
+    let result: crate::modules::data::DataListResult =
+        serde_json::from_value(value).map_err(ClientError::from)?; // Decode the data/list storage command response envelope.
+    if result.items.len() != result.total as usize {
+        return Err(ClientError::Transport("incomplete generation credit lookup".into()).into());
+    }
+    let mut selected = None;
+    for value in result.items {
+        let record: crate::orm::types::DataRecord =
+            serde_json::from_value(value).map_err(ClientError::from)?; // Decode the storage protocol's DataRecord envelope.
+        let link: StagedCreditGeneration =
+            serde_json::from_value(record.data).map_err(ClientError::from)?; // Decode the persisted generation-index entity from its storage record.
+        if link.submitted_request_id != generation {
+            return Err(CreditBindingError::WrongSelection);
+        }
+        let Some(row) =
+            read_one::<_, StagedCredit>(conn, persona_name, &link.staged_credit_id.to_string())
+                .await?
+        else {
+            // Staging can replace the parent between these reads. Retry against
+            // its new index; an absent parent is not evidence for another row.
+            return Err(CreditBindingError::AmbiguousGeneration(generation.into()));
+        };
+        if row.card_id == submitted.card_id.as_uuid()
+            && row.claim_id == Some(submitted.claim_id.as_uuid())
+            && row.owner == Some(persona_id)
+            && row.role.is_some()
+            && row
+                .receipts
+                .iter()
+                .any(|r| r.submitted_request_id == generation)
+        {
+            if selected.is_some() {
+                return Err(CreditBindingError::AmbiguousGeneration(generation.into()));
+            }
+            selected = Some(row);
+        }
+    }
+    let snapshot =
+        selected.ok_or_else(|| CreditBindingError::AmbiguousGeneration(generation.into()))?;
+    // Carry the captured snapshot through the transaction; rereading its mutable
+    // staging key here would reintroduce the inspection/publication race.
+    bind_snapshot(
+        conn,
+        persona_name,
+        persona_id,
+        selection(snapshot.id),
+        snapshot,
+    )
+    .await
+}
+
+async fn bind_snapshot<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    selection: SubmissionSelection,
+    snapshot: StagedCredit,
+) -> Result<WorkCreditBinding, CreditBindingError> {
+    let id = selection.submission_id.to_string();
     if snapshot.card_id != selection.card_id
         || snapshot.claim_id != Some(selection.claim_id)
         || snapshot.owner != Some(persona_id)

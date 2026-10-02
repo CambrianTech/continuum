@@ -1,5 +1,6 @@
 //! The CLI arm of `continuum install`: the `continuum` and `uu` a human types are
-//! the installed release's CLI, on PATH, the same bytes as the slot.
+//! the installed release's CLI, on PATH. On Windows `uu.exe` hard-links to
+//! `continuum.exe`; on Unix `uu` symlinks to it.
 //!
 //! Joel, 2026-09-18: *"continuum or uu (alias) need to work from path… must work
 //! across os's."* and *"You want users to remember almost nothing."* `uu` is THE
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 /// The names a human types. On Windows both carry `.exe` so PowerShell and cmd
 /// resolve them, not only Git bash (the installer's bare `uu` copy resolves in bash
-/// alone). On Unix the second is a symlink to the first.
+/// alone). On Windows the second is a hard link to the first; on Unix a symlink.
 pub const CLI_NAMES: [&str; 2] = ["continuum", "uu"];
 
 /// Where the CLI lives for a user: `~/.local/bin`, user-writable, conventionally on
@@ -46,6 +47,8 @@ pub enum CliDrift {
     Missing(String),
     /// The bytes differ from the slot's CLI: a stale copy.
     Stale(String),
+    /// Matching bytes, but `uu.exe` is a duplicate file rather than an alias.
+    DuplicateAlias,
     /// `~/.local/bin` is not on the user's PATH; the names resolve nowhere.
     NotOnPath(PathBuf),
 }
@@ -69,6 +72,8 @@ pub fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<Cli
             out.push(CliDrift::Missing(name.to_string()));
         } else if digest_file(&file)? != want {
             out.push(CliDrift::Stale(name.to_string()));
+        } else if name == "uu" && alias_is_duplicate(&dir.join(cli_file_name("continuum")), &file)? {
+            out.push(CliDrift::DuplicateAlias);
         }
     }
     if !path_contains(user_path, dir) {
@@ -76,6 +81,17 @@ pub fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<Cli
     }
     Ok(out)
 }
+
+#[cfg(windows)]
+fn alias_is_duplicate(primary: &Path, alias: &Path) -> Result<bool, String> {
+    if !primary.is_file() { return Ok(true); }
+    same_file::is_same_file(primary, alias)
+        .map(|same| !same)
+        .map_err(|e| format!("cannot compare CLI alias {} with {}: {e}", alias.display(), primary.display()))
+}
+
+#[cfg(not(windows))]
+fn alias_is_duplicate(_primary: &Path, _alias: &Path) -> Result<bool, String> { Ok(false) }
 
 /// Does a PATH value name `dir`? Trailing separators and case (on Windows) are not a
 /// difference; `~` is not expanded because the stored user PATH never carries it.
@@ -92,6 +108,16 @@ pub fn path_contains(path_value: &str, dir: &Path) -> bool {
 /// file open (Windows: a running CLI's image is locked; the installer waits the same
 /// ten seconds rather than terminating a user's command).
 pub fn copy_with_retry(from: &Path, to: &Path, budget: std::time::Duration) -> Result<(), String> {
+    replace_with_retry(from, to, budget, |source, target| std::fs::copy(source, target).map(|_| ()))
+}
+
+/// Give the short Windows name another directory entry for the same executable.
+pub fn hard_link_with_retry(from: &Path, to: &Path, budget: std::time::Duration) -> Result<(), String> {
+    replace_with_retry(from, to, budget, |source, target| std::fs::hard_link(source, target))
+}
+
+fn replace_with_retry(from: &Path, to: &Path, budget: std::time::Duration,
+    create: impl Fn(&Path, &Path) -> std::io::Result<()>) -> Result<(), String> {
     let deadline = std::time::Instant::now() + budget;
     loop {
         // Move the live file aside first: a mapped image cannot be overwritten, but it
@@ -107,9 +133,8 @@ pub fn copy_with_retry(from: &Path, to: &Path, budget: std::time::Duration) -> R
                 continue;
             }
         }
-        return std::fs::copy(from, to)
-            .map(|_| ())
-            .map_err(|e| format!("cannot copy {} to {}: {e}", from.display(), to.display()));
+        return create(from, to)
+            .map_err(|e| format!("cannot install {} as {}: {e}", from.display(), to.display()));
     }
 }
 
@@ -142,7 +167,21 @@ mod tests {
         assert_eq!(d, vec![CliDrift::Stale("uu".into())], "a stale alias is named; the dir is on PATH");
 
         copy_with_retry(&slot, &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap(); // unwrap: the valid case — an Err here IS the failure
+        #[cfg(windows)]
+        assert_eq!(cli_drift(&slot, &bin, &on_path).unwrap(), vec![CliDrift::DuplicateAlias]);
+        #[cfg(windows)]
+        hard_link_with_retry(&bin.join(cli_file_name("continuum")), &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap();
         assert!(cli_drift(&slot, &bin, &on_path).unwrap().is_empty(), "converged is silent"); // unwrap: the valid case — an Err here IS the failure
+        #[cfg(windows)]
+        {
+            // Removing only the primary name must repair both entries in one install.
+            let primary = bin.join(cli_file_name("continuum"));
+            std::fs::remove_file(&primary).unwrap();
+            assert_eq!(cli_drift(&slot, &bin, &on_path).unwrap(), vec![CliDrift::Missing("continuum".into()), CliDrift::DuplicateAlias]);
+            copy_with_retry(&slot, &primary, std::time::Duration::from_secs(1)).unwrap();
+            hard_link_with_retry(&primary, &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap();
+            assert!(cli_drift(&slot, &bin, &on_path).unwrap().is_empty());
+        }
         assert!(bin.join("uu.prev").is_file() || !cfg!(windows), "the old copy is moved aside, not deleted under a running process");
 
         let with_slash = format!("{}{}", bin.display(), std::path::MAIN_SEPARATOR);

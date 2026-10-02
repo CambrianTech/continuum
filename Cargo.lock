@@ -2261,7 +2261,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.9.2"
-source = "git+https://github.com/joelteply/candle.git?branch=fix%2Fmetal-memory-and-rope-neox#ce617942db6985b884b01596bfec32795de9261a"
+source = "git+https://github.com/joelteply/candle.git?rev=50756fc6ae242743b3e465e0fbb2968482c9c782#50756fc6ae242743b3e465e0fbb2968482c9c782"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -2292,7 +2292,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.9.2"
-source = "git+https://github.com/joelteply/candle.git?branch=fix%2Fmetal-memory-and-rope-neox#ce617942db6985b884b01596bfec32795de9261a"
+source = "git+https://github.com/joelteply/candle.git?rev=50756fc6ae242743b3e465e0fbb2968482c9c782#50756fc6ae242743b3e465e0fbb2968482c9c782"
 dependencies = [
  "cudaforge",
 ]
@@ -2300,7 +2300,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.9.2"
-source = "git+https://github.com/joelteply/candle.git?branch=fix%2Fmetal-memory-and-rope-neox#ce617942db6985b884b01596bfec32795de9261a"
+source = "git+https://github.com/joelteply/candle.git?rev=50756fc6ae242743b3e465e0fbb2968482c9c782#50756fc6ae242743b3e465e0fbb2968482c9c782"
 dependencies = [
  "half",
  "objc2",
@@ -2314,7 +2314,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.9.2"
-source = "git+https://github.com/joelteply/candle.git?branch=fix%2Fmetal-memory-and-rope-neox#ce617942db6985b884b01596bfec32795de9261a"
+source = "git+https://github.com/joelteply/candle.git?rev=50756fc6ae242743b3e465e0fbb2968482c9c782#50756fc6ae242743b3e465e0fbb2968482c9c782"
 dependencies = [
  "accelerate-src",
  "candle-core",
@@ -2332,7 +2332,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.9.2"
-source = "git+https://github.com/joelteply/candle.git?branch=fix%2Fmetal-memory-and-rope-neox#ce617942db6985b884b01596bfec32795de9261a"
+source = "git+https://github.com/joelteply/candle.git?rev=50756fc6ae242743b3e465e0fbb2968482c9c782#50756fc6ae242743b3e465e0fbb2968482c9c782"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -2351,7 +2351,7 @@ dependencies = [
 [[package]]
 name = "candle-ug"
 version = "0.9.2"
-source = "git+https://github.com/joelteply/candle.git?branch=fix%2Fmetal-memory-and-rope-neox#ce617942db6985b884b01596bfec32795de9261a"
+source = "git+https://github.com/joelteply/candle.git?rev=50756fc6ae242743b3e465e0fbb2968482c9c782#50756fc6ae242743b3e465e0fbb2968482c9c782"
 dependencies = [
  "ug",
  "ug-cuda",
@@ -2804,9 +2804,11 @@ dependencies = [
 name = "continuum-cli-lifecycle"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "libc",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",
@@ -2878,6 +2880,7 @@ dependencies = [
  "continuum-client",
  "continuum-orm-derive",
  "continuum-positron",
+ "continuum-tool-protocol",
  "crossbeam-channel",
  "csv",
  "dashmap",
@@ -2973,6 +2976,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "ts-rs 12.0.1",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-tool-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "ts-rs 12.0.1",
  "uuid",
 ]

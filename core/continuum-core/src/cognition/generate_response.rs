@@ -317,25 +317,28 @@ pub async fn evaluate_response(
     let inference_request = build_response_generation_request(&request, model.clone(), start_ms);
 
     let registry_arc = global_registry();
-    let registry = registry_arc.read().await;
-    // Device = `Auto` — cognition has no opinion on placement; the
-    // model identifier already names what's wanted, and the
-    // registered adapter is the authority on its own device class.
-    // Filtering by `Gpu` here (the old `InferenceDevice::default()`)
-    // wrongly excluded CPU-only adapters even when they were the
-    // only ones claiming the model — observed 2026-06-03 on Intel
-    // Mac CPU build where Paige's LlamaCppAdapter declared Cpu
-    // and was filtered out of her own response cycle.
-    let (_provider_id, adapter) = registry
-        .select(
-            Some(DEFAULT_GENERATE_PROVIDER),
-            Some(&model),
-            InferenceDevice::Auto,
-        )
-        .ok_or_else(|| GenerateResponseError::NoAdapter {
-            provider: DEFAULT_GENERATE_PROVIDER.to_string(),
-            model: Some(model.clone()),
-        })?;
+    let adapter = {
+        let registry = registry_arc.read().await;
+        // Device = `Auto` — cognition has no opinion on placement; the
+        // model identifier already names what's wanted, and the
+        // registered adapter is the authority on its own device class.
+        // Filtering by `Gpu` here (the old `InferenceDevice::default()`)
+        // wrongly excluded CPU-only adapters even when they were the
+        // only ones claiming the model — observed 2026-06-03 on Intel
+        // Mac CPU build where Paige's LlamaCppAdapter declared Cpu
+        // and was filtered out of her own response cycle.
+        let (_provider_id, adapter) = registry
+            .select_arc(
+                Some(DEFAULT_GENERATE_PROVIDER),
+                Some(&model),
+                InferenceDevice::Auto,
+            )
+            .ok_or_else(|| GenerateResponseError::NoAdapter {
+                provider: DEFAULT_GENERATE_PROVIDER.to_string(),
+                model: Some(model.clone()),
+            })?;
+        adapter
+    };
 
     let response: TextGenerationResponse = match tokio::time::timeout(
         Duration::from_millis(timeout_ms),

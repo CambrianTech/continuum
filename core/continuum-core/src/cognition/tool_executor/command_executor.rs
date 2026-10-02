@@ -629,17 +629,21 @@ impl ToolExecutor for CommandToolExecutor {
                     crate::ipc::positron_canvas_source::maybe_publish_observation(
                         &ctx.persona_name, &canonical, &value.to_string(),
                     );
-                    let image = match crate::media::artifact::retain_capture(&canonical, &mut value) {
-                        Ok(image) => image,
+                    let images = match crate::media::artifact::retain_captures(&canonical, &mut value) {
+                        Ok(images) => images,
                         Err(error) => {
                             if let Some(object) = value.as_object_mut() {
                                 object.insert("mediaError".into(), Value::String(error));
                             }
-                            None
+                            Vec::new()
                         }
                     };
+                    let mut images = images.into_iter();
+                    let image = images.next();
+                    let additional_images: Vec<_> = images.collect();
                     verdicts.push(CallVerdict {
                         image,
+                        additional_images: (!additional_images.is_empty()).then_some(additional_images),
                         tool_use_id: tool_use_id.clone(),
                         verdict,
                         dispatch_handle,
@@ -679,6 +683,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // field and a glyph that reads the other must never disagree.
                     verdicts.push(CallVerdict {
                         image: None,
+                        additional_images: None,
                         tool_use_id: tool_use_id.clone(),
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,

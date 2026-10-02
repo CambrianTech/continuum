@@ -191,6 +191,9 @@ pub struct CallVerdict {
     /// Durable visual evidence produced by this exact call, never inline pixels.
     #[serde(default)]
     pub image: Option<crate::media::artifact::ImageArtifact>,
+    /// Remaining frames from the same call (for example, other video participants).
+    #[serde(default)]
+    pub additional_images: Option<Vec<crate::media::artifact::ImageArtifact>>,
     pub tool_use_id: String,
     pub verdict: ActVerdict,
     pub dispatch_handle: Option<Uuid>,
