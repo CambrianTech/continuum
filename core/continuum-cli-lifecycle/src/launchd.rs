@@ -139,25 +139,28 @@ pub fn refusal_of_this_start(runs_before: Option<u64>, print: &str) -> Option<Sp
 pub enum StartVerdict {
     /// No refusal of this start yet: keep waiting for the core to answer.
     Pending,
-    /// The first spawn of a new build was refused by its launch constraint, and launchd has
-    /// not yet made the respawn that repairs it. Not a verdict on the build.
+    /// The first spawn of a new build was refused by its launch constraint, and the repair
+    /// spawn has not happened yet. Not a verdict on the build: [`wait_owned`] triggers it.
     AwaitingRepairRespawn(SpawnFailed),
     /// launchd refused this start and, for a launch-constraint refusal, its repair respawn too.
     Refused(SpawnFailed),
 }
 
-/// How long [`wait_owned`] waits for launchd's repair respawn after a launch-constraint
-/// refusal. launchd throttles a job that ran under its minimum runtime and respawns it about
-/// 10 s later (measured on the M5: refused 15:02:28.820, respawned 15:02:38.855); the rest is
-/// headroom. Past it, the refusal stands.
+/// How long [`wait_owned`] waits for the repair spawn it triggered after a launch-constraint
+/// refusal. launchd throttles a job that ran under its minimum runtime and defers the next
+/// spawn about 8-10 s (M5: refused 15:02:28.820, kicked 15:02:30.845, spawned 15:02:38.855);
+/// the rest is headroom. Past it, the refusal stands.
 pub const LWCR_REPAIR_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// PURE: the verdict on this start. Background Task Management pins a legacy daemon to a
 /// lightweight code requirement (LWCR) for the binary it last ran. An ad-hoc signed build
 /// has a new code hash every time, so the FIRST spawn of a newly staged build is killed with
 /// `OS_REASON_CODESIGNING | Launch Constraint Violation`, launchd logs `Requesting LWCR
-/// update on next spawn`, and its throttled respawn re-pins the job to whatever binary is in
-/// the slot and runs it (M5 2026-10-03, system log at 13:54 and 15:02). So a codesigning
+/// update on next spawn`, and that next spawn re-pins the job to whatever binary is in the
+/// slot and runs it (M5 2026-10-03, system log at 13:54 and 15:02). launchd does NOT make
+/// that spawn on its own: the job is `KeepAlive { Crashed }` and a codesigning kill is not a
+/// crash, so no respawn came in 30 s (M5 23:35Z); in the 15:02 log it was the rollback's
+/// kickstart that caused it, which is why the OLD build got re-pinned. So a codesigning
 /// refusal is final only once launchd has spawned TWICE since `runs_before` and the second
 /// was refused too. Any other refusal is final on the first spawn, as before.
 pub fn start_verdict(runs_before: Option<u64>, print: &str) -> StartVerdict {
@@ -603,6 +606,26 @@ pub mod live {
         Ok(())
     }
 
+    /// `launchctl kickstart` WITHOUT `-k`: start the job if it is not running, never stop
+    /// one that is. The LWCR repair spawn after a launch-constraint refusal (see
+    /// [`super::start_verdict`]): the job is down, so there is nothing to stop, and a plain
+    /// kickstart of a system job is permitted to its owning user where `-k` is not (M5
+    /// 2026-10-03: `kickstart -k` refused with `1: Operation not permitted`).
+    pub fn kickstart_if_stopped(domain: &Domain) -> Result<(), String> {
+        let out = Command::new("launchctl")
+            .args(["kickstart", &domain.target()])
+            .output()
+            .map_err(|e| format!("launchctl kickstart: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "launchctl kickstart {} failed: {}",
+                domain.target(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+
     /// launchd's spawn count for the job right now. Read it BEFORE the action that should
     /// make launchd spawn (a kickstart, a kill), and hand it to [`wait_owned`]: read after,
     /// an instant refusal is already counted and looks stale (BIGGIEDESK on #4681).
@@ -648,8 +671,9 @@ pub mod live {
             }
             // A refusal of THIS start ends the wait at once, with launchd's own reason;
             // waiting out the ceiling would only keep the node dark longer. The exception is
-            // a new build's launch-constraint refusal: launchd repairs it on its own respawn
-            // (see `start_verdict`), so the wait gives that respawn LWCR_REPAIR_GRACE.
+            // a new build's launch-constraint refusal: the NEXT spawn repairs it (see
+            // `start_verdict`), so the wait triggers that spawn once, on the new build still
+            // in the slot, and gives it LWCR_REPAIR_GRACE.
             let print = launchctl_print(&job.domain);
             let refused = |failed: &SpawnFailed, note: &str| {
                 format!(
@@ -661,9 +685,14 @@ pub mod live {
             match print.as_deref().map(|p| start_verdict(runs_before, p)) {
                 Some(StartVerdict::Refused(failed)) => return Err(refused(&failed, "")),
                 Some(StartVerdict::AwaitingRepairRespawn(failed)) => {
-                    let since = *awaiting_repair_since.get_or_insert_with(Instant::now);
-                    if since.elapsed() >= LWCR_REPAIR_GRACE {
-                        return Err(refused(&failed, ", and launchd made no repair respawn"));
+                    if awaiting_repair_since.is_none() {
+                        awaiting_repair_since = Some(Instant::now());
+                        if let Err(e) = kickstart_if_stopped(&job.domain) {
+                            return Err(refused(&failed, &format!(", and the repair spawn could not be triggered: {e}")));
+                        }
+                    }
+                    if awaiting_repair_since.is_some_and(|since| since.elapsed() >= LWCR_REPAIR_GRACE) {
+                        return Err(refused(&failed, ", and the repair spawn did not come up"));
                     }
                 }
                 Some(StartVerdict::Pending) | None => {}
@@ -926,13 +955,13 @@ mod tests {
     }
 
     // what this catches (M5 2026-10-03, system log 13:54 and 15:02): the FIRST spawn of every
-    // new ad-hoc build is killed by its launch constraint, and launchd's own respawn ~10 s
-    // later repairs the LWCR and runs it. Reading that first refusal as final rolled every
-    // build back inside the repair window, so the M5 never advanced past c01065ca6 all day.
-    // A codesigning refusal is final only after the repair respawn is refused too; any other
-    // refusal stays final at once.
+    // new ad-hoc build is killed by its launch constraint, and the NEXT spawn repairs the LWCR
+    // and runs it. Reading that first refusal as final rolled every build back, and the
+    // rollback's own kickstart made the repair spawn on the OLD build, so the M5 never advanced
+    // past c01065ca6 all day. A codesigning refusal is final only after the repair spawn (which
+    // wait_owned triggers on the new build) is refused too; any other refusal stays final at once.
     #[test]
-    fn a_launch_constraint_refusal_waits_for_launchds_repair_respawn() {
+    fn a_launch_constraint_refusal_waits_for_the_repair_spawn() {
         let print = |runs: u64, reason: &str| {
             format!("com.continuum.core = {{\n\tstate = not running\n\truns = {runs}\n\tlast exit reason = {reason}\n\tjob state = spawn failed\n}}")
         };
