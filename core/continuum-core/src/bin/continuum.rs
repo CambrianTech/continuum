@@ -1742,11 +1742,37 @@ impl PreparedCoreService {
                 self.job.domain.target(),
                 self.job.slot.display()
             );
-            launchd::live::kickstart(&self.job.domain)?;
             let socket = socket_path();
+            let core_pid = {
+                let socket = socket.clone();
+                move || launchd::live::serving_core_pid(&socket)
+            };
+            // One road for a refused kickstart and a refused spawn: the old core is
+            // already stopped, so either one with nothing answering is a dark node.
+            let started_new = match launchd::live::kickstart(&self.job.domain) {
+                Ok(()) => launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60))
+                    .await
+                    .map(|_| ()),
+                Err(refused) => Err(refused),
+            };
+            let staged_failed = match launchd::after_staged_start(started_new, core_is_up().await) {
+                launchd::HandoffNext::Done => return Ok(started.elapsed().as_secs()),
+                launchd::HandoffNext::Report(why) => return Err(why),
+                launchd::HandoffNext::RollBack(why) => why,
+            };
+            eprintln!("⚠ {staged_failed}\n▶ restoring the previous build and kickstarting it");
+            let kept = launchd::live::restore_previous(&self.job)
+                .map_err(|e| format!("{staged_failed}; the node is DARK: {e}"))?;
+            launchd::live::kickstart(&self.job.domain)
+                .map_err(|e| format!("{staged_failed}; restored the previous build but the node is DARK: {e}"))?;
             let core_pid = move || launchd::live::serving_core_pid(&socket);
-            launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await?;
-            Ok(started.elapsed().as_secs())
+            match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+                Ok(pid) => Err(format!(
+                    "{staged_failed}; rolled back: the previous build is serving under launchd (pid {pid}), the refused one is kept at {}",
+                    kept.display()
+                )),
+                Err(again) => Err(format!("{staged_failed}; the previous build did not come up either, the node is DARK: {again}")),
+            }
         }
         #[cfg(windows)]
         {

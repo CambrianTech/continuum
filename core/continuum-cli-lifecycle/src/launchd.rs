@@ -107,6 +107,72 @@ pub fn pid_from_launchctl_print(output: &str) -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// launchd refused to start the job's program: `job state = spawn failed` with no pid.
+/// `reason` is launchd's `last exit reason` verbatim (M5 2026-10-02:
+/// `OS_REASON_CODESIGNING` on a freshly staged core, node dark until a hand).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnFailed {
+    pub reason: Option<String>,
+}
+
+/// The spawn failure `launchctl print <target>` reports, if any. A running job (a pid)
+/// is never a spawn failure, whatever an older `last exit reason` line still says.
+pub fn spawn_failed_from_launchctl_print(output: &str) -> Option<SpawnFailed> {
+    let field = |key: &str| {
+        output
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix(key))
+            .map(|v| v.trim().to_string())
+    };
+    if pid_from_launchctl_print(output).is_some() || field("job state = ").as_deref() != Some("spawn failed") {
+        return None;
+    }
+    Some(SpawnFailed { reason: field("last exit reason = ") })
+}
+
+/// What a deploy does after it stopped the serving core and asked launchd to start the
+/// staged one. `started` is the kickstart AND the wait for launchd to own a core, so a
+/// refused kickstart and a refused spawn take the same road.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandoffNext {
+    /// launchd owns the new core.
+    Done,
+    /// A core answers outside launchd: a different defect, reported as it is.
+    Report(String),
+    /// Nothing answers: the node is dark, so the build that was serving goes back.
+    RollBack(String),
+}
+
+pub fn after_staged_start(started: Result<(), String>, core_answering: bool) -> HandoffNext {
+    match (started, core_answering) {
+        (Ok(()), _) => HandoffNext::Done,
+        (Err(why), true) => HandoffNext::Report(why),
+        (Err(why), false) => HandoffNext::RollBack(why),
+    }
+}
+
+/// Put the build a stage moved aside (`<slot>.prev`) back into `slot`. The refused
+/// build is kept for inspection under a name of its own (`<slot>.failed-<now_ms>`):
+/// an earlier `.failed` someone is still looking at is never overwritten or deleted.
+/// Returns where the refused build was kept.
+pub fn restore_previous_in(slot: &Path, now_ms: u64) -> Result<PathBuf, String> {
+    let prev = slot.with_extension("prev");
+    if !prev.exists() {
+        return Err(format!("no previous build at {} to restore", prev.display()));
+    }
+    let kept = slot.with_extension(format!("failed-{now_ms}"));
+    if slot.exists() {
+        if kept.exists() {
+            return Err(format!("{} already exists; not overwriting a kept build", kept.display()));
+        }
+        std::fs::rename(slot, &kept).map_err(|e| format!("cannot move {} aside: {e}", slot.display()))?;
+    }
+    std::fs::rename(&prev, slot)
+        .map_err(|e| format!("cannot restore {} into {}: {e}", prev.display(), slot.display()))?;
+    Ok(kept)
+}
+
 /// Whether launchd's own log says the domain cannot spawn on demand — the line that
 /// explained the failed receipt. Matched on the substring launchd prints, verbatim.
 pub fn domain_is_on_demand_only(launchd_log: &str) -> bool {
@@ -440,6 +506,15 @@ pub mod live {
         Ok(job.slot.clone())
     }
 
+    /// Put the build `stage` moved aside back into the slot; see [`super::restore_previous_in`].
+    pub fn restore_previous(job: &Job) -> Result<PathBuf, String> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0); // unwrap_or: a clock before 1970 only names the kept file 0
+        super::restore_previous_in(&job.slot, now_ms)
+    }
+
     /// `launchctl kickstart -k`: launchd stops the running instance (SIGTERM — the core's
     /// save-and-join exit) and starts the job again from the slot. Works even on a gui
     /// domain in on-demand-only mode, which is why a deploy through it succeeds where
@@ -481,6 +556,15 @@ pub mod live {
                         ))
                     }
                 }
+            }
+            // launchd will not retry a spawn it refused, so waiting out the ceiling only
+            // keeps the node dark longer. Say so now, with launchd's own reason.
+            if let Some(failed) = launchctl_print(&job.domain).and_then(|o| spawn_failed_from_launchctl_print(&o)) {
+                return Err(format!(
+                    "launchd could not start {} ({}); job state = spawn failed",
+                    job.slot.display(),
+                    failed.reason.as_deref().unwrap_or("no exit reason given")
+                ));
             }
             if started.elapsed() >= ceiling {
                 return Err(format!(
@@ -646,6 +730,64 @@ mod tests {
         assert_eq!(pid_from_launchctl_print(running), Some(93518));
         let idle = "com.continuum.core = {\n\tstate = not running\n\tlast exit code = (never exited)\n}";
         assert_eq!(pid_from_launchctl_print(idle), None);
+    }
+
+    // what this catches (M5 2026-10-02): launchd refused a freshly staged core with
+    // OS_REASON_CODESIGNING and the deploy waited five minutes before giving up, with no
+    // rollback, so the node stayed dark. The failure is read from launchd's own lines; a
+    // job that is running is never a failure, even with a stale exit reason left over.
+    // what this catches (review of #4668): a kickstart that launchd refused returned
+    // early through `?` after the old core was stopped, skipping the rollback this PR
+    // adds and leaving the node dark. Refused kickstart and refused spawn are one road.
+    #[test]
+    fn a_refused_kickstart_or_spawn_with_nothing_answering_rolls_back() {
+        assert_eq!(after_staged_start(Ok(()), true), HandoffNext::Done);
+        assert_eq!(
+            after_staged_start(Err("launchctl kickstart -k system/x failed: Operation not permitted".into()), false),
+            HandoffNext::RollBack("launchctl kickstart -k system/x failed: Operation not permitted".into())
+        );
+        assert!(matches!(after_staged_start(Err("spawn failed".into()), false), HandoffNext::RollBack(_)));
+        assert!(matches!(after_staged_start(Err("orphan".into()), true), HandoffNext::Report(_)));
+    }
+
+    // what this catches (review of #4668): the rollback deleted any earlier `.failed`
+    // build before keeping the new refused one, destroying what an operator may still be
+    // inspecting. Real files: previous restored, refused kept by its own name, an older
+    // kept build untouched, and a missing previous refused without touching the slot.
+    #[test]
+    fn rollback_restores_previous_and_keeps_every_refused_build() {
+        let dir = std::env::temp_dir().join(format!("rollback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let slot = dir.join("continuum-core-server");
+        std::fs::write(&slot, b"refused").unwrap();
+        std::fs::write(slot.with_extension("prev"), b"serving").unwrap();
+        std::fs::write(slot.with_extension("failed"), b"older evidence").unwrap();
+
+        let kept = restore_previous_in(&slot, 42).expect("rollback");
+        assert_eq!(std::fs::read(&slot).unwrap(), b"serving");
+        assert_eq!(kept, slot.with_extension("failed-42"));
+        assert_eq!(std::fs::read(&kept).unwrap(), b"refused");
+        assert_eq!(std::fs::read(slot.with_extension("failed")).unwrap(), b"older evidence");
+        assert!(!slot.with_extension("prev").exists());
+
+        let err = restore_previous_in(&slot, 43).unwrap_err();
+        assert!(err.contains("no previous build"), "{err}");
+        assert_eq!(std::fs::read(&slot).unwrap(), b"serving", "a refused rollback leaves the slot alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_spawn_failure_is_read_from_launchctl_print_and_a_running_job_is_not_one() {
+        let failed = "com.continuum.core = {\n\tstate = not running\n\truns = 2\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
+        assert_eq!(
+            spawn_failed_from_launchctl_print(failed),
+            Some(SpawnFailed { reason: Some("OS_REASON_CODESIGNING".to_string()) })
+        );
+        let running = "com.continuum.core = {\n\tstate = running\n\tpid = 93518\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
+        assert_eq!(spawn_failed_from_launchctl_print(running), None);
+        let idle = "com.continuum.core = {\n\tstate = not running\n\tjob state = exited\n}";
+        assert_eq!(spawn_failed_from_launchctl_print(idle), None);
     }
 
     // what this catches (2026-09-19 13:32Z, IntelMac): the four states a Mac can be in,
