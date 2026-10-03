@@ -24,8 +24,8 @@ INSTALLED=()
 SKIPPED=()
 
 install_hook() {
-  local hook_name="$1"      # e.g. pre-commit
-  local target_script="$2"  # e.g. git-precommit.sh
+  local hook_name="$1"      # e.g. pre-push
+  local target_script="$2"  # e.g. git-prepush.sh
   local description="$3"    # human-readable
 
   local target_path="$SRC_DIR/$target_script"
@@ -48,9 +48,19 @@ EOF
   INSTALLED+=("$hook_name")
 }
 
-install_hook pre-commit  git-precommit.sh  "Comprehensive CRUD + state validation"
-install_hook post-commit git-postcommit.sh "Post-commit cleanup"
-install_hook pre-push    git-prepush.sh    "Compile + test + native-arch docker push"
+install_hook pre-push git-prepush.sh "Rust compile + test + optional native-arch docker push"
+
+# Earlier versions of this script also installed pre-commit → git-precommit.sh
+# and post-commit → git-postcommit.sh. Both targets guarded the deleted Node
+# src/ tree and are gone; a delegator left pointing at them would fail every
+# commit. Remove only delegators this script wrote, never a hand-written hook.
+for stale in pre-commit:git-precommit.sh post-commit:git-postcommit.sh; do
+  stale_hook="$HOOKS_DIR/${stale%%:*}"
+  if [[ -f "$stale_hook" ]] && grep -q "delegates to tools/scripts/${stale#*:}" "$stale_hook"; then
+    rm -f "$stale_hook"
+    echo "🧹 Removed stale ${stale%%:*} delegator (tools/scripts/${stale#*:} no longer exists)"
+  fi
+done
 
 echo ""
 echo "✅ Git hooks setup complete"
@@ -62,8 +72,4 @@ if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   echo "⏭️  Skipped (target script missing): ${SKIPPED[*]}"
 fi
 echo ""
-echo "🛠️ Management commands:"
-echo "   npm run hooks:setup     - Run this script"
-echo "   npm run hooks:test      - Test all hooks"
-echo "   npm run hooks:status    - Show hook status"
-echo "   npm run hooks:remove    - Remove all hooks"
+echo "🛠️ Re-run with: npm run setup:git-hooks"
