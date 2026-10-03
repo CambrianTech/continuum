@@ -8,7 +8,7 @@
 # Usage in docker-compose.yml:
 #   dockerfile: ../../docker/continuum-core-cuda.Dockerfile
 #   args:
-#     GPU_FEATURES: "--no-default-features --features load-dynamic-ort,cuda"
+#     GPU_FEATURES: "--no-default-features --features load-dynamic-ort,cuda,avatar-3d"
 
 # ── Stage 1: Chef base (cargo-chef installed, system deps in place) ──
 # Mirrors the multi-stage cargo-chef pattern from continuum-core.Dockerfile
@@ -71,7 +71,7 @@ ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 
 # 1. Cook deps from the recipe ONLY (no source yet → no stub binaries
 #    produced for our workspace bins → no incremental-build false-positive).
-ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
+ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda,avatar-3d"
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 

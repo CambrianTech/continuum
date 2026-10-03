@@ -163,6 +163,9 @@ source "$SCRIPT_DIR/lib/windows-build-env.sh"
 # socket client wants.
 case "$(uname -sm)" in
   "Darwin x86_64")
+    # `--no-default-features` also drops `avatar-3d` (the Bevy 3D renderer): a CPU-only
+    # Intel Mac doesn't render 3D avatars, and bevy was ~16% of the core binary (card
+    # 0bff1a0a). Requests for a 3D face fail loudly naming the feature.
     CONTINUUM_FEATURES="--no-default-features --features livekit-webrtc,llama/mac-cpu-only"
     # ONE library compile per deploy — the arm64 rule below, which this arm never got
     # (card 7d1b3660). With the CLI lacking `livekit-webrtc`, cargo's per-invocation
@@ -197,6 +200,8 @@ case "$(uname -sm)" in
     # this every Linux/Windows deploy paid a second full lib compile for a CLI whose
     # only difference was dropping `livekit-webrtc` — no launchability gained.
     case " $CONTINUUM_FEATURES " in
+      # (`--no-default-features` also keeps `avatar-3d`/bevy out of the socket-client
+      # CLI — ~24% of its binary, never used by it.)
       *cuda*|*rocm*|*vulkan*) CONTINUUM_CLI_FEATURES="--no-default-features" ;;
       *)                      CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES" ;;
     esac

@@ -1251,10 +1251,18 @@ impl ServiceModule for VoiceModule {
                     _ => return Err(format!("Invalid cognitive state: {state_str} (expected evaluating|generating|idle)")),
                 };
 
+                #[cfg(feature = "avatar-3d")]
                 let found = if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get()
                 {
                     bevy_system.set_cognitive_state_by_identity(user_id, state)
                 } else {
+                    false
+                };
+                // Built without `avatar-3d`: no 3D avatar exists to carry the state, so
+                // nothing was set — the same answer as a renderer that isn't running.
+                #[cfg(not(feature = "avatar-3d"))]
+                let found = {
+                    let _ = (user_id, state);
                     false
                 };
 
@@ -1365,7 +1373,11 @@ impl ServiceModule for VoiceModule {
                 };
 
                 let active_sessions = self.state.resource_lifecycle.active_count();
+                #[cfg(feature = "avatar-3d")]
                 let bevy_running = crate::live::video::bevy_renderer::is_running();
+                // No renderer is compiled into this build, so it is not running.
+                #[cfg(not(feature = "avatar-3d"))]
+                let bevy_running = false;
 
                 Ok(CommandResult::Json(serde_json::json!({
                     "active_sessions": active_sessions,
@@ -1440,12 +1452,16 @@ impl ServiceModule for VoiceModule {
                 // in-flight sessions. Models will reload on next call.
                 self.state.resource_lifecycle.reset_sessions();
 
-                // Shut down Bevy renderer to reclaim ~3GB GPU/ECS memory
-                let bevy_was_running = crate::live::video::bevy_renderer::is_running();
-                if bevy_was_running {
-                    crate::live::video::bevy_renderer::shutdown();
-                    crate::live::avatar::reset_slot_pool();
-                    unloaded.push("bevy-renderer".to_string());
+                // Shut down Bevy renderer to reclaim ~3GB GPU/ECS memory (only exists
+                // under `avatar-3d`; without it there is nothing to shut down).
+                #[cfg(feature = "avatar-3d")]
+                {
+                    let bevy_was_running = crate::live::video::bevy_renderer::is_running();
+                    if bevy_was_running {
+                        crate::live::video::bevy_renderer::shutdown();
+                        crate::live::avatar::reset_slot_pool();
+                        unloaded.push("bevy-renderer".to_string());
+                    }
                 }
 
                 log_info!(

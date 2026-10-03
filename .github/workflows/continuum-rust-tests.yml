@@ -225,6 +225,54 @@ jobs:
               ;;
           esac
 
+  # The headless / CPU-only configuration: continuum-core WITHOUT the `avatar-3d`
+  # feature (no bevy, no wgpu) — what the IntelMac CPU path and the CUDA CLI build
+  # (tools/scripts/start-server.sh passes --no-default-features there). Nothing
+  # else compiles this cfg, so without this job a stray ungated `bevy_renderer::`
+  # call would rot it silently until the next IntelMac deploy failed. Its own job,
+  # not a step in cargo-test-continuum-core: that job already runs ~21 of its 30
+  # minutes, and a second feature set is a second full check of the crate plus
+  # its own dependency metadata, which would also bloat that job's shared cache.
+  cargo-check-no-avatar-3d:
+    name: cargo check continuum-core without avatar-3d (lib + bins)
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.rust != 'false'
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+      - name: System deps (same set as cargo-test-continuum-core)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          # Vendor apt lists we never install from must not fail the build (see the
+          # same step in cargo-test-continuum-core for the 2026-09-09 incident).
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
+            cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
+            libclang-dev clang build-essential \
+            libglib2.0-dev libasound2-dev libva-dev
+      - name: Cache cargo state
+        if: needs.changes.outputs.rust != 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: continuum-rust-1.95-no-avatar-3d-v1
+          cache-workspace-crates: true
+          cache-on-failure: true
+      - name: cargo check --no-default-features --features livekit-webrtc
+        if: needs.changes.outputs.rust != 'false'
+        run: cargo check -p continuum-core --lib --bins --no-default-features --features livekit-webrtc
+
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
     needs: changes

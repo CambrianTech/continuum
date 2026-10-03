@@ -3,16 +3,26 @@
 //! Allocates a temporary Bevy render slot, loads the persona's VRM model,
 //! waits for a clean frame, encodes it as PNG, and saves to disk.
 //! The resulting file is served by the HTTP server at `/avatars/{identity}.png`.
+//!
+//! The module is registered in every build ("avatar" is a required `MODULES`
+//! row), but its render path exists only under the `avatar-3d` cargo feature.
+//! Without it, `capture_snapshot` refuses with `AvatarError::Avatar3dNotCompiled`
+//! and there is no auto-refresh tick — never a substituted image.
 
+#[cfg(feature = "avatar-3d")]
 use crate::live::avatar::catalog::avatar_model_path;
+#[cfg(feature = "avatar-3d")]
 use crate::live::avatar::frame::AvatarConfig;
+#[cfg(feature = "avatar-3d")]
 use crate::live::avatar::render_loop::allocate_bevy_slot;
+#[cfg(feature = "avatar-3d")]
 use crate::live::avatar::selection::select_avatar_by_identity;
 use crate::log_info;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+#[cfg(feature = "avatar-3d")]
 use tracing::info as trace_info;
 
 pub struct AvatarModule;
@@ -33,6 +43,7 @@ impl AvatarModule {
     /// `pub(crate)`: both the `avatar/snapshot` command body (in `commands/avatar.rs`)
     /// and the module's `tick()` auto-refresh drive it. The Bevy-render domain logic
     /// stays here in the module; the command orchestrates the cache check + threading.
+    #[cfg(feature = "avatar-3d")]
     pub(crate) fn capture_snapshot(
         identity: &str,
         width: u32,
@@ -45,8 +56,8 @@ impl AvatarModule {
         pinned_vrm: Option<std::path::PathBuf>,
         // Glass box (#172): optional expression/pose to render instead of the idle
         // neutral face; `out_stem` is the state-suffixed output filename (no `.png`).
-        expression: Option<crate::live::video::bevy_renderer::Emotion>,
-        pose: Option<crate::live::video::bevy_renderer::Gesture>,
+        expression: Option<crate::live::video::avatar_types::Emotion>,
+        pose: Option<crate::live::video::avatar_types::Gesture>,
         // Mouth openness weight 0.0..1.0 (viseme/lip-sync glass box). None → resting.
         mouth: Option<f32>,
         out_stem: &str,
@@ -211,6 +222,28 @@ impl AvatarModule {
 
         Ok(format!("/avatars/{out_stem}.png"))
     }
+
+    /// Built without `avatar-3d`: there is no renderer to draw her face with.
+    /// Refuse loudly, naming the feature — never write a stand-in PNG.
+    #[cfg(not(feature = "avatar-3d"))]
+    pub(crate) fn capture_snapshot(
+        identity: &str,
+        _width: u32,
+        _height: u32,
+        _avatar_dir: &std::path::Path,
+        _pinned_vrm: Option<std::path::PathBuf>,
+        _expression: Option<crate::live::video::avatar_types::Emotion>,
+        _pose: Option<crate::live::video::avatar_types::Gesture>,
+        _mouth: Option<f32>,
+        _out_stem: &str,
+    ) -> Result<String, String> {
+        Err(
+            crate::live::avatar::AvatarError::Avatar3dNotCompiled(format!(
+                "Avatar snapshot for '{identity}'"
+            ))
+            .to_string(),
+        )
+    }
 }
 
 #[async_trait]
@@ -254,6 +287,8 @@ impl ServiceModule for AvatarModule {
         Ok(())
     }
 
+    // Without `avatar-3d` the trait's no-op tick stands: nothing to render.
+    #[cfg(feature = "avatar-3d")]
     async fn tick(&self) -> Result<(), String> {
         // Auto-refresh avatar snapshots for all known personas.
         // Only runs when Bevy is available (headless 3D renderer).

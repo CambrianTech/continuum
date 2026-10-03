@@ -308,7 +308,7 @@ platforms = ["windows", "macos", "linux"]
 # accept: the binary builds AND passes the per-subsystem GPU gates in GPU-CONTRACT.md.
 accept = "continuum-core-server.exe boots past the GPU-detection gate on the target device"
 [module.build.windows]
-# no-compromise GPU: DEFAULT features (livekit+bevy stay on GPU) + cuda. NEVER
+# no-compromise GPU: DEFAULT features (livekit + avatar-3d/bevy stay on GPU) + cuda. NEVER
 # --no-default-features (that drops livekit off the GPU).
 features = "cuda,load-dynamic-ort"     # NVIDIA; non-NVIDIA -> "directml"
 profile = "release"
