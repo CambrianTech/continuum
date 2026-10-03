@@ -1925,51 +1925,33 @@ impl Drop for WarmBuildReceipt {
     }
 }
 
-/// A warm build runs BESIDE a serving core by definition, so it yields the CPU to it: the
-/// lowest scheduling priority, inherited by cargo and every rustc it starts. At equal
-/// priority a deploy build on the IntelMac (2026-09-27, ~10 h, load 25 on 12 cores) starved
-/// its CPU-served lane: 34 of 34 generations in an hour failed their prefill bound and the
-/// citizens took no turn (Cormac's read of the captures). Background priority costs the
-/// build nothing on an idle machine and hands the cores to serving on a busy one.
+/// A warm build beside a serving core: below the core in the run queue, never throttled.
 ///
-/// Priority alone did not protect a CPU-served lane (card 682a5abf): nice reorders the run
-/// queue but frees no core, and cargo's default jobs (one per logical CPU) took the cores the
-/// lane decodes on. Beside a CPU-served engine the build also takes ONE job
-/// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
-/// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
-/// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
-/// A GPU-served lane keeps nice 19 and the job budgets but not the band: there the band kept
-/// the M5's build on its efficiency cores for over 90 minutes with no measurable decode
-/// benefit (2026-10-03); the lane's host-side work is still guarded by nice 19.
+/// Joel, 2026-10-03: "Speed of engineering iteration is everything now and building isn't a
+/// runtime feature." End users never compile (they get binaries); the machines that build are
+/// the fleet's own, where a deploy gates every fix's verification. So the build takes every
+/// core the core is not using:
+/// - nice 19 (Windows: below-normal class), inherited by cargo and every rustc, so a persona's
+///   decode still preempts it; that only orders the run queue, so idle cores all go to the build;
+/// - NO CPU-lane job cap and NO macOS background band. Those were removed: on the IntelMac they
+///   held a deploy's final links to ~95 CPU-minutes per bin across ~5h40m of wall time, and on
+///   the M5 the band alone held rustc at 8% CPU where clearing it gave 58% (#4679);
+/// - the MEMORY budget stays (`warm_build_jobs_for_memory`): that one prevents an OOM kill of the
+///   serving node, which is the never-crash contract, not a speed knob.
 fn yield_to_serving(cmd: &mut std::process::Command) {
-    // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
-    // the memory the serving node has left (a lane that fills memory must not stop deploys).
-    let backend = continuum_core::inference::llama_server::installed_engine_backend();
-    let cores = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref());
-    let memory = continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes());
-    let jobs = match (cores, memory) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
-    if let Some(jobs) = jobs {
+    if let Some(jobs) =
+        continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes())
+    {
         cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
     }
-    #[cfg(target_os = "macos")]
-    let background_band = continuum_core::inference::llama_server::warm_build_background_band(backend.as_deref());
     #[cfg(unix)]
     // SAFETY: the closure runs in the forked child before exec and calls only
     // setpriority, which is async-signal-safe; it touches no memory of the parent.
     unsafe {
         use std::os::unix::process::CommandExt;
-        cmd.pre_exec(move || {
+        cmd.pre_exec(|| {
             // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
-            // The background band, only beside a CPU-served lane (efficiency cores, throttled
-            // I/O); also on the child itself and inherited.
-            #[cfg(target_os = "macos")]
-            if background_band {
-                libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
-            }
             Ok(())
         });
     }

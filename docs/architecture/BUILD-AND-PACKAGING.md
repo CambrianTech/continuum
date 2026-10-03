@@ -105,6 +105,32 @@ The integration-smoke gap (`#22`: boot core + continuum-mcp smoke) is the next t
 
 ---
 
+## 5b. Two audiences, both fast: builds happen in CI, machines download
+
+Joel, 2026-10-03: *"separate end users of this repo from US our engineering efforts, both of which be fast"* and *"end users do not compile."* One rule serves both: **a commit is built once per platform in CI; every machine that runs it downloads it.**
+
+| | End users of the repo | Us (fleet engineering) |
+|---|---|---|
+| Wants | one-command install, never compile, fast runtime | a merged fix running on every node in minutes |
+| Branch | `main` | `canary` |
+| Built by | CI, once per platform | CI, once per platform |
+| Profile | full release (thin LTO), signed | release without LTO: fastest correct binary |
+| On the machine | installer / `continuum update` downloads, verifies, swaps | the node's deploy consumer downloads its platform's artifact, verifies, hands off |
+| Compiles locally? | never | never, except a developer iterating on their own unmerged change |
+
+**Platforms:** macOS arm64 (Metal), macOS x86_64 (CPU), Linux (CPU / CUDA / Vulkan), Windows.
+
+**Status (2026-10-03).**
+- **Docker:** `docker-images.yml` already builds and pushes `ghcr.io/cambriantech/continuum-core*` on push to `main`.
+- **Native macOS and Windows:** these installs still compile on the user's machine.
+- **Fleet nodes:** every node compiles canary on itself. The IntelMac took ~10 h per deploy, and the M5's launchd refused freshly built cores with OS_REASON_CODESIGNING.
+- **Stopgaps that only make on-node compiles hurt less:** canary builds without LTO (#4687), warm builds unthrottled (#4689), bevy behind `avatar-3d` (#4688).
+- **The fix** is the artifact pipeline above. It also gives one signing point for macOS.
+
+**Rule for changes here:** speed of iteration first. A build is not a runtime feature; never throttle it to protect a node's runtime. And don't add process (new jobs, new gates) where a download would remove the work entirely.
+
+---
+
 ## 6. Packaging & rollout — dockerized nodes → k8s
 
 The Docker surface already exists and is the rollout unit:
