@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registers_and_round_trips_through_AdapterRegistry() {
+    async fn registers_and_round_trips_through_adapter_registry() {
         let mut registry = AdapterRegistry::new();
         registry.register(std::sync::Arc::new(HeuristicInferenceAdapter::new()), 99);
         assert!(registry.is_registered(HEURISTIC_PROVIDER_ID));

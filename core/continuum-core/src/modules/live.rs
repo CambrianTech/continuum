@@ -231,7 +231,7 @@ impl ServiceModule for VoiceModule {
         self.state.executor.install(executor);
     }
 
-    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         // Spawn idle watcher here (inside tokio runtime), not in VoiceState::new()
         self.state.resource_lifecycle.spawn_idle_watcher();
         // Room text is not native model speech. The former chat:posted listener
