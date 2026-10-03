@@ -87,6 +87,72 @@ impl Probed {
     }
 }
 
+/// What a [`capture`] saw: the exit code and both streams, or why there are none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Captured {
+    /// Exited before the deadline. `code` is `None` when a signal ended it.
+    Exited { code: Option<i32>, stdout: String, stderr: String },
+    /// Still running at the deadline; killed and reaped.
+    TimedOut,
+    /// Could not be started.
+    Unstartable { error: String },
+}
+
+/// Wait for `child` until `timeout`; at the deadline kill it and reap it, so it can
+/// never act after its caller has given up on it. `None` = it was killed. The one
+/// deadline loop in this module: [`capture`] and [`probe`] are built on it, and a
+/// caller that owns a child with its own stdio (a log file, no pipes) uses it directly.
+pub fn wait_bounded(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            // Best-effort: if kill fails the child is already dying; the wait reaps it
+            // either way, so no zombie and no late action survives the deadline.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Run `program args…` within `timeout` and keep its exit code, stdout and stderr:
+/// for a caller that must tell one failure from another by the program's own words.
+pub fn capture(program: &str, args: &[&str], timeout: Duration) -> Captured {
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Captured::Unstartable { error: e.to_string() },
+    };
+    match wait_bounded(&mut child, timeout) {
+        Ok(Some(status)) => {
+            // The child is gone; reading the pipes to EOF cannot block on it.
+            let (stdout, stderr) = match child.wait_with_output() {
+                Ok(out) => (
+                    String::from_utf8_lossy(&out.stdout).into_owned(),
+                    String::from_utf8_lossy(&out.stderr).into_owned(),
+                ),
+                // The status is known; losing the bytes is a degraded answer, not a hang.
+                Err(_) => (String::new(), String::new()),
+            };
+            Captured::Exited { code: status.code(), stdout, stderr }
+        }
+        Ok(None) => Captured::TimedOut,
+        Err(e) => Captured::Unstartable { error: e.to_string() },
+    }
+}
+
 /// Run `program args…`, and return within `timeout` NO MATTER WHAT.
 ///
 /// A child still alive at the deadline is killed and reaped. The return value
@@ -94,53 +160,10 @@ impl Probed {
 /// blocks forever and none that loses the distinction between "answered no",
 /// "never answered", and "was never there".
 pub fn probe(program: &str, args: &[&str], timeout: Duration) -> Probed {
-    let mut child = match Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return Probed::Unstartable {
-                error: e.to_string(),
-            }
-        }
-    };
-
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // The child is gone; reading the pipe to EOF cannot block on it.
-                let stdout = match child.wait_with_output() {
-                    Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-                    // The child exited and we have its status; losing the bytes
-                    // is a degraded answer, not a hang. Report what we know.
-                    Err(_) => String::new(),
-                };
-                return Probed::Exited {
-                    stdout,
-                    success: status.success(),
-                };
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    // Best-effort: if kill fails the child is already dying, and
-                    // either way WE are no longer waiting on it.
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Probed::TimedOut;
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            }
-            Err(e) => {
-                return Probed::Unstartable {
-                    error: e.to_string(),
-                }
-            }
-        }
+    match capture(program, args, timeout) {
+        Captured::Exited { code, stdout, .. } => Probed::Exited { stdout, success: code == Some(0) },
+        Captured::TimedOut => Probed::TimedOut,
+        Captured::Unstartable { error } => Probed::Unstartable { error },
     }
 }
 
@@ -214,6 +237,42 @@ mod tests {
     // what this catches: a program that RUNS and reports failure (no GPU on
     // this host) being conflated with one that could not run. detect_gpu must
     // be able to tell "asked, answered no" from "never asked".
+    // what this catches (review of continuum #4672): a caller that gave up at its
+    // deadline left the child running, so it could still act afterward and overlap the
+    // next attempt. A child past the deadline must be killed before the call returns.
+    #[test]
+    #[cfg(unix)]
+    fn a_child_past_its_deadline_is_killed_and_cannot_act_afterward() {
+        let dir = std::env::temp_dir().join(format!("bounded-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let marker = dir.join("acted");
+        let _ = std::fs::remove_file(&marker);
+        let mut child = Command::new("sh")
+            .args(["-c", &format!("sleep 1; touch '{}'", marker.display())])
+            .spawn()
+            .expect("sh runs");
+        let waited = wait_bounded(&mut child, Duration::from_millis(100)).expect("wait");
+        assert_eq!(waited, None, "the child outlived its deadline and must read as killed");
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "a child killed at its deadline acted afterward");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: telling failures apart by the program's own words needs its
+    // exit code and stderr, which `probe` discards.
+    #[test]
+    #[cfg(unix)]
+    fn capture_keeps_the_exit_code_and_stderr() {
+        match capture("sh", &["-c", "echo out; echo why >&2; exit 113"], Duration::from_secs(10)) {
+            Captured::Exited { code, stdout, stderr } => {
+                assert_eq!(code, Some(113));
+                assert_eq!(stdout.trim(), "out");
+                assert_eq!(stderr.trim(), "why");
+            }
+            other => panic!("expected Exited, got {other:?}"),
+        }
+    }
+
     #[test]
     #[cfg(unix)]
     fn a_child_that_exits_nonzero_is_absent_not_ok() {

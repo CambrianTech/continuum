@@ -33,8 +33,8 @@ pub trait FdRelief: Send + Sync {
     fn relieve(&self) -> ReliefOutcome;
 }
 
-/// Restart the airc daemon through airc's own lifecycle; the freed count is measured,
-/// not assumed.
+/// Restart the airc daemon through airc's own lifecycle when it offers a transient
+/// restart; the freed count is measured, not assumed.
 pub struct DaemonRestartRelief;
 
 impl FdRelief for DaemonRestartRelief {

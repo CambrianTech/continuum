@@ -170,14 +170,23 @@ pub fn spawn() -> Spawned {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Spawned::BinaryAbsent,
         Err(e) => return Spawned::Failed(format!("airc autostart could not run: {e}")),
     };
-    // The read returns once airc has its daemon; a slow store open must not stall the
-    // budget, so it gets AUTOSTART_BOUND and then the answer wait decides.
-    let started = std::time::Instant::now();
-    while started.elapsed() < AUTOSTART_BOUND {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            break;
+    // The read returns once airc has its daemon. Past AUTOSTART_BOUND it is killed and
+    // reaped here, so a start the core gave up on can never complete later and overlap
+    // the next attempt.
+    match crate::system_resources::bounded_command::wait_bounded(&mut child, AUTOSTART_BOUND) {
+        Ok(Some(status)) if status.success() => {}
+        Ok(Some(status)) => {
+            return Spawned::Failed(format!(
+                "airc's autostart refused or failed ({status}); its words are in ~/.continuum/logs/airc-daemon.log"
+            ))
         }
-        std::thread::sleep(Duration::from_millis(100));
+        Ok(None) => {
+            return Spawned::Failed(format!(
+                "airc's autostart did not finish within {}s and was stopped",
+                AUTOSTART_BOUND.as_secs()
+            ))
+        }
+        Err(e) => return Spawned::Failed(format!("waiting on airc's autostart: {e}")),
     }
     let deadline = std::time::Instant::now() + ANSWER_BOUND;
     while std::time::Instant::now() < deadline {
@@ -242,16 +251,36 @@ fn airc_supervisor_target() -> String {
 fn airc_supervisor_state() -> SupervisorState {
     #[cfg(target_os = "macos")]
     {
-        use crate::system_resources::bounded_command::{probe, Probed};
-        match probe("launchctl", &["print", &airc_supervisor_target()], ENDPOINT_RESOLVE_BOUND) {
-            Probed::Exited { success: true, .. } => SupervisorState::Registered,
-            Probed::Exited { success: false, .. } => SupervisorState::Absent,
-            other => SupervisorState::Unreadable(format!("launchctl print: {}", other.outcome())),
-        }
+        supervisor_state_from(&crate::system_resources::bounded_command::capture(
+            "launchctl",
+            &["print", &airc_supervisor_target()],
+            ENDPOINT_RESOLVE_BOUND,
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {
         SupervisorState::Absent
+    }
+}
+
+/// launchd's own answer to `launchctl print gui/<uid>/<label>`. Only its established
+/// "no such service" answer (exit 113, "Could not find service") is Absent and so
+/// permits a direct start; a denied or broken domain query (exit 112, "Could not find
+/// domain", anything else) stays Unreadable with launchd's words.
+pub fn supervisor_state_from(answer: &crate::system_resources::bounded_command::Captured) -> SupervisorState {
+    use crate::system_resources::bounded_command::Captured;
+    match answer {
+        Captured::Exited { code: Some(0), .. } => SupervisorState::Registered,
+        Captured::Exited { code: Some(113), stderr, .. } if stderr.contains("Could not find service") => {
+            SupervisorState::Absent
+        }
+        Captured::Exited { code, stderr, .. } => SupervisorState::Unreadable(format!(
+            "launchctl print exited {}: {}",
+            code.map_or_else(|| "on a signal".to_string(), |c| c.to_string()),
+            stderr.trim()
+        )),
+        Captured::TimedOut => SupervisorState::Unreadable("launchctl print timed out".into()),
+        Captured::Unstartable { error } => SupervisorState::Unreadable(format!("launchctl print could not run: {error}")),
     }
 }
 
@@ -260,16 +289,11 @@ fn airc_supervisor_state() -> SupervisorState {
 fn start_through_airc_supervisor() -> Spawned {
     #[cfg(target_os = "macos")]
     {
-        use crate::system_resources::bounded_command::{probe, Probed};
+        use crate::system_resources::bounded_command::{capture, Captured};
         let target = airc_supervisor_target();
-        match probe("launchctl", &["kickstart", "-k", &target], ENDPOINT_RESOLVE_BOUND) {
-            Probed::Exited { success: true, .. } => {}
-            other => {
-                return Spawned::Failed(format!(
-                    "{target} is registered but launchd did not start it ({})",
-                    other.outcome()
-                ))
-            }
+        match capture("launchctl", &["kickstart", "-k", &target], ENDPOINT_RESOLVE_BOUND) {
+            Captured::Exited { code: Some(0), .. } => {}
+            other => return Spawned::Failed(format!("{target} is registered but launchd did not start it: {other:?}")),
         }
         // The answering probe, `launchctl print` and this kickstart each spend up to
         // one resolve bound before the wait starts.
@@ -310,26 +334,17 @@ pub enum Restart {
     Failed(String),
 }
 
-/// Restart the machine daemon through airc's own lifecycle: `airc stop` (its graceful
-/// stop, which any operator could run), then [`spawn`]. Never a kill by pid.
+/// Restart the machine daemon through airc's own lifecycle. Not `airc stop` then
+/// start: once airc records an operator stop intent (card 8825182f), that sequence would
+/// leave the daemon stopped for good, or erase an operator's own stop. A transient
+/// restart belongs to airc's maintenance boundary; until airc offers one, this says so
+/// instead of guessing.
 pub fn restart_through_airc() -> Restart {
-    if answering() {
-        let stopped = crate::system_resources::bounded_command::probe("airc", &["stop"], ENDPOINT_RESOLVE_BOUND * 2);
-        if stopped.stdout_if_ok().is_none() {
-            return Restart::Failed(format!("`airc stop` did not complete ({})", stopped.outcome()));
-        }
-        let deadline = std::time::Instant::now() + ANSWER_BOUND;
-        while answering() {
-            if std::time::Instant::now() >= deadline {
-                return Restart::Failed("airc acknowledged the stop but its daemon still answers".into());
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    }
-    match spawn() {
-        Spawned::Answering | Spawned::StartedByAirc => Restart::Restarted,
-        other => Restart::Failed(format!("{other:?}")),
-    }
+    Restart::Failed(
+        "airc has no transient restart entry yet (card 8825182f owns the lifecycle boundary); \
+         an operator restart is owed"
+            .into(),
+    )
 }
 
 #[cfg(test)]
@@ -376,6 +391,32 @@ mod tests {
         let direct_route = ENDPOINT_RESOLVE_BOUND * 3 + AUTOSTART_BOUND + ANSWER_BOUND;
         assert!(supervisor_route <= SPAWN_BUDGET);
         assert!(direct_route <= SPAWN_BUDGET);
+    }
+
+    // what this catches (review of #4672): every nonzero `launchctl print` read as
+    // Absent, so a denied or broken domain query permitted the direct start. Only
+    // launchd's own "no such service" answer is Absent. Fixtures are launchd's real
+    // outputs, captured on the M5 (macOS 26.5.2).
+    #[test]
+    fn only_launchds_no_such_service_answer_permits_a_direct_start() {
+        use crate::system_resources::bounded_command::Captured;
+        let exited = |code: i32, stderr: &str| Captured::Exited { code: Some(code), stdout: String::new(), stderr: stderr.into() };
+        assert_eq!(supervisor_state_from(&exited(0, "")), SupervisorState::Registered);
+        assert_eq!(
+            supervisor_state_from(&exited(113, "Bad request.\nCould not find service \"airc-join\" in domain for user gui: 501\n")),
+            SupervisorState::Absent
+        );
+        for denied in [
+            exited(112, "Bad request.\nCould not find domain for user gui: 99999\n"),
+            exited(113, "something else entirely"),
+            exited(1, "Operation not permitted"),
+            Captured::TimedOut,
+            Captured::Unstartable { error: "No such file or directory".into() },
+        ] {
+            let state = supervisor_state_from(&denied);
+            assert!(matches!(state, SupervisorState::Unreadable(_)), "{denied:?} read as {state:?}");
+            assert!(matches!(start_route(&state), StartRoute::Refuse(_)));
+        }
     }
 
     // what this catches: the scope resolving to something other than the CLI's
