@@ -3316,6 +3316,9 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         if options.runs(Arm::Core) {
             take(Arm::Core, install_core(check).await);
         }
+        if options.runs(Arm::Airc) {
+            take(Arm::Airc, install_airc(check).await);
+        }
         if options.runs(Arm::Cli) {
             // The macOS CLI arm (PATH copies follow the slot's CLI) is owed: on this OS the
             // slot carries no CLI descriptor yet. Said, never counted as converged.
@@ -3362,6 +3365,10 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         // 3. The CLI on PATH follows the slot's CLI (fresh after a stage).
         if options.runs(Arm::Cli) {
             take(Arm::Cli, install_cli(check).await);
+        }
+        // 4. The mesh: airc installed and started at login.
+        if options.runs(Arm::Airc) {
+            take(Arm::Airc, install_airc(check).await);
         }
         finish_install(check, &reports, &failed)
     }
@@ -3722,6 +3729,135 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
             }
         }
     }
+}
+
+/// The airc arm: continuum makes sure the mesh it talks through is installed and comes
+/// back after a reboot. airc stays its own product: installed by its own installer,
+/// and its login supervisor judged and repaired by its own registrar
+/// (`unix/register-autostart.sh --check`, `windows/register-autostart.ps1 -Check`).
+/// This arm only invokes them; it never reads airc's task or plist itself.
+#[cfg(any(windows, target_os = "macos"))]
+async fn install_airc(check: bool) -> Result<supervisor_install::ArmReport, String> {
+    use supervisor_install::{airc_drift, AircDrift, ArmReport};
+    let read = || {
+        let airc = airc_on_path();
+        let supervisor = airc.as_deref().and_then(|a| airc_registrar(a, RegistrarMode::Check).err());
+        let runs = airc.is_some();
+        (airc, airc_drift(runs, supervisor))
+    };
+    let (mut airc, drift) = read();
+    if drift.is_empty() {
+        println!("✓ airc: installed; its registrar reports the login supervisor converged");
+        return Ok(ArmReport::converged());
+    }
+    for d in &drift {
+        println!("  airc: {d:?}");
+    }
+    if check {
+        println!("✗ airc: drifted; `continuum install` installs airc and has airc's registrar repair its supervisor");
+        return Ok(ArmReport::read_only(drift.len()));
+    }
+    if drift.contains(&AircDrift::Missing) {
+        println!("▶ airc: installing through airc's own installer");
+        continuum_core::airc::discovery::install_airc()
+            .await
+            .map_err(|e| format!("airc install: {e}"))?;
+        airc = airc_on_path();
+    }
+    let airc = airc.ok_or("airc installed but is still not runnable on PATH; open a new shell or check ~/.local/bin")?;
+    if airc_registrar(&airc, RegistrarMode::Check).is_err() {
+        airc_registrar(&airc, RegistrarMode::Repair)?;
+    }
+    let (_, after) = read();
+    if !after.is_empty() {
+        return Err(format!("airc still drifted after its registrar ran: {after:?}"));
+    }
+    println!("✓ airc: installed; its registrar reports the login supervisor converged ({})", airc.display());
+    Ok(ArmReport { drift_before: drift.len(), drift_after: 0 })
+}
+
+/// The `airc` a login shell would run, if it runs at all (`--version` answers).
+#[cfg(any(windows, target_os = "macos"))]
+fn airc_on_path() -> Option<PathBuf> {
+    use supervisor_install::quiet_command;
+    let finder = if cfg!(windows) { "where" } else { "which" };
+    let out = quiet_command(finder).arg("airc").output().ok()?;
+    let found = String::from_utf8_lossy(&out.stdout).lines().next().map(|l| PathBuf::from(l.trim()))?;
+    let runs = out.status.success()
+        && quiet_command(&found)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    runs.then_some(found)
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegistrarMode {
+    /// Read only: `--check` / `-Check`. Never elevates.
+    Check,
+    /// Register or repair; on Windows the registrar asks for elevation only if the
+    /// existing task needs it, through its own consent path.
+    Repair,
+}
+
+/// Run airc's own supervisor registrar from the checkout airc was installed from.
+/// `Err` carries the registrar's own words (the drift, or why it could not run).
+#[cfg(any(windows, target_os = "macos"))]
+fn airc_registrar(airc: &Path, mode: RegistrarMode) -> Result<(), String> {
+    use supervisor_install::quiet_command;
+    let home = PathBuf::from(home_dir()?);
+    let marker = home.join(".airc").join("install-source");
+    let source = std::fs::read_to_string(&marker)
+        .map_err(|e| format!("cannot read {} to find airc's checkout: {e}; run `airc update`", marker.display()))?;
+    let source = PathBuf::from(source.trim());
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let registrar = source.join("unix").join("register-autostart.sh");
+        if !registrar.is_file() {
+            return Err(format!("this airc predates its supervisor registrar ({} is missing); run `airc update`", registrar.display()));
+        }
+        let mut command = quiet_command("bash");
+        command.arg(&registrar).arg(airc);
+        if mode == RegistrarMode::Check {
+            command.arg("--check");
+        }
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let registrar = source.join("windows").join("register-autostart.ps1");
+        if !registrar.is_file() {
+            return Err(format!("this airc predates its supervisor registrar ({} is missing); run `airc update`", registrar.display()));
+        }
+        let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
+        let shell = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut command = quiet_command(shell);
+        command
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File"])
+            .arg(&registrar)
+            .arg("-AircPath")
+            .arg(airc)
+            // Native module discovery across pwsh callers, as the scheduler seam does.
+            .env_remove("PSModulePath");
+        if mode == RegistrarMode::Check {
+            command.arg("-Check");
+        }
+        command
+    };
+    let out = command
+        .current_dir(&home)
+        .output()
+        .map_err(|e| format!("cannot run airc's supervisor registrar: {e}"))?;
+    if out.status.success() {
+        if mode == RegistrarMode::Repair {
+            print!("  airc: {}", String::from_utf8_lossy(&out.stdout));
+        }
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if said.is_empty() { format!("airc's registrar exited {}", out.status) } else { said })
 }
 
 /// The macOS supervisor arm of `continuum install` (card a1bd8b58): READ the registered
@@ -6259,7 +6395,7 @@ fn usage() -> String {
        continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n  \
-       continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot). Each arm reads, changes only\n                                       what drifted, says so. --check reads only. Name arms with\n                                       --supervisor --core --cli. (linux arms pending)\n  \
+       continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot), and airc (installed, started at\n                                       login). Each arm reads, changes only what drifted, says so.\n                                       --check reads only. Name arms with --supervisor --core --cli\n                                       --airc. (linux arms pending)\n  \
        continuum uninstall             unregister the supervisor job (the staged binary stays)\n  \
        continuum supervisor-status [--crash-test]\n                                       who owns the running core; --crash-test = kill -9, expect a heal < 60 s\n\
      \n\
