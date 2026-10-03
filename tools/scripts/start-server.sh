@@ -457,14 +457,13 @@ ensure_airc_daemon() {
     fi
   fi
 
-  # ONE binary for launch, ping and adoption — the one `command -v` resolves.
-  # 2026-09-07 07:01Z (IntelMac): the launch below reached a June `airc` under
+  # ONE binary for launch, ping and adoption: machine_airc runs the one `command -v`
+  # resolves. 2026-09-07 07:01Z (IntelMac): the launch reached a June `airc` under
   # ~/.cargo/bin while the installed binary was the current one, and the stale
   # daemon was then ADOPTED because it answered ping; `airc doctor` lost its
   # daemon-build row (the daemon was too old to answer the query) and read as
   # fine. Adoption now requires the daemon's build to match the binary's.
-  local airc_bin
-  airc_bin="$(command -v airc)"
+  local stale_answering=0
   if machine_airc 5 ping; then
     # `airc status` prints both: `build:` is the DAEMON's, `cli_version:` the binary's.
     local status_out daemon_build bin_build
@@ -509,45 +508,39 @@ ensure_airc_daemon() {
     if [ -z "$daemon_build" ]; then
       echo "⚠  airc daemon answered \`status\` without a \`build:\` line (cli=$bin_build) — a daemon too old for today's status shape; restarting it" >&2
     fi
-    echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
-    machine_airc 5 stop || true
-    sleep 1
-    local holders
-    holders="$(machine_daemon_pids)"
-    if [ -n "$holders" ]; then
-      kill $holders 2>/dev/null || true
-      sleep 1
-    fi
+    echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; asking airc to replace it" >&2
+    # airc's own ensure (below) stops a non-current daemon over its IPC and starts the
+    # installed one. Never the public `airc stop`: that records an OPERATOR stop
+    # intent (airc #1508), after which every automatic attach is refused until a
+    # human joins. A stale daemon is not wedged, so it is not reaped below.
+    stale_answering=1
   fi
 
   # Not answering. If a daemon process exists it is WEDGED, and a wedged holder is
   # worse than none — it answers nothing AND owns the socket, so a fresh spawn
   # would lose the bind (airc's own start gives up on a contended lock, #355).
-  # Reap before spawning: graceful verb first, then the process.
-  local wedged
-  wedged="$(machine_daemon_pids)"
+  # Reap before asking airc to start one. A wedged holder answers nothing, so it
+  # cannot take an IPC stop either; it is reaped by pid. Never `airc stop` here:
+  # that records an operator stop intent (airc #1508) for a recovery no human asked
+  # for. A stale daemon answers, so it is airc's ensure that replaces it, not this.
+  local wedged=""
+  [ "$stale_answering" = 1 ] || wedged="$(machine_daemon_pids)"
   if [ -n "$wedged" ]; then
     echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping pid(s) $wedged" >&2
-    machine_airc 5 stop || true
+    kill $wedged 2>/dev/null || true
+    sleep 1
     wedged="$(machine_daemon_pids)"
-    if [ -n "$wedged" ]; then
-      kill $wedged 2>/dev/null || true
-      sleep 1
-      wedged="$(machine_daemon_pids)"
-      [ -n "$wedged" ] && kill -9 $wedged 2>/dev/null || true
-    fi
+    [ -n "$wedged" ] && kill -9 $wedged 2>/dev/null || true
   fi
 
   local airc_log="${HOME}/.airc/runtime/daemon-boot.log"
   mkdir -p "$(dirname "$airc_log")" 2>/dev/null || true
-  echo "  starting airc daemon (boot owns it, #452) → $airc_log" >&2
-  # From $HOME, never from the repo: airc's scope is the cwd's git root, so a daemon
-  # launched here would serve the REPO's agent home and refuse the machine socket
-  # ("refusing to serve a socket this scope does not own" — 2026-09-07 10:12Z, the
-  # restart after a stop that should not have happened). The machine account is
-  # $HOME/.airc on every host; that is the daemon's home.
-  (cd "$HOME" && nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &)
-  disown 2>/dev/null || true
+  echo "  asking airc to start its daemon → $airc_log" >&2
+  # airc's own gated autostart, never a raw `airc daemon`: it honors airc's
+  # maintenance lock and operator stop intent (airc #1508), replaces a non-current
+  # daemon over IPC, and provisions the daemon's GitHub token itself. machine_airc
+  # runs it from $HOME, so it serves the machine account's scope, never the repo's.
+  machine_airc 30 events list --limit 0 --json >>"$airc_log" 2>&1 || true
 
   local waited=0
   while [ "$waited" -lt 30 ]; do
