@@ -575,29 +575,9 @@ mod tests {
 
     fn req_with(messages: Vec<ChatMessage>) -> TextGenerationRequest {
         TextGenerationRequest {
-            native_output: None,
             messages,
-            system_prompt: None,
             model: Some(HEURISTIC_DEFAULT_MODEL.to_string()),
-            provider: None,
-            temperature: None,
-            max_tokens: None,
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
-            purpose: None,
-            persona_id: None,
-            turn_bound: None,
+            ..Default::default()
         }
     }
 

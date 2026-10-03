@@ -139,7 +139,9 @@ fn prepare(
     request.room_id = Some(room.to_string());
     request.request_id = Some(request_id.clone());
     request.provider = Some(p.provider.clone());
-    request.purpose = Some("cognition/replay-request".into());
+    // Purpose also controls generation policy (e.g. the answer's reasoning
+    // reserve). Change placement only; provenance is already in PromptCall.
+    request.scheduling_purpose = Some(CognitionReplayRequest::NAME.into());
     Ok(Prepared {
         request,
         call: PromptCall {
@@ -292,6 +294,7 @@ mod tests {
         let request = TextGenerationRequest {
             model: Some("captured-model".into()),
             provider: Some("original-provider".into()),
+            purpose: Some("cognition/deliberation".into()),
             persona_id: Some(persona.to_string()),
             room_id: Some(room.to_string()),
             request_id: Some("original-request".into()),
@@ -339,11 +342,37 @@ mod tests {
             expected[field] = actual[field].clone();
         }
         expected["provider"] = serde_json::json!("explicit-provider");
-        expected["purpose"] = serde_json::json!("cognition/replay-request");
+        expected["schedulingPurpose"] = serde_json::json!("cognition/replay-request");
         assert_eq!(
-            crate::inference::slots::class_for(prepared.request.purpose.as_deref()),
+            crate::inference::slots::class_for_request(&prepared.request),
             crate::inference::slots::SlotClass::Probe
         );
+        // Regression: replay used to erase the answer reserve by replacing purpose.
+        // Exercise the actual wire policy as well as scratch-slot placement.
+        for (purpose, budget) in [
+            (Some("cognition/deliberation"), Some(3771)),
+            (Some("cognition/act"), Some(1024)),
+            (Some("cognition/vision-describe"), Some(3771)),
+            (None, None),
+        ] {
+            let mut source = read();
+            source.submitted.as_mut().expect("submission")["request"]["purpose"] =
+                serde_json::json!(purpose);
+            let mut params = p.clone();
+            params.max_tokens = Some(5028);
+            let replay = prepare(source, &params, persona).expect("policy replay");
+            let mut body = serde_json::json!({"max_tokens": replay.request.max_tokens});
+            assert_eq!(
+                crate::inference::request_body::apply_reasoning_budget(
+                    replay.request.purpose.as_deref(), &mut body
+                ),
+                budget
+            );
+            assert_eq!(
+                crate::inference::slots::class_for_request(&replay.request),
+                crate::inference::slots::SlotClass::Probe
+            );
+        }
         expected["maxTokens"] = serde_json::json!(41_053);
         assert_eq!(
             actual, expected,

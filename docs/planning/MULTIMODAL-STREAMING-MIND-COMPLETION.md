@@ -1,28 +1,35 @@
 # Multimodal streaming mind — completion plan
 
-Owner: Codex. Updated 2026-10-03 00:52 UTC. This is the active delivery plan, not a new
-architecture. Reuse the live WorkspaceCycle, CBAR stages, bus, admission,
-scheduling, model bindings, genome, AIRC and existing avatar/live session code.
-BIGGIEDESK installation belongs to the other Codex and is not this lane's gate.
+Owner: Codex. Updated 2026-10-03 08:15 UTC. This is the active delivery plan, not a new
+architecture. Reuse WorkspaceCycle, CBAR stages, bus, admission, scheduling, model
+bindings, genome, AIRC and existing avatar/live session code.
 
-Current source: `codex/native-model-binding` at `4bc42ba14`, including the shared
-remote-stream cancellation repair. Focused integration session95093 passed4/4
-in1.07s after17.88s incremental compilation; no active native compiler remains.
-That repair is pushed but not installed. Last verified CLI was build5932/ba56443ad;
-install95398's historical receipt records core/CLI convergence, but a fresh core
-SHA check is still required before the next adoption claim.
+Installed native integration: build5940 / `3ae8b8b9e4036599b17010f86e574f87a09a3e4c`.
+Supported install session3696 completed successfully; canonical continuum, uu and
+running core matched the durable checkout. The stream cancellation repair
+`4bc42ba14` is included. Replay-policy build90490 completed; five exact tests passed
+from its binary. No compiler is active. The handoff reported two
+undrained cognition requests, so lossless continuity remains unproved.
 
-Last bound-model PDF visual acceptance64407 passed in74038ms on5927/0839e37d1.
-This proves that earlier native vision path, not current native voice. Lossless
-cognition continuity, native audio, image output and persona output/playback remain
-OPEN. The latest captured model catalog declares no native audio. Use existing
-WorkspaceCycle and CallManager owners. Older timed entries below are historical;
-do not resume their completed installer/test handles.
+Actual PDF visual acceptance passed on this installed build: receipt
+`C:/Users/joelt/.continuum/state/team-proof-20260921/pdf-native-3ae8b8b9e/receipt.json`.
+The bound Qwen3.8-27B/llama-server identified the blue square and red circle from
+rendered pixels of a vector PDF with no text layer in3705ms. No controlled speedup
+claim follows. Native audio input/output, image output, persona playback and voice
+LoRA adoption remain OPEN; the captured catalog declares no native audio. See
+`docs/testing/NATIVE-MEDIA-CONTINUITY.md` for source and acceptance receipts.
 
-AIRC is installed at2f9226daa7a9 with external reader acknowledgment. Its existing
-owner is coordinating the bounded installed offline/reconnect acceptance. Keep
-local AIRC calls and lifecycle changes quiescent during that owner's test window;
-consult the team README/owner before any deployment or build.
+AIRC PR1510 is installed/running locally as93ff93e08b59. The bounded quiet reconnect
+acceptance passed with first observation at151.156 seconds and a reader ACK;
+recovery latency, fleet-wide adoption and the UI crash-before-checkpoint window
+remain explicit gaps. See airc-1510-installed-acceptance.md in the team evidence
+directory. No outage or AIRC build is active. Peer installs remain their existing
+owners' responsibility. Kimi work has resumed: isolated replay exposed a semantic
+purpose overwrite that removed the captured reasoning budget. Its correction is
+on branch `codex/replay-scheduling-policy`, stacked over `codex/native-model-binding`.
+Replay policy, command forwarding, remote roundtrip, slot placement and generated
+request binding passed. Installation and corrected live replay remain pending;
+the original empty-card cause is still unresolved.
 ## Grid execution contract (Joel, 13:15 UTC)
 
 Each distributable operation uses the existing typed command executor and AIRC
@@ -333,3 +340,27 @@ passed1.07s, incremental compilation17.88s (session95093,
 `native-stream-cancel-0042.log`). First attempt60482 exposed two fixture PeerId
 wrapper type errors, corrected before this successful run. This is source-level
 handler validation; installation and native model audio acceptance remain open.
+
+## AIRC recovery handoff — 2026-10-03 07:20 UTC
+
+PR1510 is installed locally as `93ff93e08b59`. The Windows receiver recovered an
+M5-published event without a wake-up send, first observed at151.156s after public
+rejoin (absent at146.124s). Reader acknowledgment confirms one publication and no
+resend. ORM-only event observation and monotonic consumer bookmarks are installed;
+28 focused native controls cover AIRC ordering, dedupe and bookmark persistence.
+Evidence: https://github.com/CambrianTech/airc/pull/1510#issuecomment-5966714006.
+
+This closes the bounded pair recovery criterion, not fleet-wide prompt recovery
+or Continuum UI/persona exactly-once delivery. Roughly2.5min latency remains open;
+crash between output and checkpoint remains at-least-once. No further outage is
+armed. Preserve this limit while resuming Kimi's recorded empty-card investigation
+and native multimodal implementation. Latest replay revision adoption on other
+machines must be verified independently; older fleet adoption receipts are not
+proof of93ff everywhere.
+
+2026-10-03 08:00 UTC — Kimi replay-policy correction, not yet delivered
+- Replay handle70704 completed: source8657e3bd (cursor28d1be75-60c7-42ba-ab50-ab025da25bb3:151) produced one placeholder call; isolated replay24de19a3-041d-40bd-aabc-235c2f737a98 consumed5028 tokens, finish length, zero answer/tool calls. No tools executed. Saved kimi-placeholder-isolated-replay.json.
+- Source-confirmed invalid comparison: replay prepare overwrote captured cognition/deliberation purpose with cognition/replay-request. Shared request_body consequently omitted the original3771-token reasoning budget derived from5028. This does not diagnose the original empty-card cause.
+- WIP in continuum-cli-alias codex/native-model-binding preserves semantic purpose and sets optional scheduling_purpose separately; existing slots owner resolves placement, replay remains Probe/scratch. Existing ai/generate and remote request transport preserve metadata. Existing replay and remote roundtrip fixtures extended; no new replay manager. Migrated repeated None constructor fields to the existing TextGenerationRequest derived Default (current source diff67added/399removed, includes fix/tests).
+- Preflight deploy.claim absent and no cargo/rustc processes. One cargo check -p continuum-core --lib --tests --offline active, session77048, shared D:/continuum-cold/cargo-target, log replay-policy-check.log. RESUME THIS HANDLE; do not duplicate build. Test execution, generated TS export, review, normal-hook commit and supported install remain pending. Do not rerun Kimi inference until corrected binary verified.
+- Normal AIRC coordination sent; live-to3 is not reader acknowledgment. AIRC installed acceptance remains bounded pair recovery151.156s, not fleet completion or exactly-once UI claim. No runtime restart/UAC this turn.

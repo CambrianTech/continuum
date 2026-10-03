@@ -756,29 +756,12 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // off the first turn; on M5 Metal with a larger model the
         // save is multiples of that.
         let warmup_request = TextGenerationRequest {
-            native_output: None,
             messages: vec![crate::ai::types::ChatMessage::text("user", "Hi")],
-            system_prompt: None,
-            model: None,
-            provider: None,
             temperature: Some(0.0),
             max_tokens: Some(1),
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
             request_id: Some("warmup".to_string()),
-            user_id: None,
-            room_id: None,
             purpose: Some("warmup".to_string()),
-            persona_id: None,
-            turn_bound: None,
+            ..Default::default()
         };
         match self.generate_text(warmup_request).await {
             Ok(_) => Ok(()),
@@ -1503,33 +1486,13 @@ mod tests {
 
     fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {
         TextGenerationRequest {
-            native_output: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: MessageContent::Text("Return JSON.".to_string()),
                 name: None,
             }],
-            system_prompt: None,
-            model: None,
-            provider: None,
-            temperature: None,
-            max_tokens: None,
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
             response_format,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
-            purpose: None,
-            persona_id: None,
-            turn_bound: None,
+            ..Default::default()
         }
     }
 
@@ -1734,33 +1697,17 @@ mod tests {
         let prompt = "Write a Rust function `fn is_palindrome(s: &str) -> bool` \
             that ignores case and non-alphanumeric characters. Reply with only the code.";
         let make_req = |adapters: Option<Vec<ActiveAdapterRequest>>| TextGenerationRequest {
-            native_output: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: MessageContent::Text(prompt.to_string()),
                 name: None,
             }],
-            system_prompt: None,
-            model: None,
-            provider: None,
             temperature: Some(0.0), // greedy — isolate the gene from sampling
             max_tokens: Some(256),
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
             response_format: Some(ResponseFormat::Text),
             active_adapters: adapters,
-            request_id: None,
-            user_id: None,
-            room_id: None,
-            purpose: None,
             persona_id: Some(uuid::Uuid::nil().to_string()),
-            turn_bound: None,
+            ..Default::default()
         };
 
         // context_length MUST be set explicitly — the scheduler refuses the

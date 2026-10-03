@@ -670,7 +670,6 @@ async fn run_render(
     );
 
     let request = TextGenerationRequest {
-        native_output: None,
         messages,
         system_prompt: Some(assembled.system_message),
         model: Some(input.model.clone()),
@@ -684,19 +683,11 @@ async fn run_render(
         // None, giving the model its full trained context window.
         // Hardcoding 1024 here was clipping qwen3.5 mid-<think>, leaving
         // unterminated reasoning that leaked '<think>' into chat.
-        max_tokens: None,
         top_p: Some(sampling.top_p),
         top_k: Some(sampling.top_k),
         repeat_penalty: Some(sampling.repeat_penalty),
         frequency_penalty: Some(sampling.frequency_penalty),
         repeat_last_n: Some(sampling.repeat_last_n),
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
         room_id: Some(input.turn_context.room_id.to_string()),
         purpose: Some("persona-respond".to_string()),
         // The whole point of this request is to generate a response on
@@ -705,7 +696,7 @@ async fn run_render(
         // route the seq slot's KV into the FootprintRegistry under this
         // id; adapters that don't (DMR, cloud) ignore it.
         persona_id: Some(input.persona.persona_id.to_string()),
-        turn_bound: None,
+        ..Default::default()
     };
 
     // #108 STEP 2 (cross-grid sprint, LaneDecision contract stamped 2026-07-24):

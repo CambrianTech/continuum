@@ -1511,7 +1511,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // SCRATCH slot so it structurally cannot truncate a warm tail. The
             // measured defect: sidecar gate calls pinned the turn's own slot and
             // cut its ~30k tail to their common head — reuse broke even solo.
-            let class = crate::inference::slots::class_for(request.purpose.as_deref());
+            let class = crate::inference::slots::class_for_request(&request);
             // MEASURED WORK HOLDS THE CORE (restore-economy Phase 1.a). Deferral
             // sits HERE — after classification, BEFORE the concurrency permit
             // below — so a parked Background/Probe request holds NOTHING while it

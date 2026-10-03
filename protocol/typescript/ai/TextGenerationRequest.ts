@@ -43,6 +43,12 @@ responseFormat?: ResponseFormat,
  */
 nativeOutput?: Array<NativeOutputRequest>, activeAdapters?: Array<ActiveAdapterRequest>, requestId?: string, userId?: string, roomId?: string, purpose?: string,
 /**
+ * Optional scheduling classification, independent of generation policy.
+ * Replays retain the captured purpose (including its reasoning budget) but
+ * run as probes so they cannot evict a citizen's warm activity slot.
+ */
+schedulingPurpose?: string,
+/**
  * Persona generating this request — the inference's "owner" for
  * per-persona resource attribution (KV cache bytes, GPU pressure,
  * recipe budgets). Wire format is a stringified UUID; the local

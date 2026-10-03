@@ -462,29 +462,8 @@ mod tests {
 
     fn req(text: &str) -> TextGenerationRequest {
         TextGenerationRequest {
-            native_output: None,
             messages: vec![user_msg(text)],
-            system_prompt: None,
-            model: None,
-            provider: None,
-            temperature: None,
-            max_tokens: None,
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
-            purpose: None,
-            persona_id: None,
-            turn_bound: None,
+            ..Default::default()
         }
     }
 

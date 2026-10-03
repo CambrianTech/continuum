@@ -116,33 +116,16 @@ crate::action_command! {
 /// `models/try` is to RECORD what happened, not abort.
 async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Option<f32>, String) {
     let request = TextGenerationRequest {
-        native_output: None,
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: MessageContent::Text("Reply with the single word: ok".to_string()),
             name: None,
         }],
-        system_prompt: None,
         model: Some(model_id.to_string()),
-        provider: None,
         temperature: Some(0.0),
         max_tokens: Some(16),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
         purpose: Some("models/try:text".to_string()),
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     let adapter = match registry.select(None, Some(model_id), InferenceDevice::default()) {
@@ -180,7 +163,6 @@ async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Op
 /// `(vision_ok, detail)`.
 async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, String) {
     let request = TextGenerationRequest {
-        native_output: None,
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: MessageContent::Parts(vec![
@@ -197,27 +179,11 @@ async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, 
             ]),
             name: None,
         }],
-        system_prompt: None,
         model: Some(model_id.to_string()),
-        provider: None,
         temperature: Some(0.0),
         max_tokens: Some(16),
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
         purpose: Some("models/try:vision".to_string()),
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     let adapter = match registry.select(None, Some(model_id), InferenceDevice::default()) {

@@ -478,30 +478,14 @@ async fn teacher_generate(
 ) -> Result<TeacherGeneration, CommandError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let request = TextGenerationRequest {
-        native_output: None,
         messages,
-        system_prompt: None,
         model: Some(model.to_string()),
         provider: Some(PROVIDER_ID.to_string()),
         temperature: Some(temperature),
         // The model owns its length — no ceiling. A hard cap truncates code mid-fn.
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
         request_id: Some(request_id.clone()),
-        user_id: None,
-        room_id: None,
         purpose: Some("genome/teach".to_string()),
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     let response: TextGenerationResponse = adapter
