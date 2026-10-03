@@ -159,14 +159,17 @@ fn forward_stream_chunk(
 /// Closure-driven stub for unit tests. Construct with a function
 /// that maps a request to either a response or an error; the stub
 /// invokes it inline.
+#[cfg(any(test, feature = "test-fixtures"))]
 pub struct StubInferenceTransport {
     handler: Box<StubInferenceHandler>,
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 type StubInferenceHandler = dyn Fn(&RemoteInferenceRequest) -> Result<RemoteInferenceResponse, RemoteInferenceError>
     + Send
     + Sync;
 
+#[cfg(any(test, feature = "test-fixtures"))]
 impl StubInferenceTransport {
     pub fn new<F>(handler: F) -> Arc<Self>
     where
@@ -180,6 +183,7 @@ impl StubInferenceTransport {
         })
     }
 
+
     /// Always-errors variant — useful for testing the adapter's
     /// error propagation paths.
     pub fn always_failing(err: RemoteInferenceError) -> Arc<Self> {
@@ -187,8 +191,20 @@ impl StubInferenceTransport {
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 #[async_trait]
 impl AircInferenceTransport for StubInferenceTransport {
+    async fn send_request_streaming(
+        &self,
+        request: RemoteInferenceRequest,
+        sink: crate::ai::stream_sinks::GenerationSink,
+    ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
+        let response = (self.handler)(&request)?;
+        sink.send(GenerationChunk::Token(response.text_response.text.clone()))
+            .map_err(|message| RemoteInferenceError::Transport { message })?;
+        Ok(response)
+    }
+
     async fn send_request(
         &self,
         request: RemoteInferenceRequest,
@@ -1008,7 +1024,18 @@ mod tests {
     // what this catches: missing continuous transport must not invoke a batch call.
     #[tokio::test]
     async fn a_transport_without_a_wire_refuses_batch_substitution() {
-        let stub = StubInferenceTransport::new(|_| panic!("batch fallback invoked"));
+        // Strip only the streaming capability from the shared fixture, so this
+        // still exercises the production trait's default refusal.
+        struct BatchOnly(Arc<StubInferenceTransport>);
+        #[async_trait]
+        impl AircInferenceTransport for BatchOnly {
+            async fn send_request(&self, request: RemoteInferenceRequest)
+                -> Result<RemoteInferenceResponse, RemoteInferenceError>
+            {
+                self.0.send_request(request).await
+            }
+        }
+        let stub = BatchOnly(StubInferenceTransport::new(|_| panic!("batch fallback invoked")));
         let (tx, mut rx) = crate::ai::stream_sinks::channel();
         let req = RemoteInferenceRequest::new(crate::ai::types::TextGenerationRequest::default());
         assert!(stub.send_request_streaming(req, tx).await.unwrap_err().to_string().contains("batch substitution"));

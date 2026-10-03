@@ -401,6 +401,16 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        self.generate_stream(request, crate::ai::stream_sinks::GenerationSink::discard()).await
+    }
+
+    // Explicit synthetic fixture transport, compiled only with test/test-fixtures.
+    // This exercises sink delivery failures; it is not evidence of native streaming.
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        sink: crate::ai::stream_sinks::GenerationSink,
+    ) -> Result<TextGenerationResponse, String> {
         request.require_text_output_transport(self.provider_id())?;
         // Observer fires for substrate-side hot-path inference call
         // counts.
@@ -463,6 +473,8 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             .request_id
             .clone()
             .unwrap_or_else(|| format!("heuristic-{}", Self::determinism_prefix(&request)));
+
+        sink.send(crate::ai::adapter::GenerationChunk::Token(text.clone()))?;
 
         Ok(TextGenerationResponse {
             text,

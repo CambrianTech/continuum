@@ -4,7 +4,7 @@
  * Provider-independent native output intent. Encoding and voice are explicit
  * request data, never inferred from a model name or a stock speech backend.
  */
-export type NativeOutputRequest = { "modality": "image", mime_type: string, } | { "modality": "audio", mime_type: string,
+export type NativeOutputRequest = { "modality": "image", mime_type: string, } | { "modality": "audio", mime_type: string, 
 /**
  * None leaves vocal identity with the bound model and its active LoRAs.
  * It does not authorize choosing a replacement TTS voice.

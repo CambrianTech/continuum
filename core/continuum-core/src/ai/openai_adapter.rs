@@ -3117,6 +3117,12 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let mut adapter = test_adapter();
         adapter.config.base_url = format!("http://{address}");
+        adapter = adapter.with_bound_model(ModelInfo {
+            id: "test-model".into(), name: "Fixture".into(), provider: "test-gateway".into(),
+            capabilities: vec![Capability::TextGeneration], context_window: 4096, max_output_tokens: 512,
+            cost_per_1k_tokens: crate::ai::types::CostPer1kTokens { input: 0.0, output: 0.0 },
+            tokens_per_second: 1.0,
+        });
         adapter.config.llamacpp_sampling_extensions = true;
         adapter.concurrency = Arc::new(tokio::sync::Semaphore::new(1));
         let activity =

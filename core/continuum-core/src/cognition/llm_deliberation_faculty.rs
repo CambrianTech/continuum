@@ -9567,6 +9567,17 @@ mod tests {
                     .map_err(Into::into)
             }
 
+            // Scripted fixture output, never a production streaming fallback.
+            async fn generate_stream(
+                &self,
+                request: TextGenerationRequest,
+                sink: crate::ai::stream_sinks::GenerationSink,
+            ) -> Result<TextGenerationResponse, String> {
+                let response = self.generate_text(request).await?;
+                sink.send(crate::ai::adapter::GenerationChunk::Token(response.text.clone()))?;
+                Ok(response)
+            }
+
             async fn generate_text(
                 &self,
                 request: TextGenerationRequest,
