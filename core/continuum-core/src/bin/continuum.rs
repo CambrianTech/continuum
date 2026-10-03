@@ -1925,6 +1925,8 @@ impl Drop for WarmBuildReceipt {
 /// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
 /// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
 /// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
+/// A GPU-served lane gets nice 19 only: the band there kept the M5's build on its efficiency
+/// cores for over 90 minutes while protecting no CPU lane (2026-10-03).
 fn yield_to_serving(cmd: &mut std::process::Command) {
     // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
     // the memory the serving node has left (a lane that fills memory must not stop deploys).
@@ -1938,17 +1940,22 @@ fn yield_to_serving(cmd: &mut std::process::Command) {
     if let Some(jobs) = jobs {
         cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
     }
+    #[cfg(target_os = "macos")]
+    let background_band = continuum_core::inference::llama_server::warm_build_background_band(backend.as_deref());
     #[cfg(unix)]
     // SAFETY: the closure runs in the forked child before exec and calls only
     // setpriority, which is async-signal-safe; it touches no memory of the parent.
     unsafe {
         use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
-            // The background band, also on the child itself and inherited.
+            // The background band, only beside a CPU-served lane (efficiency cores, throttled
+            // I/O); also on the child itself and inherited.
             #[cfg(target_os = "macos")]
-            libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
+            if background_band {
+                libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
+            }
             Ok(())
         });
     }

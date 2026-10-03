@@ -1528,6 +1528,17 @@ pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
     (backend == Some("cpu")).then_some(2)
 }
 
+/// PURE: whether a warm build beside a lane served by `backend` goes into macOS's background
+/// band, which confines it to the efficiency cores and throttles its I/O. Only a CPU-served
+/// lane needs that: its decode holds the performance cores the build would take (card
+/// 682a5abf). A GPU-served lane prefills on its device, so the band protects nothing and only
+/// slows the deploy: the M5 (Metal, the 27B resident, swap 9.4 of 10 GB) took over 90 minutes
+/// on 2026-10-03 with rustc at one job on the efficiency cores. Nice 19 still applies to every
+/// warm build; this decides only the band.
+pub fn warm_build_background_band(backend: Option<&str>) -> bool {
+    backend == Some("cpu")
+}
+
 /// Free memory at which a warm build beside a serving core runs at cargo's own job count:
 /// the measured uncapped peak (8.7 GB, every rustc together, the M5 on 2026-09-27) plus the
 /// reserve, rounded up (Cormac on #4479: at 12 the uncapped build would eat into the
@@ -6625,6 +6636,17 @@ mod tests {
         assert_eq!(warm_build_jobs(Some("metal")), None);
         assert_eq!(warm_build_jobs(Some("cuda")), None);
         assert_eq!(warm_build_jobs(None), None, "no stamp: nothing known, no cap");
+    }
+
+    // what this catches (2026-10-03, the M5): every warm build ran in the background band, so
+    // a Metal-served node built on its efficiency cores for over 90 minutes while protecting
+    // no CPU lane. Only a CPU-served lane takes the band.
+    #[test]
+    fn only_a_cpu_lane_puts_the_warm_build_in_the_background_band() {
+        assert!(warm_build_background_band(Some("cpu")));
+        assert!(!warm_build_background_band(Some("metal")));
+        assert!(!warm_build_background_band(Some("cuda")));
+        assert!(!warm_build_background_band(None), "no stamp: nothing known, no band");
     }
 
     // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine
