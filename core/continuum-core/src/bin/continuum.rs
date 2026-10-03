@@ -1771,10 +1771,15 @@ impl PreparedCoreService {
             }
             let core_pid = move || launchd::live::serving_core_pid(&socket);
             match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
-                Ok(pid) => Err(format!(
-                    "{staged_failed}; rolled back: the previous build is serving under launchd (pid {pid}), the refused one is kept at {}",
-                    kept.display()
-                )),
+                // Answering under launchd is not yet "restored": the receipt names the build that
+                // is actually running and refuses one that is not the build put back (#194).
+                Ok(pid) => Err(match restored_build_identity(&self.job.slot).await {
+                    Ok(sha) => format!(
+                        "{staged_failed}; rolled back: the previous build {sha} is serving under launchd (pid {pid}), the refused one is kept at {}",
+                        kept.display()
+                    ),
+                    Err(why) => format!("{staged_failed}; rolled back, but the restored core's identity is unproven: {why}"),
+                }),
                 Err(again) => Err(format!("{staged_failed}; the previous build did not come up either, the node is DARK: {again}")),
             }
         }
@@ -2426,6 +2431,26 @@ const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 /// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
 /// tell a HANDOFF ("the next run gets the new CLI") apart from real STALENESS, instead of
 /// warning on every successful deploy.
+/// The build a rollback put back, proven: the restored slot binary's embedded SHA must be
+/// the one the answering core reports. `Ok(sha)` only when they match.
+#[cfg(target_os = "macos")]
+async fn restored_build_identity(slot: &Path) -> Result<String, String> {
+    let expected = binary_build_sha(slot).await?;
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        connection().commands().execute_value("ping", Value::Object(Default::default())),
+    )
+    .await
+    .map_err(|_| "the restored core did not answer `ping` within 30 s".to_string())?
+    .map_err(|e| format!("the restored core did not answer `ping`: {e}"))?;
+    let actual = reply.get("buildSha").and_then(|v| v.as_str()).unwrap_or(""); // unwrap_or: an absent sha is the mismatch the check below names
+    if sha_matches(actual, &expected) {
+        Ok(expected)
+    } else {
+        Err(format!("the slot holds {expected} but the answering core reports {actual:?}"))
+    }
+}
+
 async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
     verify_deployed_build_against(rebuilt_cli, None).await
 }
