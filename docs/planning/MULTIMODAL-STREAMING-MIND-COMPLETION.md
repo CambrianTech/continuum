@@ -1,10 +1,10 @@
 # Multimodal streaming mind — completion plan
 
-Owner: Codex. Updated 2026-10-03 08:46 UTC. This is the active delivery plan, not a new
+Owner: Codex. Updated 2026-10-03 09:51 UTC. This is the active delivery plan, not a new
 architecture. Reuse WorkspaceCycle, CBAR stages, bus, admission, scheduling, model
 bindings, genome, AIRC and existing avatar/live session code.
 
-Installed native integration: build5942 / `dd1fee91b`.
+Installed native integration: build5944 / `d8bca290e`.
 Supported install session7499 completed successfully; canonical continuum, uu and
 running core match the durable checkout. The stream cancellation repair
 `4bc42ba14` is included. Replay-policy build90490 completed; five exact tests passed
@@ -384,3 +384,23 @@ command parsing and remote roundtrip migrate together; no second classification
 map is introduced. This source follow-up passed replay policy, command parsing, remote roundtrip, slot placement and both generated binding tests. Installation remains pending.
 Installed acceptance above remains specific to dd1fee91b and its earlier wire
 field. Mixed-version peers must not be assumed to honor the new class.
+
+### Fleet route follow-up — 2026-10-03 09:31 UTC
+
+Fable identified unacknowledged peer2f0aed7f as the expected-live M5 machine
+account (reader reply5fda3576). Current local daemon logs show its routed forward
+queue saturated. Peer identity/endpoint comparison is pending; healthy LAN counts
+and other peers' ACKs do not establish this route's delivery. Trust is preserved.
+Supported local install80606 remains active after the14m41 core release pass.
+Fable owns CLI dependency extraction card0bd5c6b3; no duplicate extraction here.
+
+### Installed typed scheduling acceptance — 2026-10-03 09:51 UTC
+
+Supported install80606 completed; fresh continuum, uu and running-core verification
+match d8bca290e/build5944. Execution-free replay69149 completed from the retained
+prior replay capture a88c611e (the original cursor had expired after rotation).
+Submission retained cognition/deliberation and5028 allowance, with typed
+schedulingClass=probe. It returned4001 output tokens, tool_use,164469ms; no tools
+executed. Receipt: team-proof-20260921/kimi-typed-replay-from-preserved-capture.json.
+This verifies installed typed request placement and generation policy together,
+not resolution of the original empty-card behavior or fleet-wide delivery.
