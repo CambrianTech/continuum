@@ -1206,10 +1206,15 @@ mod tests {
         let decision = |out: Vec<ResidueOutcome>| out.into_iter().map(|o| o.decision).collect::<Vec<_>>();
         assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true, &|| Ok(()))), vec!["kept"], "a live build keeps it");
         assert!(target.exists());
+        // End the simulated build's lock explicitly: another parallel test may fork
+        // while this descriptor is open, briefly retaining its shared Unix flock
+        // until exec. Closing only our descriptor does not end that inherited lock.
+        held.unlock().expect("the simulated build releases its lock");
         drop(held);
 
         // a dry run judges and takes nothing (Codex on #4528: explicit, never automatic)
-        assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, false, &|| Ok(()))), vec!["would_reclaim"]);
+        let dry_run = CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, false, &|| Ok(()));
+        assert_eq!(dry_run.iter().map(|o| o.decision.as_str()).collect::<Vec<_>>(), vec!["would_reclaim"], "dry-run outcomes: {dry_run:?}");
         assert!(target.exists(), "a dry run touches nothing");
         assert_eq!(decision(CitizenWorkspacePool::reclaim_with_roster(root.path(), &roster, later, true, &|| Ok(()))), vec!["reclaimed"]);
         assert!(!target.exists(), "idle, tagged, stale, applied: reclaimed");

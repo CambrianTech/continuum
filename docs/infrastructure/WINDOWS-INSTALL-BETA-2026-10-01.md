@@ -122,6 +122,16 @@ is no complete public-install or remote-command acceptance receipt yet.
 
 ## Hidden Windows installation work
 
+The subsequent public d8b7941c6 retest failed before consent in cold-storage
+configuration: Windows PowerShell 5 inherited a PowerShell 7 module path and
+autoloaded incompatible Security type data at `Get-Acl`. Earlier test callers
+normalized their module path, which missed this public-entry failure. The shared
+initializer now explicitly imports Management, Utility and Security from the
+running engine's `PSHOME`; the generated bootstrap invokes that same initializer.
+It preserves user module paths and does not change machine configuration.
+The process regression includes a foreign-module negative control and a real
+helper positive case. A fresh public installer receipt is still required.
+
 The installer process launcher is authored in `tools/scripts/lib/windows-elevation.ps1`.
 The remote, pre-clone entry cannot source that file yet, so its bounded generated
 region is synchronized by `tools/scripts/sync-windows-bootstrap.ps1`. Run that
@@ -168,3 +178,150 @@ These are development checks with an isolated D target and one build worker,
 not a supported public installer receipt. Dependency PR joelteply/candle#1 and
 its CI must complete before merging this integration. Public install/rerun and
 remote command/event plus useful grid GPU work remain OPEN.
+
+### 2026-10-02 — bounded AIRC entry acquisition
+
+Public canary d2604d832 passed native module initialization and all cached
+prerequisites, then stalled before launching the AIRC firewall child: PS5
+Invoke-WebRequest consumed 206 CPU seconds in roughly four minutes while its
+10448-byte entry destination remained empty. No gsudo/UAC or build had started.
+The exact owned public installer PID18224/parent30308 was verified and stopped;
+exec68330 ended -1. No downloaded installer was substituted or run manually.
+
+Invoke-AircSetup now uses a bounded HttpClient acquisition for its small entry
+script (60-second complete-response deadline, 1 MiB maximum). Script bytes are
+written only after a complete successful response. Existing manifest URL,
+hidden child ownership, arguments, exit propagation and cleanup are preserved.
+Actual PS5 loopback tests cover exact bytes, HTTP error, oversized response,
+stalled body and real downloaded child exit23. Full Windows service suite passed.
+The same manifest URL downloaded 10448 bytes in0.42seconds through the real helper
+in isolated scratch; it was not executed. Public live acceptance remains OPEN.
+
+### Hidden PS5 compiler diagnostics (2026-10-02)
+
+OPEN public acceptance: the normal Grid install completed the GPU core server
+build, then Cargo returned 101 building the CLI; the hidden coordinator displayed
+only the module failure. A tiny actual hidden PS5 `-File` reproduction proved
+native stderr was drained, but unmerged PowerShell ErrorRecords disappeared at
+the host's OS pipe boundary. The existing merged-stream launcher fixture did not
+exercise that boundary. The compiler failure itself is a separate dependency issue.
+
+The canonical shared helper now provides an executable-entry serializer; the
+public entry (including its generated pre-clone functions) uses it. Native helper
+callers retain PowerShell data/error stream semantics. Entry errors serialize once
+to OS stderr; successful values remain on the success stream, explicit native
+exit codes survive, and terminating failures exit 1 after cleanup.
+
+Validation: complete actual PS5 windows-process.test.ps1 PASS (session 7177),
+including nested hidden -File coordinators, native exit 23, terminating exit 1,
+separate data/diagnostic streams and exact single diagnostic emission. The actual
+public entry's conflicting-switch refusal is visible before any provisioning.
+Existing cancellation, successful child handoff, argv, dual-pipe and bootstrap
+projection checks pass. No build, live installer, UAC, or daemon was run. AIRC must
+consume the released shared helper and wrap its public entry in a follow-up;
+this change does not claim to fix unmodified external PowerShell scripts.
+### Verified recovery handoff (2026-10-02)
+
+A whole-update coordinator can restore and verify the previous daemon yet must
+return a failing update status. The shared launcher now accepts an explicit
+`PreserveChildrenOnExitCode` list for such completed outcomes. The default is
+empty; existing success-only behavior is unchanged. The option requires owned
+process-tree cleanup, never changes the native exit status, and never applies
+to interruption or cancellation. Callers must select the outcome only after
+verifying recovery; ordinary failures must remain outside the list.
+
+Actual hidden PS5 child/grandchild fixtures verify default refusal of exit 200,
+explicit handoff on 200 while retaining that failure status, cleanup on unlisted
+23, and cancellation cleanup even with the allowlist. AIRC integration and the
+public mapping of its internal recovery outcome remain separate acceptance work.
+No live installation, daemon, firewall, or consent action was performed.
+
+### Consent acquisition evidence (2026-10-02)
+
+The cache-on boundary now reports UTC start/end, elapsed milliseconds, resolved
+helper path and file version, cache owner/caller process IDs, and the actual exit
+status (or incomplete launch/wait). Metadata lookup cannot replace acquisition
+errors. Native diagnostics and the original failure remain intact; exit 999
+alone does not identify which actor canceled. Acquisition arguments, ownership,
+retry policy and consent behavior are unchanged.
+
+The existing full Windows PowerShell 5 service suite passed with synthetic
+success, exit 999, launcher failure and unavailable metadata, plus native stderr
+and exit-status fixtures. No live gsudo consent or provisioning was performed;
+this adds evidence for the next supported attempt, not a causal fix for 999.
+
+### Registered elevation helper discovery (2026-10-02)
+
+A nested setup can install gsudo and register its directory while its parent
+still holds an older PATH. The parent previously attempted a second acquisition,
+then refused winget's already-installed/no-upgrade result. Shared discovery now
+refreshes the session from registered User/Machine PATH on a miss before any
+acquisition, and verifies the discovered native executable through `--version`.
+Acquisition exit failures remain failures; no exit-code blanket acceptance or
+persistent environment change was added.
+
+The full PS5 service suite passed with an actual scratch executable and a
+synthetic registered-PATH boundary: stale caller discovery/reuse, a second reuse
+without acquisition, and wrong-version refusal. No live winget, UAC, account or
+firewall changes were performed. AIRC must consume the released helper pin;
+public installation acceptance remains separate.
+
+### CI consolidation evidence (2026-10-02)
+
+[Helper repair run 37057570374](https://github.com/CambrianTech/continuum/actions/runs/37057570374)
+spent 21m06s in Windows checks (16m39s compiling Rust), 18m47s in Linux library
+and handoff checks, and another 10m16s in the separate documentation-guard job.
+That last job compiled the core for 7m33s to execute two compile-fail guards whose
+reported execution took 4.07s. The Linux handoff step also compiled the normal
+core library with the same dev-fast profile. Three subsequent runs showed the
+same separate doc job taking 9m35s to 10m54s.
+
+The existing Linux job now executes those same two documentation guards after
+the handoff tests, sharing their compiled artifacts. The exact two-test assertion,
+Postgres tests, binding checks and required status contexts remain. Narrow known
+Windows helper changes select the existing Windows installer tests without an
+unrelated Rust build; unknown, dependency and workflow changes retain full gates.
+The XZ/CUDA test conditions now match their checkout condition, so docs-only runs
+cannot attempt missing scripts. No workflow or job was added; one was removed.
+
+Local selector tests and YAML structure validation pass. Hosted execution must
+still establish artifact reuse and the new timing; the old measured durations
+are not a claim of savings or binary installation acceptance.
+
+The follow-up fixture-ownership slice keeps all nine warm-build launcher
+scenarios and the one-compile static assertion in the Linux job. Windows runs
+the two native Windows success/refusal scenarios with real Git Bash path
+conversion, executable receipt and media-staging assertions; both modes reuse
+one scratch repository and one teardown. The earlier full Windows warm-suite
+step took 7 seconds, so this is duplicate scenario reduction, not a claim of
+minutes saved. Separate PowerShell/Bash CUDA adapter coverage remains intact.
+Engine-slot shell contracts run once in the required Linux job for PR/push;
+standalone manually dispatched Carl smoke keeps its own slot proof.
+### 2026-10-02 — LLVM publication completeness (OPEN live acceptance)
+
+The DLL-only reuse guard could accept an interrupted copy before resource
+headers reached the managed payload directory. LLVM now writes an owned pending
+marker before copying, verifies every staged DLL/resource file by SHA256 against
+a manifest-bound receipt, and atomically publishes the receipt before clearing
+pending. Normal setup repairs missing, damaged, interrupted or differently
+pinned installs; ExistingOnly refuses them. Unrelated destination files remain
+untouched. LLVM receipts are separate from inference-engine lifecycle records.
+
+The existing XZ fixture now forces failure after the first destination copy and
+checks rerun recovery, missing/corrupt receipts, modified resource headers,
+source-pin changes, unchanged reruns, literal cold paths and unrelated data.
+Real PS5 publication checks pass with an explicitly preseeded, checksum-verified
+scratch decoder; this does NOT prove PS5 decoder acquisition. Full decoder
+acquisition plus the same LLVM cases pass under PS7. The full PS5 service suite,
+including public preparation using complete synthetic LLVM files, passes.
+No real LLVM download/extraction, user environment registration, UAC, Rust build,
+or live installer changes were used for this follow-up.
+
+Separate OPEN evidence: the initial full PS5 XZ fixture (session8691) remained
+at unchanged decoder Expand-Archive acquisition for over 90 seconds, with only
+the verified 1099395-byte ZIP and payload-root present, no decoder executable.
+The exact scratch test owner PID31236/child348 was verified and stopped; no
+public installer was stopped. Decoder acquisition is not repaired by this patch.
+The service fixture initially selected Codex's Git without Bash; selecting the
+installed Git for Windows in that test process's PATH allowed its existing
+ancestry regression to run. No global PATH or setup policy was changed.

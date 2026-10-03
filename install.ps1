@@ -29,16 +29,43 @@ param(
 )
 
 # BEGIN GENERATED INSTALLER PROCESS - tools/scripts/sync-windows-bootstrap.ps1
+function Initialize-InstallerPowerShell {
+    # A PS7 desktop host may pass its PSModulePath to Windows PowerShell 5.
+    # Load the running engine's built-ins explicitly before autoload can select
+    # another engine's Security/Utility type data. Keep user module paths intact.
+    foreach ($name in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security')) {
+        $manifest = [IO.Path]::Combine($PSHOME, 'Modules', $name, ($name + '.psd1'))
+        Import-Module $manifest -Global -ErrorAction Stop
+    }
+}
+
+function Invoke-InstallerEntryPoint {
+    param([Parameter(Mandatory = $true)][scriptblock]$Action)
+    try {
+        & $Action 2>&1 | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) {
+                [Console]::Error.WriteLine($_.ToString())
+            } else { Write-Output $_ }
+        }
+    } catch {
+        [Console]::Error.WriteLine($_.ToString())
+        exit 1
+    }
+}
+
 function Invoke-InstallerProcess {
     [CmdletBinding(DefaultParameterSetName = 'Argv')]
     param([Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
         [Parameter(ParameterSetName = 'Argv', Position = 1)][string[]]$ArgumentList = @(),
         [switch]$OwnProcessTree,
         [switch]$PreserveChildrenOnSuccess,
+        # Explicit coordinator outcomes may verify restored runtime yet report failure.
+        # This never changes the returned exit code or applies to cancellation.
+        [int[]]$PreserveChildrenOnExitCode = @(),
         # cmd.exe /c uses shell grammar rather than CommandLineToArgvW. Only
         # fixed installer shell expressions should use this explicit boundary.
         [Parameter(Mandatory = $true, ParameterSetName = 'Raw')][string]$RawArguments)
-    if ($PreserveChildrenOnSuccess -and -not $OwnProcessTree) { throw 'Successful daemon handoff requires an owned process tree.' }
+    if (($PreserveChildrenOnSuccess -or $PreserveChildrenOnExitCode.Count -gt 0) -and -not $OwnProcessTree) { throw 'Completed daemon handoff requires an owned process tree.' }
     $command = Get-Command $FilePath -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $command.Source
@@ -56,7 +83,7 @@ function Invoke-InstallerProcess {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    if ($OwnProcessTree -and -not ('Continuum.Setup.OwnedProcess' -as [type])) {
+    if ($OwnProcessTree -and -not ('Continuum.Setup.OwnedProcessV2' -as [type])) {
         # Bootstrap adapter for the same Windows job/explicit-handle-list contract
         # used by continuum-cli-lifecycle/windows_launch.rs. The kernel assigns
         # ownership before the child's first instruction, not after Process.Start.
@@ -69,7 +96,7 @@ using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 namespace Continuum.Setup {
-public sealed class OwnedProcess : IDisposable {
+public sealed class OwnedProcessV2 : IDisposable {
     [StructLayout(LayoutKind.Sequential)] struct Basic { public long User, Job; public uint Flags; public UIntPtr Min, Max; public uint Count; public UIntPtr Affinity; public uint Priority, Scheduling; }
     [StructLayout(LayoutKind.Sequential)] struct IO { public ulong A,B,C,D,E,F; }
     [StructLayout(LayoutKind.Sequential)] struct Limits { public Basic Basic; public IO IO; public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob; }
@@ -93,13 +120,13 @@ public sealed class OwnedProcess : IDisposable {
     public int ExitCode { get { uint code; if (!GetExitCodeProcess(process, out code)) throw new Win32Exception(); return unchecked((int)code); } }
     public bool WaitForExit(int milliseconds) { uint result=WaitForSingleObject(process, (uint)milliseconds); if (result==0xFFFFFFFF) throw new Win32Exception(); return result==0; }
     public void WaitForExit() { if (!WaitForExit(-1)) throw new InvalidOperationException("Process wait failed"); }
-    public void CompleteHandoff() {
-        if (!HasExited || ExitCode!=0) throw new InvalidOperationException("Only a successful coordinator may hand off its children");
+    public void CompleteHandoff(int completedExitCode) {
+        if (!HasExited || ExitCode!=completedExitCode) throw new InvalidOperationException("Only the selected completed coordinator outcome may hand off its children");
         var limits=new Limits();
         if (!SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf(typeof(Limits)))) throw new Win32Exception();
     }
-    public static OwnedProcess Start(ProcessStartInfo start) {
-        var owned = new OwnedProcess();
+    public static OwnedProcessV2 Start(ProcessStartInfo start) {
+        var owned = new OwnedProcessV2();
         IntPtr attributes=IntPtr.Zero, handles=IntPtr.Zero, jobs=IntPtr.Zero;
         bool initialized=false;
         try {
@@ -148,7 +175,7 @@ public sealed class OwnedProcess : IDisposable {
     }
     $process = $null
     try {
-        if ($OwnProcessTree) { $process = [Continuum.Setup.OwnedProcess]::Start($start) }
+        if ($OwnProcessTree) { $process = [Continuum.Setup.OwnedProcessV2]::Start($start) }
         else { $process = [Diagnostics.Process]::Start($start) }
         if (-not $process) { throw "Could not start $FilePath" }
         $stdout = $process.StandardOutput.ReadLineAsync()
@@ -169,12 +196,15 @@ public sealed class OwnedProcess : IDisposable {
         }
         while (-not $process.WaitForExit(200)) { } # Pipes may close before process exit; remain cancellable.
         $global:LASTEXITCODE = $process.ExitCode
-        # Until a complete successful coordinator return, cancellation owns all
+        # Until an explicitly accepted completed coordinator return, cancellation owns all
         # work. Build commands never transfer their descendants' lifetime.
-        if ($PreserveChildrenOnSuccess -and $process.ExitCode -eq 0) { $process.CompleteHandoff() }
+        if (($PreserveChildrenOnSuccess -and $process.ExitCode -eq 0) -or $PreserveChildrenOnExitCode -contains $process.ExitCode) { $process.CompleteHandoff($process.ExitCode) }
     } finally { if ($process) { $process.Dispose() } }
 }
 # END GENERATED INSTALLER PROCESS
+
+Invoke-InstallerEntryPoint {
+Initialize-InstallerPowerShell
 
 $ErrorActionPreference = 'Stop'
 if ($ResumePrepared -and $Update) { throw '-ResumePrepared selects an existing release and cannot be combined with -Update.' }
@@ -353,3 +383,5 @@ Write-Ok 'Continuum native install complete.'
 Write-Host '  Update: .\install.ps1 -Update  (fast-forward this checkout, build, verify, and hand over)'
 Write-Host '  Test:   continuum ping'
 Write-Host ''
+
+} # Installer entry: preserve diagnostics across hidden PowerShell process boundaries.
