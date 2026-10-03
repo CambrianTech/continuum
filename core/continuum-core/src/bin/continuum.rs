@@ -1742,33 +1742,34 @@ impl PreparedCoreService {
                 self.job.domain.target(),
                 self.job.slot.display()
             );
-            launchd::live::kickstart(&self.job.domain)?;
             let socket = socket_path();
             let core_pid = {
                 let socket = socket.clone();
                 move || launchd::live::serving_core_pid(&socket)
             };
-            let staged_failed = match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
-                Ok(_) => return Ok(started.elapsed().as_secs()),
-                Err(why) => why,
+            // One road for a refused kickstart and a refused spawn: the old core is
+            // already stopped, so either one with nothing answering is a dark node.
+            let started_new = match launchd::live::kickstart(&self.job.domain) {
+                Ok(()) => launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60))
+                    .await
+                    .map(|_| ()),
+                Err(refused) => Err(refused),
             };
-            // The old core is already stopped. A core that answers outside launchd is a
-            // different defect and is reported as is; with nothing answering, the node is
-            // dark, and the build that was serving is better than none (M5 2026-10-02:
-            // dark for hours after launchd refused a staged core).
-            if core_is_up().await {
-                return Err(staged_failed);
-            }
+            let staged_failed = match launchd::after_staged_start(started_new, core_is_up().await) {
+                launchd::HandoffNext::Done => return Ok(started.elapsed().as_secs()),
+                launchd::HandoffNext::Report(why) => return Err(why),
+                launchd::HandoffNext::RollBack(why) => why,
+            };
             eprintln!("⚠ {staged_failed}\n▶ restoring the previous build and kickstarting it");
-            launchd::live::restore_previous(&self.job)
+            let kept = launchd::live::restore_previous(&self.job)
                 .map_err(|e| format!("{staged_failed}; the node is DARK: {e}"))?;
             launchd::live::kickstart(&self.job.domain)
                 .map_err(|e| format!("{staged_failed}; restored the previous build but the node is DARK: {e}"))?;
             let core_pid = move || launchd::live::serving_core_pid(&socket);
             match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
                 Ok(pid) => Err(format!(
-                    "{staged_failed}; rolled back: the previous build is serving under launchd (pid {pid}), the refused one is at {}",
-                    self.job.slot.with_extension("failed").display()
+                    "{staged_failed}; rolled back: the previous build is serving under launchd (pid {pid}), the refused one is kept at {}",
+                    kept.display()
                 )),
                 Err(again) => Err(format!("{staged_failed}; the previous build did not come up either, the node is DARK: {again}")),
             }
