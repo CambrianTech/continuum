@@ -48,9 +48,15 @@ crate::action_command! {
             ));
         }
         let root = workspace_root_for(&this.state, ctx).await?;
+        let written = root.clone();
         let hash = blocking_git(move || git_bridge::git_commit(&root, &p.message))
             .await?
             .map_err(CommandError::Internal)?;
+        // HEAD moved: announce it from the write, not from a later poll (card f860e59c).
+        crate::code::workspace_events::note_written(
+            &crate::modules::code_commands::caller_id(ctx),
+            &written,
+        );
         Ok(GitCommitResult { hash })
     }
 }

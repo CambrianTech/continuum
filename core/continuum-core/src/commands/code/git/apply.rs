@@ -69,6 +69,7 @@ crate::action_command! {
             ));
         }
         let root = workspace_root_for(&this.state, ctx).await?;
+        let written = root.clone();
         let check = p.check;
         let message = blocking_git(move || git_bridge::git_apply(&root, &p.patch, check))
             .await?
@@ -77,6 +78,14 @@ crate::action_command! {
                  file state (ask the author for a fresh code/git/diff), or apply with \
                  check=true to inspect the conflict."
             )))?;
+        // A check-only apply touches nothing; a real one rewrote the tree — announce it
+        // from the write, not from a later poll (card f860e59c).
+        if !check {
+            crate::code::workspace_events::note_written(
+                &crate::modules::code_commands::caller_id(ctx),
+                &written,
+            );
+        }
         Ok(GitApplyResult { message })
     }
 }

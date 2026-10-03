@@ -11,6 +11,7 @@
 //! - `search` — Regex + glob code search with .gitignore awareness
 //! - `tree` — Directory tree generation
 //! - `git_bridge` — Git status, diff, and branch operations
+//! - `workspace_events` — `workspace:written` bus events emitted at every write site
 
 pub mod change_graph;
 pub mod diff_engine;
@@ -23,6 +24,7 @@ pub mod shell_types;
 pub mod syntax;
 pub mod tree;
 pub mod types;
+pub mod workspace_events;
 
 // Re-export key types for convenience
 pub use change_graph::ChangeGraph;

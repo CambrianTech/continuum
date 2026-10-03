@@ -44,12 +44,18 @@ crate::action_command! {
     output: GitAddResult,
     run(this, ctx, p) => {
         let root = workspace_root_for(&this.state, ctx).await?;
+        let written = root.clone();
         let output = blocking_git(move || {
             let refs: Vec<&str> = p.paths.iter().map(String::as_str).collect();
             git_bridge::git_add(&root, &refs)
         })
         .await?
         .map_err(CommandError::Internal)?;
+        // The index moved: announce it from the write, not from a later poll (card f860e59c).
+        crate::code::workspace_events::note_written(
+            &crate::modules::code_commands::caller_id(ctx),
+            &written,
+        );
         Ok(GitAddResult { output })
     }
 }

@@ -138,6 +138,10 @@ fn ensure_citizen_layer_from_base(
         match crate::code::git_bridge::git_sync_from_shared(&layer, base) {
             Ok(report) if report.synced => {
                 write_workspace_sync_note(&layer, &report.summary);
+                // The merge (and the note) rewrote her layer: announce it from the write
+                // so the bench board re-reads it on the event, never on a clock
+                // (card f860e59c). The layer root maps to all of her instances.
+                crate::code::workspace_events::note_written(peer, &layer);
                 crate::probe!(
                     class = "workspace.layer.sync",
                     peer = %peer,
@@ -218,6 +222,8 @@ fn ensure_citizen_layer_from_base(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "citizen layer provisioned — shared clone of the base (objects via alternates, tracked tree only)"
     );
+    // A new layer is a written workspace (clone + submodule checkout) — card f860e59c.
+    crate::code::workspace_events::note_written(peer, &layer);
     Ok(layer)
 }
 
@@ -442,8 +448,12 @@ pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), Co
         // parallel Conway implementations across un-versioned workspaces had no
         // consolidation path, and the team asked for one. Loud on failure — a
         // workspace that silently can't version work is a quiet defect.
-        crate::code::git_bridge::git_init_if_needed(&citizen_root)
+        let initialized = crate::code::git_bridge::git_init_if_needed(&citizen_root)
             .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
+        if initialized {
+            // init + root commit gave the workspace a HEAD — card f860e59c.
+            crate::code::workspace_events::note_written(who, &citizen_root);
+        }
         citizen_root
     };
     let security = PathSecurity::new(&root)
