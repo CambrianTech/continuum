@@ -316,6 +316,8 @@ impl FileEngine {
 
         // Write the file
         fs::write(&abs_path, content)?;
+        // The workspace changed: tell its observers from the write itself (card f860e59c).
+        super::workspace_events::note_written(&abs_path);
 
         // Record in change graph
         let node = ChangeNode {
@@ -536,6 +538,7 @@ impl FileEngine {
 
         // Write the modified file
         fs::write(&abs_path, &new_content)?;
+        super::workspace_events::note_written(&abs_path);
 
         // Record in change graph
         let node = ChangeNode {
@@ -617,6 +620,7 @@ impl FileEngine {
 
         // Delete the file
         fs::remove_file(&abs_path)?;
+        super::workspace_events::note_written(&abs_path);
 
         // Record in change graph
         let node = ChangeNode {
@@ -761,6 +765,9 @@ impl FileEngine {
                 .unwrap_or_else(|| current_content.clone());
             fs::write(&abs_path, &restored)?;
         }
+        // Every undo arm rewrote (or removed) the one restored file. `undo_last` folds
+        // through here, so each of its undos announces itself too.
+        super::workspace_events::note_written(&abs_path);
 
         Ok(WriteResult {
             success: true,

@@ -73,3 +73,4 @@ pub mod vdd;
 pub mod vector;
 pub mod vision;
 pub mod web;
+pub mod workspace_artifacts;

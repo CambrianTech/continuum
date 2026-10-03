@@ -2210,6 +2210,15 @@ pub fn start_server(
     // Pushed shell completions (2026-08-24): the exit fold publishes
     // command:completed for handed-back executions; wire it the bus once.
     crate::code::shell_session::set_shell_completion_bus(runtime.bus_arc());
+    // Workspace writes (card f860e59c): every write site announces `workspace:written`;
+    // the bench board's artifact registry recomputes a tree's diff on THAT event, never
+    // by spawning git on a clock. Wired here, unconditionally — `benchmark/runs` and the
+    // standing autopilot read the registry too, not only the websocket board.
+    crate::code::workspace_events::set_workspace_event_bus(runtime.bus_arc());
+    crate::commands::workspace_artifacts::spawn_workspace_artifact_watcher(
+        &rt_handle,
+        runtime.bus_arc(),
+    );
     let code_state = Arc::new(CodeState::new(
         file_engines.clone(),
         shell_sessions.clone(),

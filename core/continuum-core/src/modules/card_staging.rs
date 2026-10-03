@@ -363,6 +363,11 @@ pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Stagi
         ms = started.elapsed().as_millis() as u64,
         "on-claim staging — the claimer's workspace prepared per the card's recipe"
     );
+    // A staged tree (fresh clone, pristine restage, or shield) is a written workspace:
+    // the bench board learns of it from this event, not from a clock (card f860e59c).
+    if let Staging::Ready { path } = &outcome {
+        crate::code::workspace_events::note_written(path);
+    }
     outcome
 }
 

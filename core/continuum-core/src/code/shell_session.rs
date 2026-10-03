@@ -368,6 +368,11 @@ impl ShellSession {
 
         rt_handle.spawn(async move {
             run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms).await;
+            // A finished command may have written anywhere under its cwd (a build, a
+            // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
+            // not — observers re-read the workspace on this event instead of
+            // polling it with git on a clock (card f860e59c).
+            super::workspace_events::note_written(&cwd);
         });
 
         log_info!(
