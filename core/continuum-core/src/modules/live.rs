@@ -1455,14 +1455,17 @@ impl ServiceModule for VoiceModule {
                 // Shut down Bevy renderer to reclaim ~3GB GPU/ECS memory (only exists
                 // under `avatar-3d`; without it there is nothing to shut down).
                 #[cfg(feature = "avatar-3d")]
-                {
-                    let bevy_was_running = crate::live::video::bevy_renderer::is_running();
-                    if bevy_was_running {
+                let bevy_was_running = {
+                    let running = crate::live::video::bevy_renderer::is_running();
+                    if running {
                         crate::live::video::bevy_renderer::shutdown();
                         crate::live::avatar::reset_slot_pool();
                         unloaded.push("bevy-renderer".to_string());
                     }
-                }
+                    running
+                };
+                #[cfg(not(feature = "avatar-3d"))]
+                let bevy_was_running = false;
 
                 log_info!(
                     "module",
