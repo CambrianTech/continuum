@@ -131,7 +131,7 @@ for platform in "${platforms[@]}"; do
     if [ "$failure" = 0 ]; then
       [ "$status" = 0 ]
       expected_dist="$scratch/repo/apps/web/dist"
-      if [ "$platform" = MINGW64_NT-10.0 ]; then expected_dist="$(cygpath -am "$expected_dist")"; fi
+      if [ "$platform" = MINGW64_NT-10.0 ]; then expected_dist="$(PATH="$fixture_home/.cargo/bin:$PATH" cygpath -am "$expected_dist")"; fi
       grep -Fx "CONTINUUM_UI_DIST='$expected_dist'" "$fixture_home/.continuum/config.env"
       if [ "$platform" = MINGW64_NT-10.0 ]; then
         grep -q '^MEDIA_PREPARE$' "$FIXTURE_TRACE"

@@ -456,7 +456,7 @@ impl AircInferenceTransport for AircLiveTransport {
         // `params` as a `TextGenerationRequest`. RemoteInferenceRequest
         // is the transport-internal envelope; only its `text_request`
         // crosses the wire.
-        let mut params = serde_json::to_value(&request.text_request).map_err(|e| {
+        let mut params = serde_json::to_value(&request.text_request).map_err(|e| { // boundary: AIRC command wire envelope carries the remote peer's ai/generate parameters.
             RemoteInferenceError::Transport {
                 message: format!("serialize TextGenerationRequest: {e}"),
             }

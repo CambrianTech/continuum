@@ -108,7 +108,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         native_output: params
             .get("nativeOutput")
             .or_else(|| params.get("native_output"))
-            .map(|value| serde_json::from_value(value.clone()))
+            .map(|value| serde_json::from_value(value.clone())) // boundary: decode nativeOutput from the legacy JSON command/remote IPC parameter contract.
             .transpose()
             .map_err(|e| format!("Invalid native output request: {e}"))?,
         messages,
@@ -141,7 +141,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         scheduling_class: params
             .get("schedulingClass")
             .or_else(|| params.get("scheduling_class"))
-            .map(|value| serde_json::from_value(value.clone()))
+            .map(|value| serde_json::from_value(value.clone())) // boundary: decode schedulingClass from the legacy JSON command/remote IPC parameter contract.
             .transpose()
             .map_err(|e| format!("Invalid scheduling class: {e}"))?,
         // Caller-provided persona attribution. TS sends `personaId` (camelCase)
