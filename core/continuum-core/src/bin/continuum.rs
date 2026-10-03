@@ -1749,8 +1749,9 @@ impl PreparedCoreService {
             };
             // One road for a refused kickstart and a refused spawn: the old core is
             // already stopped, so either one with nothing answering is a dark node.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
             let started_new = match launchd::live::kickstart(&self.job.domain) {
-                Ok(()) => launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60))
+                Ok(()) => launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60))
                     .await
                     .map(|_| ()),
                 Err(refused) => Err(refused),
@@ -1763,14 +1764,26 @@ impl PreparedCoreService {
             eprintln!("⚠ {staged_failed}\n▶ restoring the previous build and kickstarting it");
             let kept = launchd::live::restore_previous(&self.job)
                 .map_err(|e| format!("{staged_failed}; the node is DARK: {e}"))?;
-            launchd::live::kickstart(&self.job.domain)
-                .map_err(|e| format!("{staged_failed}; restored the previous build but the node is DARK: {e}"))?;
+            // A kickstart error is not a dark node: on the M5 (2026-10-03) `kickstart -k`
+            // reported failure at 10:08:02Z while the restored core started in that same
+            // second, most likely spawned by that kickstart before it exited non-zero. (Not
+            // KeepAlive: the plist sets it to Crashed only, which never retries a job that did
+            // not start.) Only the bounded wait decides.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
+            if let Err(e) = launchd::live::kickstart(&self.job.domain) {
+                eprintln!("⚠ kickstart of the restored build reported: {e}; waiting for launchd to start it");
+            }
             let core_pid = move || launchd::live::serving_core_pid(&socket);
-            match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
-                Ok(pid) => Err(format!(
-                    "{staged_failed}; rolled back: the previous build is serving under launchd (pid {pid}), the refused one is kept at {}",
-                    kept.display()
-                )),
+            match launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+                // Answering under launchd is not yet "restored": the receipt names the build that
+                // is actually running and refuses one that is not the build put back (#194).
+                Ok(pid) => Err(match restored_build_identity(&self.job.slot).await {
+                    Ok(sha) => format!(
+                        "{staged_failed}; rolled back: the previous build {sha} is serving under launchd (pid {pid}), the refused one is kept at {}",
+                        kept.display()
+                    ),
+                    Err(why) => format!("{staged_failed}; rolled back, but the restored core's identity is unproven: {why}"),
+                }),
                 Err(again) => Err(format!("{staged_failed}; the previous build did not come up either, the node is DARK: {again}")),
             }
         }
@@ -2417,6 +2430,42 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
 /// describing the binary you are RUNNING rather than one found on disk.
 const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 
+/// The build a rollback put back, proven: the restored slot binary's embedded SHA must be
+/// the one the answering core reports. `Ok(sha)` only when they match.
+#[cfg(target_os = "macos")]
+async fn restored_build_identity(slot: &Path) -> Result<String, String> {
+    let expected = binary_build_sha(slot).await?;
+    let actual = running_core_build_sha("restore-verify").await?.unwrap_or_default(); // unwrap_or_default: an absent sha is the mismatch the check below names
+    if sha_matches(&actual, &expected) {
+        Ok(expected)
+    } else {
+        Err(format!("the slot holds {expected} but the answering core reports {actual:?}"))
+    }
+}
+
+/// The RUNNING core's build SHA, from the process itself over `ping`, bounded at 30 s: a
+/// core that accepts the socket mid-boot but never answers made `continuum reboot` hang
+/// for good (IntelMac, 50 min, 2026-09-05). `what` names the caller in the error. The one
+/// read both the deploy receipt and the rollback's identity check use.
+async fn running_core_build_sha(what: &str) -> Result<Option<String>, String> {
+    let socket = socket_path();
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        connection()
+            .commands()
+            .execute_value("ping", Value::Object(Default::default())),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "{what}: the core on {socket} accepted the socket but did not answer `ping` \
+             within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
+        )
+    })?
+    .map_err(|e| format!("{what}: no core answering on {socket}: {e}"))?;
+    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+}
+
 /// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
 /// `reboot` (start-server.sh rebuilds + reinstalls it unless `cli_self_build` skips the
 /// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
@@ -2431,29 +2480,8 @@ async fn verify_deployed_build_against(
     prebuilt: Option<&PrebuiltCore>,
 ) -> Result<(), String> {
     let socket = socket_path();
-    // The RUNNING core's provenance, from the process itself. BOUNDED: a core
-    // that accepts the socket mid-boot but never answers made `continuum
-    // reboot` hang for good (IntelMac's node, 50 min, 2026-09-05) — the same
-    // wall-clock-forever shape as the 300 s boot watchdog, on the other side of
-    // the socket. A named failure beats a silent hang.
-    let reply = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        connection()
-            .commands()
-            .execute_value("ping", Value::Object(Default::default())),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "deploy-verify: the core on {socket} accepted the socket but did not answer `ping` \
-             within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
-        )
-    })?
-    .map_err(|e| format!("deploy-verify: no core answering on {socket}: {e}"))?;
-    let actual = reply
-        .get("buildSha")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    // The RUNNING core's provenance, from the process itself (bounded; see the helper).
+    let actual = running_core_build_sha("deploy-verify").await?;
 
     // What the deploy SHOULD have shipped.
     let (expected, expected_source) = match prebuilt {
@@ -3666,6 +3694,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
             ));
         }
         eprintln!("▶ crash test: kill -9 {victim}; waiting for {} to relaunch it", job.domain.target());
+        let runs_before = live::spawn_runs(&job.domain);
         // SAFETY: a plain signal to a pid this process just read as the supervised core.
         let rc = unsafe { libc::kill(victim as i32, libc::SIGKILL) };
         if rc != 0 {
@@ -3673,7 +3702,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
         }
         let t0 = std::time::Instant::now();
         let fresh = move || core_pid().filter(|p| *p != victim);
-        match live::wait_owned(&job, fresh, core_is_up, Duration::from_secs(120)).await {
+        match live::wait_owned(&job, runs_before, fresh, core_is_up, Duration::from_secs(120)).await {
             Ok(pid) => {
                 let secs = t0.elapsed().as_secs();
                 eprintln!("✅ healed: {} relaunched the core (pid {pid}) in {secs}s", job.domain.target());
@@ -3789,11 +3818,14 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
     // The system daemon was started by its bootstrap (RunAtLoad) inside the elevated half
     // — a kickstart there needs root and is not owed. The agent is kickstarted: on a gui
     // domain in on-demand-only mode bootstrap does NOT start it (measured).
+    // A system daemon was spawned by that bootstrap already, so a refusal there may be in
+    // this count; the wait then runs to its ceiling instead of failing fast (not wrong).
+    let runs_before = live::spawn_runs(&job.domain);
     if matches!(job.domain, Domain::Gui(_)) {
         live::kickstart(&job.domain)?;
     }
     let core_pid = || live::serving_core_pid(&socket);
-    match live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+    match live::wait_owned(&job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
         Ok(pid) => println!("✓ {} owns the core (pid {pid}); `continuum supervisor-status --crash-test` proves the heal", job.domain.target()),
         Err(why) => {
             let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(3 * 60));
