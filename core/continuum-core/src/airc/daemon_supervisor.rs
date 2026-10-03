@@ -1,21 +1,16 @@
-//! The airc daemon this core spawned — owned, probed in-process, restartable.
+//! The ONE place the core starts, observes and restarts the airc daemon.
 //!
 //! Before 2026-09-12 the boot asked `airc ipc-endpoint` (a CLI fork that prints a
 //! path and proves nothing about liveness), spawned `airc daemon`, dropped the child
 //! handle, and never looked again. When the descriptor table filled that night the
 //! only recovery was a human killing and restarting the daemon by hand. Now the core
-//! records the pid it spawned, answers "is it answering" by connecting to the socket
-//! it resolves itself, and can restart the daemon it owns — the action the
-//! [`FdPressurePool`](crate::system_resources::fd_pressure::FdPressurePool) takes.
-//! A daemon someone else started is never killed: [`Restart::NotOurs`] is a named
-//! outcome, not a silent no-op.
+//! answers "is it answering" by connecting to the socket it resolves itself, and
+//! starts and restarts the daemon only through airc's own lifecycle (its login
+//! supervisor, its gated autostart, `airc stop`), never by spawning or killing the
+//! process itself, so airc's maintenance gate and token provisioning always apply.
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-
-/// The pid of the daemon THIS process spawned; 0 = none (adopted or absent).
-static OWNED_PID: AtomicU32 = AtomicU32::new(0);
 
 /// The machine-account scope the daemon serves: `<home>/.airc`, the scope
 /// `airc daemon` run from `<home>` binds (the CLI's own default resolution).
@@ -113,14 +108,9 @@ pub fn answering() -> bool {
 pub enum Spawned {
     /// A daemon was already answering; nothing spawned.
     Answering,
-    /// Spawned and answering within the bound.
-    Started { pid: u32 },
-    /// airc's own login supervisor started it (macOS LaunchAgent): airc owns it, not us.
+    /// airc started it, through its login supervisor (macOS) or its own gated autostart,
+    /// which provisions the daemon's token. airc owns that daemon, not this core.
     StartedByAirc,
-    /// Spawned and answering, but without a GitHub token: local IPC works, while the
-    /// registry refresh cannot run and every peer ages out within ten minutes. Never
-    /// reported as healthy.
-    StartedWithoutToken { pid: u32 },
     /// The `airc` binary is not on PATH — a transportless box (CI, a fresh clone).
     BinaryAbsent,
     /// Neither USERPROFILE nor HOME is set: the machine-account scope is unresolvable.
@@ -159,35 +149,46 @@ pub fn spawn() -> Spawned {
                 .into(),
         );
     }
+    // Never a bare `airc daemon`: airc's own autostart (ensure_daemon_running, reached by
+    // any CLI read) holds its lifecycle gate, so a maintenance window refuses it, and it
+    // provisions the daemon's GitHub token itself, or logs that it could not. The core
+    // starts airc only the way airc starts itself.
     let mut command = std::process::Command::new("airc");
     command
-        .arg("daemon")
+        .args(["events", "list", "--limit", "0", "--json"])
         .current_dir(&home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(daemon_log(&home));
-    // The token `airc join` would have provisioned, when this context can read it.
-    let token = gh_token();
-    if let Some(token) = &token {
-        command.env("GH_TOKEN", token);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the boot task has no console
     }
-    let child = command.spawn();
-    let child = match child {
-        Ok(c) => c,
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Spawned::BinaryAbsent,
-        Err(e) => return Spawned::Failed(format!("airc daemon spawn: {e}")),
+        Err(e) => return Spawned::Failed(format!("airc autostart could not run: {e}")),
     };
-    let pid = child.id();
-    OWNED_PID.store(pid, Ordering::SeqCst);
+    // The read returns once airc has its daemon; a slow store open must not stall the
+    // budget, so it gets AUTOSTART_BOUND and then the answer wait decides.
+    let started = std::time::Instant::now();
+    while started.elapsed() < AUTOSTART_BOUND {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let deadline = std::time::Instant::now() + ANSWER_BOUND;
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(250));
         if answering() {
-            return if token.is_some() { Spawned::Started { pid } } else { Spawned::StartedWithoutToken { pid } };
+            return Spawned::StartedByAirc;
         }
     }
     Spawned::Failed(format!(
-        "airc daemon (pid {pid}) spawned but never answered within {}s",
+        "airc's autostart ran but no daemon answered within {}s; a maintenance window or a \
+         refused start is in ~/.continuum/logs/airc-daemon.log",
         ANSWER_BOUND.as_secs()
     ))
 }
@@ -197,6 +198,9 @@ pub fn spawn() -> Spawned {
 /// bounds `spawn` uses this, so a slow but successful start is never reported failed
 /// while its work goes on unobserved.
 pub const SPAWN_BUDGET: Duration = Duration::from_secs(40);
+
+/// How long the direct route waits for airc's autostart read to return.
+const AUTOSTART_BOUND: Duration = Duration::from_secs(10);
 
 /// What can be read about airc's own login supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,14 +289,6 @@ fn start_through_airc_supervisor() -> Spawned {
     }
 }
 
-/// The user's GitHub token from `gh`, bounded; `None` when gh is absent or cannot read
-/// its store from this context (a system service has no login keychain).
-fn gh_token() -> Option<String> {
-    let probed = crate::system_resources::bounded_command::probe("gh", &["auth", "token"], ENDPOINT_RESOLVE_BOUND);
-    let token = probed.stdout_if_ok()?.trim().to_string();
-    (!token.is_empty()).then_some(token)
-}
-
 /// Where a daemon this core spawns writes its stderr: a file, so a gate that keeps
 /// skipping (no token, no route) is readable instead of going to /dev/null.
 fn daemon_log(home: &std::path::Path) -> std::process::Stdio {
@@ -308,30 +304,30 @@ fn daemon_log(home: &std::path::Path) -> std::process::Stdio {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Restart {
-    /// The daemon we own was killed and a new one answers.
-    Restarted { old: u32, new: u32 },
-    /// No daemon of ours to restart (adopted at boot, or absent) — left alone.
-    NotOurs,
-    /// Killed ours; the replacement did not come up.
+    /// airc stopped its daemon and a new one answers.
+    Restarted,
+    /// The stop or the start did not complete; the reason is airc's or the bound's.
     Failed(String),
 }
 
-/// Kill the daemon this process spawned and spawn another. Only ours: a daemon we
-/// adopted belongs to whoever started it.
-pub fn restart_if_owned() -> Restart {
-    let old = OWNED_PID.load(Ordering::SeqCst);
-    if old == 0 {
-        return Restart::NotOurs;
+/// Restart the machine daemon through airc's own lifecycle: `airc stop` (its graceful
+/// stop, which any operator could run), then [`spawn`]. Never a kill by pid.
+pub fn restart_through_airc() -> Restart {
+    if answering() {
+        let stopped = crate::system_resources::bounded_command::probe("airc", &["stop"], ENDPOINT_RESOLVE_BOUND * 2);
+        if stopped.stdout_if_ok().is_none() {
+            return Restart::Failed(format!("`airc stop` did not complete ({})", stopped.outcome()));
+        }
+        let deadline = std::time::Instant::now() + ANSWER_BOUND;
+        while answering() {
+            if std::time::Instant::now() >= deadline {
+                return Restart::Failed("airc acknowledged the stop but its daemon still answers".into());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
-    crate::inference::lane_process::kill9(old);
-    OWNED_PID.store(0, Ordering::SeqCst);
-    std::thread::sleep(Duration::from_millis(500));
     match spawn() {
-        Spawned::Started { pid } => Restart::Restarted { old, new: pid },
-        Spawned::StartedWithoutToken { pid } => Restart::Failed(format!(
-            "restarted (pid {pid}) without a GitHub token; peers will age out"
-        )),
-        Spawned::Answering | Spawned::StartedByAirc => Restart::Restarted { old, new: 0 },
+        Spawned::Answering | Spawned::StartedByAirc => Restart::Restarted,
         other => Restart::Failed(format!("{other:?}")),
     }
 }
@@ -376,16 +372,16 @@ mod tests {
     fn every_start_route_fits_the_budget_its_caller_waits() {
         // answering probe + launchctl print + kickstart, then the wait
         let supervisor_route = ENDPOINT_RESOLVE_BOUND * 3 + (SPAWN_BUDGET - ENDPOINT_RESOLVE_BOUND * 3);
-        // answering probe + launchctl print + socket resolve + gh token, then the wait
-        let direct_route = ENDPOINT_RESOLVE_BOUND * 4 + ANSWER_BOUND;
+        // answering probe + launchctl print + socket resolve, the autostart read, then the wait
+        let direct_route = ENDPOINT_RESOLVE_BOUND * 3 + AUTOSTART_BOUND + ANSWER_BOUND;
         assert!(supervisor_route <= SPAWN_BUDGET);
         assert!(direct_route <= SPAWN_BUDGET);
     }
 
+    // what this catches: the scope resolving to something other than the CLI's
+    // machine-account home, which would serve the socket under the wrong identity.
     #[test]
-    fn a_daemon_we_did_not_spawn_is_never_restarted() {
-        OWNED_PID.store(0, Ordering::SeqCst);
-        assert_eq!(restart_if_owned(), Restart::NotOurs);
+    fn the_scope_is_the_machine_account_home() {
         if let Some(scope) = scope_home() {
             assert!(scope.ends_with(".airc"), "{}", scope.display());
         }

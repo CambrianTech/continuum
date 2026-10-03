@@ -146,32 +146,13 @@ pub fn spawn() {
                         Err(_) => Spawned::Failed("spawn did not return within its bound".into()),
                     };
                     match outcome {
-                        Spawned::Started { pid } => {
-                            revived_by_us = true;
-                            crate::probe!(
-                                class = "airc.daemon.revived",
-                                pid = pid,
-                                attempt = attempt,
-                                absent_s = absent_since.map(|s| s.elapsed().as_secs()).unwrap_or(0), // unwrap_or: 0 = absence start unrecorded, a legible value in the row
-                                "the owner spawned a transport daemon and it answers"
-                            );
-                        }
                         Spawned::StartedByAirc => {
                             revived_by_us = true;
                             crate::probe!(
                                 class = "airc.daemon.revived_by_airc",
                                 attempt = attempt,
                                 absent_s = absent_since.map(|s| s.elapsed().as_secs()).unwrap_or(0), // unwrap_or: 0 = absence start unrecorded, a legible value in the row
-                                "kickstarted airc's own login supervisor and its daemon answers"
-                            );
-                        }
-                        Spawned::StartedWithoutToken { pid } => {
-                            failed_attempts = failed_attempts.saturating_add(1);
-                            crate::probe!(
-                                class = "airc.daemon.started_without_token",
-                                pid = pid,
-                                attempt = attempt,
-                                "spawned a daemon with no GitHub token: local IPC answers, but its registry refresh cannot run and peers will age out — register airc's supervisor with `continuum install --airc`"
+                                "airc started its daemon (login supervisor or gated autostart) and it answers"
                             );
                         }
                         Spawned::Answering => {

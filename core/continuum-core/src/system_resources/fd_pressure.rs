@@ -33,38 +33,27 @@ pub trait FdRelief: Send + Sync {
     fn relieve(&self) -> ReliefOutcome;
 }
 
-/// Restart the airc daemon this core spawned; the freed count is measured, not
-/// assumed.
+/// Restart the airc daemon through airc's own lifecycle; the freed count is measured,
+/// not assumed.
 pub struct DaemonRestartRelief;
 
 impl FdRelief for DaemonRestartRelief {
     fn relieve(&self) -> ReliefOutcome {
         let before = open_fds().unwrap_or(0); // unwrap_or: an unreadable table reads as 0 freed, never as a gain
-        match crate::airc::daemon_supervisor::restart_if_owned() {
-            crate::airc::daemon_supervisor::Restart::Restarted { old, new } => {
+        match crate::airc::daemon_supervisor::restart_through_airc() {
+            crate::airc::daemon_supervisor::Restart::Restarted => {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 let after = open_fds().unwrap_or(before); // unwrap_or: unreadable after = nothing freed
                 let freed = before.saturating_sub(after) as u64;
                 crate::probe!(
                     class = "process.fds.owner_acted",
                     action = "daemon_restart",
-                    old_pid = old,
-                    new_pid = new,
                     before,
                     after,
                     freed,
-                    "descriptor pressure: the daemon this core spawned was restarted"
+                    "descriptor pressure: the airc daemon was restarted through airc's own stop and start"
                 );
                 ReliefOutcome { action: "daemon_restart", freed }
-            }
-            crate::airc::daemon_supervisor::Restart::NotOurs => {
-                crate::probe!(
-                    class = "process.fds.owner_exhausted",
-                    reason = "daemon not ours",
-                    open = before,
-                    "descriptor pressure with no action left: the daemon was adopted, not spawned — an operator restart is owed"
-                );
-                ReliefOutcome { action: "none", freed: 0 }
             }
             crate::airc::daemon_supervisor::Restart::Failed(e) => {
                 crate::probe!(

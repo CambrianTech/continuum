@@ -115,12 +115,7 @@ fn step_airc_daemon() -> Outcome {
     use crate::airc::daemon_supervisor::{spawn, Spawned};
     match spawn() {
         Spawned::Answering => Outcome::Ok("daemon answering".into()),
-        Spawned::Started { pid } => Outcome::Ok(format!("daemon started (pid {pid}, owned)")),
-        Spawned::StartedByAirc => Outcome::Ok("daemon started by airc's login supervisor".into()),
-        Spawned::StartedWithoutToken { pid } => Outcome::Failed(format!(
-            "daemon (pid {pid}) runs WITHOUT a GitHub token: local IPC works, but peers age out \
-             within ten minutes; register airc's supervisor with `continuum install --airc`"
-        )),
+        Spawned::StartedByAirc => Outcome::Ok("daemon started by airc (supervisor or gated autostart)".into()),
         Spawned::BinaryAbsent => Outcome::Skipped("airc binary absent — transportless box (CI/fresh)".into()),
         Spawned::NoHome => Outcome::Failed(
             "cannot spawn airc daemon: neither USERPROFILE nor HOME is set, so the \

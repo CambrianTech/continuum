@@ -266,47 +266,47 @@ impl From<DiscoveryError> for DiscoveryFailure {
     }
 }
 
-/// Recover through AIRC's own singleton lifecycle. `status` only observes; a read of the
-/// event store attaches through `ensure_daemon_running` without changing subscriptions or
-/// the default room. Never unlink a socket based on a missing platform-specific `lsof`.
-/// Every outcome is a probe: `airc.daemon.recovered`.
+/// Recover a dead daemon through the core's ONE airc starter,
+/// [`daemon_supervisor::spawn`](crate::airc::daemon_supervisor::spawn): airc's login
+/// supervisor or its gated autostart, so its maintenance gate and token provisioning
+/// apply. Until 2026-10-03 this ran its own `airc events list` here, a second reviver
+/// beside the liveness owner that undid an intentional stop within 1.3 s and bypassed
+/// the supervisor route (proven by Astra's nonce-c run). Every outcome is a probe:
+/// `airc.daemon.recovered`.
 async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
-    use tokio::process::Command;
-    #[cfg(windows)]
-    use std::os::windows::process::CommandExt;
+    use crate::airc::daemon_supervisor::{self, Spawned};
     let existed = socket.exists();
     let started = std::time::Instant::now();
-    let mut command = Command::new("airc");
-    command.args(["events", "list", "--limit", "0", "--json"]);
-    // A console-subsystem child started by the boot task must not open Windows Terminal.
-    #[cfg(windows)]
-    command.as_std_mut().creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    let start = tokio::time::timeout(std::time::Duration::from_secs(30), command.output()).await;
-    let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
-    if matches!(&start, Ok(Err(_))) {
-        // The CLI itself could not launch; waiting for a daemon it never started
-        // would only conceal the missing executable or failed process creation.
-        return false;
+    let outcome = match tokio::time::timeout(
+        daemon_supervisor::SPAWN_BUDGET + std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking(daemon_supervisor::spawn),
+    )
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(e)) => Spawned::Failed(format!("spawn task panicked: {e}")),
+        Err(_) => Spawned::Failed("spawn did not return within its budget".into()),
+    };
+    let started_one = matches!(outcome, Spawned::StartedByAirc);
+    if started_one {
+        // A daemon the core just had started needs time to answer; see DAEMON_STARTED_AT.
+        note_daemon_started();
     }
-    // AIRC can spawn successfully and still return a timeout while its event store
-    // opens. Windows socket metadata is not a reliable readiness signal. Reset the
-    // outer budget once for the actual launch attempt and probe the RPC directly.
-    note_daemon_started();
-    let mut answered = false;
-    while started.elapsed() < std::time::Duration::from_secs(75) {
-        if discover_peer_id(socket).await.is_ok() {
-            answered = true;
-            break;
-        }
+    let mut answered = matches!(outcome, Spawned::Answering | Spawned::StartedByAirc)
+        && discover_peer_id(socket).await.is_ok();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !answered && started_one && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        answered = discover_peer_id(socket).await.is_ok();
     }
     crate::probe!(
         class = "airc.daemon.recovered",
         socket = %socket.display(),
-        outcome = if answered { "recovered" } else if start_ok { "started_not_answering" } else { "start_failed" },
+        outcome = if answered { "recovered" } else { "not_recovered" },
+        spawn = format!("{outcome:?}"),
         stale_file_present = existed,
         waited_ms = started.elapsed().as_millis() as u64,
-        "airc daemon recovery through the canonical attach lifecycle"
+        "airc daemon recovery through the core's one airc starter"
     );
     answered
 }
