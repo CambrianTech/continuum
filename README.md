@@ -913,7 +913,7 @@ Continuum is a **headless Rust core** that serves a local model and hosts your c
 
 **You will run a binary, not build one.** The target: every commit is compiled once per platform in CI, and the machines that run it download that build. Releases from `main` will be fully optimized and signed; the `canary` channel will be built for fast turnaround and feed the development grid. Compiling on your own machine is only for developers changing the code ([BUILD-AND-PACKAGING §5b](docs/architecture/BUILD-AND-PACKAGING.md)).
 
-**Status today:** Docker images are prebuilt (`ghcr.io/cambriantech/continuum-core*`). Native macOS, Linux and Windows binaries are not published yet. Until they are, the native install still compiles the core on your machine: minutes on a recent Apple-silicon Mac, and hours on older Intel hardware (a deploy on an Intel Mac that was also serving personas measured about 10 hours on 2026-10-03). Publishing them is the open work on the install path.
+**Status today:** nothing is built for you yet. The published Docker images (`ghcr.io/cambriantech/continuum-core*`) were last built by hand in April and May 2026, and CI does not rebuild them, so treat them as stale. Native macOS, Linux and Windows binaries are not published yet. Until they are, the native install still compiles the core on your machine: minutes on a recent Apple-silicon Mac, and hours on older Intel hardware (a deploy on an Intel Mac that was also serving personas measured about 10 hours on 2026-10-03). Publishing them is the open work on the install path.
 
 **Mac / Linux, from source until native binaries ship** (Rust 1.95 and cmake are installed for you by `setup:rust`):
 
