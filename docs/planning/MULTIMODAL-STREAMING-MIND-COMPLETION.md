@@ -1,17 +1,17 @@
 # Multimodal streaming mind — completion plan
 
-Owner: Codex. Updated 2026-10-03 08:15 UTC. This is the active delivery plan, not a new
+Owner: Codex. Updated 2026-10-03 08:46 UTC. This is the active delivery plan, not a new
 architecture. Reuse WorkspaceCycle, CBAR stages, bus, admission, scheduling, model
 bindings, genome, AIRC and existing avatar/live session code.
 
-Installed native integration: build5940 / `3ae8b8b9e4036599b17010f86e574f87a09a3e4c`.
-Supported install session3696 completed successfully; canonical continuum, uu and
-running core matched the durable checkout. The stream cancellation repair
+Installed native integration: build5942 / `dd1fee91b`.
+Supported install session7499 completed successfully; canonical continuum, uu and
+running core match the durable checkout. The stream cancellation repair
 `4bc42ba14` is included. Replay-policy build90490 completed; five exact tests passed
-from its binary. No compiler is active. The handoff reported two
+from its binary. No compiler is active. The latest handoff reported one
 undrained cognition requests, so lossless continuity remains unproved.
 
-Actual PDF visual acceptance passed on this installed build: receipt
+Actual PDF visual acceptance passed on preceding build3ae8b8b9e: receipt
 `C:/Users/joelt/.continuum/state/team-proof-20260921/pdf-native-3ae8b8b9e/receipt.json`.
 The bound Qwen3.8-27B/llama-server identified the blue square and red circle from
 rendered pixels of a vector PDF with no text layer in3705ms. No controlled speedup
@@ -28,8 +28,9 @@ owners' responsibility. Kimi work has resumed: isolated replay exposed a semanti
 purpose overwrite that removed the captured reasoning budget. Its correction is
 on branch `codex/replay-scheduling-policy`, stacked over `codex/native-model-binding`.
 Replay policy, command forwarding, remote roundtrip, slot placement and generated
-request binding passed. Installation and corrected live replay remain pending;
-the original empty-card cause is still unresolved.
+request binding passed. Installation and corrected live replay passed; the replay
+proposed work_submission without executing it. The original empty-card cause is
+still unresolved; see the installed acceptance receipt below.
 ## Grid execution contract (Joel, 13:15 UTC)
 
 Each distributable operation uses the existing typed command executor and AIRC
@@ -364,3 +365,11 @@ proof of93ff everywhere.
 - WIP in continuum-cli-alias codex/native-model-binding preserves semantic purpose and sets optional scheduling_purpose separately; existing slots owner resolves placement, replay remains Probe/scratch. Existing ai/generate and remote request transport preserve metadata. Existing replay and remote roundtrip fixtures extended; no new replay manager. Migrated repeated None constructor fields to the existing TextGenerationRequest derived Default (current source diff67added/399removed, includes fix/tests).
 - Preflight deploy.claim absent and no cargo/rustc processes. One cargo check -p continuum-core --lib --tests --offline active, session77048, shared D:/continuum-cold/cargo-target, log replay-policy-check.log. RESUME THIS HANDLE; do not duplicate build. Test execution, generated TS export, review, normal-hook commit and supported install remain pending. Do not rerun Kimi inference until corrected binary verified.
 - Normal AIRC coordination sent; live-to3 is not reader acknowledgment. AIRC installed acceptance remains bounded pair recovery151.156s, not fleet completion or exactly-once UI claim. No runtime restart/UAC this turn.
+
+### Installed replay-policy acceptance — 2026-10-03 08:46 UTC
+
+PR4680 source dd1fee91b is installed through `continuum install --core --cli` (handle7499, exit0). Fresh `continuum --version`, `uu --version` and `deploy-verify` confirm build5942/dd1fee91b for both CLI aliases and the running core. No administrator prompt was needed. The handoff reported one undrained cognition request with a clean save, so lossless turn continuity is not established.
+
+Corrected execution-free replay68765 completed successfully against the same captured request8657e3bd (cursor28d1be75-60c7-42ba-ab50-ab025da25bb3:151). Its submitted request preserves `cognition/deliberation`, schedules as `cognition/replay-request`, and retains5028 output tokens and the recorded Qwen3.8-27B binding. Outcome:3862 output tokens, finish `tool_use`, one proposed `work_submission` call, zero tools executed,103158ms. The earlier broken replay exhausted5028 tokens with finish `length`; both receipts remain preserved. This verifies the corrected installed replay boundary, not deterministic reproduction, a speed benchmark, or a fix for the original empty-card behavior.
+
+Evidence: team directory `kimi-placeholder-corrected-replay.json`; replay identitya88c611e-3abc-42e7-a972-42ef76b92cb2, capture64c183a0-d48a-4a87-b4c0-edb124e3f2ca:0. Original empty-card diagnosis and native audio/embodiment delivery remain open. Fable's scoped source approval is recorded on4680; typed scheduling classification is a nonblocking follow-up.
