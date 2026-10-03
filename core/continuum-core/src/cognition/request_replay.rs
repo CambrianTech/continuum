@@ -141,7 +141,7 @@ fn prepare(
     request.provider = Some(p.provider.clone());
     // Purpose also controls generation policy (e.g. the answer's reasoning
     // reserve). Change placement only; provenance is already in PromptCall.
-    request.scheduling_purpose = Some(CognitionReplayRequest::NAME.into());
+    request.scheduling_class = Some(crate::inference::slots::SlotClass::Probe);
     Ok(Prepared {
         request,
         call: PromptCall {
@@ -342,7 +342,7 @@ mod tests {
             expected[field] = actual[field].clone();
         }
         expected["provider"] = serde_json::json!("explicit-provider");
-        expected["schedulingPurpose"] = serde_json::json!("cognition/replay-request");
+        expected["schedulingClass"] = serde_json::json!("probe");
         assert_eq!(
             crate::inference::slots::class_for_request(&prepared.request),
             crate::inference::slots::SlotClass::Probe

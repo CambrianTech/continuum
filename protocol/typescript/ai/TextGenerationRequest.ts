@@ -4,6 +4,7 @@ import type { ChatMessage } from "./ChatMessage";
 import type { NativeOutputRequest } from "./NativeOutputRequest";
 import type { NativeToolSpec } from "./NativeToolSpec";
 import type { ResponseFormat } from "./ResponseFormat";
+import type { SlotClass } from "./SlotClass";
 import type { ToolChoice } from "./ToolChoice";
 
 /**
@@ -47,7 +48,7 @@ nativeOutput?: Array<NativeOutputRequest>, activeAdapters?: Array<ActiveAdapterR
  * Replays retain the captured purpose (including its reasoning budget) but
  * run as probes so they cannot evict a citizen's warm activity slot.
  */
-schedulingPurpose?: string,
+schedulingClass?: SlotClass,
 /**
  * Persona generating this request — the inference's "owner" for
  * per-persona resource attribution (KV cache bytes, GPU pressure,

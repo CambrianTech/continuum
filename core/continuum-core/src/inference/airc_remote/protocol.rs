@@ -190,7 +190,7 @@ mod tests {
     fn request_serializes_and_round_trips() {
         let mut request = dummy_request();
         request.purpose = Some("cognition/deliberation".into());
-        request.scheduling_purpose = Some("cognition/replay-request".into());
+        request.scheduling_class = Some(crate::inference::slots::SlotClass::Probe);
         let r = RemoteInferenceRequest::new(request).with_target_peer("peer-abc");
         let json = serde_json::to_string(&r).unwrap();
         let back: RemoteInferenceRequest = serde_json::from_str(&json).unwrap();
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(back.target_peer.as_deref(), Some("peer-abc"));
         // Replay generation semantics and scratch placement must both cross peers.
         assert_eq!(back.text_request.purpose, r.text_request.purpose);
-        assert_eq!(back.text_request.scheduling_purpose, r.text_request.scheduling_purpose);
+        assert_eq!(back.text_request.scheduling_class, r.text_request.scheduling_class);
         assert_eq!(
             crate::inference::slots::class_for_request(&back.text_request),
             crate::inference::slots::SlotClass::Probe

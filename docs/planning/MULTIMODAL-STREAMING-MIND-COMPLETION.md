@@ -8,8 +8,8 @@ Installed native integration: build5942 / `dd1fee91b`.
 Supported install session7499 completed successfully; canonical continuum, uu and
 running core match the durable checkout. The stream cancellation repair
 `4bc42ba14` is included. Replay-policy build90490 completed; five exact tests passed
-from its binary. No compiler is active. The latest handoff reported one
-undrained cognition requests, so lossless continuity remains unproved.
+from its binary. Typed scheduling follow-up build74469 completed successfully; six focused tests passed, including both generated bindings. The latest handoff reported one
+undrained cognition request, so lossless continuity remains unproved.
 
 Actual PDF visual acceptance passed on preceding build3ae8b8b9e: receipt
 `C:/Users/joelt/.continuum/state/team-proof-20260921/pdf-native-3ae8b8b9e/receipt.json`.
@@ -373,3 +373,14 @@ PR4680 source dd1fee91b is installed through `continuum install --core --cli` (h
 Corrected execution-free replay68765 completed successfully against the same captured request8657e3bd (cursor28d1be75-60c7-42ba-ab50-ab025da25bb3:151). Its submitted request preserves `cognition/deliberation`, schedules as `cognition/replay-request`, and retains5028 output tokens and the recorded Qwen3.8-27B binding. Outcome:3862 output tokens, finish `tool_use`, one proposed `work_submission` call, zero tools executed,103158ms. The earlier broken replay exhausted5028 tokens with finish `length`; both receipts remain preserved. This verifies the corrected installed replay boundary, not deterministic reproduction, a speed benchmark, or a fix for the original empty-card behavior.
 
 Evidence: team directory `kimi-placeholder-corrected-replay.json`; replay identitya88c611e-3abc-42e7-a972-42ef76b92cb2, capture64c183a0-d48a-4a87-b4c0-edb124e3f2ca:0. Original empty-card diagnosis and native audio/embodiment delivery remain open. Fable's scoped source approval is recorded on4680; typed scheduling classification is a nonblocking follow-up.
+
+### Typed replay placement follow-up — 2026-10-03
+
+Fable's review is being addressed by reusing inference/slots::SlotClass in the
+request and remote envelope. schedulingClass is a closed enum; generation purpose
+remains separate. The command boundary rejects misspelled classes and retains
+legacy purpose-based placement when the class is absent. Replay preparation,
+command parsing and remote roundtrip migrate together; no second classification
+map is introduced. This source follow-up passed replay policy, command parsing, remote roundtrip, slot placement and both generated binding tests. Installation remains pending.
+Installed acceptance above remains specific to dd1fee91b and its earlier wire
+field. Mixed-version peers must not be assumed to honor the new class.
