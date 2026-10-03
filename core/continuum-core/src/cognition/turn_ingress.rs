@@ -76,6 +76,15 @@ pub fn close() -> bool {
     GATE.close()
 }
 
+/// Is the node stopping? Read by a turn already admitted, at each act boundary, so a
+/// multi-act tool loop ends after the act in hand instead of starting its next generation
+/// (Fable on #4684: a 12-act solve otherwise rides the whole settle cap). A bare read is
+/// safe HERE because the gate only ever closes: a stale `false` lets one more act run, and
+/// nothing can make a `true` wrong.
+pub fn is_closing() -> bool {
+    !GATE.is_open()
+}
+
 /// The longest a stop waits for admitted turns to finish before it saves (card 32fa22ba).
 ///
 /// The module drain's own budget is 1.8 s, sized to the runtime's 2 s phase — and a turn
