@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { selectChecks } = require('../ci-change-scope.cjs');
 const select = (...paths) => selectChecks(paths.map(filename => ({ filename })));
 test('installer repairs run installer checks without unrelated Rust builds', () => {
-  for (const file of ['install.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/windows-engine-receipt.ps1', 'tools/scripts/lib/windows-service.ps1'])
+  for (const file of ['install.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/windows-engine-receipt.ps1', 'tools/scripts/lib/windows-service.ps1', 'tools/scripts/lib/windows-elevation.ps1', 'tools/scripts/tests/windows-process.test.ps1', 'tools/scripts/tests/windows-airc-download.test.ps1', 'tools/scripts/tests/windows-xz.test.ps1', 'tools/scripts/sync-windows-bootstrap.ps1'])
     assert.deepEqual(select(file), { rust: false, installer: true });
 });
 test('unknown, Rust, dependency, workflow and genome inputs retain full gates', () => {
