@@ -481,22 +481,40 @@ impl Arm {
 }
 
 /// What keeps this node off the mesh after a reboot, as far as continuum can see.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AircDrift {
     /// No runnable `airc` on PATH.
     Missing,
-    /// airc runs, but nothing starts `airc join` at login (M5 2026-10-02: off the mesh
-    /// for hours after a restart until a hand ran it).
-    Unsupervised,
+    /// airc runs, but airc's own registrar says its login supervisor is absent,
+    /// disabled, stale or for another binary (M5 2026-10-02: off the mesh for hours
+    /// after a restart until a hand ran it). The registrar's words are carried.
+    Unsupervised(String),
 }
 
-/// The pure rule: an absent airc has nothing to supervise, so it is one drift, not two.
-pub fn airc_drift(runs: bool, supervised: bool) -> Vec<AircDrift> {
-    match (runs, supervised) {
+/// The pure rule. `supervisor_drift` is what airc's registrar (`--check` / `-Check`)
+/// said was wrong, `None` when it reported converged. An absent airc has nothing to
+/// supervise, so it is one drift, not two.
+pub fn airc_drift(runs: bool, supervisor_drift: Option<String>) -> Vec<AircDrift> {
+    match (runs, supervisor_drift) {
         (false, _) => vec![AircDrift::Missing],
-        (true, false) => vec![AircDrift::Unsupervised],
-        (true, true) => Vec::new(),
+        (true, Some(why)) => vec![AircDrift::Unsupervised(why)],
+        (true, None) => Vec::new(),
     }
+}
+
+/// A command that never opens a console window on Windows, for an installer whose
+/// caller may have none (a hidden service, the deploy consumer). Same flag the
+/// scheduler seam uses; a no-op elsewhere.
+pub fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command.stdin(std::process::Stdio::null());
+    command
 }
 
 /// Task XML as `schtasks /Create /XML` reads it: UTF-16LE with a BOM, matching the
@@ -1027,10 +1045,14 @@ mod tests {
     // supervisor reads as converged, so a reboot takes it off the mesh silently.
     #[test]
     fn airc_without_a_login_supervisor_is_drift_and_absent_airc_is_one_drift() {
-        assert_eq!(airc_drift(true, true), Vec::<AircDrift>::new());
-        assert_eq!(airc_drift(true, false), vec![AircDrift::Unsupervised]);
-        assert_eq!(airc_drift(false, false), vec![AircDrift::Missing]);
-        assert_eq!(airc_drift(false, true), vec![AircDrift::Missing]);
+        assert_eq!(airc_drift(true, None), Vec::<AircDrift>::new());
+        assert_eq!(
+            airc_drift(true, Some("airc-join is registered but disabled".into())),
+            vec![AircDrift::Unsupervised("airc-join is registered but disabled".into())],
+            "a disabled or stale task is drift, with the registrar's reason, not a converged name"
+        );
+        assert_eq!(airc_drift(false, Some("x".into())), vec![AircDrift::Missing]);
+        assert_eq!(airc_drift(false, None), vec![AircDrift::Missing]);
     }
 
     // what this catches: the elevated child is a one-plan registrar and nothing
