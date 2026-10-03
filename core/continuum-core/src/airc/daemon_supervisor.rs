@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn only_launchds_no_such_service_answer_permits_a_direct_start() {
         use crate::system_resources::bounded_command::Captured;
-        let exited = |code: i32, stderr: &str| Captured::Exited { code: Some(code), stdout: String::new(), stderr: stderr.into() };
+        let exited = |code: i32, stderr: &str| Captured::Exited { code: Some(code), stdout: String::new(), stderr: stderr.into(), truncated: false };
         assert_eq!(supervisor_state_from(&exited(0, "")), SupervisorState::Registered);
         assert_eq!(
             supervisor_state_from(&exited(113, "Bad request.\nCould not find service \"airc-join\" in domain for user gui: 501\n")),

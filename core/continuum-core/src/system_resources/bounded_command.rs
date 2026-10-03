@@ -91,8 +91,9 @@ impl Probed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Captured {
     /// Exited before the deadline. `code` is `None` when a signal ended it. The streams
-    /// are what the child (and anything it started) had written by then.
-    Exited { code: Option<i32>, stdout: String, stderr: String },
+    /// are a snapshot of at most [`CAPTURE_LIMIT`] bytes each, taken at exit;
+    /// `truncated` says a stream held more (or a descendant was still writing).
+    Exited { code: Option<i32>, stdout: String, stderr: String, truncated: bool },
     /// Still running at the deadline; it and, on Unix, its process group were killed
     /// and reaped.
     TimedOut,
@@ -100,40 +101,57 @@ pub enum Captured {
     Unstartable { error: String },
 }
 
+/// The most each [`capture`] stream keeps. Probes answer in a few lines; anything
+/// past this is reported as `truncated`, never read without bound.
+pub const CAPTURE_LIMIT: usize = 64 * 1024;
+
+/// How long a killed child gets to be reaped before the caller is told its exit is
+/// unconfirmed. A kill does not wait without bound (an uninterruptible exit can hang).
+const REAP_GRACE: Duration = Duration::from_secs(2);
+
 /// Wait for `child` until `timeout`; at the deadline kill it and reap it, so it can
-/// never act after its caller has given up on it. `Ok(None)` = it was killed and
-/// reaped. A kill that fails on a child still running is an error, never a blocking
-/// wait: the caller is told it could not be terminated.
+/// never act after its caller has given up on it. `Ok(None)` = it was killed and its
+/// exit observed. Every failure, including a status that cannot be read, still kills
+/// and tries to reap first; an exit not observed within [`REAP_GRACE`] is an error.
 pub fn wait_bounded(
     child: &mut std::process::Child,
     timeout: Duration,
 ) -> std::io::Result<Option<std::process::ExitStatus>> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
+            Ok(None) => return kill_and_reap(child, false).map(|()| None),
+            Err(e) => {
+                let _ = kill_and_reap(child, false);
+                return Err(e);
+            }
         }
-        if Instant::now() >= deadline {
-            return kill_and_reap(child, false).map(|()| None);
-        }
-        std::thread::sleep(POLL_INTERVAL);
     }
 }
 
-/// Terminate, then reap. `group` kills the child's whole process group on Unix (the
-/// child must lead one). A failed kill on a child that has not exited is returned as
-/// an error instead of a `wait()` that could block forever.
+/// Terminate, then observe the exit within [`REAP_GRACE`]. `group` kills the child's
+/// whole process group on Unix (the child must lead one). Never a blocking `wait()`:
+/// a child whose exit is not observed in time is reported, not waited on forever.
 fn kill_and_reap(child: &mut std::process::Child, group: bool) -> std::io::Result<()> {
     let killed = if group { kill_group(child) } else { child.kill() };
-    if let Err(e) = killed {
-        if child.try_wait()?.is_none() {
-            return Err(std::io::Error::new(e.kind(), format!("could not terminate the child: {e}")));
+    let deadline = Instant::now() + REAP_GRACE;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(());
         }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                match killed {
+                    Err(e) => format!("could not terminate the child: {e}"),
+                    Ok(()) => format!("killed, but its exit was not observed within {}s", REAP_GRACE.as_secs()),
+                },
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
     }
-    child
-        .wait()
-        .map(|_| ())
-        .map_err(|e| std::io::Error::new(e.kind(), format!("killed but not reaped: {e}")))
 }
 
 fn kill_group(child: &mut std::process::Child) -> std::io::Result<()> {
@@ -156,8 +174,9 @@ fn kill_group(child: &mut std::process::Child) -> std::io::Result<()> {
 ///
 /// Output goes to files this call owns, never pipes: nothing stalls on a full pipe, a
 /// descendant that inherits the streams cannot hold the call past its deadline, and
-/// there is no reader thread to leak. On Unix the child leads its own process group,
-/// so a timeout kills everything it started.
+/// there is no reader thread to leak. On Unix the child leads its own process group:
+/// a timeout kills everything it started, and so does a normal exit, so no descendant
+/// outlives the call. (Windows stops the child only; a probe there must not fork.)
 pub fn capture(program: &str, args: &[&str], timeout: Duration) -> Captured {
     let deadline = Instant::now() + timeout;
     let (out, err) = match (CaptureFile::new(), CaptureFile::new()) {
@@ -186,11 +205,22 @@ pub fn capture(program: &str, args: &[&str], timeout: Duration) -> Captured {
             Ok(Some(status)) => break Ok(Some(status)),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
             Ok(None) => break kill_and_reap(&mut child, true).map(|()| None),
-            Err(e) => break Err(e),
+            Err(e) => {
+                let _ = kill_and_reap(&mut child, true);
+                break Err(e);
+            }
         }
     };
     match waited {
-        Ok(Some(status)) => Captured::Exited { code: status.code(), stdout: out.text(), stderr: err.text() },
+        Ok(Some(status)) => {
+            // A capture owns everything its child started (its process group on Unix):
+            // a descendant left behind is stopped here, so nothing writes after return.
+            #[cfg(unix)]
+            let _ = kill_group(&mut child);
+            let (stdout, out_more) = out.snapshot();
+            let (stderr, err_more) = err.snapshot();
+            Captured::Exited { code: status.code(), stdout, stderr, truncated: out_more || err_more }
+        }
         Ok(None) => Captured::TimedOut,
         Err(e) => Captured::Unstartable { error: e.to_string() },
     }
@@ -219,14 +249,25 @@ impl CaptureFile {
         self.file.try_clone().map(Stdio::from)
     }
 
-    fn text(&self) -> String {
-        use std::io::{Read, Seek};
-        let mut bytes = Vec::new();
-        let mut file = &self.file;
-        if file.seek(std::io::SeekFrom::Start(0)).is_ok() {
-            let _ = file.read_to_end(&mut bytes);
+    /// At most [`CAPTURE_LIMIT`] bytes from the start, read by position so the shared
+    /// write offset a surviving descendant may still be using is never moved. `true`
+    /// when the file held more than that.
+    fn snapshot(&self) -> (String, bool) {
+        let mut bytes = vec![0u8; CAPTURE_LIMIT + 1];
+        let mut filled = 0;
+        while filled < bytes.len() {
+            #[cfg(unix)]
+            let read = std::os::unix::fs::FileExt::read_at(&self.file, &mut bytes[filled..], filled as u64);
+            #[cfg(windows)]
+            let read = std::os::windows::fs::FileExt::seek_read(&self.file, &mut bytes[filled..], filled as u64);
+            match read {
+                Ok(0) | Err(_) => break,
+                Ok(n) => filled += n,
+            }
         }
-        String::from_utf8_lossy(&bytes).into_owned()
+        let truncated = filled > CAPTURE_LIMIT;
+        bytes.truncate(filled.min(CAPTURE_LIMIT));
+        (String::from_utf8_lossy(&bytes).into_owned(), truncated)
     }
 }
 
@@ -350,9 +391,10 @@ mod tests {
     #[cfg(unix)]
     fn capture_holds_one_deadline_with_large_output_or_a_descendant_on_the_streams() {
         match capture("sh", &["-c", "head -c 300000 /dev/zero | tr '\\0' x"], Duration::from_secs(10)) {
-            Captured::Exited { code, stdout, .. } => {
+            Captured::Exited { code, stdout, truncated, .. } => {
                 assert_eq!(code, Some(0));
-                assert_eq!(stdout.len(), 300_000, "output beyond a pipe's capacity must be captured, not timed out");
+                assert_eq!(stdout.len(), CAPTURE_LIMIT, "a large stream is kept up to the limit, not timed out");
+                assert!(truncated, "the rest is reported, not silently dropped");
             }
             other => panic!("large output must not read as {other:?}"),
         }
@@ -361,13 +403,38 @@ mod tests {
         let outcome = capture("sh", &["-c", "sleep 30 & echo parent-done; echo why >&2"], bound);
         let elapsed = started.elapsed();
         match &outcome {
-            Captured::Exited { code: Some(0), stdout, stderr } => {
+            Captured::Exited { code: Some(0), stdout, stderr, .. } => {
                 assert_eq!(stdout.trim(), "parent-done");
                 assert_eq!(stderr.trim(), "why");
             }
             other => panic!("{other:?}"),
         }
         assert!(elapsed < bound, "a descendant on the streams held capture for {elapsed:?} (bound {bound:?})");
+
+        // A descendant that never stops writing BOTH streams: the snapshot is bounded,
+        // the call keeps its deadline, and nothing reads without end.
+        // The token is made at run time so no other process (an editor, a shell that
+        // printed this source) can match it.
+        let token = format!("capture-writer-{}-{:?}", std::process::id(), Instant::now());
+        let script = format!("(while :; do echo {token}; echo {token} >&2; done) & sleep 0.3; echo parent-done");
+        let started = Instant::now();
+        let outcome = capture("sh", &["-c", &script], bound);
+        let elapsed = started.elapsed();
+        match &outcome {
+            Captured::Exited { code: Some(0), stdout, stderr, .. } => {
+                assert!(stdout.len() <= CAPTURE_LIMIT && stderr.len() <= CAPTURE_LIMIT);
+                assert!(stdout.contains(&token) && stderr.contains(&token));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(elapsed < bound, "a writing descendant held capture for {elapsed:?} (bound {bound:?})");
+        std::thread::sleep(Duration::from_millis(200));
+        let survivors = Command::new("pgrep").args(["-f", &token]).output().expect("pgrep");
+        assert!(
+            survivors.stdout.is_empty(),
+            "a capture left its writing descendant running: pids {}",
+            String::from_utf8_lossy(&survivors.stdout)
+        );
     }
 
     // what this catches (review of #4672): at the deadline only the child was killed,
@@ -393,7 +460,7 @@ mod tests {
     #[cfg(unix)]
     fn capture_keeps_the_exit_code_and_stderr() {
         match capture("sh", &["-c", "echo out; echo why >&2; exit 113"], Duration::from_secs(10)) {
-            Captured::Exited { code, stdout, stderr } => {
+            Captured::Exited { code, stdout, stderr, .. } => {
                 assert_eq!(code, Some(113));
                 assert_eq!(stdout.trim(), "out");
                 assert_eq!(stderr.trim(), "why");
