@@ -123,6 +123,9 @@ pub(crate) struct TurnSettle {
     pub in_flight_at_close: u64,
     pub cut: u64,
     pub bound_ms: u64,
+    /// Where the bound came from: `nothing_in_flight`, `measured` (the turns' own
+    /// remaining time), or `cap` (an unknown turn, or measured past the cap).
+    pub bound_source: &'static str,
     pub waited_ms: u64,
 }
 
@@ -140,6 +143,13 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let cap_ms = cap.as_millis().min(u128::from(u64::MAX)) as u64;
     let turns = crate::cognition::resource_admission::in_flight_turns(crate::persona::trace::now_ms());
     let bound_ms = settle_bound_ms(&turns, in_flight_at_close > turns.len() as u64, cap_ms);
+    let bound_source = if in_flight_at_close == 0 {
+        "nothing_in_flight"
+    } else if bound_ms >= cap_ms {
+        "cap"
+    } else {
+        "measured"
+    };
     let deadline = started + std::time::Duration::from_millis(bound_ms);
     let mut poll = tokio::time::interval(POLL);
     while in_flight() > 0 && std::time::Instant::now() < deadline {
@@ -149,6 +159,7 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
         in_flight_at_close,
         cut: in_flight(),
         bound_ms,
+        bound_source,
         waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     }
 }
