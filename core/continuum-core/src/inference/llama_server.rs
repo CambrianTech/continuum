@@ -1528,6 +1528,20 @@ pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
     (backend == Some("cpu")).then_some(2)
 }
 
+/// PURE: whether a warm build beside a lane served by `backend` goes into macOS's background
+/// band, which confines it to the efficiency cores and throttles its I/O. Only a CPU-served
+/// lane needs that: its decode holds the performance cores the build would take (card
+/// 682a5abf). A GPU-served lane prefills and decodes on its device, so the band no longer
+/// guards its decode cores; the host work it still has (the core, tokenizing, memory and I/O)
+/// is guarded by nice 19 and the memory job budget, which every warm build keeps. Measured on
+/// the M5 (Metal, the 27B resident) on 2026-10-03: in the band the deploy took over 90
+/// minutes with rustc at one job on the efficiency cores, and decode per call was the same in
+/// and out of the band (1.6-3.9 tps before the build, 2.8-4.2 during). This decides only the
+/// band.
+pub fn warm_build_background_band(backend: Option<&str>) -> bool {
+    backend == Some("cpu")
+}
+
 /// Free memory at which a warm build beside a serving core runs at cargo's own job count:
 /// the measured uncapped peak (8.7 GB, every rustc together, the M5 on 2026-09-27) plus the
 /// reserve, rounded up (Cormac on #4479: at 12 the uncapped build would eat into the
@@ -6625,6 +6639,17 @@ mod tests {
         assert_eq!(warm_build_jobs(Some("metal")), None);
         assert_eq!(warm_build_jobs(Some("cuda")), None);
         assert_eq!(warm_build_jobs(None), None, "no stamp: nothing known, no cap");
+    }
+
+    // what this catches (2026-10-03, the M5): every warm build ran in the background band, so
+    // a Metal-served node built on its efficiency cores for over 90 minutes while protecting
+    // no CPU lane. Only a CPU-served lane takes the band.
+    #[test]
+    fn only_a_cpu_lane_puts_the_warm_build_in_the_background_band() {
+        assert!(warm_build_background_band(Some("cpu")));
+        assert!(!warm_build_background_band(Some("metal")));
+        assert!(!warm_build_background_band(Some("cuda")));
+        assert!(!warm_build_background_band(None), "no stamp: nothing known, no band");
     }
 
     // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine

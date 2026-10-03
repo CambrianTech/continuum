@@ -401,6 +401,16 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        self.generate_stream(request, crate::ai::stream_sinks::GenerationSink::discard()).await
+    }
+
+    // Explicit synthetic fixture transport, compiled only with test/test-fixtures.
+    // This exercises sink delivery failures; it is not evidence of native streaming.
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        sink: crate::ai::stream_sinks::GenerationSink,
+    ) -> Result<TextGenerationResponse, String> {
         request.require_text_output_transport(self.provider_id())?;
         // Observer fires for substrate-side hot-path inference call
         // counts.
@@ -463,6 +473,8 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             .request_id
             .clone()
             .unwrap_or_else(|| format!("heuristic-{}", Self::determinism_prefix(&request)));
+
+        sink.send(crate::ai::adapter::GenerationChunk::Token(text.clone()))?;
 
         Ok(TextGenerationResponse {
             text,
@@ -575,29 +587,9 @@ mod tests {
 
     fn req_with(messages: Vec<ChatMessage>) -> TextGenerationRequest {
         TextGenerationRequest {
-            native_output: None,
             messages,
-            system_prompt: None,
             model: Some(HEURISTIC_DEFAULT_MODEL.to_string()),
-            provider: None,
-            temperature: None,
-            max_tokens: None,
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
-            purpose: None,
-            persona_id: None,
-            turn_bound: None,
+            ..Default::default()
         }
     }
 
@@ -701,7 +693,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registers_and_round_trips_through_AdapterRegistry() {
+    async fn registers_and_round_trips_through_adapter_registry() {
         let mut registry = AdapterRegistry::new();
         registry.register(std::sync::Arc::new(HeuristicInferenceAdapter::new()), 99);
         assert!(registry.is_registered(HEURISTIC_PROVIDER_ID));

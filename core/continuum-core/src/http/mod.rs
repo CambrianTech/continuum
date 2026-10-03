@@ -210,7 +210,6 @@ async fn messages_handler(
     });
 
     let gen_request = TextGenerationRequest {
-        native_output: None,
         messages,
         system_prompt,
         model: spec.model.clone(),
@@ -220,23 +219,16 @@ async fn messages_handler(
         top_p: req.top_p,
         top_k: req.top_k,
         repeat_penalty: req.repeat_penalty,
-        frequency_penalty: None,
-        repeat_last_n: None,
         stop_sequences: req.stop_sequences.clone(),
         tools: None, // Tool calls handled by Claude Code, not the local model
-        tool_choice: None,
-        response_format: None,
         active_adapters,
         request_id: Some(format!(
             "msg_{}",
             uuid::Uuid::new_v4().to_string().replace('-', "")
         )),
-        user_id: None,
-        room_id: None,
         purpose: Some("local-coding-agent".to_string()),
         // External coding-agent caller (not a persona-owned conversation).
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     let response = adapter.generate_text(gen_request).await.map_err(|e| {

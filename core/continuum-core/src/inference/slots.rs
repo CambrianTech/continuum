@@ -64,7 +64,9 @@ pub type SlotPin = PinHandle<ActivityKey, std::sync::Arc<KvSlotLease>>;
 /// and truncated the citizen's ~30k warm tail to their tiny common head —
 /// breaking KV reuse even for a SOLO citizen — while the smoke probe and the
 /// unpinned producers were free to LCP-steal any warm slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/ai/SlotClass.ts")]
 pub enum SlotClass {
     /// The citizen's real turn (deliberation / persona-respond): pins her
     /// activity slot via [`ActivityKey`].
@@ -116,6 +118,11 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("cognition/replay-request") => SlotClass::Probe,
         _ => SlotClass::Background,
     }
+}
+
+/// Placement is independent of the request's semantic generation policy.
+pub fn class_for_request(request: &crate::ai::TextGenerationRequest) -> SlotClass {
+    request.scheduling_class.unwrap_or_else(|| class_for(request.purpose.as_deref()))
 }
 
 /// The warm-KV identity: one persona's conversation in one room — an ACTIVITY.
@@ -1540,6 +1547,11 @@ mod tests {
         assert_eq!(class_for(Some("some-future-producer")), SlotClass::Background,
             "unknown purposes default AWAY from citizen slots");
         assert_eq!(class_for(None), SlotClass::Background);
+        let request = crate::ai::TextGenerationRequest {
+            purpose: Some("cognition/deliberation".into()),
+            ..Default::default()
+        };
+        assert_eq!(class_for_request(&request), SlotClass::Turn);
     }
 
     // what this catches: KV-CACHE-ECONOMY §2's arithmetic, as a pinned test. A

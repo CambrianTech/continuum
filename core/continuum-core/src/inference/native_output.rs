@@ -38,7 +38,7 @@ impl AudioCursor {
         if data.is_empty() { return Ok(false); }
         // Bound allocation before decoding, at the shared stream's frame budget.
         if data.len() > MAX_GENERATION_CHUNK_BYTES.div_ceil(3) * 4 { return Err("Native audio delta exceeds stream frame budget".into()); }
-        let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("Invalid native audio delta: {e}"))?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("Invalid native audio delta: {e}"))?; // boundary: provider HTTP audio delta encodes PCM as base64; decoded bytes enter the shared media stream.
         if bytes.len() % 2 != 0 { return Err("Native PCM delta contains an incomplete s16le sample".into()); }
         if bytes.is_empty() { return Ok(false); }
         let sample_count = bytes.len() as u64 / 2;

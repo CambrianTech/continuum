@@ -22,6 +22,7 @@ if (-not (Test-Path $script:ManifestPs)) {
     throw "manifest projection missing: $script:ManifestPs`n  regenerate it with: cargo run -p manifest-gen"
 }
 . (Join-Path $PSScriptRoot 'windows-engine-receipt.ps1')
+. (Join-Path $PSScriptRoot 'windows-llvm-receipt.ps1')
 . $script:ManifestPs    # defines $script:ContinuumManifest ([ordered] hashtable)
 
 # Fetch a module's projected record; fail loud if the manifest lacks it (a typo
@@ -43,7 +44,7 @@ function Assert-Sha256 {
         [Parameter(Mandatory = $true)][string]$Expected,
         [string]$Name = 'download'
     )
-    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $Expected.ToLowerInvariant()) {
         Module-Fail $Name "sha256 mismatch`n  expected $Expected`n  actual   $actual`n  ($Path -- corrupted download or moved release; do NOT install unverified)"
     }
@@ -480,33 +481,43 @@ function Expand-ManagedTarXz {
     if ($code -ne 0) { throw "Archive extraction failed (exit $code): $($diagnostic -join [Environment]::NewLine)" }
 }
 
+function Set-LlvmEnvironment {
+    param([string]$Bin, [switch]$ExistingOnly)
+    $env:LIBCLANG_PATH = $Bin
+    if (-not $ExistingOnly) { [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $Bin, 'User') }
+}
+
 function Mod-LLVM {
     param([switch]$ExistingOnly)
     # libclang.dll for bindgen. From LLVM's OFFICIAL release (clang+llvm
     # windows-msvc tarball), extracted per-user -- no admin, no Python.
     $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\llvm'
+    Assert-ColdMigrationPath -Path $dir
     $bin = Join-Path $dir 'bin'
-    if (Test-Path (Join-Path $bin 'libclang.dll')) {
-        $env:LIBCLANG_PATH = $bin
-        if (-not $ExistingOnly) { [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $bin, 'User') }
-        Module-Skip 'LLVM' "libclang present at $bin"; return
+    $src = (Get-ManifestModule 'llvm-libclang').source
+    $complete = $false
+    try { Get-LlvmReceipt -Directory $dir -Source $src | Out-Null; $complete = $true }
+    catch { $incomplete = $_.Exception.Message }
+    if ($complete) {
+        Set-LlvmEnvironment -Bin $bin -ExistingOnly:$ExistingOnly
+        Module-Skip 'LLVM' "verified libclang and resource files at $bin"; return
     }
-    if ($ExistingOnly) { throw 'Preparation requires libclang already installed; run the normal installer to provision it.' }
+    if ($ExistingOnly) { throw "Preparation requires a complete LLVM installation ($incomplete); run the normal installer to repair it." }
     Module-Start 'LLVM' 'downloading libclang from LLVM official release (no admin)'
     # Version is PINNED in the manifest. The GitHub "latest" can be a bleeding-edge
     # RC whose libclang mis-generates llama.cpp's bindgen layout tests (llama_sampler
     # came out opaque[1 byte] vs the header's 16 -> a `1 - 16` E0080 underflow).
     # 18.1.x is the known-good that llama.cpp's bindgen expects. Bump in the
     # manifest (+ re-validate the llama build), never here.
-    $src = (Get-ManifestModule 'llvm-libclang').source   # archive: url + version + sha256
     $url = $src.url
     $name = Split-Path $url -Leaf
     $tar = Join-Path $env:TEMP $name
     # Reuse a cached tarball (idempotent re-runs don't re-download ~800MB).
-    if (-not ((Test-Path $tar) -and ((Get-Item $tar).Length -gt 100MB))) {
+    if (-not (Test-Path -LiteralPath $tar -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $tar -Algorithm SHA256).Hash -ine $src.sha256) {
         Invoke-WebRequest -Uri $url -OutFile $tar -UseBasicParsing
+        Assert-Sha256 -Path $tar -Expected $src.sha256 -Name 'LLVM'
     }
-    Assert-Sha256 -Path $tar -Expected $src.sha256 -Name 'LLVM'
     New-Item -ItemType Directory -Force $dir | Out-Null
     # Stage extraction before publishing; a decoder failure must not leave a
     # partial DLL that a rerun mistakes for an installed prerequisite.
@@ -517,15 +528,12 @@ function Mod-LLVM {
     New-Item -ItemType Directory -Path $stage | Out-Null
     try {
         Expand-ManagedTarXz -Archive $tar -Destination $stage -Members $src.extract.Substring(8).Split(',')
-        if (-not (Test-Path (Join-Path $stage 'bin\libclang.dll'))) { throw 'LLVM archive did not contain libclang.dll.' }
-        Get-ChildItem -LiteralPath $stage | Copy-Item -Destination $dir -Recurse -Force -ErrorAction Stop
+        Publish-LlvmStage -Stage $stage -Directory $dir -Source $src
     } finally { Remove-Item -LiteralPath $stage -Recurse -Force }
     # Keep the tarball cached in TEMP for fast re-runs.
-    if (Test-Path (Join-Path $bin 'libclang.dll')) {
-        $env:LIBCLANG_PATH = $bin
-        [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $bin, 'User')
-        Module-Done 'LLVM'
-    } else { Module-Fail 'LLVM' "libclang.dll not found after extract to $dir" }
+    Get-LlvmReceipt -Directory $dir -Source $src | Out-Null
+    Set-LlvmEnvironment -Bin $bin
+    Module-Done 'LLVM'
 }
 
 function Mod-CUDA {
@@ -609,9 +617,9 @@ function Mod-GhAuth {
     else { throw "GitHub login did not complete (exit $LASTEXITCODE); grid setup stopped. Rerun this installer to resume authentication." }
 }
 
-function Save-InstallerEntryScript {
+function Save-InstallerSmallFile {
     param([string]$Uri, [string]$OutFile, [int]$TimeoutSeconds = 60)
-    # This boundary downloads a small entry script, never a toolchain archive.
+    # Small setup entries and compact tool archives only; large payloads need streaming.
     # Bound the complete response; PS5's legacy web response processing can spin
     # indefinitely even for this small download, before any child is launched.
     Add-Type -AssemblyName System.Net.Http
@@ -630,7 +638,7 @@ function Invoke-AircSetup {
     $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         Write-Host '  + acquiring AIRC setup entry (bounded download)'
-        Save-InstallerEntryScript -Uri $source.url -OutFile $scriptPath
+        Save-InstallerSmallFile -Uri $source.url -OutFile $scriptPath
         Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path (@('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $scriptPath) + $SetupArguments)
         if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
     } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
@@ -992,7 +1000,7 @@ function Mod-LlamaServer {
         Write-Step '  llama-server: fetching ninja (no-admin CUDA build driver)'
         New-Item -ItemType Directory -Force $ninjaDir | Out-Null
         $nz = Join-Path $env:TEMP 'ninja-win.zip'
-        Invoke-WebRequest -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz -UseBasicParsing
+        Save-InstallerSmallFile -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz
         Expand-Archive -Path $nz -DestinationPath $ninjaDir -Force
         Remove-Item $nz -ErrorAction SilentlyContinue
     }

@@ -184,7 +184,6 @@ pub async fn evaluate_gating(
     let prompt = build_gating_prompt(&request.context);
 
     let gen_request = TextGenerationRequest {
-        native_output: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
@@ -199,30 +198,17 @@ pub async fn evaluate_gating(
                 name: None,
             },
         ],
-        system_prompt: None,
         model: Some(model.clone()),
         provider: Some(GATING_PROVIDER.to_string()),
         temperature: Some(request.temperature.unwrap_or(0.3)),
         // Model owns its length — the adapter forwards no ceiling (None). The gating
         // prompt asks for a short verdict; brevity is the model's to give, not ours
         // to guillotine (a hard cap truncates a reasoning model mid-thought → empty).
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
         response_format: Some(ResponseFormat::JsonObject),
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
         room_id: Some(request.context.room_id.clone()),
         purpose: Some("cognition/should-respond".to_string()),
         persona_id: Some(request.context.persona_id.clone()),
-        turn_bound: None,
+        ..Default::default()
     };
 
     let registry_arc = global_registry();

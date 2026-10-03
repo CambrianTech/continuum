@@ -1645,6 +1645,7 @@ impl LlmDeliberationFaculty {
             // The turn's bound on the wire: her measured expectation with headroom
             // (card ba82d0a0). Every waiting seam takes max(its floor, this).
             turn_bound: self.turn_bound(),
+            ..Default::default()
         }
     }
 
@@ -9564,6 +9565,17 @@ mod tests {
                 self.generate_stream(request, sink)
                     .await
                     .map_err(Into::into)
+            }
+
+            // Scripted fixture output, never a production streaming fallback.
+            async fn generate_stream(
+                &self,
+                request: TextGenerationRequest,
+                sink: crate::ai::stream_sinks::GenerationSink,
+            ) -> Result<TextGenerationResponse, String> {
+                let response = self.generate_text(request).await?;
+                sink.send(crate::ai::adapter::GenerationChunk::Token(response.text.clone()))?;
+                Ok(response)
             }
 
             async fn generate_text(

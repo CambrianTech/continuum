@@ -9042,6 +9042,11 @@ pub(crate) mod tests {
             return;
         }
         crate::model_registry::init_global().expect("model registry for real teacher adapter");
+        // The real gateway resolves authoritative capabilities, even in this
+        // isolated HTTP fixture. Use one catalog identity throughout the test.
+        let teacher_id = crate::model_registry::global().models_for_provider(crate::inference::llama_server::PROVIDER_ID)
+            .find(|model| model.capabilities.contains(&crate::model_registry::Capability::TextGeneration))
+            .expect("catalog contains a text-generation model").id.clone();
         use crate::cognition::eval::EvalTask;
         use crate::modules::serving_daemon::academy_batch::TeacherBatchRequest;
         use axum::{routing::post, Router};
@@ -9050,17 +9055,17 @@ pub(crate) mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let app = Router::new().route("/v1/chat/completions", post({
             let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
-            move || {
+            move |axum::Json(body): axum::Json<serde_json::Value>| {
                 let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     entered.notify_one();
                     release.acquire().await.unwrap().forget();
                     let chunk = serde_json::json!({
-                        "id":"owned-teacher-fixture", "model":"teacher-fixture",
+                        "id":"owned-teacher-fixture", "model":body["model"],
                         "choices":[{"index":0,"delta":{"content":"```rust\nfn answer() -> i32 { 2 }\n```"},"finish_reason":null}]
                     });
-                    let end = serde_json::json!({"id":"owned-teacher-fixture","model":"teacher-fixture",
+                    let end = serde_json::json!({"id":"owned-teacher-fixture","model":body["model"],
                         "choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
                         "usage":{"prompt_tokens":10,"completion_tokens":12,"total_tokens":22}});
                     ([("content-type", "text/event-stream")], format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"))
@@ -9075,13 +9080,11 @@ pub(crate) mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let mut configured = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
         configured.set_model_resolver(Arc::new(|id| {
-            let mut model = fake_model(id);
-            model.provider = crate::inference::llama_server::PROVIDER_ID.into();
-            Some(model)
+            crate::model_registry::global().model(id).cloned()
         }));
         let daemon = Arc::new(configured);
         let mut snapshot = ServingSnapshot::empty();
-        snapshot.active_model = Some("teacher-fixture".into());
+        snapshot.active_model = Some(teacher_id.clone());
         snapshot.base_url = format!("{root}/v1");
         snapshot.ready = true;
         snapshot.served_context_window = 32768;
@@ -9097,7 +9100,7 @@ pub(crate) mod tests {
         })).unwrap();
         let request = |tasks| TeacherBatchRequest {
             tasks,
-            teacher_model: "teacher-fixture".into(),
+            teacher_model: teacher_id.clone(),
             temperature: 0.0,
             max_fix_iters: 0,
         };
@@ -9110,7 +9113,7 @@ pub(crate) mod tests {
                 _ = entered.notified() => {},
                 result = &mut first => match result {
                     Ok(Err(error)) => panic!("teacher returned before HTTP generation: {error}"),
-                    Ok(Ok(corpus)) => panic!("teacher returned {} examples before HTTP generation", corpus.examples.len()),
+                    Ok(Ok(corpus)) => panic!("teacher returned {} examples before HTTP generation; outcomes: {:?}", corpus.examples.len(), corpus.outcomes),
                     Err(error) => panic!("teacher task ended before HTTP generation: {error}"),
                 },
             }
@@ -9148,7 +9151,7 @@ pub(crate) mod tests {
                 _ = entered.notified() => {},
                 result = &mut next => match result {
                     Ok(Err(error)) => panic!("teacher returned before HTTP generation: {error}"),
-                    Ok(Ok(corpus)) => panic!("teacher returned {} examples before HTTP generation", corpus.examples.len()),
+                    Ok(Ok(corpus)) => panic!("teacher returned {} examples before HTTP generation; outcomes: {:?}", corpus.examples.len(), corpus.outcomes),
                     Err(error) => panic!("teacher task ended before HTTP generation: {error}"),
                 },
             }

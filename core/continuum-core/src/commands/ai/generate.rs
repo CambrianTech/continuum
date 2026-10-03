@@ -108,7 +108,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         native_output: params
             .get("nativeOutput")
             .or_else(|| params.get("native_output"))
-            .map(|value| serde_json::from_value(value.clone()))
+            .map(|value| serde_json::from_value(value.clone())) // boundary: decode nativeOutput from the legacy JSON command/remote IPC parameter contract.
             .transpose()
             .map_err(|e| format!("Invalid native output request: {e}"))?,
         messages,
@@ -133,12 +133,17 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
             .or_else(|| p.json_opt("stopSequences")),
         tools: p.json_opt("tools"),
         tool_choice: p.json_opt("tool_choice"),
-        response_format: None,
         active_adapters: p.json_opt("activeAdapters"),
         request_id: p.string_opt_alias("request_id", "requestId"),
         user_id: p.string_opt_alias("user_id", "userId"),
         room_id: p.string_opt_alias("room_id", "roomId"),
         purpose: p.str_opt("purpose").map(String::from),
+        scheduling_class: params
+            .get("schedulingClass")
+            .or_else(|| params.get("scheduling_class"))
+            .map(|value| serde_json::from_value(value.clone())) // boundary: decode schedulingClass from the legacy JSON command/remote IPC parameter contract.
+            .transpose()
+            .map_err(|e| format!("Invalid scheduling class: {e}"))?,
         // Caller-provided persona attribution. TS sends `personaId` (camelCase)
         // per Continuum convention; snake_case alias accepted for symmetry.
         persona_id: p.string_opt_alias("persona_id", "personaId"),
@@ -150,6 +155,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         turn_bound: p
             .json_opt::<std::time::Duration>("turn_bound")
             .or_else(|| p.json_opt("turnBound")),
+        ..Default::default()
     })
 }
 
@@ -264,14 +270,23 @@ mod native_output_tests {
     // The command boundary must preserve native output intent and reject malformed
     // intent, never silently default a media request into a text-only generation.
     #[test]
-    fn native_output_intent_survives_command_parsing() {
+    fn request_intent_survives_command_parsing() {
         for key in ["nativeOutput", "native_output"] {
-            let mut params = serde_json::json!({"prompt":"respond"});
+            let mut params = serde_json::json!({
+                "prompt": "respond",
+                "purpose": "cognition/deliberation",
+                "schedulingClass": "probe"
+            });
             params[key] = serde_json::json!([
                 {"modality":"audio","mime_type":"audio/wav","voice":null},
                 {"modality":"image","mime_type":"image/png"}
             ]);
             let request = parse_request(&params).unwrap();
+            assert_eq!(request.purpose.as_deref(), Some("cognition/deliberation"));
+            assert_eq!(
+                crate::inference::slots::class_for_request(&request),
+                crate::inference::slots::SlotClass::Probe
+            );
             assert_eq!(request.native_output.as_ref().unwrap().len(), 2);
             assert!(request.require_text_output_transport("unwired").is_err());
             params[key] = serde_json::json!([{"modality":"unknown"}]);
@@ -279,6 +294,19 @@ mod native_output_tests {
                 .unwrap_err()
                 .contains("Invalid native output"));
         }
+        for key in ["schedulingClass", "scheduling_class"] {
+            let mut params = serde_json::json!({"prompt":"respond", "purpose":"cognition/deliberation"});
+            for class in ["turn", "sidecar", "background", "probe"] {
+                params[key] = serde_json::json!(class);
+                let request = parse_request(&params).unwrap();
+                assert_eq!(crate::inference::slots::class_for_request(&request).as_str(), class);
+                assert_eq!(request.purpose.as_deref(), Some("cognition/deliberation"));
+            }
+            params[key] = serde_json::json!("porbe");
+            assert!(parse_request(&params).unwrap_err().contains("Invalid scheduling class"));
+        }
+        let legacy = parse_request(&serde_json::json!({"prompt":"respond", "purpose":"cognition/deliberation"})).unwrap();
+        assert_eq!(crate::inference::slots::class_for_request(&legacy), crate::inference::slots::SlotClass::Turn);
         assert!(parse_request(&serde_json::json!({"prompt":"text"}))
             .unwrap()
             .native_output

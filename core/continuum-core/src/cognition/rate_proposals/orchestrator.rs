@@ -80,7 +80,6 @@ pub async fn rate_proposals_with_ai(
     let prompt_text = build_rating_prompt(&context, &reviewer_name);
 
     let inference_request = TextGenerationRequest {
-        native_output: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
@@ -95,29 +94,13 @@ pub async fn rate_proposals_with_ai(
                 name: None,
             },
         ],
-        system_prompt: None,
         model: Some(model_id),
         provider: Some(model_provider),
         temperature: Some(temperature.unwrap_or(DEFAULT_TEMPERATURE)),
         // Model owns its length (None → adapter forwards no ceiling). The JSON
         // response_format + prompt bound the rater's output, not a const of ours.
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
         purpose: Some("cognition-rate-proposals".to_string()),
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     let registry = global_registry();

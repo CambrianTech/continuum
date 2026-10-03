@@ -10,6 +10,16 @@
 # both sides: the script text carries exactly one literal invocation, and the
 # trace of a run shows one cargo line naming all four bins.
 set -euo pipefail
+# Linux owns the complete shared behavior contract. Windows CI additionally
+# exercises only its native path/receipt/media adapter with this same fixture.
+case "${1:-all}" in
+  all) platforms=(MINGW64_NT-10.0 Linux Darwin); adapter_only=0 ;;
+  --windows-adapter)
+    case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo 'Windows adapter proof requires native Git Bash' >&2; exit 2 ;; esac
+    command -v cygpath >/dev/null || { echo 'Windows adapter proof requires native cygpath' >&2; exit 2; }
+    platforms=(MINGW64_NT-10.0); adapter_only=1 ;;
+  *) echo 'Usage: start-server-build-only.test.sh [--windows-adapter]' >&2; exit 2 ;;
+esac
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 scratch="$(mktemp -d "$scratch_root/continuum-warm-build.XXXXXX")"
@@ -97,7 +107,7 @@ if ! command -v cygpath >/dev/null 2>&1; then
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$2"\n' > "$fixture_home/.cargo/bin/cygpath"
   chmod +x "$fixture_home/.cargo/bin/cygpath"
 fi
-for platform in MINGW64_NT-10.0 Linux Darwin; do
+for platform in "${platforms[@]}"; do
   printf '#!/usr/bin/env bash\necho %s\n' "$platform" > "$fixture_home/.cargo/bin/uname"
   chmod +x "$fixture_home/.cargo/bin/uname"
   for failure in 0 1; do
@@ -121,7 +131,7 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     if [ "$failure" = 0 ]; then
       [ "$status" = 0 ]
       expected_dist="$scratch/repo/apps/web/dist"
-      if [ "$platform" = MINGW64_NT-10.0 ]; then expected_dist="$(cygpath -am "$expected_dist")"; fi
+      if [ "$platform" = MINGW64_NT-10.0 ]; then expected_dist="$(PATH="$fixture_home/.cargo/bin:$PATH" cygpath -am "$expected_dist")"; fi
       grep -Fx "CONTINUUM_UI_DIST='$expected_dist'" "$fixture_home/.continuum/config.env"
       if [ "$platform" = MINGW64_NT-10.0 ]; then
         grep -q '^MEDIA_PREPARE$' "$FIXTURE_TRACE"
@@ -154,6 +164,10 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     echo "PASS $platform build-only (core build failure=$failure)"
   done
 done
+
+# The native Windows adapter has no Unix engine sidecar or generic feature
+# policy to repeat. The EXIT trap still owns the single scratch teardown.
+if [ "$adapter_only" = 1 ]; then exit 0; fi
 
 # A failed engine build leaves the deploy green: the core still ships, the lanes
 # keep the engine they run, and the warm pass says so.

@@ -78,12 +78,17 @@ jobs:
           test_cold_storage_preserves_config
           test_cold_storage_resumes_owned_migration
 
-      - name: Check managed payload placement and engine slots
+      - name: Check managed payload placement
         shell: bash
         run: |
           source tools/scripts/lib/install-common.test.sh
           test_managed_payload_placement
-          bash tools/scripts/tests/install-llama-server-slots.test.sh
+
+      # PR/push slot contracts belong to the required Linux Rust job. Manual
+      # smoke runs have no companion Rust workflow, so retain their proof here.
+      - name: Engine slot contracts for standalone manual smoke
+        if: github.event_name == 'workflow_dispatch'
+        run: bash tools/scripts/tests/install-llama-server-slots.test.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

@@ -267,6 +267,12 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub purpose: Option<String>,
+    /// Optional scheduling classification, independent of generation policy.
+    /// Replays retain the captured purpose (including its reasoning budget) but
+    /// run as probes so they cannot evict a citizen's warm activity slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scheduling_class: Option<crate::inference::slots::SlotClass>,
     /// Persona generating this request — the inference's "owner" for
     /// per-persona resource attribution (KV cache bytes, GPU pressure,
     /// recipe budgets). Wire format is a stringified UUID; the local

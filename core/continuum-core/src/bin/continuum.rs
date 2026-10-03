@@ -1716,11 +1716,50 @@ impl PreparedCoreService {
                 self.job.domain.target(),
                 self.job.slot.display()
             );
-            launchd::live::kickstart(&self.job.domain)?;
             let socket = socket_path();
+            let core_pid = {
+                let socket = socket.clone();
+                move || launchd::live::serving_core_pid(&socket)
+            };
+            // One road for a refused kickstart and a refused spawn: the old core is
+            // already stopped, so either one with nothing answering is a dark node.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
+            let started_new = match launchd::live::kickstart(&self.job.domain) {
+                Ok(()) => launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60))
+                    .await
+                    .map(|_| ()),
+                Err(refused) => Err(refused),
+            };
+            let staged_failed = match launchd::after_staged_start(started_new, core_is_up().await) {
+                launchd::HandoffNext::Done => return Ok(started.elapsed().as_secs()),
+                launchd::HandoffNext::Report(why) => return Err(why),
+                launchd::HandoffNext::RollBack(why) => why,
+            };
+            eprintln!("⚠ {staged_failed}\n▶ restoring the previous build and kickstarting it");
+            let kept = launchd::live::restore_previous(&self.job)
+                .map_err(|e| format!("{staged_failed}; the node is DARK: {e}"))?;
+            // A kickstart error is not a dark node: on the M5 (2026-10-03) `kickstart -k`
+            // reported failure at 10:08:02Z while the restored core started in that same
+            // second, most likely spawned by that kickstart before it exited non-zero. (Not
+            // KeepAlive: the plist sets it to Crashed only, which never retries a job that did
+            // not start.) Only the bounded wait decides.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
+            if let Err(e) = launchd::live::kickstart(&self.job.domain) {
+                eprintln!("⚠ kickstart of the restored build reported: {e}; waiting for launchd to start it");
+            }
             let core_pid = move || launchd::live::serving_core_pid(&socket);
-            launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await?;
-            Ok(started.elapsed().as_secs())
+            match launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+                // Answering under launchd is not yet "restored": the receipt names the build that
+                // is actually running and refuses one that is not the build put back (#194).
+                Ok(pid) => Err(match restored_build_identity(&self.job.slot).await {
+                    Ok(sha) => format!(
+                        "{staged_failed}; rolled back: the previous build {sha} is serving under launchd (pid {pid}), the refused one is kept at {}",
+                        kept.display()
+                    ),
+                    Err(why) => format!("{staged_failed}; rolled back, but the restored core's identity is unproven: {why}"),
+                }),
+                Err(again) => Err(format!("{staged_failed}; the previous build did not come up either, the node is DARK: {again}")),
+            }
         }
         #[cfg(windows)]
         {
@@ -1873,6 +1912,9 @@ impl Drop for WarmBuildReceipt {
 /// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
 /// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
 /// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
+/// A GPU-served lane keeps nice 19 and the job budgets but not the band: there the band kept
+/// the M5's build on its efficiency cores for over 90 minutes with no measurable decode
+/// benefit (2026-10-03); the lane's host-side work is still guarded by nice 19.
 fn yield_to_serving(cmd: &mut std::process::Command) {
     // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
     // the memory the serving node has left (a lane that fills memory must not stop deploys).
@@ -1886,17 +1928,22 @@ fn yield_to_serving(cmd: &mut std::process::Command) {
     if let Some(jobs) = jobs {
         cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
     }
+    #[cfg(target_os = "macos")]
+    let background_band = continuum_core::inference::llama_server::warm_build_background_band(backend.as_deref());
     #[cfg(unix)]
     // SAFETY: the closure runs in the forked child before exec and calls only
     // setpriority, which is async-signal-safe; it touches no memory of the parent.
     unsafe {
         use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
-            // The background band, also on the child itself and inherited.
+            // The background band, only beside a CPU-served lane (efficiency cores, throttled
+            // I/O); also on the child itself and inherited.
             #[cfg(target_os = "macos")]
-            libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
+            if background_band {
+                libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
+            }
             Ok(())
         });
     }
@@ -2365,6 +2412,42 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
 /// describing the binary you are RUNNING rather than one found on disk.
 const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 
+/// The build a rollback put back, proven: the restored slot binary's embedded SHA must be
+/// the one the answering core reports. `Ok(sha)` only when they match.
+#[cfg(target_os = "macos")]
+async fn restored_build_identity(slot: &Path) -> Result<String, String> {
+    let expected = binary_build_sha(slot).await?;
+    let actual = running_core_build_sha("restore-verify").await?.unwrap_or_default(); // unwrap_or_default: an absent sha is the mismatch the check below names
+    if sha_matches(&actual, &expected) {
+        Ok(expected)
+    } else {
+        Err(format!("the slot holds {expected} but the answering core reports {actual:?}"))
+    }
+}
+
+/// The RUNNING core's build SHA, from the process itself over `ping`, bounded at 30 s: a
+/// core that accepts the socket mid-boot but never answers made `continuum reboot` hang
+/// for good (IntelMac, 50 min, 2026-09-05). `what` names the caller in the error. The one
+/// read both the deploy receipt and the rollback's identity check use.
+async fn running_core_build_sha(what: &str) -> Result<Option<String>, String> {
+    let socket = socket_path();
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        connection()
+            .commands()
+            .execute_value("ping", Value::Object(Default::default())),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "{what}: the core on {socket} accepted the socket but did not answer `ping` \
+             within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
+        )
+    })?
+    .map_err(|e| format!("{what}: no core answering on {socket}: {e}"))?;
+    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+}
+
 /// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
 /// `reboot` (start-server.sh rebuilds + reinstalls it unless `cli_self_build` skips the
 /// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
@@ -2379,29 +2462,8 @@ async fn verify_deployed_build_against(
     prebuilt: Option<&PrebuiltCore>,
 ) -> Result<(), String> {
     let socket = socket_path();
-    // The RUNNING core's provenance, from the process itself. BOUNDED: a core
-    // that accepts the socket mid-boot but never answers made `continuum
-    // reboot` hang for good (IntelMac's node, 50 min, 2026-09-05) — the same
-    // wall-clock-forever shape as the 300 s boot watchdog, on the other side of
-    // the socket. A named failure beats a silent hang.
-    let reply = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        connection()
-            .commands()
-            .execute_value("ping", Value::Object(Default::default())),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "deploy-verify: the core on {socket} accepted the socket but did not answer `ping` \
-             within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
-        )
-    })?
-    .map_err(|e| format!("deploy-verify: no core answering on {socket}: {e}"))?;
-    let actual = reply
-        .get("buildSha")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    // The RUNNING core's provenance, from the process itself (bounded; see the helper).
+    let actual = running_core_build_sha("deploy-verify").await?;
 
     // What the deploy SHOULD have shipped.
     let (expected, expected_source) = match prebuilt {
@@ -3236,6 +3298,9 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         if options.runs(Arm::Core) {
             take(Arm::Core, install_core(check).await);
         }
+        if options.runs(Arm::Airc) {
+            take(Arm::Airc, install_airc(check).await);
+        }
         if options.runs(Arm::Cli) {
             // The macOS CLI arm (PATH copies follow the slot's CLI) is owed: on this OS the
             // slot carries no CLI descriptor yet. Said, never counted as converged.
@@ -3282,6 +3347,10 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         // 3. The CLI on PATH follows the slot's CLI (fresh after a stage).
         if options.runs(Arm::Cli) {
             take(Arm::Cli, install_cli(check).await);
+        }
+        // 4. The mesh: airc installed and started at login.
+        if options.runs(Arm::Airc) {
+            take(Arm::Airc, install_airc(check).await);
         }
         finish_install(check, &reports, &failed)
     }
@@ -3614,6 +3683,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
             ));
         }
         eprintln!("▶ crash test: kill -9 {victim}; waiting for {} to relaunch it", job.domain.target());
+        let runs_before = live::spawn_runs(&job.domain);
         // SAFETY: a plain signal to a pid this process just read as the supervised core.
         let rc = unsafe { libc::kill(victim as i32, libc::SIGKILL) };
         if rc != 0 {
@@ -3621,7 +3691,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
         }
         let t0 = std::time::Instant::now();
         let fresh = move || core_pid().filter(|p| *p != victim);
-        match live::wait_owned(&job, fresh, core_is_up, Duration::from_secs(120)).await {
+        match live::wait_owned(&job, runs_before, fresh, core_is_up, Duration::from_secs(120)).await {
             Ok(pid) => {
                 let secs = t0.elapsed().as_secs();
                 eprintln!("✅ healed: {} relaunched the core (pid {pid}) in {secs}s", job.domain.target());
@@ -3641,6 +3711,135 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
             }
         }
     }
+}
+
+/// The airc arm: continuum makes sure the mesh it talks through is installed and comes
+/// back after a reboot. airc stays its own product: installed by its own installer,
+/// and its login supervisor judged and repaired by its own registrar
+/// (`unix/register-autostart.sh --check`, `windows/register-autostart.ps1 -Check`).
+/// This arm only invokes them; it never reads airc's task or plist itself.
+#[cfg(any(windows, target_os = "macos"))]
+async fn install_airc(check: bool) -> Result<supervisor_install::ArmReport, String> {
+    use supervisor_install::{airc_drift, AircDrift, ArmReport};
+    let read = || {
+        let airc = airc_on_path();
+        let supervisor = airc.as_deref().and_then(|a| airc_registrar(a, RegistrarMode::Check).err());
+        let runs = airc.is_some();
+        (airc, airc_drift(runs, supervisor))
+    };
+    let (mut airc, drift) = read();
+    if drift.is_empty() {
+        println!("✓ airc: installed; its registrar reports the login supervisor converged");
+        return Ok(ArmReport::converged());
+    }
+    for d in &drift {
+        println!("  airc: {d:?}");
+    }
+    if check {
+        println!("✗ airc: drifted; `continuum install` installs airc and has airc's registrar repair its supervisor");
+        return Ok(ArmReport::read_only(drift.len()));
+    }
+    if drift.contains(&AircDrift::Missing) {
+        println!("▶ airc: installing through airc's own installer");
+        continuum_core::airc::discovery::install_airc()
+            .await
+            .map_err(|e| format!("airc install: {e}"))?;
+        airc = airc_on_path();
+    }
+    let airc = airc.ok_or("airc installed but is still not runnable on PATH; open a new shell or check ~/.local/bin")?;
+    if airc_registrar(&airc, RegistrarMode::Check).is_err() {
+        airc_registrar(&airc, RegistrarMode::Repair)?;
+    }
+    let (_, after) = read();
+    if !after.is_empty() {
+        return Err(format!("airc still drifted after its registrar ran: {after:?}"));
+    }
+    println!("✓ airc: installed; its registrar reports the login supervisor converged ({})", airc.display());
+    Ok(ArmReport { drift_before: drift.len(), drift_after: 0 })
+}
+
+/// The `airc` a login shell would run, if it runs at all (`--version` answers).
+#[cfg(any(windows, target_os = "macos"))]
+fn airc_on_path() -> Option<PathBuf> {
+    use supervisor_install::quiet_command;
+    let finder = if cfg!(windows) { "where" } else { "which" };
+    let out = quiet_command(finder).arg("airc").output().ok()?;
+    let found = String::from_utf8_lossy(&out.stdout).lines().next().map(|l| PathBuf::from(l.trim()))?;
+    let runs = out.status.success()
+        && quiet_command(&found)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    runs.then_some(found)
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegistrarMode {
+    /// Read only: `--check` / `-Check`. Never elevates.
+    Check,
+    /// Register or repair; on Windows the registrar asks for elevation only if the
+    /// existing task needs it, through its own consent path.
+    Repair,
+}
+
+/// Run airc's own supervisor registrar from the checkout airc was installed from.
+/// `Err` carries the registrar's own words (the drift, or why it could not run).
+#[cfg(any(windows, target_os = "macos"))]
+fn airc_registrar(airc: &Path, mode: RegistrarMode) -> Result<(), String> {
+    use supervisor_install::quiet_command;
+    let home = PathBuf::from(home_dir()?);
+    let marker = home.join(".airc").join("install-source");
+    let source = std::fs::read_to_string(&marker)
+        .map_err(|e| format!("cannot read {} to find airc's checkout: {e}; run `airc update`", marker.display()))?;
+    let source = PathBuf::from(source.trim());
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let registrar = source.join("unix").join("register-autostart.sh");
+        if !registrar.is_file() {
+            return Err(format!("this airc predates its supervisor registrar ({} is missing); run `airc update`", registrar.display()));
+        }
+        let mut command = quiet_command("bash");
+        command.arg(&registrar).arg(airc);
+        if mode == RegistrarMode::Check {
+            command.arg("--check");
+        }
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let registrar = source.join("windows").join("register-autostart.ps1");
+        if !registrar.is_file() {
+            return Err(format!("this airc predates its supervisor registrar ({} is missing); run `airc update`", registrar.display()));
+        }
+        let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
+        let shell = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut command = quiet_command(shell);
+        command
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File"])
+            .arg(&registrar)
+            .arg("-AircPath")
+            .arg(airc)
+            // Native module discovery across pwsh callers, as the scheduler seam does.
+            .env_remove("PSModulePath");
+        if mode == RegistrarMode::Check {
+            command.arg("-Check");
+        }
+        command
+    };
+    let out = command
+        .current_dir(&home)
+        .output()
+        .map_err(|e| format!("cannot run airc's supervisor registrar: {e}"))?;
+    if out.status.success() {
+        if mode == RegistrarMode::Repair {
+            print!("  airc: {}", String::from_utf8_lossy(&out.stdout));
+        }
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if said.is_empty() { format!("airc's registrar exited {}", out.status) } else { said })
 }
 
 /// The macOS supervisor arm of `continuum install` (card a1bd8b58): READ the registered
@@ -3737,11 +3936,14 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
     // The system daemon was started by its bootstrap (RunAtLoad) inside the elevated half
     // — a kickstart there needs root and is not owed. The agent is kickstarted: on a gui
     // domain in on-demand-only mode bootstrap does NOT start it (measured).
+    // A system daemon was spawned by that bootstrap already, so a refusal there may be in
+    // this count; the wait then runs to its ceiling instead of failing fast (not wrong).
+    let runs_before = live::spawn_runs(&job.domain);
     if matches!(job.domain, Domain::Gui(_)) {
         live::kickstart(&job.domain)?;
     }
     let core_pid = || live::serving_core_pid(&socket);
-    match live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+    match live::wait_owned(&job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
         Ok(pid) => println!("✓ {} owns the core (pid {pid}); `continuum supervisor-status --crash-test` proves the heal", job.domain.target()),
         Err(why) => {
             let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(3 * 60));
@@ -5240,7 +5442,25 @@ fn start_log_report(logfile: &str) -> String {
 /// `Runtime::shutdown` runs three 2s-bounded phases per module in parallel, so a healthy
 /// stop is ~6s worst case; the extra room is for the response to travel back. A stop that
 /// exceeds this is not assumed dead — it is assumed UNKNOWN, and the caller says so.
-const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+///
+/// Plus the turn settle's cap (card 32fa22ba): before any module saves, the core lets the
+/// citizens' admitted turns finish, for their measured remaining time and never longer than
+/// `TURN_SETTLE_CAP`. The same constant the core waits on, so the CLI never gives up on a
+/// stop that is still letting a turn finish. An older core does not settle and answers in
+/// the first 20 s as before.
+const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(
+    20 + continuum_core::cognition::turn_ingress::TURN_SETTLE_CAP.as_secs(),
+);
+
+/// Say the stop may wait before it does (Fable on #4684): a stop letting turns finish for
+/// up to `TURN_SETTLE_CAP` must read as busy, never as hung. Printed before every graceful
+/// stop request, so the operator's `stop` and the deploy's reboot say the same thing.
+fn say_turns_may_settle() {
+    println!(
+        "▶ stopping: turns already in flight finish first (their measured remaining time, at most {}s), then the core saves",
+        continuum_core::cognition::turn_ingress::TURN_SETTLE_CAP.as_secs()
+    );
+}
 
 /// What the graceful request achieved, if anything.
 // Debug: the elevated child has no console an operator can read — its only voice is the
@@ -5547,6 +5767,7 @@ async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulSto
     let conn = connection();
     let cmds = conn.commands();
     let req = cmds.execute_value("system/shutdown", Value::Object(Default::default()));
+    say_turns_may_settle();
     match tokio::time::timeout(GRACEFUL_STOP_BUDGET, req).await {
         Ok(Ok(value)) => {
             let durable = value
@@ -5690,6 +5911,7 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
+    say_turns_may_settle();
     let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
         cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
         .await.map_err(|_| "bound shutdown is still running; no exit acknowledgment sent".to_string())?
@@ -6155,7 +6377,7 @@ fn usage() -> String {
        continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n  \
-       continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot). Each arm reads, changes only\n                                       what drifted, says so. --check reads only. Name arms with\n                                       --supervisor --core --cli. (linux arms pending)\n  \
+       continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot), and airc (installed, started at\n                                       login). Each arm reads, changes only what drifted, says so.\n                                       --check reads only. Name arms with --supervisor --core --cli\n                                       --airc. (linux arms pending)\n  \
        continuum uninstall             unregister the supervisor job (the staged binary stays)\n  \
        continuum supervisor-status [--crash-test]\n                                       who owns the running core; --crash-test = kill -9, expect a heal < 60 s\n\
      \n\
