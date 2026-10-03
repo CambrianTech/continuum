@@ -196,3 +196,72 @@ Actual PS5 loopback tests cover exact bytes, HTTP error, oversized response,
 stalled body and real downloaded child exit23. Full Windows service suite passed.
 The same manifest URL downloaded 10448 bytes in0.42seconds through the real helper
 in isolated scratch; it was not executed. Public live acceptance remains OPEN.
+
+### Hidden PS5 compiler diagnostics (2026-10-02)
+
+OPEN public acceptance: the normal Grid install completed the GPU core server
+build, then Cargo returned 101 building the CLI; the hidden coordinator displayed
+only the module failure. A tiny actual hidden PS5 `-File` reproduction proved
+native stderr was drained, but unmerged PowerShell ErrorRecords disappeared at
+the host's OS pipe boundary. The existing merged-stream launcher fixture did not
+exercise that boundary. The compiler failure itself is a separate dependency issue.
+
+The canonical shared helper now provides an executable-entry serializer; the
+public entry (including its generated pre-clone functions) uses it. Native helper
+callers retain PowerShell data/error stream semantics. Entry errors serialize once
+to OS stderr; successful values remain on the success stream, explicit native
+exit codes survive, and terminating failures exit 1 after cleanup.
+
+Validation: complete actual PS5 windows-process.test.ps1 PASS (session 7177),
+including nested hidden -File coordinators, native exit 23, terminating exit 1,
+separate data/diagnostic streams and exact single diagnostic emission. The actual
+public entry's conflicting-switch refusal is visible before any provisioning.
+Existing cancellation, successful child handoff, argv, dual-pipe and bootstrap
+projection checks pass. No build, live installer, UAC, or daemon was run. AIRC must
+consume the released shared helper and wrap its public entry in a follow-up;
+this change does not claim to fix unmodified external PowerShell scripts.
+### Verified recovery handoff (2026-10-02)
+
+A whole-update coordinator can restore and verify the previous daemon yet must
+return a failing update status. The shared launcher now accepts an explicit
+`PreserveChildrenOnExitCode` list for such completed outcomes. The default is
+empty; existing success-only behavior is unchanged. The option requires owned
+process-tree cleanup, never changes the native exit status, and never applies
+to interruption or cancellation. Callers must select the outcome only after
+verifying recovery; ordinary failures must remain outside the list.
+
+Actual hidden PS5 child/grandchild fixtures verify default refusal of exit 200,
+explicit handoff on 200 while retaining that failure status, cleanup on unlisted
+23, and cancellation cleanup even with the allowlist. AIRC integration and the
+public mapping of its internal recovery outcome remain separate acceptance work.
+No live installation, daemon, firewall, or consent action was performed.
+
+### Consent acquisition evidence (2026-10-02)
+
+The cache-on boundary now reports UTC start/end, elapsed milliseconds, resolved
+helper path and file version, cache owner/caller process IDs, and the actual exit
+status (or incomplete launch/wait). Metadata lookup cannot replace acquisition
+errors. Native diagnostics and the original failure remain intact; exit 999
+alone does not identify which actor canceled. Acquisition arguments, ownership,
+retry policy and consent behavior are unchanged.
+
+The existing full Windows PowerShell 5 service suite passed with synthetic
+success, exit 999, launcher failure and unavailable metadata, plus native stderr
+and exit-status fixtures. No live gsudo consent or provisioning was performed;
+this adds evidence for the next supported attempt, not a causal fix for 999.
+
+### Registered elevation helper discovery (2026-10-02)
+
+A nested setup can install gsudo and register its directory while its parent
+still holds an older PATH. The parent previously attempted a second acquisition,
+then refused winget's already-installed/no-upgrade result. Shared discovery now
+refreshes the session from registered User/Machine PATH on a miss before any
+acquisition, and verifies the discovered native executable through `--version`.
+Acquisition exit failures remain failures; no exit-code blanket acceptance or
+persistent environment change was added.
+
+The full PS5 service suite passed with an actual scratch executable and a
+synthetic registered-PATH boundary: stale caller discovery/reuse, a second reuse
+without acquisition, and wrong-version refusal. No live winget, UAC, account or
+firewall changes were performed. AIRC must consume the released helper pin;
+public installation acceptance remains separate.
