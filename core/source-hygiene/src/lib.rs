@@ -341,6 +341,12 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
+        if !in_str {
+            if let Some(len) = char_literal_len(bytes, i) {
+                i += len;
+                continue;
+            }
+        }
         if in_str {
             if escaped {
                 escaped = false;
@@ -359,8 +365,80 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
     (line, None)
 }
 
+/// The byte length of a char (or byte) literal starting at `i`, if one does: `'x'` (any
+/// single byte, `'"'` and `'{'` included) or an escaped `'\x'` (`'\''`, `'\"'`). A lifetime
+/// (`'a`) never has a closing `'` two bytes on, so it is never mistaken for one (Cormac,
+/// review of #4678: `'"'` opened a string and hid every brace after it on the line).
+fn char_literal_len(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i) != Some(&b'\'') {
+        return None;
+    }
+    if bytes.get(i + 2) == Some(&b'\'') && bytes.get(i + 1) != Some(&b'\\') {
+        return Some(3);
+    }
+    if bytes.get(i + 1) == Some(&b'\\') && bytes.get(i + 3) == Some(&b'\'') {
+        return Some(4);
+    }
+    None
+}
+
+/// The net brace depth change of a line of CODE (comments already split off), counting
+/// only braces outside string literals and outside the `'{'` / `'}'` char literals, by
+/// the same string tracking as [`split_code_and_comment`]. A brace in `"}"` is text, not
+/// a block (Astra, review of #4678). Line-based like its sibling, so a string literal
+/// spanning lines or a raw string with an unbalanced brace is outside its reach.
+pub fn brace_delta(code: &str) -> i64 {
+    let bytes = code.as_bytes();
+    let mut in_str = false;
+    let mut escaped = false;
+    let mut delta = 0i64;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+        } else if let Some(len) = char_literal_len(bytes, i) {
+            i += len;
+            continue;
+        } else if c == b'{' {
+            delta += 1;
+        } else if c == b'}' {
+            delta -= 1;
+        }
+        i += 1;
+    }
+    delta
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches (Astra, review of #4678): a brace inside a string or char
+    // literal counted as a block, so `{ "}" }` read as closing the enclosing impl.
+    #[test]
+    fn braces_in_string_and_char_literals_are_not_blocks() {
+        assert_eq!(super::brace_delta(r#"fn label() -> &str { "}" }"#), 0);
+        assert_eq!(super::brace_delta(r#"let s = "{{";"#), 0);
+        assert_eq!(super::brace_delta(r#"let s = "a \" }";"#), 0, "an escaped quote does not end the string");
+        assert_eq!(super::brace_delta("if c == '{' { open += 1;"), 1);
+        assert_eq!(super::brace_delta("impl Runner {"), 1);
+        assert_eq!(super::brace_delta("}"), -1);
+        // Cormac, review of #4678: a quote char or byte literal is not a string.
+        assert_eq!(super::brace_delta("if c == '\"' {"), 1);
+        assert_eq!(super::brace_delta("} else if c == b'\"' {"), 0);
+        assert_eq!(super::brace_delta(r"} else if c == b'\'' {"), 0, "an escaped quote char");
+        assert_eq!(super::brace_delta("fn f<'a>(x: &'a str) {"), 1, "lifetimes are not char literals");
+        // The same rule keeps the comment splitter right after a quote char literal.
+        assert_eq!(super::split_code_and_comment("if c == '\"' { // note").1, Some(" note"));
+    }
+
     // what this catches: THE EXTRACTION'S OWN FAILURE MODE, and it is the quiet one.
     // These rules used to live inside the crate they audit, so `CARGO_MANIFEST_DIR`
     // and "the tree under audit" were the same directory and could not disagree.

@@ -617,9 +617,9 @@ function Mod-GhAuth {
     else { throw "GitHub login did not complete (exit $LASTEXITCODE); grid setup stopped. Rerun this installer to resume authentication." }
 }
 
-function Save-InstallerEntryScript {
+function Save-InstallerSmallFile {
     param([string]$Uri, [string]$OutFile, [int]$TimeoutSeconds = 60)
-    # This boundary downloads a small entry script, never a toolchain archive.
+    # Small setup entries and compact tool archives only; large payloads need streaming.
     # Bound the complete response; PS5's legacy web response processing can spin
     # indefinitely even for this small download, before any child is launched.
     Add-Type -AssemblyName System.Net.Http
@@ -638,7 +638,7 @@ function Invoke-AircSetup {
     $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
         Write-Host '  + acquiring AIRC setup entry (bounded download)'
-        Save-InstallerEntryScript -Uri $source.url -OutFile $scriptPath
+        Save-InstallerSmallFile -Uri $source.url -OutFile $scriptPath
         Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path (@('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $scriptPath) + $SetupArguments)
         if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
     } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
@@ -1000,7 +1000,7 @@ function Mod-LlamaServer {
         Write-Step '  llama-server: fetching ninja (no-admin CUDA build driver)'
         New-Item -ItemType Directory -Force $ninjaDir | Out-Null
         $nz = Join-Path $env:TEMP 'ninja-win.zip'
-        Invoke-WebRequest -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz -UseBasicParsing
+        Save-InstallerSmallFile -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz
         Expand-Archive -Path $nz -DestinationPath $ninjaDir -Force
         Remove-Item $nz -ErrorAction SilentlyContinue
     }

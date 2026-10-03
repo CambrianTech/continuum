@@ -107,6 +107,33 @@ pub fn pid_from_launchctl_print(output: &str) -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// How many times launchd has spawned the job (`runs = N`), refused spawns included.
+/// A spawn failure is evidence about THIS start only when `runs` moved after it was asked
+/// for; the `job state = spawn failed` line otherwise lingers from the previous attempt.
+pub fn runs_from_launchctl_print(output: &str) -> Option<u64> {
+    output
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("runs = "))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// PURE: whether launchd has spawned the job since a wait began. An unreadable count on
+/// either side is not evidence of a fresh attempt, so the wait falls back to its ceiling.
+pub fn fresh_spawn_attempt(at_start: Option<u64>, now: Option<u64>) -> bool {
+    matches!((at_start, now), (Some(a), Some(n)) if n > a)
+}
+
+/// PURE: launchd's refusal of the start this wait is for, if the print shows one. A
+/// `spawn failed` line counts only when launchd has spawned since `runs_before` (read
+/// before the trigger); otherwise it is the previous attempt's and says nothing about this
+/// one. Pinned by a test so a caller that reads its baseline after the trigger is caught.
+pub fn refusal_of_this_start(runs_before: Option<u64>, print: &str) -> Option<SpawnFailed> {
+    fresh_spawn_attempt(runs_before, runs_from_launchctl_print(print))
+        .then(|| spawn_failed_from_launchctl_print(print))
+        .flatten()
+}
+
 /// launchd refused to start the job's program: `job state = spawn failed` with no pid.
 /// `reason` is launchd's `last exit reason` verbatim (M5 2026-10-02:
 /// `OS_REASON_CODESIGNING` on a freshly staged core, node dark until a hand).
@@ -534,14 +561,33 @@ pub mod live {
         Ok(())
     }
 
+    /// launchd's spawn count for the job right now. Read it BEFORE the action that should
+    /// make launchd spawn (a kickstart, a kill), and hand it to [`wait_owned`]: read after,
+    /// an instant refusal is already counted and looks stale (BIGGIEDESK on #4681).
+    pub fn spawn_runs(domain: &Domain) -> Option<u64> {
+        launchctl_print(domain).as_deref().and_then(runs_from_launchctl_print)
+    }
+
     /// Wait until `up()` reports the core answering AND launchd's pid for the job is the
     /// core's own — the receipt refuses an unsupervised core that merely happens to answer.
-    pub async fn wait_owned<F, Fut>(job: &Job, core_pid: impl Fn() -> Option<u32>, up: F, ceiling: Duration) -> Result<u32, String>
+    /// `runs_before` is [`spawn_runs`] read before the triggering action; a spawn failure
+    /// ends the wait early only once launchd has spawned since then.
+    pub async fn wait_owned<F, Fut>(
+        job: &Job,
+        runs_before: Option<u64>,
+        core_pid: impl Fn() -> Option<u32>,
+        up: F,
+        ceiling: Duration,
+    ) -> Result<u32, String>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = bool>,
     {
         let started = Instant::now();
+        // A spawn failure counts only once launchd has spawned again since `runs_before`:
+        // right after a refusal, `job state = spawn failed` is the previous attempt's, and
+        // reading it as this one's declared a restored node dark while launchd was starting
+        // it (M5 2026-10-03 10:08Z: DARK logged, the restored core answered 30 s later).
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
             ticks.tick().await;
@@ -557,9 +603,10 @@ pub mod live {
                     }
                 }
             }
-            // launchd will not retry a spawn it refused, so waiting out the ceiling only
-            // keeps the node dark longer. Say so now, with launchd's own reason.
-            if let Some(failed) = launchctl_print(&job.domain).and_then(|o| spawn_failed_from_launchctl_print(&o)) {
+            // A refusal of THIS start ends the wait at once, with launchd's own reason;
+            // waiting out the ceiling would only keep the node dark longer.
+            let print = launchctl_print(&job.domain);
+            if let Some(failed) = print.as_deref().and_then(|p| refusal_of_this_start(runs_before, p)) {
                 return Err(format!(
                     "launchd could not start {} ({}); job state = spawn failed",
                     job.slot.display(),
@@ -788,6 +835,39 @@ mod tests {
         assert_eq!(spawn_failed_from_launchctl_print(running), None);
         let idle = "com.continuum.core = {\n\tstate = not running\n\tjob state = exited\n}";
         assert_eq!(spawn_failed_from_launchctl_print(idle), None);
+    }
+
+    // what this catches (M5 2026-10-03 10:08Z): right after a refused spawn, launchctl print
+    // still says `job state = spawn failed` while launchd is about to start the restored
+    // build; reading that stale line as the restored start's refusal logged DARK 30 s before
+    // the core answered. Only a refusal after launchd spawned again (runs moved) counts.
+    #[test]
+    fn a_spawn_failure_counts_only_after_launchd_spawned_again() {
+        let failed = "com.continuum.core = {\n\tstate = not running\n\truns = 11\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
+        assert_eq!(runs_from_launchctl_print(failed), Some(11));
+        assert!(!fresh_spawn_attempt(Some(11), Some(11)), "the same count is the previous attempt's refusal");
+        assert!(fresh_spawn_attempt(Some(11), Some(12)), "launchd spawned again and was refused again");
+        assert!(!fresh_spawn_attempt(None, Some(12)), "no baseline: not evidence, wait the ceiling");
+        assert!(!fresh_spawn_attempt(Some(11), None));
+
+        // The ordering BIGGIEDESK named on #4681: runs read BEFORE the kickstart (11), the
+        // kickstart's spawn refused at once (12). Read before, it is a fresh refusal and the
+        // wait ends now; read after the kickstart (12 vs 12), it would look stale and the
+        // rollback would wait out its five-minute ceiling.
+        let pre_start = runs_from_launchctl_print(failed);
+        let refused_at_once = failed.replace("runs = 11", "runs = 12");
+        let now = runs_from_launchctl_print(&refused_at_once);
+        assert!(fresh_spawn_attempt(pre_start, now), "an instant refusal after a pre-start baseline is this start's");
+        assert!(spawn_failed_from_launchctl_print(&refused_at_once).is_some());
+        assert!(!fresh_spawn_attempt(now, now), "a baseline taken after the kickstart hides the instant refusal");
+
+        // The decision wait_owned takes, pinned whole (Cormac on #4681): a refusal counts
+        // for this start only with a pre-trigger baseline below the current count.
+        let refused = Some(SpawnFailed { reason: Some("OS_REASON_CODESIGNING".to_string()) });
+        assert_eq!(refusal_of_this_start(Some(11), &refused_at_once), refused, "pre-kickstart baseline: this start was refused");
+        assert_eq!(refusal_of_this_start(Some(12), &refused_at_once), None, "post-kickstart baseline: the refusal would be hidden");
+        assert_eq!(refusal_of_this_start(Some(11), failed), None, "no spawn since the baseline: the previous attempt's line");
+        assert_eq!(refusal_of_this_start(None, &refused_at_once), None, "no baseline: wait the ceiling");
     }
 
     // what this catches (2026-09-19 13:32Z, IntelMac): the four states a Mac can be in,

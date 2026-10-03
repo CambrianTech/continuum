@@ -648,6 +648,24 @@ pub(crate) fn turn_in_flight(persona: uuid::Uuid) -> bool {
     IN_FLIGHT.lock().contains(&persona)
 }
 
+/// Every turn in flight right now, as (ms it has run, her typical turn ms — `None` until
+/// she has finished one this boot). The settle before a stop sizes its wait from this
+/// ([`crate::cognition::turn_ingress::settle_bound_ms`]). `now_ms` is the clock
+/// [`begin_turn`] was stamped with. Locks taken one at a time, never nested.
+pub(crate) fn in_flight_turns(now_ms: u64) -> Vec<(u64, Option<u64>)> {
+    let personas: Vec<uuid::Uuid> = IN_FLIGHT.lock().iter().copied().collect();
+    let starts = LAST_TURN_MS.lock();
+    let started: Vec<(uuid::Uuid, u64)> = personas
+        .into_iter()
+        .map(|p| (p, starts.get(&p).map_or(0, |s| now_ms.saturating_sub(*s)))) // map_or: begin_turn stamps the start before marking in flight, so a miss is a race at most — 0 elapsed waits LONGER, never shorter
+        .collect();
+    drop(starts);
+    started
+        .into_iter()
+        .map(|(p, elapsed)| (elapsed, turn_shape_of(p).map(|s| s.turn_ms)))
+        .collect()
+}
+
 /// Her measured turn shape; `None` until a turn has finished this boot.
 pub(crate) fn turn_shape_of(persona: uuid::Uuid) -> Option<TurnShape> {
     TURN_SHAPES.lock().get(&persona).copied().filter(|s| s.turns > 0)
