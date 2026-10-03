@@ -108,9 +108,12 @@ pub fn answering() -> bool {
 pub enum Spawned {
     /// A daemon was already answering; nothing spawned.
     Answering,
-    /// airc started it, through its login supervisor (macOS) or its own gated autostart,
-    /// which provisions the daemon's token. airc owns that daemon, not this core.
-    StartedByAirc,
+    /// A start was issued through airc (its login supervisor on macOS, or its own gated
+    /// autostart, which provisions the daemon's token); airc owns that daemon, not this
+    /// core. `spawn` does not wait for it to answer: a large store takes 60-70 s to open
+    /// (the 5090, 2.4 GB), so the caller notes the start and gives it its patience. The
+    /// text says which route and anything the caller should know (a tokenless start).
+    Issued(String),
     /// The `airc` binary is not on PATH — a transportless box (CI, a fresh clone).
     BinaryAbsent,
     /// Neither USERPROFILE nor HOME is set: the machine-account scope is unresolvable.
@@ -119,13 +122,10 @@ pub enum Spawned {
     Failed(String),
 }
 
-/// How long a freshly spawned daemon gets to answer. Cold stores take seconds
-/// (a 5 s sqlite pool acquire was measured on the busy M5 store).
-pub const ANSWER_BOUND: Duration = Duration::from_secs(15);
-
-/// Spawn the daemon from the scope's home (never the repo cwd — the ownership
-/// guard refuses a socket served under the wrong identity) and wait for it to
-/// answer. Idempotent: an answering daemon is left alone.
+/// Start the daemon through airc, from the scope's home (never the repo cwd: the
+/// ownership guard refuses a socket served under the wrong identity), and return once
+/// the start is issued. It never waits for the daemon to answer; see [`Spawned::Issued`].
+/// Idempotent: an answering daemon is left alone.
 pub fn spawn() -> Spawned {
     if answering() {
         return Spawned::Answering;
@@ -135,11 +135,11 @@ pub fn spawn() -> Spawned {
     // from the user's gh; a bare `airc daemon` does not), so its registry refresh never
     // ran and every peer aged into a ghost ten minutes later: the node was off the mesh
     // while it looked healthy. airc's own supervisor runs in the session; use it.
-    match start_route(&airc_supervisor_state()) {
+    let note = match start_route(&airc_supervisor_state()) {
         StartRoute::ThroughSupervisor => return start_through_airc_supervisor(),
         StartRoute::Refuse(why) => return Spawned::Failed(why),
-        StartRoute::SpawnDirect => {}
-    }
+        StartRoute::SpawnDirect(note) => note,
+    };
     let Some(scope) = scope_home() else { return Spawned::NoHome };
     let Some(home) = scope.parent().map(|p| p.to_path_buf()) else { return Spawned::NoHome };
     if socket_path().is_none() {
@@ -153,13 +153,17 @@ pub fn spawn() -> Spawned {
     // any CLI read) holds its lifecycle gate, so a maintenance window refuses it, and it
     // provisions the daemon's GitHub token itself, or logs that it could not. The core
     // starts airc only the way airc starts itself.
+    let (log, log_note) = match daemon_log(&home) {
+        Ok(file) => (std::process::Stdio::from(file), "its words are in ~/.continuum/logs/airc-daemon.log".to_string()),
+        Err(e) => (std::process::Stdio::null(), format!("its words are lost: airc-daemon.log could not be opened ({e})")),
+    };
     let mut command = std::process::Command::new("airc");
     command
         .args(["events", "list", "--limit", "0", "--json"])
         .current_dir(&home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(daemon_log(&home));
+        .stderr(log);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -173,40 +177,37 @@ pub fn spawn() -> Spawned {
     // The read returns once airc has its daemon. Past AUTOSTART_BOUND it is killed and
     // reaped here, so a start the core gave up on can never complete later and overlap
     // the next attempt.
+    // The read returns once airc's daemon answers; on a large store that outlasts this
+    // bound, so a read still waiting here is a start in progress, not a refusal. Only
+    // airc's own non-zero exit (a maintenance gate, a refused start) is a failure.
     match crate::system_resources::bounded_command::wait_bounded(&mut child, AUTOSTART_BOUND) {
-        Ok(Some(status)) if status.success() => {}
-        Ok(Some(status)) => {
-            return Spawned::Failed(format!(
-                "airc's autostart refused or failed ({status}); its words are in ~/.continuum/logs/airc-daemon.log"
-            ))
-        }
-        Ok(None) => {
-            return Spawned::Failed(format!(
-                "airc's autostart did not finish within {}s and was stopped",
-                AUTOSTART_BOUND.as_secs()
-            ))
-        }
-        Err(e) => return Spawned::Failed(format!("waiting on airc's autostart: {e}")),
+        Ok(Some(status)) if status.success() => Spawned::Issued(format!("airc's gated autostart{note}")),
+        Ok(Some(status)) => Spawned::Failed(format!("airc's autostart refused or failed ({status}); {log_note}")),
+        Ok(None) => Spawned::Issued(format!(
+            "airc's gated autostart{note}, still waiting on its daemon after {}s (a store opening); the read was stopped, the daemon was not",
+            AUTOSTART_BOUND.as_secs()
+        )),
+        Err(e) => Spawned::Failed(format!("waiting on airc's autostart: {e}")),
     }
-    let deadline = std::time::Instant::now() + ANSWER_BOUND;
-    while std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(250));
-        if answering() {
-            return Spawned::StartedByAirc;
-        }
-    }
-    Spawned::Failed(format!(
-        "airc's autostart ran but no daemon answered within {}s; a maintenance window or a \
-         refused start is in ~/.continuum/logs/airc-daemon.log",
-        ANSWER_BOUND.as_secs()
-    ))
 }
 
-/// The whole of one [`spawn`], on every path: the supervisor route's two launchctl
-/// probes plus its wait, or the direct route's token probe plus its wait. A caller that
-/// bounds `spawn` uses this, so a slow but successful start is never reported failed
-/// while its work goes on unobserved.
+/// The bound a caller puts on one [`spawn`]. It must cover [`spawn_worst_case`]; a test
+/// holds it there, so raising any bound below fails it instead of leaving a `spawn`
+/// running with nobody reading its result.
 pub const SPAWN_BUDGET: Duration = Duration::from_secs(40);
+
+/// The longest one [`spawn`] can take, summed from the bounds it actually runs under.
+/// Every bounded child adds [`REAP_GRACE`](crate::system_resources::bounded_command::REAP_GRACE)
+/// on a timeout; `socket_path` resolves at most twice (cached once it succeeds).
+pub fn spawn_worst_case() -> Duration {
+    use crate::system_resources::bounded_command::REAP_GRACE;
+    let resolve = ENDPOINT_RESOLVE_BOUND + REAP_GRACE;
+    let answering = resolve + ANSWERING_PROBE_BOUND;
+    let supervisor_query = resolve; // launchctl print, same bound
+    let through_supervisor = resolve; // launchctl kickstart, same bound
+    let direct = resolve + AUTOSTART_BOUND + REAP_GRACE;
+    answering + supervisor_query + through_supervisor.max(direct)
+}
 
 /// How long the direct route waits for airc's autostart read to return.
 const AUTOSTART_BOUND: Duration = Duration::from_secs(10);
@@ -216,6 +217,10 @@ const AUTOSTART_BOUND: Duration = Duration::from_secs(10);
 enum SupervisorState {
     /// None registered (or this OS has none): the core starts the daemon itself.
     Absent,
+    /// No login session for this user (launchd: no `gui/<uid>` domain, exit 112): a core
+    /// that booted to the login screen. No supervisor can be running, so refusing would
+    /// protect nothing; the core starts the daemon directly and says it is tokenless.
+    NoSession,
     /// Registered: only it may start the daemon, because it provisions the token.
     Registered,
     /// launchd could not be asked (timed out, not runnable): neither route is known safe.
@@ -225,7 +230,8 @@ enum SupervisorState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StartRoute {
     ThroughSupervisor,
-    SpawnDirect,
+    /// A direct start; the text is appended to its description (empty, or why it is tokenless).
+    SpawnDirect(String),
     Refuse(String),
 }
 
@@ -233,7 +239,10 @@ enum StartRoute {
 /// daemon, that failure is the answer, not a tokenless spawn behind its back.
 fn start_route(state: &SupervisorState) -> StartRoute {
     match state {
-        SupervisorState::Absent => StartRoute::SpawnDirect,
+        SupervisorState::Absent => StartRoute::SpawnDirect(String::new()),
+        SupervisorState::NoSession => StartRoute::SpawnDirect(
+            " with no login session, so tokenless until someone logs in (peers age out after 10 min)".into(),
+        ),
         SupervisorState::Registered => StartRoute::ThroughSupervisor,
         SupervisorState::Unreadable(why) => StartRoute::Refuse(format!(
             "cannot tell whether airc's login supervisor is registered ({why}); not starting a daemon around it"
@@ -263,10 +272,10 @@ fn airc_supervisor_state() -> SupervisorState {
     }
 }
 
-/// launchd's own answer to `launchctl print gui/<uid>/<label>`. Only its established
-/// "no such service" answer (exit 113, "Could not find service") is Absent and so
-/// permits a direct start; a denied or broken domain query (exit 112, "Could not find
-/// domain", anything else) stays Unreadable with launchd's words.
+/// launchd's own answer to `launchctl print gui/<uid>/<label>`. "No such service"
+/// (exit 113, "Could not find service") is Absent; "no such domain" (exit 112, measured
+/// by Cormac on the IntelMac for a gui domain with no login) is NoSession. Both permit a
+/// direct start. Anything else stays Unreadable with launchd's words.
 fn supervisor_state_from(answer: &crate::system_resources::bounded_command::Captured) -> SupervisorState {
     use crate::system_resources::bounded_command::Captured;
     match answer {
@@ -274,6 +283,7 @@ fn supervisor_state_from(answer: &crate::system_resources::bounded_command::Capt
         Captured::Exited { code: Some(113), stderr, .. } if stderr.contains("Could not find service") => {
             SupervisorState::Absent
         }
+        Captured::Exited { code: Some(112), .. } => SupervisorState::NoSession,
         Captured::Exited { code, stderr, .. } => SupervisorState::Unreadable(format!(
             "launchctl print exited {}: {}",
             code.map_or_else(|| "on a signal".to_string(), |c| c.to_string()),
@@ -291,21 +301,13 @@ fn start_through_airc_supervisor() -> Spawned {
     {
         use crate::system_resources::bounded_command::{capture, Captured};
         let target = airc_supervisor_target();
-        match capture("launchctl", &["kickstart", "-k", &target], ENDPOINT_RESOLVE_BOUND) {
-            Captured::Exited { code: Some(0), .. } => {}
-            other => return Spawned::Failed(format!("{target} is registered but launchd did not start it: {other:?}")),
+        // No `-k`: a supervisor that is running but not yet answering is opening its store,
+        // and killing it would restart that from zero (Cormac's review of #4672). A plain
+        // kickstart starts the job only if it is not running.
+        match capture("launchctl", &["kickstart", &target], ENDPOINT_RESOLVE_BOUND) {
+            Captured::Exited { code: Some(0), .. } => Spawned::Issued(format!("airc's login supervisor {target}")),
+            other => Spawned::Failed(format!("{target} is registered but launchd did not start it: {other:?}")),
         }
-        // The answering probe, `launchctl print` and this kickstart each spend up to
-        // one resolve bound before the wait starts.
-        let wait = SPAWN_BUDGET - ENDPOINT_RESOLVE_BOUND * 3;
-        let deadline = std::time::Instant::now() + wait;
-        while std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(250));
-            if answering() {
-                return Spawned::StartedByAirc;
-            }
-        }
-        Spawned::Failed(format!("kickstarted {target} but no daemon answered within {}s", wait.as_secs()))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -314,16 +316,14 @@ fn start_through_airc_supervisor() -> Spawned {
 }
 
 /// Where a daemon this core spawns writes its stderr: a file, so a gate that keeps
-/// skipping (no token, no route) is readable instead of going to /dev/null.
-fn daemon_log(home: &std::path::Path) -> std::process::Stdio {
+/// skipping (no token, no route) is readable instead of going to /dev/null. It lives in
+/// `~/.continuum/logs`, a tracked dir with its own eviction story. A file that cannot be
+/// opened is returned as the error, so the caller says the words are lost instead of
+/// pointing a reader at a log that does not exist.
+fn daemon_log(home: &std::path::Path) -> std::io::Result<std::fs::File> {
     let dir = home.join(".continuum").join("logs");
-    let _ = std::fs::create_dir_all(&dir);
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("airc-daemon.log"))
-        .map(std::process::Stdio::from)
-        .unwrap_or_else(|_| std::process::Stdio::null())
+    std::fs::create_dir_all(&dir)?;
+    std::fs::OpenOptions::new().create(true).append(true).open(dir.join("airc-daemon.log"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,24 +373,30 @@ mod tests {
     #[test]
     fn a_registered_supervisor_is_never_bypassed_and_an_unreadable_one_refuses() {
         assert_eq!(start_route(&SupervisorState::Registered), StartRoute::ThroughSupervisor);
-        assert_eq!(start_route(&SupervisorState::Absent), StartRoute::SpawnDirect);
+        assert_eq!(start_route(&SupervisorState::Absent), StartRoute::SpawnDirect(String::new()));
+        // what this also catches (Cormac's review of #4672): a core booted to the login
+        // screen has no gui domain, so no supervisor can run; it starts directly and the
+        // route says it is tokenless instead of refusing.
+        match start_route(&SupervisorState::NoSession) {
+            StartRoute::SpawnDirect(note) => assert!(note.contains("tokenless"), "{note}"),
+            other => panic!("no session must start directly, got {other:?}"),
+        }
         assert!(matches!(
             start_route(&SupervisorState::Unreadable("timed_out".into())),
             StartRoute::Refuse(_)
         ));
     }
 
-    // what this catches (review of #4672): the supervisor route waited 30 s inside a
-    // caller bounded at 17 s, so a slow successful start read as failed and its result
-    // was lost. Every route must fit the one budget the caller uses.
+    // what this catches (reviews of #4672): a spawn that outlives the bound its caller
+    // waits, so its result is lost while it keeps running. The previous form of this test
+    // reduced to `x <= x` and could not fail (Cormac). The worst case is now summed from
+    // the bounds spawn really runs under, including the reap grace each timed-out child
+    // adds, so raising AUTOSTART_BOUND or a resolve bound past the budget fails here.
     #[test]
-    fn every_start_route_fits_the_budget_its_caller_waits() {
-        // answering probe + launchctl print + kickstart, then the wait
-        let supervisor_route = ENDPOINT_RESOLVE_BOUND * 3 + (SPAWN_BUDGET - ENDPOINT_RESOLVE_BOUND * 3);
-        // answering probe + launchctl print + socket resolve, the autostart read, then the wait
-        let direct_route = ENDPOINT_RESOLVE_BOUND * 3 + AUTOSTART_BOUND + ANSWER_BOUND;
-        assert!(supervisor_route <= SPAWN_BUDGET);
-        assert!(direct_route <= SPAWN_BUDGET);
+    fn spawns_worst_case_fits_the_budget_its_caller_waits() {
+        let worst = spawn_worst_case();
+        assert!(worst <= SPAWN_BUDGET, "spawn can take {worst:?}, callers wait {SPAWN_BUDGET:?}");
+        assert!(worst > AUTOSTART_BOUND + ENDPOINT_RESOLVE_BOUND * 2, "the sum must include every bound it runs under");
     }
 
     // what this catches (review of #4672): every nonzero `launchctl print` read as
@@ -400,14 +406,17 @@ mod tests {
     #[test]
     fn only_launchds_no_such_service_answer_permits_a_direct_start() {
         use crate::system_resources::bounded_command::Captured;
-        let exited = |code: i32, stderr: &str| Captured::Exited { code: Some(code), stdout: String::new(), stderr: stderr.into(), truncated: false };
+        let exited = |code: i32, stderr: &str| Captured::Exited { code: Some(code), stdout: String::new(), stderr: stderr.into(), truncated: false, cleanup: None };
         assert_eq!(supervisor_state_from(&exited(0, "")), SupervisorState::Registered);
         assert_eq!(
             supervisor_state_from(&exited(113, "Bad request.\nCould not find service \"airc-join\" in domain for user gui: 501\n")),
             SupervisorState::Absent
         );
+        assert_eq!(
+            supervisor_state_from(&exited(112, "Bad request.\nCould not find domain for user gui: 99999\n")),
+            SupervisorState::NoSession
+        );
         for denied in [
-            exited(112, "Bad request.\nCould not find domain for user gui: 99999\n"),
             exited(113, "something else entirely"),
             exited(1, "Operation not permitted"),
             Captured::TimedOut,

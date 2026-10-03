@@ -115,7 +115,7 @@ fn step_airc_daemon() -> Outcome {
     use crate::airc::daemon_supervisor::{spawn, Spawned};
     match spawn() {
         Spawned::Answering => Outcome::Ok("daemon answering".into()),
-        Spawned::StartedByAirc => Outcome::Ok("daemon started by airc (supervisor or gated autostart)".into()),
+        Spawned::Issued(route) => Outcome::Ok(format!("daemon start issued through {route}; discovery waits for it to answer")),
         Spawned::BinaryAbsent => Outcome::Skipped("airc binary absent — transportless box (CI/fresh)".into()),
         Spawned::NoHome => Outcome::Failed(
             "cannot spawn airc daemon: neither USERPROFILE nor HOME is set, so the \

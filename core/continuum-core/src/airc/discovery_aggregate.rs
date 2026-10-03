@@ -287,12 +287,15 @@ async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
         Ok(Err(e)) => Spawned::Failed(format!("spawn task panicked: {e}")),
         Err(_) => Spawned::Failed("spawn did not return within its budget".into()),
     };
-    let started_one = matches!(outcome, Spawned::StartedByAirc);
+    // A start that was ISSUED resets the patience origin, whether or not the daemon has
+    // answered yet: a 2.4 GB store answers 60-70 s later (the 5090), and noting only
+    // starts that answered let patience run out and refuse full-citizen boot, the
+    // four-days-dark loop (Cormac's review of #4672). See DAEMON_STARTED_AT.
+    let started_one = matches!(outcome, Spawned::Issued(_));
     if started_one {
-        // A daemon the core just had started needs time to answer; see DAEMON_STARTED_AT.
         note_daemon_started();
     }
-    let mut answered = matches!(outcome, Spawned::Answering | Spawned::StartedByAirc)
+    let mut answered = matches!(outcome, Spawned::Answering | Spawned::Issued(_))
         && discover_peer_id(socket).await.is_ok();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !answered && started_one && std::time::Instant::now() < deadline {

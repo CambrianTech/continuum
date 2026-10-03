@@ -146,13 +146,20 @@ pub fn spawn() {
                         Err(_) => Spawned::Failed("spawn did not return within its bound".into()),
                     };
                     match outcome {
-                        Spawned::StartedByAirc => {
+                        Spawned::Issued(route) => {
                             revived_by_us = true;
+                            // The start is issued, not yet answered (a store may take a
+                            // minute to open). It spaces the next attempt like a failure
+                            // would, so a slow store is never restarted underneath itself;
+                            // the daemon answering is what the next tick reads as back.
+                            failed_attempts = failed_attempts.saturating_add(1);
                             crate::probe!(
-                                class = "airc.daemon.revived_by_airc",
+                                class = "airc.daemon.revive_issued",
                                 attempt = attempt,
+                                route = %route,
                                 absent_s = absent_since.map(|s| s.elapsed().as_secs()).unwrap_or(0), // unwrap_or: 0 = absence start unrecorded, a legible value in the row
-                                "airc started its daemon (login supervisor or gated autostart) and it answers"
+                                next_check_s = backoff_after(failed_attempts).as_secs(),
+                                "a daemon start was issued through airc; waiting for it to answer"
                             );
                         }
                         Spawned::Answering => {

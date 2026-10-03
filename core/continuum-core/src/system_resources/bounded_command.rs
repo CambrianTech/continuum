@@ -91,9 +91,11 @@ impl Probed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Captured {
     /// Exited before the deadline. `code` is `None` when a signal ended it. The streams
-    /// are a snapshot of at most [`CAPTURE_LIMIT`] bytes each, taken at exit;
-    /// `truncated` says a stream held more (or a descendant was still writing).
-    Exited { code: Option<i32>, stdout: String, stderr: String, truncated: bool },
+    /// are a snapshot of at most [`CAPTURE_LIMIT`] bytes each, taken after the child's
+    /// process group was stopped; `truncated` says only that a stream held more than
+    /// that cap. `cleanup` is `Some` when the group could not be stopped (any error but
+    /// "no such group"), so a descendant may still be running.
+    Exited { code: Option<i32>, stdout: String, stderr: String, truncated: bool, cleanup: Option<String> },
     /// Still running at the deadline; it and, on Unix, its process group were killed
     /// and reaped.
     TimedOut,
@@ -107,7 +109,7 @@ const CAPTURE_LIMIT: usize = 64 * 1024;
 
 /// How long a killed child gets to be reaped before the caller is told its exit is
 /// unconfirmed. A kill does not wait without bound (an uninterruptible exit can hang).
-const REAP_GRACE: Duration = Duration::from_secs(2);
+pub const REAP_GRACE: Duration = Duration::from_secs(2);
 
 /// Wait for `child` until `timeout`; at the deadline kill it and reap it, so it can
 /// never act after its caller has given up on it. `Ok(None)` = it was killed and its
@@ -123,10 +125,7 @@ pub fn wait_bounded(
             Ok(Some(status)) => return Ok(Some(status)),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
             Ok(None) => return kill_and_reap(child, false).map(|()| None),
-            Err(e) => {
-                let _ = kill_and_reap(child, false);
-                return Err(e);
-            }
+            Err(e) => return Err(with_cleanup(e, kill_and_reap(child, false))),
         }
     }
 }
@@ -154,6 +153,15 @@ fn kill_and_reap(child: &mut std::process::Child, group: bool) -> std::io::Resul
     }
 }
 
+/// `status_error`, with the result of the cleanup that followed it: a kill or reap that
+/// also failed is named in the error instead of being dropped.
+fn with_cleanup(status_error: std::io::Error, cleanup: std::io::Result<()>) -> std::io::Error {
+    match cleanup {
+        Ok(()) => status_error,
+        Err(c) => std::io::Error::new(status_error.kind(), format!("{status_error}; cleanup also failed: {c}")),
+    }
+}
+
 fn kill_group(child: &mut std::process::Child) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -175,8 +183,10 @@ fn kill_group(child: &mut std::process::Child) -> std::io::Result<()> {
 /// Output goes to files this call owns, never pipes: nothing stalls on a full pipe, a
 /// descendant that inherits the streams cannot hold the call past its deadline, and
 /// there is no reader thread to leak. On Unix the child leads its own process group:
-/// a timeout kills everything it started, and so does a normal exit, so no descendant
-/// outlives the call. (Windows stops the child only; a probe there must not fork.)
+/// a timeout kills that group, and so does a normal exit; if that kill fails the result
+/// says so in `cleanup`. A descendant that leaves the group (`setsid`/`setpgid`, e.g.
+/// git's detached auto-gc) is out of reach and may outlive the call. Windows stops the
+/// child only; a probe there must not fork.
 pub fn capture(program: &str, args: &[&str], timeout: Duration) -> Captured {
     let deadline = Instant::now() + timeout;
     let (out, err) = match (CaptureFile::new(), CaptureFile::new()) {
@@ -205,21 +215,24 @@ pub fn capture(program: &str, args: &[&str], timeout: Duration) -> Captured {
             Ok(Some(status)) => break Ok(Some(status)),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
             Ok(None) => break kill_and_reap(&mut child, true).map(|()| None),
-            Err(e) => {
-                let _ = kill_and_reap(&mut child, true);
-                break Err(e);
-            }
+            Err(e) => break Err(with_cleanup(e, kill_and_reap(&mut child, true))),
         }
     };
     match waited {
         Ok(Some(status)) => {
-            // A capture owns everything its child started (its process group on Unix):
-            // a descendant left behind is stopped here, so nothing writes after return.
+            // A capture owns everything its child started (its process group on Unix): a
+            // descendant left behind is stopped here. "No such group" means none was left;
+            // any other error is reported, not assumed away.
             #[cfg(unix)]
-            let _ = kill_group(&mut child);
+            let cleanup = match kill_group(&mut child) {
+                Err(e) if e.raw_os_error() != Some(libc::ESRCH) => Some(format!("descendants not stopped: {e}")),
+                _ => None,
+            };
+            #[cfg(not(unix))]
+            let cleanup = None;
             let (stdout, out_more) = out.snapshot();
             let (stderr, err_more) = err.snapshot();
-            Captured::Exited { code: status.code(), stdout, stderr, truncated: out_more || err_more }
+            Captured::Exited { code: status.code(), stdout, stderr, truncated: out_more || err_more, cleanup }
         }
         Ok(None) => Captured::TimedOut,
         Err(e) => Captured::Unstartable { error: e.to_string() },
@@ -421,7 +434,8 @@ mod tests {
         let outcome = capture("sh", &["-c", &script], bound);
         let elapsed = started.elapsed();
         match &outcome {
-            Captured::Exited { code: Some(0), stdout, stderr, .. } => {
+            Captured::Exited { code: Some(0), stdout, stderr, cleanup, .. } => {
+                assert_eq!(cleanup, &None, "the writer's group was stopped");
                 assert!(stdout.len() <= CAPTURE_LIMIT && stderr.len() <= CAPTURE_LIMIT);
                 assert!(stdout.contains(&token) && stderr.contains(&token));
             }
