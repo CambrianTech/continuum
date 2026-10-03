@@ -124,6 +124,16 @@ pub fn fresh_spawn_attempt(at_start: Option<u64>, now: Option<u64>) -> bool {
     matches!((at_start, now), (Some(a), Some(n)) if n > a)
 }
 
+/// PURE: launchd's refusal of the start this wait is for, if the print shows one. A
+/// `spawn failed` line counts only when launchd has spawned since `runs_before` (read
+/// before the trigger); otherwise it is the previous attempt's and says nothing about this
+/// one. Pinned by a test so a caller that reads its baseline after the trigger is caught.
+pub fn refusal_of_this_start(runs_before: Option<u64>, print: &str) -> Option<SpawnFailed> {
+    fresh_spawn_attempt(runs_before, runs_from_launchctl_print(print))
+        .then(|| spawn_failed_from_launchctl_print(print))
+        .flatten()
+}
+
 /// launchd refused to start the job's program: `job state = spawn failed` with no pid.
 /// `reason` is launchd's `last exit reason` verbatim (M5 2026-10-02:
 /// `OS_REASON_CODESIGNING` on a freshly staged core, node dark until a hand).
@@ -551,8 +561,6 @@ pub mod live {
         Ok(())
     }
 
-    /// Wait until `up()` reports the core answering AND launchd's pid for the job is the
-    /// core's own — the receipt refuses an unsupervised core that merely happens to answer.
     /// launchd's spawn count for the job right now. Read it BEFORE the action that should
     /// make launchd spawn (a kickstart, a kill), and hand it to [`wait_owned`]: read after,
     /// an instant refusal is already counted and looks stale (BIGGIEDESK on #4681).
@@ -560,6 +568,8 @@ pub mod live {
         launchctl_print(domain).as_deref().and_then(runs_from_launchctl_print)
     }
 
+    /// Wait until `up()` reports the core answering AND launchd's pid for the job is the
+    /// core's own — the receipt refuses an unsupervised core that merely happens to answer.
     /// `runs_before` is [`spawn_runs`] read before the triggering action; a spawn failure
     /// ends the wait early only once launchd has spawned since then.
     pub async fn wait_owned<F, Fut>(
@@ -596,8 +606,7 @@ pub mod live {
             // A refusal of THIS start ends the wait at once, with launchd's own reason;
             // waiting out the ceiling would only keep the node dark longer.
             let print = launchctl_print(&job.domain);
-            let fresh = fresh_spawn_attempt(runs_before, print.as_deref().and_then(runs_from_launchctl_print));
-            if let Some(failed) = print.as_deref().filter(|_| fresh).and_then(spawn_failed_from_launchctl_print) {
+            if let Some(failed) = print.as_deref().and_then(|p| refusal_of_this_start(runs_before, p)) {
                 return Err(format!(
                     "launchd could not start {} ({}); job state = spawn failed",
                     job.slot.display(),
@@ -851,6 +860,14 @@ mod tests {
         assert!(fresh_spawn_attempt(pre_start, now), "an instant refusal after a pre-start baseline is this start's");
         assert!(spawn_failed_from_launchctl_print(&refused_at_once).is_some());
         assert!(!fresh_spawn_attempt(now, now), "a baseline taken after the kickstart hides the instant refusal");
+
+        // The decision wait_owned takes, pinned whole (Cormac on #4681): a refusal counts
+        // for this start only with a pre-trigger baseline below the current count.
+        let refused = Some(SpawnFailed { reason: Some("OS_REASON_CODESIGNING".to_string()) });
+        assert_eq!(refusal_of_this_start(Some(11), &refused_at_once), refused, "pre-kickstart baseline: this start was refused");
+        assert_eq!(refusal_of_this_start(Some(12), &refused_at_once), None, "post-kickstart baseline: the refusal would be hidden");
+        assert_eq!(refusal_of_this_start(Some(11), failed), None, "no spawn since the baseline: the previous attempt's line");
+        assert_eq!(refusal_of_this_start(None, &refused_at_once), None, "no baseline: wait the ceiling");
     }
 
     // what this catches (2026-09-19 13:32Z, IntelMac): the four states a Mac can be in,

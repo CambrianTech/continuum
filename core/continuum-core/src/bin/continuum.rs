@@ -1764,9 +1764,11 @@ impl PreparedCoreService {
             eprintln!("⚠ {staged_failed}\n▶ restoring the previous build and kickstarting it");
             let kept = launchd::live::restore_previous(&self.job)
                 .map_err(|e| format!("{staged_failed}; the node is DARK: {e}"))?;
-            // A kickstart error is not a dark node: launchd's KeepAlive may start the restored
-            // build anyway (M5 2026-10-03: `kickstart -k` failed at 10:08:02Z and launchd
-            // started the restored core in the same second). Only the wait decides.
+            // A kickstart error is not a dark node: on the M5 (2026-10-03) `kickstart -k`
+            // reported failure at 10:08:02Z while the restored core started in that same
+            // second, most likely spawned by that kickstart before it exited non-zero. (Not
+            // KeepAlive: the plist sets it to Crashed only, which never retries a job that did
+            // not start.) Only the bounded wait decides.
             let runs_before = launchd::live::spawn_runs(&self.job.domain);
             if let Err(e) = launchd::live::kickstart(&self.job.domain) {
                 eprintln!("⚠ kickstart of the restored build reported: {e}; waiting for launchd to start it");
@@ -2428,45 +2430,25 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
 /// describing the binary you are RUNNING rather than one found on disk.
 const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 
-/// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
-/// `reboot` (start-server.sh rebuilds + reinstalls it unless `cli_self_build` skips the
-/// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
-/// tell a HANDOFF ("the next run gets the new CLI") apart from real STALENESS, instead of
-/// warning on every successful deploy.
 /// The build a rollback put back, proven: the restored slot binary's embedded SHA must be
 /// the one the answering core reports. `Ok(sha)` only when they match.
 #[cfg(target_os = "macos")]
 async fn restored_build_identity(slot: &Path) -> Result<String, String> {
     let expected = binary_build_sha(slot).await?;
-    let reply = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        connection().commands().execute_value("ping", Value::Object(Default::default())),
-    )
-    .await
-    .map_err(|_| "the restored core did not answer `ping` within 30 s".to_string())?
-    .map_err(|e| format!("the restored core did not answer `ping`: {e}"))?;
-    let actual = reply.get("buildSha").and_then(|v| v.as_str()).unwrap_or(""); // unwrap_or: an absent sha is the mismatch the check below names
-    if sha_matches(actual, &expected) {
+    let actual = running_core_build_sha("restore-verify").await?.unwrap_or_default(); // unwrap_or_default: an absent sha is the mismatch the check below names
+    if sha_matches(&actual, &expected) {
         Ok(expected)
     } else {
         Err(format!("the slot holds {expected} but the answering core reports {actual:?}"))
     }
 }
 
-async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
-    verify_deployed_build_against(rebuilt_cli, None).await
-}
-
-async fn verify_deployed_build_against(
-    rebuilt_cli: bool,
-    prebuilt: Option<&PrebuiltCore>,
-) -> Result<(), String> {
+/// The RUNNING core's build SHA, from the process itself over `ping`, bounded at 30 s: a
+/// core that accepts the socket mid-boot but never answers made `continuum reboot` hang
+/// for good (IntelMac, 50 min, 2026-09-05). `what` names the caller in the error. The one
+/// read both the deploy receipt and the rollback's identity check use.
+async fn running_core_build_sha(what: &str) -> Result<Option<String>, String> {
     let socket = socket_path();
-    // The RUNNING core's provenance, from the process itself. BOUNDED: a core
-    // that accepts the socket mid-boot but never answers made `continuum
-    // reboot` hang for good (IntelMac's node, 50 min, 2026-09-05) — the same
-    // wall-clock-forever shape as the 300 s boot watchdog, on the other side of
-    // the socket. A named failure beats a silent hang.
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         connection()
@@ -2476,15 +2458,30 @@ async fn verify_deployed_build_against(
     .await
     .map_err(|_| {
         format!(
-            "deploy-verify: the core on {socket} accepted the socket but did not answer `ping` \
+            "{what}: the core on {socket} accepted the socket but did not answer `ping` \
              within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
         )
     })?
-    .map_err(|e| format!("deploy-verify: no core answering on {socket}: {e}"))?;
-    let actual = reply
-        .get("buildSha")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    .map_err(|e| format!("{what}: no core answering on {socket}: {e}"))?;
+    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+}
+
+/// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
+/// `reboot` (start-server.sh rebuilds + reinstalls it unless `cli_self_build` skips the
+/// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
+/// tell a HANDOFF ("the next run gets the new CLI") apart from real STALENESS, instead of
+/// warning on every successful deploy.
+async fn verify_deployed_build(rebuilt_cli: bool) -> Result<(), String> {
+    verify_deployed_build_against(rebuilt_cli, None).await
+}
+
+async fn verify_deployed_build_against(
+    rebuilt_cli: bool,
+    prebuilt: Option<&PrebuiltCore>,
+) -> Result<(), String> {
+    let socket = socket_path();
+    // The RUNNING core's provenance, from the process itself (bounded; see the helper).
+    let actual = running_core_build_sha("deploy-verify").await?;
 
     // What the deploy SHOULD have shipped.
     let (expected, expected_source) = match prebuilt {
