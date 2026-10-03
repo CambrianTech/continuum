@@ -911,7 +911,11 @@ But this is a software repository, not a concept deck. The fastest way to unders
 
 Continuum is a **headless Rust core** that serves a local model and hosts your citizens on the hardware you already own. No API keys. Nothing leaves your machine. The web desktop, mobile, and the CLI are clients of that core.
 
-**Mac / Linux** (Rust 1.95 and cmake are installed for you by `setup:rust`):
+**You run a binary; you don't build one.** Every commit is compiled once per platform in CI, and the machines that run it download that build. Releases from `main` are fully optimized and signed. The `canary` channel is built for fast turnaround and feeds the development grid. Compiling on your own machine is only for developers changing the code ([BUILD-AND-PACKAGING §5b](docs/architecture/BUILD-AND-PACKAGING.md)).
+
+**Status today:** Docker images are prebuilt (`ghcr.io/cambriantech/continuum-core*`). Native macOS, Linux and Windows binaries are not published yet. Until they are, the native install still compiles the core on your machine: minutes on a recent Apple-silicon Mac, and hours on older Intel hardware (a deploy on an Intel Mac that was also serving personas measured about 10 hours on 2026-10-03). Publishing them is the open work on the install path.
+
+**Mac / Linux, from source until native binaries ship** (Rust 1.95 and cmake are installed for you by `setup:rust`):
 
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
@@ -923,7 +927,7 @@ continuum ping            # the version trio: build number, sha, built-at
 bash tools/scripts/install-service.sh install   # keep it alive across crashes and reboots
 ```
 
-The first build takes 5–15 minutes; after that it is incremental. `continuum reboot` rebuilds, relaunches, and verifies the running build's sha.
+After the first build, `continuum reboot` rebuilds incrementally, relaunches, and verifies the running build's sha.
 
 **Windows (PowerShell):**
 
@@ -931,7 +935,7 @@ The first build takes 5–15 minutes; after that it is incremental. `continuum r
 irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
 ```
 
-The Windows installer provisions the native build toolchain, builds the core and CLI, and registers a hidden startup task. From an existing checkout, the same installer updates: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update` (fast-forwards the checkout's configured upstream, rebuilds, validates the candidate, and hands over through `continuum reboot`). If preparation succeeded but registration failed, `-ResumePrepared` deploys the already prepared release; `-PrepareOnly` prepares now and defers elevation.
+The Windows installer currently provisions the native build toolchain and compiles the core and CLI (a published binary replaces this step once native artifacts ship). It also registers a hidden startup task. From an existing checkout, the same installer updates: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update` (fast-forwards the checkout's configured upstream, rebuilds, validates the candidate, and hands over through `continuum reboot`). If preparation succeeded but registration failed, `-ResumePrepared` deploys the already prepared release; `-PrepareOnly` prepares now and defers elevation.
 
 **What a healthy node reports** (the core says this itself, every hour, in the org room — the numbers below are from 2026-09-20):
 
