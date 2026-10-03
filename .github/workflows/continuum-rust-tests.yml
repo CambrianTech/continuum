@@ -115,6 +115,7 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
+          bash tools/scripts/tests/start-server-airc-recovery.test.sh
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
           python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
@@ -154,6 +155,23 @@ jobs:
             fi
           done
 
+      # The CLI step already builds the normal core rlib in this profile.
+      # Reuse it here instead of recompiling it in a separate runner. --lib
+      # cannot exercise compile-fail doctests; preserve their exact count.
+      - name: cargo test -p continuum-core --doc (compile-fail guards)
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          set -o pipefail
+          # Same profile as the --lib build above, deliberately: a different profile
+          # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
+          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
+          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
+            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
+            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
+            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
+            exit 1
+          fi
+
       # These tests share a database schema; run serially and reject zero matches.
       - name: cargo test -p continuum-core --lib (Postgres, --ignored)
         if: needs.changes.outputs.rust != 'false'
@@ -186,112 +204,26 @@ jobs:
           fi
           echo "✓ protocol/typescript/ is in sync with Rust source"
 
-  # Required legacy context mirrors the drift check above; never compile twice.
+  # Preserve the required legacy context without another compilation. All
+  # core, CLI, doc-guard, Postgres and binding checks now share the Linux job.
   ts-rs-binding-drift-detector:
     name: ts-rs binding drift detector
-    # AGGREGATE OVER THE SPLIT, so splitting a job cannot weaken a gate.
-    # This job's only purpose has always been to publish a REQUIRED status context for
-    # a check that actually happens inside another job. Moving the doc guard out of
-    # `cargo test --lib` into its own parallel job created a second such case: the new
-    # job's check name is not in the repo's required set, so on its own a red there
-    # would not block a merge — the split would have traded 5.9 min of wall time for a
-    # gate that stopped gating. Rather than ask a human to add a required check (which
-    # is a promise, not a mechanism), the already-required context now fails when
-    # EITHER upstream fails. `!cancelled()` so a genuine failure still reports instead
-    # of being skipped into a green.
-    needs: [cargo-test-continuum-core, cargo-doc-guards]
+    needs: cargo-test-continuum-core
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Mirror the binding-drift verdict and aggregate the split cargo jobs
+      - name: Mirror the combined Rust and binding-drift verdict
         run: |
-          lib='${{ needs.cargo-test-continuum-core.result }}'
-          doc='${{ needs.cargo-doc-guards.result }}'
-          echo "cargo test --lib : $lib"
-          echo "cargo test --doc : $doc"
-          echo ""
-          echo "ts-rs binding drift is gated by the 'Verify protocol/typescript/ in sync"
-          echo "with Rust source' step inside 'cargo test -p continuum-core --lib'."
-          echo "This job publishes the required status context; it does not re-check."
-          echo ""
-          for name in lib doc; do
-            eval "result=\$$name"
-            case "$result" in
-              success|skipped) ;;
-              *)
-                echo "::error::the $name cargo job concluded '$result' — failing the"
-                echo "::error::required context so a split job cannot pass unnoticed."
-                exit 1
-                ;;
-            esac
-          done
-
-  cargo-doc-guards:
-    # THE 5.9-MINUTE STEP THAT WAS COSTING EVERY PR ITS CRITICAL PATH.
-    # Measured 2026-09-22 on a full-cache-hit run: `cargo test --lib` 12.4 min and
-    # `cargo test --doc` 5.9 min ran SERIALLY in one job, so the doc guard added its
-    # whole wall time to every run (18.3 of a ~20 min job). As its own job it runs
-    # CONCURRENTLY with the lib build and costs zero additional wall time — the gate is
-    # unchanged, it just stopped queueing behind a build it does not depend on.
-    # Not made conditional on purpose: a compile-fail guard that only runs when someone
-    # remembers to touch the guarded file is the gate that is not a gate, and a red
-    # canary tip is a fleet-wide deploy outage.
-    name: cargo test -p continuum-core --doc (compile-fail guards)
-    needs: changes
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        if: needs.changes.outputs.rust != 'false'
-        with:
-          submodules: recursive
-
-      - name: Install Rust toolchain from rust-toolchain.toml
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          rustup show active-toolchain || rustup show
-          rustc --version
-          cargo --version
-
-      - name: System deps (mirrors docker/continuum-core.Dockerfile builder stage)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list \
-                     /etc/apt/sources.list.d/*azure-cli* 2>/dev/null || true
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
-            cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
-            libclang-dev clang build-essential \
-            libglib2.0-dev libasound2-dev libva-dev
-
-      - name: Cache cargo state
-        if: needs.changes.outputs.rust != 'false'
-        uses: Swatinem/rust-cache@v2
-        with:
-          # SAME shared-key as the lib job: this job compiles the same crate with the
-          # same profile, so it reads the warm cache the lib job already populates
-          # rather than paying a cold build for the privilege of being parallel.
-          shared-key: continuum-rust-1.95-workspace-v2
-          cache-workspace-crates: true
-          cache-on-failure: true
-
-      # --lib cannot exercise compile-fail doctests. Preserve the exact guard count.
-      - name: cargo test -p continuum-core --doc (compile-fail guards)
-        if: needs.changes.outputs.rust != 'false'
-        run: |
-          set -o pipefail
-          # Same profile as the --lib build above, deliberately: a different profile
-          # here would be a SECOND full codegen of a 625k-line crate, not a cheap extra step.
-          cargo test -p continuum-core --doc --profile dev-fast BindingIsUnstatable 2>&1 | tee doc-guard.log
-          if ! grep -q 'test result: ok. 2 passed' doc-guard.log; then
-            echo "::error::expected exactly 2 BindingIsUnstatable doctests to pass."
-            echo "A zero-match filter exits 0, so this is how a renamed or deleted"
-            echo "guard is caught. Check core/continuum-core/src/persona/viewstate_rag.rs."
-            exit 1
-          fi
+          result='${{ needs.cargo-test-continuum-core.result }}'
+          echo "Combined lib/CLI/doc/Postgres/binding checks: $result"
+          case "$result" in
+            success) ;;
+            *)
+              echo "::error::The combined Rust job concluded '$result'."
+              exit 1
+              ;;
+          esac
 
   cargo-check-windows:
     name: cargo check windows-msvc (lib + tests)
@@ -335,18 +267,21 @@ jobs:
         run: ./tools/scripts/tests/windows-service.test.ps1
 
       - name: Windows native XZ prerequisite smoke
+        if: needs.changes.outputs.installer != 'false'
         shell: powershell
         run: ./tools/scripts/tests/windows-xz.test.ps1
       - name: CUDA device target selection (PowerShell)
+        if: needs.changes.outputs.installer != 'false'
         shell: powershell
         run: ./tools/scripts/tests/cuda-targets.test.ps1
       - name: CUDA device target selection (Bash)
+        if: needs.changes.outputs.installer != 'false'
         shell: bash
         run: bash tools/scripts/tests/cuda-targets.test.sh
       - name: Warm builds preserve live services
         if: needs.changes.outputs.installer != 'false'
         shell: bash
-        run: bash tools/scripts/tests/start-server-build-only.test.sh
+        run: bash tools/scripts/tests/start-server-build-only.test.sh --windows-adapter
       - name: Windows native cache and engine ownership regressions
         if: needs.changes.outputs.rust != 'false'
         shell: powershell
