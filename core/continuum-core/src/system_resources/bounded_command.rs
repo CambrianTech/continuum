@@ -38,7 +38,7 @@
 //! `vulkaninfo --summary` a few dozen. Anything that streams belongs on the
 //! async path with a drained reader, not here.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// How often the deadline is checked while the child runs. Small enough that a
@@ -193,8 +193,10 @@ pub fn capture(program: &str, args: &[&str], timeout: Duration) -> Captured {
         (Ok(out), Ok(err)) => (out, err),
         (Err(e), _) | (_, Err(e)) => return Captured::Unstartable { error: format!("capture files: {e}") },
     };
-    let mut command = Command::new(program);
-    command.args(args).stdin(Stdio::null());
+    // The one quiet launch policy: no console window on Windows (probes run from hidden
+    // services and the deploy consumer), stdin closed.
+    let mut command = continuum_cli_lifecycle::process::quiet_command(program);
+    command.args(args);
     match (out.stdio(), err.stdio()) {
         (Ok(o), Ok(e)) => {
             command.stdout(o).stderr(e);
@@ -308,6 +310,7 @@ pub fn probe(program: &str, args: &[&str], timeout: Duration) -> Probed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     // what this catches: the whole reason the file exists — a child that never
     // exits must not hold the caller past the deadline. Regression for #3732;

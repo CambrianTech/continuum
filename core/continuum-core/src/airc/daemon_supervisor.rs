@@ -157,18 +157,13 @@ pub fn spawn() -> Spawned {
         Ok(file) => (std::process::Stdio::from(file), "its words are in ~/.continuum/logs/airc-daemon.log".to_string()),
         Err(e) => (std::process::Stdio::null(), format!("its words are lost: airc-daemon.log could not be opened ({e})")),
     };
-    let mut command = std::process::Command::new("airc");
+    // The one quiet launch policy (no console window: the boot task has none; stdin closed).
+    let mut command = continuum_cli_lifecycle::process::quiet_command("airc");
     command
         .args(["events", "list", "--limit", "0", "--json"])
         .current_dir(&home)
-        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: the boot task has no console
-    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Spawned::BinaryAbsent,

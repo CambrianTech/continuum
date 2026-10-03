@@ -502,20 +502,8 @@ pub fn airc_drift(runs: bool, supervisor_drift: Option<String>) -> Vec<AircDrift
     }
 }
 
-/// A command that never opens a console window on Windows, for an installer whose
-/// caller may have none (a hidden service, the deploy consumer). Same flag the
-/// scheduler seam uses; a no-op elsewhere.
-pub fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    #[allow(unused_mut)]
-    let mut command = std::process::Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    command.stdin(std::process::Stdio::null());
-    command
-}
+// The one launch policy for a child the user never sees lives in `crate::process`.
+pub use crate::process::quiet_command;
 
 /// Task XML as `schtasks /Create /XML` reads it: UTF-16LE with a BOM, matching the
 /// document's own `encoding="UTF-16"` declaration.
