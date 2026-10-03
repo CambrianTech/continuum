@@ -341,6 +341,12 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
+        if !in_str {
+            if let Some(len) = char_literal_len(bytes, i) {
+                i += len;
+                continue;
+            }
+        }
         if in_str {
             if escaped {
                 escaped = false;
@@ -357,6 +363,23 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
         i += 1;
     }
     (line, None)
+}
+
+/// The byte length of a char (or byte) literal starting at `i`, if one does: `'x'` (any
+/// single byte, `'"'` and `'{'` included) or an escaped `'\x'` (`'\''`, `'\"'`). A lifetime
+/// (`'a`) never has a closing `'` two bytes on, so it is never mistaken for one (Cormac,
+/// review of #4678: `'"'` opened a string and hid every brace after it on the line).
+fn char_literal_len(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i) != Some(&b'\'') {
+        return None;
+    }
+    if bytes.get(i + 2) == Some(&b'\'') && bytes.get(i + 1) != Some(&b'\\') {
+        return Some(3);
+    }
+    if bytes.get(i + 1) == Some(&b'\\') && bytes.get(i + 3) == Some(&b'\'') {
+        return Some(4);
+    }
+    None
 }
 
 /// The net brace depth change of a line of CODE (comments already split off), counting
@@ -382,8 +405,8 @@ pub fn brace_delta(code: &str) -> i64 {
             }
         } else if c == b'"' {
             in_str = true;
-        } else if c == b'\'' && i + 2 < bytes.len() && bytes[i + 2] == b'\'' && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
-            i += 3;
+        } else if let Some(len) = char_literal_len(bytes, i) {
+            i += len;
             continue;
         } else if c == b'{' {
             delta += 1;
@@ -407,6 +430,13 @@ mod tests {
         assert_eq!(super::brace_delta("if c == '{' { open += 1;"), 1);
         assert_eq!(super::brace_delta("impl Runner {"), 1);
         assert_eq!(super::brace_delta("}"), -1);
+        // Cormac, review of #4678: a quote char or byte literal is not a string.
+        assert_eq!(super::brace_delta("if c == '\"' {"), 1);
+        assert_eq!(super::brace_delta("} else if c == b'\"' {"), 0);
+        assert_eq!(super::brace_delta(r"} else if c == b'\'' {"), 0, "an escaped quote char");
+        assert_eq!(super::brace_delta("fn f<'a>(x: &'a str) {"), 1, "lifetimes are not char literals");
+        // The same rule keeps the comment splitter right after a quote char literal.
+        assert_eq!(super::split_code_and_comment("if c == '\"' { // note").1, Some(" note"));
     }
 
     // what this catches: THE EXTRACTION'S OWN FAILURE MODE, and it is the quiet one.

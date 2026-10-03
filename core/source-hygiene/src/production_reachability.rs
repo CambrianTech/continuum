@@ -167,9 +167,9 @@ impl ProductionReachability {
         let mut own_impl_depth: Option<i64> = None;
         for code in file.production.lines().map(|l| split_code_and_comment(l).0) {
             let t = code.trim_start();
-            if own_impl_depth.is_none()
-                && (t.starts_with(&format!("impl {name} ")) || t.starts_with(&format!("impl {name}<")))
-            {
+            let opens_own_impl = own_impl_depth.is_none()
+                && (t.starts_with(&format!("impl {name} ")) || t.starts_with(&format!("impl {name}<")));
+            if opens_own_impl {
                 own_impl_depth = Some(depth);
             }
             if own_impl_depth.is_some() && CONSTRUCTOR_SHAPES.iter().any(|s| code.contains(s)) {
@@ -177,7 +177,9 @@ impl ProductionReachability {
             }
             let delta = crate::brace_delta(code);
             depth += delta;
-            if own_impl_depth.is_some_and(|d| depth <= d && delta < 0) {
+            // `delta < 0` closes a multi-line impl; a one-line `impl X {}` (delta 0) opens
+            // and closes on its own line and must not stay open over the rest of the file.
+            if own_impl_depth.is_some_and(|d| depth <= d && (delta < 0 || opens_own_impl)) {
                 own_impl_depth = None;
             }
         }
@@ -345,5 +347,11 @@ mod tests {
         let stringy = "pub struct Runner {}\nimpl Runner {\n    fn label() -> &'static str { \"}\" }\n    pub fn new() -> Self { Runner {} }\n}\n";
         let quoted = SourceFile { rel: "stringy.rs".into(), production: stringy.into(), raw: stringy.into() };
         assert!(ProductionReachability::is_machinery(&quoted, "Runner"));
+
+        // what this also catches (Cormac, review of #4678): a one-line empty impl stayed
+        // open, so a later neighbour's constructor counted as this type's.
+        let empty = "pub struct Marker;\nimpl Marker {}\nstruct Other;\nimpl Other {\n    fn new() -> Self { Other }\n}\n";
+        let one_line = SourceFile { rel: "empty.rs".into(), production: empty.into(), raw: empty.into() };
+        assert!(!ProductionReachability::is_machinery(&one_line, "Marker"));
     }
 }
