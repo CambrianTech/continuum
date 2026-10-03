@@ -141,7 +141,7 @@ fn ensure_citizen_layer_from_base(
                 // The merge (and the note) rewrote her layer: announce it from the write
                 // so the bench board re-reads it on the event, never on a clock
                 // (card f860e59c). The layer root maps to all of her instances.
-                crate::code::workspace_events::note_written(peer, &layer);
+                crate::code::workspace_events::note_written(&layer);
                 crate::probe!(
                     class = "workspace.layer.sync",
                     peer = %peer,
@@ -223,7 +223,7 @@ fn ensure_citizen_layer_from_base(
         "citizen layer provisioned — shared clone of the base (objects via alternates, tracked tree only)"
     );
     // A new layer is a written workspace (clone + submodule checkout) — card f860e59c.
-    crate::code::workspace_events::note_written(peer, &layer);
+    crate::code::workspace_events::note_written(&layer);
     Ok(layer)
 }
 
@@ -452,7 +452,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), Co
             .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
         if initialized {
             // init + root commit gave the workspace a HEAD — card f860e59c.
-            crate::code::workspace_events::note_written(who, &citizen_root);
+            crate::code::workspace_events::note_written(&citizen_root);
         }
         citizen_root
     };

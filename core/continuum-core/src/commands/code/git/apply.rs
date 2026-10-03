@@ -81,10 +81,7 @@ crate::action_command! {
         // A check-only apply touches nothing; a real one rewrote the tree — announce it
         // from the write, not from a later poll (card f860e59c).
         if !check {
-            crate::code::workspace_events::note_written(
-                &crate::modules::code_commands::caller_id(ctx),
-                &written,
-            );
+            crate::code::workspace_events::note_written(&written);
         }
         Ok(GitApplyResult { message })
     }

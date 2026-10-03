@@ -365,7 +365,6 @@ impl ShellSession {
         let cwd = self.cwd.clone();
         let env = self.env.clone();
         let cmd_str = command.to_string();
-        let persona_id = self.persona_id.clone();
 
         rt_handle.spawn(async move {
             run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms).await;
@@ -373,7 +372,7 @@ impl ShellSession {
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
             // not — observers re-read the workspace on this event instead of
             // polling it with git on a clock (card f860e59c).
-            super::workspace_events::note_written(&persona_id, &cwd);
+            super::workspace_events::note_written(&cwd);
         });
 
         log_info!(

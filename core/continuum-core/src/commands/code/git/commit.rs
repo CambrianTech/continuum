@@ -53,10 +53,7 @@ crate::action_command! {
             .await?
             .map_err(CommandError::Internal)?;
         // HEAD moved: announce it from the write, not from a later poll (card f860e59c).
-        crate::code::workspace_events::note_written(
-            &crate::modules::code_commands::caller_id(ctx),
-            &written,
-        );
+        crate::code::workspace_events::note_written(&written);
         Ok(GitCommitResult { hash })
     }
 }
