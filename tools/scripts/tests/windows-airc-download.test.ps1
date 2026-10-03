@@ -15,7 +15,9 @@ public sealed class InstallerHttpFixture : IDisposable {
     readonly TcpListener listener;
     readonly Task worker;
     public string Url { get; private set; }
-    public InstallerHttpFixture(int status, string body, int delay, int length) {
+    public InstallerHttpFixture(int status, string body, int delay, int length)
+        : this(status, Encoding.UTF8.GetBytes(body), delay, length) { }
+    public InstallerHttpFixture(int status, byte[] bytes, int delay, int length) {
         listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         Url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port + "/install.ps1";
@@ -29,7 +31,6 @@ public sealed class InstallerHttpFixture : IDisposable {
                         int b = stream.ReadByte(); if (b < 0) return;
                         tail = (tail << 8) | b;
                     }
-                    byte[] bytes = Encoding.UTF8.GetBytes(body);
                     byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + " Fixture\r\nContent-Length: " + (length < 0 ? bytes.Length : length) + "\r\nConnection: close\r\n\r\n");
                     stream.Write(header, 0, header.Length); stream.Flush();
                     if (delay > 0) Thread.Sleep(delay);
@@ -49,8 +50,18 @@ try {
     $body = 'param([string]$Proof); Write-Output $Proof; exit 23'
     $server = New-Object InstallerHttpFixture(200, $body, 0, -1)
     try {
-        Save-InstallerEntryScript -Uri $server.Url -OutFile $path
+        Save-InstallerSmallFile -Uri $server.Url -OutFile $path
         if ([IO.File]::ReadAllText($path) -cne $body) { throw 'Downloaded entry bytes changed.' }
+    } finally { $server.Dispose() }
+    # Binary archives use the same bounded downloader as entry scripts. This
+    # catches accidental text decoding that corrupts Ninja ZIP bytes.
+    $binary = [byte[]](0..255)
+    $server = New-Object InstallerHttpFixture(200, $binary, 0, -1)
+    try {
+        Save-InstallerSmallFile -Uri $server.Url -OutFile $path
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) -cne [Convert]::ToBase64String($binary)) {
+            throw 'Downloaded binary archive bytes changed.'
+        }
     } finally { $server.Dispose() }
     foreach ($case in @(@(404,0,-1), @(200,0,1048577), @(200,3000,-1))) {
         Remove-Item -LiteralPath $path -Force
@@ -58,7 +69,7 @@ try {
         try {
             $failed = $false
             $elapsed = [Diagnostics.Stopwatch]::StartNew()
-            try { Save-InstallerEntryScript -Uri $server.Url -OutFile $path -TimeoutSeconds 1 }
+            try { Save-InstallerSmallFile -Uri $server.Url -OutFile $path -TimeoutSeconds 1 }
             catch { $failed = $true }
             $elapsed.Stop()
             if (-not $failed -or (Test-Path -LiteralPath $path)) { throw 'Failed/incomplete response was published.' }
