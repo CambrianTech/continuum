@@ -290,8 +290,12 @@ pub enum MacDrift {
     WrapperCommand,
     /// The plist lacks `AbandonProcessGroup`: a kickstart or heal would kill the lanes.
     KillsLanes,
-    /// The job exists but the core on the socket is not its pid (or nothing answers).
+    /// The job exists but the core on the socket is not its pid.
     NotOwned { job_pid: Option<u32>, core_pid: Option<u32> },
+    /// The job is registered correctly and nothing is running: a start, not a
+    /// re-registration (no root needed). M5 2026-10-02: reported as NotOwned, so
+    /// `install` tried to re-register (sudo) a job whose only problem was a stopped core.
+    NotRunning,
     /// The agent's domain is on-demand-only: registered, cannot heal.
     CannotHeal,
 }
@@ -321,6 +325,7 @@ pub fn mac_drift(
     match supervision_verdict(Some(domain.clone()), job_pid, core_pid, on_demand_only) {
         SupervisionVerdict::Supervised { .. } => {}
         SupervisionVerdict::OwnedButCannotHeal { .. } => out.push(MacDrift::CannotHeal),
+        SupervisionVerdict::JobPresentCoreOrphaned { job_pid: None, core_pid: None } => out.push(MacDrift::NotRunning),
         SupervisionVerdict::JobPresentCoreOrphaned { job_pid, core_pid } => out.push(MacDrift::NotOwned { job_pid, core_pid }),
         SupervisionVerdict::Unsupervised => out.push(MacDrift::Absent),
     }
@@ -958,6 +963,12 @@ mod tests {
             "an agent asked for, registered right, beside an orphan core"
         );
         assert!(mac_drift(Some((&Domain::Gui(501), &agent)), &Domain::Gui(501), Some(9), Some(9), false).is_empty());
+        // M5 2026-10-02: the daemon registered right with no core running is a start
+        // (no root), never NotOwned, which sent `install` to re-register under sudo.
+        assert_eq!(
+            mac_drift(Some((&Domain::System, &daemon)), &Domain::System, None, None, false),
+            vec![MacDrift::NotRunning]
+        );
     }
 
     // what this catches (Fable on #4232, the same window here): the consent covers the
