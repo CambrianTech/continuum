@@ -168,17 +168,22 @@ crate::action_command! {
                     .to_string(),
             ));
         }
-        let rx = crate::runtime::begin_shutdown();
+        // The settle comes first (card 32fa22ba): admitted turns finish, bounded by their
+        // measured remaining time and capped by TURN_SETTLE_CAP, before any module saves.
+        let settle = crate::cognition::turn_ingress::TURN_SETTLE_CAP;
+        let rx = crate::runtime::begin_shutdown(settle);
 
         // Bounded so a wedged module cannot hold the connection open forever. A timeout
         // here does NOT cancel the shutdown — it is still running, un-cancelled, in the
         // runtime's task — so the honest answer is that durability is unknown, not that
         // it failed.
-        const OBSERVE: std::time::Duration = std::time::Duration::from_secs(15);
-        let Some(receipt) = crate::runtime::await_shutdown(rx, OBSERVE).await else {
+        // The settle's cap on top of the save's own 15 s, so the turns' wait is never
+        // charged against the save.
+        let observe = std::time::Duration::from_secs(15) + settle;
+        let Some(receipt) = crate::runtime::await_shutdown(rx, observe).await else {
             return Err(crate::sdk_codegen::CommandError::Internal(format!(
                 "shutdown is still running after {}s — it was NOT cancelled, and whether                  every module saved is unknown from here",
-                OBSERVE.as_secs()
+                observe.as_secs()
             )));
         };
 
