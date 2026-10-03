@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot 'payload-paths.ps1')
+. (Join-Path $PSScriptRoot 'cuda-targets.ps1')
 # win-modules.ps1 -- the Continuum native-build toolchain modules (Windows).
 #
 # Dot-sourced by install.ps1 AFTER install-common.ps1. Each Mod-* is a
@@ -20,6 +22,7 @@ if (-not (Test-Path $script:ManifestPs)) {
     throw "manifest projection missing: $script:ManifestPs`n  regenerate it with: cargo run -p manifest-gen"
 }
 . (Join-Path $PSScriptRoot 'windows-engine-receipt.ps1')
+. (Join-Path $PSScriptRoot 'windows-llvm-receipt.ps1')
 . $script:ManifestPs    # defines $script:ContinuumManifest ([ordered] hashtable)
 
 # Fetch a module's projected record; fail loud if the manifest lacks it (a typo
@@ -41,7 +44,7 @@ function Assert-Sha256 {
         [Parameter(Mandatory = $true)][string]$Expected,
         [string]$Name = 'download'
     )
-    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $Expected.ToLowerInvariant()) {
         Module-Fail $Name "sha256 mismatch`n  expected $Expected`n  actual   $actual`n  ($Path -- corrupted download or moved release; do NOT install unverified)"
     }
@@ -66,7 +69,7 @@ function Get-CargoFeatures {
 #  CUDA version probe (Blackwell / sm_120 floor is 12.8) 
 function Get-NvccVersion {
     if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) { return $null }
-    $out = & nvcc --version 2>$null
+    $out = Invoke-InstallerProcess 'nvcc' @('--version') 2>$null
     if ($out -match 'release\s+(\d+)\.(\d+)') {
         return [version]("{0}.{1}" -f $Matches[1], $Matches[2])
     }
@@ -78,16 +81,16 @@ function Get-NvccVersion {
 # exactly what conda/pip repackage -- we skip the middleman: download NVIDIA's
 # component .zips and merge them into one toolkit dir. No conda, no Python, no
 # admin, no 3GB system installer. Blackwell (sm_120 / RTX 5090) needs >= 12.8.
-$script:CudaToolkitDir = Join-Path $env:USERPROFILE '.continuum\cuda-toolkit'
+function Get-CudaToolkitDirectory { return (Join-Path (Get-ManagedPayloadRoot) 'cuda-toolkit') }
 
-function Get-CudaToolkitNvcc { return (Join-Path $script:CudaToolkitDir 'bin\nvcc.exe') }
+function Get-CudaToolkitNvcc { return (Join-Path (Get-CudaToolkitDirectory) 'bin\nvcc.exe') }
 
 function Test-CudaBuildToolkit {
     $nvcc = Get-CudaToolkitNvcc
     if (-not (Test-Path $nvcc)) { return $false }
     # Out-String: `& nvcc --version` yields a string ARRAY; `-match` on an array
     # filters and does NOT populate $Matches, so $Matches[1] would index null.
-    $out = (& $nvcc --version 2>$null | Out-String)
+    $out = (Invoke-InstallerProcess $nvcc @('--version') 2>$null | Out-String)
     if ($out -match 'release (\d+)\.(\d+)') {
         return ([version]("{0}.{1}" -f $Matches[1], $Matches[2]) -ge [version]'12.8')
     }
@@ -118,22 +121,83 @@ function Get-ColdDrive {
     } | Sort-Object SizeRemaining -Descending | Select-Object -First 1
 }
 
-# Move a cold dir to the big drive (robocopy /MOVE = copy then delete source).
-# Idempotent: skips when the source is absent or already relocated.
+function Write-ColdMigrationRecord {
+    param([string]$Path, [string]$Text)
+    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temporary, $Text, (New-Object Text.UTF8Encoding($false)))
+        # Same-directory rename publishes a complete record, refusing an owner
+        # already at the destination. Interrupted writes cannot strand data.
+        [IO.File]::Move($temporary, $Path)
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Assert-ColdMigrationPath {
+    param([string]$Path)
+    $cursor = [IO.Path]::GetFullPath($Path)
+    while ($cursor) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Cold migration path traverses a link/reparse point: $cursor"
+            }
+        }
+        $parent = Split-Path $cursor -Parent
+        if ($parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+}
+
+# An owned receipt makes a partial move resumable. A destination without that
+# receipt is never assumed to be this source's completed or interrupted copy.
 function Move-ColdDir {
-    param([string]$Src, [string]$Dst)
-    if (-not (Test-Path $Src)) { return }                       # nothing to move
-    if ((Get-Item $Src).LinkType) { return }                    # already a link/reparse
-    if (Test-Path $Dst) { Write-Step "  cold: $Dst already present -- leaving source in place"; return }
+    param([string]$Src, [string]$Dst, [Parameter(Mandatory)][string]$ColdRoot)
+    $Src = [IO.Path]::GetFullPath($Src).TrimEnd('\')
+    $Dst = [IO.Path]::GetFullPath($Dst).TrimEnd('\')
+    $cold = [IO.Path]::GetFullPath($ColdRoot).TrimEnd('\')
+    $allowed = @{}
+    foreach ($entry in @(@('.cache\huggingface','huggingface'), @('.continuum\genome','genome'), @('.continuum\cache\cargo-target','cargo-target'))) {
+        $allowed[[IO.Path]::GetFullPath((Join-Path $env:USERPROFILE $entry[0]))] = $entry[1]
+    }
+    if (-not $allowed.ContainsKey($Src) -or $Dst -ine (Join-Path $cold $allowed[$Src]) -or
+        $cold -ieq ([IO.Path]::GetPathRoot($cold)).TrimEnd('\') -or
+        $Dst.StartsWith($Src + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        $Src.StartsWith($Dst + '\', [StringComparison]::OrdinalIgnoreCase) -or $Src -ieq $Dst) {
+        throw 'Cold migration refused: source/destination are outside the selected cache roots.'
+    }
+    Assert-ColdMigrationPath $Src
+    Assert-ColdMigrationPath $Dst
+    $receipt = $Dst + '.continuum-migration'
+    Assert-ColdMigrationPath $receipt
+    $identity = "continuum-cold-migration-v1`n$Src`n$Dst`n"
+    if (Test-Path -LiteralPath $receipt) {
+        if ([IO.File]::ReadAllText($receipt) -ine $identity) { throw "Cold migration receipt names different paths: $receipt" }
+    } elseif (-not (Test-Path -LiteralPath $Src)) { return }
+    if (-not (Test-Path -LiteralPath $Src)) {
+        if (-not (Test-Path -LiteralPath $Dst -PathType Container)) { throw 'Cold migration lost both endpoints; refusing to publish storage configuration.' }
+        Remove-Item -LiteralPath $receipt -Force
+        return
+    }
+    if (-not (Test-Path -LiteralPath $receipt)) {
+        if (Test-Path -LiteralPath $Dst) { throw "Cold migration destination already exists without an ownership receipt: $Dst. No files were overwritten." }
+        New-Item -ItemType Directory -Force $cold | Out-Null
+        Write-ColdMigrationRecord -Path $receipt -Text $identity
+    }
     Write-Step "  cold: migrating $Src -> $Dst"
-    New-Item -ItemType Directory -Force (Split-Path $Dst -Parent) | Out-Null
-    # /E all subdirs incl empty, /MOVE delete source after, /NFL /NDL /NP quiet, /R:1 /W:1 fail fast
-    & robocopy $Src $Dst /E /MOVE /NFL /NDL /NP /R:1 /W:1 | Out-Null
-    # robocopy exit codes: < 8 = success (1 = files copied, 3 = copied+extra, etc.);
-    # >= 8 = real failure. Normalize the success codes to 0 so they don't leak out as
-    # a false non-zero script exit (robocopy's "1" is NOT an error).
-    if ($LASTEXITCODE -ge 8) { Write-Warn2 "cold: robocopy $Src -> $Dst returned $LASTEXITCODE (left source intact)" }
-    else { $global:LASTEXITCODE = 0 }
+    # Never traverse junctions; move symbolic links as links. Remaining source
+    # entries cause refusal below, rather than silently publishing a partial cache.
+    Invoke-InstallerProcess -OwnProcessTree 'robocopy' @($Src, $Dst, '/E', '/MOVE', '/SL', '/XJ', '/NFL', '/NDL', '/NP', '/R:1', '/W:1') | Out-Host
+    $code = $global:LASTEXITCODE
+    if ($code -ge 8) { throw "Cold migration failed with robocopy exit $code; the owned partial move will resume on installer rerun: $receipt" }
+    if (Test-Path -LiteralPath $Src) {
+        if (@(Get-ChildItem -LiteralPath $Src -Force).Count) { throw "Cold migration left source entries; refusing to publish partial storage: $Src" }
+        Remove-Item -LiteralPath $Src -Force
+    }
+    if (-not (Test-Path -LiteralPath $Dst -PathType Container)) { throw 'Cold migration did not produce its destination.' }
+    Remove-Item -LiteralPath $receipt -Force
+    $global:LASTEXITCODE = 0
 }
 
 # Persist + export the cold-storage env so THIS install session (Mod-BuildCore)
@@ -147,34 +211,71 @@ function Set-ColdStorageEnv {
     $configDir = Join-Path $env:USERPROFILE '.continuum'
     New-Item -ItemType Directory -Force $configDir | Out-Null
     $configEnv = Join-Path $configDir 'config.env'
-    Set-Content -Path $configEnv -Encoding ASCII -Value @(
-        '# Continuum storage config -- auto-generated by install (cold-storage module).',
-        '# Cold artifacts (models, genome, build cache) live on a large drive.',
-        '# Reconfigure by editing CONTINUUM_STORAGE_PATH below; re-running install',
-        '# respects an existing valid path.',
-        # SINGLE-QUOTED, and on Windows that is load-bearing rather than cosmetic. config.env is
-        # `source`d by bash (start-server.sh launches the core), and bash treats a backslash in an
-        # unquoted value as an escape character, so the path does not survive the round trip:
-        #   HF_HOME=D:\continuum-cold\huggingface   sources as   D:continuum-coldhuggingface
-        # Windows resolves that drive-relative string into a SEPARATE cache root. MEASURED: a 76 GB
-        # model download landed in D:\continuum-coldhuggingface\ while every resolver looked under
-        # D:\continuum-cold\huggingface\. The Rust reader strips these quotes (config_env::unquote).
-        "CONTINUUM_STORAGE_PATH='$ColdRoot'",
-        "HF_HOME='$hf'"
-    )
+    Update-ColdStorageConfig -Path $configEnv -ColdRoot $ColdRoot
+    # Downloads/extraction must use the selected disk too, before LLVM/CUDA/ORT.
+    # Session-only: do not redirect unrelated applications' temporary files.
+    $temp = Join-Path $ColdRoot 'tmp'
+    New-Item -ItemType Directory -Force $temp | Out-Null
+    $env:TEMP = $temp
+    $env:TMP = $temp
     foreach ($kv in @(@('CONTINUUM_STORAGE_PATH', $ColdRoot), @('HF_HOME', $hf), @('CARGO_TARGET_DIR', $cargo))) {
         [Environment]::SetEnvironmentVariable($kv[0], $kv[1], 'User')   # persist for future sessions
         Set-Item -Path "Env:$($kv[0])" -Value $kv[1]                    # and this session
     }
 }
 
+function Update-ColdStorageConfig {
+    param([string]$Path, [string]$ColdRoot)
+    # config.env is read both as dotenv and as shell source. Neither reader has
+    # a shared escape syntax for embedded single quotes/newlines; fail before
+    # modifying the file instead of persisting a different or executable value.
+    if ($ColdRoot -match "['`r`n]") { throw 'Cold-storage path cannot contain single quotes or newlines in config.env.' }
+    $text = if (Test-Path -LiteralPath $Path) { [IO.File]::ReadAllText($Path) } else { '' }
+    $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    foreach ($entry in @(@('CONTINUUM_STORAGE_PATH', $ColdRoot), @('HF_HOME', (Join-Path $ColdRoot 'huggingface')))) {
+        $line = "$($entry[0])='$($entry[1])'"
+        $pattern = '(?m)^[\t ]*' + $entry[0] + '[\t ]*=[^\r\n]*'
+        if ([regex]::IsMatch($text, $pattern)) {
+            # A delegate keeps dollar signs/backslashes in path values literal.
+            $text = [regex]::Replace($text, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $line })
+        } else {
+            if ($text -and -not $text.EndsWith("`n")) { $text += $newline }
+            $text += $line + $newline
+        }
+    }
+    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temporary, '')
+        if (Test-Path -LiteralPath $Path) {
+            # The file can contain credentials unrelated to storage; retain its
+            # explicit access policy instead of inheriting broader parent ACLs.
+            Set-Acl -LiteralPath $temporary -AclObject (Get-Acl -LiteralPath $Path)
+        }
+        [IO.File]::WriteAllText($temporary, $text, (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
 function Mod-ColdStorage {
     $configEnv = Join-Path $env:USERPROFILE '.continuum\config.env'
+    $pending = Join-Path $env:USERPROFILE '.continuum\cold-storage.pending'
+    $coldRoot = $null
+    if (Test-Path -LiteralPath $pending) {
+        $coldRoot = [IO.File]::ReadAllText($pending).TrimEnd("`r", "`n")
+        if (-not (Test-Path -LiteralPath $coldRoot -PathType Container)) { throw 'Pending cold-storage drive is unavailable; setup stopped.' }
+    }
     # Already routed to a still-present drive? Re-export env + skip (idempotent).
-    if (Test-Path $configEnv) {
-        $existing = Get-Content $configEnv |
+    if (-not $coldRoot -and (Test-Path $configEnv)) {
+        $existing = Get-Content -LiteralPath $configEnv -Encoding UTF8 |
             Where-Object { $_ -match '^\s*CONTINUUM_STORAGE_PATH\s*=' } |
-            ForEach-Object { ($_ -split '=', 2)[1].Trim() } | Select-Object -First 1
+            ForEach-Object { ($_ -split '=', 2)[1].Trim() } | Select-Object -Last 1
+        if ($existing -and $existing.Length -ge 2 -and
+            (($existing.StartsWith("'") -and $existing.EndsWith("'")) -or
+             ($existing.StartsWith('"') -and $existing.EndsWith('"')))) {
+            $existing = $existing.Substring(1, $existing.Length - 2)
+        }
         if ($existing -and (Test-Path (Split-Path $existing -Qualifier))) {
             Set-ColdStorageEnv -ColdRoot $existing
             Module-Skip 'cold-storage' "already routed to $existing (edit ~/.continuum/config.env to change)"
@@ -182,23 +283,25 @@ function Mod-ColdStorage {
         }
     }
 
-    $cold = Get-ColdDrive
-    if (-not $cold) {
-        Module-Skip 'cold-storage' "no large secondary drive (>= $($script:ColdStorageMinFreeGB)GB free) -- staying on the system drive"
-        return
+    if (-not $coldRoot) {
+        $cold = Get-ColdDrive
+        if (-not $cold) {
+            Module-Skip 'cold-storage' "no large secondary drive (>= $($script:ColdStorageMinFreeGB)GB free) -- staying on the system drive"
+            return
+        }
+        $coldRoot = "$($cold.DriveLetter):\continuum-cold"
+        New-Item -ItemType Directory -Force $coldRoot, (Split-Path $pending) | Out-Null
+        Write-ColdMigrationRecord -Path $pending -Text ($coldRoot + "`n")
     }
-
-    $freeGB = [math]::Round($cold.SizeRemaining / 1GB)
-    $coldRoot = "$($cold.DriveLetter):\continuum-cold"
-    Module-Start 'cold-storage' "routing cold artifacts to $($cold.DriveLetter): ($freeGB GB free) -- auto-detected"
-    New-Item -ItemType Directory -Force $coldRoot | Out-Null
+    Module-Start 'cold-storage' "routing cold artifacts to $coldRoot"
 
     # Migrate what's already on the system drive (models cache, genome, build cache).
-    Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface')            (Join-Path $coldRoot 'huggingface')
-    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\genome')             (Join-Path $coldRoot 'genome')
-    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\cache\cargo-target') (Join-Path $coldRoot 'cargo-target')
+    Move-ColdDir (Join-Path $env:USERPROFILE '.cache\huggingface')            (Join-Path $coldRoot 'huggingface') -ColdRoot $coldRoot
+    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\genome')             (Join-Path $coldRoot 'genome') -ColdRoot $coldRoot
+    Move-ColdDir (Join-Path $env:USERPROFILE '.continuum\cache\cargo-target') (Join-Path $coldRoot 'cargo-target') -ColdRoot $coldRoot
 
     Set-ColdStorageEnv -ColdRoot $coldRoot
+    Remove-Item -LiteralPath $pending -Force
     Module-Done 'cold-storage'
     Write-Ok "cold storage -> $coldRoot (models, genome, build cache). Reconfigure: ~/.continuum/config.env"
 }
@@ -215,7 +318,7 @@ function Mod-Rust {
     # on first build; ensure a default toolchain exists so rustc/cargo resolve.
     if ((Get-Command rustup -ErrorAction SilentlyContinue) -and
         -not (Get-Command rustc -ErrorAction SilentlyContinue)) {
-        & rustup default stable 2>&1 | Out-Null
+        Invoke-InstallerProcess -OwnProcessTree 'rustup' @('default', 'stable') 2>&1 | Out-Null
         Update-SessionPath
     }
 }
@@ -251,7 +354,7 @@ function Set-CMakeEnv {
 function Get-CMakeVersion([string]$Exe) {
     # Parse `cmake --version` -> [version], or $null when unparsable. Out-String
     # because the native call yields a string ARRAY (same trap as the nvcc probe).
-    $out = (& $Exe --version 2>$null | Out-String)
+    $out = (Invoke-InstallerProcess $Exe @('--version') 2>$null | Out-String)
     if ($out -match 'cmake version (\d+)\.(\d+)\.(\d+)') {
         return [version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $Matches[3])
     }
@@ -280,7 +383,7 @@ function Mod-CMake {
         $have = Get-CMakeVersion $onPath.Source
         if ($have -and $have -ge $pin) { Module-Skip 'CMake' "on PATH ($have >= pinned $ver)"; return }
     }
-    $dir = Join-Path $env:USERPROFILE '.continuum\tools\cmake'
+    $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\cmake'
     $bin = Join-Path $dir 'bin'
     $installedExe = Join-Path $bin 'cmake.exe'
     if (Test-Path $installedExe) {
@@ -309,48 +412,128 @@ function Mod-CMake {
     else { Module-Fail 'CMake' "cmake.exe not found after extract to $dir" }
 }
 
+function Get-ManagedXzDecoder {
+    # Windows bsdtar may delegate XZ to an external decoder. Acquire that
+    # prerequisite from the manifest, in user-owned payload storage, before tar.
+    $src = (Get-ManifestModule 'xz-decoder').source
+    $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\xz'
+    $exe = Join-Path $dir 'bin_x86-64\xz.exe'
+    if (Test-Path -LiteralPath $exe) {
+        $version = (Invoke-InstallerProcess $exe @('--version') | Out-String)
+        if ($LASTEXITCODE -eq 0 -and $version.Contains("XZ Utils) $($src.version)")) { return $exe }
+    }
+    Write-Host "  > [XZ] acquiring archive decoder $($src.version) (no admin)"
+    $archive = Join-Path $env:TEMP "xz-$($src.version)-windows.zip"
+    if (-not (Test-Path -LiteralPath $archive) -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $src.sha256) {
+        $partial = $archive + '.download'
+        Invoke-WebRequest -Uri $src.url -OutFile $partial -UseBasicParsing
+        Assert-Sha256 -Path $partial -Expected $src.sha256 -Name 'XZ'
+        Move-Item -LiteralPath $partial -Destination $archive -Force
+    }
+    Assert-Sha256 -Path $archive -Expected $src.sha256 -Name 'XZ'
+    Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force
+    if (-not (Test-Path -LiteralPath $exe)) { throw 'XZ archive did not supply the required Windows decoder.' }
+    $version = (Invoke-InstallerProcess $exe @('--version') | Out-String)
+    if ($LASTEXITCODE -ne 0 -or -not $version.Contains("XZ Utils) $($src.version)")) { throw 'XZ decoder verification failed.' }
+    return $exe
+}
+
+function Expand-ManagedTarXz {
+    param([string]$Archive, [string]$Destination, [string[]]$Members)
+    $decoder = Get-ManagedXzDecoder
+    $savedPreference = $ErrorActionPreference
+    $plainTar = Join-Path $Destination ([guid]::NewGuid().ToString('N') + '.tar')
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo.FileName = $decoder
+    $process.StartInfo.Arguments = '-d -c -- "' + $Archive + '"'
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $started = $false
+    try {
+        # Windows bsdtar's external-filter pipes stalled on the real LLVM
+        # archive after 64 KiB, although a tiny fixture passed. Decode to a
+        # file first; never send binary tar bytes through PowerShell's pipeline.
+        Write-Host '  > [archive] decoding XZ to temporary tar on the selected storage'
+        $output = [IO.File]::Open($plainTar, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        try {
+            $started = $process.Start()
+            if (-not $started) { throw 'Could not start XZ decoder.' }
+            $errors = $process.StandardError.ReadToEndAsync()
+            $process.StandardOutput.BaseStream.CopyTo($output)
+            $process.WaitForExit()
+            $detail = $errors.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) { throw "Archive extraction failed during XZ decode (exit $($process.ExitCode)): $detail" }
+        } finally { $output.Dispose() }
+        Write-Host '  > [archive] extracting selected members from decoded tar'
+        # Capture native stderr in PS5 without losing the exit status. A failed
+        # decoder/extractor must never be reported as a completed prerequisite.
+        $ErrorActionPreference = 'Continue'
+        $diagnostic = @(Invoke-InstallerProcess (Join-Path $env:SystemRoot 'System32\tar.exe') (@('-xf', $plainTar, '-C', $Destination, '--strip-components=1') + $Members) 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        if ($started -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+        $process.Dispose()
+        $ErrorActionPreference = $savedPreference
+        if (Test-Path -LiteralPath $plainTar) { Remove-Item -LiteralPath $plainTar -Force }
+    }
+    if ($code -ne 0) { throw "Archive extraction failed (exit $code): $($diagnostic -join [Environment]::NewLine)" }
+}
+
+function Set-LlvmEnvironment {
+    param([string]$Bin, [switch]$ExistingOnly)
+    $env:LIBCLANG_PATH = $Bin
+    if (-not $ExistingOnly) { [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $Bin, 'User') }
+}
+
 function Mod-LLVM {
     param([switch]$ExistingOnly)
     # libclang.dll for bindgen. From LLVM's OFFICIAL release (clang+llvm
     # windows-msvc tarball), extracted per-user -- no admin, no Python.
-    $dir = Join-Path $env:USERPROFILE '.continuum\tools\llvm'
+    $dir = Join-Path (Get-ManagedPayloadRoot) 'tools\llvm'
+    Assert-ColdMigrationPath -Path $dir
     $bin = Join-Path $dir 'bin'
-    if (Test-Path (Join-Path $bin 'libclang.dll')) {
-        $env:LIBCLANG_PATH = $bin
-        if (-not $ExistingOnly) { [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $bin, 'User') }
-        Module-Skip 'LLVM' "libclang present at $bin"; return
+    $src = (Get-ManifestModule 'llvm-libclang').source
+    $complete = $false
+    try { Get-LlvmReceipt -Directory $dir -Source $src | Out-Null; $complete = $true }
+    catch { $incomplete = $_.Exception.Message }
+    if ($complete) {
+        Set-LlvmEnvironment -Bin $bin -ExistingOnly:$ExistingOnly
+        Module-Skip 'LLVM' "verified libclang and resource files at $bin"; return
     }
-    if ($ExistingOnly) { throw 'Preparation requires libclang already installed; run the normal installer to provision it.' }
+    if ($ExistingOnly) { throw "Preparation requires a complete LLVM installation ($incomplete); run the normal installer to repair it." }
     Module-Start 'LLVM' 'downloading libclang from LLVM official release (no admin)'
     # Version is PINNED in the manifest. The GitHub "latest" can be a bleeding-edge
     # RC whose libclang mis-generates llama.cpp's bindgen layout tests (llama_sampler
     # came out opaque[1 byte] vs the header's 16 -> a `1 - 16` E0080 underflow).
     # 18.1.x is the known-good that llama.cpp's bindgen expects. Bump in the
     # manifest (+ re-validate the llama build), never here.
-    $src = (Get-ManifestModule 'llvm-libclang').source   # archive: url + version + sha256
     $url = $src.url
     $name = Split-Path $url -Leaf
     $tar = Join-Path $env:TEMP $name
     # Reuse a cached tarball (idempotent re-runs don't re-download ~800MB).
-    if (-not ((Test-Path $tar) -and ((Get-Item $tar).Length -gt 100MB))) {
+    if (-not (Test-Path -LiteralPath $tar -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $tar -Algorithm SHA256).Hash -ine $src.sha256) {
         Invoke-WebRequest -Uri $url -OutFile $tar -UseBasicParsing
+        Assert-Sha256 -Path $tar -Expected $src.sha256 -Name 'LLVM'
     }
-    Assert-Sha256 -Path $tar -Expected $src.sha256 -Name 'LLVM'
     New-Item -ItemType Directory -Force $dir | Out-Null
-    # Use Windows' bsdtar EXPLICITLY -- git-bash's MSYS /usr/bin/tar reads the C:\
-    # dest as a remote host ("cannot connect to C:") and fails. Extract only
-    # bin/libclang.dll (fast); bindgen finds system headers via the MSVC env.
-    $wtar = Join-Path $env:SystemRoot 'System32\tar.exe'
-    & $wtar -xf $tar -C $dir --strip-components=1 "*/bin/libclang.dll" 2>$null
-    if (-not (Test-Path (Join-Path $bin 'libclang.dll'))) {
-        & $wtar -xf $tar -C $dir --strip-components=1 "*/bin/*" 2>$null
-    }
+    # Stage extraction before publishing; a decoder failure must not leave a
+    # partial DLL that a rerun mistakes for an installed prerequisite.
+    if (-not $src.extract.StartsWith('members:')) { throw 'LLVM manifest must declare archive members.' }
+    $stageRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+    $stage = Join-Path $stageRoot ('continuum-llvm-' + [guid]::NewGuid().ToString('N'))
+    if (-not ([IO.Path]::GetFullPath($stage)).StartsWith($stageRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe LLVM staging directory' }
+    New-Item -ItemType Directory -Path $stage | Out-Null
+    try {
+        Expand-ManagedTarXz -Archive $tar -Destination $stage -Members $src.extract.Substring(8).Split(',')
+        Publish-LlvmStage -Stage $stage -Directory $dir -Source $src
+    } finally { Remove-Item -LiteralPath $stage -Recurse -Force }
     # Keep the tarball cached in TEMP for fast re-runs.
-    if (Test-Path (Join-Path $bin 'libclang.dll')) {
-        $env:LIBCLANG_PATH = $bin
-        [Environment]::SetEnvironmentVariable('LIBCLANG_PATH', $bin, 'User')
-        Module-Done 'LLVM'
-    } else { Module-Fail 'LLVM' "libclang.dll not found after extract to $dir" }
+    Get-LlvmReceipt -Directory $dir -Source $src | Out-Null
+    Set-LlvmEnvironment -Bin $bin
+    Module-Done 'LLVM'
 }
 
 function Mod-CUDA {
@@ -361,8 +544,8 @@ function Mod-CUDA {
         return
     }
     if (Test-CudaBuildToolkit) {
-        $env:CUDA_PATH = $script:CudaToolkitDir
-        Module-Skip 'CUDA' "toolkit present at $script:CudaToolkitDir"
+        $env:CUDA_PATH = (Get-CudaToolkitDirectory)
+        Module-Skip 'CUDA' "toolkit present at $(Get-CudaToolkitDirectory)"
         return
     }
     if ($ExistingOnly) { throw 'Preparation requires the CUDA build toolkit already installed; run the normal installer to provision it.' }
@@ -387,7 +570,7 @@ function Mod-CUDA {
     # cuBLAS, cuRAND (candle's RNG links curand.lib), NVRTC, CCCL headers) is DATA
     # in the manifest -- read it, don't hardcode.
     $components = $src.components
-    New-Item -ItemType Directory -Force $script:CudaToolkitDir | Out-Null
+    New-Item -ItemType Directory -Force (Get-CudaToolkitDirectory) | Out-Null
     $tmp = Join-Path $env:TEMP 'continuum-cuda-redist'
     if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
     New-Item -ItemType Directory -Force $tmp | Out-Null
@@ -404,15 +587,15 @@ function Mod-CUDA {
         # merge those into the single unified toolkit dir.
         $inner = Get-ChildItem $ext -Directory | Select-Object -First 1
         if ($inner) {
-            Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $script:CudaToolkitDir -Recurse -Force
+            Copy-Item -Path (Join-Path $inner.FullName '*') -Destination (Get-CudaToolkitDirectory) -Recurse -Force
         }
     }
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 
     if (Test-CudaBuildToolkit) {
-        $env:CUDA_PATH = $script:CudaToolkitDir
+        $env:CUDA_PATH = (Get-CudaToolkitDirectory)
         Module-Done 'CUDA'
-        Write-Ok "CUDA_PATH -> $script:CudaToolkitDir"
+        Write-Ok "CUDA_PATH -> $(Get-CudaToolkitDirectory)"
     } else {
         Module-Fail 'CUDA' "assembled toolkit but nvcc not runnable at $(Get-CudaToolkitNvcc)"
     }
@@ -425,13 +608,40 @@ function Mod-GhAuth {
     Install-IfMissing -Name 'GitHub CLI' -WingetId (Get-ManifestModule 'gh').source.id `
         -TestCmd { Get-Command gh -ErrorAction SilentlyContinue }
     if (-not $WantsGrid) { Module-Skip 'gh auth' 'local-only (no grid) -- GitHub login not required'; return }
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Write-Warn2 'gh not on PATH yet -- re-run to finish login.'; return }
-    & gh auth status 2>$null | Out-Null
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI is unavailable after provisioning; grid setup cannot continue.' }
+    Invoke-InstallerProcess 'gh' @('auth', 'status') 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { Module-Skip 'gh auth' 'already authenticated'; return }
     Module-Start 'gh auth' 'GitHub login for grid (gist rendezvous) -- device-code flow'
-    & gh auth login --hostname github.com --git-protocol https --web
+    Invoke-InstallerProcess 'gh' @('auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web')
     if ($LASTEXITCODE -eq 0) { Module-Done 'gh auth' }
-    else { Write-Warn2 'GitHub login not completed -- re-run install to finish, or: gh auth login' }
+    else { throw "GitHub login did not complete (exit $LASTEXITCODE); grid setup stopped. Rerun this installer to resume authentication." }
+}
+
+function Save-InstallerSmallFile {
+    param([string]$Uri, [string]$OutFile, [int]$TimeoutSeconds = 60)
+    # Small setup entries and compact tool archives only; large payloads need streaming.
+    # Bound the complete response; PS5's legacy web response processing can spin
+    # indefinitely even for this small download, before any child is launched.
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object Net.Http.HttpClient
+    try {
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+        $client.MaxResponseContentBufferSize = 1048576
+        $bytes = $client.GetByteArrayAsync($Uri).GetAwaiter().GetResult()
+        [IO.File]::WriteAllBytes($OutFile, $bytes)
+    } finally { $client.Dispose() }
+}
+
+function Invoke-AircSetup {
+    param([string[]]$SetupArguments = @())
+    $source = (Get-ManifestModule 'airc').source
+    $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        Write-Host '  + acquiring AIRC setup entry (bounded download)'
+        Save-InstallerSmallFile -Uri $source.url -OutFile $scriptPath
+        Invoke-InstallerProcess -OwnProcessTree -PreserveChildrenOnSuccess (Get-Process -Id $PID).Path (@('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $scriptPath) + $SetupArguments)
+        if ($global:LASTEXITCODE -ne 0) { throw "AIRC setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
+    } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
 }
 
 function Mod-AircFirewall {
@@ -444,9 +654,8 @@ function Mod-AircFirewall {
     # routing inference to this box) never connect. A hand-added rule is a manual
     # step that a fresh grid box won't have -- so it belongs in the installer.
     #
-    # A PROGRAM rule (allow airc.exe on ANY port) survives the daemon's ephemeral-
-    # port churn. Grid-only: local serving never needs inbound peer dials. Uses the
-    # single gsudo UAC (Ensure-Elevated) shared with the other machine-scope modules.
+    # AIRC owns its effective TCP/UDP local-subnet policy and legacy rule repair.
+    # Its public entry borrows this installer's existing elevation owner.
     if (-not $WantsGrid) { Module-Skip 'airc-firewall' 'local-only (no grid) -- no inbound peer dials'; return }
 
     # Locate the airc grid-transport binary; skip cleanly if airc isn't installed.
@@ -454,21 +663,9 @@ function Mod-AircFirewall {
     if (-not $airc) { $airc = Join-Path $env:USERPROFILE '.local\bin\airc.exe' }
     if (-not (Test-Path $airc)) { Module-Skip 'airc-firewall' 'airc not installed -- grid transport absent'; return }
 
-    $ruleName = 'airc daemon inbound (continuum grid)'
-    if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
-        Module-Skip 'airc-firewall' 'inbound rule already present'; return
-    }
-
-    Module-Start 'airc-firewall' 'allowing airc daemon inbound (peers must dial in for the grid)'
-    Ensure-Elevated -Reason 'configuring the AIRC inbound firewall rule'
-    $add = "New-NetFirewallRule -DisplayName '$ruleName' -Program '$airc' -Direction Inbound -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null"
-    Invoke-Elevated -CommandLine @('powershell', '-NoProfile', '-Command', $add)
-    if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
-        Module-Done 'airc-firewall'
-        Write-Ok "airc inbound allowed -> peers can dial this node for the grid (program rule, ephemeral-port safe)"
-    } else {
-        Write-Warn2 'airc-firewall: rule not present after add -- peers may not be able to dial in (was the UAC approved?).'
-    }
+    Module-Start 'airc-firewall' 'verifying AIRC-owned local-subnet TCP/UDP policy'
+    Invoke-AircSetup -SetupArguments @('-FirewallOnly', '-AircPath', $airc)
+    Module-Done 'airc-firewall'
 }
 
 function Mod-Airc {
@@ -480,13 +677,7 @@ function Mod-Airc {
     $candidates = @((Join-Path $canonicalBin 'airc.exe'), (Join-Path $userBin 'airc.exe'))
     $installed = if ($airc) { $airc.Source } else { $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
     if (-not $installed) {
-        $source = (Get-ManifestModule 'airc').source
-        $scriptPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-airc-' + [guid]::NewGuid().ToString('N') + '.ps1')
-        try {
-            Invoke-WebRequest -Uri $source.url -OutFile $scriptPath -UseBasicParsing
-            & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy RemoteSigned -File $scriptPath
-            if ($LASTEXITCODE -ne 0) { throw 'AIRC installation failed; the core was not restarted.' }
-        } finally { Remove-Item -LiteralPath $scriptPath -ErrorAction SilentlyContinue }
+        Invoke-AircSetup
         $installed = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         if (-not $installed) { throw 'AIRC installer did not produce its configured CLI.' }
     }
@@ -504,7 +695,7 @@ function Mod-OrtRuntime {
         if (-not (Test-Path -LiteralPath $env:ORT_DYLIB_PATH)) { throw 'Configured ORT_DYLIB_PATH does not exist.' }
         return
     }
-    $lib = Join-Path $env:USERPROFILE '.continuum\lib'
+    $lib = Join-Path (Get-ManagedPayloadRoot) 'lib'
     if (Test-Path (Join-Path $lib 'onnxruntime.dll')) { Module-Skip 'onnxruntime' 'installed runtime present'; return }
     $source = (Get-ManifestModule 'onnxruntime').source
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-ort-' + [guid]::NewGuid().ToString('N'))
@@ -559,7 +750,7 @@ function Test-PopplerRuntime {
 function Mod-Poppler {
     $source = (Get-ManifestModule 'poppler').source
     $version = ($source.version -split '-')[0]
-    $directory = Join-Path $env:USERPROFILE '.continuum\tools\poppler'
+    $directory = Join-Path (Get-ManagedPayloadRoot) 'tools\poppler'
     if (Test-PopplerRuntime -Directory $directory -Version $version) {
         Module-Skip 'poppler' 'all three installed PDF decoders execute at the pinned version'
         return
@@ -620,8 +811,7 @@ function Mod-BuildCore {
         Enter-MsvcEnv                                       # cl.exe for nvcc (nvcc-compatible VS)
         $env:CMAKE_GENERATOR = $build.cmake_generator       # match the VS nvcc supports
         $env:CMAKE_GENERATOR_PLATFORM = 'x64'
-        $env:CMAKE_CUDA_ARCHITECTURES = $build.cuda_arch    # Blackwell RTX 5090 = sm_120
-        if (-not $env:CUDA_COMPUTE_CAP) { $env:CUDA_COMPUTE_CAP = $build.cuda_arch }  # candle-kernels
+        $null = Set-CudaTargets
         if ($env:CUDA_PATH) {
             $env:CUDA_HOME = $env:CUDA_PATH
             $cudaBin = Join-Path $env:CUDA_PATH 'bin'
@@ -642,16 +832,16 @@ function Mod-BuildCore {
         $buildArgs = @('build', '-p', 'continuum-core',
             '--bin', 'continuum-core-server',
             '--release', '--features', $features)
-        & cargo @buildArgs
+        Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList $buildArgs -OwnProcessTree
         $code = $LASTEXITCODE
         if ($code -eq 0) {
             # The client does not serve models or render frames. Keep its launch
             # independent of GPU DLLs, including while repairing the service.
-            & cargo build -p continuum-core --bin continuum --release --no-default-features
+            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'continuum-core', '--bin', 'continuum', '--release', '--no-default-features') -OwnProcessTree
             $code = $LASTEXITCODE
         }
         if ($code -eq 0) {
-            & cargo build -p livekit-bridge --bin livekit-bridge --release
+            Invoke-InstallerProcess -FilePath 'cargo' -ArgumentList @('build', '-p', 'livekit-bridge', '--bin', 'livekit-bridge', '--release') -OwnProcessTree
             $code = $LASTEXITCODE
         }
     } finally { Pop-Location }
@@ -669,7 +859,7 @@ function Get-CoreEngineBackend {
 
 function Get-CoreEngineRequirement {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
-    $revision = (& git -C $RepoRoot rev-parse 'HEAD:core/vendor/llama.cpp' 2>$null)
+    $revision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $RepoRoot, 'rev-parse', 'HEAD:core/vendor/llama.cpp') 2>$null)
     if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Cannot resolve the tracked llama.cpp gitlink.' }
     return [pscustomobject]@{ source_revision = $revision; backend = (Get-CoreEngineBackend) }
 }
@@ -699,7 +889,7 @@ function Mod-LlamaServer {
     # tiny). The heavy CUDA build tree goes to cold storage so it doesn't bloat C:.
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [string]$InstallDirectory = (Join-Path $env:USERPROFILE '.continuum\bin'),
+        [string]$InstallDirectory = (Join-Path (Get-ManagedPayloadRoot) 'bin'),
         [switch]$RequireReceipt
     )
 
@@ -717,27 +907,29 @@ function Mod-LlamaServer {
     if (-not (Test-Path $serverCMake)) {
         Module-Start 'llama-server' 'initializing core/vendor/llama.cpp submodule'
         Push-Location $RepoRoot
-        try { & git submodule update --init core/vendor/llama.cpp } finally { Pop-Location }
+        try { Invoke-InstallerProcess -OwnProcessTree 'git' @('submodule', 'update', '--init', 'core/vendor/llama.cpp') } finally { Pop-Location }
     }
     if (-not (Test-Path $serverCMake)) {
         Module-Fail 'llama-server' "llama.cpp submodule missing at $submodule even after init"
     }
 
-    $sourceRevision = (& git -C $submodule rev-parse HEAD 2>$null)
+    $sourceRevision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', 'HEAD') 2>$null)
     if ($RequireReceipt) {
         $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
         if ($sourceRevision -cne $requirement.source_revision) { throw 'Checked-out llama.cpp differs from the tracked gitlink; refusing receipt migration.' }
     }
-    $head = (& git -C $submodule rev-parse --short HEAD 2>$null)
+    $head = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', '--short', 'HEAD') 2>$null)
     if (-not $head) { $head = 'unknown' }
 
     # Backend: NVIDIA -> CUDA (matches core/llama/build.rs gating), else CPU.
     $backend = Get-CoreEngineBackend; $backendDefs = @()
     if ($backend -eq 'cuda') {
         $build = (Get-ManifestModule 'build-core').build
-        $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($build.cuda_arch)")
+        $targets = Set-CudaTargets
+        $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($targets.CMake)")
     }
     $stampWant = "${head}:${backend}"
+    if ($backend -eq 'cuda') { $stampWant += ":$($targets.CMake)" }
 
     if ((Test-Path $installBin) -and (Test-Path $stampFile) -and
         ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $stampWant)) {
@@ -755,7 +947,7 @@ function Mod-LlamaServer {
 
     # A new core slot does not require recompiling an unchanged engine. Reuse
     # only a stamped matching build and verify its copy before publishing stamp.
-    $engineRoot = Join-Path $env:USERPROFILE '.continuum\bin'
+    $engineRoot = Join-Path (Get-ManagedPayloadRoot) 'bin'
     foreach ($sourceDir in @($engineRoot, (Join-Path $engineRoot 'engine-a'),
         (Join-Path $engineRoot 'engine-b'), (Join-Path $engineRoot 'engine-c'))) {
         if ([IO.Path]::GetFullPath($sourceDir) -eq [IO.Path]::GetFullPath($installDir)) { continue }
@@ -802,13 +994,13 @@ function Mod-LlamaServer {
     # needs zero VS integration -- the robust no-admin CUDA path. Provision ninja
     # (a single ~500KB binary, no admin) and build with it inside the vcvars env
     # (Enter-MsvcEnv puts cl.exe on PATH for nvcc's host side).
-    $ninjaDir = Join-Path $env:USERPROFILE '.continuum\tools\ninja'
+    $ninjaDir = Join-Path (Get-ManagedPayloadRoot) 'tools\ninja'
     $ninja = Join-Path $ninjaDir 'ninja.exe'
     if ($backend -eq 'cuda' -and -not (Test-Path $ninja)) {
         Write-Step '  llama-server: fetching ninja (no-admin CUDA build driver)'
         New-Item -ItemType Directory -Force $ninjaDir | Out-Null
         $nz = Join-Path $env:TEMP 'ninja-win.zip'
-        Invoke-WebRequest -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz -UseBasicParsing
+        Save-InstallerSmallFile -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz
         Expand-Archive -Path $nz -DestinationPath $ninjaDir -Force
         Remove-Item $nz -ErrorAction SilentlyContinue
     }
@@ -837,11 +1029,11 @@ function Mod-LlamaServer {
 
     # Reboots can build from another worktree while sharing the same cache.
     # The shell installer uses this same source-ownership guard.
-    & cmake "-DSOURCE_DIR=$submodule" "-DBUILD_DIR=$buildDir" -P (Join-Path $PSScriptRoot 'prepare-llama-build.cmake')
+    Invoke-InstallerProcess 'cmake' @("-DSOURCE_DIR=$submodule", "-DBUILD_DIR=$buildDir", '-P', (Join-Path $PSScriptRoot 'prepare-llama-build.cmake')) -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "CMake cache ownership check failed ($LASTEXITCODE); configure aborted" }
-    & cmake @cmakeArgs
+    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList $cmakeArgs -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake configure failed ($LASTEXITCODE)" }
-    & cmake --build $buildDir --target llama-server
+    Invoke-InstallerProcess -FilePath 'cmake' -ArgumentList @('--build', $buildDir, '--target', 'llama-server') -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake build failed ($LASTEXITCODE)" }
 
     # Ninja (single-config) emits under bin\; the VS generator would use bin\Release\.
@@ -851,8 +1043,8 @@ function Mod-LlamaServer {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $builtBin) { Module-Fail 'llama-server' "build finished but llama-server.exe not found under $buildDir\bin" }
 
-    if ((& git -C $submodule rev-parse HEAD) -cne $sourceRevision) { throw 'Engine source revision changed during build.' }
-    if (& git -C $submodule status --porcelain --untracked-files=all) { throw 'Engine source changed; cannot publish clean-source receipt.' }
+    if ((Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', 'HEAD')) -cne $sourceRevision) { throw 'Engine source revision changed during build.' }
+    if (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'status', '--porcelain', '--untracked-files=all')) { throw 'Engine source changed; cannot publish clean-source receipt.' }
     # Receipt capture belongs to this fresh build; never reconstruct it from a stamp.
     $cache = Get-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Raw
     foreach ($setting in @('BUILD_SHARED_LIBS:BOOL=OFF', 'GGML_BACKEND_DL:BOOL=OFF', 'GGML_BACKEND_DIR:PATH=')) {
@@ -865,7 +1057,7 @@ function Mod-LlamaServer {
     if ($cache -notmatch '(?m)^CMAKE_MSVC_RUNTIME_LIBRARY:(STRING|UNINITIALIZED)=MultiThreaded\r?$') { throw 'Engine CRT is not static.' }
     Assert-CorePreparedPath -Path $installDir -Expected $installDir
     $runtimeNames = @()
-    if ($backend -eq 'cuda') { $runtimeNames = @(Get-ChildItem -LiteralPath (Join-Path $script:CudaToolkitDir 'bin') -File -Filter '*.dll' | ForEach-Object { $_.Name }) }
+    if ($backend -eq 'cuda') { $runtimeNames = @(Get-ChildItem -LiteralPath (Join-Path (Get-CudaToolkitDirectory) 'bin') -File -Filter '*.dll' | ForEach-Object { $_.Name }) }
     foreach ($oldDll in @(Get-ChildItem -LiteralPath $installDir -File -Filter '*.dll')) {
         if ($oldDll.Name -notin $runtimeNames) { throw "Unowned application DLL in engine slot: $($oldDll.Name)" }
     }
@@ -873,7 +1065,7 @@ function Mod-LlamaServer {
     Copy-Item -Force $builtBin $installBin
     if ($backend -eq 'cuda') {
         # Pin actual installed toolkit inputs, not a claim of archive provenance.
-        $runtime = Join-Path $script:CudaToolkitDir 'bin'
+        $runtime = Join-Path (Get-CudaToolkitDirectory) 'bin'
         Assert-CorePreparedPath -Path $runtime -Expected $runtime
         $dlls = @(Get-ChildItem -LiteralPath $runtime -File -Filter '*.dll')
         if (-not $dlls.Count) { throw 'CUDA toolkit has no application runtime DLLs.' }
@@ -887,7 +1079,7 @@ function Mod-LlamaServer {
     $dumpbin = Join-Path (Split-Path $Matches[1] -Parent) 'dumpbin.exe'
     if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Configured engine dependency inspector is missing.' }
     # Imported platform DLLs remain the explicit Windows/driver contract.
-    & cmake "-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin" "-DENGINE_DIR=$($installDir.Replace('\','/'))" "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))" -P (Join-Path $PSScriptRoot 'verify-engine-imports.cmake')
+    Invoke-InstallerProcess 'cmake' @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin", "-DENGINE_DIR=$($installDir.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-P', (Join-Path $PSScriptRoot 'verify-engine-imports.cmake')) -OwnProcessTree
     if ($LASTEXITCODE -ne 0) { throw 'Engine application imports could not be bounded.' }
     Save-CoreEngineReceipt -Directory $installDir -SourceRevision $sourceRevision -Backend $backend
     Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII

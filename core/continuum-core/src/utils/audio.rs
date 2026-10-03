@@ -89,6 +89,78 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
 }
 
+/// Stateful mono PCM rate conversion for an explicitly negotiated stream.
+/// Retains filter history across packets and flushes the filter tail only once.
+/// Unlike the batch convenience function, errors never return unconverted audio.
+pub struct StreamingPcmResampler {
+    filter: rubato::FftFixedInOut<f32>,
+    pending: Vec<f32>,
+    block: usize,
+    skip: usize,
+    input_samples: u64,
+    output_samples: u64,
+    from_rate: u32,
+    to_rate: u32,
+    finished: bool,
+}
+
+impl StreamingPcmResampler {
+    pub fn new(from_rate: u32, to_rate: u32) -> Result<Self, String> {
+        use rubato::Resampler;
+        if from_rate == 0 || to_rate == 0 {
+            return Err("PCM stream sample rates must be positive".into());
+        }
+        let filter = rubato::FftFixedInOut::new(
+            from_rate as usize, to_rate as usize, (from_rate as usize / 100).max(1), 1,
+        ).map_err(|e| format!("PCM stream resampler: {e}"))?;
+        let block = filter.input_frames_next();
+        let skip = filter.output_delay();
+        Ok(Self { filter, pending: Vec::with_capacity(block), block, skip,
+            input_samples: 0, output_samples: 0, from_rate, to_rate, finished: false })
+    }
+
+    fn process_block(&mut self) -> Result<Vec<i16>, String> {
+        use rubato::Resampler;
+        let result = self.filter.process(&[&self.pending], None)
+            .map_err(|e| format!("PCM stream conversion: {e}"))?;
+        self.pending.clear();
+        let skip = self.skip.min(result[0].len());
+        self.skip -= skip;
+        Ok(f32_to_i16(&result[0][skip..]))
+    }
+
+    pub fn push(&mut self, samples: &[i16]) -> Result<Vec<i16>, String> {
+        if self.finished { return Err("PCM stream is already finished".into()); }
+        self.input_samples += samples.len() as u64;
+        let mut output = Vec::new();
+        let mut remaining = samples;
+        while !remaining.is_empty() {
+            let take = remaining.len().min(self.block - self.pending.len());
+            self.pending.extend(remaining[..take].iter().map(|&s| s as f32 / 32768.0));
+            remaining = &remaining[take..];
+            if self.pending.len() == self.block { output.extend(self.process_block()?); }
+        }
+        self.output_samples += output.len() as u64;
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<i16>, String> {
+        if self.finished { return Err("PCM stream is already finished".into()); }
+        self.finished = true;
+        let expected = self.input_samples * self.to_rate as u64 / self.from_rate as u64;
+        let mut output = Vec::new();
+        while self.output_samples < expected {
+            self.pending.resize(self.block, 0.0);
+            let block = self.process_block()?;
+            let take = block.len().min((expected - self.output_samples) as usize);
+            output.extend_from_slice(&block[..take]);
+            self.output_samples += take as u64;
+        }
+        self.pending.clear();
+        Ok(output)
+    }
+}
+
 /// Resample audio to standard sample rate (common for speech models like Whisper)
 pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Vec<f32> {
     use crate::audio_constants::AUDIO_SAMPLE_RATE;
@@ -112,6 +184,26 @@ pub fn is_silence(samples: &[i16], threshold: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: packet boundaries must not reset filter phase, lose
+    // the final audio tail, or change the native utterance's duration.
+    #[test]
+    fn streaming_pcm_is_packet_boundary_invariant() {
+        let samples: Vec<i16> = (0..24013).map(|i| ((i as f32 * 0.11).sin() * 12000.0) as i16).collect();
+        let mut whole = StreamingPcmResampler::new(24000, 16000).unwrap();
+        let mut expected = whole.push(&samples).unwrap();
+        expected.extend(whole.finish().unwrap());
+        let mut stream = StreamingPcmResampler::new(24000, 16000).unwrap();
+        let mut actual = Vec::new();
+        for packet in samples.chunks(137) { actual.extend(stream.push(packet).unwrap()); }
+        assert!(!actual.is_empty(), "playback must start before terminal completion");
+        actual.extend(stream.finish().unwrap());
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), samples.len() * 16000 / 24000);
+        assert!(stream.push(&[1]).is_err());
+        assert!(stream.finish().is_err());
+        assert!(StreamingPcmResampler::new(0, 16000).is_err());
+    }
 
     #[test]
     fn test_bytes_to_i16_roundtrip() {

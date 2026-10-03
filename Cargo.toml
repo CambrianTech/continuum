@@ -198,20 +198,20 @@ members = [
 # AIRC #1433 adds accepted signed reviews of exact work submissions, used by
 # the ordinary reviewed-credit consumer. All crates share that public revision.
 # The same revision across all AIRC crates preserves one shared wire contract.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "9d5557399deb2a606f0e92a84dba304566657dca" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
@@ -390,7 +390,9 @@ codegen-units = 256
 [profile.dev.package."*"]
 debug = false
 
-# Override crates.io candle with our fork (Metal memory fix + RoPE NEOX fix).
+# Override crates.io candle with our fork (Metal memory, RoPE NEOX and Pascal
+# half-atomic fixes). General CUDA excludes the uncalled fused-MoE archive;
+# active tensor, training and speech users keep their existing CUDA features.
 #
 # Status (2026-04-15): huggingface/candle PR #3411 — the RoPE NEOX fix
 # from this fork — was ACCEPTED AND MERGED upstream. The Metal memory
@@ -402,12 +404,12 @@ debug = false
 # a published release lets `cargo` find the fix at a version number.
 #
 # To check: `cargo search candle-core` or the candle CHANGELOG for the
-# first release >= the merge date. Graduation is a 3-line delete.
+# first release containing all the required fixes before removing these pins.
 # This applies to all workspace members transparently.
 [patch.crates-io]
-candle-core = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
-candle-nn = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
-candle-transformers = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
+candle-core = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-nn = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
+candle-transformers = { git = "https://github.com/joelteply/candle.git", rev = "50756fc6ae242743b3e465e0fbb2968482c9c782" }
 
 [workspace.package]
 edition = "2021"

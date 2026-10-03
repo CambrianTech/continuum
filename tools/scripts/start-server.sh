@@ -32,10 +32,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # core/continuum-core (commit 2cb63e019); cwd-independent --manifest-path so the
 # headless start works from any directory.
 CORE_MANIFEST="$REPO_ROOT/core/continuum-core/Cargo.toml"
+source "$SCRIPT_DIR/lib/payload-paths.sh"
 
 # ── PATH + config ────────────────────────────────────────────────────
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 [ -f "$HOME/.continuum/config.env" ] && { set -a; source "$HOME/.continuum/config.env"; set +a; }
+PAYLOAD_ROOT="$(managed_payload_root)" || exit 1
 
 # Locate cargo deterministically. A background task / detached shell does NOT
 # inherit the interactive PATH, so cargo (rustup at ~/.cargo/bin OR homebrew at
@@ -98,12 +100,12 @@ fi
 # the start log. Measured on BigMama 2026-09-05; the .so and .dylib arms existed
 # and the .dll arm did not, so every Windows citizen was mute by omission.
 if [ -z "$ORT_DYLIB_PATH" ]; then
-  if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+  if [ -f "$PAYLOAD_ROOT/lib/libonnxruntime.so" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/libonnxruntime.so"
   elif [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
     export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
-  elif [ -f "$HOME/.continuum/lib/onnxruntime.dll" ]; then
-    export ORT_DYLIB_PATH="$HOME/.continuum/lib/onnxruntime.dll"
+  elif [ -f "$PAYLOAD_ROOT/lib/onnxruntime.dll" ]; then
+    export ORT_DYLIB_PATH="$PAYLOAD_ROOT/lib/onnxruntime.dll"
   fi
 fi
 
@@ -114,7 +116,7 @@ fi
 if [ -z "$ORT_DYLIB_PATH" ]; then
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-      echo "⚠ ONNX Runtime not provisioned (~/.continuum/lib/onnxruntime.dll absent)." >&2
+      echo "⚠ ONNX Runtime not provisioned ($PAYLOAD_ROOT/lib/onnxruntime.dll absent)." >&2
       echo "  ort will dlopen by name and Windows will hand it System32's copy," >&2
       echo "  which Edge ships at 1.17.1 — ort needs >= 1.23.x, so voice will be" >&2
       echo "  dead with only a worker-thread panic in the start log to say so." >&2
@@ -200,6 +202,11 @@ case "$(uname -sm)" in
     esac
     ;;
 esac
+
+if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+fi
 
 # Warm builds prepare artifacts only. Runtime reconciliation belongs to launch:
 # it may reap engines or restart AIRC and must never run while the old core serves.
@@ -361,7 +368,7 @@ fi
 #     one is the class of lie this whole card exists to end.
 
 # Every airc verb the boot uses to judge the MACHINE daemon runs from $HOME, so it
-# addresses the machine account's socket — the one `machine_daemon_pids` reaps. From
+# addresses the machine account's socket, the one airc's own ensure serves. From
 # the repo cwd, airc resolves the REPO's scope and its own daemon: IntelMac measured
 # (10:33Z) `airc status` answering "current" about the repo-scope daemon while a June
 # binary held the machine socket — the check compared one daemon and reaped another.
@@ -375,23 +382,6 @@ machine_airc() {
 machine_airc_capture() {
   local bound="$1"; shift
   (cd "$HOME" && bounded_capture "$bound" "$(command -v airc)" "$@")
-}
-
-# The pid(s) holding THIS machine's airc socket — the only daemon boot may reap.
-# `pkill -f 'airc.*daemon'` was machine-wide while scopes are per-project (three
-# sites, one with -9): a deploy in one checkout killed every scope's daemon on the
-# box (IntelMac, card 0e65f352). No socket or no lsof → nothing to reap, said so.
-machine_daemon_pids() {
-  local sock
-  sock="$(ls -1t "$HOME"/.airc/runtime/airc-machine-*-v5.sock 2>/dev/null | head -1)"
-  if [ -z "$sock" ]; then
-    return 0
-  fi
-  if ! command -v lsof >/dev/null 2>&1; then
-    echo "  (no lsof on this host — cannot name the socket's holder; not reaping by pattern)" >&2
-    return 0
-  fi
-  lsof -t "$sock" 2>/dev/null || true
 }
 
 ensure_airc_daemon() {
@@ -450,14 +440,12 @@ ensure_airc_daemon() {
     fi
   fi
 
-  # ONE binary for launch, ping and adoption — the one `command -v` resolves.
-  # 2026-09-07 07:01Z (IntelMac): the launch below reached a June `airc` under
+  # ONE binary for launch, ping and adoption: machine_airc runs the one `command -v`
+  # resolves. 2026-09-07 07:01Z (IntelMac): the launch reached a June `airc` under
   # ~/.cargo/bin while the installed binary was the current one, and the stale
   # daemon was then ADOPTED because it answered ping; `airc doctor` lost its
   # daemon-build row (the daemon was too old to answer the query) and read as
   # fine. Adoption now requires the daemon's build to match the binary's.
-  local airc_bin
-  airc_bin="$(command -v airc)"
   if machine_airc 5 ping; then
     # `airc status` prints both: `build:` is the DAEMON's, `cli_version:` the binary's.
     local status_out daemon_build bin_build
@@ -502,45 +490,32 @@ ensure_airc_daemon() {
     if [ -z "$daemon_build" ]; then
       echo "⚠  airc daemon answered \`status\` without a \`build:\` line (cli=$bin_build) — a daemon too old for today's status shape; restarting it" >&2
     fi
-    echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; restarting it" >&2
-    machine_airc 5 stop || true
-    sleep 1
-    local holders
-    holders="$(machine_daemon_pids)"
-    if [ -n "$holders" ]; then
-      kill $holders 2>/dev/null || true
-      sleep 1
-    fi
+    echo "⚠  airc daemon answers but its build (${daemon_build:-unknown}) is not the installed binary's (${bin_build:-unknown}) — a stale daemon would silently miss verbs the core sends; asking airc to replace it" >&2
+    # airc's own ensure (below) stops a non-current daemon over its IPC and starts the
+    # installed one. Never the public `airc stop`: that records an OPERATOR stop
+    # intent (airc #1508), after which every automatic attach is refused until a
+    # human joins.
   fi
 
-  # Not answering. If a daemon process exists it is WEDGED, and a wedged holder is
-  # worse than none — it answers nothing AND owns the socket, so a fresh spawn
-  # would lose the bind (airc's own start gives up on a contended lock, #355).
-  # Reap before spawning: graceful verb first, then the process.
-  local wedged
-  wedged="$(machine_daemon_pids)"
-  if [ -n "$wedged" ]; then
-    echo "  airc daemon is wedged (holds the socket, answers nothing) — reaping pid(s) $wedged" >&2
-    machine_airc 5 stop || true
-    wedged="$(machine_daemon_pids)"
-    if [ -n "$wedged" ]; then
-      kill $wedged 2>/dev/null || true
-      sleep 1
-      wedged="$(machine_daemon_pids)"
-      [ -n "$wedged" ] && kill -9 $wedged 2>/dev/null || true
-    fi
-  fi
-
+  # Not answering, or answering stale. Recovery is airc's, never this script's: a
+  # failed ping (denied, timed out, protocol mismatch) does not prove a wedged owner,
+  # and the shell cannot name the canonical endpoint's holder (a glob plus lsof found
+  # clients too, then killed them). airc's ensure replaces a stale daemon over IPC and
+  # refuses, with its reason, what it cannot recover. Never `airc stop`: that records
+  # an operator stop intent (airc #1508) for a recovery no human asked for.
   local airc_log="${HOME}/.airc/runtime/daemon-boot.log"
   mkdir -p "$(dirname "$airc_log")" 2>/dev/null || true
-  echo "  starting airc daemon (boot owns it, #452) → $airc_log" >&2
-  # From $HOME, never from the repo: airc's scope is the cwd's git root, so a daemon
-  # launched here would serve the REPO's agent home and refuse the machine socket
-  # ("refusing to serve a socket this scope does not own" — 2026-09-07 10:12Z, the
-  # restart after a stop that should not have happened). The machine account is
-  # $HOME/.airc on every host; that is the daemon's home.
-  (cd "$HOME" && nohup "$airc_bin" daemon >>"$airc_log" 2>&1 &)
-  disown 2>/dev/null || true
+  echo "  asking airc to start its daemon → $airc_log" >&2
+  # airc's own gated autostart, never a raw `airc daemon`: it honors airc's
+  # maintenance lock and operator stop intent (airc #1508), replaces a non-current
+  # daemon over IPC, and provisions the daemon's GitHub token itself. machine_airc
+  # runs it from $HOME, so it serves the machine account's scope, never the repo's.
+  # Its refusal is the answer and is shown, not swallowed.
+  if ! machine_airc 30 events list --limit 0 --json >>"$airc_log" 2>&1; then
+    echo "❌ airc refused or could not start its daemon; its own words:" >&2
+    tail -20 "$airc_log" >&2 2>/dev/null || true
+    return 1
+  fi
 
   local waited=0
   while [ "$waited" -lt 30 ]; do
@@ -1028,6 +1003,11 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
       || echo "  ⚠ npm install failed — desktop + eye-node unavailable (run npm ci to diagnose)" >&2
   fi
   export CONTINUUM_UI_DIST="$REPO_ROOT/apps/web/dist"
+  # The supervisor launches native Rust without MSYS argument conversion.
+  # Persist a native path, not /c/... which Rust resolves on the wrong root.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) CONTINUUM_UI_DIST="$(cygpath -am "$CONTINUUM_UI_DIST")" || exit 1 ;;
+  esac
   # The durable pin: replace-or-append, single-quoted (the file is `source`d by
   # bash, and an unquoted path with a backslash is destroyed by it — see
   # config_env.rs). Same shape as `bin/continuum`'s config_set.
@@ -1274,7 +1254,7 @@ echo ""
 # execs a half-written file. Non-fatal: failing to publish doesn't block this boot,
 # which runs $CORE_BIN directly either way.
 # [[managed-product-everything-self-provisions-no-operator-steps]], #194, #291
-CORE_INSTALL_DIR="$HOME/.continuum/bin"
+CORE_INSTALL_DIR="$PAYLOAD_ROOT/bin"
 if mkdir -p "$CORE_INSTALL_DIR" 2>/dev/null; then
   if cp "$CORE_BIN" "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" 2>/dev/null \
      && mv -f "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" \

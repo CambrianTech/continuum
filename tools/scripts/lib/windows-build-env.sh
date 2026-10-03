@@ -33,6 +33,8 @@ esac
 # resolved to `/generated/manifest.windows.sh` in a plain shell, found
 # nothing, and left nvcc off PATH so the MSVC import below skipped itself.
 _wbe_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_wbe_lib_dir/payload-paths.sh"
+_wbe_payload_root="$(managed_payload_root)" || return 1
 _mf_runtime="$_wbe_lib_dir/../generated/manifest.${_mf_os}.sh"
 # The generated manifest uses bash-4 associative arrays (`declare -A`). macOS ships bash 3.2,
 # where those are a hard `invalid option` error — and under this script's `set -e` a mid-file
@@ -75,7 +77,7 @@ _wbe_cuda_major=""
 _wbe_cuda_rejected=""
 if [ "$_mf_os" = windows ]; then
   _wbe_best_rank=""
-  for _t in "${CONTINUUM_HOME:-$HOME/.continuum}"/cuda-*; do
+  for _t in "$_wbe_payload_root"/cuda-*; do
     [ -d "$_t" ] || continue
     _has_lib=""; _has_dll=""; _maj=""
     for _sub in "Library/lib/x64" "lib/x64"; do
@@ -140,7 +142,8 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
       IFS=':' read -ra _rp_dirs <<<"${MOD_RUNTIME_PATH[$_mid]}"
       for _rp in "${_rp_dirs[@]}"; do
         # eval expands ~ and the version glob (cuda-*); prepend each existing match once.
-        for _rp_hit in $(eval echo "$_rp"); do
+        case "$_rp" in "~/.continuum/"*) _rp="${_rp#\~/.continuum/}" ;; *) echo "Unsupported managed runtime path: $_rp" >&2; return 1 ;; esac
+        for _rp_hit in "$_wbe_payload_root"/$_rp; do
           [ -d "$_rp_hit" ] || continue
           # A cuda-* dir that is NOT the chosen tree never reaches PATH. Without this the glob
           # puts every major on PATH and the linker picks by position — the whole bug.
@@ -151,7 +154,20 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
               fi
               ;;
           esac
-          case ":$PATH:" in *":$_rp_hit:"*) ;; *) export PATH="$_rp_hit:$PATH" ;; esac
+          if [ -n "$_wbe_cuda_tree" ] && [[ "$_rp_hit" == "$_wbe_cuda_tree/"* ]]; then
+            # An installed CLI already carries managed directories on PATH.
+            # Presence does not establish precedence: promote the selected tree
+            # even when it was inherited behind an older CUDA runtime.
+            IFS=: read -ra _wbe_inherited <<< "$PATH"
+            _wbe_promoted="$_rp_hit"
+            for _wbe_entry in "${_wbe_inherited[@]}"; do
+              [ "$_wbe_entry" = "$_rp_hit" ] || _wbe_promoted="$_wbe_promoted:$_wbe_entry"
+            done
+            export PATH="$_wbe_promoted"
+            unset _wbe_inherited _wbe_promoted _wbe_entry
+          else
+            case ":$PATH:" in *":$_rp_hit:"*) ;; *) export PATH="$_rp_hit:$PATH" ;; esac
+          fi
         done
       done
     done
@@ -173,7 +189,7 @@ if [ "$_mf_os" = windows ]; then
   # clean shell's PATH (measured: absent in a clean subshell → "cmake not found"). Point CMAKE at
   # the known install (same resolution as install-llama-server.sh) and put its dir on PATH for
   # cmake's own sub-tools.
-  _ccmk="$(command -v cmake 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/cmake/bin/cmake.exe")"
+  _ccmk="$(command -v cmake 2>/dev/null || echo "$_wbe_payload_root/tools/cmake/bin/cmake.exe")"
   if [ -x "$_ccmk" ]; then
     export CMAKE="$(cygpath -w "$_ccmk" 2>/dev/null || echo "$_ccmk")"
     case ":$PATH:" in *":$(dirname "$_ccmk"):"*) ;; *) PATH="$(dirname "$_ccmk"):$PATH"; export PATH ;; esac
@@ -182,7 +198,7 @@ if [ "$_mf_os" = windows ]; then
   # a VS18-2026 box that is "Visual Studio 18 2026" — a generator cmake 3.30.x does NOT define
   # ("Could not create named generator"). Ninja is version-agnostic, uses the MSVC env imported
   # below, and matches the llama-server build. [[windows-build-env-drift]]
-  _cninja="$(command -v ninja 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/ninja/ninja.exe")"
+  _cninja="$(command -v ninja 2>/dev/null || echo "$_wbe_payload_root/tools/ninja/ninja.exe")"
   if [ -x "$_cninja" ]; then
     export CMAKE_GENERATOR="Ninja"
     # ninja must be ON PATH: the cmake crate ignores CMAKE_MAKE_PROGRAM env, so with -G Ninja it

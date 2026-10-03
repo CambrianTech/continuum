@@ -319,6 +319,13 @@ async fn build_gateway_adapter(
 ) -> Result<OpenAICompatibleAdapter, String> {
     let mut a = OpenAICompatibleAdapter::from_registry(crate::inference::llama_server::PROVIDER_ID)
         .with_runtime_base_url(base_url);
+    if let Some(id) = active_model {
+        let registry = crate::model_registry::global();
+        let model = registry.model(id).ok_or_else(|| format!(
+            "Serving model '{id}' has no registered capability metadata; cannot bind the gateway"
+        ))?;
+        a = a.with_bound_model(model.into());
+    }
     a.initialize().await.map_err(|e| e.to_string())?;
     // The snapshot's active_model ALWAYS selects, whatever /v1/models claimed —
     // the daemon's reconcile verified it against the live process; the catalog

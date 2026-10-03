@@ -31,7 +31,7 @@
 //! override, so a reboot keeps it; the fall-home/return rule above then owns it.
 
 use crate::ai::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk, InferenceDevice,
+    AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice,
     LoRAAdapterInfo, LoRACapabilities,
 };
 use crate::ai::types::{
@@ -76,6 +76,10 @@ pub fn seat_queued(wait_p50_ms: u64, wait_samples: u32, home_wait_p50_ms: Option
 /// never twice a minute.
 pub const MOVE_COOLDOWN_MS: u64 = 600_000;
 
+/// No home capability known yet: every u8 rank is a real value, so the sentinel lives
+/// outside the u8 range.
+const HOME_CAPABILITY_UNKNOWN: u16 = u16::MAX;
+
 /// THE OPPORTUNITY MOVE (card 10bba591; Joel: "can it grow to higher capacity as both
 /// the M5 and the 5090 come online, ideally no time lost"). The failure rule above moves
 /// a mind only when her seat fails her. This is the mirror: the grid allocator
@@ -99,12 +103,37 @@ pub(crate) struct OpportunityInputs<'a> {
     pub turn_in_flight: bool,
     pub since_last_move_ms: u64,
     pub cooldown_ms: u64,
+    /// The capability of her HOME plan (`PlacementSwitch::home_capability`); `None` =
+    /// unknown in this life.
+    pub home_capability: Option<u8>,
+    /// What HER turn needs of a lane, measured: the same number the fall-home rule reads
+    /// ([`seat_starves`]); `None` = unmeasured, the serve floor stands.
+    pub turn_requirement: Option<u32>,
 }
 
 /// The rule. Pure.
 pub(crate) fn decide_opportunity(i: &OpportunityInputs<'_>) -> Option<crate::cognition::grid_allocation::BetterBy> {
     if i.target_is_current || i.turn_in_flight || i.since_last_move_ms < i.cooldown_ms {
         return None;
+    }
+    // ONE ANSWER TO "CAN THIS SEAT HOLD HER TURN" (card 60d90c95): the placer asked the
+    // role's requirement while the fall-home rule asked her measured turn, so a seat the
+    // placer called better was the seat fall-home rejected, and she bounced (Iris
+    // IntelMac↔M5 six times in 30 min, 2026-09-26 13:33-14:05Z). A seat that starves her
+    // turn is never an opportunity: the same predicate, both directions.
+    if seat_starves(Some(i.target.window), i.turn_requirement) {
+        return None;
+    }
+    // AN OPPORTUNITY NEVER STEPS DOWN (card 60d90c95, Fable 2026-09-26 16:4xZ): Kimi, served
+    // on a 27B, was moved "on opportunity (requirement)" to a 1.5B CPU coder the moment her
+    // home plan was momentarily absent, and went dark. Capability below her home is a
+    // failure move's business (fall-home, spill), which says so in its receipt; never
+    // "better". Unknown home with no current plan is not permission either: an absence
+    // is not a number, and the spill path still answers a real shortage here.
+    match i.home_capability {
+        Some(home) if i.target.capability_rank < home => return None,
+        None if i.current.is_none() => return None,
+        _ => {}
     }
     match i.current {
         Some(c) if i.current_holds_her => i.target.better_than(c, i.requirement),
@@ -318,6 +347,11 @@ pub struct PlacementSwitch {
     /// buries the change it was added to report — the third time that shape bit this
     /// session (Cormac on #4307).
     retire_said: std::sync::atomic::AtomicBool,
+    /// The capability of the plan she is served on at HOME, remembered from the last tick
+    /// this node published one ([`HOME_CAPABILITY_UNKNOWN`] until then). An opportunity is
+    /// never a step down from it (card 60d90c95); read even while this node's plan is
+    /// momentarily absent, which is exactly when a mind was moved off a 27B onto a 1.5B.
+    home_capability: std::sync::atomic::AtomicU16,
     /// Fixed strings the adapter trait hands out by reference.
     provider_label: String,
     name_label: String,
@@ -375,6 +409,7 @@ impl PlacementSwitch {
             seat: AtomicU8::new(Seat::Home as u8),
             moved_at_ms: AtomicU64::new(0),
             retire_said: std::sync::atomic::AtomicBool::new(false),
+            home_capability: std::sync::atomic::AtomicU16::new(HOME_CAPABILITY_UNKNOWN),
         }
     }
 
@@ -386,6 +421,15 @@ impl PlacementSwitch {
     /// closed was the right default; this is the right wire. `None` = no airc on this node.
     pub fn airc_handle(&self) -> Option<Arc<Airc>> {
         self.airc.as_ref().and_then(|c| c.get().cloned())
+    }
+
+    /// Remember the capability of the plan this node serves her on (see `home_capability`).
+    pub(crate) fn note_home_capability(&self, rank: u8) {
+        self.home_capability.store(u16::from(rank), Ordering::Relaxed);
+    }
+    /// Her home capability, `None` until this node has published a plan in this life.
+    pub(crate) fn home_capability(&self) -> Option<u8> {
+        u8::try_from(self.home_capability.load(Ordering::Relaxed)).ok()
     }
 
     pub fn seat(&self) -> Seat {
@@ -704,7 +748,7 @@ impl AIProviderAdapter for PlacementSwitch {
     async fn generate_stream_checked(
         &self,
         request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         self.current().generate_stream_checked(request, sink).await
     }
@@ -714,7 +758,7 @@ impl AIProviderAdapter for PlacementSwitch {
     async fn generate_stream(
         &self,
         request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, String> {
         self.current().generate_stream(request, sink).await
     }
@@ -1153,7 +1197,12 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
     let Some(p) = crate::modules::grid_allocator::current() else {
         return lines;
     };
+    let working_set = crate::cognition::working_set::global();
+    let home_plan = p.allocation.node(p.this_node).and_then(|n| n.plan.as_ref());
     for sw in switches() {
+        if let Some(plan) = home_plan {
+            sw.note_home_capability(plan.capability_rank);
+        }
         let mind = sw.persona_id();
         let Some(seat) = p.allocation.seated.iter().find(|s| s.mind == mind) else {
             continue; // dormant: the slack's clip, not a move
@@ -1176,6 +1225,10 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
             turn_in_flight: turn_in_flight(mind),
             since_last_move_ms: now_ms.saturating_sub(sw.moved_at_ms()),
             cooldown_ms: opportunity_cooldown_ms(turn_shape_of(mind)),
+            home_capability: sw.home_capability(),
+            turn_requirement: working_set
+                .sent_median_of(&[mind])
+                .map(crate::cognition::serving_plan::prompt_floor_of),
         };
         let Some(why) = decide_opportunity(&inputs) else {
             continue;
@@ -1287,6 +1340,45 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
 mod tests {
     use super::*;
 
+    // regression for card 60d90c95 (Kimi on a 1.5B, 2026-09-26 16:4xZ; Delia IntelMac→5090
+    // ×22 on 2026-10-03, each move followed by a fall-home).
+    // what this catches: an opportunity never steps DOWN from her home capability, even
+    // while her home plan is absent (the moment Kimi was moved); unknown home with no
+    // current plan is no permission; a seat that starves her measured turn is never
+    // "better" (the fall-home predicate, both directions); a real step UP still moves her.
+    #[test]
+    fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_reject() {
+        use crate::cognition::grid_allocation::{BetterBy, LanePlan, Requirement};
+        const REQ: Requirement = Requirement { window: 0, target_window: None, min_capability: 0, decode_floor_tps: None };
+        let plan = |cap: u8, window: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes: 2, decode_tps_per_lane: None };
+        fn base<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {
+            OpportunityInputs {
+                current, current_holds_her: current.is_some(), target, requirement: &REQ, target_is_current: false,
+                turn_in_flight: false, since_last_move_ms: 1_000, cooldown_ms: 1_000, home_capability: None, turn_requirement: None,
+            }
+        }
+        let (small, big) = (plan(2, 32_768), plan(30, 45_470));
+        // Kimi: home is a 27B, her home plan is momentarily absent, a 1.5B seat is offered.
+        assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(30), ..base(None, &small) }), None);
+        // Unknown home and no current plan: an absence is not permission.
+        assert_eq!(decide_opportunity(&base(None, &small)), None);
+        // A weak home stepping UP is still the point of the rule.
+        assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(2), ..base(None, &big) }), Some(BetterBy::Requirement));
+        // Delia, measured: the 5090 seat's window 67,840 against her sent floor 70,608. The
+        // placer called it better by requirement; fall-home then rejected it, 22 times.
+        let seat_5090 = plan(30, 67_840);
+        assert_eq!(
+            decide_opportunity(&OpportunityInputs { home_capability: Some(2), turn_requirement: Some(70_608), ..base(None, &seat_5090) }),
+            None
+        );
+        assert!(seat_starves(Some(seat_5090.window), Some(70_608)), "the same predicate fall-home reads");
+        // A mind that seat does hold still moves up to it.
+        assert_eq!(
+            decide_opportunity(&OpportunityInputs { home_capability: Some(2), turn_requirement: Some(56_557), ..base(None, &seat_5090) }),
+            Some(BetterBy::Requirement)
+        );
+    }
+
     // what this catches (card 10bba591): the opportunity rule — a strictly better seat
     // moves her, in the allocator's order (requirement, capability, lanes, window); an
     // equal seat, her own seat, a turn in flight, or her cooldown holds her; and the
@@ -1305,6 +1397,7 @@ mod tests {
             OpportunityInputs {
                 requirement: &REQUIREMENT,
                 current, current_holds_her: current.is_some(), target, target_is_current: false, turn_in_flight: false, since_last_move_ms: 1_000, cooldown_ms: 1_000,
+                home_capability: Some(0), turn_requirement: None,
             }
         }
         assert_eq!(decide_opportunity(&i(Some(&home), &wide)), Some(BetterBy::Window));
@@ -1384,6 +1477,10 @@ mod tests {
                 turn_in_flight: false,
                 since_last_move_ms: MOVE_COOLDOWN_MS,
                 cooldown_ms: MOVE_COOLDOWN_MS,
+                // As the pass reads it: her home capability is this node's own plan
+                // (`note_home_capability`), so a move up still passes the never-step-down rule.
+                home_capability: cur.and_then(|n| n.plan.as_ref()).map(|p| p.capability_rank),
+                turn_requirement: None,
             })
         };
         assert_eq!(decide_for(&grown, coder), Some(BetterBy::Requirement), "moved: her home never held her");

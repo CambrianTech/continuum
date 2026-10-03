@@ -287,9 +287,12 @@ impl CommandRequestHandler {
         if parsed.request.path != STREAMED_GENERATE_PATH {
             return self.process_request(parsed).await;
         }
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = crate::ai::stream_sinks::channel();
         let stream_id = parsed.correlation_id;
-        let guard = crate::ai::stream_sinks::register(stream_id, tx);
+        let guard = match crate::ai::stream_sinks::register(stream_id, tx) {
+            Ok(guard) => guard,
+            Err(message) => return AircCommandResponse::Error { message },
+        };
         let mut streamed = parsed.clone();
         if let Some(obj) = streamed.request.params.as_object_mut() {
             obj.insert(
@@ -298,6 +301,8 @@ impl CommandRequestHandler {
             );
         }
         let publisher = StreamPublisher {
+            media_enabled: parsed.request.params.get(crate::inference::media_wire::ACCEPT_PARAM)
+                .and_then(serde_json::Value::as_u64) == Some(1),
             airc: Arc::clone(&self.airc),
             room: parsed.request_channel,
             stream_id,
@@ -305,23 +310,22 @@ impl CommandRequestHandler {
             // requester's node (card c84d885a, S1 — the wait is measured where it forms).
             received_at: std::time::Instant::now(),
         };
-        let drain = tokio::spawn(publisher.drain(rx));
-        let response = self.process_request(&streamed).await;
-        // The sink's sender is dropped by the command (or by the guard, if the
-        // command never took it); the drain sees the close, flushes, marks the
-        // end, and only THEN does the settled reply go out — a requester never
-        // sees the reply before the last chunk.
-        drop(guard);
-        match drain.await {
-            Ok(published) => crate::probe!(
-                class = "airc.command.streamed",
-                path = %parsed.request.path,
-                correlation = %stream_id,
-                chunks = published,
-                "the answer's tokens rode the wire as they were produced; the settled reply follows"
-            ),
-            Err(e) => warn!(correlation = %stream_id, error = %e, "stream drain task failed"),
-        }
+        // Both halves are owned by this operation. Cancellation drops the reader
+        // AND generation, rather than detaching the forwarder task.
+        let command = async {
+            let response = self.process_request(&streamed).await;
+            drop(guard);
+            Ok::<_, String>(response)
+        };
+        // A failed consumer retires its producer immediately. Waiting for both
+        // futures after ring loss or publication failure can strand generation
+        // until the model's full deadline, despite having no usable output path.
+        let (response, published) = match tokio::try_join!(command, publisher.drain(rx)) {
+            Ok(completed) => completed,
+            Err(message) => return AircCommandResponse::Error { message },
+        };
+        crate::probe!(class = "airc.command.streamed", correlation = %stream_id,
+            chunks = published, "stream completed before its final receipt");
         response
     }
 
@@ -684,6 +688,7 @@ pub const STREAM_KIND_PREFILL: &str = "inference.prefill";
 
 /// Publishes one generation's chunks into the request's room under its stream id.
 struct StreamPublisher {
+    media_enabled: bool,
     airc: Arc<Airc>,
     room: airc_core::RoomId,
     stream_id: Uuid,
@@ -694,8 +699,11 @@ struct StreamPublisher {
 }
 
 impl StreamPublisher {
-    async fn publish(&self, seq: u64, kind: &str, text: String, is_final: bool) -> bool {
-        let mut headers = airc_core::Headers::new();
+    async fn publish(&self, seq: u64, kind: &str, text: String, is_final: bool) -> Result<u64, String> {
+        self.publish_body(seq, kind, Body::text(text), airc_core::Headers::new(), is_final).await
+    }
+
+    async fn publish_body(&self, seq: u64, kind: &str, body: Body, mut headers: airc_core::Headers, is_final: bool) -> Result<u64, String> {
         headers.insert(airc_lib::HEADER_STREAM_ID.into(), self.stream_id.to_string());
         headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), seq.to_string());
         headers.insert(airc_lib::HEADER_STREAM_KIND.into(), kind.to_string());
@@ -707,16 +715,16 @@ impl StreamPublisher {
             .publish_with_delivery(
                 airc_lib::PublishTarget::RoomByName(self.room.as_uuid().to_string()),
                 airc_protocol::FrameKind::Event,
-                Body::text(text),
+                body,
                 headers,
                 airc_bus::DeliveryClass::StreamChunk,
             )
             .await
         {
-            Ok(_) => true,
+            Ok(_) => Ok(1),
             Err(e) => {
                 warn!(correlation = %self.stream_id, seq, error = %e, "stream chunk publish failed");
-                false
+                Err(format!("Inference stream publication failed: {e}"))
             }
         }
     }
@@ -724,8 +732,8 @@ impl StreamPublisher {
     /// Drain the command's sink onto the wire until it closes; returns chunks published.
     async fn drain(
         self,
-        mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
-    ) -> u64 {
+        mut rx: crate::ai::stream_sinks::GenerationReceiver,
+    ) -> Result<u64, String> {
         use crate::ai::adapter::GenerationChunk;
         let mut seq = 0u64;
         let mut published = 0u64;
@@ -738,10 +746,23 @@ impl StreamPublisher {
         // publish is that measurement; every later flush is generation.
         let mut first_progress_recorded = false;
         loop {
+            let mut media_chunk = None;
             let next = tokio::time::timeout(STREAM_FLUSH_EVERY, rx.recv()).await;
-            let closed = matches!(next, Ok(None));
-            if let Ok(Some(chunk)) = next {
+            let closed = matches!(next, Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)));
+            if let Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) = &next {
+                return Err(format!("Inference stream ring lost {skipped} chunks; refusing partial delivery"));
+            }
+            if let Ok(Ok(chunk)) = next {
                 match chunk {
+                    GenerationChunk::RequestBoundary { .. } => {
+                        return Err("Nested request lifecycle is not negotiated on this remote stream".into());
+                    }
+                    GenerationChunk::Media(media) => {
+                        if !self.media_enabled {
+                            return Err(format!("Remote media consumer not negotiated for {}", media.mime_type));
+                        }
+                        media_chunk = Some(media);
+                    }
                     GenerationChunk::Token(t) => token.push_str(&t),
                     GenerationChunk::Reasoning(r) => reasoning.push_str(&r),
                     GenerationChunk::Prefill { processed, total, cached } => {
@@ -752,32 +773,37 @@ impl StreamPublisher {
                     }
                 }
             }
-            if closed || last_flush.elapsed() >= STREAM_FLUSH_EVERY {
-                if !first_progress_recorded && (prefill.is_some() || !token.is_empty() || !reasoning.is_empty()) {
+            if closed || media_chunk.is_some() || last_flush.elapsed() >= STREAM_FLUSH_EVERY {
+                if !first_progress_recorded && (media_chunk.is_some() || prefill.is_some() || !token.is_empty() || !reasoning.is_empty()) {
                     first_progress_recorded = true;
                     crate::cognition::resource_admission::note_leased_in_first_progress_ms(
                         self.received_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
                     );
                 }
                 if let Some(p) = prefill.take() {
-                    published += self.publish(seq, STREAM_KIND_PREFILL, p, false).await as u64;
+                    published += self.publish(seq, STREAM_KIND_PREFILL, p, false).await?;
                     seq += 1;
                 }
                 if !reasoning.is_empty() {
                     let flushed = std::mem::take(&mut reasoning);
                     published += self
                         .publish(seq, airc_lib::STREAM_KIND_TEXT_REASONING, flushed, false)
-                        .await as u64;
+                        .await?;
                     seq += 1;
                 }
                 if !token.is_empty() {
                     let flushed = std::mem::take(&mut token);
                     published += self
                         .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, flushed, false)
-                        .await as u64;
+                        .await?;
                     seq += 1;
                 }
                 last_flush = std::time::Instant::now();
+            }
+            if let Some(media) = media_chunk {
+                let (headers, body) = crate::inference::media_wire::encode(&media)?;
+                published += self.publish_body(seq, crate::inference::media_wire::KIND, body, headers, false).await?;
+                seq += 1;
             }
             if closed {
                 break;
@@ -785,8 +811,8 @@ impl StreamPublisher {
         }
         published += self
             .publish(seq, airc_lib::STREAM_KIND_TEXT_TOKEN, String::new(), true)
-            .await as u64;
-        published
+            .await?;
+        Ok(published)
     }
 }
 

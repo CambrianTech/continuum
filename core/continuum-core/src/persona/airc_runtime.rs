@@ -79,13 +79,7 @@ pub const AIRC_LOBBY_ROOM: &str = "general";
 /// the airc `HeartbeatTask` teardown contract — dropping the runtime aborts
 /// the pump so a torn-down persona ages out of the roster within the
 /// presence window (honest "no longer here"), never beats past her death.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
+use crate::utils::task::AbortOnDrop;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use uuid::Uuid;

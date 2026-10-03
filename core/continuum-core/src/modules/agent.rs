@@ -758,29 +758,12 @@ async fn call_llm(
     // Use AI provider module - routes to DeepSeek, Anthropic, OpenAI, etc.
     let request = TextGenerationRequest {
         messages,
-        system_prompt: None,
         model: Some(model.to_string()),
         provider: None, // Auto-select based on model name
         temperature: Some(0.7),
         // Model owns its length (None → adapter forwards no ceiling).
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
-        active_adapters: None,
-        response_format: None,
-        purpose: None,
         // Agent-mode call from the IPC bridge — not a persona-owned conversation.
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     let response = adapter.generate_text(request).await?;

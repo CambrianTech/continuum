@@ -260,7 +260,6 @@ async fn run_analysis(
                 name: None,
             },
         ],
-        system_prompt: None,
         // Resolved above from the single source (caller override → served snapshot).
         model: Some(model),
         // The llama-server gateway is the sole local inference path (the in-process
@@ -273,29 +272,17 @@ async fn run_analysis(
         // is the canonical proof of why: a flat cap (was 500, bumped to 2500)
         // truncated qwen3.5 mid-reasoning → zero JSON → silent persona failure.
         // The model runs to its own stop token; the JSON envelope is the bound.
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
         // FORCE JSON OUTPUT. llama.cpp / DMR constrain the sampler so the
         // model can only emit valid JSON. Eliminates qwen3.5's thinking-mode
         // prose that broke the parser. The right way to enforce structured
         // output: at the model level, not via parser fallbacks.
         response_format: Some(crate::ai::types::ResponseFormat::JsonObject),
         active_adapters: None, // Explicit no-LoRA. Stays opted-out when runtime composition lands.
-        request_id: None,
-        user_id: None,
         room_id: Some(input.room_id.to_string()),
         purpose: Some("shared-cognition-analysis".to_string()),
         // Shared analysis is room-wide cognition (not attributable to one
         // persona); registry treats this seq's KV as un-attributed.
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     // Acquire the registry read lock for the duration of the call.

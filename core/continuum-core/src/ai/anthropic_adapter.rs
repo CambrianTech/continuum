@@ -78,123 +78,69 @@ impl AnthropicAdapter {
         }
     }
 
-    /// Convert ChatMessage to Anthropic format
-    fn format_messages(&self, messages: &[ChatMessage]) -> (Vec<Value>, Option<String>) {
+    /// Encode every part or return an explicit transport error; never discard media.
+    fn format_messages(messages: &[ChatMessage]) -> Result<(Vec<Value>, Option<String>), String> {
         let mut result = Vec::new();
         let mut system_prompt = None;
-
         for msg in messages {
-            // Extract system prompt from messages
             if msg.role == "system" {
+                if let MessageContent::Parts(parts) = &msg.content {
+                    if parts
+                        .iter()
+                        .any(|part| !matches!(part, ContentPart::Text { .. }))
+                    {
+                        return Err("Anthropic system transport supports text only; non-text content was not sent".into());
+                    }
+                }
                 system_prompt = Some(msg.content_text());
                 continue;
             }
-
             let role = if msg.role == "assistant" {
                 "assistant"
             } else {
                 "user"
             };
-
-            match &msg.content {
-                MessageContent::Text(text) => {
-                    result.push(json!({
-                        "role": role,
-                        "content": text
-                    }));
-                }
+            let content = match &msg.content {
+                MessageContent::Text(text) => json!(text),
                 MessageContent::Parts(parts) => {
-                    // Check for tool protocol blocks
-                    let has_tool_use = parts
-                        .iter()
-                        .any(|p| matches!(p, ContentPart::ToolUse { .. }));
-                    let has_tool_result = parts
-                        .iter()
-                        .any(|p| matches!(p, ContentPart::ToolResult { .. }));
-
-                    if has_tool_use || has_tool_result {
-                        // Anthropic native tool format
-                        let content: Vec<Value> = parts
-                            .iter()
-                            .filter_map(|p| match p {
-                                ContentPart::Text { text } => Some(json!({
-                                    "type": "text",
-                                    "text": text
-                                })),
-                                ContentPart::ToolUse { id, name, input } => Some(json!({
-                                    "type": "tool_use",
-                                    "id": id,
-                                    "name": name,
-                                    "input": input
-                                })),
-                                ContentPart::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    is_error,
-                                } => {
-                                    let mut obj = json!({
-                                        "type": "tool_result",
-                                        "tool_use_id": tool_use_id,
-                                        "content": content
-                                    });
-                                    if is_error.unwrap_or(false) {
-                                        obj["is_error"] = json!(true);
+                    let mut content = Vec::with_capacity(parts.len());
+                    for part in parts {
+                        content.push(match part {
+                            ContentPart::Text { text } => json!({"type":"text", "text":text}),
+                            ContentPart::Image { image } => {
+                                let source = if let Some(data) = &image.base64 {
+                                    if data.is_empty() {
+                                        return Err("Anthropic image base64 is empty".into());
                                     }
-                                    Some(obj)
+                                    let mime = image.mime_type.as_deref().filter(|mime| !mime.is_empty())
+                                        .ok_or("Anthropic base64 image requires an explicit MIME type")?;
+                                    json!({"type":"base64", "media_type":mime, "data":data})
+                                } else {
+                                    let url = image.url.as_deref().filter(|url| !url.is_empty())
+                                        .ok_or("Anthropic image requires a nonempty source")?;
+                                    json!({"type":"url", "url":url})
+                                };
+                                json!({"type":"image", "source":source})
+                            }
+                            ContentPart::Audio { .. } => return Err("Anthropic adapter has no native audio input transport; audio was not sent".into()),
+                            ContentPart::Video { .. } => return Err("Anthropic adapter has no native video input transport; video was not sent".into()),
+                            ContentPart::ToolUse { id, name, input } => json!({"type":"tool_use", "id":id, "name":name, "input":input}),
+                            ContentPart::ToolResult { tool_use_id, content, is_error } => {
+                                let mut block = json!({"type":"tool_result", "tool_use_id":tool_use_id, "content":content});
+                                if let Some(is_error) = is_error {
+                                    block["is_error"] = json!(is_error);
                                 }
-                                _ => None,
-                            })
-                            .collect();
-
-                        result.push(json!({
-                            "role": role,
-                            "content": content
-                        }));
-                    } else {
-                        // Standard multimodal content
-                        let content: Vec<Value> = parts
-                            .iter()
-                            .filter_map(|p| match p {
-                                ContentPart::Text { text } => Some(json!({
-                                    "type": "text",
-                                    "text": text
-                                })),
-                                ContentPart::Image { image } => {
-                                    if let Some(b64) = &image.base64 {
-                                        Some(json!({
-                                            "type": "image",
-                                            "source": {
-                                                "type": "base64",
-                                                "media_type": image.mime_type.as_deref().unwrap_or("image/png"),
-                                                "data": b64
-                                            }
-                                        }))
-                                    } else {
-                                        image.url.as_ref().map(|url| json!({
-                                            "type": "image",
-                                            "source": {
-                                                "type": "url",
-                                                "url": url
-                                            }
-                                        }))
-                                    }
-                                }
-                                _ => None,
-                            })
-                            .collect();
-
-                        result.push(json!({
-                            "role": role,
-                            "content": content
-                        }));
+                                block
+                            }
+                        });
                     }
+                    json!(content)
                 }
-            }
+            };
+            result.push(json!({"role":role, "content":content}));
         }
-
-        (result, system_prompt)
+        Ok((result, system_prompt))
     }
-
     /// Map Anthropic stop reason to our enum
     fn map_finish_reason(&self, reason: &str) -> FinishReason {
         match reason {
@@ -305,6 +251,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        request.require_text_output_transport(self.provider_id())?;
         let api_key = self
             .api_key
             .as_ref()
@@ -318,7 +265,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         // Build messages and extract system prompt
-        let (messages, msg_system) = self.format_messages(&request.messages);
+        let (messages, msg_system) = Self::format_messages(&request.messages)?;
         let system_prompt = request.system_prompt.as_deref().or(msg_system.as_deref());
 
         // Anthropic's Messages API REQUIRES max_tokens — it cannot be omitted. When
@@ -590,5 +537,53 @@ impl AnthropicAdapter {
         };
 
         (input_tokens as f64 / 1000.0) * input_cost + (output_tokens as f64 / 1000.0) * output_cost
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Every part must survive in order or fail explicitly before network dispatch,
+    // including media beside tool blocks and non-text system content.
+    #[test]
+    fn native_media_is_preserved_or_rejected_never_dropped() {
+        let message = |role: &str, parts: Value| -> ChatMessage {
+            serde_json::from_value(json!({"role":role,"content":parts})).unwrap()
+        };
+        let image = json!({"type":"image","image":{"base64":"aW1hZ2U=","mimeType":"image/jpeg"}});
+        let tool = json!({"type":"tool_result","tool_use_id":"t1","content":"done"});
+        let input = message(
+            "user",
+            json!([tool, image, {"type":"text","text":"inspect"}]),
+        );
+        let (wire, _) = AnthropicAdapter::format_messages(&[input]).unwrap();
+        assert_eq!(wire[0]["content"][0]["type"], "tool_result");
+        assert_eq!(wire[0]["content"][1]["source"]["data"], "aW1hZ2U=");
+        assert_eq!(wire[0]["content"][1]["source"]["media_type"], "image/jpeg");
+        assert_eq!(wire[0]["content"][2]["text"], "inspect");
+        assert_eq!(wire[0]["content"].as_array().unwrap().len(), 3);
+
+        for part in [
+            json!({"type":"audio","audio":{"base64":"YXVkaW8=","mimeType":"audio/wav"}}),
+            json!({"type":"video","video":{"url":"https://example.invalid/video"}}),
+            json!({"type":"image","image":{}}),
+            json!({"type":"image","image":{"base64":"","mimeType":"image/jpeg"}}),
+            json!({"type":"image","image":{"base64":"aW1hZ2U="}}),
+        ] {
+            assert!(AnthropicAdapter::format_messages(&[message("user", json!([part]))]).is_err());
+        }
+        assert!(AnthropicAdapter::format_messages(&[message("system", json!([image]))]).is_err());
+        let (wire, _) = AnthropicAdapter::format_messages(&[message(
+            "user",
+            json!([
+                {"type":"image","image":{"url":"https://example.invalid/image.jpg"}}
+            ]),
+        )])
+        .unwrap();
+        assert_eq!(
+            wire[0]["content"][0]["source"]["url"],
+            "https://example.invalid/image.jpg"
+        );
     }
 }

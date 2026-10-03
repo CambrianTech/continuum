@@ -156,6 +156,7 @@ fn draft_request(
         _ => task_prompt.to_string(),
     };
     TextGenerationRequest {
+        native_output: None,
         messages: vec![ChatMessage::text("user", user)],
         system_prompt,
         model,
@@ -180,7 +181,7 @@ fn draft_request(
         room_id: None,
         purpose: Some("resolution-draft".to_string()),
         persona_id,
-        turn_bound: None,
+        ..Default::default()
     }
 }
 

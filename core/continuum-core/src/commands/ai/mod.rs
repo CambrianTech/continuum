@@ -64,6 +64,30 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::ActionCommand;
 
+    // what this catches: a longer model id listed first must not lend its native
+    // audio capabilities to a shorter id, unknown id, or implicit fuzzy alias.
+    #[test]
+    fn model_info_never_borrows_another_models_capabilities() {
+        use crate::ai::types::{ModelInfo, CostPer1kTokens};
+        use crate::model_registry::Capability;
+        let audio = ModelInfo {
+            id: "fixture-audio".into(), name: "Audio fixture".into(), provider: "fixture".into(),
+            capabilities: vec![Capability::AudioOutput], context_window: 4096,
+            max_output_tokens: 512, cost_per_1k_tokens: CostPer1kTokens { input: 0.0, output: 0.0 },
+            tokens_per_second: 1.0,
+        };
+        let mut text = audio.clone();
+        text.id = "fixture".into();
+        text.capabilities = vec![Capability::TextGeneration];
+        let models = vec![audio, text];
+        let resolved = model_info::exact_model_info(&models, "fixture").unwrap();
+        assert!(std::ptr::eq(resolved, &models[1]));
+        assert!(!resolved.has(Capability::AudioOutput));
+        for missing in ["", "fixt", "fixture-unknown", "FIXTURE"] {
+            assert!(model_info::exact_model_info(&models, missing).is_none());
+        }
+    }
+
     // what this catches: every ai/* introspection command's registered NAME
     // mirrors its file path under commands/ai/ — the path==name invariant that
     // keeps the tree navigable, and a guard that command_objects() stays in sync

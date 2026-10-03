@@ -10,6 +10,16 @@
 # both sides: the script text carries exactly one literal invocation, and the
 # trace of a run shows one cargo line naming all four bins.
 set -euo pipefail
+# Linux owns the complete shared behavior contract. Windows CI additionally
+# exercises only its native path/receipt/media adapter with this same fixture.
+case "${1:-all}" in
+  all) platforms=(MINGW64_NT-10.0 Linux Darwin); adapter_only=0 ;;
+  --windows-adapter)
+    case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo 'Windows adapter proof requires native Git Bash' >&2; exit 2 ;; esac
+    command -v cygpath >/dev/null || { echo 'Windows adapter proof requires native cygpath' >&2; exit 2; }
+    platforms=(MINGW64_NT-10.0); adapter_only=1 ;;
+  *) echo 'Usage: start-server-build-only.test.sh [--windows-adapter]' >&2; exit 2 ;;
+esac
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 scratch="$(mktemp -d "$scratch_root/continuum-warm-build.XXXXXX")"
@@ -19,6 +29,8 @@ fixture_home="$scratch/home"
 trap 'status=$?; if [ "$status" != 0 ]; then cat "$scratch/output" "$scratch/trace" >&2; fi; rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/repo/tools/scripts/lib" "$scratch/repo/tools/scripts/shared" "$scratch/repo/core/continuum-core/src" "$scratch/home/.cargo/bin"
 cp "$script_dir/../start-server.sh" "$scratch/repo/tools/scripts/start-server.sh"
+cp "$script_dir/../lib/payload-paths.sh" "$scratch/repo/tools/scripts/lib/payload-paths.sh"
+cp "$script_dir/../lib/cuda-targets.sh" "$scratch/repo/tools/scripts/lib/cuda-targets.sh"
 # Media preparation belongs to warm build; startup must still be deferred.
 printf 'echo MEDIA_PREPARE >> "$FIXTURE_TRACE"\n' > "$scratch/repo/tools/scripts/install-livekit.sh"
 printf '# staged media helper\n' > "$scratch/repo/tools/scripts/start-livekit-windows.ps1"
@@ -60,6 +72,11 @@ for bin in "${bins[@]}"; do
 done
 SH
 chmod +x "$fixture_home/.cargo/bin/cargo"
+mkdir -p "$scratch/repo/apps/web/dist" "$scratch/repo/node_modules"
+printf '{}\n' > "$scratch/repo/apps/web/package.json"
+printf '<html>fixture</html>\n' > "$scratch/repo/apps/web/dist/index.html"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture_home/.cargo/bin/npm"
+chmod +x "$fixture_home/.cargo/bin/npm"
 # Even a suppressed command failure must leave evidence. Never call real tools.
 cat > "$scratch/forbidden" <<'SH'
 #!/usr/bin/env bash
@@ -90,7 +107,7 @@ if ! command -v cygpath >/dev/null 2>&1; then
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$2"\n' > "$fixture_home/.cargo/bin/cygpath"
   chmod +x "$fixture_home/.cargo/bin/cygpath"
 fi
-for platform in MINGW64_NT-10.0 Linux Darwin; do
+for platform in "${platforms[@]}"; do
   printf '#!/usr/bin/env bash\necho %s\n' "$platform" > "$fixture_home/.cargo/bin/uname"
   chmod +x "$fixture_home/.cargo/bin/uname"
   for failure in 0 1; do
@@ -113,6 +130,9 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     fi
     if [ "$failure" = 0 ]; then
       [ "$status" = 0 ]
+      expected_dist="$scratch/repo/apps/web/dist"
+      if [ "$platform" = MINGW64_NT-10.0 ]; then expected_dist="$(PATH="$fixture_home/.cargo/bin:$PATH" cygpath -am "$expected_dist")"; fi
+      grep -Fx "CONTINUUM_UI_DIST='$expected_dist'" "$fixture_home/.continuum/config.env"
       if [ "$platform" = MINGW64_NT-10.0 ]; then
         grep -q '^MEDIA_PREPARE$' "$FIXTURE_TRACE"
         grep -q -- '--bin livekit-bridge --release' "$FIXTURE_TRACE"
@@ -144,6 +164,10 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     echo "PASS $platform build-only (core build failure=$failure)"
   done
 done
+
+# The native Windows adapter has no Unix engine sidecar or generic feature
+# policy to repeat. The EXIT trap still owns the single scratch teardown.
+if [ "$adapter_only" = 1 ]; then exit 0; fi
 
 # A failed engine build leaves the deploy green: the core still ships, the lanes
 # keep the engine they run, and the warm pass says so.
@@ -186,6 +210,10 @@ echo "PASS one cargo invocation names all four bins with one feature set"
 # runtime (cuda) gives the socket-client CLI its own GPU-free set — a SECOND line, the
 # only one, carrying `--bin continuum` alone; the other three still share one line.
 printf 'CARGO_GPU_FEATURES="--features cuda,load-dynamic-ort"\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
+printf '#!/usr/bin/env bash\necho 8.6\n' > "$fixture_home/.cargo/bin/nvidia-smi"
+printf '#!/usr/bin/env bash\necho compute_86\n' > "$fixture_home/.cargo/bin/nvcc"
+chmod +x "$fixture_home/.cargo/bin/nvidia-smi" "$fixture_home/.cargo/bin/nvcc"
+unset CUDA_PATH CUDA_COMPUTE_CAP
 : > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
 HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
   bash "$launcher" > "$scratch/output" 2>&1

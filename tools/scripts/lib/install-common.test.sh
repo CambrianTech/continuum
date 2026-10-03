@@ -256,6 +256,151 @@ test_llama_cache_tracks_source_ownership() (
   [ -f "$source_a/CMakeLists.txt" ]
 )
 
+# what this catches: installing or rerunning cold-storage erased unrelated
+# configuration, while xargs changed literal paths before drive selection.
+test_cold_storage_preserves_config() (
+  source "$LIB"
+  local scratch; scratch="$(mktemp -d)" || return 1
+  trap 'rm -rf -- "$scratch"' EXIT
+  export HOME="$scratch/home"
+  local cold="$scratch/cold cache \$literal" config="$HOME/.continuum/config.env"
+  mkdir -p "$HOME/.continuum" "$cold" || return 1
+  printf "# retained\nLABEL='λ'\nCUSTOM_VALUE='literal \$value \\path = stays'\n" > "$scratch/kept"
+  cp "$scratch/kept" "$config" || return 1
+  chmod 600 "$config" || return 1
+  _cold_export "$cold" || return 1
+  head -3 "$config" > "$scratch/actual"
+  cmp "$scratch/kept" "$scratch/actual" || return 1
+  cp "$config" "$scratch/first" || return 1
+  _cold_export "$cold" || return 1
+  cmp "$config" "$scratch/first" || return 1
+  assert_eq "$cold/tmp" "$TMPDIR" || return 1
+  [ -d "$TMPDIR" ] || return 1
+  ( unset CONTINUUM_STORAGE_PATH HF_HOME; source "$config"; assert_eq "$cold" "$CONTINUUM_STORAGE_PATH" ) || return 1
+  _cold_drive() { echo 'must not rediscover quoted configured path' >&2; return 1; }
+  mod_cold_storage || return 1
+  cmp "$config" "$scratch/first" || return 1
+  if _cold_write_config "$config" "bad'path"; then return 1; fi
+  cmp "$config" "$scratch/first" || return 1
+  printf '# missing key and final newline' > "$config"
+  _cold_export "$cold" || return 1
+  assert_eq '# missing key and final newline' "$(head -1 "$config")" || return 1
+  ( unset CONTINUUM_STORAGE_PATH; source "$config"; assert_eq "$cold" "$CONTINUUM_STORAGE_PATH" )
+)
+
+test_cold_storage_resumes_owned_migration() (
+  source "$LIB"
+  local scratch; scratch="$(mktemp -d)" || return 1
+  scratch="$(cd "$scratch" && pwd -P)" || return 1
+  trap 'rm -rf -- "$scratch"' EXIT
+  export HOME="$scratch/home"
+  local cold="$scratch/cold" src="$HOME/.cache/huggingface" config="$HOME/.continuum/config.env"
+  mkdir -p "$src" "$HOME/.continuum" "$cold" || return 1
+  printf '%s\n' "$cold" > "$HOME/.continuum/cold-storage.pending"
+  printf '# retained until success\n' > "$config"
+  printf 'first\n' > "$src/first"; printf 'second\n' > "$src/second"
+  local fail_copy=1
+  cp() {
+    if [ "$fail_copy" = 1 ]; then command cp "$src/first" "$cold/huggingface/first"; return 42; fi
+    command cp "$@"
+  }
+  _cold_drive() { echo 'must not change drives during interrupted migration' >&2; return 1; }
+  if mod_cold_storage; then echo 'Partial copy accepted' >&2; return 1; fi
+  assert_eq '# retained until success' "$(cat "$config")" || return 1
+  [ -f "$cold/huggingface.continuum-migration" ] || return 1
+  fail_copy=0
+  mod_cold_storage || return 1
+  [ ! -e "$src" ] && [ ! -e "$HOME/.continuum/cold-storage.pending" ] || return 1
+  assert_eq first "$(cat "$cold/huggingface/first")" || return 1
+  assert_eq second "$(cat "$cold/huggingface/second")" || return 1
+  mod_cold_storage || return 1
+  src="$HOME/.continuum/genome"
+  mkdir -p "$src" "$cold/genome" || return 1
+  printf kept > "$cold/genome/unrelated"
+  if _cold_migrate "$src" "$cold/genome" "$cold"; then return 1; fi
+  assert_eq kept "$(cat "$cold/genome/unrelated")" || return 1
+  if _cold_migrate "$scratch" "$cold/genome" "$cold"; then return 1; fi
+  local overlap_error
+  if overlap_error="$(_cold_migrate "$src" "$HOME/.continuum/./genome" "$HOME/.continuum/." 2>&1)"; then return 1; fi
+  assert_contains 'overlaps source' "$overlap_error" || return 1
+  [ ! -e "$src.continuum-migration" ] || return 1
+  mkdir -p "$scratch/foreign/huggingface" || return 1
+  printf untouched > "$scratch/foreign/huggingface/keep"
+  rmdir "$HOME/.cache" || return 1
+  ln -s "$scratch/foreign" "$HOME/.cache" || return 1
+  if [ ! -L "$HOME/.cache" ]; then
+    case "$(uname -s)" in
+      MINGW*|MSYS*) echo 'SKIP: Git Bash copied symlink fixture; native junction coverage runs in windows-service.test.ps1' >&2; return 0 ;;
+      *) echo 'Symlink fixture did not create a link' >&2; return 1 ;;
+    esac
+  fi
+  mkdir "$scratch/link-case-cold" || return 1
+  if _cold_migrate "$HOME/.cache/huggingface" "$scratch/link-case-cold/huggingface" "$scratch/link-case-cold"; then return 1; fi
+  assert_eq untouched "$(cat "$scratch/foreign/huggingface/keep")" || return 1
+  rm "$HOME/.cache" || return 1
+  ln -s "$cold" "$scratch/linked-cold" || return 1
+  if _cold_migrate "$HOME/.cache/huggingface" "$scratch/linked-cold/huggingface" "$scratch/linked-cold"; then return 1; fi
+)
+
+test_managed_payload_placement() (
+  # what this catches: model/cache placement cannot silently move a live engine.
+  source "$(dirname "$LIB")/payload-paths.sh"
+  local scratch; scratch="$(mktemp -d)"
+  trap 'rm -rf "$scratch"' EXIT
+  local home="$scratch/home" cold="$scratch/cold" selected
+  selected="$(initialize_managed_payload_root "$home" "$cold")" || return 1
+  assert_eq "$cold/payloads" "$(dirname "$selected")" || return 1
+  [ "$(initialize_managed_payload_root "$scratch/other-home" "$cold")" != "$selected" ] || return 1
+  assert_eq "$selected" "$(initialize_managed_payload_root "$home" "$scratch/other")" || return 1
+  mkdir -p "$scratch/legacy/bin"
+  assert_eq "$scratch/legacy" "$(initialize_managed_payload_root "$scratch/legacy" "$cold")" || return 1
+  # The real scripted loader must expand manifest-relative directories at the
+  # selected payload location, preserving spaces and keeping hot-home data out.
+  mkdir -p "$selected/cuda-fixture/lib"
+  export CONTINUUM_HOME="$home"
+  uname() { printf '%s\n' Linux; }
+  source "$(dirname "$LIB")/windows-build-env.sh" || return 1
+  case ":$PATH:" in *":$selected/cuda-fixture/lib:"*) ;; *) return 1;; esac
+  printf '%s\n' "$scratch/missing" > "$home/payload-root"
+  if managed_payload_root "$home"; then return 1; fi
+  # A service operation must refuse an unavailable recorded payload before
+  # touching the host supervisor or searching a stale hot-home binary.
+  if bash "$(dirname "$LIB")/../install-service.sh" status > "$scratch/service-output" 2>&1; then return 1; fi
+  grep -q 'Selected payload directory .* is unavailable' "$scratch/service-output" || return 1
+)
+
+test_cuda_selection_promotes_inherited_path() (
+  # The installed CLI inherits managed paths: merely avoiding duplicates left
+  # cuda-12 ahead of the selected cuda-13 tree on a second deployment.
+  local scratch; scratch="$(mktemp -d)"
+  trap 'rm -rf "$scratch"' EXIT
+  export CONTINUUM_HOME="$scratch/home"
+  local selected="$CONTINUUM_HOME/cuda-selected" old="$CONTINUUM_HOME/cuda-old"
+  mkdir -p "$selected/Library/bin" "$selected/Library/lib/x64" "$old/bin"
+  touch "$selected/Library/bin/cublas64_13.dll" "$selected/Library/lib/x64/cuda.lib" \
+    "$selected/Library/lib/x64/curand.lib" "$old/bin/cublas64_12.dll"
+  uname() { printf '%s\n' MINGW64_NT; }
+  cl.exe() { :; } # This fixture tests PATH normalization, not host MSVC import.
+  cmake() { :; }
+  export CMAKE_GENERATOR=Ninja
+  export NVCC_PREPEND_FLAGS="" CUDA_PATH="" RUSTFLAGS=""
+  export PATH="$old/bin:$selected/Library/bin:$PATH"
+  local helper="$(dirname "$LIB")/windows-build-env.sh"
+  source "$helper" || return 1
+  local entry first="" count=0
+  local -a entries
+  IFS=: read -ra entries <<< "$PATH"
+  for entry in "${entries[@]}"; do
+    [ "$entry" != "$selected/Library/bin" ] || count=$((count + 1))
+    if [ -z "$first" ] && { [ -f "$entry/cublas64_12.dll" ] || [ -f "$entry/cublas64_13.dll" ]; }; then first="$entry"; fi
+  done
+  assert_eq "$selected/Library/bin" "$first" || return 1
+  assert_eq 1 "$count" || return 1
+  local before="$PATH"
+  source "$helper" || return 1
+  assert_eq "$before" "$PATH"
+)
+
 # Permit a focused scratch-only test without executing installer tier tests.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -290,6 +435,10 @@ _run_test test_mod_tailscale_check_handles_missing
 _run_test test_mod_docker_check_fails_loud_when_missing
 _run_test test_mod_continuum_bin_link_uses_user_space_when_no_sudo_no_tty
 _run_test test_llama_cache_tracks_source_ownership
+_run_test test_cold_storage_preserves_config
+_run_test test_cold_storage_resumes_owned_migration
+_run_test test_managed_payload_placement
+_run_test test_cuda_selection_promotes_inherited_path
 
 echo ""
 echo "------------------------------------"

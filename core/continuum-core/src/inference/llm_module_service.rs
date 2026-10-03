@@ -378,9 +378,6 @@ pub(super) async fn run_adapter_inference(
             content: MessageContent::Text(prompt_text.to_string()),
             name: None,
         }],
-        system_prompt: None,
-        model: None,
-        provider: None,
         temperature: Some(request.sampling.temperature),
         max_tokens: if request.budget.max_tokens > 0 {
             Some(request.budget.max_tokens)
@@ -397,16 +394,10 @@ pub(super) async fn run_adapter_inference(
         } else {
             Some(request.stop_sequences.clone())
         },
-        tools: None,
-        tool_choice: None,
-        response_format: None,
-        active_adapters: None,
         request_id: Some(request.request_id.as_uuid().to_string()),
-        user_id: None,
-        room_id: None,
         purpose: Some("inference-llm".to_string()),
         persona_id: Some(request.persona.as_uuid().to_string()),
-        turn_bound: None,
+        ..Default::default()
     };
 
     let response = adapter

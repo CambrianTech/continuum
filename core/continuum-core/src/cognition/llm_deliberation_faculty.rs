@@ -1470,14 +1470,14 @@ impl LlmDeliberationFaculty {
                 // the chunks and reports `observed = false` rather than a false zero.
                 let mut witness =
                     crate::cognition::generation_drop::InFlight::arm(&self.persona_name, turn_bound, None);
-                let result = binding
-                    .adapter
-                    .generate_stream_checked(request, sink.clone())
-                    .await;
+                let result = sink.run_request(
+                    request_id.clone().into(),
+                    |producer| binding.adapter.generate_stream_checked(request, producer),
+                ).await;
                 witness.disarm();
                 result
             } else {
-                let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+                let (sink, receiver) = crate::ai::stream_sinks::channel();
                 // The receiver is no longer thrown away: the witness holds it, so a drop
                 // can drain what the model had already produced. Nothing reads it on the
                 // healthy path — the accumulate still comes from the returned response.
@@ -1574,6 +1574,7 @@ impl LlmDeliberationFaculty {
             "the turn's output allowance — max(time × her rate, her measured think + answer), under the reserve"
         );
         TextGenerationRequest {
+            native_output: None,
             messages,
             system_prompt: Some(system_prompt),
             model: binding.model.clone(),
@@ -1644,6 +1645,7 @@ impl LlmDeliberationFaculty {
             // The turn's bound on the wire: her measured expectation with headroom
             // (card ba82d0a0). Every waiting seam takes max(its floor, this).
             turn_bound: self.turn_bound(),
+            ..Default::default()
         }
     }
 
@@ -9548,7 +9550,7 @@ mod tests {
             async fn generate_stream_checked(
                 &self,
                 request: TextGenerationRequest,
-                sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+                sink: crate::ai::stream_sinks::GenerationSink,
             ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>
             {
                 let rejection = self
@@ -9563,6 +9565,17 @@ mod tests {
                 self.generate_stream(request, sink)
                     .await
                     .map_err(Into::into)
+            }
+
+            // Scripted fixture output, never a production streaming fallback.
+            async fn generate_stream(
+                &self,
+                request: TextGenerationRequest,
+                sink: crate::ai::stream_sinks::GenerationSink,
+            ) -> Result<TextGenerationResponse, String> {
+                let response = self.generate_text(request).await?;
+                sink.send(crate::ai::adapter::GenerationChunk::Token(response.text.clone()))?;
+                Ok(response)
             }
 
             async fn generate_text(

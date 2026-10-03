@@ -1004,19 +1004,15 @@ impl CallManager {
         user_id: &str,
         display_name: &str,
         samples: Vec<i16>,
-    ) {
+    ) -> Result<(), String> {
         let call = {
             let calls = self.calls.read().await;
             match calls.get(call_id) {
                 Some(c) => c.clone(),
-                None => return, // no native Call — nobody has this call open
+                None => return Ok(()), // optional native tee: no native listener
             }
         };
-        let key = format!("{call_id}\0{user_id}");
-        let handle = {
-            let mut handles = self.persona_audio_handles.write().await;
-            *handles.entry(key).or_insert_with(Handle::new)
-        };
+        let handle = self.persona_audio_handle(call_id, user_id).await;
         let mut call = call.write().await;
         // Ensure the persona is a live AI participant in THIS mixer (self-heal across
         // call recreation). AI participants carry a ring buffer sized for whole
@@ -1030,7 +1026,94 @@ impl CallManager {
                 ));
         }
         // Dump the whole utterance; the audio loop drains it frame-by-frame at cadence.
-        let _ = call.push_audio(&handle, samples);
+        call.mixer.get_participant_mut(&handle)
+            .ok_or("Persona playback participant disappeared")?
+            .try_push_ai_audio(samples)
+    }
+
+    async fn persona_audio_handle(&self, call_id: &str, user_id: &str) -> Handle {
+        let key = format!("{call_id}\0{user_id}");
+        let mut handles = self.persona_audio_handles.write().await;
+        *handles.entry(key).or_insert_with(Handle::new)
+    }
+
+    /// Admit a native output generation to the existing call mixer. The owner
+    /// calls this once, before consuming packets; packet arrival never reopens
+    /// a cancelled generation. The bound PCM decoder owns rate/filter continuity.
+    pub async fn begin_persona_generation(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        display_name: &str,
+        generation: uuid::Uuid,
+        mime_type: &str,
+    ) -> Result<crate::live::audio::native_playback::NativePlaybackLease, String> {
+        if mime_type != crate::inference::native_output::PCM_MIME {
+            return Err(format!("Unsupported native playback format: {mime_type}"));
+        }
+        let call = self.calls.read().await.get(call_id).cloned()
+            .ok_or("Native playback requires an active call")?;
+        let handle = self.persona_audio_handle(call_id, user_id).await;
+        let mut call = call.write().await;
+        if call.mixer.get_participant_mut(&handle).is_none() {
+            call.mixer.add_participant(crate::live::audio::mixer::ParticipantStream::new_ai(
+                handle, user_id.to_string(), display_name.to_string(),
+            ));
+        }
+        call.mixer.get_participant_mut(&handle)
+            .ok_or("Native playback participant disappeared")?
+            .begin_native_pcm(generation, mime_type)
+    }
+
+    /// Deliver admitted PCM without waiting for the model's terminal reply.
+    /// Missing calls, retired generations and full queues are observable errors.
+    pub async fn push_persona_generation(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        generation: uuid::Uuid,
+        packet: &crate::ai::stream_sinks::MediaChunk,
+    ) -> Result<(), String> {
+        let (call, handle) = self.admitted_persona_playback(call_id, user_id).await?;
+        let mut call = call.write().await;
+        call.mixer.get_participant_mut(&handle)
+            .ok_or("Native playback participant disappeared")?
+            .push_native_pcm(generation, packet)
+    }
+
+    /// Flush decoder tail only after the generation owner observes successful
+    /// model completion. A disconnected stream must cancel instead.
+    pub async fn finish_persona_generation(&self, call_id: &str, user_id: &str, generation: uuid::Uuid) -> Result<(), String> {
+        let (call, handle) = self.admitted_persona_playback(call_id, user_id).await?;
+        let mut call = call.write().await;
+        call.mixer.get_participant_mut(&handle)
+            .ok_or("Native playback participant disappeared")?
+            .finish_native_pcm(generation)
+    }
+
+    async fn admitted_persona_playback(&self, call_id: &str, user_id: &str) -> Result<(Arc<RwLock<Call>>, Handle), String> {
+        let call = self.calls.read().await.get(call_id).cloned()
+            .ok_or("Native playback requires an active call")?;
+        let key = format!("{call_id}\0{user_id}");
+        let handle = self.persona_audio_handles.read().await.get(&key).copied()
+            .ok_or("Native playback generation was not admitted")?;
+        Ok((call, handle))
+    }
+
+    /// Flush only this generation's queued output. A late cancellation cannot
+    /// silence a successor; a removed call already has no playback to stop.
+    pub async fn cancel_persona_generation(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        generation: uuid::Uuid,
+    ) -> bool {
+        let Some(call) = self.calls.read().await.get(call_id).cloned() else { return false; };
+        let key = format!("{call_id}\0{user_id}");
+        let Some(handle) = self.persona_audio_handles.read().await.get(&key).copied() else { return false; };
+        let mut call = call.write().await;
+        call.mixer.get_participant_mut(&handle)
+            .is_some_and(|stream| stream.cancel_ai_generation(generation))
     }
 
     /// Bridge-fed HUMAN audio (the LiveKit media lane): route a remote
@@ -1819,6 +1902,31 @@ mod tests {
     /// room, so `join_call` accepts only an airc RoomId — a bare name is refused. Tests dial
     /// with the RoomId, exactly as a real client would after resolving the name through airc.
     const TEST_ROOM: &str = "11111111-1111-1111-1111-111111111111";
+
+    // what this catches: the call boundary must preserve native generation
+    // cancellation and refuse a sample-rate mismatch before opening playback.
+    #[tokio::test]
+    async fn native_playback_call_preserves_generation_ownership() {
+        let manager = CallManager::new();
+        let mime = crate::inference::native_output::PCM_MIME;
+        let packet = crate::ai::stream_sinks::MediaChunk { sequence: 0, presentation_time_us: 0, mime_type: mime.into(), data: vec![0u8; 9600].into() };
+        let old = uuid::Uuid::new_v4();
+        let new = uuid::Uuid::new_v4();
+        assert!(manager.begin_persona_generation(TEST_ROOM, "persona", "Persona", old, mime).await.is_err());
+        let listener = manager.join_call(TEST_ROOM, "listener", "Listener", false).await.unwrap();
+        assert!(manager.begin_persona_generation(TEST_ROOM, "persona", "Persona", old, "audio/unsupported").await.is_err());
+        assert!(manager.push_persona_generation(TEST_ROOM, "persona", old, &packet).await.is_err());
+        let _old_lease = manager.begin_persona_generation(TEST_ROOM, "persona", "Persona", old, mime).await.unwrap();
+        manager.push_persona_generation(TEST_ROOM, "persona", old, &packet).await.unwrap();
+        assert!(manager.cancel_persona_generation(TEST_ROOM, "persona", old).await);
+        assert!(manager.push_persona_generation(TEST_ROOM, "persona", old, &packet).await.is_err());
+        let _new_lease = manager.begin_persona_generation(TEST_ROOM, "persona", "Persona", new, mime).await.unwrap();
+        assert!(!manager.cancel_persona_generation(TEST_ROOM, "persona", old).await);
+        manager.push_persona_generation(TEST_ROOM, "persona", new, &packet).await.unwrap();
+        manager.finish_persona_generation(TEST_ROOM, "persona", new).await.unwrap();
+        assert!(manager.cancel_persona_generation(TEST_ROOM, "persona", new).await);
+        manager.leave_call(&listener.handle).await;
+    }
 
     // what this catches (#193): the call room IS the airc room BY CONSTRUCTION. The gate
     // refuses a bare name (there is no parallel call_id namespace to fall back to — the

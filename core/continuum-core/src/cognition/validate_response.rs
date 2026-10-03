@@ -210,6 +210,7 @@ fn build_validate_generation_request(
     model: String,
 ) -> TextGenerationRequest {
     TextGenerationRequest {
+        native_output: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
@@ -248,7 +249,7 @@ fn build_validate_generation_request(
         room_id: None,
         purpose: Some("cognition/validate-response-decision".to_string()),
         persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     }
 }
 

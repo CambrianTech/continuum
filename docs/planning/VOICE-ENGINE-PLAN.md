@@ -1,5 +1,16 @@
 # The Voice Engine Plan
 
+> Historical plan, superseded for implementation by Joel's 2026-10-01 native
+> modality requirements in CLAUDE.md (Sensory Architecture). The engine ladder,
+> automatic transcription substitution, and proposed model-family graft below
+> are not current authorization or evidence of model capabilities. Resolve the
+> actual bound model's metadata once and use provider/model adapters for native
+> image/audio input and output. Missing native capability or transport must fail
+> explicitly. Native persona speech and supported voice LoRAs belong to the bound
+> model and existing genome orchestration. Preserve transcripts as records where
+> supported; never count them as native hearing. Neither this plan nor a model
+> name proves a loaded artifact can synthesize speech.
+
 *2026-09-02. Joel: "Need a better audio speech solution." Grounded in today's live
 receipts: `voice/selftest`'s first run caught Edge-TTS (cloud, PRIMARY, "flaky" by its
 own comment) returning empty audio while local engines sat provisioned; the Orpheus

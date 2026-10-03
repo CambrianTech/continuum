@@ -22,6 +22,7 @@ pub mod elevated_teardown;
 pub mod install_cli;
 pub mod launchd;
 pub mod owned_engines;
+pub mod process;
 pub mod supervisor_install;
 
 /// Windows process launch and ownership. Imports `std::os::windows` and

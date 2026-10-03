@@ -387,25 +387,9 @@ impl SemanticDistiller {
             messages: vec![ChatMessage::text("user", block)],
             system_prompt: Some(lens.system_prompt.to_string()),
             model: self.model.clone(),
-            provider: None,
-            temperature: None,
-            max_tokens: None,
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
             purpose: Some(lens.purpose.to_string()),
             persona_id: persona_id.map(|id| id.to_string()),
-            turn_bound: None,
+            ..Default::default()
         };
 
         // Take a NON-directed serving lane before the dream's model call. Dream

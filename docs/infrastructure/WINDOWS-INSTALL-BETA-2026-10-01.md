@@ -1,0 +1,327 @@
+# Windows public-installer beta: BIGGIEDESK
+
+Owner: Codex, coordinated with Astra/Bigmama through AIRC. All repairs belong in
+the public installers. Diagnostic experiments do not count as installation
+acceptance, and successful reuse does not prove first acquisition.
+
+## Prerequisite evidence
+
+AIRC's normal standalone `install.ps1` completed twice on runtime revision
+`077158a9a2ed`: automatic secondary-drive build storage, shared elevation,
+firewall verification, hidden startup, installed-daemon adoption, verified legacy
+endpoint retirement, and an idempotent rerun preserving the daemon PID. A fresh
+two-way room challenge with Bigmama passed. Joel confirmed the old terminal
+window closed. AIRC PR #1470 passed all CI and merged to canary at
+`f47a06b57dfe8fc66c1d02ddb8a665800b3fbbfc`. Main promotion remains separate.
+
+Continuum PR #4649 supplies the reviewed shared elevation and canonical AIRC
+firewall delegation, merged after green CI at `1248f9073391b149e4a3ab32a110fd2e42fd3b59`.
+Its fresh dependency contract requires AIRC #1470 on canary, now satisfied.
+The cold-storage repair is stacked above #4649; it does not replace that contract.
+
+## Intervention and acceptance checklist
+
+| Finding | Repository action | Acceptance |
+|---|---|---|
+| Failed winget prerequisites only warned, suggested manual installs, and continued into dependent builds; caller-local native status could mask the result | Read actual global native status and throw on vendor failure or a failed post-install probe; retain verified success, reboot-required success, and healthy reuse | Regression added; live provisioning still required |
+| Cold storage selected only after large Windows prerequisite downloads; system drive has about 1.8 GB free while secondary drive has about 4.2 TB | Select storage before prerequisite provisioning; route temporary download/extraction files to the selected disk for this installer session, on both platform adapters | Public runs selected D cold storage before acquisition; full installation remains open |
+| Both cold-storage adapters replaced the whole `config.env`, losing unrelated settings; Windows used ASCII | Update only storage keys, retain other settings/comments/UTF-8, stage writes before replacement | Existing Windows and shell regression suites cover preservation and repeatability |
+| Windows could not reread its own single-quoted storage path; shell `xargs` could alter literal path text | Strip matching outer quotes without evaluation; retain literal spaces/backslashes/dollar signs; use last assignment like the runtime | Public reruns reused the selected cold configuration; scratch literal-path regressions also pass |
+| Existing Codex process lacks persisted user Rust-home variables despite AIRC installing Rust on the secondary drive | Public entry restores absent Rust-home settings from user/machine registration, preserves explicit process settings, and refreshes PATH without dropping session tools or accumulating duplicates | Public entry restored registered Rust/VS state without injected environment; full installation remains open |
+| CUDA toolkit and installed runtime payloads still target the system drive | Persist one managed payload-root across installer and runtime consumers | Public LLVM/CUDA/ORT acquisition used the selected D payload; final installed service/engine acceptance remains open |
+| Existing cold-directory migration can warn on partial robocopy failure and continue | Both adapters persist the selected pending root and own each source/destination pair before moving; failures stop configuration publication, reruns resume only owned destinations, and ancestor links/out-of-root paths are refused | Scratch partial-failure/resume and Windows junction regressions pass; POSIX symlink assertions require Unix CI (Git Bash copies link fixtures); public migration remains OPEN |
+| LLVM final publication copies staged files non-atomically and reuse checks only libclang.dll | Require a complete versioned publication contract and interruption recovery through the normal installer | OPEN; successful decoder extraction does not close this separate publication defect |
+| Long prerequisite downloads are silent in captured output and canceled consent lacks enough phase visibility | Add progress and consent observability in the shared installer paths | OPEN; no temporary downloader or manual consent workaround counts as repair |
+| Bigmama remote Continuum ping timed out; no installed local Continuum CLI/core was found | Complete normal `install.ps1 -Grid`, then verify the installed receiver and actual remote command/event path | OPEN; AIRC room messaging does not prove Continuum remote execution |
+
+Public runs exercised prerequisite acquisition and consent, but did not complete installation. Regression tests use isolated scratch profiles and mocked elevation; those tests do not provision the machine. Before a live run, announce any expected Windows consent prompt and
+allow Joel time to approve it. Never claim a complete install from a build alone.
+
+## Released payload contract and remaining live acceptance
+
+`paths::payload_root` and the platform readers share a UTF-8 `payload-root`
+record in the hot Continuum home. Without a record, existing installs retain
+their home layout. A recorded missing/unreadable/invalid target fails closed;
+it must never become another installation on the system drive. Fresh selection
+uses a home-scoped directory under the already selected cold root. Existing
+`bin`, `tools`, `lib` or `cuda-toolkit` trees retain their original location.
+Reruns read the record rather than selecting storage again. Engine slot state
+stays together under the selected payload `bin`; identities, room/session data,
+logs and configuration remain in the hot home.
+
+The first source slice adds the runtime resolver, engine launch/error handling,
+`engine root` query, and platform selection/read primitives with regressions.
+Both public installers now invoke selection after cold-cache configuration and
+before prerequisites. Windows tool/library destinations, service/engine slot
+adapters, prepared-release validation, Unix engine installation, manifest runtime
+paths and direct/scripted library environments consume the record. Service-host
+bootstrap validates against the selected root and propagates registration failure
+instead of changing managed engines into an operator pin.
+
+The ordinary PowerShell entry runs in a scratch profile and proves selection at
+the prerequisite boundary without acquisition. The full PS5 suite also covers
+cold prepared-release validation and engine preparation. Bigmama independently
+proved native-path cross-reading both ways between PS5 and Git Bash with spaces
+at the initial contract revision, including extended drive paths and unavailable
+target refusal. UNC share coverage remains unavailable. Bigmama's consumer and
+lifecycle review at `0340a6e73` found no blocker in the inspected integration;
+approval remains subject to required CI and actual installer acceptance.
+Linux CI exposed a warm-build scratch fixture missing the launcher's new shared
+helper. The fixture now copies the actual helper, and its Windows/Linux/macOS
+control-flow regressions pass in Git Bash. Final runtime compilation/tests and
+public rerun remain required. Linux CI also includes cold engine-slot and
+manifest-loader regressions.
+Public install, reboot/rerun, remote command/event and GPU proof remain OPEN.
+
+The follow-up consumer audit found additional fixed hot-home paths in Unix core
+publishing/service resolution, CLI core lookup, macOS install staging and engine
+orphan ownership. These now consume the selected payload root too; macOS receives
+the resolved slot from the CLI rather than duplicating path policy in its adapter.
+The existing artifact-order and plist tests cover a cold slot, and shell placement
+tests verify that an unavailable selected directory refuses service operations.
+This additional consumer change requires fresh CI and peer review.
+
+## First public Continuum run (canary 84c18e611)
+
+After all required CI and independent review passed, Joel confirmed readiness.
+The unmodified PowerShell 5.1 `install.ps1 -Grid` selected D: cold cache/payloads,
+restored registered Rust tools, reused Visual Studio, cloned native submodules
+and installed CMake. No admin operation or consent prompt was reached.
+LLVM's 981,666,720-byte archive passed the manifest checksum, then Windows tar
+failed because its external XZ decoder was absent. The installer exited nonzero;
+no manual extraction or installation was performed.
+
+The repair declares the official Windows XZ archive and digest in the manifest,
+acquires/verifies it under managed payload storage, and supplies it only to the
+native tar invocation. Extraction checks its exit status and stages LLVM before
+publishing files. A Windows smoke test uses the actual decoder and native tar in
+an isolated profile, verifying acquisition/reuse, corrupt-archive refusal and
+PATH restoration. Public rerun and full Continuum acceptance remain required.
+The lengthy LLVM download also exposed missing useful progress in captured
+installer output; download observability remains an open usability repair.
+
+The public rerun on canary `355c84833` acquired XZ automatically, then stalled
+inside Windows tar's external decoder filter. Two process samples showed tar
+fixed at 134,080 bytes read / 65,536 written and XZ at 73,728 read / zero written,
+with unchanged CPU counters and no extracted files. The follow-up avoids that
+filter: XZ reads the archive directly, its binary stdout is copied to a temporary
+tar file while stderr drains independently, then native tar reads the plain file.
+The regression now uses 2 MB of incompressible data rather than a tiny string.
+That larger smoke passes in an isolated profile using the checksum-verified
+decoder archive. Full live-archive acceptance remains open.
+
+During this run the agent environment changed to restricted permissions. CIM
+process inspection returned Access denied, so the ownership-checked stop refused
+to act; the old installer was not stopped. GitHub CLI subsequently reported its
+keyring credential unusable. No authentication reset, privilege workaround or
+second installer was attempted at that point. Access was subsequently restored
+and the exact owned stalled process tree was stopped after verification. The
+later public run passed LLVM extraction and prerequisite setup, but was stopped
+during the CLI build after the user reported disruptive terminal windows. There
+is no complete public-install or remote-command acceptance receipt yet.
+
+## Hidden Windows installation work
+
+The subsequent public d8b7941c6 retest failed before consent in cold-storage
+configuration: Windows PowerShell 5 inherited a PowerShell 7 module path and
+autoloaded incompatible Security type data at `Get-Acl`. Earlier test callers
+normalized their module path, which missed this public-entry failure. The shared
+initializer now explicitly imports Management, Utility and Security from the
+running engine's `PSHOME`; the generated bootstrap invokes that same initializer.
+It preserves user module paths and does not change machine configuration.
+The process regression includes a foreign-module negative control and a real
+helper positive case. A fresh public installer receipt is still required.
+
+The installer process launcher is authored in `tools/scripts/lib/windows-elevation.ps1`.
+The remote, pre-clone entry cannot source that file yet, so its bounded generated
+region is synchronized by `tools/scripts/sync-windows-bootstrap.ps1`. Run that
+script after editing the launcher; `-Check` rejects drift in CI. This preserves
+one authored implementation across bootstrap, modules and elevation consumers.
+Acquisition/build/service CLI calls retain captured diagnostics and native exit
+codes. Failed Git acquisition or grid authentication stops setup.
+
+The focused Windows PowerShell 5 regression covers no console for the direct
+child, Windows arguments (including gsudo's bare flags), concurrent output pipes,
+batch-shell environment capture, authentication refusal, and bootstrap drift.
+CI at cb13f090f passed the unadapted-grandchild visibility probe and full service
+suite. Acquisition and build commands now explicitly own a Windows job assigned
+at process creation, using the same kernel ownership contract as the Rust
+lifecycle adapter. Cancellation closes that job, including descendants; both
+pipe draining and post-EOF waiting remain cancellable. PS5 regressions cover
+downstream exceptions and silent cancellation after both OS pipes close.
+Installer coordinators own their descendants until successful completion. Only
+after exit zero and drained output may a coordinator clear kill-on-close so an
+intended background daemon survives; failures and cancellation retain tree
+cleanup. Build jobs never perform this handoff. The gsudo cache retains its
+existing session owner. PS5 regressions exercise successful handoff and failed
+coordinator cleanup with real child processes.
+PR #4658 merged after final-head CI and independent review at c40cc9cc6. Live consent remains required. Standalone AIRC must receive the
+released shared helper through its existing pin; a local wrapper is not a fix.
+
+### CUDA dependency validation following the llama.cpp usage audit
+
+Production LLM inference is llama.cpp. Candle remains in active LoRA/plasticity,
+GGUF utilities and speech. Astra confirmed over ordinary AIRC that her native
+media plumbing does not yet provide a validated replacement for Orpheus/custom
+voices; those components are retained.
+
+Candle fused Qwen3 MoE has no Continuum callers, but its static archive previously
+built on every CUDA build. The dependency repair makes that specialized archive
+opt-in and restores the commented Pascal FP16 atomic-add compatibility function.
+Continuum pins the reviewed dependency revision explicitly. The lock update
+changes only the six Candle source identities, not unrelated packages.
+
+Dependency receipts: CPU and compute61 CUDA candle-transformers checks pass;
+CUDA-linked optional-MoE refusal test and existing simple_grad_gpu pass; native
+half-atomic contention/neighbor/NaN test passes on all three local Pascal GPUs.
+These are development checks with an isolated D target and one build worker,
+not a supported public installer receipt. Dependency PR joelteply/candle#1 and
+its CI must complete before merging this integration. Public install/rerun and
+remote command/event plus useful grid GPU work remain OPEN.
+
+### 2026-10-02 — bounded AIRC entry acquisition
+
+Public canary d2604d832 passed native module initialization and all cached
+prerequisites, then stalled before launching the AIRC firewall child: PS5
+Invoke-WebRequest consumed 206 CPU seconds in roughly four minutes while its
+10448-byte entry destination remained empty. No gsudo/UAC or build had started.
+The exact owned public installer PID18224/parent30308 was verified and stopped;
+exec68330 ended -1. No downloaded installer was substituted or run manually.
+
+Invoke-AircSetup now uses a bounded HttpClient acquisition for its small entry
+script (60-second complete-response deadline, 1 MiB maximum). Script bytes are
+written only after a complete successful response. Existing manifest URL,
+hidden child ownership, arguments, exit propagation and cleanup are preserved.
+Actual PS5 loopback tests cover exact bytes, HTTP error, oversized response,
+stalled body and real downloaded child exit23. Full Windows service suite passed.
+The same manifest URL downloaded 10448 bytes in0.42seconds through the real helper
+in isolated scratch; it was not executed. Public live acceptance remains OPEN.
+
+### Hidden PS5 compiler diagnostics (2026-10-02)
+
+OPEN public acceptance: the normal Grid install completed the GPU core server
+build, then Cargo returned 101 building the CLI; the hidden coordinator displayed
+only the module failure. A tiny actual hidden PS5 `-File` reproduction proved
+native stderr was drained, but unmerged PowerShell ErrorRecords disappeared at
+the host's OS pipe boundary. The existing merged-stream launcher fixture did not
+exercise that boundary. The compiler failure itself is a separate dependency issue.
+
+The canonical shared helper now provides an executable-entry serializer; the
+public entry (including its generated pre-clone functions) uses it. Native helper
+callers retain PowerShell data/error stream semantics. Entry errors serialize once
+to OS stderr; successful values remain on the success stream, explicit native
+exit codes survive, and terminating failures exit 1 after cleanup.
+
+Validation: complete actual PS5 windows-process.test.ps1 PASS (session 7177),
+including nested hidden -File coordinators, native exit 23, terminating exit 1,
+separate data/diagnostic streams and exact single diagnostic emission. The actual
+public entry's conflicting-switch refusal is visible before any provisioning.
+Existing cancellation, successful child handoff, argv, dual-pipe and bootstrap
+projection checks pass. No build, live installer, UAC, or daemon was run. AIRC must
+consume the released shared helper and wrap its public entry in a follow-up;
+this change does not claim to fix unmodified external PowerShell scripts.
+### Verified recovery handoff (2026-10-02)
+
+A whole-update coordinator can restore and verify the previous daemon yet must
+return a failing update status. The shared launcher now accepts an explicit
+`PreserveChildrenOnExitCode` list for such completed outcomes. The default is
+empty; existing success-only behavior is unchanged. The option requires owned
+process-tree cleanup, never changes the native exit status, and never applies
+to interruption or cancellation. Callers must select the outcome only after
+verifying recovery; ordinary failures must remain outside the list.
+
+Actual hidden PS5 child/grandchild fixtures verify default refusal of exit 200,
+explicit handoff on 200 while retaining that failure status, cleanup on unlisted
+23, and cancellation cleanup even with the allowlist. AIRC integration and the
+public mapping of its internal recovery outcome remain separate acceptance work.
+No live installation, daemon, firewall, or consent action was performed.
+
+### Consent acquisition evidence (2026-10-02)
+
+The cache-on boundary now reports UTC start/end, elapsed milliseconds, resolved
+helper path and file version, cache owner/caller process IDs, and the actual exit
+status (or incomplete launch/wait). Metadata lookup cannot replace acquisition
+errors. Native diagnostics and the original failure remain intact; exit 999
+alone does not identify which actor canceled. Acquisition arguments, ownership,
+retry policy and consent behavior are unchanged.
+
+The existing full Windows PowerShell 5 service suite passed with synthetic
+success, exit 999, launcher failure and unavailable metadata, plus native stderr
+and exit-status fixtures. No live gsudo consent or provisioning was performed;
+this adds evidence for the next supported attempt, not a causal fix for 999.
+
+### Registered elevation helper discovery (2026-10-02)
+
+A nested setup can install gsudo and register its directory while its parent
+still holds an older PATH. The parent previously attempted a second acquisition,
+then refused winget's already-installed/no-upgrade result. Shared discovery now
+refreshes the session from registered User/Machine PATH on a miss before any
+acquisition, and verifies the discovered native executable through `--version`.
+Acquisition exit failures remain failures; no exit-code blanket acceptance or
+persistent environment change was added.
+
+The full PS5 service suite passed with an actual scratch executable and a
+synthetic registered-PATH boundary: stale caller discovery/reuse, a second reuse
+without acquisition, and wrong-version refusal. No live winget, UAC, account or
+firewall changes were performed. AIRC must consume the released helper pin;
+public installation acceptance remains separate.
+
+### CI consolidation evidence (2026-10-02)
+
+[Helper repair run 37057570374](https://github.com/CambrianTech/continuum/actions/runs/37057570374)
+spent 21m06s in Windows checks (16m39s compiling Rust), 18m47s in Linux library
+and handoff checks, and another 10m16s in the separate documentation-guard job.
+That last job compiled the core for 7m33s to execute two compile-fail guards whose
+reported execution took 4.07s. The Linux handoff step also compiled the normal
+core library with the same dev-fast profile. Three subsequent runs showed the
+same separate doc job taking 9m35s to 10m54s.
+
+The existing Linux job now executes those same two documentation guards after
+the handoff tests, sharing their compiled artifacts. The exact two-test assertion,
+Postgres tests, binding checks and required status contexts remain. Narrow known
+Windows helper changes select the existing Windows installer tests without an
+unrelated Rust build; unknown, dependency and workflow changes retain full gates.
+The XZ/CUDA test conditions now match their checkout condition, so docs-only runs
+cannot attempt missing scripts. No workflow or job was added; one was removed.
+
+Local selector tests and YAML structure validation pass. Hosted execution must
+still establish artifact reuse and the new timing; the old measured durations
+are not a claim of savings or binary installation acceptance.
+
+The follow-up fixture-ownership slice keeps all nine warm-build launcher
+scenarios and the one-compile static assertion in the Linux job. Windows runs
+the two native Windows success/refusal scenarios with real Git Bash path
+conversion, executable receipt and media-staging assertions; both modes reuse
+one scratch repository and one teardown. The earlier full Windows warm-suite
+step took 7 seconds, so this is duplicate scenario reduction, not a claim of
+minutes saved. Separate PowerShell/Bash CUDA adapter coverage remains intact.
+Engine-slot shell contracts run once in the required Linux job for PR/push;
+standalone manually dispatched Carl smoke keeps its own slot proof.
+### 2026-10-02 — LLVM publication completeness (OPEN live acceptance)
+
+The DLL-only reuse guard could accept an interrupted copy before resource
+headers reached the managed payload directory. LLVM now writes an owned pending
+marker before copying, verifies every staged DLL/resource file by SHA256 against
+a manifest-bound receipt, and atomically publishes the receipt before clearing
+pending. Normal setup repairs missing, damaged, interrupted or differently
+pinned installs; ExistingOnly refuses them. Unrelated destination files remain
+untouched. LLVM receipts are separate from inference-engine lifecycle records.
+
+The existing XZ fixture now forces failure after the first destination copy and
+checks rerun recovery, missing/corrupt receipts, modified resource headers,
+source-pin changes, unchanged reruns, literal cold paths and unrelated data.
+Real PS5 publication checks pass with an explicitly preseeded, checksum-verified
+scratch decoder; this does NOT prove PS5 decoder acquisition. Full decoder
+acquisition plus the same LLVM cases pass under PS7. The full PS5 service suite,
+including public preparation using complete synthetic LLVM files, passes.
+No real LLVM download/extraction, user environment registration, UAC, Rust build,
+or live installer changes were used for this follow-up.
+
+Separate OPEN evidence: the initial full PS5 XZ fixture (session8691) remained
+at unchanged decoder Expand-Archive acquisition for over 90 seconds, with only
+the verified 1099395-byte ZIP and payload-root present, no decoder executable.
+The exact scratch test owner PID31236/child348 was verified and stopped; no
+public installer was stopped. Decoder acquisition is not repaired by this patch.
+The service fixture initially selected Codex's Git without Bash; selecting the
+installed Git for Windows in that test process's PATH allowed its existing
+ancestry regression to run. No global PATH or setup policy was changed.

@@ -92,13 +92,14 @@ use futures::stream::StreamExt;
 /// an adapter so tests can swap heuristic / failing / no-op behaviors.
 struct TestInferenceModule {
     adapter: Arc<dyn AIProviderAdapter>,
+    pending_stream: Option<Arc<()>>,
 }
 
 impl TestInferenceModule {
     const PREFIXES: &'static [&'static str] = &["ai/generate"];
 
     fn new(adapter: Arc<dyn AIProviderAdapter>) -> Self {
-        Self { adapter }
+        Self { adapter, pending_stream: None }
     }
 }
 
@@ -128,6 +129,19 @@ impl ServiceModule for TestInferenceModule {
         _command: &str,
         params: serde_json::Value,
     ) -> Result<CommandResult, String> {
+        if let Some(lifetime) = &self.pending_stream {
+            let _active = Arc::clone(lifetime);
+            let id = continuum_core::ai::stream_sinks::stream_id_of(&params)
+                .expect("handler must supply stream ownership");
+            let sink = continuum_core::ai::stream_sinks::take(id).expect("owned producer");
+            sink.send(continuum_core::ai::adapter::GenerationChunk::RequestBoundary {
+                request_id: "unsupported-nested-request".into(),
+                phase: continuum_core::ai::stream_sinks::RequestPhase::Started,
+            })?;
+            // Keep generation and its sink alive until the handler cancels it.
+            std::future::pending::<()>().await;
+            drop(sink);
+        }
         let request: TextGenerationRequest = serde_json::from_value(params)
             .map_err(|e| format!("TestInferenceModule: decode TextGenerationRequest: {e}"))?;
         let response = self.adapter.generate_text(request).await?;
@@ -247,6 +261,22 @@ async fn spawn_substrate_responder(
             if hint != body_hint_filter {
                 continue;
             }
+            // Regression: a command with an already-owned correlation ID must
+            // fail before dispatch, even after its original sink was taken.
+            // Exercise the actual handler on this received peer envelope.
+            let parsed = CommandRequestHandler::parse_envelope(&event).expect("peer envelope");
+            let (reserved, _consumer) = continuum_core::ai::stream_sinks::channel();
+            let guard = continuum_core::ai::stream_sinks::register(parsed.correlation_id, reserved)
+                .expect("reserve request stream");
+            let producer = continuum_core::ai::stream_sinks::take(parsed.correlation_id)
+                .expect("original producer owns stream");
+            let duplicate = handler.process_request_streaming(&parsed).await;
+            assert!(matches!(duplicate,
+                continuum_core::routing::AircCommandResponse::Error { ref message }
+                    if message.contains("already has an active owner")),
+                "duplicate command must not replace the active stream");
+            drop(producer);
+            drop(guard);
             // SAME entry point a productized airc adapter-registry
             // dispatch loop would call. The handler internally goes
             // parse_envelope -> process_request -> send_reply.
@@ -278,6 +308,37 @@ fn request(prompt: &str) -> TextGenerationRequest {
         messages: vec![user_msg(prompt)],
         ..Default::default()
     }
+}
+
+// A publisher refusal must cancel a pending command and release correlation
+// ownership; join! used to wait forever for the now-unusable producer.
+#[tokio::test]
+async fn stream_refusal_cancels_producer_and_releases_ownership() {
+    use continuum_core::routing::{AircCommandRequest, AircCommandResponse, ParsedEnvelope};
+    let fixture = TwoAircLoopback::new().await.expect("fixture setup");
+    let lifetime = Arc::new(());
+    let mut module = TestInferenceModule::new(Arc::new(HeuristicInferenceAdapter::new()));
+    module.pending_stream = Some(Arc::clone(&lifetime));
+    let handler = build_handler(Arc::clone(fixture.peer_a()), Some(Arc::new(module)));
+    let correlation_id = uuid::Uuid::new_v4();
+    let parsed = ParsedEnvelope {
+        caller_peer_id: airc_lib::PeerId(fixture.peer_a_id()),
+        reply_to: airc_lib::PeerId(fixture.peer_a_id()),
+        correlation_id,
+        request: AircCommandRequest::new("ai/generate".into(), "peer".into(), None,
+            serde_json::to_value(request("cancel on refusal")).unwrap()),
+        request_channel: airc_core::RoomId::new(),
+        request_channel_name: None,
+        presented_grant: None,
+    };
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2),
+        handler.process_request_streaming(&parsed)).await.expect("refusal must retire pending producer");
+    assert!(matches!(response, AircCommandResponse::Error { message }
+        if message.contains("Nested request lifecycle")));
+    assert_eq!(Arc::strong_count(&lifetime), 2, "command future must be dropped");
+    let (sink, _receiver) = continuum_core::ai::stream_sinks::channel();
+    let _guard = continuum_core::ai::stream_sinks::register(correlation_id, sink)
+        .expect("failed operation must release correlation ownership");
 }
 
 // ── Happy path ─────────────────────────────────────────────────────
@@ -422,36 +483,12 @@ async fn end_to_end_missing_module_returns_typed_error() {
         .await
         .expect_err("missing module must produce a typed error");
 
-    // What we OBSERVE today: CommandExecutor doesn't shortcut on a
-    // missing Rust module — it tries the TypeScript bridge at
-    // `/tmp/jtag-command-router.sock` (legacy router for unmigrated
-    // commands). The bridge isn't running in tests, so the caller
-    // sees the connect failure verbatim.
-    //
-    // Architecturally this is a `[[no-fallbacks-ever]]` violation —
-    // a Rust-only deployment should hard-error with the missing
-    // module name immediately, not silently route to TS-land. Filed
-    // as task #219.
-    //
-    // Per R1 round 1 on PR #1563: pin EXACTLY the current
-    // bridge-passthrough surface — NOT a permissive OR over plausible
-    // future error shapes. When task #219 lands, this test SHOULD
-    // fail loudly with "actual" not matching "commandrouterserver",
-    // forcing the test author to update to the new typed
-    // missing-module error AND verify the substrate fix actually
-    // produces it. A permissive assertion would silently stay green
-    // and let either a good fix (typed error) or a bad regression
-    // (200 on nothing) pass undetected.
-    let lower = err.to_lowercase();
+    // Regression for task #219: the executor now refuses missing Rust modules
+    // before attempting the legacy TS bridge. Preserve that refusal across AIRC.
     assert!(
-        lower.contains("commandrouterserver") || lower.contains("jtag-command-router"),
-        "expected the TS-bridge connect-failure surface — the substrate \
-         currently falls through to /tmp/jtag-command-router.sock on \
-         missing Rust modules. If THIS assertion fired because task #219 \
-         landed and CommandExecutor now hard-errors on missing modules, \
-         update the assertion to pin the new typed-error surface and \
-         verify the substrate change. Got: {err:?}"
+        err.contains("no Rust module handles command: 'ai/generate'")
+            && err.contains("implicit TS-bridge fallthrough is disabled"),
+        "expected the explicit missing-module refusal across the grid, got: {err:?}"
     );
-
     responder.await.expect("responder task joined");
 }

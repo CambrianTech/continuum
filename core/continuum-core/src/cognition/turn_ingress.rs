@@ -76,6 +76,94 @@ pub fn close() -> bool {
     GATE.close()
 }
 
+/// Is the node stopping? Read by a turn already admitted, at each act boundary, so a
+/// multi-act tool loop ends after the act in hand instead of starting its next generation
+/// (Fable on #4684: a 12-act solve otherwise rides the whole settle cap). A bare read is
+/// safe HERE because the gate only ever closes: a stale `false` lets one more act run, and
+/// nothing can make a `true` wrong.
+pub fn is_closing() -> bool {
+    !GATE.is_open()
+}
+
+/// The longest a stop waits for admitted turns to finish before it saves (card 32fa22ba).
+///
+/// The module drain's own budget is 1.8 s, sized to the runtime's 2 s phase — and a turn
+/// is not 2 s on any tier this grid runs. The IntelMac's CPU 1.5B takes minutes, the M5's
+/// 27B decodes about 3 tok/s per stream: 40 IntelMac deploys and 187 M5 deploys logged
+/// `cognition (drain Incomplete { in_flight: N })`, up to 15 citizens cut at once. The
+/// wait is the turns' MEASURED remaining time ([`settle_bound_ms`]); this is only its
+/// ceiling, so a wedged turn cannot hold a deploy forever. One constant, read by the core
+/// (how long to wait) and the CLI (how long to wait for the core), so the two cannot drift.
+pub const TURN_SETTLE_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How long the turns in flight are expected to still need, ms. Pure.
+///
+/// `turns` is each measured turn in flight as (elapsed ms, her typical turn ms — `None`
+/// when she has not finished one this boot). `uncounted` = more turns hold a permit than
+/// have a measured start (a turn admitted and still composing), so at least one is
+/// unknown. An unknown turn waits the cap: an absence is not a number. A known one waits
+/// half again her typical turn past what it has already run, and never less than a
+/// quarter of a turn, so one running long is given time rather than cut at once.
+pub(crate) fn settle_bound_ms(turns: &[(u64, Option<u64>)], uncounted: bool, cap_ms: u64) -> u64 {
+    let unknown = if uncounted { cap_ms } else { 0 };
+    turns
+        .iter()
+        .map(|&(elapsed, typical)| match typical {
+            Some(t) => (t + t / 2).saturating_sub(elapsed).max(t / 4),
+            None => cap_ms,
+        })
+        .fold(unknown, u64::max)
+        .min(cap_ms)
+}
+
+/// What the settle before a stop did — the probe's numbers, so a deploy that still cuts
+/// turns says how many, and against which bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TurnSettle {
+    pub in_flight_at_close: u64,
+    pub cut: u64,
+    pub bound_ms: u64,
+    /// Where the bound came from: `nothing_in_flight`, `measured` (the turns' own
+    /// remaining time), or `cap` (an unknown turn, or measured past the cap).
+    pub bound_source: &'static str,
+    pub waited_ms: u64,
+}
+
+/// CLOSE THE DOOR, THEN LET THE CITIZENS FINISH: the step before a stop saves.
+///
+/// Called only from the runtime's shutdown task, which no connection owns, so the door
+/// this closes is always followed by the shutdown it exists for (the one-way rule above).
+/// The module drain that follows closes the same door again (a no-op) and waits its own
+/// 1.8 s for anything still left — the backstop, unchanged.
+pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
+    close();
+    let started = std::time::Instant::now();
+    let in_flight_at_close = in_flight();
+    let cap_ms = cap.as_millis().min(u128::from(u64::MAX)) as u64;
+    let turns = crate::cognition::resource_admission::in_flight_turns(crate::persona::trace::now_ms());
+    let bound_ms = settle_bound_ms(&turns, in_flight_at_close > turns.len() as u64, cap_ms);
+    let bound_source = if in_flight_at_close == 0 {
+        "nothing_in_flight"
+    } else if bound_ms >= cap_ms {
+        "cap"
+    } else {
+        "measured"
+    };
+    let deadline = started + std::time::Duration::from_millis(bound_ms);
+    let mut poll = tokio::time::interval(POLL);
+    while in_flight() > 0 && std::time::Instant::now() < deadline {
+        poll.tick().await;
+    }
+    TurnSettle {
+        in_flight_at_close,
+        cut: in_flight(),
+        bound_ms,
+        bound_source,
+        waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +196,29 @@ mod tests {
         );
         drop(permit);
         assert_eq!(in_flight(), 0, "and invisible once it ends");
+    }
+
+    // regression for card 32fa22ba (IntelMac: 40 deploys, M5: 187, each cutting up to 15
+    // turns on a fixed 1.8 s drain). what this catches: the settle's wait is the turns'
+    // measured REMAINING time — not zero for a turn with minutes left, not the cap for
+    // one about to finish — an unknown turn (unmeasured, or admitted without a measured
+    // start) waits the cap, an overrunning turn still gets a quarter turn, and nothing
+    // ever exceeds the cap.
+    #[test]
+    fn the_settle_waits_the_measured_remaining_turn_and_never_past_the_cap() {
+        const CAP: u64 = 300_000;
+        assert_eq!(settle_bound_ms(&[], false, CAP), 0, "nothing in flight: no wait");
+        // A 4-minute CPU turn one minute in: half again past the typical, minus elapsed.
+        assert_eq!(settle_bound_ms(&[(60_000, Some(240_000))], false, CAP), 300_000);
+        assert_eq!(settle_bound_ms(&[(200_000, Some(240_000))], false, CAP), 160_000);
+        // Running long: a quarter turn, not an instant cut.
+        assert_eq!(settle_bound_ms(&[(500_000, Some(240_000))], false, CAP), 60_000);
+        // The longest of several decides; the cap bounds it.
+        assert_eq!(settle_bound_ms(&[(1_000, Some(20_000)), (0, Some(900_000))], false, CAP), CAP);
+        // Unknown turns wait the cap.
+        assert_eq!(settle_bound_ms(&[(1_000, None)], false, CAP), CAP);
+        assert_eq!(settle_bound_ms(&[(1_000, Some(20_000))], true, CAP), CAP);
+        // A zero cap is no settle at all.
+        assert_eq!(settle_bound_ms(&[(0, Some(240_000))], true, 0), 0);
     }
 }

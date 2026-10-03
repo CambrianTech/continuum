@@ -386,6 +386,8 @@ pub struct InstallOptions {
     pub cli: bool,
     /// The running core is the checkout's HEAD: build, stage, hand off when not.
     pub core: bool,
+    /// airc is installed and its mesh supervisor (`airc join` from login) is registered.
+    pub airc: bool,
     /// macOS only: the per-user LaunchAgent instead of the system LaunchDaemon (no sudo;
     /// cannot heal on a gui domain in on-demand-only mode — measured, IntelMac). The
     /// daemon is the default nobody has to remember; this is the explicit other choice.
@@ -409,6 +411,7 @@ impl InstallOptions {
                 "--supervisor" if !options.supervisor => options.supervisor = true,
                 "--cli" if !options.cli => options.cli = true,
                 "--core" if !options.core => options.core = true,
+                "--airc" if !options.airc => options.airc = true,
                 "--user" if !options.user => options.user = true,
                 "--check" if !options.check => options.check = true,
                 "--elevated" if !options.elevated => options.elevated = true,
@@ -423,10 +426,10 @@ impl InstallOptions {
                     }
                     options.plan_sha = Some(sha.to_ascii_lowercase());
                 }
-                "--supervisor" | "--cli" | "--core" | "--user" | "--check" | "--elevated" | "--plan" | "--plan-sha" => {
+                "--supervisor" | "--cli" | "--core" | "--airc" | "--user" | "--check" | "--elevated" | "--plan" | "--plan-sha" => {
                     return Err(format!("duplicate option {arg}"))
                 }
-                _ => return Err(format!("unknown install option {arg}; use --check, or name arms: --supervisor --core --cli")),
+                _ => return Err(format!("unknown install option {arg}; use --check, or name arms: --supervisor --core --cli --airc")),
             }
         }
         if options.check && options.elevated {
@@ -435,7 +438,7 @@ impl InstallOptions {
         if options.elevated != options.plan.is_some() || options.elevated != options.plan_sha.is_some() {
             return Err("install: --elevated, --plan and --plan-sha go together (the elevated child registers exactly one plan, bound by its digest)".to_string());
         }
-        if options.elevated && (options.cli || options.core || options.user) {
+        if options.elevated && (options.cli || options.core || options.airc || options.user) {
             return Err("install: the elevated child registers the supervisor plan only".to_string());
         }
         Ok(options)
@@ -443,12 +446,13 @@ impl InstallOptions {
 
     /// Bare `install` = every arm.
     pub fn runs(&self, arm: Arm) -> bool {
-        let named = self.supervisor || self.cli || self.core;
+        let named = self.supervisor || self.cli || self.core || self.airc;
         !named
             || match arm {
                 Arm::Supervisor => self.supervisor,
                 Arm::Core => self.core,
                 Arm::Cli => self.cli,
+                Arm::Airc => self.airc,
             }
     }
 }
@@ -460,6 +464,9 @@ pub enum Arm {
     Supervisor,
     Core,
     Cli,
+    /// The mesh the core talks through: continuum installs airc and makes sure it
+    /// comes back after a reboot. airc stays separately installable and usable.
+    Airc,
 }
 
 impl Arm {
@@ -468,9 +475,35 @@ impl Arm {
             Arm::Supervisor => "supervisor",
             Arm::Core => "core",
             Arm::Cli => "cli",
+            Arm::Airc => "airc",
         }
     }
 }
+
+/// What keeps this node off the mesh after a reboot, as far as continuum can see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AircDrift {
+    /// No runnable `airc` on PATH.
+    Missing,
+    /// airc runs, but airc's own registrar says its login supervisor is absent,
+    /// disabled, stale or for another binary (M5 2026-10-02: off the mesh for hours
+    /// after a restart until a hand ran it). The registrar's words are carried.
+    Unsupervised(String),
+}
+
+/// The pure rule. `supervisor_drift` is what airc's registrar (`--check` / `-Check`)
+/// said was wrong, `None` when it reported converged. An absent airc has nothing to
+/// supervise, so it is one drift, not two.
+pub fn airc_drift(runs: bool, supervisor_drift: Option<String>) -> Vec<AircDrift> {
+    match (runs, supervisor_drift) {
+        (false, _) => vec![AircDrift::Missing],
+        (true, Some(why)) => vec![AircDrift::Unsupervised(why)],
+        (true, None) => Vec::new(),
+    }
+}
+
+// The one launch policy for a child the user never sees lives in `crate::process`.
+pub use crate::process::quiet_command;
 
 /// Task XML as `schtasks /Create /XML` reads it: UTF-16LE with a BOM, matching the
 /// document's own `encoding="UTF-16"` declaration.
@@ -996,6 +1029,20 @@ mod tests {
         assert!(!absent.present);
     }
 
+    // what this catches (M5 2026-10-02): a node with airc installed but no login
+    // supervisor reads as converged, so a reboot takes it off the mesh silently.
+    #[test]
+    fn airc_without_a_login_supervisor_is_drift_and_absent_airc_is_one_drift() {
+        assert_eq!(airc_drift(true, None), Vec::<AircDrift>::new());
+        assert_eq!(
+            airc_drift(true, Some("airc-join is registered but disabled".into())),
+            vec![AircDrift::Unsupervised("airc-join is registered but disabled".into())],
+            "a disabled or stale task is drift, with the registrar's reason, not a converged name"
+        );
+        assert_eq!(airc_drift(false, Some("x".into())), vec![AircDrift::Missing]);
+        assert_eq!(airc_drift(false, None), vec![AircDrift::Missing]);
+    }
+
     // what this catches: the elevated child is a one-plan registrar and nothing
     // else; the flags that make it one travel together or not at all.
     #[test]
@@ -1003,7 +1050,10 @@ mod tests {
         let parse = |a: &[&str]| InstallOptions::parse(a.iter().map(|s| s.to_string()));
         assert!(parse(&["--supervisor"]).is_ok());
         let bare = parse(&[]).unwrap(); // unwrap: the valid case — an Err here IS the failure
-        assert!([Arm::Supervisor, Arm::Core, Arm::Cli].iter().all(|a| bare.runs(*a)), "bare install runs every arm");
+        assert!([Arm::Supervisor, Arm::Core, Arm::Cli, Arm::Airc].iter().all(|a| bare.runs(*a)), "bare install runs every arm");
+        let airc = parse(&["--airc"]).unwrap(); // unwrap: the valid case — an Err here IS the failure
+        assert!(airc.runs(Arm::Airc) && !airc.runs(Arm::Core), "--airc names only the mesh arm");
+        assert!(parse(&["--airc", "--airc"]).is_err());
         let one = parse(&["--cli"]).unwrap(); // unwrap: the valid case — an Err here IS the failure
         assert!(one.runs(Arm::Cli) && !one.runs(Arm::Core) && !one.runs(Arm::Supervisor), "naming an arm restricts to it");
         assert!(parse(&["--cli", "--elevated", "--plan", "x", "--plan-sha", &"b".repeat(64)]).is_err(), "the elevated child is the supervisor's only");

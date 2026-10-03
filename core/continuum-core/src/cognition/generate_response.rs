@@ -411,6 +411,7 @@ pub fn build_response_generation_request(
     start_ms: u64,
 ) -> TextGenerationRequest {
     TextGenerationRequest {
+        native_output: None,
         messages: build_response_messages(&request.context, start_ms),
         system_prompt: None,
         model: Some(model),
@@ -436,7 +437,7 @@ pub fn build_response_generation_request(
         room_id: Some(request.context.room_id.clone()),
         purpose: Some("cognition/generate-response".to_string()),
         persona_id: Some(request.context.persona_id.clone()),
-        turn_bound: None,
+        ..Default::default()
     }
 }
 

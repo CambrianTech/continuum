@@ -533,36 +533,20 @@ async fn run_inference_probe(
         messages,
         system_prompt: Some(system_prompt),
         model: Some(model.clone()),
-        provider: None,
-        temperature: None,
         // The MODEL owns its generation length — the adapter forwards no
         // ceiling when None (unsloth/llama.cpp run to the model's own stop
         // token). The old 512 "conservative fallback" was exactly the
         // LCD-tier clamp this comment warned against: it truncated qwen3.5
         // mid-`<think>` → empty reply. Capable models self-pace; we never
         // pin a tighter value here.
-        max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
-        stop_sequences: None,
-        tools: None,
-        tool_choice: None,
         // The substrate's cognition contract: JSON-grammar-constrained
         // output. LlamaCpp wires this to GBNF grammar so the sampler
         // can ONLY emit valid JSON (the unit test
         // `json_object_response_format_enables_json_grammar` locks
         // this in `inference/llamacpp_adapter.rs`).
         response_format: Some(ResponseFormat::JsonObject),
-        active_adapters: None,
-        request_id: None,
-        user_id: None,
-        room_id: None,
         purpose: Some("persona_decide_and_respond".to_string()),
-        persona_id: None,
-        turn_bound: None,
+        ..Default::default()
     };
 
     let items_count = items.len();

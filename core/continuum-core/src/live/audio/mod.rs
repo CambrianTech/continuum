@@ -2,6 +2,7 @@ pub mod buffer;
 pub mod emotion_tags;
 pub mod capabilities;
 pub mod mixer;
+pub mod native_playback;
 pub mod model_root;
 pub mod reloadable;
 pub mod resource_lifecycle;

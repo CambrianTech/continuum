@@ -4327,12 +4327,7 @@ pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPass
 
 /// RAII abort for a spawned helper task — dropped with the pass, so the help
 /// listener can never outlive the exam it serves.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
+use crate::utils::task::AbortOnDrop;
 fn scopeguard_abort(h: tokio::task::JoinHandle<()>) -> AbortOnDrop {
     AbortOnDrop(h)
 }

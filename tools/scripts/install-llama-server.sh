@@ -28,11 +28,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SUBMODULE="$REPO_ROOT/core/vendor/llama.cpp"
 
 CONTINUUM_HOME="${CONTINUUM_HOME:-$HOME/.continuum}"
-INSTALL_DIR="$CONTINUUM_HOME/bin"
+source "$SCRIPT_DIR/lib/payload-paths.sh"
+PAYLOAD_ROOT="$(managed_payload_root "$CONTINUUM_HOME")" || exit 1
+INSTALL_DIR="$PAYLOAD_ROOT/bin"
 INSTALL_BIN="$INSTALL_DIR/llama-server"
 STAMP_FILE="$INSTALL_DIR/.llama-server.stamp"
 # One shared build cache; source ownership is checked before configuring it.
-BUILD_DIR="$CONTINUUM_HOME/cache/llama-server-build"
+BUILD_DIR="${CONTINUUM_STORAGE_PATH:-$PAYLOAD_ROOT}/cache/llama-server-build"
 
 # ── toolchain ────────────────────────────────────────────────────────
 # cmake on PATH, else the manifest install location — a user who provisioned via
@@ -40,7 +42,7 @@ BUILD_DIR="$CONTINUUM_HOME/cache/llama-server-build"
 # PATH (Windows especially). Discover it rather than falsely failing. (CONTINUUM_HOME is
 # already resolved above.)
 if ! command -v cmake >/dev/null 2>&1; then
-  for c in "$CONTINUUM_HOME/tools/cmake/bin/cmake" "$CONTINUUM_HOME/tools/cmake/bin/cmake.exe"; do
+  for c in "$PAYLOAD_ROOT/tools/cmake/bin/cmake" "$PAYLOAD_ROOT/tools/cmake/bin/cmake.exe"; do
     if [ -x "$c" ]; then PATH="$(dirname "$c"):$PATH"; export PATH; break; fi
   done
 fi
@@ -101,7 +103,7 @@ else
   case "$OS" in
     MINGW*|MSYS*|CYGWIN*)
       EXE=".exe"
-      if command -v nvcc >/dev/null 2>&1 || [ -x "$CONTINUUM_HOME/cuda-toolkit/bin/nvcc.exe" ]; then
+      if command -v nvcc >/dev/null 2>&1 || [ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]; then
         BACKEND="cuda"; WIN_CUDA=1
         # arch=native → build for THIS machine's GPU (portable; NOT a hardcoded sm_120).
         BACKEND_DEFS=(-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native)
@@ -109,6 +111,14 @@ else
       # non-NVIDIA Windows falls through to the CPU build (llama.cpp CPU works on Win).
       ;;
   esac
+fi
+if [[ "$BACKEND" == cuda ]]; then
+  if ! command -v nvcc >/dev/null 2>&1 && [[ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]]; then
+    export CUDA_PATH="$PAYLOAD_ROOT/cuda-toolkit"
+  fi
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+  BACKEND_DEFS=(-DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=$CMAKE_CUDA_ARCHITECTURES")
 fi
 # Windows binaries carry .exe — apply the suffix to the installed path now, before the
 # idempotency check and every downstream use.
@@ -142,6 +152,7 @@ else
 fi
 
 STAMP_WANT="$SUBMODULE_HEAD:$BACKEND"
+if [[ "$BACKEND" == cuda ]]; then STAMP_WANT+=":$CMAKE_CUDA_ARCHITECTURES"; fi
 
 # ── engine slot (card 7a6a033a; the core half is #4491) ──────────────
 # A deploy builds the engine into the IDLE slot the core names
@@ -325,9 +336,9 @@ if [ "$WIN_CUDA" -eq 1 ]; then
   vcvars="$vs_path\\VC\\Auxiliary\\Build\\vcvars64.bat"
   # Ninja + nvcc: on PATH, else the manifest install locations (a manifest-provisioned box
   # has these under ~/.continuum but may not export them on PATH).
-  ninja_exe="$(command -v ninja 2>/dev/null || echo "$CONTINUUM_HOME/tools/ninja/ninja.exe")"
+  ninja_exe="$(command -v ninja 2>/dev/null || echo "$PAYLOAD_ROOT/tools/ninja/ninja.exe")"
   [ -x "$ninja_exe" ] || { echo "✗ FATAL: ninja not found (install-manifest toolchain)." >&2; exit 1; }
-  nvcc_exe="$(command -v nvcc 2>/dev/null || echo "$CONTINUUM_HOME/cuda-toolkit/bin/nvcc.exe")"
+  nvcc_exe="$(command -v nvcc 2>/dev/null || echo "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe")"
   [ -x "$nvcc_exe" ] || { echo "✗ FATAL: nvcc not found (install-manifest 'cuda' module)." >&2; exit 1; }
   cmake_exe="$(command -v cmake)"
   # Windows-native paths for the cmd context.

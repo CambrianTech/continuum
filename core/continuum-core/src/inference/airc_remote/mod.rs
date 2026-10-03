@@ -65,5 +65,7 @@ pub mod transport;
 pub use adapter::{AircRemoteInferenceAdapter, AIRC_REMOTE_PROVIDER_ID};
 pub use protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInferenceResponse};
 pub use transport::{
-    AircInferenceTransport, AircLiveTransport, LocalAdapterTransport, StubInferenceTransport,
+    AircInferenceTransport, AircLiveTransport, LocalAdapterTransport,
 };
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use transport::StubInferenceTransport;

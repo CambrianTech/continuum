@@ -88,21 +88,15 @@ pub enum Capability {
     TextGeneration,
     Chat,
     ToolUse,
-    /// Model accepts image input natively (raw pixels / base64). When
-    /// absent, the sensory bridge classifies images via
-    /// VisionDescriptionService → text → text-only model. CLAUDE.md
-    /// "Sensory Architecture" — every persona sees, regardless of
-    /// base model capability.
+    /// Model accepts image input natively (raw pixels / base64).
+    /// Missing capability must explicitly reject a native image request;
+    /// a generated description is not native perception.
     Vision,
-    /// Model accepts audio input natively (raw waveform / base64
-    /// encoded). When absent, STT transcribes upstream → text-only
-    /// model. New 2026-04-20 — was missing entirely; sensory bridge
-    /// can't honor "every persona hears" without registry knowing
-    /// who's audio-native vs needs-the-bridge.
+    /// Model accepts audio input natively (raw waveform / base64 encoded).
+    /// A transcript cannot substitute for missing native audio support.
     AudioInput,
-    /// Model generates audio output natively (e.g. GPT-4o-audio,
-    /// Gemini 2.5 native audio). When absent, TTS synthesizes
-    /// downstream from the text response. New 2026-04-20.
+    /// Model generates audio output natively. Missing capability must
+    /// explicitly reject native speech; stock TTS is not a replacement.
     AudioOutput,
     Streaming,
     FineTuning,

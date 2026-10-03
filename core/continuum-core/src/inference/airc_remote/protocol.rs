@@ -163,27 +163,7 @@ mod tests {
                 content: MessageContent::Text("hello".to_string()),
                 name: None,
             }],
-            system_prompt: None,
-            model: None,
-            provider: None,
-            temperature: None,
-            max_tokens: None,
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            frequency_penalty: None,
-            repeat_last_n: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
-            purpose: None,
-            persona_id: None,
-            turn_bound: None,
+            ..Default::default()
         }
     }
 
@@ -208,11 +188,21 @@ mod tests {
 
     #[test]
     fn request_serializes_and_round_trips() {
-        let r = RemoteInferenceRequest::new(dummy_request()).with_target_peer("peer-abc");
+        let mut request = dummy_request();
+        request.purpose = Some("cognition/deliberation".into());
+        request.scheduling_class = Some(crate::inference::slots::SlotClass::Probe);
+        let r = RemoteInferenceRequest::new(request).with_target_peer("peer-abc");
         let json = serde_json::to_string(&r).unwrap();
         let back: RemoteInferenceRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(back.correlation_id, r.correlation_id);
         assert_eq!(back.target_peer.as_deref(), Some("peer-abc"));
+        // Replay generation semantics and scratch placement must both cross peers.
+        assert_eq!(back.text_request.purpose, r.text_request.purpose);
+        assert_eq!(back.text_request.scheduling_class, r.text_request.scheduling_class);
+        assert_eq!(
+            crate::inference::slots::class_for_request(&back.text_request),
+            crate::inference::slots::SlotClass::Probe
+        );
     }
 
     // ── error variants ──────────────────────────────────────────

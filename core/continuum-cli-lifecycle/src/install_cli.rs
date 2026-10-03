@@ -61,6 +61,30 @@ pub fn digest_file(path: &Path) -> Result<String, String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// Stage a supervisor artifact without rotating an already-correct executable.
+/// Running helpers can retain their previous image on Windows; identical bytes
+/// need no replacement and must not disturb either that image or its process.
+pub fn stage_artifact(from: &Path, to: &Path) -> Result<(), String> {
+    let wanted = digest_file(from)?;
+    if to.exists() {
+        if digest_file(to)? == wanted { return Ok(()); }
+        let prev = to.with_extension("prev.exe");
+        if let Err(error) = std::fs::remove_file(&prev) {
+            if prev.exists() {
+                return Err(format!("the previous artifact at {} could not be removed ({error}) and is still present; staging cannot move the current artifact aside onto an occupied name", prev.display()));
+            }
+        }
+        std::fs::rename(to, &prev)
+            .map_err(|error| format!("cannot move {} aside: {error}", to.display()))?;
+    }
+    std::fs::copy(from, to)
+        .map_err(|error| format!("cannot stage {} into {}: {error}", from.display(), to.display()))?;
+    if digest_file(to)? != wanted {
+        return Err(format!("staged artifact checksum mismatch: {}", to.display()));
+    }
+    Ok(())
+}
+
 /// The drift of the PATH copies from `slot_cli`. `user_path` is the user's PATH
 /// variable as stored (semicolon- or colon-separated per OS). Pure.
 pub fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<CliDrift>, String> {
@@ -141,6 +165,29 @@ fn replace_with_retry(from: &Path, to: &Path, budget: std::time::Duration,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression for the 2026-10-02 LiveKit handoff failure: identical helpers
+    // must not rotate into an occupied previous name; changed bytes still refuse.
+    #[test]
+    fn staging_identical_artifacts_preserves_occupied_previous_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("built.exe");
+        let target = dir.path().join("livekit-bridge.exe");
+        let previous = target.with_extension("prev.exe");
+        std::fs::write(&source, b"same image").unwrap();
+        std::fs::write(&target, b"same image").unwrap();
+        // A directory deterministically refuses remove_file on every platform.
+        std::fs::create_dir(&previous).unwrap();
+        stage_artifact(&source, &target).unwrap();
+        assert!(previous.is_dir());
+        std::fs::write(&source, b"new image").unwrap();
+        assert!(stage_artifact(&source, &target).unwrap_err().contains("occupied name"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"same image");
+        std::fs::remove_dir(&previous).unwrap();
+        stage_artifact(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new image");
+        assert_eq!(std::fs::read(&previous).unwrap(), b"same image");
+    }
 
     // what this catches: the read half of the CLI arm — a missing name, a stale
     // copy (bytes differ from the slot), and a dir absent from PATH are each named;

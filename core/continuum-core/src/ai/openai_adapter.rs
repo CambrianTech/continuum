@@ -355,6 +355,23 @@ impl OpenAICompatibleAdapter {
         self
     }
 
+    /// Attach metadata when a serving owner binds a model to this adapter.
+    /// Discovery belongs to that owner; generation only borrows this value.
+    pub fn with_bound_model(mut self, model: ModelInfo) -> Self {
+        self.config.models.retain(|existing| existing.id != model.id);
+        self.config.models.push(model);
+        self
+    }
+
+    fn bound_model(&self, requested: &str, resolved: &str) -> Result<&ModelInfo, String> {
+        self.config.models.iter()
+            .find(|model| model.id == requested || model.id == resolved)
+            .ok_or_else(|| format!(
+                "Model '{requested}' has no capability binding on provider '{}'; bind model metadata before generation",
+                self.config.provider_id
+            ))
+    }
+
     /// The typed OpenAI-compatible endpoint base — the runtime override if set,
     /// else the configured base. The ONE place request URLs are built; every
     /// site calls a typed accessor ([`OpenAiBase::chat_completions`] etc.) rather
@@ -1354,7 +1371,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<GenerationChunk>();
+        let tx = crate::ai::stream_sinks::GenerationSink::discard();
         self.generate_stream(request, tx).await
     }
 
@@ -1366,7 +1383,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     async fn generate_stream(
         &self,
         request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, String> {
         self.generate_stream_checked(request, sink)
             .await
@@ -1376,8 +1393,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     async fn generate_stream_checked(
         &self,
         request: TextGenerationRequest,
-        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        if request.native_output.as_ref().is_some_and(|v| !v.is_empty()) && sink.is_closed() {
+            return Err("Native media requires an active streaming consumer; whole-response media generation is forbidden".to_string().into());
+        }
         // Only require API key for providers that need auth
         if self.config.requires_auth && self.api_key.is_none() {
             return Err(format!("{} not initialized", self.config.name).into());
@@ -1408,35 +1428,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         };
         let model: &str = &resolved_model;
 
-        // Native vision is a MODEL fact, not a provider fact: gate image content
-        // parts on the TARGET model row's Capability::Vision (the same
-        // `sensory::route` verdict that drives the bridge-vs-native table in
-        // CLAUDE.md "Sensory Architecture"). Row present → its capability set is
-        // the truth (a vision-capable llama-server lane / gpt-4o gets raw
-        // pixels; a text row gets its images dropped and reads the description
-        // bridge). Row absent (dynamic catalogs like DMR resolve ids the
-        // registry never saw) → the provider-level scan ("any row under this
-        // provider declares Vision", already folded into `config.capabilities`)
-        // is the best available truth — same source `capabilities()` advertises.
-        let vision_native = crate::model_registry::try_global()
-            .and_then(|reg| {
-                reg.model(raw_model).map(|row| {
-                    crate::sensory::route(row, crate::sensory::Modality::ImageIn).is_native()
-                })
-            })
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
-
-        // Build the base request body — `inference::request_body` (the head of assembly).
-        let audio_native = crate::model_registry::try_global()
-            .and_then(|reg| reg.model(raw_model).map(|row| row.has(Capability::AudioInput)))
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput));
+        // The adapter owns model metadata resolved at construction. Select that
+        // existing binding, then borrow its capability struct for every modality.
+        // Never rediscover capabilities per request, or infer them from another
+        // model hosted by the same provider. A new catalog requires a new binding.
+        let bound_model = self.bound_model(raw_model, &resolved_model)?;
         let mut body = crate::inference::request_body::build_base_body(
             &self.config,
             &request,
             model,
-            vision_native,
-            audio_native,
-        );
+            bound_model,
+        )?;
 
         // Message content is final here; later extensions only add transport fields.
         // Carry this estimate through admission, overflow checks and send receipts.
@@ -1509,7 +1511,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // SCRATCH slot so it structurally cannot truncate a warm tail. The
             // measured defect: sidecar gate calls pinned the turn's own slot and
             // cut its ~30k tail to their common head — reuse broke even solo.
-            let class = crate::inference::slots::class_for(request.purpose.as_deref());
+            let class = crate::inference::slots::class_for_request(&request);
             // MEASURED WORK HOLDS THE CORE (restore-economy Phase 1.a). Deferral
             // sits HERE — after classification, BEFORE the concurrency permit
             // below — so a parked Background/Probe request holds NOTHING while it
@@ -1857,6 +1859,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // token/tool accumulation). The locals below are what the inline loop bound.
         let local_lane = self.targets_local_serving_lane();
         let crate::inference::sse_stream::StreamOutcome {
+            acc_parts,
             acc_content,
             acc_reasoning,
             acc_tools,
@@ -1866,13 +1869,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             resp_model,
             probe_persona,
         } = crate::inference::sse_stream::consume_sse_stream(
-            &self.config,
-            &request,
-            local_lane,
-            response,
-            &sink,
-        )
-        .await?;
+            &self.config, &request, local_lane, response, &sink,
+        ).await?;
         let response_time_ms = start.elapsed().as_millis() as u64;
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
@@ -1883,7 +1881,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // primary path invisible to the liveness record). It also ends any failure
         // streak. Gated on the local lane like the failure stamps above.
         let delivered_something =
-            !acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty();
+            !acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty() || !acc_parts.is_empty() || crate::inference::native_output::requested(&request);
 
         // harness/memory and stripped from `text` so it can NEVER reach the room.
         let raw_content = acc_content;
@@ -2019,25 +2017,18 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             (!calls.is_empty()).then_some(calls)
         };
 
-        // UNIVERSAL text-format tool-call fallback. When no NATIVE tool_calls came
-        // back, scan the model's TEXT for `{"tool_call": {...}}` envelopes and lift
-        // them into the canonical ToolUse shape — so the agent loop executes them
-        // EXACTLY like native calls. Run REGARDLESS of declared protocol: the base
-        // model picks the surface format (and a "native" gateway sometimes still
-        // emits the call as content), so the adapter stays flexible and never lets a
-        // persona's hands go dead over a formatting mismatch. Robust to malformed
-        // siblings + multiple calls + ``` fences (see json_in_prompt_tools). A LoRA
-        // can tighten the model to native later; this is the floor that always works.
-        if tool_calls.as_ref().map_or(true, |t| t.is_empty()) {
+        // Parse text tools only when the bound wire protocol explicitly uses them.
+        // Native speech/text must never acquire actions from quoted JSON.
+        if self.config.tool_protocol == crate::model_registry::ToolProtocol::JsonInPrompt
+            && !crate::inference::native_output::requested(&request)
+            && tool_calls.as_ref().map_or(true, |t| t.is_empty())
+        {
             let parsed = super::json_in_prompt_tools::parse_tool_calls(&text);
-            if !parsed.is_empty() {
-                finish_reason = FinishReason::ToolUse;
-                tool_calls = Some(parsed);
-            }
+            if !parsed.is_empty() { finish_reason = FinishReason::ToolUse; tool_calls = Some(parsed); }
         }
 
         // Build content blocks
-        let mut content_blocks = Vec::new();
+        let mut content_blocks = acc_parts;
         if !text.is_empty() {
             content_blocks.push(ContentPart::Text { text: text.clone() });
         }
@@ -2652,6 +2643,78 @@ mod tests {
         })
     }
 
+    #[test]
+    fn native_model_binding_is_exact_and_media_cannot_silently_degrade() {
+        use crate::ai::types::CostPer1kTokens;
+        let native = ModelInfo {
+            id: "exotic-native".into(), name: "Native".into(), provider: "test-gateway".into(),
+            capabilities: vec![Capability::Vision, Capability::AudioInput],
+            context_window: 4096, max_output_tokens: 512,
+            cost_per_1k_tokens: CostPer1kTokens { input: 0.0, output: 0.0 },
+            tokens_per_second: 1.0,
+        };
+        let mut text = native.clone();
+        text.id = "exotic-text".into();
+        text.capabilities.clear();
+        let adapter = test_adapter().with_bound_model(native).with_bound_model(text);
+        assert!(adapter.bound_model("unknown", "unknown").is_err());
+        let bound = adapter.bound_model("exotic-native", "exotic-native").unwrap();
+        assert!(std::ptr::eq(bound, adapter.bound_model("exotic-native", "exotic-native").unwrap()));
+        let mut request: TextGenerationRequest = serde_json::from_value(json!({
+            "messages": [{"role":"user", "content":[
+                {"type":"image", "image":{"base64":"QUJD", "mimeType":"image/png"}},
+                {"type":"audio", "audio":{"base64":"UklGRg==", "mimeType":"audio/wav"}}
+            ]}]
+        })).unwrap();
+        let assemble = |request: &TextGenerationRequest, model: &ModelInfo| {
+            crate::inference::request_body::build_base_body(&adapter.config, request, &model.id, model)
+        };
+        let wire = assemble(&request, bound).unwrap();
+        assert_eq!(wire["messages"][0]["content"][0]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(wire["messages"][0]["content"][1]["input_audio"]["data"], "UklGRg==");
+        let text = adapter.bound_model("exotic-text", "exotic-text").unwrap();
+        assert!(assemble(&request, text).unwrap_err().contains("Vision"));
+        let MessageContent::Parts(parts) = &mut request.messages[0].content else { unreachable!() };
+        parts.remove(0);
+        assert!(assemble(&request, text).unwrap_err().contains("AudioInput"));
+        let MessageContent::Parts(parts) = &mut request.messages[0].content else { unreachable!() };
+        let ContentPart::Audio { audio } = &mut parts[0] else { unreachable!() };
+        audio.mime_type = Some("audio/unknown".into());
+        assert!(assemble(&request, bound).unwrap_err().contains("encoding"));
+
+        // Native output intent must survive the shared request wire. Until an
+        // adapter connects a real media output transport, it cannot answer text
+        // and count that as fulfilling an audio/image request.
+        let output: TextGenerationRequest = serde_json::from_value(json!({
+            "messages": [],
+            "nativeOutput": [
+                {"modality":"audio","mime_type":"audio/wav","voice":"persona-voice"},
+                {"modality":"image","mime_type":"image/png"}
+            ]
+        })).unwrap();
+        let round_trip: TextGenerationRequest = serde_json::from_value(
+            serde_json::to_value(&output).unwrap()
+        ).unwrap();
+        assert_eq!(round_trip.native_output, output.native_output);
+        assert!(assemble(&round_trip, bound).unwrap_err().contains("transport is not implemented"));
+        assert!(TextGenerationRequest::default().require_text_output_transport("test").is_ok());
+
+        // Native output uses the same streaming wire and an explicit PCM format.
+        let mut audio_request = round_trip;
+        audio_request.native_output.as_mut().unwrap().truncate(1);
+        assert!(assemble(&audio_request, bound).unwrap_err().contains("AudioOutput"));
+        let mut audio_model = bound.clone();
+        audio_model.capabilities.push(Capability::AudioOutput);
+        assert!(assemble(&audio_request, &audio_model).unwrap_err().contains("no batch"));
+        audio_request.native_output = Some(vec![crate::ai::types::NativeOutputRequest::Audio {
+            mime_type: crate::inference::native_output::PCM_MIME.into(), voice: Some("persona-voice".into()),
+        }]);
+        let wire = assemble(&audio_request, &audio_model).unwrap();
+        assert_eq!(wire["stream"], true);
+        assert_eq!(wire["audio"], json!({"format":"pcm16","voice":"persona-voice"}));
+
+    }
+
     // what this catches: be553169 — `live_served_window` is now the ONLY thing that stamps
     // RoutingInfo.served_context_window (ai/generate no longer gates on `is_local`, which
     // blocked this adapter and permitted the in-process one), and its two refusal arms had no
@@ -2693,25 +2756,64 @@ mod tests {
     #[tokio::test]
     async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
         use crate::ai::inference_error::InferenceError;
-        use axum::{http::StatusCode, routing::post, Router};
+        use axum::{http::StatusCode, routing::post, Router, response::IntoResponse};
         use std::sync::{Arc, Mutex};
 
         let received = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let log = Arc::clone(&received);
         let quotes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let quote_log = Arc::clone(&quotes);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let native_release = Arc::clone(&release);
         let app = Router::new().route("/v1/chat/completions", post(move |body: axum::body::Bytes| {
             let log = Arc::clone(&log);
+            let release = Arc::clone(&native_release);
             async move {
                 let attempt = {
                     let mut log = log.lock().expect("fixture request log");
                     log.push(body.to_vec());
                     log.len()
                 };
+                let input: Value = serde_json::from_slice(&body).unwrap();
+                if input["messages"][0]["content"] == "multiple-native-fixture" {
+                    let choice = json!({"delta":{"audio":{"data":"AAA="}}});
+                    let frame = format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[choice.clone(), choice]}));
+                    return axum::response::Response::builder().header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(frame)).unwrap();
+                }
+                if input["messages"][0]["content"] == "late-native-fixture" {
+                    return axum::response::Response::builder().header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(concat!(
+                            "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"AAA=\"}}}]}\n\n",
+                            "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"AgM=\"}}}]}\n\n",
+                            "data: [DONE]\n\n"))).unwrap();
+                }
+                if input.get("audio").is_some() {
+                    use futures::StreamExt;
+                    let first = futures::stream::once(async {
+                        let pcm: Vec<u8> = (0..4800).flat_map(|_| 256i16.to_le_bytes()).collect();
+                        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pcm);
+                        Ok::<_, std::io::Error>(format!("data: {}\n\n", json!({
+                            "model": "test-model", "choices": [{"delta": {"audio": {"data": encoded}}}]
+                        })))
+                    });
+                    let tail = futures::stream::once(async move {
+                        release.notified().await;
+                        Ok::<_, std::io::Error>(concat!(
+                            "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"AgM=\"}}}]}\n\n",
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"tool_call\\\":{\\\"name\\\":\\\"quoted_only\\\",\\\"arguments\\\":{}}}\"}}]}\n\n",
+                            "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+                            "data: [DONE]\n\n").to_string())
+                    });
+                    return axum::response::Response::builder().header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(first.chain(tail))).unwrap();
+                }
                 if attempt == 2 {
-                    (StatusCode::SERVICE_UNAVAILABLE, "loading")
+                    (StatusCode::SERVICE_UNAVAILABLE, "loading").into_response()
                 } else {
-                    (StatusCode::BAD_REQUEST, r#"{"error":{"type":"exceed_context_size_error","message":"no counts may be inferred from this text","n_prompt_tokens":29722,"n_ctx":29440}}"#)
+                    (StatusCode::BAD_REQUEST, r#"{"error":{"type":"exceed_context_size_error","message":"no counts may be inferred from this text","n_prompt_tokens":29722,"n_ctx":29440}}"#).into_response()
                 }
             }
         }))
@@ -2732,6 +2834,12 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let mut adapter = test_adapter();
         adapter.config.base_url = format!("http://{address}");
+        adapter = adapter.with_bound_model(ModelInfo {
+            id: "test-model".into(), name: "Fixture".into(), provider: "test-gateway".into(),
+            capabilities: vec![Capability::AudioOutput], context_window: 4096, max_output_tokens: 512,
+            cost_per_1k_tokens: crate::ai::types::CostPer1kTokens { input: 0.0, output: 0.0 },
+            tokens_per_second: 1.0,
+        });
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text(
                 "user",
@@ -2739,7 +2847,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sink, receiver) = crate::ai::stream_sinks::channel();
         drop(receiver);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -2810,10 +2918,100 @@ mod tests {
                 Err(message) => assert!(quoted.unwrap_err().contains(message)),
             }
         }
+        // Regression: native media must arrive while the provider is STILL working;
+        // the fixture will not finish until this consumer receives the first packet.
+        adapter.config.single_resident_model = false;
+        let native_request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "speak")],
+            native_output: Some(vec![crate::ai::types::NativeOutputRequest::Audio {
+                mime_type: crate::inference::native_output::PCM_MIME.into(), voice: Some("persona-native-voice".into()),
+            }]), ..Default::default()
+        };
+        assert!(adapter.generate_text(native_request.clone()).await.unwrap_err().contains("active streaming consumer"));
+        // Exercise the production native decoder/call boundary with actual SSE
+        // packets. This fixture validates plumbing, not a model's voice quality.
+        let calls = crate::live::transport::call_server::CallManager::new();
+        let room = "c789bdad-00a7-46a3-a8aa-f68fb8e1cf22";
+        let mut listener = calls.join_call(room, "listener", "Listener", false).await.unwrap();
+        let playback_id = uuid::Uuid::new_v4();
+        let _playback_lease = calls.begin_persona_generation(room, "persona", "Persona", playback_id,
+            crate::inference::native_output::PCM_MIME).await.unwrap();
+        let (sink, mut receiver) = crate::ai::stream_sinks::channel();
+        let generation = adapter.generate_stream(native_request.clone(), sink);
+        tokio::pin!(generation);
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                packet = receiver.recv() => packet.unwrap(),
+                done = &mut generation => panic!("generation completed before first media: {done:?}"),
+            }
+        }).await.unwrap();
+        let GenerationChunk::Media(first) = first else { panic!("first native packet missing") };
+        assert_eq!(first.data.len(), 9600);
+        assert!(first.data.chunks_exact(2).all(|sample| sample == [0, 1]));
+        assert_eq!(first.sequence, 0);
+        assert_eq!(first.presentation_time_us, 0);
+        calls.push_persona_generation(room, "persona", playback_id, &first).await.unwrap();
+        // Await the real call's paced audio output while provider completion is
+        // still gated. Receiving a media handle alone would not prove playback.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let (_, sender, samples) = listener.audio_rx.recv().await.unwrap();
+                if sender == "persona" && samples.iter().any(|&sample| sample != 0) { break; }
+            }
+        }).await.expect("native PCM must reach the listener before provider completion");
+        release.notify_one();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut generation).await.unwrap().unwrap();
+        assert_eq!(result.usage.output_tokens, 2);
+        assert!(result.tool_calls.is_none(), "quoted tool JSON is not an action");
+        let GenerationChunk::Media(second) = receiver.try_recv().unwrap() else { panic!("second media missing") };
+        assert_eq!(&*second.data, &[2, 3]);
+        assert_eq!(second.sequence, 1);
+        assert_eq!(second.presentation_time_us, 200_000);
+        calls.push_persona_generation(room, "persona", playback_id, &second).await.unwrap();
+        calls.finish_persona_generation(room, "persona", playback_id).await.unwrap();
+        assert!(calls.cancel_persona_generation(room, "persona", playback_id).await);
+        assert!(calls.push_persona_generation(room, "persona", playback_id, &second).await.is_err());
+        calls.leave_call(&listener.handle).await;
+
+        // Drop the consumer after headers/first media while the server is stalled.
+        // Cancellation must interrupt the existing body read, not await its watchdog.
+        let (sink, mut receiver) = crate::ai::stream_sinks::channel();
+        let generation = adapter.generate_stream(native_request.clone(), sink);
+        tokio::pin!(generation);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                packet = receiver.recv() => assert!(matches!(packet, Ok(GenerationChunk::Media(_)))),
+                done = &mut generation => panic!("premature completion: {done:?}"),
+            }
+        }).await.unwrap();
+        drop(receiver);
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), &mut generation)
+            .await.unwrap().unwrap_err().contains("consumer cancelled"));
+        // what this catches: a provider's stop marker must fence native bytes,
+        // even if a later PCM delta arrives before the SSE [DONE] marker.
+        let mut late_request = native_request.clone();
+        late_request.messages = vec![ChatMessage::text("user", "late-native-fixture")];
+        let (sink, mut receiver) = crate::ai::stream_sinks::channel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5),
+            adapter.generate_stream(late_request, sink)).await.unwrap().unwrap_err();
+        assert!(error.contains("after terminal completion"), "{error}");
+        assert!(matches!(receiver.try_recv(), Ok(GenerationChunk::Media(_))));
+        assert!(receiver.try_recv().is_err(), "late PCM must not reach presentation");
+        // Multiple alternatives cannot silently choose a voice or drop media.
+        let mut multiple_request = native_request;
+        multiple_request.messages = vec![ChatMessage::text("user", "multiple-native-fixture")];
+        let (sink, mut receiver) = crate::ai::stream_sinks::channel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5),
+            adapter.generate_stream(multiple_request, sink)).await.unwrap().unwrap_err();
+        assert!(error.contains("requires one choice"), "{error}");
+        assert!(receiver.try_recv().is_err(), "ambiguous voice bytes must not be presented");
         server.abort();
         let _ = server.await;
         let received = received.lock().expect("actual wire requests");
-        assert_eq!(received.len(), 3);
+        assert_eq!(received.len(), 7);
+        let native_wire: Value = serde_json::from_slice(&received[3]).unwrap();
+        assert_eq!(native_wire["stream"], true);
+        assert_eq!(native_wire["audio"]["voice"], "persona-native-voice");
         assert_eq!(received[1], body);
         assert_eq!(received[2], body);
         let first: Value = serde_json::from_slice(&received[0]).expect("actual adapter JSON body");
@@ -2919,6 +3117,12 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let mut adapter = test_adapter();
         adapter.config.base_url = format!("http://{address}");
+        adapter = adapter.with_bound_model(ModelInfo {
+            id: "test-model".into(), name: "Fixture".into(), provider: "test-gateway".into(),
+            capabilities: vec![Capability::TextGeneration], context_window: 4096, max_output_tokens: 512,
+            cost_per_1k_tokens: crate::ai::types::CostPer1kTokens { input: 0.0, output: 0.0 },
+            tokens_per_second: 1.0,
+        });
         adapter.config.llamacpp_sampling_extensions = true;
         adapter.concurrency = Arc::new(tokio::sync::Semaphore::new(1));
         let activity =
@@ -3005,14 +3209,14 @@ mod tests {
                 // Poll the real client until it receives partial output, then
                 // cancel it. Releasing this fixture stream separately makes no
                 // assertion that cancellation stops a production backend.
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                let (tx, mut rx) = crate::ai::stream_sinks::channel();
                 {
                     let generation = adapter.generate_stream(failed_turn.clone(), tx);
                     tokio::pin!(generation);
                     tokio::time::timeout(std::time::Duration::from_secs(5), async {
                         tokio::select! {
                             result = &mut generation => panic!("stream completed before cancellation: {result:?}"),
-                            chunk = rx.recv() => assert!(matches!(chunk, Some(GenerationChunk::Token(_)))),
+                            chunk = rx.recv() => assert!(matches!(chunk, Ok(GenerationChunk::Token(_)))),
                         }
                     }).await.expect("bounded partial stream");
                 }
