@@ -174,9 +174,6 @@ pub fn spawn() -> Spawned {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Spawned::BinaryAbsent,
         Err(e) => return Spawned::Failed(format!("airc autostart could not run: {e}")),
     };
-    // The read returns once airc has its daemon. Past AUTOSTART_BOUND it is killed and
-    // reaped here, so a start the core gave up on can never complete later and overlap
-    // the next attempt.
     // The read returns once airc's daemon answers; on a large store that outlasts this
     // bound, so a read still waiting here is a start in progress, not a refusal. Only
     // airc's own non-zero exit (a maintenance gate, a refused start) is a failure.

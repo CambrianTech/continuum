@@ -152,6 +152,12 @@ pub fn spawn() {
                             // minute to open). It spaces the next attempt like a failure
                             // would, so a slow store is never restarted underneath itself;
                             // the daemon answering is what the next tick reads as back.
+                            // A later attempt can still land mid-open (the backoff is about
+                            // 30 s, a large store opens in 60-70 s). That is safe ONLY because
+                            // both routes are idempotent: airc's gated autostart joins the
+                            // start already in progress, and a plain `kickstart` (no -k)
+                            // does nothing to a running job. A route that is not idempotent
+                            // must not be added here (Cormac on #4672).
                             failed_attempts = failed_attempts.saturating_add(1);
                             crate::probe!(
                                 class = "airc.daemon.revive_issued",
