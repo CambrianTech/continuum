@@ -103,7 +103,7 @@ pub enum Captured {
 
 /// The most each [`capture`] stream keeps. Probes answer in a few lines; anything
 /// past this is reported as `truncated`, never read without bound.
-pub const CAPTURE_LIMIT: usize = 64 * 1024;
+const CAPTURE_LIMIT: usize = 64 * 1024;
 
 /// How long a killed child gets to be reaped before the caller is told its exit is
 /// unconfirmed. A kill does not wait without bound (an uninterruptible exit can hang).

@@ -213,7 +213,7 @@ const AUTOSTART_BOUND: Duration = Duration::from_secs(10);
 
 /// What can be read about airc's own login supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SupervisorState {
+enum SupervisorState {
     /// None registered (or this OS has none): the core starts the daemon itself.
     Absent,
     /// Registered: only it may start the daemon, because it provisions the token.
@@ -223,7 +223,7 @@ pub enum SupervisorState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StartRoute {
+enum StartRoute {
     ThroughSupervisor,
     SpawnDirect,
     Refuse(String),
@@ -231,7 +231,7 @@ pub enum StartRoute {
 
 /// The pure rule. A registered supervisor is never bypassed: if it cannot start the
 /// daemon, that failure is the answer, not a tokenless spawn behind its back.
-pub fn start_route(state: &SupervisorState) -> StartRoute {
+fn start_route(state: &SupervisorState) -> StartRoute {
     match state {
         SupervisorState::Absent => StartRoute::SpawnDirect,
         SupervisorState::Registered => StartRoute::ThroughSupervisor,
@@ -267,7 +267,7 @@ fn airc_supervisor_state() -> SupervisorState {
 /// "no such service" answer (exit 113, "Could not find service") is Absent and so
 /// permits a direct start; a denied or broken domain query (exit 112, "Could not find
 /// domain", anything else) stays Unreadable with launchd's words.
-pub fn supervisor_state_from(answer: &crate::system_resources::bounded_command::Captured) -> SupervisorState {
+fn supervisor_state_from(answer: &crate::system_resources::bounded_command::Captured) -> SupervisorState {
     use crate::system_resources::bounded_command::Captured;
     match answer {
         Captured::Exited { code: Some(0), .. } => SupervisorState::Registered,
