@@ -27,6 +27,12 @@
 name: core-binaries
 
 on:
+  # A PR that changes HOW the binaries are built proves both legs before merge (build and
+  # package, never publish). Ordinary core PRs don't pay two macOS builds; the push does.
+  pull_request:
+    paths:
+      - 'tools/scripts/lib/core-features.sh'
+      - '.github/workflows/core-binaries.yml'
   push:
     branches: [canary]
     paths:
@@ -37,7 +43,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: core-binaries-${{ github.ref }}
+  group: core-binaries-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -143,6 +149,7 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Publish
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -162,7 +169,7 @@ jobs:
   prune:
     name: prune old canary releases
     needs: build
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
