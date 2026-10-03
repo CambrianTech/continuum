@@ -1005,3 +1005,22 @@ This is command/correlation ownership evidence only: the existing fixture still
 uses batch heuristic output and cannot establish native media generation/playback.
 Build time demonstrates an unresolved cache/profile reuse cost; do not call it a
 speed improvement. No additional compiler or installer is owned by this run.
+
+## Installed consumer acceptance — 2026-10-03 02:22 UTC
+
+Supported install3696 adopted core and bothCLIaliases5940/3ae8b8b9e;
+independent deploy-verify matched durableHEAD. Existing PDF acceptance script ran
+against that exact SHA, with no restart or substitute transport. The vector-only
+PDF had no text layer; perception pixels reached the bound
+`ggml-org/Qwen3.8-27B-GGUF` model through llama-server. It answered:
+"On the left is a blue square, and on the right is a red circle."
+Inference3705ms; unchanged build/model/provider verified before and after.
+Receipt: team-proof-20260921/pdf-native-3ae8b8b9e/receipt.json,
+requestreq-1790994190857; sourceSHA256
+8D502094C7348F74F0054BEA96F0C45C68354244980477F6DB5FF199387E6D7E,
+imageSHA25603ACAF6E65083234F09DFF096B5E4761C7112EBA486464C73DF68DEA9DAACE7F.
+This is native PDF vision acceptance. Different warm/cache/workload conditions
+make comparison with the earlier74s run insufficient to claim a speedup.
+Native audio input/output and actual incremental remote media remain open.
+The installer reported two undrained cognition operations; adoption does not
+establish lossless handoff.
