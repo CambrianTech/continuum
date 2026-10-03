@@ -258,9 +258,13 @@ jobs:
           shared-key: continuum-rust-windows-1.95-workspace-v2
           cache-workspace-crates: true
           cache-on-failure: true
-      - name: cargo check (lib + test harness, incl. test-fixtures targets)
+      - name: cargo check (lib + test harness, incl. test-fixtures targets; headless, no avatar-3d)
         if: needs.changes.outputs.rust != 'false'
-        run: cargo check -p continuum-core --lib --tests --features test-fixtures
+        # Headless configuration: --no-default-features drops `avatar-3d` (bevy/wgpu), which is
+        # what the Intel-Mac CPU path and the CUDA CLI build (card be575955). Folded into this
+        # existing job (one job per contract, Joel 2026-10-02) rather than a new one. The
+        # bevy-on configuration stays covered by cargo-test-continuum-core (default features).
+        run: cargo check -p continuum-core --lib --tests --no-default-features --features livekit-webrtc,test-fixtures
       - name: Windows installed release and supervisor regressions
         if: needs.changes.outputs.installer != 'false'
         shell: powershell

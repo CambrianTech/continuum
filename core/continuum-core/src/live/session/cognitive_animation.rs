@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::live::video::bevy_renderer::Gesture;
+use crate::live::video::avatar_types::Gesture;
 
 /// Cognitive state of an AI persona — drives avatar gesture selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]

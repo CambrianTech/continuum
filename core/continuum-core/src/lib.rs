@@ -11,8 +11,9 @@
 //! Target: 60-70% Rust (cognition, compute, real-time), 30-40% TypeScript (UI only)
 
 // objc macros (sel!, msg_send!, class!) must be imported at crate root.
-// Used by live::video::metal_gpu_convert for Metal compute shader dispatch.
-#[cfg(target_os = "macos")]
+// Used by live::video::metal_gpu_convert for Metal compute shader dispatch —
+// the macros' only user, so the import carries that module's exact gate.
+#[cfg(all(target_os = "macos", feature = "avatar-3d", feature = "livekit-webrtc"))]
 #[macro_use]
 extern crate objc;
 

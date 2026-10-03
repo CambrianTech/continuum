@@ -205,15 +205,21 @@ impl AudioResourceLifecycle {
     /// Called after idle timeout — all agents are long gone, safe to teardown.
     /// Shuts down the entire Bevy thread (ECS world, wgpu device, Metal pipelines).
     /// Next call to `get_or_init()` restarts it transparently.
+    ///
+    /// Without the `avatar-3d` feature there is no renderer and no slot pool, so
+    /// there is nothing to unload — the body compiles away.
     fn unload_avatar_models() {
-        if crate::live::video::bevy_renderer::is_running() {
-            crate::live::video::bevy_renderer::shutdown();
-            clog_info!("AudioResourceLifecycle: Bevy renderer shut down (~3GB freed)");
+        #[cfg(feature = "avatar-3d")]
+        {
+            if crate::live::video::bevy_renderer::is_running() {
+                crate::live::video::bevy_renderer::shutdown();
+                clog_info!("AudioResourceLifecycle: Bevy renderer shut down (~3GB freed)");
+            }
+            // Reset slot pool to full capacity. If any video loop tasks didn't exit
+            // cleanly (e.g., disconnect signal lost), their held slots are reclaimed.
+            // Safe because active_sessions == 0 — no call is using any slots.
+            crate::live::avatar::reset_slot_pool();
         }
-        // Reset slot pool to full capacity. If any video loop tasks didn't exit
-        // cleanly (e.g., disconnect signal lost), their held slots are reclaimed.
-        // Safe because active_sessions == 0 — no call is using any slots.
-        crate::live::avatar::reset_slot_pool();
     }
 
     /// Shut down all STT and TTS adapters to reclaim memory.

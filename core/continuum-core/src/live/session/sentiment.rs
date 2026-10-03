@@ -11,7 +11,7 @@
 //!
 //! Gesture extraction runs independently (scans full text for gesture keywords).
 
-use crate::live::video::bevy_renderer::{Emotion, Gesture};
+use crate::live::video::avatar_types::{Emotion, Gesture};
 
 /// Result of sentiment analysis on a text fragment.
 #[derive(Debug, Clone, Copy)]

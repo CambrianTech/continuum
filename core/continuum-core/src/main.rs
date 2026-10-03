@@ -159,14 +159,13 @@ fn install_shutdown_handlers() {
     }
 }
 
-/// Short human-readable description of each `BootMode` — surfaces
-/// in the boot banner so the operator can see at a glance what the
-/// substrate is expected to support in this run.
 /// Register a BevyMemoryReporter with the pressure monitor once the
 /// Bevy renderer's ready edge fires. Pulled out of the inline async
 /// task so the subscribe-and-await loop reads as one signal-shaped
 /// block. Called at most once per process lifetime; a Bevy restart
 /// would re-fire the edge but the existing reporter stays valid.
+/// Only exists under `avatar-3d` — no renderer, no reporter.
+#[cfg(feature = "avatar-3d")]
 fn register_bevy_reporter(
     pressure_monitor: &std::sync::Arc<continuum_core::system_resources::MemoryPressureMonitor>,
 ) {
@@ -188,6 +187,9 @@ fn register_bevy_reporter(
     tracing::info!("🧠 Bevy memory reporter registered via ready edge");
 }
 
+/// Short human-readable description of each `BootMode` — surfaces
+/// in the boot banner so the operator can see at a glance what the
+/// substrate is expected to support in this run.
 fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static str {
     use continuum_core::runtime::BootMode;
     match mode {
@@ -616,7 +618,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // updater stopped it, failed the install, and the node was dark for 100 minutes).
     continuum_core::airc::daemon_liveness::spawn();
 
+    // Built without `avatar-3d` there is no renderer, so no ready edge to wait on.
+    #[cfg(feature = "avatar-3d")]
     let pm_clone = pressure_monitor.clone();
+    #[cfg(feature = "avatar-3d")]
     tokio::spawn(async move {
         let mut rx = continuum_core::live::video::bevy_renderer::subscribe_ready();
         // Fast path: bevy already up before we subscribed.

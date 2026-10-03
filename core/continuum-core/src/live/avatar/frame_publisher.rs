@@ -206,14 +206,18 @@ pub fn create_publisher(
     let _ = slot;
 
     // Tier 3: WgpuI420Publisher (GPU compute, works on Vulkan/DX12/Metal)
-    // Check if wgpu GPU bridge is registered for this slot
-    if crate::live::video::wgpu_gpu_convert::has_bridge(slot) {
-        crate::clog_info!(
-            "📹 Using WgpuI420Publisher (GPU compute I420, slot {})",
-            slot
-        );
-        use super::publishers::wgpu_i420::WgpuI420Publisher;
-        return Box::new(WgpuI420Publisher::new(frame_rx, width, height));
+    // Check if wgpu GPU bridge is registered for this slot. The bridge is fed by
+    // the Bevy render app, so this tier exists only under `avatar-3d`.
+    #[cfg(feature = "avatar-3d")]
+    {
+        if crate::live::video::wgpu_gpu_convert::has_bridge(slot) {
+            crate::clog_info!(
+                "📹 Using WgpuI420Publisher (GPU compute I420, slot {})",
+                slot
+            );
+            use super::publishers::wgpu_i420::WgpuI420Publisher;
+            return Box::new(WgpuI420Publisher::new(frame_rx, width, height));
+        }
     }
 
     // Tier 4: CpuI420Publisher (CPU fallback — last resort for ancient hardware)

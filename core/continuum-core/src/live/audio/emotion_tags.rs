@@ -10,7 +10,7 @@
 //! injection because the speaking IS the thinking.
 
 use crate::live::session::sentiment;
-use crate::live::video::bevy_renderer::Emotion;
+use crate::live::video::avatar_types::Emotion;
 
 /// Minimum sentiment intensity before a tag is worth an interjection — a
 /// mild reading decorated with a laugh sounds unhinged, not natural.

@@ -44,7 +44,7 @@ services:
         # Add cuda to the existing feature flags. The base file already
         # passes load-dynamic-ort + no-default-features; we extend with cuda
         # so the llama crate's build.rs activates GGML_CUDA=ON at cmake time.
-        GPU_FEATURES: "--no-default-features --features load-dynamic-ort,cuda"
+        GPU_FEATURES: "--no-default-features --features load-dynamic-ort,cuda,avatar-3d"
     runtime: nvidia
     deploy:
       resources:

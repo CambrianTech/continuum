@@ -43,12 +43,9 @@ mod stats;
 pub(crate) mod types;
 mod vrm;
 
-/// Maximum number of concurrent avatar render slots.
-pub const MAX_AVATAR_SLOTS: u8 = 16;
-
-/// Default render resolution per avatar.
-pub const AVATAR_WIDTH: u32 = 640;
-pub const AVATAR_HEIGHT: u32 = 360;
+// Slot/resolution constants are pure data shared with non-rendering code, so they
+// live ungated in `live::video::avatar_types`; re-exported here for the renderer.
+pub use crate::live::video::avatar_types::{AVATAR_HEIGHT, AVATAR_WIDTH, MAX_AVATAR_SLOTS};
 
 /// Target framerate for avatar rendering — the live-call bar is 30 (Joel,
 /// 2026-08-31: "live 30fps rendering for avatar scenes in the live video

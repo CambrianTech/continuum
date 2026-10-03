@@ -546,7 +546,9 @@ impl LiveKitAgentManager {
             None,
         );
 
-        // Bevy animation (stays in core)
+        // Bevy animation (stays in core). No renderer without `avatar-3d` — nothing
+        // to animate, so the call compiles away with it.
+        #[cfg(feature = "avatar-3d")]
         self.trigger_speech_animation(user_id, text, &synthesis.samples, sample_rate, duration_ms);
 
         // Send PCM audio to bridge for LiveKit publishing — BINARY media
@@ -714,6 +716,7 @@ impl LiveKitAgentManager {
         }
     }
 
+    #[cfg(feature = "avatar-3d")]
     fn trigger_speech_animation(
         &self,
         user_id: &str,
@@ -730,7 +733,7 @@ impl LiveKitAgentManager {
             let lip_sync_window_ms = 66u32;
             let mouth_weights = calculate_rms_weights(samples, sample_rate, lip_sync_window_ms);
 
-            if sentiment.emotion != crate::live::video::bevy_renderer::Emotion::Neutral {
+            if sentiment.emotion != crate::live::video::avatar_types::Emotion::Neutral {
                 bevy_system.set_emotion_by_identity(
                     user_id,
                     sentiment.emotion,
@@ -738,7 +741,7 @@ impl LiveKitAgentManager {
                     300,
                 );
             }
-            if sentiment.gesture != crate::live::video::bevy_renderer::Gesture::None {
+            if sentiment.gesture != crate::live::video::avatar_types::Gesture::None {
                 bevy_system.set_gesture_by_identity(user_id, sentiment.gesture, 2000);
             }
             bevy_system.play_speech_by_identity(
@@ -1231,6 +1234,7 @@ fn handle_bridge_event(
 // RMS calculation for mouth weight animation
 // =============================================================================
 
+#[cfg(feature = "avatar-3d")]
 fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> Vec<f32> {
     let window_size = (sample_rate as usize * window_ms as usize) / 1000;
     if window_size == 0 || samples.is_empty() {
