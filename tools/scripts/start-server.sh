@@ -655,6 +655,31 @@ if [ -n "$CONTINUUM_DEBUG" ] && [ -z "$CONTINUUM_RELEASE" ]; then
   PROFILE_LABEL="debug"
 fi
 
+# OFFICIAL vs DEV release builds (Joel, 2026-10-03: "you just intentionally target release
+# only for repo users and official builds like main merges"; "I've never seen 10 hour
+# deployments ... If we lost optimizations to test faster so be it"). Both repos have
+# canary and main: MAIN is the official line users install, CANARY is where the fleet
+# iterates. A commit on origin/main builds the full release profile (thin LTO). Anything
+# else, a canary deploy on a node, builds release WITHOUT LTO. Same `release` dir and
+# artifact paths, so nothing downstream changes; only the link step does. Measured on the
+# IntelMac: thin LTO alone was ~5h40m of wall time per bin per deploy (cargo 600-646m).
+# Precedence: an explicit CARGO_PROFILE_RELEASE_LTO wins; CONTINUUM_OFFICIAL_BUILD=1
+# forces the official profile.
+# Canary is also a user-facing channel (airc and continuum both offer one). For now its
+# builds take the fast link. Joel: "When we get more users we will also make canary
+# release lto". That is a change to THIS block (treat the canary tip as official), not a
+# second profile.
+if [ "$PROFILE_LABEL" = "release" ] && [ -z "${CARGO_PROFILE_RELEASE_LTO:-}" ]; then
+  if [ "${CONTINUUM_OFFICIAL_BUILD:-}" = "1" ]; then
+    echo "▶ build: official release (CONTINUUM_OFFICIAL_BUILD=1): thin LTO"
+  elif git -C "$REPO_ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    echo "▶ build: official release (HEAD is on origin/main): thin LTO"
+  else
+    export CARGO_PROFILE_RELEASE_LTO=false
+    echo "▶ build: dev release (HEAD is not on origin/main, e.g. a canary deploy): LTO off for a fast link"
+  fi
+fi
+
 
 # ── ONE cargo invocation for every bin of the crate ─────────────────
 # `cargo build --bin a` then `cargo build --bin b` is two invocations, and each
