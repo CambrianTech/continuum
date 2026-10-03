@@ -359,8 +359,56 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
     (line, None)
 }
 
+/// The net brace depth change of a line of CODE (comments already split off), counting
+/// only braces outside string literals and outside the `'{'` / `'}'` char literals, by
+/// the same string tracking as [`split_code_and_comment`]. A brace in `"}"` is text, not
+/// a block (Astra, review of #4678). Line-based like its sibling, so a string literal
+/// spanning lines or a raw string with an unbalanced brace is outside its reach.
+pub fn brace_delta(code: &str) -> i64 {
+    let bytes = code.as_bytes();
+    let mut in_str = false;
+    let mut escaped = false;
+    let mut delta = 0i64;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+        } else if c == b'\'' && i + 2 < bytes.len() && bytes[i + 2] == b'\'' && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
+            i += 3;
+            continue;
+        } else if c == b'{' {
+            delta += 1;
+        } else if c == b'}' {
+            delta -= 1;
+        }
+        i += 1;
+    }
+    delta
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches (Astra, review of #4678): a brace inside a string or char
+    // literal counted as a block, so `{ "}" }` read as closing the enclosing impl.
+    #[test]
+    fn braces_in_string_and_char_literals_are_not_blocks() {
+        assert_eq!(super::brace_delta(r#"fn label() -> &str { "}" }"#), 0);
+        assert_eq!(super::brace_delta(r#"let s = "{{";"#), 0);
+        assert_eq!(super::brace_delta(r#"let s = "a \" }";"#), 0, "an escaped quote does not end the string");
+        assert_eq!(super::brace_delta("if c == '{' { open += 1;"), 1);
+        assert_eq!(super::brace_delta("impl Runner {"), 1);
+        assert_eq!(super::brace_delta("}"), -1);
+    }
+
     // what this catches: THE EXTRACTION'S OWN FAILURE MODE, and it is the quiet one.
     // These rules used to live inside the crate they audit, so `CARGO_MANIFEST_DIR`
     // and "the tree under audit" were the same directory and could not disagree.

@@ -175,8 +175,9 @@ impl ProductionReachability {
             if own_impl_depth.is_some() && CONSTRUCTOR_SHAPES.iter().any(|s| code.contains(s)) {
                 return true;
             }
-            depth += code.matches('{').count() as i64 - code.matches('}').count() as i64;
-            if own_impl_depth.is_some_and(|d| depth <= d && code.contains('}')) {
+            let delta = crate::brace_delta(code);
+            depth += delta;
+            if own_impl_depth.is_some_and(|d| depth <= d && delta < 0) {
                 own_impl_depth = None;
             }
         }
@@ -338,5 +339,11 @@ mod tests {
         let mixed = SourceFile { rel: "mixed.rs".into(), production: neighbour.into(), raw: neighbour.into() };
         assert!(!ProductionReachability::is_machinery(&mixed, "Outcome"));
         assert!(ProductionReachability::is_machinery(&mixed, "Scratch"));
+
+        // what this also catches (Astra, review of #4678): a "}" inside a string closed
+        // the impl early, so the constructor after it was missed.
+        let stringy = "pub struct Runner {}\nimpl Runner {\n    fn label() -> &'static str { \"}\" }\n    pub fn new() -> Self { Runner {} }\n}\n";
+        let quoted = SourceFile { rel: "stringy.rs".into(), production: stringy.into(), raw: stringy.into() };
+        assert!(ProductionReachability::is_machinery(&quoted, "Runner"));
     }
 }
