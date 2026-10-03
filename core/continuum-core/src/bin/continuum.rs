@@ -5292,7 +5292,15 @@ fn start_log_report(logfile: &str) -> String {
 /// `Runtime::shutdown` runs three 2s-bounded phases per module in parallel, so a healthy
 /// stop is ~6s worst case; the extra room is for the response to travel back. A stop that
 /// exceeds this is not assumed dead — it is assumed UNKNOWN, and the caller says so.
-const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+///
+/// Plus the turn settle's cap (card 32fa22ba): before any module saves, the core lets the
+/// citizens' admitted turns finish, for their measured remaining time and never longer than
+/// `TURN_SETTLE_CAP`. The same constant the core waits on, so the CLI never gives up on a
+/// stop that is still letting a turn finish. An older core does not settle and answers in
+/// the first 20 s as before.
+const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(
+    20 + continuum_core::cognition::turn_ingress::TURN_SETTLE_CAP.as_secs(),
+);
 
 /// What the graceful request achieved, if anything.
 // Debug: the elevated child has no console an operator can read — its only voice is the

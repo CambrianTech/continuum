@@ -1666,9 +1666,15 @@ impl ShutdownOperation {
     /// result. Idempotent: a second caller — a signal racing the stop verb, a retried
     /// request — joins the first broadcast rather than running `save_state` twice over
     /// the same state.
+    ///
+    /// `settle` is how long the citizens' turns may still finish before the modules drain
+    /// (card 32fa22ba): the turns' measured remaining time, never more than this. ZERO =
+    /// none — the signal path, whose own deadline belongs to the supervisor. Only the
+    /// FIRST caller's settle applies, as only its broadcast runs.
     fn begin(
         &self,
         rt: Option<Arc<Runtime>>,
+        settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
         if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             match rt {
@@ -1679,6 +1685,21 @@ impl ShutdownOperation {
                     // goes away, and a shutdown cancelled after ingress closed leaves the
                     // node refusing work with nothing saved.
                     tokio::spawn(async move {
+                        // In THIS task, never a connection's: the settle closes the turn
+                        // door, and a door closed by a handler whose client went away
+                        // would leave every citizen refusing work with no stop behind it.
+                        if !settle.is_zero() {
+                            let s = crate::cognition::turn_ingress::settle(settle).await;
+                            crate::probe!(
+                                class = "cognition.turns.settled",
+                                in_flight_at_close = s.in_flight_at_close,
+                                cut = s.cut,
+                                bound_ms = s.bound_ms,
+                                waited_ms = s.waited_ms,
+                                cap_ms = settle.as_millis() as u64,
+                                "the stop let admitted turns finish before saving — `cut` is how many it still tore"
+                            );
+                        }
                         let receipt = rt.shutdown().await;
                         // send_replace, NEVER send: `send` returns Err and DROPS the value
                         // when the last receiver has gone — and the receiver that goes
@@ -1721,8 +1742,8 @@ fn process_shutdown() -> &'static ShutdownOperation {
 ///
 /// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
 /// operation is owned rather than free-standing.
-pub fn begin_shutdown() -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
-    process_shutdown().begin(signal_runtime())
+pub fn begin_shutdown(settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    process_shutdown().begin(signal_runtime(), settle)
 }
 
 /// Observe the retained terminal receipt without starting a shutdown.
@@ -1777,7 +1798,9 @@ pub async fn run_signal_shutdown() {
     // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
     // and a tighter cap here would cut off the save phase on any node slow enough to
     // need it.
-    let rx = begin_shutdown();
+    // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
+    // console close), not ours to spend waiting on turns.
+    let rx = begin_shutdown(std::time::Duration::ZERO);
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
             // A signal handler cannot return an exit code to anyone, so the receipt's only
@@ -1836,7 +1859,7 @@ mod conditional_modules_tests {
             runtime.register(module);
 
             // The only observer disconnects — the CLI died, was interrupted, timed out.
-            let rx = op.begin(Some(runtime));
+            let rx = op.begin(Some(runtime), std::time::Duration::ZERO);
             drop(rx);
 
             // Wait for the owner to publish. It is a detached task, so this polls a FRESH
@@ -1878,9 +1901,9 @@ mod conditional_modules_tests {
             let saves = module.saves.clone();
             runtime.register(module);
 
-            let _first = op.begin(Some(runtime.clone()));
+            let _first = op.begin(Some(runtime.clone()), std::time::Duration::ZERO);
             // A second caller with a runtime it would otherwise stop.
-            let _second = op.begin(Some(runtime));
+            let _second = op.begin(Some(runtime), std::time::Duration::ZERO);
 
             let mut receipt = None;
             for _ in 0..200 {
