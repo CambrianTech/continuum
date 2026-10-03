@@ -1,9 +1,9 @@
-//! `CoreIpcTransport` — a `continuum_client::Transport` that talks DIRECTLY to a
+//! `CoreIpcTransport` — a [`Transport`](crate::transport::Transport) that talks DIRECTLY to a
 //! running core's IPC socket (the `ipc::start_server` Unix socket).
 //!
 //! ## Why (the local-sidecar path)
 //!
-//! [`AircIpcTransport`](continuum_client::AircIpcTransport) routes commands over
+//! [`AircIpcTransport`](crate::airc_ipc::AircIpcTransport) routes commands over
 //! airc to a *peer* — the GRID/REMOTE path. A LOCAL sidecar (e.g. `continuum-mcp`
 //! spawned beside the core) is the *same machine-account peer* as the core, so
 //! addressing a command "to that peer" over airc doesn't route back to the core's
@@ -40,9 +40,9 @@ use tokio::net::TcpStream as UnixStream;
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
-use continuum_client::event::EventStream;
-use continuum_client::transport::{ServeHandler, Transport};
-use continuum_client::ClientError;
+use crate::event::EventStream;
+use crate::transport::{ServeHandler, Transport};
+use crate::ClientError;
 
 /// Cap on a response frame, so a corrupt length prefix can't make us allocate
 /// gigabytes. Generous — large tool results (search dumps, file reads) fit well

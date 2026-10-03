@@ -40,7 +40,9 @@ pub mod command_interceptor;
 pub mod control;
 pub mod core_bind_guard;
 pub mod deploy_claim;
-pub mod core_ipc_transport;
+// Moved to continuum-client (a client concern: the CLI and other clients reach the core
+// over it without linking the core). Re-exported so existing paths keep working.
+pub use continuum_client::core_ipc_transport;
 pub mod deploy_provenance;
 pub mod deploy_tracker;
 pub mod event_graph;

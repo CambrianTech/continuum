@@ -10,6 +10,8 @@ pub mod airc_ipc;
 pub mod attach;
 pub mod command;
 pub mod connection;
+pub mod core_ipc_transport;
+pub mod endpoint_paths;
 pub mod error;
 pub mod event;
 #[cfg(any(test, feature = "test-fixtures"))]

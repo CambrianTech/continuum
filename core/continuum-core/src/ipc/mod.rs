@@ -112,7 +112,8 @@ impl IpcStream for TcpStream {
 // here so existing call sites resolve unchanged.
 
 pub mod diagnostics;
-pub mod endpoint_paths;
+// Moved to continuum-client with the socket transport; re-exported for existing paths.
+pub use continuum_client::endpoint_paths;
 pub mod experience_resolver;
 pub mod positron_bench_source;
 pub mod positron_canvas_source;
