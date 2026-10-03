@@ -80,9 +80,14 @@ leaves a clean stop down.
 
 - **H1 · Windows: re-running the one-liner does not update.** The bootstrap clones only when the folder
   is absent; pulling needs `-Update`, which refuses with git language.
-- **H2 · Windows: one `continuum install` can raise up to four separate admin prompts.** `-Verb RunAs`
-  for the supervisor, gsudo for release and engine registration (a new elevation session per PowerShell
-  child), and another `-Verb RunAs` for teardown. None share a cache.
+- **H2 · Windows: one `continuum install` can raise separate admin prompts.** The direct Rust `RunAs`
+  sites (`supervisor_install.rs:685` for the supervisor, `elevated_teardown.rs:225` for teardown) each
+  raise their own UAC and share no cache with the installer's gsudo session.
+  **(update, BigMama)** The PowerShell side is NOT per-child: `windows-elevation.ps1`
+  `Initialize-ElevationSession` propagates the owner PID/birth (`CAMBRIAN_INSTALL_ELEVATION`) and
+  validates ancestry, descendants borrow the session, `Clear-Elevation` does not close borrowed sessions,
+  and `windows-service.ps1` registration uses the shared `Invoke-Elevated`. The defect is the Rust
+  `RunAs` sites outside that session.
 - **H3 · macOS: the sudo prompt comes with no reason.** Before `sudo` (`launchd.rs:665-668`) the user sees
   only Rust debug output such as `NotOwned { job_pid: … }`.
 - **H4 · macOS: three competing supervisor installers under two labels.** Bash `continuum service install`
@@ -120,7 +125,7 @@ a user is away. The macOS automatic path does rely on the unelevated system-doma
 | 6 | `install-common.sh:76-118` ensure_sudo_warmed | Installer | Declared, one prompt | Keepalive for the run | No |
 | 7 | Docker Desktop vmnetd | Mac prerequisite | Outside the installer | n/a | No |
 | 8 | `install-common.ps1:140` Invoke-Elevated | Windows installer | Declared, one UAC, with a reason | gsudo, installer process | No |
-| 9 | `windows-service.ps1:524` | Release and engine registration | New session per child | Per process | No |
+| 9 | `windows-service.ps1:524` | Release and engine registration | Shared `Invoke-Elevated` session (descendants borrow) | gsudo, installer process | No |
 | 10 | `supervisor_install.rs:685` RunAs | Windows `continuum install` | Separate UAC | No | No |
 | 11 | `elevated_teardown.rs:225` RunAs | Install core teardown | Separate UAC | No | No |
 
