@@ -333,24 +333,28 @@ msedge-tts = "0.3"
 # traces via symbol names in the stripped binary (just not source-line info).
 # Expected: ~200MB → ~80MB for continuum-core-server.
 strip = "symbols"
-# Thin LTO across crate boundaries. Gets ~80-90% of fat-LTO's runtime
-# benefit (cross-crate inlining on the hot path — llama crate ↔ continuum-
-# core per-token calls) but at a fraction of the build-time cost — ~5-10%
-# vs ~30%. For a project where iteration speed matters as much as runtime
-# perf, thin is the right default. Release-tagged builds can override
-# upward to fat via `RUSTFLAGS="-C lto=fat"` on the single blessed build
-# if we ever decide the last 10% is worth it.
-lto = "thin"
+# NO LTO (Joel, 2026-10-03: "I've never seen 10 hour deployments ... If we lost
+# optimizations to test faster so be it. That's how devs code"). Thin LTO was
+# justified here as "~5-10% build time" for cross-crate inlining on the llama crate <->
+# continuum-core per-token path. Both halves stopped holding:
+# - Serving runs in a separate llama-server process (engine-a), so the per-token hot
+#   path no longer crosses a Rust crate boundary inside this binary.
+# - On a CPU-lane node the cost was measured, not estimated. The IntelMac deploy of
+#   63d0e4ee6 spent ~5h40m of wall time in EACH bin's thin-LTO link (cargo 646m,
+#   deploy 10h48m), and c839ac662 took 600m. Every deploy re-links four bins.
+# A build that wants the last few percent opts in: CARGO_PROFILE_RELEASE_LTO=thin.
+lto = false
 
 # Local installs rebuild this large crate for both the serving and GPU-free CLI
 # feature sets. Keep incremental caches for those distinct compilations so a
 # small harness edit does not redo every unchanged codegen unit in each set.
-# Preserve release's normal 16 units explicitly: enabling incremental would
-# otherwise change the default to 256. Optimization level and thin LTO stay put.
-# CI can still disable incremental with its existing CARGO_INCREMENTAL=0.
+# 256 codegen units (cargo's own default once incremental is on): the crate is one
+# enormous compilation, and 16 units capped how much of it rustc could split across
+# cores and how little an edit re-optimizes. Deploy time over the last percent of
+# runtime (see `lto` above). CI can still disable incremental with CARGO_INCREMENTAL=0.
 [profile.release.package.continuum-core]
 incremental = true
-codegen-units = 16
+codegen-units = 256
 
 # Hot-iter profile — fastest possible compile for inner-loop work
 # (airc work claim → cargo build → test → repeat). Slice 3 of build-time
