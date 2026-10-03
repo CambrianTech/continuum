@@ -4,31 +4,22 @@ This directory contains GitHub-specific configuration files for Continuum's CI/C
 
 ## Workflows
 
-### Main CI Pipeline (`ci.yml`)
+Required on canary: `cargo test -p continuum-core --lib`, `cargo check windows-msvc (lib + tests)`, and `ts-rs binding drift detector`, all in `continuum-rust-tests.yml`.
 
-The main CI workflow runs on all pushes to `main` and pull requests. It:
+| Workflow | What it guards |
+|---|---|
+| `continuum-rust-tests.yml` | The core: lib tests, the Windows check, ts-rs drift, CLI handoff regressions. Rust jobs skip when no Rust changed. |
+| `source-hygiene.yml` | Fast source ratchets. |
+| `pipefail-ratchet.yml` | Shell scripts may not hide pipeline failures (`scripts/ratchets/pipefail-baseline.txt`). |
+| `carl-install-smoke.yml` | The Linux Docker install, end to end. |
+| `host-detect-matrix.yml` | Installer hardware detection on Linux, macOS and Windows. |
+| `manifest-projection-drift-guard.yml` | The install manifest matches its projections. |
+| `docker-images.yml` | Verifies the published images (main). |
+| `dependencies.yml` | npm audit of the web client (main and weekly). |
+| `promote-main.yml` | Moves main to canary's green tip daily. |
+| `pr-labeler.yml`, `auto-close-queue-cards.yml`, `stale.yml` | Housekeeping. |
 
-- Builds the project
-- Runs linting checks
-- Executes tests
-- Validates against multiple Node.js versions
-
-### AI Config Validation (`validate-ai-config.yml`)
-
-This workflow specifically validates AI configuration files against the schema:
-
-- Runs when changes are made to schema, templates, or examples
-- Validates all template configs against the schema
-- Tests example scripts to ensure they work as expected
-
-### Dependency Check (`dependencies.yml`)
-
-This workflow checks package dependencies:
-
-- Runs on changes to package.json files
-- Performs npm audit for security vulnerabilities
-- Checks for outdated dependencies
-- Runs weekly to catch new security advisories
+The legacy Node tree (`legacy/`) is reference material only. No workflow builds, lints or guards it.
 
 ## Issue & PR Templates
 
