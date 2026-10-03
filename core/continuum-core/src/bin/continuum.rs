@@ -5324,7 +5324,25 @@ fn start_log_report(logfile: &str) -> String {
 /// `Runtime::shutdown` runs three 2s-bounded phases per module in parallel, so a healthy
 /// stop is ~6s worst case; the extra room is for the response to travel back. A stop that
 /// exceeds this is not assumed dead — it is assumed UNKNOWN, and the caller says so.
-const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+///
+/// Plus the turn settle's cap (card 32fa22ba): before any module saves, the core lets the
+/// citizens' admitted turns finish, for their measured remaining time and never longer than
+/// `TURN_SETTLE_CAP`. The same constant the core waits on, so the CLI never gives up on a
+/// stop that is still letting a turn finish. An older core does not settle and answers in
+/// the first 20 s as before.
+const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(
+    20 + continuum_core::cognition::turn_ingress::TURN_SETTLE_CAP.as_secs(),
+);
+
+/// Say the stop may wait before it does (Fable on #4684): a stop letting turns finish for
+/// up to `TURN_SETTLE_CAP` must read as busy, never as hung. Printed before every graceful
+/// stop request, so the operator's `stop` and the deploy's reboot say the same thing.
+fn say_turns_may_settle() {
+    println!(
+        "▶ stopping: turns already in flight finish first (their measured remaining time, at most {}s), then the core saves",
+        continuum_core::cognition::turn_ingress::TURN_SETTLE_CAP.as_secs()
+    );
+}
 
 /// What the graceful request achieved, if anything.
 // Debug: the elevated child has no console an operator can read — its only voice is the
@@ -5631,6 +5649,7 @@ async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulSto
     let conn = connection();
     let cmds = conn.commands();
     let req = cmds.execute_value("system/shutdown", Value::Object(Default::default()));
+    say_turns_may_settle();
     match tokio::time::timeout(GRACEFUL_STOP_BUDGET, req).await {
         Ok(Ok(value)) => {
             let durable = value
@@ -5774,6 +5793,7 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
+    say_turns_may_settle();
     let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
         cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
         .await.map_err(|_| "bound shutdown is still running; no exit acknowledgment sent".to_string())?
