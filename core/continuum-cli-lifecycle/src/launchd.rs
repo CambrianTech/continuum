@@ -107,6 +107,23 @@ pub fn pid_from_launchctl_print(output: &str) -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// How many times launchd has spawned the job (`runs = N`), refused spawns included.
+/// A spawn failure is evidence about THIS start only when `runs` moved after it was asked
+/// for; the `job state = spawn failed` line otherwise lingers from the previous attempt.
+pub fn runs_from_launchctl_print(output: &str) -> Option<u64> {
+    output
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("runs = "))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// PURE: whether launchd has spawned the job since a wait began. An unreadable count on
+/// either side is not evidence of a fresh attempt, so the wait falls back to its ceiling.
+pub fn fresh_spawn_attempt(at_start: Option<u64>, now: Option<u64>) -> bool {
+    matches!((at_start, now), (Some(a), Some(n)) if n > a)
+}
+
 /// launchd refused to start the job's program: `job state = spawn failed` with no pid.
 /// `reason` is launchd's `last exit reason` verbatim (M5 2026-10-02:
 /// `OS_REASON_CODESIGNING` on a freshly staged core, node dark until a hand).
@@ -542,6 +559,11 @@ pub mod live {
         Fut: std::future::Future<Output = bool>,
     {
         let started = Instant::now();
+        // A spawn failure counts only once launchd has spawned again since this wait began:
+        // right after a refusal, `job state = spawn failed` is the previous attempt's, and
+        // reading it as this one's declared a restored node dark while launchd was starting
+        // it (M5 2026-10-03 10:08Z: DARK logged, the restored core answered 30 s later).
+        let runs_at_start = launchctl_print(&job.domain).as_deref().and_then(runs_from_launchctl_print);
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
             ticks.tick().await;
@@ -557,9 +579,11 @@ pub mod live {
                     }
                 }
             }
-            // launchd will not retry a spawn it refused, so waiting out the ceiling only
-            // keeps the node dark longer. Say so now, with launchd's own reason.
-            if let Some(failed) = launchctl_print(&job.domain).and_then(|o| spawn_failed_from_launchctl_print(&o)) {
+            // A refusal of THIS start ends the wait at once, with launchd's own reason;
+            // waiting out the ceiling would only keep the node dark longer.
+            let print = launchctl_print(&job.domain);
+            let fresh = fresh_spawn_attempt(runs_at_start, print.as_deref().and_then(runs_from_launchctl_print));
+            if let Some(failed) = print.as_deref().filter(|_| fresh).and_then(spawn_failed_from_launchctl_print) {
                 return Err(format!(
                     "launchd could not start {} ({}); job state = spawn failed",
                     job.slot.display(),
@@ -788,6 +812,20 @@ mod tests {
         assert_eq!(spawn_failed_from_launchctl_print(running), None);
         let idle = "com.continuum.core = {\n\tstate = not running\n\tjob state = exited\n}";
         assert_eq!(spawn_failed_from_launchctl_print(idle), None);
+    }
+
+    // what this catches (M5 2026-10-03 10:08Z): right after a refused spawn, launchctl print
+    // still says `job state = spawn failed` while launchd is about to start the restored
+    // build; reading that stale line as the restored start's refusal logged DARK 30 s before
+    // the core answered. Only a refusal after launchd spawned again (runs moved) counts.
+    #[test]
+    fn a_spawn_failure_counts_only_after_launchd_spawned_again() {
+        let failed = "com.continuum.core = {\n\tstate = not running\n\truns = 11\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
+        assert_eq!(runs_from_launchctl_print(failed), Some(11));
+        assert!(!fresh_spawn_attempt(Some(11), Some(11)), "the same count is the previous attempt's refusal");
+        assert!(fresh_spawn_attempt(Some(11), Some(12)), "launchd spawned again and was refused again");
+        assert!(!fresh_spawn_attempt(None, Some(12)), "no baseline: not evidence, wait the ceiling");
+        assert!(!fresh_spawn_attempt(Some(11), None));
     }
 
     // what this catches (2026-09-19 13:32Z, IntelMac): the four states a Mac can be in,

@@ -1763,8 +1763,12 @@ impl PreparedCoreService {
             eprintln!("⚠ {staged_failed}\n▶ restoring the previous build and kickstarting it");
             let kept = launchd::live::restore_previous(&self.job)
                 .map_err(|e| format!("{staged_failed}; the node is DARK: {e}"))?;
-            launchd::live::kickstart(&self.job.domain)
-                .map_err(|e| format!("{staged_failed}; restored the previous build but the node is DARK: {e}"))?;
+            // A kickstart error is not a dark node: launchd's KeepAlive may start the restored
+            // build anyway (M5 2026-10-03: `kickstart -k` failed at 10:08:02Z and launchd
+            // started the restored core in the same second). Only the wait decides.
+            if let Err(e) = launchd::live::kickstart(&self.job.domain) {
+                eprintln!("⚠ kickstart of the restored build reported: {e}; waiting for launchd to start it");
+            }
             let core_pid = move || launchd::live::serving_core_pid(&socket);
             match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
                 Ok(pid) => Err(format!(
