@@ -115,6 +115,7 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         run: |
           bash tools/scripts/tests/start-server-build-only.test.sh
+          bash tools/scripts/tests/start-server-airc-recovery.test.sh
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
           python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
