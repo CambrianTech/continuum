@@ -1,19 +1,28 @@
 # Multimodal streaming mind — completion plan
 
-Owner: Codex. Updated 2026-10-02. This is the active delivery plan, not a new
+Owner: Codex. Updated 2026-10-03 00:52 UTC. This is the active delivery plan, not a new
 architecture. Reuse the live WorkspaceCycle, CBAR stages, bus, admission,
 scheduling, model bindings, genome, AIRC and existing avatar/live session code.
 BIGGIEDESK installation belongs to the other Codex and is not this lane's gate.
 
-Active execution receipt (13:05 UTC): supported install20349 completed. Core and
-both CLI aliases run build5927/0839e37d1; bound-model PDF visual acceptance64407
-passed in74038ms. This proves native vision, not fast conversation or native voice.
-The installer reported one undrained cognition turn; lossless continuity is NOT
-verified. Current durable checkout moved to peer installer head d2604d832.
-Exact model-info selection and registry lock lifetime fixes passed focused test50234
-but remain undeployed follow-ups. Native audio, image output, and persona per-turn
-output-intent/playback integration remain OPEN. Use existing WorkspaceCycle and
-CallManager owners; current available model catalog declares no native audio.
+Current source: `codex/native-model-binding` at `4bc42ba14`, including the shared
+remote-stream cancellation repair. Focused integration session95093 passed4/4
+in1.07s after17.88s incremental compilation; no active native compiler remains.
+That repair is pushed but not installed. Last verified CLI was build5932/ba56443ad;
+install95398's historical receipt records core/CLI convergence, but a fresh core
+SHA check is still required before the next adoption claim.
+
+Last bound-model PDF visual acceptance64407 passed in74038ms on5927/0839e37d1.
+This proves that earlier native vision path, not current native voice. Lossless
+cognition continuity, native audio, image output and persona output/playback remain
+OPEN. The latest captured model catalog declares no native audio. Use existing
+WorkspaceCycle and CallManager owners. Older timed entries below are historical;
+do not resume their completed installer/test handles.
+
+AIRC is installed at2f9226daa7a9 with external reader acknowledgment. Its existing
+owner is coordinating the bounded installed offline/reconnect acceptance. Keep
+local AIRC calls and lifecycle changes quiescent during that owner's test window;
+consult the team README/owner before any deployment or build.
 ## Grid execution contract (Joel, 13:15 UTC)
 
 Each distributable operation uses the existing typed command executor and AIRC
@@ -27,8 +36,9 @@ valid boundary; unsupported routing or native capabilities fail explicitly.
 The shared stream registry must reject duplicate correlation IDs both before and
 after a consumer takes the sink, until its request guard releases ownership.
 This prevents concurrent remote commands from replacing each other's output.
-Focused regression82009 passed; command-path integration is being validated in
-the existing airc_remote_inference_end_to_end fixture (see team README).
+Focused regression82009 and the existing command-path fixture passed. The fixture
+also now proves producer cancellation and correlation release on stream refusal;
+its heuristic responses do not prove incremental native audio (see team README).
 
 ## The outcome
 
