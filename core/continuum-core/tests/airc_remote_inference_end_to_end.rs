@@ -92,13 +92,14 @@ use futures::stream::StreamExt;
 /// an adapter so tests can swap heuristic / failing / no-op behaviors.
 struct TestInferenceModule {
     adapter: Arc<dyn AIProviderAdapter>,
+    pending_stream: Option<Arc<()>>,
 }
 
 impl TestInferenceModule {
     const PREFIXES: &'static [&'static str] = &["ai/generate"];
 
     fn new(adapter: Arc<dyn AIProviderAdapter>) -> Self {
-        Self { adapter }
+        Self { adapter, pending_stream: None }
     }
 }
 
@@ -128,6 +129,19 @@ impl ServiceModule for TestInferenceModule {
         _command: &str,
         params: serde_json::Value,
     ) -> Result<CommandResult, String> {
+        if let Some(lifetime) = &self.pending_stream {
+            let _active = Arc::clone(lifetime);
+            let id = continuum_core::ai::stream_sinks::stream_id_of(&params)
+                .expect("handler must supply stream ownership");
+            let sink = continuum_core::ai::stream_sinks::take(id).expect("owned producer");
+            sink.send(continuum_core::ai::adapter::GenerationChunk::RequestBoundary {
+                request_id: "unsupported-nested-request".into(),
+                phase: continuum_core::ai::stream_sinks::RequestPhase::Started,
+            })?;
+            // Keep generation and its sink alive until the handler cancels it.
+            std::future::pending::<()>().await;
+            drop(sink);
+        }
         let request: TextGenerationRequest = serde_json::from_value(params)
             .map_err(|e| format!("TestInferenceModule: decode TextGenerationRequest: {e}"))?;
         let response = self.adapter.generate_text(request).await?;
@@ -294,6 +308,37 @@ fn request(prompt: &str) -> TextGenerationRequest {
         messages: vec![user_msg(prompt)],
         ..Default::default()
     }
+}
+
+// A publisher refusal must cancel a pending command and release correlation
+// ownership; join! used to wait forever for the now-unusable producer.
+#[tokio::test]
+async fn stream_refusal_cancels_producer_and_releases_ownership() {
+    use continuum_core::routing::{AircCommandRequest, AircCommandResponse, ParsedEnvelope};
+    let fixture = TwoAircLoopback::new().await.expect("fixture setup");
+    let lifetime = Arc::new(());
+    let mut module = TestInferenceModule::new(Arc::new(HeuristicInferenceAdapter::new()));
+    module.pending_stream = Some(Arc::clone(&lifetime));
+    let handler = build_handler(Arc::clone(fixture.peer_a()), Some(Arc::new(module)));
+    let correlation_id = uuid::Uuid::new_v4();
+    let parsed = ParsedEnvelope {
+        caller_peer_id: airc_lib::PeerId(fixture.peer_a_id()),
+        reply_to: airc_lib::PeerId(fixture.peer_a_id()),
+        correlation_id,
+        request: AircCommandRequest::new("ai/generate".into(), "peer".into(), None,
+            serde_json::to_value(request("cancel on refusal")).unwrap()),
+        request_channel: airc_core::RoomId::new(),
+        request_channel_name: None,
+        presented_grant: None,
+    };
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2),
+        handler.process_request_streaming(&parsed)).await.expect("refusal must retire pending producer");
+    assert!(matches!(response, AircCommandResponse::Error { message }
+        if message.contains("Nested request lifecycle")));
+    assert_eq!(Arc::strong_count(&lifetime), 2, "command future must be dropped");
+    let (sink, _receiver) = continuum_core::ai::stream_sinks::channel();
+    let _guard = continuum_core::ai::stream_sinks::register(correlation_id, sink)
+        .expect("failed operation must release correlation ownership");
 }
 
 // ── Happy path ─────────────────────────────────────────────────────

@@ -315,14 +315,17 @@ impl CommandRequestHandler {
         let command = async {
             let response = self.process_request(&streamed).await;
             drop(guard);
-            response
+            Ok::<_, String>(response)
         };
-        let (response, delivered) = tokio::join!(command, publisher.drain(rx));
-        match delivered {
-            Ok(published) => crate::probe!(class = "airc.command.streamed", correlation = %stream_id,
-                chunks = published, "stream completed before its final receipt"),
+        // A failed consumer retires its producer immediately. Waiting for both
+        // futures after ring loss or publication failure can strand generation
+        // until the model's full deadline, despite having no usable output path.
+        let (response, published) = match tokio::try_join!(command, publisher.drain(rx)) {
+            Ok(completed) => completed,
             Err(message) => return AircCommandResponse::Error { message },
-        }
+        };
+        crate::probe!(class = "airc.command.streamed", correlation = %stream_id,
+            chunks = published, "stream completed before its final receipt");
         response
     }
 

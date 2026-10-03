@@ -294,3 +294,32 @@ channel closure alone cannot authorize successful PCM tail completion.
 Distributability belongs to the existing typed command contract; the existing governor owns placement. Nodes including the 1080 Ti can serve LLM and non-LLM work according to actual capabilities, resident state and available capacity. Measure whole-fleet latency, throughput, memory pressure, transfer and warm-up cost. Use stable feedback/hysteresis to avoid relocation churn; preserve active-session continuity. Do not assign permanent hardware roles or add a parallel scheduler.
 
 Native audio acceptance must distinguish user speech from television/background dialogue, including overlap and interruptions, and produce speech through the bound model. Transcripts and stock TTS are not substitutes. Refreshed installed ai/models/list at22:12 UTC returned51 models with no audio/speech declaration observed; native-models-current.json preserves the response. This is a current catalog limitation, not proof that hardware cannot run native audio. Resolve/provision a capable binding explicitly before native voice acceptance. Existing dirty remote-inference test and NATIVE-MEDIA-CONTINUITY edits are preserved; no duplicate build started.
+
+## Remote stream cancellation review (2026-10-03 00:12 UTC)
+
+Source review at36f56b3ce found an outstanding cancellation defect in
+`routing/command_handler.rs::process_request_streaming`: `tokio::join!` waits
+for generation even after `StreamPublisher::drain` returns an error. Explicit
+ring loss, unsupported media or publication failure therefore need not retire
+the operation promptly; the final error can wait for the slow adapter to finish.
+Dropping the receiver alone does not guarantee that every adapter stops work.
+This is a source finding, not a measured live failure or completed repair.
+
+Next bounded repair: keep both futures owned by the same operation, but cancel
+the command future immediately when draining fails. Preserve successful drain
+before final response and preserve command errors. Extend the existing handler
+fixture with a producer held pending after emission, force a drain refusal, and
+assert the command is dropped and correlation ownership released without waiting
+for producer completion. Reuse the existing stream registry and test fixture;
+no detached task, alternate bus, or batch substitution. Installed native audio
+and remote media acceptance remain open.
+
+00:42 UTC repair validation: the shared handler now uses `try_join!`, dropping
+owned generation immediately on publisher failure while still awaiting successful
+drain before final reply. Extended the existing test module (no new bus/task or
+adapter) with a pending producer; the regression asserts explicit refusal,
+producer lifetime release and correlation reuse. Focused integration suite4/4
+passed1.07s, incremental compilation17.88s (session95093,
+`native-stream-cancel-0042.log`). First attempt60482 exposed two fixture PeerId
+wrapper type errors, corrected before this successful run. This is source-level
+handler validation; installation and native model audio acceptance remain open.
