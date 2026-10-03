@@ -1749,8 +1749,9 @@ impl PreparedCoreService {
             };
             // One road for a refused kickstart and a refused spawn: the old core is
             // already stopped, so either one with nothing answering is a dark node.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
             let started_new = match launchd::live::kickstart(&self.job.domain) {
-                Ok(()) => launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60))
+                Ok(()) => launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60))
                     .await
                     .map(|_| ()),
                 Err(refused) => Err(refused),
@@ -1766,11 +1767,12 @@ impl PreparedCoreService {
             // A kickstart error is not a dark node: launchd's KeepAlive may start the restored
             // build anyway (M5 2026-10-03: `kickstart -k` failed at 10:08:02Z and launchd
             // started the restored core in the same second). Only the wait decides.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
             if let Err(e) = launchd::live::kickstart(&self.job.domain) {
                 eprintln!("⚠ kickstart of the restored build reported: {e}; waiting for launchd to start it");
             }
             let core_pid = move || launchd::live::serving_core_pid(&socket);
-            match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+            match launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
                 // Answering under launchd is not yet "restored": the receipt names the build that
                 // is actually running and refuses one that is not the build put back (#194).
                 Ok(pid) => Err(match restored_build_identity(&self.job.slot).await {
@@ -3695,6 +3697,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
             ));
         }
         eprintln!("▶ crash test: kill -9 {victim}; waiting for {} to relaunch it", job.domain.target());
+        let runs_before = live::spawn_runs(&job.domain);
         // SAFETY: a plain signal to a pid this process just read as the supervised core.
         let rc = unsafe { libc::kill(victim as i32, libc::SIGKILL) };
         if rc != 0 {
@@ -3702,7 +3705,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
         }
         let t0 = std::time::Instant::now();
         let fresh = move || core_pid().filter(|p| *p != victim);
-        match live::wait_owned(&job, fresh, core_is_up, Duration::from_secs(120)).await {
+        match live::wait_owned(&job, runs_before, fresh, core_is_up, Duration::from_secs(120)).await {
             Ok(pid) => {
                 let secs = t0.elapsed().as_secs();
                 eprintln!("✅ healed: {} relaunched the core (pid {pid}) in {secs}s", job.domain.target());
@@ -3818,11 +3821,14 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
     // The system daemon was started by its bootstrap (RunAtLoad) inside the elevated half
     // — a kickstart there needs root and is not owed. The agent is kickstarted: on a gui
     // domain in on-demand-only mode bootstrap does NOT start it (measured).
+    // A system daemon was spawned by that bootstrap already, so a refusal there may be in
+    // this count; the wait then runs to its ceiling instead of failing fast (not wrong).
+    let runs_before = live::spawn_runs(&job.domain);
     if matches!(job.domain, Domain::Gui(_)) {
         live::kickstart(&job.domain)?;
     }
     let core_pid = || live::serving_core_pid(&socket);
-    match live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+    match live::wait_owned(&job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
         Ok(pid) => println!("✓ {} owns the core (pid {pid}); `continuum supervisor-status --crash-test` proves the heal", job.domain.target()),
         Err(why) => {
             let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(3 * 60));
