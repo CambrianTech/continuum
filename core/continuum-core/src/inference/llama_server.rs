@@ -1531,10 +1531,13 @@ pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
 /// PURE: whether a warm build beside a lane served by `backend` goes into macOS's background
 /// band, which confines it to the efficiency cores and throttles its I/O. Only a CPU-served
 /// lane needs that: its decode holds the performance cores the build would take (card
-/// 682a5abf). A GPU-served lane prefills on its device, so the band protects nothing and only
-/// slows the deploy: the M5 (Metal, the 27B resident, swap 9.4 of 10 GB) took over 90 minutes
-/// on 2026-10-03 with rustc at one job on the efficiency cores. Nice 19 still applies to every
-/// warm build; this decides only the band.
+/// 682a5abf). A GPU-served lane prefills and decodes on its device, so the band no longer
+/// guards its decode cores; the host work it still has (the core, tokenizing, memory and I/O)
+/// is guarded by nice 19 and the memory job budget, which every warm build keeps. Measured on
+/// the M5 (Metal, the 27B resident) on 2026-10-03: in the band the deploy took over 90
+/// minutes with rustc at one job on the efficiency cores, and decode per call was the same in
+/// and out of the band (1.6-3.9 tps before the build, 2.8-4.2 during). This decides only the
+/// band.
 pub fn warm_build_background_band(backend: Option<&str>) -> bool {
     backend == Some("cpu")
 }

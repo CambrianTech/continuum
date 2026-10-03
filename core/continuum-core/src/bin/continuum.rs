@@ -1925,8 +1925,9 @@ impl Drop for WarmBuildReceipt {
 /// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
 /// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
 /// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
-/// A GPU-served lane gets nice 19 only: the band there kept the M5's build on its efficiency
-/// cores for over 90 minutes while protecting no CPU lane (2026-10-03).
+/// A GPU-served lane keeps nice 19 and the job budgets but not the band: there the band kept
+/// the M5's build on its efficiency cores for over 90 minutes with no measurable decode
+/// benefit (2026-10-03); the lane's host-side work is still guarded by nice 19.
 fn yield_to_serving(cmd: &mut std::process::Command) {
     // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
     // the memory the serving node has left (a lane that fills memory must not stop deploys).
