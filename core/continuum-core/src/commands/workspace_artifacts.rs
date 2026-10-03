@@ -192,11 +192,15 @@ fn written_path(event: &BusEvent) -> Option<PathBuf> {
     if event.name != WORKSPACE_WRITTEN_TOPIC {
         return None;
     }
-    event
-        .payload
-        .get("path")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from)
+    // The same type the write site published; a payload that does not decode as one is
+    // not a workspace change we can place.
+    // Decoded here only, after the topic matched, and straight from the shared Value
+    // (no clone of the payload).
+    <crate::code::workspace_events::WorkspaceChanged as serde::Deserialize>::deserialize(
+        event.payload.as_ref(),
+    )
+    .ok()
+    .map(|changed| changed.path)
 }
 
 /// Await the in-flight recompute, or never resolve when there is none (so the `select!`

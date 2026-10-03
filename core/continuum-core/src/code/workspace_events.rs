@@ -22,9 +22,21 @@ use std::sync::{Arc, OnceLock};
 
 use crate::runtime::message_bus::MessageBus;
 
-/// The bus topic a workspace write publishes on. Payload:
-/// `{ "personaId": <writer, may be empty>, "path": <absolute path written> }`.
+/// The bus topic a workspace write publishes on. Payload: [`WorkspaceChanged`].
 pub const WORKSPACE_WRITTEN_TOPIC: &str = "workspace:written";
+
+/// What a write site announces: who wrote, and where. ONE type for the publisher and
+/// every subscriber, so a field can never be spelled two ways on the two ends of the bus.
+/// `path` is the file written, or the directory a command ran in (a shell completion
+/// bumps conservatively: it cannot see what the command touched).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceChanged {
+    /// The writer; empty when the site has no persona in scope.
+    pub persona_id: String,
+    /// Absolute path written.
+    pub path: std::path::PathBuf,
+}
 
 /// Process-global bus handle — set once at boot (ipc wiring), read by write sites that
 /// hold no bus of their own (FileEngine, the detached shell task, git verbs). Same shape
@@ -43,11 +55,9 @@ pub fn note_written(persona_id: &str, path: &Path) {
     let Some(bus) = WORKSPACE_EVENT_BUS.get() else {
         return; // no bus wired (tests, early boot) — nobody is listening yet
     };
-    bus.publish_async_only(
-        WORKSPACE_WRITTEN_TOPIC,
-        serde_json::json!({
-            "personaId": persona_id,
-            "path": path.to_string_lossy(),
-        }),
-    );
+    let event = WorkspaceChanged { persona_id: persona_id.to_string(), path: path.to_path_buf() };
+    match serde_json::to_value(&event) { // the bus carries Values; this is its one encode
+        Ok(payload) => bus.publish_async_only(WORKSPACE_WRITTEN_TOPIC, payload),
+        Err(e) => tracing::warn!(error = %e, "workspace:written encode failed — this write is not announced"),
+    }
 }
