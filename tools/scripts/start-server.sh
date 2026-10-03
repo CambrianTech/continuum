@@ -665,6 +665,10 @@ fi
 # IntelMac: thin LTO alone was ~5h40m of wall time per bin per deploy (cargo 600-646m).
 # Precedence: an explicit CARGO_PROFILE_RELEASE_LTO wins; CONTINUUM_OFFICIAL_BUILD=1
 # forces the official profile.
+# Canary is also a user-facing channel (airc and continuum both offer one). For now its
+# builds take the fast link. Joel: "When we get more users we will also make canary
+# release lto". That is a change to THIS block (treat the canary tip as official), not a
+# second profile.
 if [ "$PROFILE_LABEL" = "release" ] && [ -z "${CARGO_PROFILE_RELEASE_LTO:-}" ]; then
   if [ "${CONTINUUM_OFFICIAL_BUILD:-}" = "1" ]; then
     echo "▶ build: official release (CONTINUUM_OFFICIAL_BUILD=1): thin LTO"
