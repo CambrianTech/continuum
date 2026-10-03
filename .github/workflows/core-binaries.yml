@@ -1,0 +1,178 @@
+# Card 30a8b3ac — a commit is compiled ONCE per platform, here; every machine that runs it
+# downloads that build.
+#
+# THE GAP THIS CLOSES: every node compiled every canary commit itself. On the IntelMac a
+# deploy of 63d0e4ee6 took ~10 h end to end (2026-10-03), so a merged fix reached that node
+# the next day, and the M5's launchd refused freshly compiled, ad-hoc-signed cores
+# (OS_REASON_CODESIGNING). Joel, 2026-10-03: "end users do not compile. We host the
+# binary." The two audiences are in docs/architecture/BUILD-AND-PACKAGING.md §5b:
+#   - canary (this workflow): no LTO, for fast turnaround; the fleet deploys it.
+#   - main: full LTO, signed, for users (a later slice of the same card).
+#
+# WHAT IT PUBLISHES: one prerelease per canary commit, tagged `canary-<sha12>`, with one
+# asset per platform: `continuum-core-<platform>.tar.gz` (continuum-core-server, continuum,
+# continuum-mcp, forge-custodian) plus its `.sha256` and a `.json` manifest carrying the
+# full sha and the exact cargo features. The features come from
+# tools/scripts/lib/core-features.sh, the same function the on-node build calls, so a
+# downloaded binary is the program the node would have compiled.
+#
+# PLATFORMS: the two Mac outliers first (Metal on arm64; CPU-only on x86_64, where Metal
+# hangs the hardware). Linux and Windows legs follow; their GPU flavor (cuda/vulkan/
+# directml) must be named per leg, because cargo-features.sh probes the machine it runs on
+# and a CI runner has no GPU.
+#
+# NEWEST TIP WINS: a node deploys canary's tip, so a run for a superseded commit is
+# cancelled rather than finished. Old canary releases are pruned to the newest 20.
+
+name: core-binaries
+
+on:
+  push:
+    branches: [canary]
+    paths:
+      - 'core/**'
+      - 'tools/scripts/lib/core-features.sh'
+      - 'tools/scripts/shared/cargo-features.sh'
+      - '.github/workflows/core-binaries.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: core-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: core binaries (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      # Every leg runs even when one fails: a broken Intel leg must not hide a good arm64 one.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-latest
+            uname: Darwin arm64
+          - platform: macos-x86_64
+            runner: macos-15-intel
+            uname: Darwin x86_64
+    env:
+      # The canary profile: no LTO, for a fast link (#4687). main keeps LTO.
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build.rs stamps CONTINUUM_BUILD_NUMBER from `git rev-list --count HEAD`; a
+          # shallow clone would stamp 1. Blobless keeps the full history cheap.
+          fetch-depth: 0
+          filter: blob:none
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup show
+          rustc --version
+          cmake --version
+
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: core-binaries-${{ matrix.platform }}
+          cache-on-failure: true
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/scripts/lib/core-features.sh
+          select_core_features "${{ matrix.uname }}"
+          # One cargo call builds all four bins only when the CLI shares the core's
+          # features, which is true on both Macs. A leg where they differ must build the
+          # CLI separately, like start-server.sh does; fail here rather than ship a CLI
+          # built with the wrong set.
+          if [ "$CONTINUUM_CLI_FEATURES" != "$CONTINUUM_FEATURES" ]; then
+            echo "::error::CLI features differ from the core's on ${{ matrix.platform }}; this leg needs a separate CLI build"
+            exit 1
+          fi
+          echo "features: $CONTINUUM_FEATURES"
+          echo "CONTINUUM_FEATURES=$CONTINUUM_FEATURES" >> "$GITHUB_ENV"
+          # shellcheck disable=SC2086  # the feature string is split on purpose
+          cargo build --manifest-path core/continuum-core/Cargo.toml --release \
+            --bin continuum-core-server --bin continuum --bin continuum-mcp --bin forge-custodian \
+            $CONTINUUM_FEATURES
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_dir="$(cargo metadata --manifest-path core/continuum-core/Cargo.toml --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+          name="continuum-core-${{ matrix.platform }}"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage"
+          for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
+            cp "$target_dir/release/$bin" "$stage/"
+          done
+          # The binary must report the commit it was built from: the deploy verifies the
+          # running core's sha, and an artifact stamped with the wrong one would be refused.
+          version="$("$stage/continuum" --version)"
+          echo "$version"
+          case "$version" in
+            *"sha ${GITHUB_SHA:0:9}"*) ;;
+            *) echo "::error::continuum --version does not report ${GITHUB_SHA:0:9}"; exit 1 ;;
+          esac
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/$name.tar.gz" "$name"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          python3 - "$RUNNER_TEMP/$name.json" <<EOF
+          import json, sys
+          json.dump({
+              "platform": "${{ matrix.platform }}",
+              "uname": "${{ matrix.uname }}",
+              "git_sha": "$GITHUB_SHA",
+              "features": "$CONTINUUM_FEATURES",
+              "profile": "release, lto=false (canary)",
+              "archive": "$name.tar.gz",
+              "sha256": open("$RUNNER_TEMP/$name.tar.gz.sha256").read().split()[0],
+              "bins": ["continuum-core-server", "continuum", "continuum-mcp", "forge-custodian"],
+          }, open(sys.argv[1], "w"), indent=2)
+          EOF
+          ls -la "$RUNNER_TEMP/$name".*
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="canary-${GITHUB_SHA:0:12}"
+          # Both legs race to create the release; the loser finds it and uploads into it.
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
+                 --title "canary ${GITHUB_SHA:0:12}" \
+                 --notes "Canary core binaries for ${GITHUB_SHA}. No LTO; for the development grid, not for users. Built by .github/workflows/core-binaries.yml." \
+            || gh release view "$tag" >/dev/null
+          name="${{ steps.package.outputs.name }}"
+          gh release upload "$tag" --clobber \
+            "$RUNNER_TEMP/$name.tar.gz" "$RUNNER_TEMP/$name.tar.gz.sha256" "$RUNNER_TEMP/$name.json"
+
+  prune:
+    name: prune old canary releases
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Keep the newest 20 canary releases
+        run: |
+          set -euo pipefail
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            -q '[.[] | select(.tagName | startswith("canary-"))] | sort_by(.createdAt) | reverse | .[20:][] | .tagName' \
+          | while read -r tag; do
+              echo "pruning $tag"
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done
