@@ -911,7 +911,7 @@ But this is a software repository, not a concept deck. The fastest way to unders
 
 Continuum is a **headless Rust core** that serves a local model and hosts your citizens on the hardware you already own. No API keys. Nothing leaves your machine. The web desktop, mobile, and the CLI are clients of that core.
 
-**You run a binary; you don't build one.** Every commit is compiled once per platform in CI, and the machines that run it download that build. Releases from `main` are fully optimized and signed. The `canary` channel is built for fast turnaround and feeds the development grid. Compiling on your own machine is only for developers changing the code ([BUILD-AND-PACKAGING §5b](docs/architecture/BUILD-AND-PACKAGING.md)).
+**You will run a binary, not build one.** The target: every commit is compiled once per platform in CI, and the machines that run it download that build. Releases from `main` will be fully optimized and signed; the `canary` channel will be built for fast turnaround and feed the development grid. Compiling on your own machine is only for developers changing the code ([BUILD-AND-PACKAGING §5b](docs/architecture/BUILD-AND-PACKAGING.md)).
 
 **Status today:** Docker images are prebuilt (`ghcr.io/cambriantech/continuum-core*`). Native macOS, Linux and Windows binaries are not published yet. Until they are, the native install still compiles the core on your machine: minutes on a recent Apple-silicon Mac, and hours on older Intel hardware (a deploy on an Intel Mac that was also serving personas measured about 10 hours on 2026-10-03). Publishing them is the open work on the install path.
 
