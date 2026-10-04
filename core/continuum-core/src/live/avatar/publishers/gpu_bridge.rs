@@ -376,7 +376,7 @@ static GPU_BRIDGES: std::sync::OnceLock<std::sync::RwLock<Vec<Option<Arc<IoSurfa
 
 fn bridges() -> &'static std::sync::RwLock<Vec<Option<Arc<IoSurfacePair>>>> {
     GPU_BRIDGES.get_or_init(|| {
-        let slots = vec![None; crate::live::video::bevy_renderer::MAX_AVATAR_SLOTS as usize];
+        let slots = vec![None; crate::live::video::avatar_types::MAX_AVATAR_SLOTS as usize];
         std::sync::RwLock::new(slots)
     })
 }

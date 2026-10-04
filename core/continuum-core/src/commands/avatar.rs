@@ -5,7 +5,7 @@
 //! auto-refresh); this command orchestrates the on-disk cache check and runs the
 //! blocking capture off the async thread.
 
-use crate::live::video::bevy_renderer::{Emotion, Gesture};
+use crate::live::video::avatar_types::{Emotion, Gesture};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

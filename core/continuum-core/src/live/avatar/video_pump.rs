@@ -22,23 +22,36 @@
 //! This is the single implementation of the pump; both the live `voice/…` path
 //! and the `avatar_livekit` example drive personas through it (one logical
 //! decision, one place).
+//!
+//! Without the `avatar-3d` cargo feature there is no renderer to pump from:
+//! `spawn_avatar_video_pump` refuses with `AvatarError::Avatar3dNotCompiled`
+//! (the caller logs it per participant) instead of publishing a stand-in.
 
 use std::sync::Arc;
 
-use crate::live::avatar::catalog::avatar_model_path;
-use crate::live::avatar::frame::AvatarConfig;
-use crate::live::avatar::render_loop::{allocate_bevy_slot, BevySlotAllocation};
-use crate::live::avatar::selection::select_avatar_by_identity;
 use crate::live::transport::bridge_client::LiveKitAgentManager;
 use crate::live::transport::call_server::CallManager;
-use crate::live::video::bevy_renderer::{AVATAR_HEIGHT, AVATAR_WIDTH};
+
+#[cfg(feature = "avatar-3d")]
+use crate::live::avatar::catalog::avatar_model_path;
+#[cfg(feature = "avatar-3d")]
+use crate::live::avatar::frame::AvatarConfig;
+#[cfg(feature = "avatar-3d")]
+use crate::live::avatar::render_loop::{allocate_bevy_slot, BevySlotAllocation};
+#[cfg(feature = "avatar-3d")]
+use crate::live::avatar::selection::select_avatar_by_identity;
+#[cfg(feature = "avatar-3d")]
+use crate::live::video::avatar_types::{AVATAR_HEIGHT, AVATAR_WIDTH};
+#[cfg(feature = "avatar-3d")]
 use crate::runtime::handle::Handle;
+#[cfg(feature = "avatar-3d")]
 use crate::{clog_error, clog_info, clog_warn};
 
 /// Resolve the render config for a persona identity. Uses the SAME selection the
 /// snapshot path uses (`select_avatar_by_identity` + `avatar_model_path`) so a
 /// persona's live-call avatar and its profile snapshot are always the same
 /// model — one source of truth for identity → VRM.
+#[cfg(feature = "avatar-3d")]
 fn config_for_identity(identity: &str, display_name: &str) -> Result<AvatarConfig, String> {
     let model = select_avatar_by_identity(identity);
     let vrm_path = avatar_model_path(model.filename);
@@ -66,6 +79,7 @@ fn config_for_identity(identity: &str, display_name: &str) -> Result<AvatarConfi
 /// Returns the pump task's `JoinHandle`. The task owns the slot guard; dropping
 /// or aborting the handle tears the slot down (RAII). Call once per AI
 /// participant, after `get_or_create_agent` has joined that persona to the room.
+#[cfg(feature = "avatar-3d")]
 pub async fn spawn_avatar_video_pump(
     manager: Arc<LiveKitAgentManager>,
     call_manager: Arc<CallManager>,
@@ -184,8 +198,26 @@ pub async fn spawn_avatar_video_pump(
     Ok(handle)
 }
 
+/// Build without the `avatar-3d` feature: there is no Bevy renderer, so there are
+/// no frames to stream. Refuse loudly, naming the feature — never publish a
+/// placeholder track in place of the persona's face.
+#[cfg(not(feature = "avatar-3d"))]
+pub async fn spawn_avatar_video_pump(
+    _manager: Arc<LiveKitAgentManager>,
+    _call_manager: Arc<CallManager>,
+    _call_id: String,
+    identity: String,
+    _display_name: String,
+) -> Result<tokio::task::JoinHandle<()>, String> {
+    Err(super::backend::AvatarError::Avatar3dNotCompiled(format!(
+        "Live-call avatar video for '{identity}'"
+    ))
+    .to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "avatar-3d")]
     use super::*;
 
     // what this catches: config_for_identity drifting from the snapshot path's
@@ -194,6 +226,7 @@ mod tests {
     // dependent, so we only assert the invariants that hold regardless: the
     // config carries the identity, a non-empty model path, and the shared
     // AVATAR_WIDTH/HEIGHT the bridge track is created against.
+    #[cfg(feature = "avatar-3d")]
     #[test]
     fn config_carries_identity_and_render_dimensions() {
         // select_avatar_by_identity always returns a catalog model; the path may

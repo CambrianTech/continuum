@@ -20,8 +20,8 @@
 //!   selection.rs  — select_avatar_for_voice/identity/agent, allocate_avatars_batch
 //!   gender.rs     — gender_from_voice_name, gender_from_identity
 //!   hash.rs       — fnv1a_hash, deterministic_pick, deterministic_index
-//!   render_loop.rs — spawn_renderer_loop, create_renderer
-//!   backends/     — ProceduralRenderer, BevyChannelRenderer
+//!   render_loop.rs — spawn_renderer_loop, create_renderer (`avatar-3d` only)
+//!   backends/     — ProceduralRenderer, Live2DRenderer, BevyChannelRenderer (`avatar-3d` only)
 
 pub mod backend;
 pub mod backends;
@@ -34,6 +34,8 @@ pub mod gender;
 pub mod hash;
 pub mod publishers;
 pub mod registry;
+// The Bevy slot allocator + renderer factory — exists only with the 3D renderer.
+#[cfg(feature = "avatar-3d")]
 pub mod render_loop;
 pub mod renderer;
 pub mod selection;
@@ -43,10 +45,9 @@ pub mod video_pump;
 // Re-export everything at the module level for backward compatibility.
 // Call sites use `crate::live::avatar::RgbaFrame`, etc.
 pub use backend::{AvatarError, ModelFormat, RenderBackend};
-pub use backends::{
-    Bevy3DBackend, BevyChannelRenderer, Live2DBackend, Live2DRenderer, ProceduralBackend,
-    ProceduralRenderer,
-};
+#[cfg(feature = "avatar-3d")]
+pub use backends::{Bevy3DBackend, BevyChannelRenderer};
+pub use backends::{Live2DBackend, Live2DRenderer, ProceduralBackend, ProceduralRenderer};
 pub use catalog::{avatar_model_path, AvatarCatalog, AVATAR_CATALOG};
 pub use frame::{AvatarConfig, ResolutionTier, RgbaFrame};
 pub use frame_analysis::{FrameAnalysis, HealthVerdict};
@@ -56,6 +57,7 @@ pub use gender::{gender_from_identity, gender_from_voice_name};
 pub use hash::{deterministic_index, deterministic_pick, fnv1a_hash};
 #[cfg(all(feature = "livekit-webrtc", target_os = "macos"))]
 pub use publishers::gpu_bridge::GpuBridgePublisher;
+#[cfg(feature = "avatar-3d")]
 pub use render_loop::{
     allocate_bevy_slot, create_renderer, reset_slot_pool, spawn_renderer_loop, BevySlotAllocation,
     SlotGuard,

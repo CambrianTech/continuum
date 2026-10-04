@@ -161,6 +161,36 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
   fi
 fi
 
+# The same rule for the PATH this script INHERITS. A caller can hand it every provisioned
+# tree: the CLI's runtime library dirs did exactly that from #4653 (cuda-toolkit/bin, CUDA 12,
+# ahead of cuda-13.2), so every warm build on the 5090 refused below with "CUDA MAJOR
+# MISMATCH" (28 times, 10-01..10-04). The deploy runs the INSTALLED CLI, so fixing the CLI
+# alone can never reach a node it already broke; this file is read from the checkout on every
+# deploy. Only our own payload's cuda-* dirs are touched; a system CUDA is not ours to remove.
+if [ -n "$_wbe_cuda_tree" ]; then
+  _wbe_tree_lc="$(printf '%s' "$_wbe_cuda_tree" | tr '[:upper:]' '[:lower:]')"
+  _wbe_root_lc="$(printf '%s' "$_wbe_payload_root" | tr '[:upper:]' '[:lower:]')"
+  _wbe_kept=""; _wbe_dropped=""
+  _IFS_SAVE="$IFS"; IFS=':'
+  for _pd in $PATH; do
+    _pd_lc="$(printf '%s' "$_pd" | tr '[:upper:]' '[:lower:]')"
+    case "$_pd_lc" in
+      "$_wbe_root_lc"/cuda-*)
+        if [ "${_pd_lc#"$_wbe_tree_lc"}" = "$_pd_lc" ]; then
+          _wbe_dropped="$_wbe_dropped $_pd"; continue
+        fi
+        ;;
+    esac
+    _wbe_kept="${_wbe_kept:+$_wbe_kept:}$_pd"
+  done
+  IFS="$_IFS_SAVE"
+  if [ -n "$_wbe_dropped" ]; then
+    export PATH="$_wbe_kept"
+    echo "▶ CUDA PATH: dropped inherited non-declared tree dir(s):$_wbe_dropped"
+  fi
+  unset _wbe_tree_lc _wbe_root_lc _wbe_kept _wbe_dropped _pd _pd_lc _IFS_SAVE
+fi
+
 # ── Windows: pin cmake + ninja + the generator ──────────────────────────────────────────────
 # UNCONDITIONAL on Windows, and deliberately so. This block used to live nested inside the
 # CUDA/MSVC import below, behind `command -v nvcc && ! command -v cl.exe`. cmake is a

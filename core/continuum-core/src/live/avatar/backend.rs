@@ -25,6 +25,15 @@ pub enum AvatarError {
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
 
+    /// 3D rendering was requested from a build compiled without the `avatar-3d`
+    /// cargo feature (headless / CPU-only nodes). Refused loudly, never
+    /// substituted with another backend — the caller asked for a 3D face.
+    #[error(
+        "{0} needs 3D avatar rendering, but this build was compiled without the \
+         `avatar-3d` cargo feature (rebuild with `--features avatar-3d`)"
+    )]
+    Avatar3dNotCompiled(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
@@ -55,6 +64,12 @@ pub enum ModelFormat {
 }
 
 impl ModelFormat {
+    /// 3D model formats (VRM / glTF) — rendered only by the Bevy `bevy_3d`
+    /// backend, which exists only under the `avatar-3d` cargo feature.
+    pub fn is_3d(self) -> bool {
+        matches!(self, Self::Vrm0x | Self::Vrm1 | Self::Gltf)
+    }
+
     /// Infer format from filename extension.
     pub fn from_filename(path: &str) -> Option<Self> {
         let lower = path.to_lowercase();

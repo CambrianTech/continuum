@@ -3,7 +3,8 @@
 //! Type definitions for the avatar rendering system.
 //! Scene graph types (SceneObject, AvatarState, etc.) live in the `scene` module.
 //! This module holds Bevy ECS Resources that wrap per-slot animation state,
-//! plus public API types (AvatarCommand, Emotion, Gesture).
+//! plus public API types (AvatarCommand; Emotion/Gesture are re-exported from the
+//! ungated `live::video::avatar_types`).
 
 use bevy::asset::Handle;
 use bevy::gltf::Gltf;
@@ -14,6 +15,10 @@ use std::sync::Arc;
 
 use crate::gpu::memory_manager::GpuAllocationGuard;
 use crate::live::avatar::RgbaFrame;
+
+// Pure avatar types live ungated in `live/video/avatar_types.rs` (they outlive the
+// `avatar-3d` feature); re-exported so `super::types::*` globs keep resolving them.
+pub use crate::live::video::avatar_types::{Emotion, Gesture};
 
 // Re-export scene types used by animation and skeleton modules.
 pub(super) use super::scene::{AvatarBones, MorphTargetLayout, SlotRegistry};
@@ -35,68 +40,6 @@ pub struct SpeechAnimationClip {
     pub interval_ms: u32,
     /// Total audio duration (ms). Bevy auto-clears Speaking flag when this expires.
     pub duration_ms: u64,
-}
-
-/// Emotional expression state for avatar facial animation.
-/// Maps to VRM expression blend shape presets. Neutral = no expression active.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    ts_rs::TS,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/avatar/Emotion.ts")]
-pub enum Emotion {
-    #[default]
-    Neutral,
-    Happy,
-    Sad,
-    Angry,
-    Surprised,
-    Relaxed,
-}
-
-/// Body gesture for avatar upper-body animation.
-/// Driven by speech content analysis — gestures fire alongside emotions
-/// since they animate different body parts (arms vs face).
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    ts_rs::TS,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/avatar/Gesture.ts")]
-pub enum Gesture {
-    #[default]
-    None,
-    /// Friendly wave — right arm up, forearm oscillates
-    Wave,
-    /// Thinking pose — right hand near chin, head tilts
-    Think,
-    /// Emphatic head nod — stronger than speech nod
-    Nod,
-    /// Shoulders up, arms slightly out — uncertainty
-    Shrug,
-    /// Right arm extended forward — directing attention
-    Point,
-    /// Both arms slightly out, palms up — explaining
-    OpenHands,
 }
 
 /// Commands sent to the Bevy renderer thread.

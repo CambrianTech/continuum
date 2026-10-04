@@ -1749,8 +1749,9 @@ impl PreparedCoreService {
             };
             // One road for a refused kickstart and a refused spawn: the old core is
             // already stopped, so either one with nothing answering is a dark node.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
             let started_new = match launchd::live::kickstart(&self.job.domain) {
-                Ok(()) => launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60))
+                Ok(()) => launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60))
                     .await
                     .map(|_| ()),
                 Err(refused) => Err(refused),
@@ -1763,14 +1764,26 @@ impl PreparedCoreService {
             eprintln!("⚠ {staged_failed}\n▶ restoring the previous build and kickstarting it");
             let kept = launchd::live::restore_previous(&self.job)
                 .map_err(|e| format!("{staged_failed}; the node is DARK: {e}"))?;
-            launchd::live::kickstart(&self.job.domain)
-                .map_err(|e| format!("{staged_failed}; restored the previous build but the node is DARK: {e}"))?;
+            // A kickstart error is not a dark node: on the M5 (2026-10-03) `kickstart -k`
+            // reported failure at 10:08:02Z while the restored core started in that same
+            // second, most likely spawned by that kickstart before it exited non-zero. (Not
+            // KeepAlive: the plist sets it to Crashed only, which never retries a job that did
+            // not start.) Only the bounded wait decides.
+            let runs_before = launchd::live::spawn_runs(&self.job.domain);
+            if let Err(e) = launchd::live::kickstart(&self.job.domain) {
+                eprintln!("⚠ kickstart of the restored build reported: {e}; waiting for launchd to start it");
+            }
             let core_pid = move || launchd::live::serving_core_pid(&socket);
-            match launchd::live::wait_owned(&self.job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
-                Ok(pid) => Err(format!(
-                    "{staged_failed}; rolled back: the previous build is serving under launchd (pid {pid}), the refused one is kept at {}",
-                    kept.display()
-                )),
+            match launchd::live::wait_owned(&self.job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+                // Answering under launchd is not yet "restored": the receipt names the build that
+                // is actually running and refuses one that is not the build put back (#194).
+                Ok(pid) => Err(match restored_build_identity(&self.job.slot).await {
+                    Ok(sha) => format!(
+                        "{staged_failed}; rolled back: the previous build {sha} is serving under launchd (pid {pid}), the refused one is kept at {}",
+                        kept.display()
+                    ),
+                    Err(why) => format!("{staged_failed}; rolled back, but the restored core's identity is unproven: {why}"),
+                }),
                 Err(again) => Err(format!("{staged_failed}; the previous build did not come up either, the node is DARK: {again}")),
             }
         }
@@ -1912,30 +1925,23 @@ impl Drop for WarmBuildReceipt {
     }
 }
 
-/// A warm build runs BESIDE a serving core by definition, so it yields the CPU to it: the
-/// lowest scheduling priority, inherited by cargo and every rustc it starts. At equal
-/// priority a deploy build on the IntelMac (2026-09-27, ~10 h, load 25 on 12 cores) starved
-/// its CPU-served lane: 34 of 34 generations in an hour failed their prefill bound and the
-/// citizens took no turn (Cormac's read of the captures). Background priority costs the
-/// build nothing on an idle machine and hands the cores to serving on a busy one.
+/// A warm build beside a serving core: below the core in the run queue, never throttled.
 ///
-/// Priority alone did not protect a CPU-served lane (card 682a5abf): nice reorders the run
-/// queue but frees no core, and cargo's default jobs (one per logical CPU) took the cores the
-/// lane decodes on. Beside a CPU-served engine the build also takes ONE job
-/// (`CARGO_BUILD_JOBS`, which cargo honours and install-llama-server.sh reads as its own
-/// budget), and on macOS it runs in the background band, which throttles CPU and I/O below
-/// nice. Both are inherited by every child (measured on the IntelMac: nice 19, priority 3).
+/// Joel, 2026-10-03: "Speed of engineering iteration is everything now and building isn't a
+/// runtime feature." End users never compile (they get binaries); the machines that build are
+/// the fleet's own, where a deploy gates every fix's verification. So the build takes every
+/// core the core is not using:
+/// - nice 19 (Windows: below-normal class), inherited by cargo and every rustc, so a persona's
+///   decode still preempts it; that only orders the run queue, so idle cores all go to the build;
+/// - NO CPU-lane job cap and NO macOS background band. Those were removed: on the IntelMac they
+///   held a deploy's final links to ~95 CPU-minutes per bin across ~5h40m of wall time, and on
+///   the M5 the band alone held rustc at 8% CPU where clearing it gave 58% (#4679);
+/// - the MEMORY budget stays (`warm_build_jobs_for_memory`): that one prevents an OOM kill of the
+///   serving node, which is the never-crash contract, not a speed knob.
 fn yield_to_serving(cmd: &mut std::process::Command) {
-    // Two budgets, the smaller wins: the cores a CPU-served lane holds (card 682a5abf) and
-    // the memory the serving node has left (a lane that fills memory must not stop deploys).
-    let backend = continuum_core::inference::llama_server::installed_engine_backend();
-    let cores = continuum_core::inference::llama_server::warm_build_jobs(backend.as_deref());
-    let memory = continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes());
-    let jobs = match (cores, memory) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
-    if let Some(jobs) = jobs {
+    if let Some(jobs) =
+        continuum_core::inference::llama_server::warm_build_jobs_for_memory(available_memory_bytes())
+    {
         cmd.env("CARGO_BUILD_JOBS", jobs.to_string());
     }
     #[cfg(unix)]
@@ -1946,9 +1952,6 @@ fn yield_to_serving(cmd: &mut std::process::Command) {
         cmd.pre_exec(|| {
             // PRIO_PROCESS on the child itself (who = 0); cargo and rustc inherit it.
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
-            // The background band, also on the child itself and inherited.
-            #[cfg(target_os = "macos")]
-            libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
             Ok(())
         });
     }
@@ -2417,6 +2420,42 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
 /// describing the binary you are RUNNING rather than one found on disk.
 const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 
+/// The build a rollback put back, proven: the restored slot binary's embedded SHA must be
+/// the one the answering core reports. `Ok(sha)` only when they match.
+#[cfg(target_os = "macos")]
+async fn restored_build_identity(slot: &Path) -> Result<String, String> {
+    let expected = binary_build_sha(slot).await?;
+    let actual = running_core_build_sha("restore-verify").await?.unwrap_or_default(); // unwrap_or_default: an absent sha is the mismatch the check below names
+    if sha_matches(&actual, &expected) {
+        Ok(expected)
+    } else {
+        Err(format!("the slot holds {expected} but the answering core reports {actual:?}"))
+    }
+}
+
+/// The RUNNING core's build SHA, from the process itself over `ping`, bounded at 30 s: a
+/// core that accepts the socket mid-boot but never answers made `continuum reboot` hang
+/// for good (IntelMac, 50 min, 2026-09-05). `what` names the caller in the error. The one
+/// read both the deploy receipt and the rollback's identity check use.
+async fn running_core_build_sha(what: &str) -> Result<Option<String>, String> {
+    let socket = socket_path();
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        connection()
+            .commands()
+            .execute_value("ping", Value::Object(Default::default())),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "{what}: the core on {socket} accepted the socket but did not answer `ping` \
+             within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
+        )
+    })?
+    .map_err(|e| format!("{what}: no core answering on {socket}: {e}"))?;
+    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+}
+
 /// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
 /// `reboot` (start-server.sh rebuilds + reinstalls it unless `cli_self_build` skips the
 /// platform), false from a bare `deploy-verify`. It is what lets the CLI-provenance note
@@ -2431,29 +2470,8 @@ async fn verify_deployed_build_against(
     prebuilt: Option<&PrebuiltCore>,
 ) -> Result<(), String> {
     let socket = socket_path();
-    // The RUNNING core's provenance, from the process itself. BOUNDED: a core
-    // that accepts the socket mid-boot but never answers made `continuum
-    // reboot` hang for good (IntelMac's node, 50 min, 2026-09-05) — the same
-    // wall-clock-forever shape as the 300 s boot watchdog, on the other side of
-    // the socket. A named failure beats a silent hang.
-    let reply = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        connection()
-            .commands()
-            .execute_value("ping", Value::Object(Default::default())),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "deploy-verify: the core on {socket} accepted the socket but did not answer `ping` \
-             within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
-        )
-    })?
-    .map_err(|e| format!("deploy-verify: no core answering on {socket}: {e}"))?;
-    let actual = reply
-        .get("buildSha")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+    // The RUNNING core's provenance, from the process itself (bounded; see the helper).
+    let actual = running_core_build_sha("deploy-verify").await?;
 
     // What the deploy SHOULD have shipped.
     let (expected, expected_source) = match prebuilt {
@@ -2596,34 +2614,71 @@ fn core_artifact_candidates(home: &str, payload: &Path, cargo_target_dir: Option
 /// `root`. Pure over the filesystem so the selection rule is testable without
 /// spawning anything.
 ///
-/// Mirrors the manifest's `runtime_path` entries: fixed-name tool dirs
-/// (`tools/<tool>/bin`) and versioned CUDA trees (`cuda-*/Library/bin`). The
-/// CUDA sweep reads the directory rather than shelling a glob, so it behaves
-/// identically on every platform and never depends on a shell being present.
+/// Fixed-name tool dirs (`tools/<tool>/bin`), plus the runtime dir of ONE CUDA
+/// tree: [`declared_cuda_runtime_dir`]. Every `cuda-*` tree on PATH at once is the
+/// multi-tree bug `windows-build-env.sh` fixed on 2026-08-07: the first tree on PATH
+/// decides which `cublas64_<major>.dll` the loader and linker bind, whatever
+/// CUDA_PATH declares. #4653 re-introduced it here (`cuda-toolkit/bin`, CUDA 12,
+/// ahead of `cuda-13.2/Library/bin`), and every deploy's warm build on the 5090 then
+/// refused with "CUDA MAJOR MISMATCH" (28 times from 10-01 to 10-04), because the
+/// build inherits this PATH.
 fn runtime_library_dirs(root: &std::path::Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    for relative in ["tools/cmake/bin", "tools/llvm/bin", "tools/poppler/Library/bin", "cuda-toolkit/bin"] {
+    for relative in ["tools/cmake/bin", "tools/llvm/bin", "tools/poppler/Library/bin"] {
         let bin = root.join(relative);
         if bin.is_dir() {
             dirs.push(bin);
         }
     }
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if !name.starts_with("cuda-") {
-                continue;
-            }
-            let bin = entry.path().join("Library").join("bin");
-            if bin.is_dir() {
-                dirs.push(bin);
-            }
+    dirs.extend(declared_cuda_runtime_dir(root));
+    dirs
+}
+
+/// The ONE CUDA tree's runtime dir: the same selection `windows-build-env.sh` makes
+/// before a build, so the core runs on the major it was linked against. Over the
+/// `cuda-*` trees under `root` that ship a runtime (`cublas64_<major>.dll` in
+/// `Library/bin` or `bin`), prefer a linkable one (`cuda.lib` + `curand.lib` in
+/// `Library/lib/x64` or `lib/x64`), then the highest major, then the most DLLs, then
+/// the name, so two machines with the same trees choose the same one. A node with
+/// only a runtime (a prebuilt install, nothing to link) still gets its runtime.
+fn declared_cuda_runtime_dir(root: &std::path::Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut best: Option<((bool, u32, usize, String), PathBuf)> = None;
+    for entry in entries.flatten() {
+        let tree = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !name.starts_with("cuda-") || !tree.is_dir() {
+            continue;
+        }
+        let linkable = ["Library/lib/x64", "lib/x64"]
+            .iter()
+            .any(|sub| tree.join(sub).join("cuda.lib").is_file() && tree.join(sub).join("curand.lib").is_file());
+        let runtime = ["Library/bin", "bin"].iter().find_map(|sub| {
+            let dir = tree.join(sub);
+            let major = std::fs::read_dir(&dir).ok()?.flatten().find_map(|f| {
+                f.file_name()
+                    .to_str()?
+                    .strip_prefix("cublas64_")?
+                    .strip_suffix(".dll")?
+                    .parse::<u32>()
+                    .ok()
+            })?;
+            Some((dir, major))
+        });
+        let Some((dir, major)) = runtime else {
+            continue; // no runtime: nothing here a process can load
+        };
+        let dlls = std::fs::read_dir(&dir)
+            .map(|d| d.flatten().filter(|f| f.path().extension().is_some_and(|x| x == "dll")).count())
+            .unwrap_or(0); // unwrap_or: just listed; an unreadable dir ranks as having none
+        let rank = (linkable, major, dlls, name);
+        if best.as_ref().is_none_or(|(b, _)| rank > *b) {
+            best = Some((rank, dir));
         }
     }
-    dirs
+    best.map(|(_, dir)| dir)
 }
 
 /// Prepend the manifest-declared runtime library dirs to the child's PATH.
@@ -3288,6 +3343,9 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         if options.runs(Arm::Core) {
             take(Arm::Core, install_core(check).await);
         }
+        if options.runs(Arm::Airc) {
+            take(Arm::Airc, install_airc(check).await);
+        }
         if options.runs(Arm::Cli) {
             // The macOS CLI arm (PATH copies follow the slot's CLI) is owed: on this OS the
             // slot carries no CLI descriptor yet. Said, never counted as converged.
@@ -3334,6 +3392,10 @@ async fn install(options: supervisor_install::InstallOptions) -> Result<(), Stri
         // 3. The CLI on PATH follows the slot's CLI (fresh after a stage).
         if options.runs(Arm::Cli) {
             take(Arm::Cli, install_cli(check).await);
+        }
+        // 4. The mesh: airc installed and started at login.
+        if options.runs(Arm::Airc) {
+            take(Arm::Airc, install_airc(check).await);
         }
         finish_install(check, &reports, &failed)
     }
@@ -3666,6 +3728,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
             ));
         }
         eprintln!("▶ crash test: kill -9 {victim}; waiting for {} to relaunch it", job.domain.target());
+        let runs_before = live::spawn_runs(&job.domain);
         // SAFETY: a plain signal to a pid this process just read as the supervised core.
         let rc = unsafe { libc::kill(victim as i32, libc::SIGKILL) };
         if rc != 0 {
@@ -3673,7 +3736,7 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
         }
         let t0 = std::time::Instant::now();
         let fresh = move || core_pid().filter(|p| *p != victim);
-        match live::wait_owned(&job, fresh, core_is_up, Duration::from_secs(120)).await {
+        match live::wait_owned(&job, runs_before, fresh, core_is_up, Duration::from_secs(120)).await {
             Ok(pid) => {
                 let secs = t0.elapsed().as_secs();
                 eprintln!("✅ healed: {} relaunched the core (pid {pid}) in {secs}s", job.domain.target());
@@ -3693,6 +3756,135 @@ async fn supervisor_status(crash_test: bool) -> Result<(), String> {
             }
         }
     }
+}
+
+/// The airc arm: continuum makes sure the mesh it talks through is installed and comes
+/// back after a reboot. airc stays its own product: installed by its own installer,
+/// and its login supervisor judged and repaired by its own registrar
+/// (`unix/register-autostart.sh --check`, `windows/register-autostart.ps1 -Check`).
+/// This arm only invokes them; it never reads airc's task or plist itself.
+#[cfg(any(windows, target_os = "macos"))]
+async fn install_airc(check: bool) -> Result<supervisor_install::ArmReport, String> {
+    use supervisor_install::{airc_drift, AircDrift, ArmReport};
+    let read = || {
+        let airc = airc_on_path();
+        let supervisor = airc.as_deref().and_then(|a| airc_registrar(a, RegistrarMode::Check).err());
+        let runs = airc.is_some();
+        (airc, airc_drift(runs, supervisor))
+    };
+    let (mut airc, drift) = read();
+    if drift.is_empty() {
+        println!("✓ airc: installed; its registrar reports the login supervisor converged");
+        return Ok(ArmReport::converged());
+    }
+    for d in &drift {
+        println!("  airc: {d:?}");
+    }
+    if check {
+        println!("✗ airc: drifted; `continuum install` installs airc and has airc's registrar repair its supervisor");
+        return Ok(ArmReport::read_only(drift.len()));
+    }
+    if drift.contains(&AircDrift::Missing) {
+        println!("▶ airc: installing through airc's own installer");
+        continuum_core::airc::discovery::install_airc()
+            .await
+            .map_err(|e| format!("airc install: {e}"))?;
+        airc = airc_on_path();
+    }
+    let airc = airc.ok_or("airc installed but is still not runnable on PATH; open a new shell or check ~/.local/bin")?;
+    if airc_registrar(&airc, RegistrarMode::Check).is_err() {
+        airc_registrar(&airc, RegistrarMode::Repair)?;
+    }
+    let (_, after) = read();
+    if !after.is_empty() {
+        return Err(format!("airc still drifted after its registrar ran: {after:?}"));
+    }
+    println!("✓ airc: installed; its registrar reports the login supervisor converged ({})", airc.display());
+    Ok(ArmReport { drift_before: drift.len(), drift_after: 0 })
+}
+
+/// The `airc` a login shell would run, if it runs at all (`--version` answers).
+#[cfg(any(windows, target_os = "macos"))]
+fn airc_on_path() -> Option<PathBuf> {
+    use supervisor_install::quiet_command;
+    let finder = if cfg!(windows) { "where" } else { "which" };
+    let out = quiet_command(finder).arg("airc").output().ok()?;
+    let found = String::from_utf8_lossy(&out.stdout).lines().next().map(|l| PathBuf::from(l.trim()))?;
+    let runs = out.status.success()
+        && quiet_command(&found)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    runs.then_some(found)
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegistrarMode {
+    /// Read only: `--check` / `-Check`. Never elevates.
+    Check,
+    /// Register or repair; on Windows the registrar asks for elevation only if the
+    /// existing task needs it, through its own consent path.
+    Repair,
+}
+
+/// Run airc's own supervisor registrar from the checkout airc was installed from.
+/// `Err` carries the registrar's own words (the drift, or why it could not run).
+#[cfg(any(windows, target_os = "macos"))]
+fn airc_registrar(airc: &Path, mode: RegistrarMode) -> Result<(), String> {
+    use supervisor_install::quiet_command;
+    let home = PathBuf::from(home_dir()?);
+    let marker = home.join(".airc").join("install-source");
+    let source = std::fs::read_to_string(&marker)
+        .map_err(|e| format!("cannot read {} to find airc's checkout: {e}; run `airc update`", marker.display()))?;
+    let source = PathBuf::from(source.trim());
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let registrar = source.join("unix").join("register-autostart.sh");
+        if !registrar.is_file() {
+            return Err(format!("this airc predates its supervisor registrar ({} is missing); run `airc update`", registrar.display()));
+        }
+        let mut command = quiet_command("bash");
+        command.arg(&registrar).arg(airc);
+        if mode == RegistrarMode::Check {
+            command.arg("--check");
+        }
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let registrar = source.join("windows").join("register-autostart.ps1");
+        if !registrar.is_file() {
+            return Err(format!("this airc predates its supervisor registrar ({} is missing); run `airc update`", registrar.display()));
+        }
+        let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
+        let shell = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut command = quiet_command(shell);
+        command
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File"])
+            .arg(&registrar)
+            .arg("-AircPath")
+            .arg(airc)
+            // Native module discovery across pwsh callers, as the scheduler seam does.
+            .env_remove("PSModulePath");
+        if mode == RegistrarMode::Check {
+            command.arg("-Check");
+        }
+        command
+    };
+    let out = command
+        .current_dir(&home)
+        .output()
+        .map_err(|e| format!("cannot run airc's supervisor registrar: {e}"))?;
+    if out.status.success() {
+        if mode == RegistrarMode::Repair {
+            print!("  airc: {}", String::from_utf8_lossy(&out.stdout));
+        }
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if said.is_empty() { format!("airc's registrar exited {}", out.status) } else { said })
 }
 
 /// The macOS supervisor arm of `continuum install` (card a1bd8b58): READ the registered
@@ -3789,11 +3981,14 @@ async fn install_supervisor_macos(check: bool, user: bool) -> Result<supervisor_
     // The system daemon was started by its bootstrap (RunAtLoad) inside the elevated half
     // — a kickstart there needs root and is not owed. The agent is kickstarted: on a gui
     // domain in on-demand-only mode bootstrap does NOT start it (measured).
+    // A system daemon was spawned by that bootstrap already, so a refusal there may be in
+    // this count; the wait then runs to its ceiling instead of failing fast (not wrong).
+    let runs_before = live::spawn_runs(&job.domain);
     if matches!(job.domain, Domain::Gui(_)) {
         live::kickstart(&job.domain)?;
     }
     let core_pid = || live::serving_core_pid(&socket);
-    match live::wait_owned(&job, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
+    match live::wait_owned(&job, runs_before, core_pid, core_is_up, Duration::from_secs(5 * 60)).await {
         Ok(pid) => println!("✓ {} owns the core (pid {pid}); `continuum supervisor-status --crash-test` proves the heal", job.domain.target()),
         Err(why) => {
             let on_demand = live::domain_on_demand_only_recently(Duration::from_secs(3 * 60));
@@ -3952,6 +4147,13 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 return Ok(());
             }
             let attempt = async {
+                // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
+                // The CI wait below can run for hours, and without a claim nothing marks
+                // this deploy in flight: the actuator re-launches a consumer once the request
+                // looks stranded (1.5x the last deploy time), and that second consumer would
+                // check the tree out under this one and reboot alongside it. `reboot` re-takes
+                // the same claim for this pid, and its guard releases it at the handoff.
+                let _claim = DeployClaimGuard::take(&tip);
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
                 // A checkout moves gitlinks, not submodule trees. Without this the llama.cpp
@@ -3967,12 +4169,23 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
                 let service = consumer_uses_service(std::env::consts::OS);
+                // Take the core CI built for this tip instead of compiling it here (card
+                // 50ca737e). `None` means CI cannot deliver for this node, said in the log,
+                // and the reboot's warm build compiles as before.
+                let prebuilt = ci_core_for(&repo, &tip).await;
+                if let Some(core) = &prebuilt {
+                    install_ci_companions(&repo, core)?;
+                }
                 deploy_note(&format!(
-                    "▶ deploy-consume: {} at {tip} — reboot{}",
+                    "▶ deploy-consume: {} at {tip} — reboot{}{}",
                     repo.display(),
-                    if service { " --service" } else { "" }
+                    if service { " --service" } else { "" },
+                    if prebuilt.is_some() { " --prebuilt (the CI build)" } else { "" }
                 ));
-                reboot(RebootOptions { service, ..Default::default() }).await
+                // A downloaded core lives in the artifact cache; launchd execs only its slot,
+                // so it is STAGED into the slot after the stop, like a warm build's artifact.
+                let stage_prebuilt = prebuilt.is_some();
+                reboot(RebootOptions { service, prebuilt, stage_prebuilt, ..Default::default() }).await
             }
             .await;
             match &attempt {
@@ -3990,6 +4203,175 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
             }
             attempt
         }
+    }
+}
+
+/// The core CI built for `tip`, downloaded, verified and extracted, for `reboot --prebuilt`
+/// (card 50ca737e). While CI is still inside its budget this WAITS, in this detached
+/// consumer, rather than returning: the actuator re-launches a consumer only after the
+/// request is stranded (1.5x the last deploy time), so a "come back later" would idle the
+/// node for hours and spend an actuation. `None` = compile here; the reason is logged.
+async fn ci_core_for(repo: &Path, tip: &str) -> Option<PathBuf> {
+    use continuum_cli_lifecycle::prebuilt_artifact::{platform_key, when_artifact_missing, MissingArtifact};
+    let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    loop {
+        tick.tick().await;
+        let missing = match platform {
+            None => when_artifact_missing(None, 0),
+            Some(p) => match fetch_ci_core(repo, tip, p).await {
+                Ok(Some(core)) => return Some(core),
+                Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, tip)),
+                Err(why) => MissingArtifact::BuildFromSource(format!(
+                    "the CI build for {tip} was refused: {why}; compiling here"
+                )),
+            },
+        };
+        match missing {
+            MissingArtifact::Wait(why) => {
+                deploy_note(&format!("deploy-consume: {why}"));
+                // Waiting on CI is this deploy's progress. The claim's renewer judges progress
+                // by CPU, and a wait has none, so without this the claim would read Stalled
+                // after an hour; still excluding, but naming a healthy wait as a hang.
+                if let Ok(root) = continuum_root() {
+                    let _ = continuum_core::runtime::deploy_claim::renew(&root, std::process::id() as i32, now_ms(), true);
+                }
+            }
+            MissingArtifact::BuildFromSource(why) => {
+                deploy_note(&format!("deploy-consume: {why}"));
+                return None;
+            }
+        }
+    }
+}
+
+/// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
+/// published is not THE build for this node, or does not match its checksum.
+async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
+    use continuum_cli_lifecycle::prebuilt_artifact::{manifest_url, manifest_verdict, ArtifactManifest};
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let url = manifest_url(tip, platform).ok_or_else(|| format!("{tip} is not a full commit sha"))?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(1800))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("fetching {url}: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let manifest: ArtifactManifest = resp
+        .error_for_status()
+        .map_err(|e| format!("fetching {url}: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("reading {url}: {e}"))?;
+    manifest_verdict(&manifest, tip, platform, &local_core_features(repo)?)?;
+    if manifest.archive.contains(['/', '\\']) || manifest.archive.contains("..") {
+        return Err(format!("archive name `{}` is not a plain file name", manifest.archive));
+    }
+    let root = PathBuf::from(home_dir()?).join(".continuum/cache/artifacts");
+    let dir = root.join(&tip[..12]);
+    let _ = std::fs::remove_dir_all(&dir); // a half-written earlier attempt is not reused
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    // Stream to disk while hashing: the archive is ~200 MB, and the weak nodes are the ones
+    // that need this path most.
+    let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
+    let mut resp = client
+        .get(&archive_url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("fetching {archive_url}: {e}"))?;
+    let archive = dir.join(&manifest.archive);
+    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
+        hasher.update(&chunk);
+        file.write_all(&chunk).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    }
+    drop(file);
+    let digest = format!("{:x}", hasher.finalize());
+    if digest != manifest.sha256.to_ascii_lowercase() {
+        return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256));
+    }
+    let status = std::process::Command::new("tar")
+        .args(["-xzf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(&dir)
+        .status()
+        .map_err(|e| format!("tar: {e}"))?;
+    if !status.success() {
+        return Err(format!("tar could not extract {}", archive.display()));
+    }
+    let _ = std::fs::remove_file(&archive);
+    let core = dir.join(format!("continuum-core-{platform}")).join(install_cli::cli_file_name("continuum-core-server"));
+    if !core.is_file() {
+        return Err(format!("the archive has no {}", core.display()));
+    }
+    deploy_note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
+    prune_ci_cores(&root, &dir);
+    Ok(Some(core))
+}
+
+/// What the warm build did besides the core, done for a CI core: the CLI on PATH follows the
+/// core, and the engine is rebuilt only when its stamp says the vendored fork moved
+/// (`install-llama-server.sh` is a no-op otherwise).
+fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
+    let built_cli = core.with_file_name(install_cli::cli_file_name("continuum"));
+    let cli = install_cli::cli_dir(Path::new(&home_dir()?)).join(install_cli::cli_file_name("continuum"));
+    install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10))?;
+    let status = std::process::Command::new(locate_bash()?)
+        .arg(repo.join("tools/scripts/install-llama-server.sh"))
+        .current_dir(repo)
+        .status()
+        .map_err(|e| format!("install-llama-server.sh: {e}"))?;
+    if !status.success() {
+        return Err("install-llama-server.sh failed; the engine would not match the core".into());
+    }
+    Ok(())
+}
+
+/// This node's core feature set, from the ONE mapping CI also builds with.
+fn local_core_features(repo: &Path) -> Result<String, String> {
+    let out = std::process::Command::new(locate_bash()?)
+        .args(["-c", "source tools/scripts/lib/core-features.sh && select_core_features && printf %s \"$CONTINUUM_FEATURES\""])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| format!("core-features.sh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("core-features.sh failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Seconds since `tip` was committed (a merge's commit time is the time it landed).
+fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
+    let committed = git_in(repo, &["log", "-1", "--format=%ct", tip])
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0); // unwrap_or: a clock before 1970 makes every tip "new", so the consumer waits
+    committed.map(|c| now.saturating_sub(c)).unwrap_or(0) // unwrap_or: an unreadable commit time waits, it does not compile early
+}
+
+/// The writer bounds its own cache (disk_eviction: `core-artifacts`): the newest
+/// `KEEP` CI cores stay for rollback, older ones go.
+fn prune_ci_cores(root: &Path, keep_dir: &Path) {
+    const KEEP: usize = 3;
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir() && e.path() != keep_dir)
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, old) in dirs.into_iter().skip(KEEP - 1) {
+        let _ = std::fs::remove_dir_all(&old);
     }
 }
 
@@ -5292,7 +5674,25 @@ fn start_log_report(logfile: &str) -> String {
 /// `Runtime::shutdown` runs three 2s-bounded phases per module in parallel, so a healthy
 /// stop is ~6s worst case; the extra room is for the response to travel back. A stop that
 /// exceeds this is not assumed dead — it is assumed UNKNOWN, and the caller says so.
-const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+///
+/// Plus the turn settle's cap (card 32fa22ba): before any module saves, the core lets the
+/// citizens' admitted turns finish, for their measured remaining time and never longer than
+/// `TURN_SETTLE_CAP`. The same constant the core waits on, so the CLI never gives up on a
+/// stop that is still letting a turn finish. An older core does not settle and answers in
+/// the first 20 s as before.
+const GRACEFUL_STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(
+    20 + continuum_core::cognition::turn_ingress::TURN_SETTLE_CAP.as_secs(),
+);
+
+/// Say the stop may wait before it does (Fable on #4684): a stop letting turns finish for
+/// up to `TURN_SETTLE_CAP` must read as busy, never as hung. Printed before every graceful
+/// stop request, so the operator's `stop` and the deploy's reboot say the same thing.
+fn say_turns_may_settle() {
+    println!(
+        "▶ stopping: turns already in flight finish first (their measured remaining time, at most {}s), then the core saves",
+        continuum_core::cognition::turn_ingress::TURN_SETTLE_CAP.as_secs()
+    );
+}
 
 /// What the graceful request achieved, if anything.
 // Debug: the elevated child has no console an operator can read — its only voice is the
@@ -5599,6 +5999,7 @@ async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulSto
     let conn = connection();
     let cmds = conn.commands();
     let req = cmds.execute_value("system/shutdown", Value::Object(Default::default()));
+    say_turns_may_settle();
     match tokio::time::timeout(GRACEFUL_STOP_BUDGET, req).await {
         Ok(Ok(value)) => {
             let durable = value
@@ -5742,6 +6143,7 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
+    say_turns_may_settle();
     let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
         cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
         .await.map_err(|_| "bound shutdown is still running; no exit acknowledgment sent".to_string())?
@@ -6207,7 +6609,7 @@ fn usage() -> String {
        continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n  \
-       continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot). Each arm reads, changes only\n                                       what drifted, says so. --check reads only. Name arms with\n                                       --supervisor --core --cli. (linux arms pending)\n  \
+       continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot), and airc (installed, started at\n                                       login). Each arm reads, changes only what drifted, says so.\n                                       --check reads only. Name arms with --supervisor --core --cli\n                                       --airc. (linux arms pending)\n  \
        continuum uninstall             unregister the supervisor job (the staged binary stays)\n  \
        continuum supervisor-status [--crash-test]\n                                       who owns the running core; --crash-test = kill -9, expect a heal < 60 s\n\
      \n\
@@ -7005,41 +7407,50 @@ mod tests {
     // with it.
     //
     // Asserts the SELECTION RULE rather than spawning a process: only
-    // existing dirs are contributed (a node without CUDA is unaffected), each
-    // real cuda-* major contributes its own Library/bin, and unrelated
-    // directories are never picked up.
+    // existing dirs are contributed (a node without CUDA is unaffected), ONE
+    // CUDA tree's runtime dir is contributed (the one the build links), and
+    // unrelated directories are never picked up.
     #[test]
     fn runtime_library_dirs_take_only_real_toolchain_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
+        let touch = |rel: &str| {
+            let f = root.join(rel);
+            std::fs::create_dir_all(f.parent().expect("parent")).expect("dir");
+            std::fs::write(f, b"").expect("file");
+        };
         std::fs::create_dir_all(root.join("tools/cmake/bin")).expect("cmake bin");
-        std::fs::create_dir_all(root.join("cuda-toolkit/bin")).expect("native CUDA bin");
         std::fs::create_dir_all(root.join("tools/poppler/Library/bin")).expect("PDF tools");
-        std::fs::create_dir_all(root.join("cuda-13.2/Library/bin")).expect("cuda bin");
-        // Present but NOT a runtime dir: must never be contributed.
-        std::fs::create_dir_all(root.join("cuda-12.1/Library/lib")).expect("cuda lib only");
+        // The 5090's trees (2026-10-04): two complete CUDA 12 trees and one complete 13.
+        for tree in ["cuda-toolkit", "cuda-env"] {
+            let (lib, bin) = if tree == "cuda-toolkit" { ("lib/x64", "bin") } else { ("Library/lib/x64", "Library/bin") };
+            touch(&format!("{tree}/{lib}/cuda.lib"));
+            touch(&format!("{tree}/{lib}/curand.lib"));
+            touch(&format!("{tree}/{bin}/cublas64_12.dll"));
+        }
+        touch("cuda-13.2/Library/lib/x64/cuda.lib");
+        touch("cuda-13.2/Library/lib/x64/curand.lib");
+        touch("cuda-13.2/Library/bin/cublas64_13.dll");
+        // A newer major with a runtime but no import libs: a build could not link it.
+        touch("cuda-14.0/bin/cublas64_14.dll");
+        std::fs::create_dir_all(root.join("cuda-build-venv")).expect("empty tree");
         std::fs::create_dir_all(root.join("models")).expect("models");
 
         let dirs = super::runtime_library_dirs(root);
-        assert!(dirs.contains(&root.join("cuda-toolkit/bin")));
-        assert!(dirs.contains(&root.join("tools/poppler/Library/bin")));
+        assert!(dirs.contains(&root.join("tools/cmake/bin")), "a provisioned tool's bin/ must be contributed: {dirs:?}");
+        assert!(dirs.contains(&root.join("tools/poppler/Library/bin")), "{dirs:?}");
+        // what this catches: the multi-tree PATH #4653 re-introduced. Exactly one CUDA dir
+        // reaches PATH, and it is the tree the build links (complete, highest major), so the
+        // warm build's "CUDA MAJOR MISMATCH" check and the core's loader agree.
+        let cuda: Vec<_> = dirs.iter().filter(|d| d.starts_with(root) && d.strip_prefix(root).is_ok_and(|r| r.to_string_lossy().starts_with("cuda-"))).collect();
+        assert_eq!(cuda, vec![&root.join("cuda-13.2/Library/bin")], "{dirs:?}");
+        assert!(!dirs.iter().any(|d| d.ends_with("models")), "unrelated continuum-root dirs are never runtime library paths: {dirs:?}");
 
-        assert!(
-            dirs.contains(&root.join("tools/cmake/bin")),
-            "a provisioned tool's bin/ must be contributed: {dirs:?}"
-        );
-        assert!(
-            dirs.contains(&root.join("cuda-13.2/Library/bin")),
-            "a real CUDA tree's Library/bin is the dir whose absence kills the loader: {dirs:?}"
-        );
-        assert!(
-            !dirs.iter().any(|d| d.starts_with(root.join("cuda-12.1"))),
-            "a cuda-* tree with no Library/bin contributes nothing: {dirs:?}"
-        );
-        assert!(
-            !dirs.iter().any(|d| d.ends_with("models")),
-            "unrelated continuum-root dirs are never runtime library paths: {dirs:?}"
-        );
+        // A runtime-only node (prebuilt install, nothing to link) still gets its runtime.
+        let only = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(only.path().join("cuda-toolkit/bin")).expect("bin");
+        std::fs::write(only.path().join("cuda-toolkit/bin/cublas64_12.dll"), b"").expect("dll");
+        assert_eq!(super::declared_cuda_runtime_dir(only.path()), Some(only.path().join("cuda-toolkit/bin")));
     }
 
     // what this catches: card d2698cdc — ONNX selection must work without any

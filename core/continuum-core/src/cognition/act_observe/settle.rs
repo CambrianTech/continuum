@@ -411,6 +411,34 @@ async fn settle_to_outcome(
     let mut seen_inputs = None;
     let mut input_watermark = 0;
     loop {
+        // THE NODE IS STOPPING: end at this step boundary (card 32fa22ba, Fable on #4684).
+        // The previous act's generation finished and its observation landed; starting the
+        // next one would hold the stop's settle for a whole further generation, and a long
+        // tool loop for its whole budget. Nothing is torn — the turn ends between acts with
+        // what it did recorded (`turn_acts`), and the next core picks the work up from the
+        // room. Only after an act: a turn that has not acted yet is the settle's business
+        // as a whole turn, and is never admitted once the door has closed.
+        if acts > 0 && crate::cognition::turn_ingress::is_closing() {
+            crate::probe!(
+                class = "cognition.turn.ended_for_stop",
+                room = %room_id,
+                acts = acts,
+                "the node is stopping — the turn ended at an act boundary instead of starting its next generation"
+            );
+            return SettleOutcome {
+                room: room_id,
+                decision: Decision::pass(),
+                spoken: None,
+                acts,
+                world_state: burst.rendered.clone(),
+                room_updates: Arc::clone(&burst.room_updates),
+                metrics,
+                generation_receipts: generation_receipts.clone(),
+                inference_error: None,
+                touched_paths: touched,
+                turn_acts: turn_acts.clone(),
+            };
+        }
         // THE ACT'S DEADLINE IS SIZED FROM THE TURN IT MUST HOLD (card ebce2ba0).
         // `TICK_DEADLINE` was a flat 25 minutes, and on the M5 2026-09-20 it reaped five
         // generations MID-FLIGHT at 1,207,290 / 1,228,814 / 1,491,253 / 1,492,283 /

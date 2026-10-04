@@ -1,17 +1,19 @@
 //! Text-to-Speech (TTS) Adapter System
 //!
-//! Modular TTS with swappable backends (priority order):
-//! - Pocket (local, Candle, 117M - PRIMARY, voice cloning, 8 preset voices)
-//! - Kokoro (local, ONNX, 82M - fast fallback)
-//! - Edge (Microsoft neural voices, online, free, <200ms, 300+ voices - FLAKY)
+//! Modular TTS with swappable backends, all LOCAL (priority order):
+//! - Kokoro (local, ONNX, 82M - the backwards-compatibility floor, fast)
+//! - Pocket (local, Candle, 117M - voice cloning, 8 preset voices; slow on CPU)
 //! - Orpheus (local, Candle GGUF, 3B - LoRA-trainable, emotion tags)
 //! - Piper (local, ONNX - offline fallback)
 //! - Silence (testing only)
 //!
+//! No cloud voice, ever (Joel, 2026-10-03: "We are wanting to avoid cloud entirely").
+//! Persona voices are headed to LoRA-learned voices on a local speech model
+//! (docs/planning/VOICE-ENGINE-PLAN.md); these adapters are the floor until then.
+//!
 //! Uses trait-based polymorphism for runtime flexibility.
 
 pub(crate) mod audio_utils;
-mod edge;
 mod kokoro;
 mod orpheus;
 mod phonemizer;
@@ -19,7 +21,6 @@ mod piper;
 mod pocket;
 mod silence;
 
-pub use edge::EdgeTTS;
 pub use kokoro::KokoroTTS;
 pub use orpheus::OrpheusTts;
 pub(crate) use phonemizer::Phonemizer;
@@ -207,7 +208,7 @@ pub trait TextToSpeech: Send + Sync {
     /// Memory is freed when the last Arc drops.
     /// Calling `initialize()` after `shutdown()` reloads models transparently.
     ///
-    /// Default: no-op (adapters like Edge TTS that don't hold local models can skip this).
+    /// Default: no-op (adapters that hold no local model can skip this).
     async fn shutdown(&self) -> Result<(), TTSError> {
         Ok(())
     }
@@ -303,10 +304,6 @@ impl Default for TTSRegistry {
 pub fn init_registry() {
     let registry = TTS_REGISTRY.get_or_init(|| {
         let mut reg = TTSRegistry::new();
-
-        // Register Edge-TTS (online, Microsoft neural voices) - PRIMARY
-        // Best quality: 300+ unique neural voices, <200ms, each persona gets distinct voice
-        reg.register(Arc::new(EdgeTTS::new()));
 
         // Register Pocket-TTS (local, Candle, 100M) - fast CPU TTS with voice cloning
         // ≤600ms TTFA, 8 preset voices, clone any voice from 5-15s WAV reference audio
@@ -425,15 +422,15 @@ pub async fn synthesize(
         }
         Err(active_err) => {
             // ADAPTER FALL-THROUGH, loudly (2026-09-02, caught by the FIRST
-            // voice/selftest run): Edge-TTS (a CLOUD service, primary) returned
-            // empty audio while Kokoro sat fully provisioned on disk — and one
-            // provider's outage silenced every citizen. A registry of providers
+            // voice/selftest run): the then-primary cloud adapter (Edge, removed
+            // 2026-10-03) returned empty audio while Kokoro sat fully provisioned
+            // on disk — and one provider's outage silenced every citizen. A registry of providers
             // is not a fallback hiding a defect: the next INITIALIZED adapter
             // takes the utterance, the voice re-resolves in ITS voice space,
             // and the swap is probed per-utterance so a degraded provider is a
             // visible fact, never a silent one. `silence` is excluded — zeros
             // are for tests, not for a persona's mouth.
-            let candidates = ["pocket", "kokoro", "orpheus", "piper"];
+            let candidates = ["kokoro", "pocket", "orpheus", "piper"];
             for name in candidates {
                 if name == adapter.name() {
                     continue;
@@ -475,13 +472,14 @@ pub async fn synthesize(
 pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), TTSError> {
     let registry = get_registry();
 
-    // Priority: edge (fast, concurrent) → pocket (local, voice cloning) → kokoro (fast offline) → orpheus → piper → silence
-    // Edge: 300+ neural voices, <200ms, concurrent (no Mutex) — BEST FOR LIVE CALLS
+    // Priority: kokoro → pocket → orpheus → piper → silence. All local.
+    // Kokoro: 82M ONNX, ~97ms — the backwards-compatibility floor, first because it is fast
     // Pocket: 117M Candle, voice cloning, 8 preset voices — but 23x slower than realtime on CPU, single Mutex
-    // Kokoro: 82M ONNX, ~97ms, fast reliable fallback — SPEED
     // Orpheus: 3B GGUF, emotion tags, LoRA-trainable — CUSTOM VOICES
+    // The LoRA-learned voice adapter takes the top seat when `voice/selftest` proves it
+    // (docs/planning/VOICE-ENGINE-PLAN.md).
     let default_priority: Vec<&str> =
-        vec!["edge", "pocket", "kokoro", "orpheus", "piper", "silence"];
+        vec!["kokoro", "pocket", "orpheus", "piper", "silence"];
 
     // Build final order: preferred first (if specified and exists), then remaining in priority
     let mut order: Vec<&str> = Vec::new();
@@ -523,7 +521,7 @@ pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), T
     ))
 }
 
-/// Initialize the active adapter with default priority (pocket → kokoro → edge → orpheus → piper → silence)
+/// Initialize the active adapter with default priority (kokoro → pocket → orpheus → piper → silence)
 pub async fn initialize() -> Result<(), TTSError> {
     initialize_with_preference(None).await
 }

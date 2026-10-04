@@ -25,7 +25,7 @@
 # Usage in docker-compose (mac/vulkan profile):
 #   dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
 #   args:
-#     GPU_FEATURES: "--no-default-features --features load-dynamic-ort,vulkan"
+#     GPU_FEATURES: "--no-default-features --features load-dynamic-ort,vulkan,avatar-3d"
 
 # ── Stage 1: Chef (cargo-chef installed, system deps in place) ──
 # Same multi-stage shape as the cuda variant — collapsing planner+builder
@@ -85,7 +85,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ── Stage 3: Build (cook deps, then real source) ─────────────
 FROM chef AS builder
 
-ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan"
+ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan,avatar-3d"
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 

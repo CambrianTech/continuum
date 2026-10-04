@@ -136,7 +136,7 @@ pub fn spawn() {
                 Decision::Revive { attempt } => {
                     last_attempt = Some(Instant::now());
                     let outcome = match tokio::time::timeout(
-                        daemon_supervisor::ANSWER_BOUND + Duration::from_secs(2),
+                        daemon_supervisor::SPAWN_BUDGET + Duration::from_secs(2),
                         tokio::task::spawn_blocking(daemon_supervisor::spawn),
                     )
                     .await
@@ -146,14 +146,26 @@ pub fn spawn() {
                         Err(_) => Spawned::Failed("spawn did not return within its bound".into()),
                     };
                     match outcome {
-                        Spawned::Started { pid } => {
+                        Spawned::Issued(route) => {
                             revived_by_us = true;
+                            // The start is issued, not yet answered (a store may take a
+                            // minute to open). It spaces the next attempt like a failure
+                            // would, so a slow store is never restarted underneath itself;
+                            // the daemon answering is what the next tick reads as back.
+                            // A later attempt can still land mid-open (the backoff is about
+                            // 30 s, a large store opens in 60-70 s). That is safe ONLY because
+                            // both routes are idempotent: airc's gated autostart joins the
+                            // start already in progress, and a plain `kickstart` (no -k)
+                            // does nothing to a running job. A route that is not idempotent
+                            // must not be added here (Cormac on #4672).
+                            failed_attempts = failed_attempts.saturating_add(1);
                             crate::probe!(
-                                class = "airc.daemon.revived",
-                                pid = pid,
+                                class = "airc.daemon.revive_issued",
                                 attempt = attempt,
+                                route = %route,
                                 absent_s = absent_since.map(|s| s.elapsed().as_secs()).unwrap_or(0), // unwrap_or: 0 = absence start unrecorded, a legible value in the row
-                                "the owner spawned a transport daemon and it answers"
+                                next_check_s = backoff_after(failed_attempts).as_secs(),
+                                "a daemon start was issued through airc; waiting for it to answer"
                             );
                         }
                         Spawned::Answering => {

@@ -144,64 +144,10 @@ fi
 source "$SCRIPT_DIR/lib/windows-build-env.sh"
 
 # ── Per-platform feature flags ───────────────────────────────────────
-# Mac Intel can't use Metal (task #131 — ggml_metal_device_init hangs on
-# Intel + AMD discrete). Force mac-cpu-only on Intel Mac.
-#
-# CONTINUUM_CLI_FEATURES is the GPU-FREE set for the `continuum` CLI, which is a
-# socket client and must never link a GPU runtime (see the CLI build below for why
-# that made it unlaunchable on Windows). It is platform-shaped for the same reason
-# the core's set is: a bare `--no-default-features` is NOT GPU-free-and-buildable
-# everywhere. On macOS the unconditional `llama` dependency fires
-#
-#   compile_error!("llama crate built on macOS WITHOUT `--features metal`")
-#
-# so the plain flag has NEVER produced a CLI on a Mac — every `npm start` since it
-# landed has hit the loud "⚠ GPU-free continuum build failed — retrying with the
-# full feature set … Please report this" fallback, and shipped a GPU-linked CLI
-# while reporting an anomaly nobody reported. `llama/mac-cpu-only` is that guard's
-# OWN declared opt-in for a deliberately CPU-only build, which is exactly what a
-# socket client wants.
-case "$(uname -sm)" in
-  "Darwin x86_64")
-    CONTINUUM_FEATURES="--no-default-features --features livekit-webrtc,llama/mac-cpu-only"
-    # ONE library compile per deploy — the arm64 rule below, which this arm never got
-    # (card 7d1b3660). With the CLI lacking `livekit-webrtc`, cargo's per-invocation
-    # feature unification recompiled the WHOLE continuum-core lib for the CLI and then
-    # again for the next bin: measured on the IntelMac deploy of fd1960e52 (2026-09-20),
-    # the post-stop pass spent 18 + 18 min on two lib rebuilds after the warm pass had
-    # already built every bin — the core was DOWN 41 minutes. The GPU-free reason for a
-    # smaller CLI set (a box without a CUDA runtime) does not apply to a Mac; the CLI is
-    # still CPU-only through `llama/mac-cpu-only`, the same as the core here.
-    CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
-    ;;
-  "Darwin arm64")
-    CONTINUUM_FEATURES="--features metal,accelerate"
-    # ONE library compile per deploy (2026-09-13): a CLI feature set that differs from the
-    # core's makes cargo compile continuum-core TWICE per deploy (measured: the "pure
-    # relaunch" spent ~10 min in a second full lib build). On Apple silicon the featured
-    # build links Metal, which every Mac has — the GPU-free reason (a box without a CUDA
-    # runtime) does not apply here. Same features → the CLI shares the core's lib.
-    CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
-    ;;
-  *)
-    # Source the existing detector for Linux/Windows.
-    source "$SCRIPT_DIR/shared/cargo-features.sh"
-    CONTINUUM_FEATURES="$CARGO_GPU_FEATURES"
-    # ONE library compile per deploy here too (card 9174fc83). The CLI carries its
-    # own GPU-free set ONLY where the core's set links a GPU runtime the loader must
-    # find before main() — cuda (cublas/cudart), rocm, vulkan (libvulkan): the
-    # measured Windows failure (see the CLI notes at the build) and its Linux twins.
-    # A CPU-only box (empty set → the crate defaults) and a DirectML-only Windows
-    # box (ort loads onnxruntime by name at run time; nothing binds at load) get the
-    # same set as the core, so the CLI shares the core's one library build. Before
-    # this every Linux/Windows deploy paid a second full lib compile for a CLI whose
-    # only difference was dropping `livekit-webrtc` — no launchability gained.
-    case " $CONTINUUM_FEATURES " in
-      *cuda*|*rocm*|*vulkan*) CONTINUUM_CLI_FEATURES="--no-default-features" ;;
-      *)                      CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES" ;;
-    esac
-    ;;
-esac
+# The mapping lives in lib/core-features.sh, shared with CI's published binaries.
+# shellcheck source=lib/core-features.sh
+source "$SCRIPT_DIR/lib/core-features.sh"
+select_core_features
 
 if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
   source "$SCRIPT_DIR/lib/cuda-targets.sh"
@@ -653,6 +599,31 @@ PROFILE_LABEL="release"
 if [ -n "$CONTINUUM_DEBUG" ] && [ -z "$CONTINUUM_RELEASE" ]; then
   PROFILE_FLAG=""
   PROFILE_LABEL="debug"
+fi
+
+# OFFICIAL vs DEV release builds (Joel, 2026-10-03: "you just intentionally target release
+# only for repo users and official builds like main merges"; "I've never seen 10 hour
+# deployments ... If we lost optimizations to test faster so be it"). Both repos have
+# canary and main: MAIN is the official line users install, CANARY is where the fleet
+# iterates. A commit on origin/main builds the full release profile (thin LTO). Anything
+# else, a canary deploy on a node, builds release WITHOUT LTO. Same `release` dir and
+# artifact paths, so nothing downstream changes; only the link step does. Measured on the
+# IntelMac: thin LTO alone was ~5h40m of wall time per bin per deploy (cargo 600-646m).
+# Precedence: an explicit CARGO_PROFILE_RELEASE_LTO wins; CONTINUUM_OFFICIAL_BUILD=1
+# forces the official profile.
+# Canary is also a user-facing channel (airc and continuum both offer one). For now its
+# builds take the fast link. Joel: "When we get more users we will also make canary
+# release lto". That is a change to THIS block (treat the canary tip as official), not a
+# second profile.
+if [ "$PROFILE_LABEL" = "release" ] && [ -z "${CARGO_PROFILE_RELEASE_LTO:-}" ]; then
+  if [ "${CONTINUUM_OFFICIAL_BUILD:-}" = "1" ]; then
+    echo "▶ build: official release (CONTINUUM_OFFICIAL_BUILD=1): thin LTO"
+  elif git -C "$REPO_ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    echo "▶ build: official release (HEAD is on origin/main): thin LTO"
+  else
+    export CARGO_PROFILE_RELEASE_LTO=false
+    echo "▶ build: dev release (HEAD is not on origin/main, e.g. a canary deploy): LTO off for a fast link"
+  fi
 fi
 
 

@@ -1220,6 +1220,13 @@ mod tests {
                  protected by serving_active_artifacts while served; never deleted in place",
             ),
             (
+                "core-artifacts",
+                "50ca737e: bounded by its writer — the deploy consumer keeps the newest 3 \
+                 CI-built cores (~200 MB each) and removes older ones on every download; all \
+                 re-downloadable from the canary releases. Owner when built: a capped pool \
+                 like cargo-target, if pressure ever needs more than three",
+            ),
+            (
                 "moe-probe",
                 "a5d4c876/#155: age-based sweep — every run is a re-creatable measurement \
                  (expert-activation traces, coverage curves); the K3 predictor memories hold \

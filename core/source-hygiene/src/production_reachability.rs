@@ -83,7 +83,7 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 /// cost days. If your new type trips this, the fix is to WIRE it or to not land it
 /// yet; a type with no caller is not finished work.
 #[cfg(test)]
-const BASELINE_UNWIRED: usize = 107;
+const BASELINE_UNWIRED: usize = 61;
 
 pub struct ProductionReachability;
 
@@ -158,22 +158,32 @@ impl ProductionReachability {
     }
 
     /// Does this file stand the type up — an inherent `impl` plus a constructor?
+    /// A type is machinery when one of ITS OWN `impl` blocks holds a constructor. The
+    /// constructor must sit inside `impl {name}` — a `fn new` belonging to another type
+    /// in the same file does not make this one machinery (that file-wide reading flagged
+    /// `Probed` the day `CaptureFile::new` landed beside it, review of #4672).
     fn is_machinery(file: &SourceFile, name: &str) -> bool {
-        let has_impl = file
-            .production
-            .lines()
-            .map(|l| split_code_and_comment(l).0)
-            .any(|code| {
-                let t = code.trim_start();
-                t.starts_with(&format!("impl {name} ")) || t.starts_with(&format!("impl {name}<"))
-            });
-        if !has_impl {
-            return false;
+        let mut depth: i64 = 0;
+        let mut own_impl_depth: Option<i64> = None;
+        for code in file.production.lines().map(|l| split_code_and_comment(l).0) {
+            let t = code.trim_start();
+            let opens_own_impl = own_impl_depth.is_none()
+                && (t.starts_with(&format!("impl {name} ")) || t.starts_with(&format!("impl {name}<")));
+            if opens_own_impl {
+                own_impl_depth = Some(depth);
+            }
+            if own_impl_depth.is_some() && CONSTRUCTOR_SHAPES.iter().any(|s| code.contains(s)) {
+                return true;
+            }
+            let delta = crate::brace_delta(code);
+            depth += delta;
+            // `delta < 0` closes a multi-line impl; a one-line `impl X {}` (delta 0) opens
+            // and closes on its own line and must not stay open over the rest of the file.
+            if own_impl_depth.is_some_and(|d| depth <= d && (delta < 0 || opens_own_impl)) {
+                own_impl_depth = None;
+            }
         }
-        file.production
-            .lines()
-            .map(|l| split_code_and_comment(l).0)
-            .any(|code| CONSTRUCTOR_SHAPES.iter().any(|s| code.contains(s)))
+        false
     }
 }
 
@@ -324,5 +334,24 @@ mod tests {
             raw: "pub struct Runner {}\nimpl Runner {\n    pub fn new() -> Self { Self {} }\n}\n".into(),
         };
         assert!(ProductionReachability::is_machinery(&machine, "Runner"));
+
+        // what this catches (review of #4672): a constructor on ANOTHER type in the file
+        // made every pub type there read as machinery.
+        let neighbour = "pub enum Outcome { A }\nimpl Outcome {\n    pub fn ok(&self) -> bool { true }\n}\nstruct Scratch;\nimpl Scratch {\n    fn new() -> Self { Scratch }\n}\n";
+        let mixed = SourceFile { rel: "mixed.rs".into(), production: neighbour.into(), raw: neighbour.into() };
+        assert!(!ProductionReachability::is_machinery(&mixed, "Outcome"));
+        assert!(ProductionReachability::is_machinery(&mixed, "Scratch"));
+
+        // what this also catches (Astra, review of #4678): a "}" inside a string closed
+        // the impl early, so the constructor after it was missed.
+        let stringy = "pub struct Runner {}\nimpl Runner {\n    fn label() -> &'static str { \"}\" }\n    pub fn new() -> Self { Runner {} }\n}\n";
+        let quoted = SourceFile { rel: "stringy.rs".into(), production: stringy.into(), raw: stringy.into() };
+        assert!(ProductionReachability::is_machinery(&quoted, "Runner"));
+
+        // what this also catches (Cormac, review of #4678): a one-line empty impl stayed
+        // open, so a later neighbour's constructor counted as this type's.
+        let empty = "pub struct Marker;\nimpl Marker {}\nstruct Other;\nimpl Other {\n    fn new() -> Self { Other }\n}\n";
+        let one_line = SourceFile { rel: "empty.rs".into(), production: empty.into(), raw: empty.into() };
+        assert!(!ProductionReachability::is_machinery(&one_line, "Marker"));
     }
 }

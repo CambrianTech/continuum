@@ -1159,6 +1159,8 @@ pub fn start_server(
     // (Embedding no longer loads an in-process ONNX model — it is adapter-routed,
     // task #40 — so it has no GPU allocation to track here.)
     crate::live::audio::tts::set_gpu_manager(gpu_manager.clone());
+    // The Bevy renderer exists only under `avatar-3d`.
+    #[cfg(feature = "avatar-3d")]
     crate::live::video::bevy_renderer::set_gpu_manager(gpu_manager.clone());
 
     // Phase 1: HealthModule (stateless)
@@ -2174,7 +2176,9 @@ pub fn start_server(
     // feed during a call — so under pressure while a call is live it REFUSES
     // (tearing it down would freeze the avatar mid-call) and sheds the renderer
     // only when nothing is rendering. Shares the same live-session lifecycle as
-    // voice, so both sides of a call are protected together.
+    // voice, so both sides of a call are protected together. Only under
+    // `avatar-3d`: without the renderer there is no residency to account or shed.
+    #[cfg(feature = "avatar-3d")]
     resource_daemon.add_consumer(Arc::new(crate::modules::bevy_consumer::BevyConsumer::new(
         voice_state.resource_lifecycle.clone(),
         gpu_manager.clone(),
@@ -2210,6 +2214,15 @@ pub fn start_server(
     // Pushed shell completions (2026-08-24): the exit fold publishes
     // command:completed for handed-back executions; wire it the bus once.
     crate::code::shell_session::set_shell_completion_bus(runtime.bus_arc());
+    // Workspace writes (card f860e59c): every write site announces `workspace:written`;
+    // the bench board's artifact registry recomputes a tree's diff on THAT event, never
+    // by spawning git on a clock. Wired here, unconditionally — `benchmark/runs` and the
+    // standing autopilot read the registry too, not only the websocket board.
+    crate::code::workspace_events::set_workspace_event_bus(runtime.bus_arc());
+    crate::commands::workspace_artifacts::spawn_workspace_artifact_watcher(
+        &rt_handle,
+        runtime.bus_arc(),
+    );
     let code_state = Arc::new(CodeState::new(
         file_engines.clone(),
         shell_sessions.clone(),
@@ -3598,7 +3611,9 @@ pub fn start_server(
     runtime.register(Arc::new(crate::modules::plasticity::PlasticityModule::new()));
 
     // AvatarModule: Bevy 3D avatar snapshots for profile pictures
-    // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG
+    // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG.
+    // Registered in every build ("avatar" is a required MODULES row); without the
+    // `avatar-3d` feature its capture refuses, naming the feature.
     runtime.register(Arc::new(AvatarModule::new()));
 
     // DatasetModule: Training dataset import and management

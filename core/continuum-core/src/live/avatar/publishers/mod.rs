@@ -23,5 +23,6 @@ pub mod gpu_bridge {
 }
 
 /// Cross-platform GPU-accelerated I420 publisher via wgpu compute shader.
-#[cfg(feature = "livekit-webrtc")]
+// Consumes the wgpu compute bridge that only the Bevy render app registers.
+#[cfg(all(feature = "livekit-webrtc", feature = "avatar-3d"))]
 pub mod wgpu_i420;

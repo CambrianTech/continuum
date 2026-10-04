@@ -1492,14 +1492,6 @@ pub(crate) fn installed_engine_commit() -> Option<String> {
     (!commit.is_empty()).then(|| commit.to_string())
 }
 
-/// The backend the INSTALLED engine was built for, from the same stamp (`cpu`, `metal`,
-/// `cuda`, ...). `None` for an operator override or a missing stamp.
-pub fn installed_engine_backend() -> Option<String> {
-    let stamp = installed_engine_stamp()?;
-    let backend = stamp.split(':').nth(1)?.trim();
-    (!backend.is_empty()).then(|| backend.to_string())
-}
-
 /// The stamp install-llama-server.sh writes beside the owned engine, trimmed.
 fn installed_engine_stamp() -> Option<String> {
     let bin = server_bin().ok()?;
@@ -1509,23 +1501,6 @@ fn installed_engine_stamp() -> Option<String> {
     }
     let stamp = std::fs::read_to_string(path.parent()?.join(".llama-server.stamp")).ok()?;
     Some(stamp.trim().to_string())
-}
-
-/// PURE: the job budget a warm build gets beside a lane served by `backend` (card 682a5abf).
-/// A CPU-served lane runs llama.cpp's default thread count, one per physical core (the core
-/// passes no `--threads`), so it already holds every core. Nice only reorders the queue, it
-/// frees no core, and a build at cargo's default jobs (one per logical CPU) took them anyway:
-/// the IntelMac (6 cores, 12 threads) went three hours at 0 acts with 7 of 11 generations
-/// dropped while it built (2026-09-27, Fable's health reads). So the build is capped.
-///
-/// TWO jobs, not one (the pre-registered step on #4471): at one job the IntelMac's warm build
-/// of f03812d9e ran past the registered 6 h bound (19:14Z start, still compiling its bins at
-/// 01:14Z), and a build that outlasts canary's pace means the node never deploys. At one job
-/// rustc held ~0.5 of a core while the lane's llama-server held ~3 cores and the core ~2, so
-/// one more job costs the lane little and roughly halves the wall time.
-/// A GPU-served lane prefills on its device, not on these cores: no cap, `None`.
-pub fn warm_build_jobs(backend: Option<&str>) -> Option<u32> {
-    (backend == Some("cpu")).then_some(2)
 }
 
 /// Free memory at which a warm build beside a serving core runs at cargo's own job count:
@@ -6614,17 +6589,6 @@ mod tests {
         assert_eq!(warm_build_jobs_for_memory(12 * gib), Some(1), "under the measured uncapped need");
         assert_eq!(warm_build_jobs_for_memory(13 * gib), None);
         assert!(WARM_BUILD_UNCAPPED_FREE_BYTES >= WARM_BUILD_RESERVE_BYTES + 8_700_000_000, "uncapped covers its measured peak plus the reserve");
-    }
-
-    // what this catches (card 682a5abf): a warm build beside a CPU-served lane at cargo's
-    // default jobs, taking the cores the lane decodes on (the IntelMac: 3 hours at 0 acts).
-    // A GPU-served or unknown engine keeps the uncapped build.
-    #[test]
-    fn a_warm_build_beside_a_cpu_lane_gets_a_capped_job_count() {
-        assert_eq!(warm_build_jobs(Some("cpu")), Some(2));
-        assert_eq!(warm_build_jobs(Some("metal")), None);
-        assert_eq!(warm_build_jobs(Some("cuda")), None);
-        assert_eq!(warm_build_jobs(None), None, "no stamp: nothing known, no cap");
     }
 
     // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine

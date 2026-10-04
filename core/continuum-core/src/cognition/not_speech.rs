@@ -292,7 +292,31 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     }
     // The canonical envelope, with or without leading whitespace inside the object.
     let compact: String = t.chars().take(24).filter(|c| !c.is_whitespace()).collect();
-    compact.starts_with("{\"tool_call\"")
+    if compact.starts_with("{\"tool_call\"") {
+        return true;
+    }
+    // THE SEVENTH DIALECT (Saoirse, Intel Mac, qwen2.5-coder-1.5b, into #cambriantech,
+    // 2026-10-02): the model's NATIVE call format — `{"name": …, "arguments": {…}}` —
+    // as the whole reply, bare or inside one fence. 20 of her 34 non-receipt posts that
+    // day: `{"name": "error", "arguments": {"message": "forbidden: …"}}`, `git_pull`,
+    // `read`, `status`, and `code/run` with a backtick string that is not JSON. The
+    // lifter rightly refuses every one (no slash in the name since #4587, or no parse),
+    // and a refused call fell through to speech. Shape, not parse, for that reason: the
+    // malformed ones are the ones that reach here. Anchored on the object OPENING the
+    // reply (after at most a fence line), so prose that quotes the envelope is speech.
+    is_name_arguments_envelope(t)
+}
+
+/// The reply opens — directly or on the line after a fence — with an object whose first
+/// key is `"name"` and that carries an `"arguments"` key: a tool call in the model's own
+/// format, emitted where prose belongs.
+fn is_name_arguments_envelope(t: &str) -> bool {
+    let body = match t.strip_prefix("```") {
+        Some(fenced) => fenced.split_once('\n').map_or("", |(_, rest)| rest),
+        None => t,
+    };
+    let compact: String = body.chars().take(48).filter(|c| !c.is_whitespace()).collect();
+    compact.starts_with("{\"name\":\"") && body.contains("\"arguments\"")
 }
 
 /// A namespaced command CALLED at the very start of `t`: `ns/verb(` or a deeper path
@@ -575,6 +599,25 @@ mod tests {
             is_not_speech(r#"{"tool_call": {"name": "code/read", "arguments": {}}}"#),
             Some("tool_envelope")
         );
+    }
+
+    // what this catches: the model's native `{"name", "arguments"}` call as the whole
+    // reply, bare or fenced, valid JSON or not — the seventh dialect. Fixtured from
+    // Saoirse's posts to #cambriantech on 2026-10-02 (a slashless name the lifter
+    // refuses since #4587, and a backtick string no parser accepts).
+    #[test]
+    fn the_native_name_arguments_call_is_not_speech_but_quoting_it_is() {
+        for observed in [
+            r#"{"name": "error", "arguments": {"message": "forbidden: no policy grants access to URI: code/shell"}}"#,
+            "```json\n{\n  \"name\": \"git_pull\",\n  \"arguments\": {\n    \"branch\": null,\n    \"repo\": \"origin/main\"\n  }\n}\n```",
+            "```json\n{\n  \"name\": \"code/run\",\n  \"arguments\": {\n    \"code\": `\nobj['body']\n`,\n    \"lang\": \"python\"\n  }\n}\n```",
+            r#"{ "name": "error", "arguments": { "code": "{\"staged\":true}", "lang\": null, "timeoutSecs\": null } }"#,
+        ] {
+            assert_eq!(is_not_speech(observed), Some("tool_envelope"), "{observed}");
+        }
+        // Prose quoting the envelope, and a JSON object that is not a call, stay speech.
+        assert_eq!(is_not_speech(r#"My reply came out as {"name": "error", "arguments": {}} — the lifter refused it."#), None);
+        assert_eq!(is_not_speech("```json\n{\"name\": \"Saoirse\", \"room\": \"498420c8\"}\n```"), None);
     }
 
     // what this catches: the SECOND bracket dialect. Found while the first version of

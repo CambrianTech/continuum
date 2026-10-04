@@ -169,7 +169,6 @@ safetensors.workspace = true  # Model weight files
 hf-hub.workspace = true       # HuggingFace model downloads
 half = "2.4"                  # f16/bf16 handling for LoRA
 earshot = "0.1"  # Fast VAD (WebRTC-style)
-msedge-tts.workspace = true  # Edge-TTS (free Microsoft TTS API)
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
@@ -202,7 +201,9 @@ continuum-bridge-protocol = { path = "../livekit-protocol" }
 # WindowPlugin (from bevy_window, pulled in by bevy_render) registers the
 # Events<WindowResized> that camera_system needs — no winit required.
 # ScheduleRunnerPlugin drives the headless frame loop.
-bevy = { version = "0.18", default-features = false, features = [
+#
+# OPTIONAL — only compiled under the `avatar-3d` feature (see [features]).
+bevy = { version = "0.18", optional = true, default-features = false, features = [
     "bevy_render",
     "bevy_core_pipeline",
     "bevy_asset",
@@ -222,9 +223,11 @@ bevy = { version = "0.18", default-features = false, features = [
 ] }
 
 # wgpu HAL access — needed for Metal texture extraction (GPU→GPU pipeline)
-# Version matches Bevy 0.18's wgpu dependency
-wgpu = "27"
-wgpu-hal = "27"
+# Version matches Bevy 0.18's wgpu dependency. Reached ONLY through the Bevy
+# render path (live/video/{wgpu,metal}_gpu_convert.rs), so it is optional and
+# rides the `avatar-3d` feature with bevy.
+wgpu = { version = "27", optional = true }
+wgpu-hal = { version = "27", optional = true }
 
 arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
 notify = "8"               # Policy directory watch + hot reload for SubstrateGovernor
@@ -312,8 +315,21 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 # CPU-only build — paid by the dev who knows to add the flags. The
 # benefit is docker / CI / cross-platform builds stop pulling Apple-
 # only crates into their dep tree on every host.
-default = ["livekit-webrtc"]
+default = ["livekit-webrtc", "avatar-3d"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
+# 3D VRM avatar rendering — the headless Bevy renderer (live/video/bevy_renderer),
+# its GPU→GPU frame converters (wgpu / Metal-via-wgpu-hal), the `bevy_3d` avatar
+# backend, the AvatarModule snapshot path and the BevyConsumer residency shedder.
+# Split out of the always-on set because headless and CPU-only nodes don't render
+# 3D, and bevy was ~16% of the core binary and ~24% of the CLI's (card 0bff1a0a;
+# Joel 2026-10-03: "bevy is unrealistic and unused for some headless forms and
+# some machines"). ON by default so GPU hosts keep it; builds that pass
+# `--no-default-features` (the IntelMac CPU path, the CUDA CLI) drop it. Without
+# it the pure avatar types (Emotion, Gesture, slot/resolution constants in
+# live/video/avatar_types.rs) and the live2d/procedural backends remain; any
+# request for 3D rendering fails loudly naming this feature — never a silent
+# substitute.
+avatar-3d = ["dep:bevy", "dep:wgpu", "dep:wgpu-hal"]
 # Legacy TypeScript-SDK generator (sdk_codegen::emit). OFF by default: nothing
 # live consumes its output (the new client SDKs are independent), so it's pure
 # CI/compile cost + a tempting-but-wrong extension point. The HEADLESS command
@@ -421,6 +437,19 @@ required-features = ["test-fixtures"]
 [[test]]
 name = "persona_command_inbound_pump"
 required-features = ["test-fixtures"]
+
+# The avatar examples drive the Bevy renderer directly — they only exist with it.
+[[example]]
+name = "avatar_breathe"
+required-features = ["avatar-3d"]
+
+[[example]]
+name = "avatar_emote"
+required-features = ["avatar-3d"]
+
+[[example]]
+name = "avatar_livekit"
+required-features = ["avatar-3d"]
 
 [lints.rust]
 # objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.

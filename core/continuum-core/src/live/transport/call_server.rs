@@ -799,10 +799,14 @@ impl CallManager {
                 // Unload idle avatar models now that video sources are shutting down.
                 // render_loop::release_slot() handles its own unloads, but this catches
                 // any slots that were loaded but never got a render loop (race on join/leave).
-                if let Some(bevy) = crate::live::video::bevy_renderer::try_get() {
-                    let _ = bevy
-                        .command_sender()
-                        .send(crate::live::video::bevy_renderer::AvatarCommand::UnloadIdle);
+                // No renderer exists without `avatar-3d`, so nothing to unload there.
+                #[cfg(feature = "avatar-3d")]
+                {
+                    if let Some(bevy) = crate::live::video::bevy_renderer::try_get() {
+                        let _ = bevy
+                            .command_sender()
+                            .send(crate::live::video::bevy_renderer::AvatarCommand::UnloadIdle);
+                    }
                 }
 
                 let mut calls = self.calls.write().await;

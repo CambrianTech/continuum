@@ -99,6 +99,18 @@ impl RenderBackendRegistry {
         })?;
 
         let backend = self.backend_for_format(format).ok_or_else(|| {
+            // A 3D model in a build without the Bevy backend: name the missing
+            // feature instead of a generic "not initialized" — the backend will
+            // never initialize in this binary, and no 2D backend stands in for it.
+            #[cfg(not(feature = "avatar-3d"))]
+            {
+                if format.is_3d() {
+                    return AvatarError::Avatar3dNotCompiled(format!(
+                        "Avatar model '{}' ({:?})",
+                        model.filename, format
+                    ));
+                }
+            }
             AvatarError::NotInitialized(format!("No initialized backend for format {:?}", format))
         })?;
 
@@ -132,15 +144,20 @@ pub fn get_registry() -> Arc<RwLock<RenderBackendRegistry>> {
 
 /// Initialize the global avatar backend registry with default backends.
 pub fn init_registry() {
-    use super::backends::{Bevy3DBackend, Live2DBackend, ProceduralBackend};
+    use super::backends::{Live2DBackend, ProceduralBackend};
 
     AVATAR_REGISTRY.get_or_init(|| {
         let mut reg = RenderBackendRegistry::new();
 
-        // Bevy 3D — highest priority for VRM/glTF (GPU rendering)
-        let mut bevy = Bevy3DBackend::new();
-        let _ = bevy.initialize(); // non-blocking, checks if Bevy app is ready
-        reg.register(Arc::new(RwLock::new(bevy)));
+        // Bevy 3D — highest priority for VRM/glTF (GPU rendering). Compiled only
+        // under `avatar-3d`; without it, VRM/glTF requests are refused by
+        // `create_renderer` with `AvatarError::Avatar3dNotCompiled`.
+        #[cfg(feature = "avatar-3d")]
+        {
+            let mut bevy = super::backends::Bevy3DBackend::new();
+            let _ = bevy.initialize(); // non-blocking, checks if Bevy app is ready
+            reg.register(Arc::new(RwLock::new(bevy)));
+        }
 
         // Live2D — sprite-sheet compositing for .moc3 / sprite-sheet formats
         let mut live2d = Live2DBackend::new();
@@ -238,5 +255,39 @@ mod tests {
 
         // VRM → none (neither supports it)
         assert!(reg.backend_for_format(ModelFormat::Vrm0x).is_none());
+    }
+
+    // what this catches: a build without the `avatar-3d` feature (headless /
+    // CPU-only) quietly answering a VRM request with a 2D stand-in or a vague
+    // "not initialized" — it must refuse with an error that names the missing
+    // feature, because the bevy_3d backend can never come up in that binary.
+    // Compiled only without the feature: with it, bevy_3d is the answer.
+    #[cfg(not(feature = "avatar-3d"))]
+    #[test]
+    fn vrm_request_without_avatar_3d_feature_refuses_naming_the_feature() {
+        use super::super::backends::{Live2DBackend, ProceduralBackend};
+        use super::super::catalog::AVATAR_CATALOG;
+
+        let mut reg = RenderBackendRegistry::new();
+        let mut live2d = Live2DBackend::new();
+        live2d.initialize().unwrap();
+        reg.register(Arc::new(RwLock::new(live2d)));
+        let mut procedural = ProceduralBackend::new();
+        procedural.initialize().unwrap();
+        reg.register(Arc::new(RwLock::new(procedural)));
+
+        let vrm = AVATAR_CATALOG
+            .iter()
+            .find(|m| ModelFormat::from_filename(m.filename).is_some_and(ModelFormat::is_3d))
+            .expect("catalog carries at least one VRM/glTF model");
+        let err = match reg.create_renderer(vrm, &AvatarConfig::default()) {
+            Ok(_) => panic!("a 3D model must not render without the avatar-3d feature"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, AvatarError::Avatar3dNotCompiled(_)),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("avatar-3d"), "got {err}");
     }
 }

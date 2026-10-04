@@ -22,6 +22,7 @@ pub mod elevated_teardown;
 pub mod install_cli;
 pub mod launchd;
 pub mod owned_engines;
+pub mod process;
 pub mod supervisor_install;
 
 /// Windows process launch and ownership. Imports `std::os::windows` and
@@ -33,3 +34,5 @@ pub mod windows_launch;
 pub mod core_bind_guard;
 pub mod deploy_provenance;
 pub mod deploy_tracker;
+/// Deploying the core CI built instead of compiling it (card 50ca737e).
+pub mod prebuilt_artifact;

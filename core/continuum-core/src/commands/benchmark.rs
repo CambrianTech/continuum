@@ -5320,11 +5320,15 @@ fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now
                 continue;
             }
             scanned += 1;
-            let Some(ws) = inst.path().to_str().map(String::from) else {
-                continue;
-            };
-            // The SAME reading of "her work" the grader uses — never a second inline diff.
-            let Ok(diff) = workspace_candidate_diff(&ws) else {
+            // The diff comes from the event-driven registry (card f860e59c) — the SAME
+            // `workspace_candidate_diff` reading, computed by the registry's owner when a
+            // write named this tree. NEVER spawned from here: this scan runs on the board's
+            // clock, and git-on-a-clock is the defect that card removed. Untracked (outer
+            // None) = the watcher has not computed it yet; it lands on a later tick.
+            // Unreadable (inner None) = skipped, as the old inline `Err` was.
+            let Some(Some(diff)) =
+                crate::commands::workspace_artifacts::candidate_diff(&inst.path())
+            else {
                 continue;
             };
             if diff.trim().is_empty() {
@@ -5378,9 +5382,10 @@ fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now
     cards
 }
 
-/// How many staged trees one `benchmark/runs` call will diff. A `git diff` per tree is a
-/// process spawn, and the board is polled; this bounds the cost. Over-cap trees are WARNED
-/// about, never silently dropped.
+/// How many staged trees one `benchmark/runs` call will project. The diffs are read from
+/// the event-driven registry (no spawn here — card f860e59c), but each row still costs a
+/// metadata read and a diff-header walk on a polled board; this bounds that. Over-cap trees
+/// are WARNED about, never silently dropped.
 const WORKSPACE_ARTIFACT_SCAN_CAP: usize = 200;
 
 /// Cards for instances that carry a DURABLE VERDICT — the third row source, and the one that

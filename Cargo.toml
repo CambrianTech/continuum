@@ -198,20 +198,20 @@ members = [
 # AIRC #1433 adds accepted signed reviews of exact work submissions, used by
 # the ordinary reviewed-credit consumer. All crates share that public revision.
 # The same revision across all AIRC crates preserves one shared wire contract.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "92a790171b35d0ff407ca70f454ecd03ff82a1bd" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
@@ -316,8 +316,6 @@ ndarray = "0.17"  # ort 2.0.0-rc.11 requires ndarray 0.17 for OwnedTensorArrayDa
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 
-# Edge-TTS (Microsoft Edge Read Aloud API — free, no API key)
-msedge-tts = "0.3"
 
 
 # Protobuf symbol conflict (ort vs webrtc-sys) is fixed by module declaration
