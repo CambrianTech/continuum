@@ -72,6 +72,7 @@ pub mod media_perception_source;
 pub mod media_policy;
 pub mod message_cache;
 pub mod mind_state;
+pub mod perception_region;
 pub mod mission_source;
 pub mod model_override;
 pub mod grid_roster_memory;
