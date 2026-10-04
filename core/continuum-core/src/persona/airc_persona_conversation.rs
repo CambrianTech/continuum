@@ -846,10 +846,18 @@ impl AircPersonaConversation {
                     self.refresh_pending = false;
                     continue;
                 }
+                // The attach set itself: which channels this persona's live stream now
+                // carries. Without it, "she never hears another peer in her project room"
+                // (Kimi, 2026-10-04: a durable chat in 700663d5 reached the core's chat
+                // projector live and never her raw_event) could not be split into "not in
+                // her set" vs "in her set, not delivered".
+                let attached = self.rooms.as_deref().unwrap_or_default(); // unwrap_or_default: refresh_membership just set it; none = an empty set, reported as 0
                 crate::probe!(
                     class = "persona.inbound.resubscribed",
                     persona = %self.own_peer_id,
                     reason = reason,
+                    attached_rooms = attached.len() as u64,
+                    attached = %attached.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(","),
                     "re-opening the subscribe stream"
                 );
                 // REPLAY THE GAP (2026-08-21, the FOURTH deaf-kickoff variant). The
