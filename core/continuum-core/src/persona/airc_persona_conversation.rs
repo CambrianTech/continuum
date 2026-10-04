@@ -484,10 +484,25 @@ impl AircPersonaConversation {
             self.mind = MindFeed::boot(persona);
         }
         let mind = self.mind.as_ref()?;
+        // Her name, by the same lookup `signal_if_directed` uses: the region detects
+        // "addressed to me" through `PersonaIdentity::mentions`, so a region without
+        // her name would be blind to every @-mention. No name, no region.
+        let Some(agent_name) = crate::persona::PersonaAircRuntimeRegistry::try_global()
+            .and_then(|r| r.get(persona))
+            .map(|rt| rt.agent_name().to_string())
+        else {
+            crate::probe!(
+                class = "mind.feed.unbooted",
+                persona = %persona,
+                "her runtime is not registered: no name to detect mentions with; the region waits for the next membership read"
+            );
+            return None;
+        };
         let (tx, rx) = tokio::sync::mpsc::channel(INBOX_CAPACITY);
         crate::persona::perception_feed::register(
             persona,
             airc_core::PeerId::from_uuid(persona),
+            &agent_name,
             Arc::clone(&mind.region),
             mind.wake_tx.clone(),
             Some(tx),
