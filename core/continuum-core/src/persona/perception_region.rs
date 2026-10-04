@@ -277,6 +277,18 @@ impl PerceptionRegion {
     /// After a turn: she perceived `activity` through `cursor`. Her cursor moves
     /// (never backwards), the delta clears, the strip updates. Only this moves a
     /// cursor; a turn that did not look at an activity leaves it unread.
+    /// Whether `activity` still holds something she has not perceived that is loud
+    /// enough to have woken her: what a Perceive wake is checked against before it
+    /// starts a turn, so a line her inbox already took never makes a second one.
+    pub fn is_pending(&self, activity: Uuid) -> bool {
+        self.views
+            .get(&activity)
+            .is_some_and(|v| v.unread() > 0 && v.salience.level > SalienceLevel::Quiet)
+    }
+    /// When her continuation falls due, if she gave it a deadline.
+    pub fn continuation_due_ms(&self) -> Option<u64> {
+        self.state.continuation.as_ref().and_then(|c| c.expectation.as_ref()).and_then(|e| e.by_ms)
+    }
     pub fn perceived(&mut self, activity: Uuid, cursor: &ActivityCursor, now_ms: u64) {
         self.state.perceived(activity, cursor);
         if let Some(view) = self.views.get_mut(&activity) {
@@ -412,6 +424,21 @@ mod tests {
         r.join(B, "cambriantech");
         std::mem::forget(dir);
         (r, rx)
+    }
+
+    // what this catches: the consumer's double-turn guard and the view's drain. A human's
+    // line leaves B pending (loud, unread), which a Perceive recheck reads as "start a turn
+    // in B"; once her turn took B in (`perceived`), B is no longer pending, so the same
+    // line cannot start a second turn, and its view is emptied.
+    #[test]
+    fn a_room_she_took_in_is_no_longer_pending() {
+        let (mut r, _rx) = region_with_saved(None);
+        let _ = r.wake_for(0);
+        r.observe_speech(B, line(&event(B, JOEL, airc_core::MentionTarget::All, 3, "how is it going?")), 12);
+        assert!(r.is_pending(B), "a human's unread line in B is pending");
+        assert!(!r.is_pending(A), "nothing arrived in A");
+        r.perceived(B, &ActivityCursor { chat_lamport: 3, chat_event_id: None, views: Default::default() }, 13);
+        assert!(!r.is_pending(B), "taken in: no second turn from the same line");
     }
 
     // what this catches: THE integrated-self acceptance (EVENT-MIND §4). While she

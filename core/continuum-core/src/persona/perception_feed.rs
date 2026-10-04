@@ -103,6 +103,18 @@ pub fn mind_dir(persona: Uuid) -> Option<std::path::PathBuf> {
     crate::paths::home_dir().map(|home| home.join(".continuum/personas").join(persona.to_string()))
 }
 
+/// She took in `room` up to this line (a turn's trigger, or a line perceived mid-turn):
+/// the activity's unread view is cleared and her cursor advances. This is the view's
+/// drain: without it every line of every room she is in accumulated in her region.
+pub fn mark_perceived(persona: Uuid, room: Uuid, lamport: u64, event_id: Option<Uuid>, now_ms: u64) {
+    let cursor = crate::persona::mind_state::ActivityCursor {
+        chat_lamport: lamport,
+        chat_event_id: event_id,
+        views: Default::default(),
+    };
+    with_region(persona, |region| region.perceived(room, &cursor, now_ms));
+}
+
 /// Act on her own registered region (her verbs write her mind through this); `None`
 /// when she is not resident on this core.
 pub fn with_region<R>(persona: Uuid, f: impl FnOnce(&mut PerceptionRegion) -> R) -> Option<R> {

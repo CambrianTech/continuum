@@ -512,6 +512,13 @@ async fn settle_to_outcome(
                             from_peer = %message.peer_id,
                             "room input perceived between actions; original task and causal root retained"
                         );
+                        crate::persona::perception_feed::mark_perceived(
+                            body.persona_id,
+                            message.room_id,
+                            message.lamport,
+                            Some(message.event_id),
+                            crate::persona::trace::now_ms(),
+                        );
                         Arc::make_mut(&mut burst.room_updates).push(Arc::clone(message));
                     }
                     Ok(())
