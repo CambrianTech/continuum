@@ -32,6 +32,17 @@
 // second, divergent rule.
 use crate::ai::types::TextGenerationResponse;
 
+/// An ordinary room event selected into a model request. The room cursor is
+/// owned by AIRC; this is input provenance, not another delivery queue.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RoomInput {
+    pub room_id: uuid::Uuid,
+    pub cursor: airc_core::TranscriptCursor,
+    /// The existing first-join window's predecessor, or the durable bookmark.
+    /// Carried from the room digest, never inferred from generated text.
+    pub read_after: Option<airc_core::TranscriptCursor>,
+}
+
 /// ONE dispatched generation, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +66,11 @@ pub struct GenerationReceipt {
     /// read as empty, which is what those calls ran (no live page-in existed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genes: Vec<String>,
+    /// Exact room events retained by prompt fitting in a successful request.
+    /// Empty for failed calls and old receipts. Tool outcomes do not change
+    /// whether an input was presented successfully.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub room_inputs: Vec<RoomInput>,
 }
 
 /// The genes a request actually runs with: every requested adapter at a non-zero scale.
@@ -132,12 +148,20 @@ impl GenerationReceipt {
             outcome,
             capture: None,
             genes: Vec::new(),
+            room_inputs: Vec::new(),
         }
     }
 
     /// Attach the genes the call ran with ([`genes_of`]).
     pub fn with_genes(mut self, genes: Vec<String>) -> Self {
         self.genes = genes;
+        self
+    }
+
+    pub fn with_room_inputs(mut self, inputs: Vec<RoomInput>) -> Self {
+        if matches!(self.outcome, GenerationOutcome::Served { .. }) {
+            self.room_inputs = inputs;
+        }
         self
     }
 
@@ -159,6 +183,7 @@ impl GenerationReceipt {
             },
             capture: None,
             genes: Vec::new(),
+            room_inputs: Vec::new(),
         }
     }
 

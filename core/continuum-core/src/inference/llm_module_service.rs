@@ -374,6 +374,7 @@ pub(super) async fn run_adapter_inference(
 ) -> Result<(InferenceComplete, FirstTokenEmitted), String> {
     let adapter_request = TextGenerationRequest {
         messages: vec![ChatMessage {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Text(prompt_text.to_string()),
             name: None,

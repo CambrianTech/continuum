@@ -157,6 +157,16 @@ pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
         }
         let mut kept: Vec<RagItem> = Vec::with_capacity(delivery.items.len());
         for item in &delivery.items {
+            // Event identity, not prose similarity, owns unread delivery. Work
+            // facts can differ in one verdict/state field; neither those nor
+            // an unpresented chat line may be collapsed as courtesy filler.
+            if item.metadata.get("unread").and_then(|value| value.as_bool()) == Some(true)
+                || item.metadata.get("content_kind").and_then(|value| value.get("kind"))
+                    .and_then(|value| value.as_str()).is_some_and(|kind| kind != "speech")
+            {
+                kept.push(item.clone());
+                continue;
+            }
             let norm = normalize(&item.content);
             if norm.is_empty() {
                 kept.push(item.clone());

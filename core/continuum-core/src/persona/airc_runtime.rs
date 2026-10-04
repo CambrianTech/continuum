@@ -1419,6 +1419,29 @@ impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
         crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.airc, room, limit)
             .await
     }
+
+    async fn read_cursor(&self, persona: Uuid, room: Uuid) -> Result<Option<airc_core::TranscriptCursor>, AircError> {
+        crate::persona::airc_source::AircTranscriptReader::read_cursor(
+            self.airc.as_ref(), persona, room,
+        )
+        .await
+    }
+
+    async fn page_after_in(&self, room: airc_core::RoomId, cursor: &airc_core::TranscriptCursor, limit: usize) -> Result<Vec<airc_core::TranscriptEvent>, AircError> {
+        crate::persona::airc_source::AircTranscriptReader::page_after_in(self.airc.as_ref(), room, cursor, limit).await
+    }
+
+    async fn advance_read_cursor(
+        &self,
+        persona: Uuid,
+        room: Uuid,
+        event: &airc_core::TranscriptEvent,
+    ) -> Result<(), AircError> {
+        crate::persona::airc_source::AircTranscriptReader::advance_read_cursor(
+            self.airc.as_ref(), persona, room, event,
+        )
+        .await
+    }
 }
 
 #[async_trait::async_trait]

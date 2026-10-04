@@ -1152,6 +1152,9 @@ impl LlmDeliberationFaculty {
         // The genome this turn runs on, read before the request moves: the receipt names it,
         // so the room's outcome for the turn can be credited to the genes that produced it.
         let genes = super::provenance::genes_of(request.active_adapters.as_deref());
+        let room_inputs = request.messages.iter()
+            .flat_map(|message| message.room_inputs.iter().cloned())
+            .collect();
         let mut capture = self.prompt_capture.as_ref().map(|sink| {
             super::prompt_capture::CaptureLease::start(
                 Arc::clone(sink),
@@ -1519,7 +1522,8 @@ impl LlmDeliberationFaculty {
                 }
             }
             .with_capture(completed.as_deref())
-            .with_genes(genes),
+            .with_genes(genes)
+            .with_room_inputs(room_inputs),
         );
         Some(gen_result)
     }
@@ -3034,7 +3038,7 @@ impl LlmDeliberationFaculty {
         // failed" can be near-identical, and a later identical statement can
         // report another change of state. Preserve that history for the citizen;
         // the existing fitter bounds it and perception facts describe repetition.
-        let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
+        let mut groups: Vec<(&'static str, Vec<String>, Vec<super::provenance::RoomInput>)> = Vec::new();
         // Preserve the newest external SPEECH as activity context, even when an
         // own receipt or perception fact follows it. This says what was heard,
         // never what the citizen must obey. Keep the typed boundary before
@@ -3069,19 +3073,28 @@ impl LlmDeliberationFaculty {
             if Some(index) == stimulus_index {
                 // The event time and addressed author are required provenance too.
                 field(&mut input, line.as_bytes());
-                stimulus = Some(ChatMessage::text(role, line));
+                let mut message = ChatMessage::text(role, line);
+                message.room_inputs.extend(turn.room_input.iter().cloned());
+                stimulus = Some(message);
                 after_stimulus = true;
                 continue;
             }
             match groups.last_mut() {
-                Some((r, lines)) if *r == role && !after_stimulus => lines.push(line),
-                _ => groups.push((role, vec![line])),
+                Some((r, lines, inputs)) if *r == role && !after_stimulus => {
+                    lines.push(line);
+                    inputs.extend(turn.room_input.iter().cloned());
+                }
+                _ => groups.push((role, vec![line], turn.room_input.iter().cloned().collect())),
             }
             after_stimulus = false;
         }
         let mut messages: Vec<ChatMessage> = groups
             .into_iter()
-            .map(|(role, lines)| ChatMessage::text(role, lines.join("\n")))
+            .map(|(role, lines, room_inputs)| {
+                let mut message = ChatMessage::text(role, lines.join("\n"));
+                message.room_inputs = room_inputs;
+                message
+            })
             .collect();
 
         // PERCEPTION FACTS (docs/architecture/PERCEPTION-FACTS.md slice 2b):
@@ -3423,7 +3436,8 @@ impl LlmDeliberationFaculty {
         let mut used = 0usize;
         // Newest first so the REQUIRED half is the freshest room state.
         for message in ws.room_updates.iter().rev() {
-            let rendered = ChatMessage::text("user", message.render_room_update());
+            let mut rendered = ChatMessage::text("user", message.render_room_update());
+            rendered.room_inputs.extend(message.room_input());
             let cost = Self::messages_cost(std::slice::from_ref(&rendered));
             // The newest update is always required, even if it alone exceeds the
             // share: one oversized message must not silently demote the very
@@ -6070,6 +6084,9 @@ mod tests {
             let updates: Vec<_> = (0..40)
                 .map(|i| {
                     Arc::new(crate::persona::service_loop::IncomingMessage {
+                        content_kind: Default::default(),
+                        target: None,
+                        subject_owner: None,
                         media: Vec::new(),
                         event_id: Uuid::new_v4(),
                         lamport: i as u64 + 1,
@@ -6364,8 +6381,14 @@ mod tests {
                 .with_prompt_capture(Arc::new(
                     JsonlPromptCaptureSink::open(dir.path(), persona).expect("real capture writer"),
                 ));
-            let ws = Workspace::in_room("Review this real task and its receipt.", room)
+            let mut ws = Workspace::in_room("Review this real task and its receipt.", room)
                 .with_cycle(crate::cognition::workspace::CycleId(17));
+            let room_input = crate::cognition::provenance::RoomInput {
+                room_id: room,
+                cursor: airc_core::TranscriptCursor { lamport: 7, event_id: airc_core::EventId::new() },
+                read_after: None,
+            };
+            ws.turns[0].room_input = Some(room_input.clone());
             let mut turn = Box::pin(faculty.contribute(&ws));
             tokio::select! {
                 biased;
@@ -6389,6 +6412,8 @@ mod tests {
             );
             let verdict = turn.await.expect("completed deliberation");
             assert!(verdict.decision.is_some());
+            assert_eq!(verdict.receipts[0].room_inputs, vec![room_input.clone()],
+                "only actual successful submitted input earns a room receipt");
             let completed =
                 prompt_capture::page(dir.path(), persona, Some(&first.cursor), true, 10)
                     .expect("terminal page");
@@ -6414,6 +6439,8 @@ mod tests {
                     wire_request,
                     detail.submitted.as_ref().expect("submitted")["request"]
                 );
+                assert!(!wire_request.to_string().contains(&room_input.cursor.event_id.to_string()),
+                    "local room handles must not leak onto the provider wire");
             }
             let legacy =
                 prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
@@ -6469,9 +6496,16 @@ mod tests {
             .with_prompt_capture(Arc::new(
                 JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
             ));
-            let ws = Workspace::in_room("Review the pending task.", Uuid::new_v4());
+            let mut ws = Workspace::in_room("Review the pending task.", Uuid::new_v4());
+            ws.turns[0].room_input = Some(crate::cognition::provenance::RoomInput {
+                room_id: ws.room_id,
+                cursor: airc_core::TranscriptCursor { lamport: 7, event_id: airc_core::EventId::new() },
+                read_after: None,
+            });
             let result = faculty.contribute(&ws).await.expect("fault contribution");
             assert!(result.fault.is_some());
+            assert!(result.receipts.iter().all(|receipt| receipt.room_inputs.is_empty()),
+                "a failed generation cannot consume an unread fact");
             let page = prompt_capture::page(dir.path(), persona, None, false, 10)
                 .expect("failed call page");
             let last = page.entries.last().expect("failed terminal");
@@ -8634,7 +8668,15 @@ mod tests {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let history: Vec<ChatMessage> = (0..12)
-                .map(|i| ChatMessage::text("user", format!("room {i} {}", "word ".repeat(95))))
+                .map(|i| {
+                    let mut message = ChatMessage::text("user", format!("room {i} {}", "word ".repeat(95)));
+                    message.room_inputs.push(crate::cognition::provenance::RoomInput {
+                        room_id: Uuid::from_u128(99),
+                        cursor: airc_core::TranscriptCursor { lamport: i + 1, event_id: airc_core::EventId::new() },
+                        read_after: None,
+                    });
+                    message
+                })
                 .collect();
             let stimulus = ChatMessage::text("user", "operator: do the thing ".repeat(40));
             let prompt = |history: Vec<ChatMessage>| PromptMessages {
@@ -8654,12 +8696,17 @@ mod tests {
             assert_eq!(roomy.receipt.dropped_messages, 0);
             assert_eq!(roomy.receipt.kept_messages, 12);
             assert!(!roomy.receipt.emptied());
+            assert_eq!(roomy.messages.iter().map(|message| message.room_inputs.len()).sum::<usize>(), 12);
 
             // A budget that holds the stimulus and a little history: some dropped, some kept.
             let tight = faculty.fit_messages(prompt(history.clone()), required + total / 2).expect("fits");
             assert!(tight.receipt.dropped_messages > 0 && tight.receipt.kept_messages > 0, "{:?}", tight.receipt);
             assert_eq!(tight.receipt.dropped_messages + tight.receipt.kept_messages, 12);
             assert!(tight.receipt.dropped_tokens >= (total / 2).saturating_sub(tight.receipt.quantum), "{:?}", tight.receipt);
+            let retained: Vec<_> = tight.messages.iter().flat_map(|message| &message.room_inputs).cloned().collect();
+            let expected: Vec<_> = history.iter().skip(tight.receipt.dropped_messages)
+                .flat_map(|message| &message.room_inputs).cloned().collect();
+            assert_eq!(retained, expected, "fitter drops source handles with the dropped text");
 
             // A budget that holds only the stimulus: the whole history goes, and the
             // receipt says emptied (the turn Kimi could not see).
@@ -8667,6 +8714,7 @@ mod tests {
             assert!(starved.receipt.emptied(), "{:?}", starved.receipt);
             assert_eq!(starved.receipt.dropped_tokens, total);
             assert_eq!(starved.receipt.history_budget, 0);
+            assert!(starved.messages.iter().all(|message| message.room_inputs.is_empty()));
             assert!(starved.messages.iter().any(|m| m.content_text() == stimulus.content_text()),
                 "the stimulus itself is never optional");
         }
@@ -10185,6 +10233,9 @@ mod tests {
                     .into_boxed_str(),
                 );
                 let update = Arc::new(crate::persona::service_loop::IncomingMessage {
+                    content_kind: Default::default(),
+                    target: None,
+                    subject_owner: None,
                     media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
@@ -10670,6 +10721,9 @@ mod tests {
                     let mut ws = Workspace::new("original task stays required");
                     ws.room_updates = Arc::new(vec![Arc::new(
                         crate::persona::service_loop::IncomingMessage {
+                            content_kind: Default::default(),
+                            target: None,
+                            subject_owner: None,
                             media: Vec::new(),
                             event_id: Uuid::new_v4(),
                             lamport: 1,

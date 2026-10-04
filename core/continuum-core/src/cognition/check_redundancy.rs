@@ -173,6 +173,7 @@ fn build_redundancy_generation_request(
     TextGenerationRequest {
         messages: vec![
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "system".to_string(),
                 content: MessageContent::Text(
                     "You decide whether a draft response repeats an answer already present. Respond ONLY with JSON."
@@ -181,6 +182,7 @@ fn build_redundancy_generation_request(
                 name: None,
             },
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(build_redundancy_prompt(
                     &request.context,

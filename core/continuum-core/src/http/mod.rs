@@ -423,6 +423,7 @@ fn convert_messages(messages: &[anthropic_compat::AnthropicMessage]) -> Vec<Chat
             };
 
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: msg.role.clone(),
                 content,
                 name: None,

@@ -19,6 +19,11 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub name: Option<String>,
+    /// Local source handles travel with a fitted message, never onto the
+    /// provider wire. Dropping a message drops its perception receipt too.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub room_inputs: Vec<crate::cognition::provenance::RoomInput>,
 }
 
 /// Message content - either plain text or multimodal content blocks
@@ -631,6 +636,7 @@ impl ChatMessage {
     /// Create a simple text message
     pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
+            room_inputs: Vec::new(),
             role: role.into(),
             content: MessageContent::Text(content.into()),
             name: None,
@@ -644,6 +650,7 @@ impl ChatMessage {
         is_error: bool,
     ) -> Self {
         Self {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Parts(vec![ContentPart::ToolResult {
                 tool_use_id: tool_use_id.into(),
@@ -659,6 +666,7 @@ impl ChatMessage {
     /// matching results, so its next generation sees what it asked for.
     pub fn assistant_tool_use(calls: &[ToolCall]) -> Self {
         Self {
+            room_inputs: Vec::new(),
             role: "assistant".to_string(),
             content: MessageContent::Parts(
                 calls
@@ -680,6 +688,7 @@ impl ChatMessage {
     /// one agent round in the message thread.
     pub fn tool_results(results: &[ToolResult]) -> Self {
         Self {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Parts(
                 results

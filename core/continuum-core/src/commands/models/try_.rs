@@ -117,6 +117,7 @@ crate::action_command! {
 async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Option<f32>, String) {
     let request = TextGenerationRequest {
         messages: vec![ChatMessage {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Text("Reply with the single word: ok".to_string()),
             name: None,
@@ -180,6 +181,7 @@ async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Op
 async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, String) {
     let request = TextGenerationRequest {
         messages: vec![ChatMessage {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Parts(vec![
                 ContentPart::Text {

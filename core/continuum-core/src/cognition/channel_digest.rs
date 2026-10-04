@@ -36,12 +36,12 @@
 
 use std::sync::Arc;
 
-use airc_core::TranscriptEvent;
+use airc_core::{TranscriptCursor, TranscriptEvent};
 use airc_lib::AircError;
 use uuid::Uuid;
 
 use crate::cognition::channel_element::{ChannelElement, ChannelElementCache};
-use crate::persona::airc_source::AircTranscriptReader;
+use crate::persona::airc_source::{cursor_key, AircTranscriptReader};
 
 /// Default N-before-bookmark grounding when a caller has no recipe-specified value.
 /// Recipe/RoomPurpose resolution belongs to the caller; this is only the floor.
@@ -78,7 +78,12 @@ pub struct ChannelDigest {
     pub room_id: Uuid,
     pub persona_id: Uuid,
     /// The last-read lamport at the moment this digest was built (the split point).
-    pub bookmark: u64,
+    pub bookmark: Option<TranscriptCursor>,
+    /// Durable position used to build this snapshot. A scan-only prefix may
+    /// move `bookmark` without acknowledging any meaningful input.
+    pub durable_bookmark: Option<TranscriptCursor>,
+    /// Raw scan progress survives pages containing only non-perceptual traffic.
+    pub scanned_through: Option<TranscriptCursor>,
     /// The consolidated window, oldest-first. `Arc` references over shared elements.
     pub elements: Vec<Arc<ChannelElement>>,
     /// Index into `elements` where the unread (since-bookmark) run begins. Elements
@@ -107,6 +112,10 @@ impl ChannelDigest {
     /// advances its bookmark to after engaging (ignore/skip/respond all mark-read).
     pub fn tip_lamport(&self) -> Option<u64> {
         self.elements.last().map(|e| e.event().lamport)
+    }
+
+    pub fn tip_cursor(&self) -> Option<TranscriptCursor> {
+        self.elements.last().map(|e| e.event().cursor())
     }
 }
 
@@ -142,9 +151,77 @@ impl ChannelDigestBuilder {
         fetch_limit: usize,
         grounding: usize,
     ) -> Result<ChannelDigest, AircError> {
-        let events = reader.page_recent(fetch_limit).await?;
-        let bookmark = reader.read_cursor(persona_id, room_id).await?;
-        Ok(self.build_from_events(persona_id, room_id, events, grounding, bookmark))
+        self.build_with_progress(persona_id, room_id, reader, fetch_limit, grounding, None)
+            .await
+    }
+
+    pub async fn build_with_progress(
+        &self,
+        persona_id: Uuid,
+        room_id: Uuid,
+        reader: &dyn AircTranscriptReader,
+        fetch_limit: usize,
+        grounding: usize,
+        previous: Option<&ChannelDigest>,
+    ) -> Result<ChannelDigest, AircError> {
+        let recent = reader
+            .page_recent_in(Some(airc_core::RoomId::from_uuid(room_id)), fetch_limit)
+            .await?;
+        self.build_from_reader_window(
+            persona_id,
+            room_id,
+            reader,
+            fetch_limit,
+            grounding,
+            recent,
+            previous,
+        )
+        .await
+    }
+
+    /// One bounded raw page from the unread position, plus already-read context.
+    /// The existing snapshot may retain progress only over a page with no unread
+    /// content, and only while the durable bookmark is unchanged.
+    pub async fn build_from_reader_window(
+        &self,
+        persona_id: Uuid,
+        room_id: Uuid,
+        reader: &dyn AircTranscriptReader,
+        fetch_limit: usize,
+        grounding: usize,
+        mut recent: Vec<TranscriptEvent>,
+        previous: Option<&ChannelDigest>,
+    ) -> Result<ChannelDigest, AircError> {
+        let durable = reader.read_cursor(persona_id, room_id).await?;
+        let mut bookmark = durable.clone();
+        if let Some(previous) = previous.filter(|d| {
+            d.room_id == room_id
+                && d.persona_id == persona_id
+                && d.durable_bookmark == durable
+                && !d.has_unread()
+        }) {
+            if let Some(scanned) = previous.scanned_through.as_ref().filter(|c| {
+                bookmark
+                    .as_ref()
+                    .is_none_or(|b| cursor_key(c) > cursor_key(b))
+            }) {
+                bookmark = Some(scanned.clone());
+            }
+        }
+        if let Some(cursor) = &bookmark {
+            recent.retain(|event| {
+                event.room_id.as_uuid() == room_id
+                    && cursor_key(&event.cursor()) <= cursor_key(cursor)
+            });
+            recent.extend(
+                reader
+                    .page_after_in(airc_core::RoomId::from_uuid(room_id), cursor, fetch_limit)
+                    .await?,
+            );
+        }
+        let mut digest = self.build_from_events(persona_id, room_id, recent, grounding, bookmark);
+        digest.durable_bookmark = durable;
+        Ok(digest)
     }
 
     /// Build a digest from PRE-FETCHED events and an ALREADY-LOADED cursor — lets a
@@ -162,8 +239,9 @@ impl ChannelDigestBuilder {
         room_id: Uuid,
         events: Vec<TranscriptEvent>,
         grounding: usize,
-        bookmark: u64,
+        bookmark: Option<TranscriptCursor>,
     ) -> ChannelDigest {
+        let durable_bookmark = bookmark.clone();
         let mut bookmark = bookmark;
 
         // Filter to THIS channel — lamport is per-room, so mixing rooms would make
@@ -173,11 +251,19 @@ impl ChannelDigestBuilder {
             .into_iter()
             .filter(|e| e.room_id.as_uuid() == room_id)
             .collect();
-        let mut elements = self.cache.get_or_insert_batch(in_room);
+        let mut raw_elements = self.cache.get_or_insert_batch(in_room);
+        raw_elements.sort_by_key(|e| cursor_key(&e.event().cursor()));
+        raw_elements.dedup_by_key(|e| e.event_id());
+        let mut elements: Vec<_> = raw_elements
+            .iter()
+            .filter(|element| element.content_kind().is_some())
+            .cloned()
+            .collect();
 
         // Sort lamport-ascending ourselves: correctness must not depend on the
         // reader's ordering convention.
-        elements.sort_by_key(|e| e.event().lamport);
+        elements.sort_by_key(|e| cursor_key(&e.event().cursor()));
+        elements.dedup_by_key(|e| e.event_id());
 
         // FIRST SIGHT OF THIS ROOM: land one page back from the tip, not on the
         // whole history. `bookmark == 0` is the never-read sentinel, and taken
@@ -191,19 +277,46 @@ impl ChannelDigestBuilder {
         // SHOWN (`advance_read_cursor`). Seeding used to self-persist here, which
         // hid a write inside a builder and could mark a page read that the budget
         // then dropped.
-        if bookmark == 0 && elements.len() > FIRST_READ_PAGE {
-            let page_start = elements[elements.len() - FIRST_READ_PAGE]
-                .event()
-                .lamport;
-            // Everything strictly older than the page start counts as already seen.
-            bookmark = page_start.saturating_sub(1);
+        if bookmark.is_none() && elements.len() > FIRST_READ_PAGE {
+            bookmark = Some(
+                elements[elements.len() - FIRST_READ_PAGE - 1]
+                    .event()
+                    .cursor(),
+            );
+        }
+
+        // Retain progress only through known records. A malformed or unknown
+        // event cannot become "read" just because a page produced no prompt text.
+        let mut scanned_through = bookmark.clone();
+        for element in raw_elements.iter().filter(|element| {
+            element.event().lamport > 0
+                && bookmark
+                    .as_ref()
+                    .is_none_or(|cursor| cursor_key(&element.event().cursor()) > cursor_key(cursor))
+        }) {
+            if element.content_kind().is_none() {
+                let reason =
+                    crate::airc::realtime_wire::room_content_from_event(element.event()).err();
+                if !reason.is_some_and(crate::airc::realtime_wire::is_non_perceptual_reason) {
+                    tracing::warn!(persona = %persona_id, room = %room_id,
+                        event_id = %element.event_id(), ?reason,
+                        "channel-digest: unrecognized room event blocks raw cursor progress");
+                    break;
+                }
+            }
+            scanned_through = Some(element.event().cursor());
         }
 
         // Split: first element strictly newer than the bookmark begins the unread
         // run; keep up to `grounding` elements before it for context.
         let first_unread = elements
             .iter()
-            .position(|e| e.event().lamport > bookmark)
+            .position(|e| {
+                e.event().lamport > 0
+                    && bookmark
+                        .as_ref()
+                        .is_none_or(|b| cursor_key(&e.event().cursor()) > cursor_key(b))
+            })
             .unwrap_or(elements.len());
         let grounding_start = first_unread.saturating_sub(grounding);
         let unread_start = first_unread - grounding_start;
@@ -213,6 +326,8 @@ impl ChannelDigestBuilder {
             room_id,
             persona_id,
             bookmark,
+            durable_bookmark,
+            scanned_through,
             elements,
             unread_start,
         }
@@ -274,25 +389,36 @@ mod tests {
         /// The reader's cursor — in production this is airc's durable
         /// `runtime_cursor`; here it is a plain cell, because the digest only
         /// ever READS it through the port.
-        cursor: Mutex<u64>,
+        cursor: Mutex<Option<TranscriptCursor>>,
     }
     impl StubReader {
         fn new(events: Vec<TranscriptEvent>) -> Self {
             Self {
                 events: Mutex::new(events),
-                cursor: Mutex::new(0),
+                cursor: Mutex::new(None),
             }
         }
         /// Start this reader already read through `lamport`.
         fn read_through(self, lamport: u64) -> Self {
-            *self.cursor.lock().unwrap() = lamport;
+            *self.cursor.lock().unwrap() = self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.lamport <= lamport)
+                .max_by_key(|event| cursor_key(&event.cursor()))
+                .map(TranscriptEvent::cursor);
             self
         }
     }
     #[async_trait]
     impl AircTranscriptReader for StubReader {
-        async fn read_cursor(&self, _p: Uuid, _r: Uuid) -> Result<u64, AircError> {
-            Ok(*self.cursor.lock().unwrap())
+        async fn read_cursor(
+            &self,
+            _p: Uuid,
+            _r: Uuid,
+        ) -> Result<Option<TranscriptCursor>, AircError> {
+            Ok(self.cursor.lock().unwrap().clone())
         }
         async fn advance_read_cursor(
             &self,
@@ -301,20 +427,38 @@ mod tests {
             event: &TranscriptEvent,
         ) -> Result<(), AircError> {
             let mut c = self.cursor.lock().unwrap();
-            if event.lamport > *c {
-                *c = event.lamport;
+            if c.as_ref()
+                .is_none_or(|old| cursor_key(&event.cursor()) > cursor_key(old))
+            {
+                *c = Some(event.cursor());
             }
             Ok(())
         }
         async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
-            Ok(self
+            let mut events = self.events.lock().unwrap().clone();
+            events.sort_by_key(|event| std::cmp::Reverse(cursor_key(&event.cursor())));
+            events.truncate(limit);
+            Ok(events)
+        }
+        async fn page_after_in(
+            &self,
+            room: RoomId,
+            cursor: &TranscriptCursor,
+            limit: usize,
+        ) -> Result<Vec<TranscriptEvent>, AircError> {
+            let mut events: Vec<_> = self
                 .events
                 .lock()
                 .unwrap()
                 .iter()
-                .take(limit)
+                .filter(|event| {
+                    event.room_id == room && cursor_key(&event.cursor()) > cursor_key(cursor)
+                })
                 .cloned()
-                .collect())
+                .collect();
+            events.sort_by_key(|event| cursor_key(&event.cursor()));
+            events.truncate(limit);
+            Ok(events)
         }
     }
 
@@ -384,7 +528,7 @@ mod tests {
         let reader = StubReader::new(events.clone());
         assert_eq!(
             reader.read_cursor(persona, room.as_uuid()).await.unwrap(),
-            0,
+            None,
             "never read"
         );
 
@@ -404,7 +548,7 @@ mod tests {
         // rather than re-delivering the same page forever.
         assert_eq!(
             d.bookmark,
-            d.elements[0].event().lamport.saturating_sub(1),
+            Some(events[events.len() - FIRST_READ_PAGE - 1].cursor()),
             "first sight splits one page back — the seed the caller then persists"
         );
 
@@ -487,7 +631,10 @@ mod tests {
             .advance_read_cursor(persona, room.as_uuid(), &older)
             .await
             .unwrap();
-        assert_eq!(reader.read_cursor(persona, room.as_uuid()).await.unwrap(), 5);
+        assert_eq!(
+            reader.read_cursor(persona, room.as_uuid()).await.unwrap(),
+            Some(newer.cursor())
+        );
     }
 
     // what this catches: the digest is PER-CHANNEL — events from another room are

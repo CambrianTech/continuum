@@ -128,7 +128,7 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
                 // binding's own parent — a run room nests under the room it was
                 // dispatched from, a pipeline under its project, generically.
                 let parent_ref = if lineage_parent.is_empty() {
-                    a.parent.clone().unwrap_or_default()  // unwrap_or: no parent = a top-level activity
+                    a.parent.clone().unwrap_or_default() // unwrap_or: no parent = a top-level activity
                 } else {
                     lineage_parent
                 };
@@ -427,9 +427,7 @@ pub fn spawn_member_set_fold(
                     if event.name != PRESENCE_UPDATED {
                         continue;
                     }
-                    if let Ok(update) =
-                        AircPresenceUpdate::deserialize(&*event.payload)
-                    {
+                    if let Ok(update) = AircPresenceUpdate::deserialize(&*event.payload) {
                         tx.send_if_modified(|set| {
                             let mut changed = false;
                             for slot in &update.roster {
@@ -528,7 +526,7 @@ impl NavReader for ChannelBookmarksNavReader {
                 // honest "no info" the unread branch below reports.
                 let last = digests
                     .peek(&(user, *room))
-                    .map(|d| d.bookmark)
+                    .and_then(|d| d.bookmark.as_ref().map(|cursor| cursor.lamport))
                     .unwrap_or(0);
                 // REAL unread from the pre-staged digest when one is staged for
                 // this (citizen, room); no staged digest → no unread info yet (an
@@ -727,7 +725,6 @@ impl NavProjectorRegistry {
     }
 }
 
-
 /// The activity's tree position + humanized reading-line label (#2632 slice a).
 ///
 /// Pure lookup over records the substrate already keeps: a room that hosts a
@@ -754,7 +751,10 @@ fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
     // what those rooms are"): `repo__repo-1234` reads as its issue half
     // (`pylint-7114`), and the assignee is her NAME when the registry knows
     // her — a hex prefix labels nothing for a human.
-    let short_instance = instance.rsplit_once("__").map(|(_, tail)| tail).unwrap_or(instance);
+    let short_instance = instance
+        .rsplit_once("__")
+        .map(|(_, tail)| tail)
+        .unwrap_or(instance);
     let who = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
         .map(|reg| reg.roster_snapshot())
         .and_then(|snap| {
@@ -763,10 +763,7 @@ fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
                 .map(|(name, _)| name)
         })
         .unwrap_or_else(|| act.assignee.to_string()[..8].to_string());
-    (
-        run_room.to_string(),
-        format!("{short_instance} · {who}"),
-    )
+    (run_room.to_string(), format!("{short_instance} · {who}"))
 }
 
 #[cfg(test)]
@@ -786,7 +783,11 @@ mod tests {
         let run = Uuid::new_v4();
         let mut a = room(&run.to_string(), "bench-swe-bench-verified-1", 0, 0);
         a.parent = Some(academy.to_string());
-        let snap = NavSnapshot { current: None, activities: vec![a], bookmarks: vec![] };
+        let snap = NavSnapshot {
+            current: None,
+            activities: vec![a],
+            bookmarks: vec![],
+        };
         let view = project_nav(Uuid::new_v4(), snap);
         assert_eq!(view.open_tabs[0].parent_ref, academy.to_string());
     }
@@ -891,7 +892,12 @@ mod tests {
             std::sync::Arc::new(crate::cognition::channel_digest::ChannelDigest {
                 room_id: room,
                 persona_id: asha,
-                bookmark: 42,
+                bookmark: Some(airc_core::TranscriptCursor {
+                    lamport: 42,
+                    event_id: airc_core::EventId::new(),
+                }),
+                durable_bookmark: None,
+                scanned_through: None,
                 elements: Vec::new(),
                 unread_start: 0,
             }),
@@ -1100,10 +1106,17 @@ mod tests {
         let mini = Uuid::new_v4();
         let academy = Uuid::new_v4();
         rooms.insert(mini, "bench-swe-bench-verified-mini-1788398099".to_string());
-        rooms.insert(academy, crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM.to_string());
+        rooms.insert(
+            academy,
+            crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM.to_string(),
+        );
         assert_eq!(landing_room(&rooms), Some(academy.to_string()));
         rooms.remove(&academy);
-        assert_eq!(landing_room(&rooms), Some(mini.to_string()), "no academy → the first room, never None");
+        assert_eq!(
+            landing_room(&rooms),
+            Some(mini.to_string()),
+            "no academy → the first room, never None"
+        );
         assert_eq!(landing_room(&RoomSet::new()), None);
     }
 }

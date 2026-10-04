@@ -19,10 +19,10 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::channel_substrate::global_channel_digest_buffer;
-use crate::persona::airc_source::AircTranscriptReader;
-use crate::persona::PersonaAircRuntimeRegistry;
 use crate::ipc::positron_nav_source::{global_nav_focus, NAV_CHANGED};
 use crate::ipc::positron_source::{AircChatFocused, CHAT_FOCUSED};
+use crate::persona::airc_source::AircTranscriptReader;
+use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::ready_buffer::ReadyBuffer;
 use crate::runtime::{
     CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
@@ -541,7 +541,7 @@ mod tests {
             metadata: serde_json::Value::Null,
         };
         let digest =
-            global_channel_digest_builder().build_from_events(user, room_a, vec![event], 0, 0);
+            global_channel_digest_builder().build_from_events(user, room_a, vec![event], 0, None);
         global_channel_digest_buffer().publish((user, room_a), Arc::new(digest));
 
         // First select: no previous focus, cursor untouched.

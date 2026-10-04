@@ -45,17 +45,58 @@ pub fn focus_workspace_card<'a>(
     focus_card(active).or_else(|| focus_card(review))
 }
 
-/// Resolve the same actionable choice used by hands against ordinary subscribed
-/// boards. A benchmark registry is not a catalog of a citizen's project work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HeldFocus {
+    pub room_id: uuid::Uuid,
+    pub card_id: airc_work::WorkCardId,
+    pub changed: bool,
+}
+
+/// An unread room fact about a held card is a changed world, irrespective of
+/// column. Use the shared digest and durable reader bookmark; no wake ledger.
 pub(crate) async fn focus_room(
     citizen: &dyn super::airc_citizen::AircCitizen,
-) -> Result<Option<uuid::Uuid>, airc_lib::AircError> {
+) -> Result<Option<HeldFocus>, airc_lib::AircError> {
+    use crate::runtime::ready_buffer::ReadyBuffer;
     let held = citizen.active_claims().await?;
+    if held.is_empty() {
+        return Ok(None);
+    }
+    let rooms = citizen.subscribed_rooms().await?;
+    let buffer = crate::cognition::channel_substrate::global_channel_digest_buffer();
+    let builder = crate::cognition::channel_substrate::global_channel_digest_builder();
+    let mut changed = None;
+    for room in &rooms {
+        let key = (citizen.peer_id(), *room);
+        let previous = buffer.peek(&key);
+        let digest = std::sync::Arc::new(builder.build_with_progress(
+            citizen.peer_id(), *room, citizen,
+            super::airc_source::FETCH_LIMIT,
+            crate::cognition::channel_digest::DEFAULT_GROUNDING,
+            previous.as_deref(),
+        ).await?);
+        for element in digest.unread() {
+            let Some(subject) = element.content_kind().and_then(|kind| kind.subject_card()) else {
+                continue;
+            };
+            if held.iter().any(|card| card.card_id == subject) {
+                let event = element.event();
+                let cursor = airc_core::TranscriptCursor { lamport: event.lamport, event_id: event.event_id };
+                if changed.as_ref().is_none_or(|(previous, _)| super::airc_source::cursor_key(&cursor) > super::airc_source::cursor_key(previous)) {
+                    changed = Some((cursor, HeldFocus { room_id: *room, card_id: subject, changed: true }));
+                }
+            }
+        }
+        buffer.publish(key, digest);
+    }
+    if let Some((_, focus)) = changed {
+        return Ok(Some(focus));
+    }
     let Some(card) = focus_actionable_card(&held) else {
         return Ok(None);
     };
     let mut unreadable = None;
-    for room in citizen.subscribed_rooms().await? {
+    for room in rooms {
         let board = match citizen.work_board(Some(room)).await {
             Ok(board) => board,
             Err(error) => {
@@ -64,7 +105,7 @@ pub(crate) async fn focus_room(
             }
         };
         if board.cards.iter().any(|c| c.card_id == card.card_id) {
-            return Ok(Some(room));
+            return Ok(Some(HeldFocus { room_id: room, card_id: card.card_id, changed: false }));
         }
     }
     if let Some(error) = unreadable {
@@ -154,7 +195,7 @@ mod tests {
             .with_claims(vec![benchmark.clone(), project.clone()])
             .with_board(bench_room, vec![benchmark])
             .with_board(project_room, vec![project]);
-        assert_eq!(focus_room(&citizen).await.expect("board readable"), Some(project_room));
+        assert_eq!(focus_room(&citizen).await.expect("board readable").map(|focus| focus.room_id), Some(project_room));
         let citizen = citizen.with_rooms(vec![bench_room]);
         assert!(matches!(focus_room(&citizen).await, Err(airc_lib::AircError::NotSubscribed(_))));
         let citizen = citizen.with_claims(vec![]);

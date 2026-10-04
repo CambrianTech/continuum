@@ -3099,6 +3099,7 @@ mod tests {
 
     fn image_message() -> Vec<ChatMessage> {
         vec![ChatMessage {
+            room_inputs: Vec::new(),
             role: "user".into(),
             content: MessageContent::Parts(vec![
                 ContentPart::Text {

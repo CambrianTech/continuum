@@ -4,8 +4,8 @@
 //! `forge.body_hint` contract has one definition.
 
 use airc_core::{Body, Headers, TranscriptEvent};
-use serde::Deserialize;
 use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
+use serde::{Deserialize, Serialize};
 
 use crate::airc::realtime::{
     AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload, AircRealtimeSchema,
@@ -168,7 +168,66 @@ pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
 /// Correlated command traffic belongs to the request/reply dispatcher, not room
 /// attention. Inspect the routing header before decoding or queueing its body.
 pub fn is_command_frame(event: &TranscriptEvent) -> bool {
-    event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID).is_some()
+    event
+        .headers
+        .get(airc_protocol::HEADER_AIRC_CORRELATION_ID)
+        .is_some()
+}
+
+/// Known control traffic may advance a raw scan without entering perception.
+/// Unknown shapes and malformed publications are not proof of consumption.
+pub fn is_non_perceptual_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "command_frame" | "stream_chunk" | "heartbeat" | "lifecycle_event" | "work_maintenance"
+    )
+}
+
+/// Exclude known wire controls before a newest-page limit. Raw replay still
+/// decodes the actual body before treating a record as safe cursor progress.
+pub fn room_perception_header_filter() -> airc_core::HeaderFilter {
+    use airc_core::HeaderFilter;
+    let mut controls: Vec<_> = [
+        airc_protocol::HEADER_AIRC_CORRELATION_ID,
+        airc_lib::HEADER_STREAM_ID,
+        airc_lib::HEADER_HEARTBEAT_KIND,
+    ]
+    .into_iter()
+    .map(|key| HeaderFilter::Has { key: key.into() })
+    .collect();
+    // The SDK's kind accessor is crate-private. These are the same two lease
+    // variants classified after canonical decoding in room_content_from_event.
+    controls.extend(
+        ["claim_heartbeat", "workspace_heartbeat"].map(|kind| HeaderFilter::Exact {
+            key: airc_work::HEADER_FORGE_WORK_EVENT_KIND.into(),
+            value: kind.into(),
+        }),
+    );
+    HeaderFilter::Not(Box::new(HeaderFilter::AnyOf(controls)))
+}
+
+/// Preserve speech versus ordinary typed room activity through perception and
+/// grounding. A published work event is not proof of board acceptance.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "event", rename_all = "snake_case")]
+pub enum RoomContentKind {
+    #[default]
+    Speech,
+    Work(airc_work::WorkEvent),
+}
+
+impl RoomContentKind {
+    /// The subject comes from AIRC's typed body projection, never an incoming
+    /// routing header or a receiver-maintained event-kind table.
+    pub fn subject_card(&self) -> Option<airc_work::WorkCardId> {
+        let Self::Work(work) = self else {
+            return None;
+        };
+        airc_work::work_event_headers(work)
+            .get(airc_work::HEADER_FORGE_WORK_CARD_ID)
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .map(airc_work::WorkCardId::from_uuid)
+    }
 }
 
 /// Typed room content; attachment bytes remain outside transcript and prompt.
@@ -177,22 +236,45 @@ pub struct RoomTurn {
     pub sender: uuid::Uuid,
     pub text: String,
     pub media: Vec<crate::persona::channel_items::MediaItemRequest>,
+    pub kind: RoomContentKind,
 }
 
+/// Speech-only compatibility view for chat/UI and text-fingerprint consumers.
+/// Typed activity keeps its event identity rather than becoming a spoken line.
 pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, String), &'static str> {
     let turn = room_content_from_event(event)?;
+    if !matches!(turn.kind, RoomContentKind::Speech) {
+        return Err("non_speech_content");
+    }
     Ok((turn.sender, render_room_content(&turn.text, &turn.media)))
 }
 
 /// A bounded notice, not a claim that the model has inspected the attachment.
 /// The event retains the full references for explicit inspection/replay.
-pub(crate) fn render_room_content(text: &str, media: &[crate::persona::channel_items::MediaItemRequest]) -> String {
-    if media.is_empty() { return text.to_owned(); }
-    let mut rendered = format!("{text}\n[{} media attachment(s); contents not loaded", media.len());
+pub(crate) fn render_room_content(
+    text: &str,
+    media: &[crate::persona::channel_items::MediaItemRequest],
+) -> String {
+    if media.is_empty() {
+        return text.to_owned();
+    }
+    let mut rendered = format!(
+        "{text}\n[{} media attachment(s); contents not loaded",
+        media.len()
+    );
     for item in media.iter().take(8) {
-        let kind: String = item.kind.chars().filter(|c| !c.is_control()).take(24).collect();
+        let kind: String = item
+            .kind
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(24)
+            .collect();
         rendered.push_str(&format!("; {kind}"));
-        if let Some(hash) = item.blob_hash.as_deref().filter(|h| h.starts_with("sha256:") && h.len() == 71 && h[7..].bytes().all(|b| b.is_ascii_hexdigit())) {
+        if let Some(hash) = item.blob_hash.as_deref().filter(|h| {
+            h.starts_with("sha256:")
+                && h.len() == 71
+                && h[7..].bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
             rendered.push_str(&format!(" {hash}"));
         }
     }
@@ -203,6 +285,12 @@ pub(crate) fn render_room_content(text: &str, media: &[crate::persona::channel_i
 pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'static str> {
     if is_command_frame(event) {
         return Err("command_frame");
+    }
+    if event.headers.contains_key(airc_lib::HEADER_HEARTBEAT_KIND) {
+        return Err("heartbeat");
+    }
+    if event.kind.is_lifecycle() {
+        return Err("lifecycle_event");
     }
     // - `"stream_chunk"` — a live streaming token chunk (`airc.stream.*` headers,
     //   published by `publish_stream_chunk` as typing-indicator-class traffic).
@@ -219,28 +307,83 @@ pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'st
     if is_stream_chunk(event) {
         return Err("stream_chunk");
     }
+    if airc_work::transcript_is_work_event(event) {
+        // The substrate owns signature verification before persistence. Its
+        // transcript retains the publisher, room, target and cursor, not the
+        // signature. Reuse its typed decoder and author-consistency checks;
+        // never infer a recipient or accepted board state from payload fields.
+        let work = airc_work::decode_transcript_work_event(event)
+            .map_err(|_| "work_event_decode_error")?
+            .event;
+        if matches!(
+            work,
+            airc_work::WorkEvent::SubmissionRejected(_) | airc_work::WorkEvent::ReviewRejected(_)
+        ) {
+            // These are local rejection results, deliberately not serializable
+            // wire events. A spoofed publication is not room activity to prompt.
+            return Err("rejected_work_event");
+        }
+        if matches!(
+            work,
+            airc_work::WorkEvent::ClaimHeartbeat(_) | airc_work::WorkEvent::WorkspaceHeartbeat(_)
+        ) {
+            // Lease renewal is board maintenance, not a new room contribution.
+            // Keep the classification shared by live perception and digests.
+            return Err("work_maintenance");
+        }
+        let json = serde_json::to_string(&work).map_err(|_| "work_event_encode_error")?;
+        return Ok(RoomTurn {
+            sender: event.peer_id.as_uuid(),
+            text: format!(
+                "Room work event (published fact; board acceptance not asserted): {json}"
+            ),
+            media: Vec::new(),
+            kind: RoomContentKind::Work(work),
+        });
+    }
     let mut turn = if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
-        RoomTurn { sender: event.peer_id.as_uuid(), text: text.to_string(), media: Vec::new() }
-    } else if event.body.is_none() && event.kind == airc_core::TranscriptKind::Attachment && event.attachment.is_some() {
-        RoomTurn { sender: event.peer_id.as_uuid(), text: String::new(), media: Vec::new() }
+        RoomTurn {
+            sender: event.peer_id.as_uuid(),
+            text: text.to_string(),
+            media: Vec::new(),
+            kind: RoomContentKind::Speech,
+        }
+    } else if event.body.is_none()
+        && event.kind == airc_core::TranscriptKind::Attachment
+        && event.attachment.is_some()
+    {
+        RoomTurn {
+            sender: event.peer_id.as_uuid(),
+            text: String::new(),
+            media: Vec::new(),
+            kind: RoomContentKind::Speech,
+        }
     } else {
         match envelope_from_event(event) {
             Err(_) => return Err("envelope_decode_error"),
             Ok(None) => return Err("no_continuum_body_hint"),
-            Ok(Some(envelope)) => chat_transcript_content(&envelope, event.peer_id.as_uuid()).ok_or("non_chat_schema")?,
+            Ok(Some(envelope)) => chat_transcript_content(&envelope, event.peer_id.as_uuid())
+                .ok_or("non_chat_schema")?,
         }
     };
     // Native AIRC attachments are first-class room input too. Preserve the
     // envelope's logical sender/caption; never treat a peer's path as a local read.
-    if matches!(event.kind, airc_core::TranscriptKind::Message | airc_core::TranscriptKind::Attachment) {
+    if matches!(
+        event.kind,
+        airc_core::TranscriptKind::Message | airc_core::TranscriptKind::Attachment
+    ) {
         if let Some(attachment) = &event.attachment {
-            let kind = attachment.media_type.as_deref()
+            let kind = attachment
+                .media_type
+                .as_deref()
                 .and_then(|mime| mime.split_once('/').map(|(kind, _)| kind))
                 .unwrap_or("file"); // Unknown MIME is displayed as a generic file, never a supported visual capability.
             let media = crate::persona::channel_items::MediaItemRequest {
-                kind: kind.to_owned(), mime_type: attachment.media_type.clone(),
+                kind: kind.to_owned(),
+                mime_type: attachment.media_type.clone(),
                 blob_hash: Some(attachment.content_hash.0.clone()),
-                url: None, description: None,
+                url: None,
+                description: None,
             };
             if !turn.media.contains(&media) {
                 turn.media.push(media);
@@ -258,7 +401,10 @@ pub fn chat_transcript_message(
     Some((turn.sender, render_room_content(&turn.text, &turn.media)))
 }
 
-fn chat_transcript_content(envelope: &AircRealtimeEnvelope, fallback_peer: uuid::Uuid) -> Option<RoomTurn> {
+fn chat_transcript_content(
+    envelope: &AircRealtimeEnvelope,
+    fallback_peer: uuid::Uuid,
+) -> Option<RoomTurn> {
     let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload else {
         return None;
     };
@@ -272,13 +418,177 @@ fn chat_transcript_content(envelope: &AircRealtimeEnvelope, fallback_peer: uuid:
         .and_then(serde_json::Value::as_str)
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
         .unwrap_or(fallback_peer);
-    let media = inline.get("media").map(|value| serde_json::from_value(value.clone())).transpose().ok()?.unwrap_or_default(); // boundary: AIRC transcript JSON decodes typed references; omitted media is the legacy text-only wire contract.
-    Some(RoomTurn { sender, text: text.to_string(), media })
+    let media = inline
+        .get("media")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .ok()?
+        .unwrap_or_default(); // boundary: AIRC transcript JSON decodes typed references; omitted media is the legacy text-only wire contract.
+    Some(RoomTurn {
+        sender,
+        text: text.to_string(),
+        media,
+        kind: RoomContentKind::Speech,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_work_content_preserves_publication_and_rejects_spoofed_authors() {
+        use airc_core::{ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptKind};
+        use airc_work::{WorkCardId, WorkEvent};
+        use serde_json::json;
+
+        let peer = PeerId::new();
+        let card = WorkCardId::new();
+        let submission_id = airc_work::SubmissionId::new();
+        let artifact = json!({ "hash": "a".repeat(64), "size_bytes": 12 });
+        let bodies = [
+            json!({
+                "kind": "card_state_changed", "card_id": card, "state": "review",
+                "changed_by": peer, "changed_at_ms": 1,
+            }),
+            json!({
+                "kind": "work_submitted", "submission_id": submission_id,
+                "card_id": card, "claim_id": airc_work::ClaimId::new(),
+                "instance": "ordinary-project", "base_sha": "b".repeat(40),
+                "artifact": artifact, "publisher": peer, "submitted_at_ms": 2,
+            }),
+            json!({
+                "kind": "work_submission_reviewed", "review_id": airc_work::WorkReviewId::new(),
+                "card_id": card, "submission_id": submission_id, "artifact": artifact,
+                "review_card_id": WorkCardId::new(), "review_claim_id": airc_work::ClaimId::new(),
+                "reviewer": peer, "outcome": "failed", "evidence": artifact, "reviewed_at_ms": 3,
+            }),
+            json!({
+                "kind": "pull_request_linked", "card_id": card,
+                "pull_request": { "repo": "acme/ordinary-project", "number": 7, "head": "topic", "base": "main" },
+                "linked_by": peer, "linked_at_ms": 4,
+            }),
+        ];
+        let mut events = Vec::new();
+        for (index, body) in bodies.into_iter().enumerate() {
+            let work: WorkEvent = serde_json::from_value(body).expect("typed work fixture");
+            let (mut headers, body) = airc_work::encode_work_event(&work).unwrap();
+            // A received header cannot redirect the typed body's actual subject.
+            headers.insert(
+                airc_work::HEADER_FORGE_WORK_CARD_ID.into(),
+                WorkCardId::new().to_string(),
+            );
+            let event = TranscriptEvent {
+                event_id: EventId::new(),
+                room_id: RoomId::new(),
+                peer_id: peer,
+                client_id: ClientId::new(),
+                kind: TranscriptKind::System,
+                occurred_at_ms: index as u64,
+                lamport: index as u64,
+                target: MentionTarget::All,
+                headers,
+                body: Some(body),
+                attachment: None,
+                receipt: None,
+                metadata: serde_json::Value::Null,
+            };
+            let content = room_content_from_event(&event).expect("ordinary work is room content");
+            assert_eq!(content.sender, peer.as_uuid());
+            assert_eq!(content.kind, RoomContentKind::Work(work.clone()));
+            assert_eq!(content.kind.subject_card(), Some(card));
+            assert!(room_perception_header_filter().matches(&event.headers));
+            assert!(content.media.is_empty());
+            assert_eq!(
+                content.text,
+                format!(
+                    "Room work event (published fact; board acceptance not asserted): {}",
+                    serde_json::to_string(&work).unwrap(),
+                )
+            );
+            assert_eq!(room_turn_from_event(&event), Err("non_speech_content"));
+            let encoded = serde_json::to_string(&content.kind).unwrap();
+            assert_eq!(
+                serde_json::from_str::<RoomContentKind>(&encoded).unwrap(),
+                content.kind
+            );
+            assert_eq!(
+                event.target,
+                MentionTarget::All,
+                "the decoder invents no recipient"
+            );
+            events.push(event);
+        }
+        assert_eq!(RoomContentKind::default(), RoomContentKind::Speech);
+        assert_eq!(RoomContentKind::Speech.subject_card(), None);
+
+        for work in [
+            WorkEvent::ClaimHeartbeat(airc_work::ClaimHeartbeat {
+                card_id: card,
+                claim_id: airc_work::ClaimId::new(),
+                owner: peer,
+                ttl_ms: 1000,
+                heartbeat_at_ms: 5,
+            }),
+            WorkEvent::WorkspaceHeartbeat(airc_work::WorkspaceHeartbeat {
+                workspace_id: airc_work::WorkspaceId::new(),
+                disk_bytes: None,
+                heartbeat_at_ms: 6,
+            }),
+        ] {
+            let mut maintenance = events[0].clone();
+            let (headers, body) = airc_work::encode_work_event(&work).unwrap();
+            maintenance.headers = headers;
+            maintenance.body = Some(body);
+            assert_eq!(
+                room_content_from_event(&maintenance).err(),
+                Some("work_maintenance")
+            );
+            assert_eq!(room_turn_from_event(&maintenance), Err("work_maintenance"));
+            assert!(!room_perception_header_filter().matches(&maintenance.headers));
+        }
+        assert!(is_non_perceptual_reason("work_maintenance"));
+        assert!(!is_non_perceptual_reason("rejected_work_event"));
+        assert!(!is_non_perceptual_reason("work_event_decode_error"));
+        assert!(!is_non_perceptual_reason("unknown_future_shape"));
+
+        // Reuse the same actual publications at the SDK's author boundary.
+        for event in &events[1..=2] {
+            let mut spoof = event.clone();
+            spoof.peer_id = PeerId::new();
+            assert_eq!(
+                room_content_from_event(&spoof).err(),
+                Some("rejected_work_event")
+            );
+            assert_eq!(room_turn_from_event(&spoof), Err("rejected_work_event"));
+        }
+        let mut malformed = events[2].clone();
+        malformed.body = Some(Body::Json(json!({ "kind": "work_submission_reviewed" })));
+        assert_eq!(
+            room_content_from_event(&malformed).err(),
+            Some("work_event_decode_error")
+        );
+        let mut untyped = events[2].clone();
+        untyped.headers.clear();
+        assert_eq!(
+            room_content_from_event(&untyped).err(),
+            Some("no_continuum_body_hint")
+        );
+        let mut command = events[0].clone();
+        command.headers.insert(
+            airc_protocol::HEADER_AIRC_CORRELATION_ID.into(),
+            "request".into(),
+        );
+        assert_eq!(
+            room_content_from_event(&command).err(),
+            Some("command_frame")
+        );
+        let mut chunk = events[0].clone();
+        chunk
+            .headers
+            .insert(airc_lib::HEADER_STREAM_ID.into(), "stream".into());
+        assert_eq!(room_content_from_event(&chunk).err(), Some("stream_chunk"));
+    }
 
     // what this catches: the ONE chat_transcript decoder recovers the
     // logical sender + text from the Body::Json shape chat/send publishes.
@@ -327,7 +637,8 @@ mod tests {
     #[test]
     fn media_notice_is_bounded_and_does_not_load_content() {
         let item = crate::persona::channel_items::MediaItemRequest {
-            kind: "image".into(), mime_type: Some("image/png".into()),
+            kind: "image".into(),
+            mime_type: Some("image/png".into()),
             blob_hash: Some(format!("sha256:{}", "a".repeat(64))),
             url: Some(format!("data:image/png;base64,{}", "x".repeat(100_000))),
             description: Some("unverified visual claim".into()),

@@ -109,11 +109,13 @@ pub async fn generate_recipe_with_ai(
     let inference_request = TextGenerationRequest {
         messages: vec![
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "system".to_string(),
                 content: MessageContent::Text(system_prompt),
                 name: None,
             },
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(user_prompt),
                 name: None,

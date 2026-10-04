@@ -250,11 +250,13 @@ async fn run_analysis(
     let request = TextGenerationRequest {
         messages: vec![
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "system".to_string(),
                 content: MessageContent::Text(SYSTEM_PROMPT.to_string()),
                 name: None,
             },
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(prompt_text),
                 name: None,

@@ -500,6 +500,7 @@ pub fn build_response_messages(
     if let Some(prompt) = context.system_prompt.as_deref() {
         if !prompt.is_empty() {
             messages.push(ChatMessage {
+                room_inputs: Vec::new(),
                 role: "system".to_string(),
                 content: MessageContent::Text(prompt.to_string()),
                 name: None,
@@ -516,6 +517,7 @@ pub fn build_response_messages(
             if now > prev {
                 if let Some(marker) = hour_gap_marker(now - prev) {
                     messages.push(ChatMessage {
+                        room_inputs: Vec::new(),
                         role: "system".to_string(),
                         content: MessageContent::Text(marker),
                         name: None,
@@ -534,6 +536,7 @@ pub fn build_response_messages(
         };
 
         messages.push(ChatMessage {
+            room_inputs: Vec::new(),
             role: msg.role.clone(),
             content: MessageContent::Text(formatted_content),
             name: None,
@@ -546,6 +549,7 @@ pub fn build_response_messages(
     let current_time = format_current_time(current_time_ms);
     let reminder = build_identity_reminder(&context.persona_name, members, &current_time);
     messages.push(ChatMessage {
+        room_inputs: Vec::new(),
         role: "system".to_string(),
         content: MessageContent::Text(reminder),
         name: None,

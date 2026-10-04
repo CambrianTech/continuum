@@ -2747,6 +2747,7 @@ pub(crate) mod tests {
         let mut receipts = vec![receipt("failed-before-serving")];
         assert!(served_provenance(&receipts).is_none());
         receipts.push(GenerationReceipt {
+            room_inputs: Vec::new(),
             submitted_request_id: "submitted-a".into(),
             outcome: GenerationOutcome::Served {
                 model: "actual-a".into(),
@@ -2761,6 +2762,7 @@ pub(crate) mod tests {
         assert_eq!(homogeneous.model, "actual-a");
         assert_eq!(homogeneous.request_id, "provider-request-a");
         receipts.push(GenerationReceipt {
+            room_inputs: Vec::new(),
             submitted_request_id: "submitted-b".into(),
             outcome: GenerationOutcome::Served {
                 model: "actual-b".into(),
@@ -3204,6 +3206,7 @@ pub(crate) mod tests {
 
     fn served_receipt(id: &str, model: &str) -> crate::cognition::provenance::GenerationReceipt {
         crate::cognition::provenance::GenerationReceipt {
+            room_inputs: Vec::new(),
             submitted_request_id: id.into(),
             outcome: crate::cognition::provenance::GenerationOutcome::Served {
                 model: model.into(),

@@ -1518,6 +1518,9 @@ mod tests {
             let colleague = Uuid::new_v4();
             let messages = vec![
                 IncomingMessage {
+                    content_kind: Default::default(),
+                    target: None,
+                    subject_owner: None,
                     media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
@@ -1527,6 +1530,9 @@ mod tests {
                     room_id: room,
                 },
                 IncomingMessage {
+                    content_kind: Default::default(),
+                    target: None,
+                    subject_owner: None,
                     media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
@@ -1537,6 +1543,9 @@ mod tests {
                 },
             ];
             let later_message = IncomingMessage {
+                content_kind: Default::default(),
+                target: None,
+                subject_owner: None,
                 media: Vec::new(),
                 event_id: Uuid::new_v4(),
                 lamport: 2,

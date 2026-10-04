@@ -1502,6 +1502,7 @@ mod tests {
     fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {
         TextGenerationRequest {
             messages: vec![ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text("Return JSON.".to_string()),
                 name: None,
@@ -1732,6 +1733,7 @@ mod tests {
             that ignores case and non-alphanumeric characters. Reply with only the code.";
         let make_req = |adapters: Option<Vec<ActiveAdapterRequest>>| TextGenerationRequest {
             messages: vec![ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(prompt.to_string()),
                 name: None,

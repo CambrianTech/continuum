@@ -258,6 +258,10 @@ async fn drive_with_input(
     conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
     mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
 ) -> SettleOutcome {
+    // The live driver owns presentation acknowledgement for every caller:
+    // message, held work and intrinsic cycle. Introspection/composition has no
+    // live conversation and cannot consume a citizen's unread room facts.
+    let reader = conversation.as_ref().and_then(|conversation| conversation.stream_citizen());
     let settled = settle_to_outcome(
         cycle,
         burst,
@@ -267,6 +271,16 @@ async fn drive_with_input(
         credit.as_deref_mut(),
     )
     .await;
+    if let Some(reader) = reader {
+        let inputs: Vec<_> = settled.generation_receipts.iter()
+            .filter(|receipt| matches!(receipt.outcome, crate::cognition::provenance::GenerationOutcome::Served { .. }))
+            .flat_map(|receipt| receipt.room_inputs.iter().cloned())
+            .collect();
+        if let Err(error) = reader.acknowledge_presented(reader.peer_id(), &inputs).await {
+            tracing::warn!(%error, persona = %reader.peer_id(),
+                "room presentation cursor was not acknowledged; unread facts remain for retry");
+        }
+    }
     if let Some(body) = cycle.acting() {
         crate::cognition::experience::record_lived_turn(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
@@ -498,8 +512,8 @@ async fn settle_to_outcome(
                         body.admission.admit(&inbox_message, None)
                             .map_err(|error| format!("room input admission failed: {error}"))?;
                         framing.attention = framing.attention.with_input(
-                            crate::cognition::workspace::TurnAttention::for_message(
-                                recipient.mentions(&message.text),
+                            message.attention(
+                                &recipient,
                                 crate::ipc::positron_presence::is_human_peer(message.peer_id),
                             ),
                         );

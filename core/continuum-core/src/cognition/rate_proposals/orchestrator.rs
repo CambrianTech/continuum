@@ -82,6 +82,7 @@ pub async fn rate_proposals_with_ai(
     let inference_request = TextGenerationRequest {
         messages: vec![
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "system".to_string(),
                 content: MessageContent::Text(format!(
                     "You are {reviewer_name}, an AI evaluating response proposals from your peers."
@@ -89,6 +90,7 @@ pub async fn rate_proposals_with_ai(
                 name: None,
             },
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(prompt_text),
                 name: None,

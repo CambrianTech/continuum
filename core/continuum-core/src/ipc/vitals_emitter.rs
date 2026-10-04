@@ -584,7 +584,7 @@ mod tests {
                     crate::cognition::channel_digest::test_event_in(room, t, i as u64 + 1)
                 })
                 .collect();
-            let digest = builder.build_from_events(persona, room.as_uuid(), events, 0, 0);
+            let digest = builder.build_from_events(persona, room.as_uuid(), events, 0, None);
             digests.publish((persona, room.as_uuid()), Arc::new(digest));
         };
         stage(peer_id, RoomId::new(), &["a", "b", "c"]);

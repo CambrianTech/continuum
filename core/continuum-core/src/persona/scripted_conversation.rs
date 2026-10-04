@@ -301,6 +301,9 @@ mod tests {
 
     fn one_msg() -> IncomingMessage {
         IncomingMessage {
+            content_kind: Default::default(),
+            target: None,
+            subject_owner: None,
             media: Vec::new(),
             event_id: uuid::Uuid::nil(),
             lamport: 1,

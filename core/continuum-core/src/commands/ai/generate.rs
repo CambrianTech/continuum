@@ -92,6 +92,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
             .map_err(|e| format!("Failed to parse messages: {}", e))?
     } else if let Some(prompt) = p.str_opt("prompt") {
         vec![ChatMessage {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Text(prompt.to_string()),
             name: None,

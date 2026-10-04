@@ -110,7 +110,7 @@ pub(crate) fn pick_trigger(
 /// feedback events for the interface"). Fired for every directed line drained,
 /// not only the one that triggers the turn: hearing is delivery, not reply.
 pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
-    if msg.event_id.is_nil() {
+    if msg.event_id.is_nil() || !msg.is_speech() {
         return;
     }
     if let Some(bus) = crate::runtime::MessageBus::global() {
@@ -145,6 +145,9 @@ mod tests {
 
     fn line(peer: u8, lamport: u64, text: &str) -> IncomingMessage {
         IncomingMessage {
+            content_kind: Default::default(),
+            target: None,
+            subject_owner: None,
             media: Vec::new(),
             event_id: Uuid::new_v4(),
             lamport,

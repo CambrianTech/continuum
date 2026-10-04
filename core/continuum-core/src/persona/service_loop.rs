@@ -56,6 +56,17 @@ use uuid::Uuid;
 /// every airc type into the test.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IncomingMessage {
+    /// The shared room decoder's type, retained through perception and capture.
+    /// Work activity is not a speaker utterance; old captures contain speech.
+    #[serde(default)]
+    pub content_kind: crate::airc::realtime_wire::RoomContentKind,
+    /// The actual transport target, never inferred from body prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<airc_core::MentionTarget>,
+    /// Receiver-side ownership of this event's typed subject. This is resolved
+    /// against the citizen's own live holdings, not claimed by the publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_owner: Option<Uuid>,
     /// The transcript event this turn came from — the row a `chat:heard`
     /// receipt points back at. Nil for scripted/synthetic turns.
     pub event_id: Uuid,
@@ -84,6 +95,43 @@ pub struct IncomingMessage {
 }
 
 impl IncomingMessage {
+    pub(crate) fn room_input(&self) -> Option<crate::cognition::provenance::RoomInput> {
+        (!self.event_id.is_nil() && !self.room_id.is_nil() && self.lamport != 0).then(|| {
+            crate::cognition::provenance::RoomInput {
+                room_id: self.room_id,
+                cursor: airc_core::TranscriptCursor {
+                    lamport: self.lamport,
+                    event_id: airc_core::EventId::from_uuid(self.event_id),
+                },
+                read_after: None,
+            }
+        })
+    }
+    pub(crate) fn is_speech(&self) -> bool {
+        matches!(self.content_kind, crate::airc::realtime_wire::RoomContentKind::Speech)
+    }
+
+    /// One addressing decision for live admission, backlog and mid-turn intake.
+    /// Names in work titles/evidence are content, not mentions. Typed ownership
+    /// and native targets are addressing facts; an actor is never an addressee.
+    pub(crate) fn attention(
+        &self,
+        recipient: &crate::persona::persona_identity::PersonaIdentity,
+        sender_is_human: bool,
+    ) -> crate::cognition::workspace::TurnAttention {
+        let target = matches!(&self.target,
+            Some(airc_core::MentionTarget::Peer(peer)) if peer.as_uuid() == recipient.id);
+        let attention = crate::cognition::workspace::TurnAttention::for_message(
+            target || (self.is_speech() && recipient.mentions(&self.text)),
+            self.is_speech() && sender_is_human,
+        );
+        if self.subject_owner == Some(recipient.id) {
+            attention.with_input(crate::cognition::workspace::TurnAttention::PriorityInput)
+        } else {
+            attention
+        }
+    }
+
     pub(crate) fn render_content(&self) -> String {
         crate::airc::realtime_wire::render_room_content(&self.text, &self.media)
     }
@@ -92,7 +140,8 @@ impl IncomingMessage {
     /// This is rendering, not a replacement for the typed event/room identity.
     pub(crate) fn render_room_update(&self) -> String {
         format!(
-            "[Room message received during this turn; room {}; peer {}; event {}]\n{}",
+            "[Room {} received during this turn; room {}; peer {}; event {}]\n{}",
+            if self.is_speech() { "message" } else { "activity" },
             self.room_id, self.peer_id, self.event_id, self.render_content()
         )
     }
@@ -710,7 +759,7 @@ async fn serve_persona_loop_inner(
             // scripted sources.
             let stale = crate::persona::wake_backlog::is_stale(&m, &mut seen_ids, high_water);
             high_water = m.lamport.max(high_water);
-            if stale || m.peer_id == self_id {
+            if stale || (m.is_speech() && m.peer_id == self_id) {
                 outcome.turns_skipped += 1;
             } else {
                 qualifying.push(m);
@@ -721,8 +770,8 @@ async fn serve_persona_loop_inner(
         // Both a literal mention and a human's opportunity to speak receive
         // priority. Only the former can tell the mind "this message names you".
         let priority_line = |m: &IncomingMessage| {
-            crate::cognition::workspace::TurnAttention::for_message(
-                ctx.identity.persona_identity().mentions(&m.text),
+            m.attention(
+                &ctx.identity.persona_identity(),
                 crate::ipc::positron_presence::is_human_peer(m.peer_id),
             )
             .requires_priority()
@@ -742,8 +791,8 @@ async fn serve_persona_loop_inner(
                 .is_some_and(|r| r.get(m.peer_id).is_some());
             crate::persona::wake_backlog::triggers_a_turn(
                 priority_line(m),
-                sender_is_citizen,
-                crate::persona::wake_backlog::is_receipt(&m.text),
+                m.is_speech() && sender_is_citizen,
+                m.is_speech() && crate::persona::wake_backlog::is_receipt(&m.text),
             )
         });
         let perceived_only = before - qualifying.len();
@@ -1094,6 +1143,8 @@ async fn serve_persona_loop_inner(
                 peer_id: &msg.peer_id.to_string(),
                 content: &msg.render_content(),
                 occurred_at_ms: 0,
+                voice: if msg.is_speech() { crate::cognition::workspace::TurnVoice::Speech } else { crate::cognition::workspace::TurnVoice::Perception },
+                room_input: msg.room_input(),
             }),
         );
         // #301 anchor-starvation fix: the in-window escalation counter loses its
@@ -1225,8 +1276,8 @@ async fn serve_persona_loop_inner(
                 // store (#89); this is the addressing half, unblocked today.
                 // Human opportunity retains priority, but sender kind can be stale
                 // or shared across clients: it cannot assert that she was named.
-                let attention = crate::cognition::workspace::TurnAttention::for_message(
-                    ctx.identity.persona_identity().mentions(&msg.text),
+                let attention = msg.attention(
+                    &ctx.identity.persona_identity(),
                     crate::ipc::positron_presence::is_human_peer(msg.peer_id),
                 );
                 if attention.requires_priority() {
@@ -1357,6 +1408,7 @@ async fn serve_persona_loop_inner(
                     &cycle,
                     ctx.identity.peer_id.as_uuid(),
                     conversation,
+                    msg.content_kind.subject_card(),
                 )
                 .await;
                 let mut credit_capture =
@@ -1822,6 +1874,8 @@ pub(crate) struct TriggerTurn<'a> {
     /// Event occurrence time when measured; zero means unknown. Never substitute
     /// the wake/turn clock for an event timestamp missing from the source.
     pub occurred_at_ms: u64,
+    pub voice: crate::cognition::workspace::TurnVoice,
+    pub room_input: Option<crate::cognition::provenance::RoomInput>,
 }
 
 /// The two grounding consumers the room-roster delivery feeds — kept as one
@@ -2038,7 +2092,24 @@ pub(crate) fn build_workspace_turns(
                 names.get(who_raw).copied().unwrap_or(who_raw)
             };
             let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
-            BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
+            let kind = item.metadata.get("content_kind")
+                .and_then(|value| serde_json::from_value::<crate::airc::realtime_wire::RoomContentKind>(value.clone()).ok())
+                .unwrap_or_default();
+            let mut turn = if matches!(kind, crate::airc::realtime_wire::RoomContentKind::Speech) {
+                BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
+            } else {
+                BurstTurn::perception(format!(
+                    "[Room activity; room {}; publisher {}; event {}; occurrence {}]\n{}",
+                    item.metadata.get("room_id").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                    who_raw,
+                    item.metadata.get("event_id").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                    occurred_at_ms.filter(|time| *time != 0).map(|time| time.to_string()).unwrap_or_else(|| "unknown".into()),
+                    item.content,
+                ))
+            };
+            turn.room_input = item.metadata.get("room_input")
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
+            turn
         })
         .collect();
 
@@ -2054,18 +2125,34 @@ pub(crate) fn build_workspace_turns(
     if let Some(trigger) = trigger {
         let already_last = turns
             .last()
-            .is_some_and(|t| !t.is_self && t.content == trigger.content);
+            .is_some_and(|t| match (&t.room_input, &trigger.room_input) {
+                (Some(existing), Some(incoming)) => {
+                    existing.room_id == incoming.room_id && existing.cursor == incoming.cursor
+                }
+                _ => !t.is_self && t.content == trigger.content,
+            });
         if !already_last {
             let author = names
                 .get(trigger.peer_id)
                 .copied()
                 .unwrap_or(trigger.peer_id);
-            turns.push(BurstTurn::attributed(
+            let mut turn = BurstTurn::attributed(
                 false,
                 author,
                 trigger.content.to_string(),
                 Some(trigger.occurred_at_ms),
-            ));
+            );
+            if trigger.voice == crate::cognition::workspace::TurnVoice::Perception {
+                turn = BurstTurn::perception(format!(
+                    "[Room activity; room {}; publisher {}; event {}; occurrence unknown]\n{}",
+                    trigger.room_input.as_ref().map(|input| input.room_id.to_string()).unwrap_or_else(|| "unknown".into()),
+                    trigger.peer_id,
+                    trigger.room_input.as_ref().map(|input| input.cursor.event_id.to_string()).unwrap_or_else(|| "unknown".into()),
+                    trigger.content,
+                ));
+            }
+            turn.room_input = trigger.room_input;
+            turns.push(turn);
         }
     }
 
@@ -2383,7 +2470,7 @@ fn burst_fingerprint(
             .get("peer_id")
             .and_then(|v| v.as_str())
             .unwrap_or("peer");
-        if who == own_peer {
+        if who == own_peer && item.metadata.get("content_kind").and_then(|v| v.get("kind")).and_then(|v| v.as_str()).unwrap_or("speech") == "speech" {
             continue; // don't subscribe to my own chat output
         }
         item.content.hash(&mut h);
@@ -2538,7 +2625,7 @@ async fn run_self_cycle(
     // One explicit work choice drives both the room and the working checkout.
     // Ordinary project cards are on subscribed boards, not in the benchmark
     // registry. Lease renewal is liveness, not a new focus selection.
-    let focus_room = match conversation.stream_citizen() {
+    let focus = match conversation.stream_citizen() {
         Some(citizen) => match super::work_focus::focus_room(citizen.as_ref()).await {
             Ok(room) => room,
             Err(error) => {
@@ -2553,6 +2640,8 @@ async fn run_self_cycle(
         },
         None => None,
     };
+    let focus_room = focus.map(|focus| focus.room_id);
+    let changed_held_card = focus.filter(|focus| focus.changed);
     if let Some(room) = focus_room {
         if room != ctx.identity.default_room {
             crate::probe!(
@@ -2610,7 +2699,7 @@ async fn run_self_cycle(
         }
     }
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
-    if crate::persona::act_question::ask_the_act_question(
+    if changed_held_card.is_none() && crate::persona::act_question::ask_the_act_question(
         ctx,
         conversation,
         now_ms, // no triggering message — the tick clock stands in for lamport
@@ -2634,10 +2723,11 @@ async fn run_self_cycle(
     // not an LLM claim tool), WIP-limited to one by construction: once she holds
     // the pulled card the held-work branch above works it and this branch won't
     // fire again until it settles. Pulling IS engagement → hold the fast beat.
-    if asked_deck_first {
-        return false;
-    }
-    match try_pull_next_card(ctx, conversation).await {
+    if changed_held_card.is_none() {
+      if asked_deck_first {
+          return false;
+      }
+      match try_pull_next_card(ctx, conversation).await {
         PullOutcome::Pulled => {
             return true;
         }
@@ -2650,17 +2740,21 @@ async fn run_self_cycle(
             return false;
         }
         PullOutcome::Nothing => {}
+      }
     }
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
     // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
     // needed one.
-    let Some(_ambient_permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
-        ctx.identity.peer_id.as_uuid(),
-        now_ms,
-    )
-    .await
-    else {
-        return true;
+    let _ambient_permit = if changed_held_card.is_some() {
+        // A new fact about her own held subject is addressed input. The normal
+        // directed inference lane still admits the request below; this is not
+        // an ambient musing taking a second permit before it can perceive it.
+        None
+    } else {
+        let Some(permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
+            ctx.identity.peer_id.as_uuid(), now_ms,
+        ).await else { return true; };
+        Some(permit)
     };
     let composed = {
         let cognition = ctx.cognition.lock().await;
@@ -2686,10 +2780,9 @@ async fn run_self_cycle(
     // so my speech can't spiral into self-talk) OR my own active work (so the
     // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
     let fp = burst_fingerprint(&deliveries, &ctx.identity.peer_id.to_string());
-    if fp == *last_burst_fp {
+    if fp == *last_burst_fp && changed_held_card.is_none() {
         return false; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
-    *last_burst_fp = fp;
     // Structured turns (own posts attributed as self → assistant, peers → user),
     // wrapped into a Burst carrying both the turns and their text projection — the
     // SAME shape the message path builds.
@@ -2763,7 +2856,16 @@ async fn run_self_cycle(
                 .map(|p| p != own_peer)
                 .unwrap_or(true) // unwrap_or: an unreadable board counts as claimable so the pull tries, never silently skips
         })
-        .any(|item| identity.mentions(&item.content));
+        .any(|item| {
+            let kind = item.metadata.get("content_kind")
+                .and_then(|value| serde_json::from_value::<crate::airc::realtime_wire::RoomContentKind>(value.clone()).ok())
+                .unwrap_or_default();
+            let target = item.metadata.get("target")
+                .and_then(|value| serde_json::from_value::<airc_core::MentionTarget>(value.clone()).ok());
+            matches!(target, Some(airc_core::MentionTarget::Peer(peer)) if peer.as_uuid() == identity.id)
+                || changed_held_card.is_some_and(|focus| kind.subject_card() == Some(focus.card_id))
+                || (matches!(kind, crate::airc::realtime_wire::RoomContentKind::Speech) && identity.mentions(&item.content))
+        });
     crate::probe!(
         class = "persona.selftick.perceive",
         persona = %ctx.identity.agent_name,
@@ -2899,17 +3001,35 @@ async fn run_self_cycle(
     }
     let forwarder =
         spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
-    let (step, _turn_metrics, _generation_receipts) = {
+    let held_card = crate::cognition::persona_workspace::root_at_held_card(
+        &cycle, ctx.identity.peer_id.as_uuid(), conversation, focus.map(|focus| focus.card_id),
+    ).await;
+    let (step, _turn_metrics, generation_receipts) = {
         let outcome = crate::cognition::act_observe::drive_to_settle_with_input(
             &cycle,
             burst,
             LIVE_MAX_ACTS,
-            crate::cognition::workspace::TurnFraming::self_thread(false),
+            crate::cognition::workspace::TurnFraming {
+                attention: if changed_held_card.is_some() {
+                    crate::cognition::workspace::TurnAttention::PriorityInput
+                } else {
+                    crate::cognition::workspace::TurnAttention::Ambient
+                },
+                ..crate::cognition::workspace::TurnFraming::self_thread(false)
+            },
             conversation,
         )
         .await;
         crate::cognition::act_observe::SettleStep::from_settled(outcome)
     };
+    if let Some(hands) = &held_card.hands {
+        if let Err(error) = crate::cognition::persona_workspace::restore_acting_workspace(hands).await {
+            tracing::error!(%error, "intrinsic room turn could not restore its working checkout");
+        }
+    }
+    if generation_receipts.iter().any(|receipt| matches!(receipt.outcome, crate::cognition::provenance::GenerationOutcome::Served { .. })) {
+        *last_burst_fp = fp;
+    }
     cycle.set_token_sink(None);
     let _ = forwarder.await;
     match step {
@@ -4286,6 +4406,8 @@ mod tests {
                 ),
             ];
             let trigger = super::super::TriggerTurn {
+                voice: crate::cognition::workspace::TurnVoice::Speech,
+                room_input: None,
                 peer_id: joel,
                 content: "run commands/list and tell me the count",
                 occurred_at_ms: 0,
@@ -4329,6 +4451,8 @@ mod tests {
                 ),
             ];
             let trigger = super::super::TriggerTurn {
+                voice: crate::cognition::workspace::TurnVoice::Speech,
+                room_input: None,
                 peer_id: joel,
                 content: question,
                 occurred_at_ms: 0,
@@ -4596,6 +4720,92 @@ mod tests {
         )
     }
 
+    // Regression 7b0e8246: an ordinary foreign typed event on a retained card
+    // reaches intrinsic composition in Review, without a chat nudge or state move.
+    #[tokio::test]
+    async fn changed_held_card_composes_typed_room_activity_in_any_column() {
+        use crate::persona::airc_source::AircTranscriptReader;
+        use crate::persona::rag_capture::{InMemoryRagCaptureSink, RagCaptureEvent};
+        let home = tempfile::tempdir().unwrap();
+        let airc = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path()).await.unwrap());
+        let room = airc.join("ordinary-held-room").await.unwrap().channel;
+        let peer = airc.peer_id().as_uuid();
+        let card = airc.create_work_card(airc_lib::CreateWorkCard::new(
+            airc_work::RepoId::new("acme/ordinary-project").unwrap(), "existing project", airc_work::Priority::P1,
+        )).await.unwrap();
+        airc.claim_work_card(airc_lib::ClaimWorkCard { card_id: card, ttl_ms: 60_000 }).await.unwrap();
+        airc.change_work_card_state(airc_lib::ChangeWorkCardState { card_id: card, state: airc_work::CardState::Review }).await.unwrap();
+        let runtime = Arc::new(crate::persona::PersonaAircRuntime::from_attached(
+            peer, "Paige", home.path().to_path_buf(), airc.clone(), room,
+            PersonaIdentitySource::FreshlyMinted,
+        ));
+        let prior = airc.page_recent(1).await.unwrap().pop().unwrap();
+        runtime.advance_read_cursor(peer, room.as_uuid(), &prior).await.unwrap();
+        assert!(crate::persona::work_focus::focus_room(runtime.as_ref()).await.unwrap().is_none());
+
+        let publisher = airc_core::PeerId::new();
+        let work: airc_work::WorkEvent = serde_json::from_value(serde_json::json!({
+            "kind": "card_state_changed", "card_id": card, "state": "review",
+            "changed_by": publisher, "changed_at_ms": prior.occurred_at_ms + 1,
+        })).unwrap();
+        let (headers, body) = airc_work::encode_work_event(&work).unwrap();
+        let event = airc_core::TranscriptEvent {
+            event_id: airc_core::EventId::new(), room_id: room, peer_id: publisher,
+            client_id: airc_core::ClientId::new(), kind: airc_core::TranscriptKind::System,
+            occurred_at_ms: prior.occurred_at_ms + 1, lamport: prior.lamport + 1,
+            target: airc_core::MentionTarget::All, headers, body: Some(body),
+            attachment: None, receipt: None, metadata: serde_json::Value::Null,
+        };
+        // Existing durable adapter boundary, not a copied decoder or stub cursor.
+        // Cross-node signature/transport acceptance remains the installed gate.
+        airc.append_event(event.clone()).await.unwrap();
+        let focus = crate::persona::work_focus::focus_room(runtime.as_ref()).await.unwrap().unwrap();
+        assert_eq!(focus.card_id, card);
+        assert!(focus.changed);
+        {
+            let mut live = crate::persona::airc_persona_conversation::AircPersonaConversation::new(runtime.clone());
+            live.prime().await.unwrap();
+            let received = tokio::time::timeout(std::time::Duration::from_secs(5), live.next_message())
+                .await.unwrap().unwrap().unwrap();
+            assert_eq!(received.event_id, event.event_id.as_uuid());
+            assert_eq!(received.subject_owner, Some(peer));
+            assert_eq!(received.peer_id, publisher.as_uuid());
+            assert_eq!(received.target, Some(airc_core::MentionTarget::All));
+            let owner = crate::persona::persona_identity::PersonaIdentity::new(peer, "Paige");
+            let attention = received.attention(&owner, false);
+            assert!(attention.requires_priority());
+            assert!(!attention.is_addressed(), "ownership does not invent a literal mention");
+            let observer = crate::persona::persona_identity::PersonaIdentity::new(Uuid::new_v4(), "Observer");
+            assert!(!received.attention(&observer, false).requires_priority());
+        }
+        let mut hosted = hosted_with_heuristic(peer);
+        hosted.identity.default_room = room.as_uuid();
+        hosted.runtime = runtime.clone();
+        let capture = Arc::new(InMemoryRagCaptureSink::new());
+        {
+            let mut brain = hosted.cognition.lock().await;
+            brain.capture_sink = capture.clone();
+            brain.set_airc_source(Arc::new(crate::persona::airc_source::AircRagSource::new(
+                peer, runtime.clone(),
+            ).with_history(None)));
+        }
+        let mut conversation = ScriptedConversation::new().with_citizen(runtime.clone());
+        let mut fingerprint = 0;
+        run_self_cycle(&hosted, &mut conversation, &ServeOptions::default(), &mut fingerprint).await;
+        let delivery = capture.events().into_iter().find_map(|event| match event {
+            RagCaptureEvent::SourceDelivered { source_id, delivery, .. } if source_id == "airc" => Some(delivery),
+            _ => None,
+        }).expect("the ordinary intrinsic cycle reached compose_for_turn");
+        assert!(delivery.items.iter().any(|item| item.metadata["event_id"] == event.event_id.to_string()));
+        let turns = build_workspace_turns(&[delivery], &peer.to_string(), "Paige", None);
+        let activity = turns.iter().find(|turn| turn.room_input.as_ref().is_some_and(|input| input.cursor == event.cursor())).unwrap();
+        assert_eq!(activity.voice, crate::cognition::workspace::TurnVoice::Perception);
+        assert!(activity.author.is_empty());
+        assert!(activity.content.contains(&publisher.to_string()));
+        assert_eq!(runtime.read_cursor(peer, room.as_uuid()).await.unwrap(), Some(prior.cursor()),
+            "composition without a served generation does not consume the fact");
+    }
+
     fn fixed_now() -> u64 {
         1_700_000_000_000
     }
@@ -4611,6 +4821,9 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                content_kind: Default::default(),
+                target: None,
+                subject_owner: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -4705,6 +4918,9 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                content_kind: Default::default(),
+                target: None,
+                subject_owner: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -5020,6 +5236,9 @@ mod tests {
         // UnprimedConversation per [[test-fixtures-are-system-primitives]].
         let mut conversation = ScriptedConversation::new()
             .with_events(vec![Ok(Some(IncomingMessage {
+                content_kind: Default::default(),
+                target: None,
+                subject_owner: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -5060,6 +5279,9 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                content_kind: Default::default(),
+                target: None,
+                subject_owner: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -5103,6 +5325,9 @@ mod tests {
             .with_high_water(100) // pre-attach history was up to lamport=100
             .with_events(vec![
                 Ok(Some(IncomingMessage {
+                    content_kind: Default::default(),
+                    target: None,
+                    subject_owner: None,
                     media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 50, // BEFORE attach
@@ -5111,6 +5336,9 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    content_kind: Default::default(),
+                    target: None,
+                    subject_owner: None,
                     media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 100, // exactly at the mark — also skipped
@@ -5119,6 +5347,9 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    content_kind: Default::default(),
+                    target: None,
+                    subject_owner: None,
                     media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 101, // FRESH
@@ -5168,6 +5399,9 @@ mod tests {
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Err("stream lag".to_string()),
             Ok(Some(IncomingMessage {
+                content_kind: Default::default(),
+                target: None,
+                subject_owner: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,

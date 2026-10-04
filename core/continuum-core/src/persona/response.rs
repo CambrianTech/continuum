@@ -798,6 +798,7 @@ pub fn build_messages_with_media(
     let mut messages: Vec<ChatMessage> = prompt_messages
         .into_iter()
         .map(|m| ChatMessage {
+            room_inputs: Vec::new(),
             role: m.role,
             content: MessageContent::Text(m.content),
             name: None,

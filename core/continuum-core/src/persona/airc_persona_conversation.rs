@@ -72,45 +72,15 @@ pub(crate) const CATCH_UP_PAGE: usize = 32;
 /// Event ids remembered per room to tell "seen" from "dropped" (bounded).
 const SEEN_RING: usize = 128;
 
-/// Per room: the WALL-TIME floor adopted at first sight (nothing older is ever
-/// replayed) and a bounded ring of EVENT IDS actually forwarded (live or paged).
-/// Neither lamport nor "max seen" can stand in for this: a lamport is the
-/// publisher's logical clock, so a quiet human's line carries a smaller lamport
-/// than the busy citizens' receipts around it and read as "old" (2026-09-04:
-/// zero admissions across three builds); and live `event` frames keep arriving
-/// after the daemon drops a `message`, so a max-seen mark leaps past the line.
+/// Bounded event identities already forwarded by this conversation, shared by
+/// live intake and durable catch-up. Durable consumption belongs to the room
+/// cursor; matching prose must never collapse distinct published facts.
 #[derive(Default)]
 struct SeenRooms {
-    /// Per-room ring of (peer, text) fingerprints — the same line under two ids.
-    texts: std::collections::HashMap<Uuid, std::collections::VecDeque<u64>>,
-    floor_ms: std::collections::HashMap<Uuid, u64>,
     seen: std::collections::HashMap<Uuid, std::collections::VecDeque<Uuid>>,
 }
 
 impl SeenRooms {
-    fn fingerprint(peer: Uuid, text: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        peer.hash(&mut h);
-        text.hash(&mut h);
-        h.finish()
-    }
-
-    fn note_text(&mut self, room: Uuid, fp: u64) {
-        let ring = self.texts.entry(room).or_default();
-        if ring.contains(&fp) {
-            return;
-        }
-        if ring.len() == SEEN_RING {
-            ring.pop_front();
-        }
-        ring.push_back(fp);
-    }
-
-    fn was_seen_text(&self, room: Uuid, fp: u64) -> bool {
-        self.texts.get(&room).is_some_and(|r| r.contains(&fp))
-    }
-
     fn note(&mut self, room: Uuid, event_id: Uuid) {
         let ring = self.seen.entry(room).or_default();
         if !ring.contains(&event_id) {
@@ -150,21 +120,22 @@ fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
     // to an agent status line that the loop head then declined — 13 work turns
     // abandoned in 9 ms in half an hour (`delib.gate.yielded_to_directed`).
     let registry = crate::persona::PersonaAircRuntimeRegistry::try_global();
-    let mentioned = registry
+    let identity = registry
         .as_ref()
         .and_then(|r| r.get(own))
         .map(|rt| {
             crate::persona::persona_identity::PersonaIdentity::new(own, rt.agent_name().to_string())
         })
-        .is_some_and(|me| me.mentions(&message.text));
+        .unwrap_or_else(|| crate::persona::persona_identity::PersonaIdentity::new(own, ""));
     let sender_is_human = crate::ipc::positron_presence::is_human_peer(peer);
-    if crate::cognition::workspace::TurnAttention::for_message(mentioned, sender_is_human)
+    if message.attention(&identity, sender_is_human)
         .requires_priority()
     {
         crate::cognition::directed_pending::signal(own);
     }
 }
 
+#[cfg(test)]
 use super::durable_history::event_from_row;
 
 async fn catch_up_from_store(
@@ -172,141 +143,49 @@ async fn catch_up_from_store(
     seen: &std::sync::Mutex<SeenRooms>,
     tx: &tokio::sync::mpsc::Sender<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>,
 ) -> (usize, usize) {
-    let rooms = runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list = nothing to catch up this tick
-    let mut forwarded = 0usize;
-    let mut paged = 0usize;
-    let mut failed = 0usize;
-    let mut first_error: Option<String> = None;
-    let mut sample_newest = 0u64;
-    let mut sample: Option<(Uuid, u64, u64, usize, String, String, bool)> = None;
-    let short = |u: &Uuid| u.to_string().chars().take(8).collect::<String>();
-    let room_list = rooms.iter().map(short).collect::<Vec<_>>().join(",");
-    let mut empty: Vec<String> = Vec::new();
+    use crate::runtime::ready_buffer::ReadyBuffer;
+    let rooms = match runtime.subscribed_rooms().await {
+        Ok(rooms) => rooms,
+        Err(error) => {
+            tracing::warn!(%error, "room catch-up could not read membership");
+            return (0, 0);
+        }
+    };
+    let buffer = crate::cognition::channel_substrate::global_channel_digest_buffer();
+    let builder = crate::cognition::channel_substrate::global_channel_digest_builder();
+    let mut forwarded = 0;
+    let mut paged = 0;
     for room in rooms {
-        // THE CORE'S OWN CHAT STORE is the durable page (see
-        // `durable_history::room_rows`): the daemon's ring page was empty for
-        // the busiest room on every citizen (2026-09-04, `catch_up_rooms`).
-        let mut events = match crate::persona::durable_history::room_rows(room, CATCH_UP_PAGE).await
-        {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|r| event_from_row(room, r))
-                .collect::<Vec<_>>(),
+        let key = (runtime.peer_id(), room);
+        let previous = buffer.peek(&key);
+        let digest = match builder.build_with_progress(
+            runtime.peer_id(), room, runtime, super::airc_source::FETCH_LIMIT,
+            crate::cognition::channel_digest::DEFAULT_GROUNDING, previous.as_deref(),
+        ).await {
+            Ok(digest) => Arc::new(digest),
             Err(error) => {
-                // Observable, not silent: on the first build 7 of ~68 rooms paged and
-                // the rest failed unseen, so eleven citizens never saw the operator.
-                failed += 1;
-                if first_error.is_none() {
-                    first_error = Some(format!("{room}: {error}"));
-                }
+                tracing::warn!(%error, %room, "room catch-up could not page its durable unread cursor");
                 continue;
             }
         };
         paged += 1;
-        events.sort_by_key(|e| e.occurred_at_ms);
-        let Some(newest_ms) = events.iter().map(|e| e.occurred_at_ms).max() else {
-            empty.push(short(&room));
-            continue;
-        };
-        let floor_ms = *seen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
-            .floor_ms
-            .entry(room)
-            .or_insert(newest_ms);
-        // WHAT SHE SEES IN THE STORE (repeatability): the newest paged line per
-        // tick for the room with the freshest tail — floor, newest, and the
-        // line's identity — so "nothing admitted" is explainable from probes
-        // alone (zero admissions across four builds were not).
-        if newest_ms > sample_newest {
-            sample_newest = newest_ms;
-            let newest = events.iter().max_by_key(|e| e.occurred_at_ms);
-            sample = newest.map(|e| {
-                (
-                    room,
-                    floor_ms,
-                    newest_ms,
-                    events.len(),
-                    e.peer_id
-                        .as_uuid()
-                        .to_string()
-                        .chars()
-                        .take(8)
-                        .collect::<String>(),
-                    e.body
-                        .as_ref()
-                        .and_then(|b| b.as_text().map(|t| t.chars().take(60).collect::<String>()))
-                        .unwrap_or_else(|| "<non-text>".to_string()), // unwrap_or: a non-text body renders as a marker, never dropped
-                    seen.lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .was_seen(room, e.event_id.as_uuid()), // poisoned lock = read the last state, same policy as every lock in this crate
-                )
-            });
-        }
-        for event in events {
-            if event.occurred_at_ms <= floor_ms
-                || seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, event.event_id.as_uuid())  // poisoned lock = read the last state, same policy as every lock in this crate
-                || crate::persona::airc_citizen::is_heartbeat(&event)
-                || crate::airc::realtime_wire::is_stream_chunk(&event)
-            {
+        buffer.publish(key, Arc::clone(&digest));
+        for element in digest.unread() {
+            let event = element.event();
+            if seen.lock().unwrap_or_else(|error| error.into_inner())
+                .was_seen(room, event.event_id.as_uuid()) {
                 continue;
             }
-            // A line the operator's `chat/send` persisted under its own message id
-            // arrives live under the say's EVENT id: same peer, same text, two ids.
-            // The fingerprint ring keeps it one turn.
-            let fingerprint = crate::airc::realtime_wire::room_turn_from_event(&event)
-                .ok()
-                .map(|(peer, text)| SeenRooms::fingerprint(peer, &text));
-            {
-                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
-                if let Some(fp) = fingerprint {
-                    if s.was_seen_text(room, fp) {
-                        continue;
-                    }
-                    s.note_text(room, fp);
-                }
-                s.note(room, event.event_id.as_uuid());
-            }
-            let event = Arc::new(event);
-            if tx.send(Ok(Arc::clone(&event))).await.is_err() {
+            // AIRC event identity is shared by live and durable intake. Work
+            // activity is never collapsed by matching prose or occurrence time.
+            if tx.send(Ok(Arc::new(event.clone()))).await.is_err() {
                 return (paged, usize::MAX);
             }
-            signal_if_directed(runtime.peer_id(), &event);
+            seen.lock().unwrap_or_else(|error| error.into_inner())
+                .note(room, event.event_id.as_uuid());
+            signal_if_directed(runtime.peer_id(), event);
             forwarded += 1;
         }
-    }
-    if let Some((room, floor_ms, newest_ms, count, peer, head, was_seen)) = sample {
-        crate::probe!(
-            class = "persona.inbound.catch_up_page_sample",
-            room = %room,
-            floor_ms = floor_ms,
-            newest_ms = newest_ms,
-            count = count as u64,
-            newest_peer = %peer,
-            newest_head = %head,
-            newest_was_seen = was_seen,
-            forwarded = forwarded as u64,
-            "store catch-up: the freshest paged room this tick"
-        );
-    }
-    // WHICH ROOMS SHE PAGES, and which come back empty — the run room missing
-    // from this list (or listed and empty) is the difference between "the store
-    // catch-up works" and "she cannot hear the room she is working in".
-    crate::probe!(
-        class = "persona.inbound.catch_up_rooms",
-        rooms = %room_list,
-        empty = %empty.join(","),
-        paged = paged as u64,
-        "the rooms this tick paged, and the ones whose page held no conversation"
-    );
-    if failed > 0 {
-        crate::probe!(
-            class = "persona.inbound.catch_up_page_failed",
-            failed = failed as u64,
-            paged = paged as u64,
-            first_error = %first_error.unwrap_or_default(), // unwrap_or: failed>0 guarantees one was recorded
-            "store catch-up: some subscribed rooms could not be paged"
-        );
     }
     (paged, forwarded)
 }
@@ -354,10 +233,8 @@ pub struct AircPersonaConversation {
     >,
     /// The drain task behind `inbox`; aborted and replaced on every re-open.
     pump: Option<tokio::task::JoinHandle<()>>,
-    /// Per-room floors and seen rings, SHARED across pump restarts. A pump
-    /// re-open (membership change) must not re-adopt floors: on the previous
-    /// build every re-open reset them to "now", so a line already in the page
-    /// read as old forever (zero admissions across four builds).
+    /// Event identities shared across pump restarts. Membership changes retain
+    /// this bounded intake dedupe while the digest owns the durable bookmark.
     seen: std::sync::Arc<std::sync::Mutex<SeenRooms>>,
     /// Membership-change cue (P0 20b44763): when the citizen joins a room at
     /// RUNTIME (benchmark dispatch moving her into a fresh run room), this
@@ -386,9 +263,6 @@ pub struct AircPersonaConversation {
     /// forever and neither the watchdog nor the catch-up ever fired (measured
     /// 2026-09-04: zero ticks in 7 minutes). A deadline held on `self` survives.
     next_catch_up: tokio::time::Instant,
-    /// Room-turns recovered by the rejoin replay, yielded ahead of the live
-    /// stream. See the epoch-reopen branch in `next_message`.
-    rejoin_backlog: std::collections::VecDeque<IncomingMessage>,
 }
 
 impl AircPersonaConversation {
@@ -411,7 +285,6 @@ impl AircPersonaConversation {
             last_lamport: 0,
             initial_watermark: None,
             next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
-            rejoin_backlog: std::collections::VecDeque::new(),
         }
     }
 
@@ -455,8 +328,6 @@ impl AircPersonaConversation {
                 "no subscribed rooms — perception waits for a membership change"
             );
         }
-        self.rejoin_backlog
-            .retain(|message| rooms.contains(&message.room_id));
         self.perceived_backlog
             .retain(|message| rooms.contains(&message.room_id));
         if self
@@ -517,7 +388,7 @@ impl AircPersonaConversation {
             // catch-up that lived inside the loop's select ticked twice in seven
             // minutes across twelve citizens.
             let seen = std::sync::Arc::clone(&seen_shared);
-            let mut next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
+            let mut next_catch_up = tokio::time::Instant::now();
             // Live frames delivered since the last catch-up tick. A tick that admits
             // events from the store while this is still zero means the live stream
             // is silently dead: the daemon dropped the subscription (a restart)
@@ -548,12 +419,10 @@ impl AircPersonaConversation {
                                     continue;
                                 }
                                 let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
-                                s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
-                                if let Ok((peer, text)) =
-                                    crate::airc::realtime_wire::room_turn_from_event(ev)
-                                {
-                                    s.note_text(ev.room_id.as_uuid(), SeenRooms::fingerprint(peer, &text));
+                                if s.was_seen(ev.room_id.as_uuid(), ev.event_id.as_uuid()) {
+                                    continue;
                                 }
+                                s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
                                 drop(s);
                             }
                             let delivered = item.as_ref().ok().cloned();
@@ -759,9 +628,6 @@ impl AircPersonaConversation {
                     }
                     continue;
                 }
-                if let Some(replayed) = self.rejoin_backlog.pop_front() {
-                    return Ok(Some(replayed));
-                }
             }
             // Wait on EITHER the next event OR a membership-epoch move. The
             // epoch branch is the P0 20b44763 fix: a room joined at runtime
@@ -852,61 +718,9 @@ impl AircPersonaConversation {
                     reason = reason,
                     "re-opening the subscribe stream"
                 );
-                // REPLAY THE GAP (2026-08-21, the FOURTH deaf-kickoff variant). The
-                // reopened stream is live-tail: anything published between the
-                // membership change and this reopen was delivered to nobody — and
-                // the benchmark kickoff is published milliseconds after join_room,
-                // so it lost this race BY CONSTRUCTION on every dispatch (event
-                // durably in the room, `kickoffs: 1`, zero raw_event rows). The
-                // reopen pages the recent transcript and queues every room turn
-                // strictly newer than the watermark; the same decode + self-skip
-                // rules as the live path apply. Card-state events dedup by event
-                // id; reviewed credit retains its durable destination identity.
-                match self.page_subscribed_rooms(32).await {
-                    Ok(events) => {
-                        let scanned = events.len();
-                        let mut replayed = 0usize;
-                        let mut events = events;
-                        events.sort_by_key(|e| e.lamport);
-                        for event in &events {
-                            if event.lamport <= self.last_lamport
-                                || crate::airc::realtime_wire::is_stream_chunk(event)
-                            {
-                                continue;
-                            }
-                            crate::modules::work::bridge_wire_work_event(
-                                event,
-                                self.runtime.peer_id(),
-                            )
-                            .await;
-                            if let Ok(message) = perceptual_from_event(event) {
-                                if message.peer_id != self.own_peer_id {
-                                    replayed += 1;
-                                    self.rejoin_backlog.push_back(message);
-                                }
-                            }
-                            // Commit only after the async bridge and queue write;
-                            // cancellation must not skip an unqueued receipt.
-                            self.last_lamport = event.lamport;
-                        }
-                        crate::probe!(
-                            class = "persona.inbound.rejoin_replayed",
-                            persona = %self.own_peer_id,
-                            scanned,
-                            replayed,
-                            watermark = self.last_lamport,
-                            "membership refresh paged subscribed rooms and queued turns \
-                             admitted by the existing replay watermark"
-                        );
-                    }
-                    Err(e) => crate::probe!(
-                    class = "persona.inbound.rejoin_page_failed",
-                                persona = %self.own_peer_id,
-                                error = %e,
-                                "rejoin replay page failed — events published between join \
-                                 and reopen stay unheard until something else surfaces them"
-                            ),
-                }
+                // The replacement pump immediately resumes the SAME durable
+                // unread digest used at boot and during normal catch-up. There
+                // is no newest-32 replay watermark that can skip an older gap.
                 self.refresh_pending = false;
                 continue;
             };
@@ -1041,12 +855,16 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
     // not a new utterance to append after every action: doing that bypassed
     // AircRagSource's existing presence folding and filled active turns with
     // other residents' work broadcasts. Media-bearing messages remain input.
-    if turn.media.is_empty()
+    if matches!(turn.kind, crate::airc::realtime_wire::RoomContentKind::Speech)
+        && turn.media.is_empty()
         && crate::persona::presence_glyph::is_presence_line(&turn.text)
     {
         return Err("work_presence");
     }
     Ok(IncomingMessage {
+        content_kind: turn.kind,
+        target: Some(event.target.clone()),
+        subject_owner: None,
         media: turn.media,
         event_id: event.event_id.as_uuid(),
         lamport: event.lamport,
@@ -1195,6 +1013,7 @@ mod tests {
     // make a second fallible history RPC after the host reports attachment.
     #[tokio::test]
     async fn initial_cutoff_is_established_by_prime_and_remains_stable() {
+        use crate::persona::airc_source::AircTranscriptReader;
         use crate::persona::identity_provider::PersonaIdentitySource;
         use crate::persona::PersonaAircRuntime;
         let home = tempfile::tempdir().unwrap();
@@ -1215,6 +1034,28 @@ mod tests {
         assert!(conversation.high_water_mark(64).await.unwrap() > cutoff);
         conversation.prime().await.unwrap();
         assert_eq!(conversation.initial_water_mark(1).await.unwrap(), cutoff);
+
+        // Regression for 7b0e8246: the actual persona and agent adapters must
+        // forward the SAME durable room bookmark, not inherit the test defaults
+        // (always unread / successful no-op save) after the shared source packs it.
+        let event = runtime.page_recent_in(Some(room), 1).await.unwrap().pop().unwrap();
+        let reader = airc.peer_id().as_uuid();
+        runtime.advance_read_cursor(reader, room.as_uuid(), &event).await.unwrap();
+        let adapter = crate::context::airc_adapter::AircHandleAdapter::new(airc.clone());
+        assert_eq!(adapter.read_cursor(reader, room.as_uuid()).await.unwrap(), Some(event.cursor()));
+        assert_eq!(adapter.read_cursor(Uuid::new_v4(), room.as_uuid()).await.unwrap(), None);
+        assert_eq!(adapter.read_cursor(reader, Uuid::new_v4()).await.unwrap(), None);
+        runtime.say_in(room.as_uuid(), "after the first room read").await.unwrap();
+        let next = adapter.page_recent_in(Some(room), 1).await.unwrap().pop().unwrap();
+        adapter.advance_read_cursor(reader, room.as_uuid(), &next).await.unwrap();
+        assert_eq!(runtime.read_cursor(reader, room.as_uuid()).await.unwrap(), Some(next.cursor()));
+        let reopened = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await.unwrap());
+        let resumed = PersonaAircRuntime::from_attached(
+            reader, "readiness-test", home.path().to_path_buf(), reopened, room,
+            PersonaIdentitySource::ResumedFromDisk,
+        );
+        assert_eq!(resumed.read_cursor(reader, room.as_uuid()).await.unwrap(), Some(next.cursor()));
     }
 
     // what this catches: c5910be2 — ready intake must use the real decoder, keep
@@ -1670,18 +1511,20 @@ mod tests {
         assert!(perceptual_from_event(&native).is_err(), "attachments must not bypass stream filtering");
     }
 
-    // what this catches: the same line under two ids (the sender's message id
-    // and the say's event id) admitting twice.
+    // what this catches: live/catch-up duplicates use event identity, while a
+    // distinct event remains eligible even when its publisher/prose repeats.
     #[test]
-    fn the_same_line_under_a_second_id_is_seen_by_fingerprint() {
+    fn intake_deduplicates_event_identity_without_collapsing_distinct_facts() {
         let mut seen = SeenRooms::default();
         let room = Uuid::new_v4();
-        let peer = Uuid::new_v4();
-        let fp = SeenRooms::fingerprint(peer, "one line");
-        assert!(!seen.was_seen_text(room, fp));
-        seen.note_text(room, fp);
-        assert!(seen.was_seen_text(room, fp));
-        assert!(!seen.was_seen_text(room, SeenRooms::fingerprint(peer, "another line")));
+        let event = Uuid::new_v4();
+        assert!(!seen.was_seen(room, event));
+        seen.note(room, event);
+        seen.note(room, event);
+        assert!(seen.was_seen(room, event));
+        assert_eq!(seen.seen[&room].len(), 1);
+        assert!(!seen.was_seen(room, Uuid::new_v4()));
+        assert!(!seen.was_seen(Uuid::new_v4(), event));
     }
 
     /// Regression test for the slice-13.6 reviewer fix to PR #1514:
@@ -1993,7 +1836,7 @@ impl AircPersonaConversation {
                     .collect(),
             },
         };
-        let message = match perceptual_from_event(&event) {
+        let mut message = match perceptual_from_event(&event) {
             Ok(message) => message,
             Err(reason) => {
                 // A decode ERROR is loud — a message-shaped body we
@@ -2044,7 +1887,7 @@ impl AircPersonaConversation {
         // speech — but a message vanishing without a trace is how a structural
         // failure reads as "the citizen chose not to work"
         // ([[an-absence-is-an-unfinished-measurement]]).
-        if message.peer_id == self.own_peer_id {
+        if message.is_speech() && message.peer_id == self.own_peer_id {
             crate::probe!(
                 class = "persona.inbound.skipped_self_authored",
                 persona = %self.own_peer_id,
@@ -2055,6 +1898,16 @@ impl AircPersonaConversation {
                  her identity and she cannot hear it"
             );
             return None;
+        }
+        if let Some(subject) = message.content_kind.subject_card() {
+            match self.runtime.active_claims().await {
+                Ok(held) if held.iter().any(|card| card.card_id == subject) => {
+                    message.subject_owner = Some(self.own_peer_id);
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, persona = %self.own_peer_id,
+                    "cannot resolve room activity ownership; retaining ordinary perception"),
+            }
         }
         Some(message)
     }

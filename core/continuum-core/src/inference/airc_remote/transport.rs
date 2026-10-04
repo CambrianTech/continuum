@@ -979,6 +979,7 @@ mod tests {
     fn req(text: &str) -> RemoteInferenceRequest {
         RemoteInferenceRequest::new(TextGenerationRequest {
             messages: vec![ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(text.to_string()),
                 name: None,

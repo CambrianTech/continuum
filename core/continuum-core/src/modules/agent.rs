@@ -701,6 +701,7 @@ async fn call_llm(
                 r => r,
             };
             Some(ChatMessage {
+                room_inputs: Vec::new(),
                 role: mapped_role.to_string(),
                 content: MessageContent::Text(content.to_string()),
                 name: None,

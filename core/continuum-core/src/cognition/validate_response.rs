@@ -212,6 +212,7 @@ fn build_validate_generation_request(
     TextGenerationRequest {
         messages: vec![
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "system".to_string(),
                 content: MessageContent::Text(
                     "You are a response validator. Reply ONLY with one word: SUBMIT, CLARIFY, or SILENT."
@@ -220,6 +221,7 @@ fn build_validate_generation_request(
                 name: None,
             },
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(build_validate_prompt(request)),
                 name: None,

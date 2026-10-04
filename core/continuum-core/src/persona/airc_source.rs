@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use airc_core::TranscriptEvent;
+use airc_core::{TranscriptCursor, TranscriptEvent};
 use airc_lib::AircError;
 use async_trait::async_trait;
 
@@ -47,7 +47,7 @@ pub(crate) const SOURCE_ID: &str = "airc";
 
 /// Default newest-events fetch cap when building a digest on demand (mirrors the
 /// region's). The recipe-defined grounding window slices within this.
-const FETCH_LIMIT: usize = 100;
+pub(crate) const FETCH_LIMIT: usize = 100;
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
@@ -58,8 +58,8 @@ use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, 
 /// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.
 #[async_trait]
 pub trait AircTranscriptReader: Send + Sync {
-    /// Return up to `limit` most-recent CONVERSATIONAL transcript events
-    /// (Message + Attachment), newest-first per airc convention.
+    /// Return up to `limit` most-recent room speech and typed activity events,
+    /// newest-first per airc convention, excluding known controls before limit.
     ///
     /// Kinds are filtered BEFORE the page limit (#297): a raw newest-`limit`
     /// page counts ephemeral StreamChunk frames (~4/sec per talking persona),
@@ -70,8 +70,8 @@ pub trait AircTranscriptReader: Send + Sync {
     /// page while the attach cursor advanced normally). The diagnostic
     /// signature: cross-machine delivery perfect, local perception stale —
     /// the wire is fine, the WINDOW is flooded. Presence / receipts /
-    /// lifecycle ride their own sources; this page is the room's
-    /// conversation, never its firehose.
+    /// lifecycle ride their own sources; ordinary typed work activity shares
+    /// this page with conversation, while lease renewal does not.
     async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError>;
 
     /// Room-scoped page (#367): return the same conversational page, but for
@@ -95,7 +95,21 @@ pub trait AircTranscriptReader: Send + Sync {
         self.page_recent(limit).await
     }
 
-    /// This reader's last-read lamport in `room` — the unread marker.
+    /// Raw oldest-first room page after an exact cursor. Production readers
+    /// must forward to the durable owner; a newest-page fallback loses unread.
+    async fn page_after_in(
+        &self,
+        room: airc_core::RoomId,
+        cursor: &TranscriptCursor,
+        limit: usize,
+    ) -> Result<Vec<TranscriptEvent>, AircError> {
+        let _ = (room, cursor, limit);
+        Err(AircError::Transport(
+            "reader does not support durable room replay".into(),
+        ))
+    }
+
+    /// This reader's last-read `(lamport, event_id)` in `room` — the unread marker.
     ///
     /// THE CURSOR LIVES IN AIRC. It is durable runtime-consumer state
     /// (`runtime_cursor`, an ORM row keyed by consumer id), and airc's own API
@@ -105,10 +119,14 @@ pub trait AircTranscriptReader: Send + Sync {
     /// every cursor died on restart, and a second source of truth for a fact
     /// airc already owns. That is the defect this method removes.
     ///
-    /// `0` = never read. Real airc lamports are >= 1.
-    async fn read_cursor(&self, persona: uuid::Uuid, room: uuid::Uuid) -> Result<u64, AircError> {
+    /// `None` means never read; equal-lamport siblings retain distinct positions.
+    async fn read_cursor(
+        &self,
+        persona: uuid::Uuid,
+        room: uuid::Uuid,
+    ) -> Result<Option<TranscriptCursor>, AircError> {
         let _ = (persona, room);
-        Ok(0)
+        Ok(None)
     }
 
     /// Persist this reader's position in `room` at `event` — mark-read.
@@ -127,6 +145,78 @@ pub trait AircTranscriptReader: Send + Sync {
         let _ = (persona, room, event);
         Ok(())
     }
+
+    /// Acknowledge only a successful request's actual selected room inputs.
+    /// Rescan the same durable room prefix; never step across an unseen fact.
+    async fn acknowledge_presented(
+        &self,
+        persona: uuid::Uuid,
+        inputs: &[crate::cognition::provenance::RoomInput],
+    ) -> Result<(), AircError> {
+        let mut rooms = std::collections::BTreeMap::<uuid::Uuid, Vec<_>>::new();
+        for input in inputs {
+            rooms.entry(input.room_id).or_default().push(input);
+        }
+        for (room, inputs) in rooms {
+            let stored = self.read_cursor(persona, room).await?;
+            let anchor = inputs
+                .iter()
+                .map(|input| input.read_after.as_ref())
+                .min_by_key(|cursor| cursor.map(cursor_key))
+                .flatten();
+            let start = stored
+                .as_ref()
+                .into_iter()
+                .chain(anchor)
+                .max_by_key(|cursor| cursor_key(cursor))
+                .cloned()
+                .unwrap_or(TranscriptCursor {
+                    lamport: 0,
+                    event_id: airc_core::EventId::from_uuid(uuid::Uuid::nil()),
+                });
+            let presented: std::collections::HashSet<_> = inputs
+                .iter()
+                .map(|input| (input.cursor.lamport, input.cursor.event_id))
+                .collect();
+            let events = self
+                .page_after_in(airc_core::RoomId::from_uuid(room), &start, FETCH_LIMIT)
+                .await?;
+            let mut through = None;
+            for event in &events {
+                if event.room_id.as_uuid() != room
+                    || cursor_key(&event.cursor()) <= cursor_key(&start)
+                {
+                    return Err(AircError::Transport(
+                        "room replay returned an invalid cursor or room".into(),
+                    ));
+                }
+                let skipped = match crate::airc::realtime_wire::room_content_from_event(event) {
+                    Err(reason) if crate::airc::realtime_wire::is_non_perceptual_reason(reason) => {
+                        true
+                    }
+                    Err(reason) => {
+                        return Err(AircError::Transport(format!(
+                            "cannot acknowledge room event {}: {reason}",
+                            event.event_id
+                        )))
+                    }
+                    Ok(_) => false,
+                };
+                if !skipped && !presented.contains(&(event.lamport, event.event_id)) {
+                    break;
+                }
+                through = Some(event);
+            }
+            if let Some(event) = through {
+                self.advance_read_cursor(persona, room, event).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn cursor_key(cursor: &TranscriptCursor) -> (u64, uuid::Uuid) {
+    (cursor.lamport, cursor.event_id.as_uuid())
 }
 
 /// The durable consumer id for one reader's position in one room.
@@ -139,13 +229,15 @@ pub fn read_cursor_consumer_id(persona: uuid::Uuid, room: uuid::Uuid) -> String 
     format!("persona:{persona}:room:{room}")
 }
 
-/// The kinds a perception page means: the room's conversation. ONE place
+/// The kinds a perception page means: room speech and ordinary typed activity. ONE place
 /// (compression) — every reader impl funnels through the [`airc_lib::Airc`]
 /// impl below, which applies this filter.
 pub fn perception_page_filter() -> airc_lib::EventFilter {
     let mut filter = airc_lib::EventFilter::current_room();
     filter.kinds.insert(airc_core::TranscriptKind::Message);
     filter.kinds.insert(airc_core::TranscriptKind::Attachment);
+    filter.kinds.insert(airc_core::TranscriptKind::System);
+    filter.headers_filter = crate::airc::realtime_wire::room_perception_header_filter();
     filter
 }
 
@@ -177,13 +269,25 @@ impl AircTranscriptReader for airc_lib::Airc {
     }
 
     /// airc's durable `runtime_cursor` row IS the unread marker — no second store.
-    async fn read_cursor(&self, persona: uuid::Uuid, room: uuid::Uuid) -> Result<u64, AircError> {
-        Ok(
-            airc_lib::Airc::load_runtime_cursor(self, &read_cursor_consumer_id(persona, room))
-                .await?
-                .map(|c| c.lamport)
-                .unwrap_or(0),
-        )
+    async fn read_cursor(
+        &self,
+        persona: uuid::Uuid,
+        room: uuid::Uuid,
+    ) -> Result<Option<TranscriptCursor>, AircError> {
+        airc_lib::Airc::load_runtime_cursor(self, &read_cursor_consumer_id(persona, room)).await
+    }
+
+    async fn page_after_in(
+        &self,
+        room: airc_core::RoomId,
+        cursor: &TranscriptCursor,
+        limit: usize,
+    ) -> Result<Vec<TranscriptEvent>, AircError> {
+        let room = self
+            .room_by_channel(room)
+            .await?
+            .ok_or_else(|| AircError::NotSubscribed(room.to_string()))?;
+        self.resume_from_in(&room, cursor, limit).await
     }
 
     async fn advance_read_cursor(
@@ -271,10 +375,17 @@ impl AircRagSource {
         sender: uuid::Uuid,
         line: &super::durable_history::HydratedLine,
     ) -> TranscriptEvent {
-        super::durable_history::event_from_row(room_id, super::durable_history::RoomRow {
-            id: uuid::Uuid::parse_str(&line.message_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-            sender, occurred_at_ms: 0, text: line.text.clone(), media: line.media.clone(),
-        })
+        super::durable_history::event_from_row(
+            room_id,
+            super::durable_history::RoomRow {
+                id: uuid::Uuid::parse_str(&line.message_id)
+                    .unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                sender,
+                occurred_at_ms: 0,
+                text: line.text.clone(),
+                media: line.media.clone(),
+            },
+        )
     }
 
     /// Override the newest-events fetch cap used when building a digest on demand.
@@ -283,8 +394,8 @@ impl AircRagSource {
         self
     }
 
-    /// Format a digest into budget-packed `RagItem`s. Walks the window newest-first
-    /// accumulating tokens until budget, then emits chronological (oldest-first) so
+    /// Format a digest into budget-packed `RagItem`s. Packs unread oldest-first,
+    /// then already-read context, and emits chronological (oldest-first) so
     /// the chat template reads turns in order. Each item is tagged `unread` vs
     /// grounding so the prompt builder / glass box can tell them apart.
     ///
@@ -298,21 +409,10 @@ impl AircRagSource {
     /// per-turn cap (a budget fraction, never a hardcoded model tier) and long
     /// turns are head-trimmed with an explicit marker — the same
     /// straddling-trim law the prompt fitter applies to messages, one level down.
-    /// The NEWEST turn is exempt (kept verbatim up to the whole budget): it is
-    /// what the persona is responding to.
-    /// Returns the packed items, the tokens they cost, and the READ-THROUGH
-    /// ELEMENT: the newest element that actually entered her prompt. That last
-    /// value is what advances her cursor — she is marked read for what she was
-    /// GIVEN, never for what was merely fetched and then dropped by the budget.
-    ///
-    /// The ELEMENT, not a lamport, because airc's `save_runtime_cursor_for_event`
-    /// wants the source event (it carries the room + kind and emits
-    /// `SubscriptionAdvanced`). Handing it a bare number would throw that away.
-    fn pack_digest(
-        digest: &ChannelDigest,
-        budget: u32,
-        working: bool,
-    ) -> (Vec<RagItem>, u32, Option<Arc<ChannelElement>>) {
+    /// The newest turn may use the remaining budget after older unread input.
+    /// Only complete items carry a RoomInput handle for later successful-request
+    /// acknowledgement; trimmed heads and folded summaries do not consume facts.
+    fn pack_digest(digest: &ChannelDigest, budget: u32, working: bool) -> (Vec<RagItem>, u32) {
         // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
         // tiny budgets still render a sentence and huge ones don't let one
         // essay crowd the window.
@@ -328,8 +428,18 @@ impl AircRagSource {
         }
         let mut keep: Vec<(usize, Option<String>)> = Vec::new();
         let mut tokens_used: u32 = 0;
-        let mut newest_kept = true;
-        for unit in units.iter().rev() {
+        // Give unread input its original order before spending space on context.
+        // Grounding is filled newest-first afterwards, then rendered chronologically.
+        let ordered = units
+            .iter()
+            .filter(|unit| unit.last_idx >= digest.unread_start)
+            .chain(
+                units
+                    .iter()
+                    .rev()
+                    .filter(|unit| unit.last_idx < digest.unread_start),
+            );
+        for unit in ordered {
             let idx = unit.last_idx;
             let text: &str = match unit.collapsed.as_deref() {
                 Some(t) => t,
@@ -339,44 +449,51 @@ impl AircRagSource {
                 },
             };
             let full = estimate_tokens(text);
-            let cap = if newest_kept { budget } else { per_turn_cap };
+            let remaining = budget.saturating_sub(tokens_used);
+            let cap = if units.last().is_some_and(|newest| newest.last_idx == idx) {
+                remaining
+            } else {
+                per_turn_cap.min(remaining)
+            };
             let (cost, trimmed) = if full <= cap {
                 (full, unit.collapsed.clone())
             } else {
-                let head = head_to_tokens(text, cap);
-                let head_cost = estimate_tokens(&head).saturating_add(2); // marker
-                // The marker SPELLING is shared with the tail-trim site so the two
-                // cannot drift apart again (card 3833b472). The +2 reserve above is
-                // left as it was on purpose: `trim_marker_tokens()` measures the real
-                // cost at 8, so this site under-reserves, but raising it changes how
-                // many turns fit in every prompt — a packing change that belongs in
-                // its own card with its own before/after, not smuggled into a
-                // disclosure fix.
-                (
-                    head_cost,
-                    Some(crate::cognition::token_budget::mark_head_kept(
-                        &head, full,
-                    )),
-                )
+                let reserve = crate::cognition::token_budget::trim_marker_tokens();
+                if cap <= reserve {
+                    break;
+                }
+                let head = head_to_tokens(text, cap - reserve);
+                let trimmed = crate::cognition::token_budget::mark_head_kept(&head, full);
+                (estimate_tokens(&trimmed), Some(trimmed))
             };
             if tokens_used.saturating_add(cost) > budget {
                 break;
             }
-            newest_kept = false;
             tokens_used += cost;
             keep.push((idx, trimmed));
         }
-        keep.reverse();
-        // `keep` is oldest-first after the reverse, so its LAST entry is the newest
-        // element that actually fit — how far she genuinely read this turn.
-        let read_through = keep.last().map(|(idx, _)| digest.elements[*idx].clone());
+        keep.sort_by_key(|(idx, _)| *idx);
         let items = keep
             .into_iter()
             .map(|(idx, trimmed)| {
-                Self::format_item(&digest.elements[idx], idx >= digest.unread_start, trimmed)
+                // A head or folded summary cannot acknowledge its omitted body.
+                let complete = trimmed.is_none();
+                let mut item =
+                    Self::format_item(&digest.elements[idx], idx >= digest.unread_start, trimmed);
+                let event = digest.elements[idx].event();
+                if complete && event.lamport > 0 {
+                    item.metadata["room_input"] =
+                        serde_json::to_value(crate::cognition::provenance::RoomInput {
+                            room_id: event.room_id.as_uuid(),
+                            cursor: event.cursor(),
+                            read_after: digest.bookmark.clone(),
+                        })
+                        .expect("RoomInput contains only typed UUID/cursor values");
+                }
+                item
             })
             .collect();
-        (items, tokens_used, read_through)
+        (items, tokens_used)
     }
 
     /// COLLAPSE, DON'T CLIP — work receipts. A working citizen radiates one
@@ -431,7 +548,10 @@ impl AircRagSource {
                 .iter()
                 .enumerate()
                 .filter(|(idx, el)| contributes[*idx] && !el.text().is_some_and(is_work_receipt))
-                .map(|(idx, _)| PackUnit { last_idx: idx, collapsed: None })
+                .map(|(idx, _)| PackUnit {
+                    last_idx: idx,
+                    collapsed: None,
+                })
                 .collect();
             return (units, quarantined);
         }
@@ -452,10 +572,15 @@ impl AircRagSource {
             }
             let is_receipt = el.text().is_some_and(is_work_receipt);
             if !is_receipt {
-                units.push(PackUnit { last_idx: idx, collapsed: None });
+                units.push(PackUnit {
+                    last_idx: idx,
+                    collapsed: None,
+                });
                 continue;
             }
-            let Some((newest, all)) = by_author.get(&el.sender_id()) else { continue };
+            let Some((newest, all)) = by_author.get(&el.sender_id()) else {
+                continue;
+            };
             if *newest != idx {
                 continue; // an older receipt of hers — folded into her newest
             }
@@ -467,7 +592,10 @@ impl AircRagSource {
                     all.len(),
                 ))
             };
-            units.push(PackUnit { last_idx: idx, collapsed });
+            units.push(PackUnit {
+                last_idx: idx,
+                collapsed,
+            });
         }
         (units, quarantined)
     }
@@ -496,12 +624,22 @@ impl AircRagSource {
         }
         let acts: Vec<String> = tally
             .iter()
-            .map(|(k, n)| if *n > 1 { format!("{k}×{n}") } else { k.clone() })
+            .map(|(k, n)| {
+                if *n > 1 {
+                    format!("{k}×{n}")
+                } else {
+                    k.clone()
+                }
+            })
             .collect();
         format!(
             "{} · ⚙ {batches} act batches: {}",
             last_thought.unwrap_or("💭 (working)"), // unwrap_or: a run of bare act lines has no thought to lead with
-            if acts.is_empty() { "(no receipts)".to_string() } else { acts.join(" · ") }
+            if acts.is_empty() {
+                "(no receipts)".to_string()
+            } else {
+                acts.join(" · ")
+            }
         )
     }
 
@@ -525,6 +663,9 @@ impl AircRagSource {
                 "peer_id": element.sender_id().to_string(),
                 "occurred_at_ms": ev.occurred_at_ms,
                 "lamport": ev.lamport,
+                "content_kind": element.content_kind(),
+                "target": ev.target,
+                "subject_card": element.content_kind().and_then(|kind| kind.subject_card()),
                 "unread": unread,
                 // The digest is a chronological window, not a ranked retrieval, so
                 // "relevance" here IS the attention signal: an unread message the
@@ -667,7 +808,11 @@ impl RagSource for AircRagSource {
                             let Ok(sender) = uuid::Uuid::parse_str(&line.sender_id) else {
                                 continue;
                             };
-                            if live_bodies.contains(&(sender, line.text.clone(), line.media.clone())) {
+                            if live_bodies.contains(&(
+                                sender,
+                                line.text.clone(),
+                                line.media.clone(),
+                            )) {
                                 continue;
                             }
                             events.push(Self::hydrated_event(room_id, sender, line));
@@ -692,83 +837,56 @@ impl RagSource for AircRagSource {
             }
         }
 
-        // Pre-staged by the region (if it staged this room), else built once now from
-        // the events we already paged — identical shape (lazy compute-once). NOTE:
-        // the pre-staged path is skipped when we hydrated (the staged digest was
-        // built from the same shallow log); the built-once path below carries the
-        // topped-up window. Region-side hydration is the follow-up slice.
-        let digest = match self.buffer.peek(&(self.persona_id, room_id)) {
-            // The region pre-stages with the recipe floor; only reuse it when
-            // it already covers the budget-derived window — else rebuild wide.
-            Some(d) if live_in_room >= grounding && d.elements.len() >= grounding => d,
-            _ => {
-                // The cursor is AIRC's, read per build. A read failure must not mute
-                // her — fall back to 0 (everything unread), which the FIRST_READ_PAGE
-                // bound then caps at one page rather than the whole transcript.
-                let bookmark = match self.reader.read_cursor(self.persona_id, room_id).await {
-                    Ok(b) => b,
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            persona_id = %self.persona_id,
-                            room = %room_id,
-                            "airc rag: read cursor unavailable — treating the room as unread \
-                             (bounded to one page), perception stays up"
-                        );
-                        0
-                    }
-                };
-                Arc::new(self.builder.build_from_events(
-                    self.persona_id,
-                    room_id,
-                    events,
-                    grounding,
-                    bookmark,
-                ))
+        // The shared builder owns bounded unread paging and control-only scan
+        // progress. Rendering alone never advances the durable read cursor.
+        let previous = self.buffer.peek(&(self.persona_id, room_id));
+        let durable = match self.reader.read_cursor(self.persona_id, room_id).await {
+            Ok(cursor) => cursor,
+            Err(err) => {
+                tracing::warn!(error = %err, persona_id = %self.persona_id, room = %room_id,
+                    "airc rag: unread position unavailable; no delivery or acknowledgement");
+                return Self::empty(ResolutionPreference::Placeholder);
             }
         };
-
-        let (items, tokens_used, read_through) = Self::pack_digest(&digest, budget, crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some());
-        // SHE HAS NOW READ THE ROOM — advance her per-room cursor, exactly as the
-        // human's UI does on nav/mark-read and on navigating away from a room.
-        //
-        // THE BUG THIS FIXES: `ChannelBookmarks` is per-(persona, room) and has
-        // been correct since it was written — but the ONLY production callers of
-        // `advance` were in `modules/nav.rs`, both keyed on `ctx.user_id`, the
-        // authenticated HUMAN. A persona never navigates, so her `last_read` stayed
-        // at 0 forever, and `last_read`'s own doc spells out what 0 means:
-        // "never read (everything is unread)". Every turn therefore re-delivered
-        // the ENTIRE paged history as UNREAD, each item at attention score 1.0,
-        // with an EMPTY grounding split (unread_start == 0) — the digest's
-        // read/unread structure was built and then never used for a persona.
-        //
-        // That is the storm: with nothing ever marked read, no message is ever
-        // consumed, so two citizens in one room re-excite each other on a window
-        // that only grows. With the cursor advancing, a wake shows what is NEW
-        // plus N-before grounding, and a room with nothing new is quiet — the same
-        // contract every message client has had for thirty years.
-        //
-        // Mark-read on DELIVERY, not on reply, because delivery is when she saw
-        // it — `tip_lamport`'s own doc says "ignore/skip/respond all mark-read".
-        // Advancing to `read_through` (what was PACKED) rather than the digest tip
-        // keeps it honest under a tight budget: she is never marked read for a
-        // message the packer dropped. `advance` is monotonic, so a repeat delivery
-        // or a late lower lamport can never rewind her.
-        if let Some(element) = read_through.as_ref() {
-            if let Err(err) = self
-                .reader
-                .advance_read_cursor(self.persona_id, room_id, element.event())
+        let reusable = previous.as_ref().filter(|digest| {
+            digest.durable_bookmark == durable
+                && digest.has_unread()
+                && live_in_room >= grounding
+                && digest.elements.len() >= grounding
+        });
+        let digest = if let Some(digest) = reusable {
+            Arc::clone(digest)
+        } else {
+            match self
+                .builder
+                .build_from_reader_window(
+                    self.persona_id,
+                    room_id,
+                    self.reader.as_ref(),
+                    self.fetch_limit,
+                    grounding,
+                    events,
+                    previous.as_deref(),
+                )
                 .await
             {
-                tracing::warn!(
-                    error = %err,
-                    persona_id = %self.persona_id,
-                    room = %room_id,
-                    "airc rag: could not persist the read cursor — she will re-read this \
-                     page next turn (bounded), never the whole transcript"
-                );
+                Ok(digest) => Arc::new(digest),
+                Err(err) => {
+                    tracing::warn!(error = %err, persona_id = %self.persona_id, room = %room_id,
+                    "airc rag: unread position unavailable; no delivery or acknowledgement");
+                    return Self::empty(ResolutionPreference::Placeholder);
+                }
             }
-        }
+        };
+        self.buffer
+            .publish((self.persona_id, room_id), Arc::clone(&digest));
+        let (items, tokens_used) = Self::pack_digest(
+            &digest,
+            budget,
+            crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some(),
+        );
+        // `room_input` handles travel through final prompt selection. Only a
+        // successful GenerationReceipt may acknowledge their contiguous prefix.
         tracing::debug!(
             persona_id = %self.persona_id,
             room = %room_id,
@@ -960,12 +1078,22 @@ mod tests {
     // digest window (the single context path), in chronological order.
     #[tokio::test]
     async fn delivers_channel_digest() {
-        let room = RoomId::new();
-        let reader = Arc::new(StubReader::new(vec![
-            event_in(room, Some("hello"), 1),
-            event_in(room, Some("world"), 2),
-        ]));
-        let (source, _) = isolated_source(reader);
+        // Exercise the same reader against its actual durable owner. The wire
+        // root is isolated, so this never attaches to the installed daemon.
+        let home = tempfile::tempdir().unwrap();
+        let reader = Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .unwrap(),
+        );
+        let room = reader.join("digest-cursor-proof").await.unwrap().channel;
+        let mut first = event_in(room, Some("hello"), 1);
+        first.event_id = EventId::from_uuid(uuid::Uuid::from_u128(1));
+        let mut second = event_in(room, Some("world"), 1);
+        second.event_id = EventId::from_uuid(uuid::Uuid::from_u128(2));
+        reader.append_event(first.clone()).await.unwrap();
+        reader.append_event(second.clone()).await.unwrap();
+        let (source, _) = isolated_source(reader.clone());
         let delivery = source
             .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
             .await;
@@ -978,6 +1106,253 @@ mod tests {
                 .get("unread")
                 .and_then(|v| v.as_bool()),
             Some(true)
+        );
+        let inputs: Vec<crate::cognition::provenance::RoomInput> = delivery
+            .items
+            .iter()
+            .map(|item| serde_json::from_value(item.metadata["room_input"].clone()).unwrap())
+            .collect();
+        assert_eq!(
+            reader.read_cursor(persona(), room.as_uuid()).await.unwrap(),
+            None,
+            "composition is not successful presentation"
+        );
+        reader.acknowledge_presented(persona(), &[]).await.unwrap();
+        reader
+            .acknowledge_presented(persona(), &inputs[1..])
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.read_cursor(persona(), room.as_uuid()).await.unwrap(),
+            None,
+            "missing/failed receipt and a selected later sibling cannot cross an unpresented fact"
+        );
+        reader
+            .acknowledge_presented(persona(), &inputs[..1])
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.read_cursor(persona(), room.as_uuid()).await.unwrap(),
+            Some(first.cursor())
+        );
+        drop(source);
+        drop(reader);
+
+        let reader = Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            reader.read_cursor(persona(), room.as_uuid()).await.unwrap(),
+            Some(first.cursor()),
+            "the full tuple survives reopening the real ORM store"
+        );
+        let mut expected = vec![second.event_id.as_uuid()];
+        for index in 3..=125 {
+            let event = event_in(room, Some(&format!("unread {index}")), index);
+            expected.push(event.event_id.as_uuid());
+            reader.append_event(event).await.unwrap();
+        }
+        let (source, _) = isolated_source(reader.clone());
+        let mut observed = Vec::new();
+        for _ in 0..4 {
+            let delivery = source
+                .deliver(&ctx_in(room), 10_000, ResolutionPreference::Raw)
+                .await;
+            let inputs: Vec<crate::cognition::provenance::RoomInput> = delivery
+                .items
+                .iter()
+                .filter(|item| item.metadata["unread"] == true)
+                .map(|item| serde_json::from_value(item.metadata["room_input"].clone()).unwrap())
+                .collect();
+            if inputs.is_empty() {
+                break;
+            }
+            observed.extend(inputs.iter().map(|input| input.cursor.event_id.as_uuid()));
+            reader
+                .acknowledge_presented(persona(), &inputs)
+                .await
+                .unwrap();
+        }
+        assert_eq!(observed, expected, "oldest unread, including the equal-lamport sibling outside the newest100, is presented once in order");
+
+        // More than one raw page of typed maintenance must make bounded scan
+        // progress without generating input or prematurely saving a bookmark.
+        let before_controls = reader
+            .read_cursor(persona(), room.as_uuid())
+            .await
+            .unwrap()
+            .unwrap();
+        for offset in 1..=5 {
+            let work = airc_work::WorkEvent::ClaimHeartbeat(airc_work::ClaimHeartbeat {
+                card_id: airc_work::WorkCardId::new(),
+                claim_id: airc_work::ClaimId::new(),
+                owner: reader.peer_id(),
+                ttl_ms: 1000,
+                heartbeat_at_ms: offset,
+            });
+            let (headers, body) = airc_work::encode_work_event(&work).unwrap();
+            let mut event = event_in(room, None, before_controls.lamport + offset);
+            event.kind = TranscriptKind::System;
+            event.headers = headers;
+            event.body = Some(body);
+            reader.append_event(event).await.unwrap();
+        }
+        let after_controls = event_in(room, Some("after maintenance"), before_controls.lamport + 6);
+        reader.append_event(after_controls.clone()).await.unwrap();
+        let mut scan = source
+            .builder
+            .build_with_progress(persona(), room.as_uuid(), reader.as_ref(), 2, 0, None)
+            .await
+            .unwrap();
+        let mut control_pages = 0;
+        while !scan.has_unread() && control_pages < 5 {
+            control_pages += 1;
+            scan = source
+                .builder
+                .build_with_progress(
+                    persona(),
+                    room.as_uuid(),
+                    reader.as_ref(),
+                    2,
+                    0,
+                    Some(&scan),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(control_pages >= 2);
+        assert_eq!(scan.unread().len(), 1);
+        assert_eq!(
+            scan.unread()[0].event_id(),
+            after_controls.event_id.as_uuid()
+        );
+        assert_eq!(
+            reader.read_cursor(persona(), room.as_uuid()).await.unwrap(),
+            Some(before_controls.clone())
+        );
+        reader
+            .acknowledge_presented(
+                persona(),
+                &[crate::cognition::provenance::RoomInput {
+                    room_id: room.as_uuid(),
+                    cursor: after_controls.cursor(),
+                    read_after: scan.bookmark,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let saved = reader
+            .read_cursor(persona(), room.as_uuid())
+            .await
+            .unwrap()
+            .unwrap();
+        let tip = reader.latest_cursor().await.unwrap().unwrap();
+        let mut malformed = event_in(room, None, tip.lamport + 1);
+        malformed.kind = TranscriptKind::System;
+        malformed.headers.insert(
+            airc_protocol::HEADER_FORGE_BODY_HINT.into(),
+            airc_work::BODY_HINT_FORGE_WORK_REVIEW.into(),
+        );
+        malformed.body = Some(Body::Json(
+            serde_json::json!({"kind":"work_submission_reviewed"}),
+        ));
+        let malformed_cursor = malformed.cursor();
+        reader.append_event(malformed).await.unwrap();
+        let later = event_in(room, Some("after malformed"), tip.lamport + 2);
+        reader.append_event(later.clone()).await.unwrap();
+        let blocked = source
+            .builder
+            .build_with_progress(persona(), room.as_uuid(), reader.as_ref(), 8, 0, None)
+            .await
+            .unwrap();
+        assert!(
+            blocked
+                .scanned_through
+                .as_ref()
+                .is_some_and(|cursor| cursor_key(cursor) < cursor_key(&malformed_cursor)),
+            "malformed input is not a control-only scan advance"
+        );
+        let error = reader
+            .acknowledge_presented(
+                persona(),
+                &[crate::cognition::provenance::RoomInput {
+                    room_id: room.as_uuid(),
+                    cursor: later.cursor(),
+                    read_after: Some(saved.clone()),
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("work_event_decode_error"));
+        assert_eq!(
+            reader.read_cursor(persona(), room.as_uuid()).await.unwrap(),
+            Some(saved)
+        );
+
+        // Reuse the same real store in another room: a submitted head excerpt
+        // must not acknowledge the unseen suffix, even when generation succeeds.
+        let oversized_room = reader.join("digest-oversized-proof").await.unwrap().channel;
+        let oversized = event_in(oversized_room, Some(&"unread detail ".repeat(1000)), 1);
+        reader.append_event(oversized.clone()).await.unwrap();
+        // The first-join page excludes controls before applying its limit, so
+        // lease traffic cannot hide the ordinary fact behind the newest100.
+        for index in 0..=FETCH_LIMIT {
+            let mut control = event_in(oversized_room, Some("control"), index as u64 + 2);
+            control.kind = TranscriptKind::System;
+            match index % 5 {
+                0 | 1 => {
+                    let work = if index % 5 == 0 {
+                        airc_work::WorkEvent::ClaimHeartbeat(airc_work::ClaimHeartbeat {
+                            card_id: airc_work::WorkCardId::new(),
+                            claim_id: airc_work::ClaimId::new(),
+                            owner: reader.peer_id(),
+                            ttl_ms: 1000,
+                            heartbeat_at_ms: index as u64,
+                        })
+                    } else {
+                        airc_work::WorkEvent::WorkspaceHeartbeat(airc_work::WorkspaceHeartbeat {
+                            workspace_id: airc_work::WorkspaceId::new(),
+                            disk_bytes: None,
+                            heartbeat_at_ms: index as u64,
+                        })
+                    };
+                    let (headers, body) = airc_work::encode_work_event(&work).unwrap();
+                    control.headers = headers;
+                    control.body = Some(body);
+                }
+                kind => {
+                    let key = match kind {
+                        2 => airc_protocol::HEADER_AIRC_CORRELATION_ID,
+                        3 => airc_lib::HEADER_STREAM_ID,
+                        _ => airc_lib::HEADER_HEARTBEAT_KIND,
+                    };
+                    control.headers.insert(key.into(), "control".into());
+                }
+            }
+            reader.append_event(control).await.unwrap();
+        }
+        let first_page = reader
+            .page_recent_in(Some(oversized_room), 1)
+            .await
+            .unwrap();
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(first_page[0].event_id, oversized.event_id);
+        let excerpt = source
+            .deliver(&ctx_in(oversized_room), 64, ResolutionPreference::Raw)
+            .await;
+        assert_eq!(excerpt.items.len(), 1);
+        assert!(excerpt.items[0].content.contains("trimmed"));
+        assert!(excerpt.items[0].metadata.get("room_input").is_none());
+        reader.acknowledge_presented(persona(), &[]).await.unwrap();
+        assert_eq!(
+            reader
+                .read_cursor(persona(), oversized_room.as_uuid())
+                .await
+                .unwrap(),
+            None
         );
     }
 
@@ -1052,6 +1427,10 @@ mod tests {
             "oldest low-frequency speaker survives, trimmed: {:?}",
             delivery.items[0].content
         );
+        assert!(
+            delivery.items[0].metadata.get("room_input").is_none(),
+            "a trimmed head cannot acknowledge the omitted suffix"
+        );
         let newest = &delivery.items.last().unwrap().content;
         assert!(
             newest.starts_with("newest peer question") && !newest.contains("trimmed"),
@@ -1064,7 +1443,13 @@ mod tests {
         );
     }
 
-    fn receipt_from(room: RoomId, peer: PeerId, thought: &str, act: &str, lamport: u64) -> TranscriptEvent {
+    fn receipt_from(
+        room: RoomId,
+        peer: PeerId,
+        thought: &str,
+        act: &str,
+        lamport: u64,
+    ) -> TranscriptEvent {
         let mut ev = event_in(room, Some(&format!("💭 {thought}\n⚙ {act}")), lamport);
         ev.peer_id = peer;
         ev
@@ -1081,11 +1466,29 @@ mod tests {
         let lorcan = PeerId::new();
         let mut events = vec![event_in(room, Some("OPERATOR: card 678b8f5c is yours"), 1)];
         for l in 2..=5 {
-            events.push(receipt_from(room, atlas, &format!("thought {l}"), "code/shell ls ✓", l));
+            events.push(receipt_from(
+                room,
+                atlas,
+                &format!("thought {l}"),
+                "code/shell ls ✓",
+                l,
+            ));
             // twelve workers interleave: another author's receipt between each of Atlas's
-            events.push(receipt_from(room, lorcan, &format!("lorcan {l}"), "code/read x ✓", l + 100));
+            events.push(receipt_from(
+                room,
+                lorcan,
+                &format!("lorcan {l}"),
+                "code/read x ✓",
+                l + 100,
+            ));
         }
-        events.push(receipt_from(room, atlas, "thought six", "code/github/issue-create  ✗", 200));
+        events.push(receipt_from(
+            room,
+            atlas,
+            "thought six",
+            "code/github/issue-create  ✗",
+            200,
+        ));
         events.push(event_in(room, Some("Kira: Atlas, stop filing issues"), 201));
         let reader = Arc::new(StubReader::new(events));
         let (source, _) = isolated_source(reader);
@@ -1096,17 +1499,32 @@ mod tests {
             delivery.items.len(),
             4,
             "operator line + ONE unit per working author (Lorcan, Atlas) + Kira: {:?}",
-            delivery.items.iter().map(|i| i.content.clone()).collect::<Vec<_>>()
+            delivery
+                .items
+                .iter()
+                .map(|i| i.content.clone())
+                .collect::<Vec<_>>()
         );
         let lorcan_unit = &delivery.items[1].content;
-        assert!(lorcan_unit.starts_with("💭 lorcan 5"), "Lorcan's newest leads: {lorcan_unit:?}");
+        assert!(delivery.items[1].metadata.get("room_input").is_none());
+        assert!(delivery.items[2].metadata.get("room_input").is_none());
+        assert!(
+            lorcan_unit.starts_with("💭 lorcan 5"),
+            "Lorcan's newest leads: {lorcan_unit:?}"
+        );
         assert!(lorcan_unit.contains("code/read ✓×4"), "{lorcan_unit:?}");
         let run = &delivery.items[2].content;
-        assert!(run.starts_with("💭 thought six"), "newest thought leads: {run:?}");
+        assert!(
+            run.starts_with("💭 thought six"),
+            "newest thought leads: {run:?}"
+        );
         assert!(run.contains("5 act batches"), "batch count: {run:?}");
         assert!(run.contains("code/shell ✓×4"), "tally: {run:?}");
         assert!(run.contains("code/github/issue-create ✗"), "tally: {run:?}");
-        assert!(!run.contains("thought 2"), "older thoughts folded away: {run:?}");
+        assert!(
+            !run.contains("thought 2"),
+            "older thoughts folded away: {run:?}"
+        );
         assert!(delivery.items[3].content.starts_with("Kira:"));
     }
 
@@ -1142,17 +1560,37 @@ mod tests {
         let (source, _) = isolated_source(Arc::new(StubReader::new(events.clone())));
         // Both packing modes share the seam: the working path (presence plane dropped)
         // and the conversational path (receipts collapsed per author).
-        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events, 0, 0);
+        let digest = source
+            .builder
+            .build_from_events(persona(), room.as_uuid(), events, 0, None);
         for working in [false, true] {
-            let (items, _, _) = AircRagSource::pack_digest(&digest, 4_000, working);
+            let (items, _) = AircRagSource::pack_digest(&digest, 4_000, working);
             let seen: Vec<&str> = items.iter().map(|i| i.content.as_str()).collect();
-            assert_eq!(seen.len(), 2, "working={working}: only the two real lines survive: {seen:?}");
+            assert_eq!(
+                seen.len(),
+                2,
+                "working={working}: only the two real lines survive: {seen:?}"
+            );
             assert!(seen[0].starts_with("Kira:"), "{seen:?}");
-            assert!(seen[1].starts_with("Atlas:"), "a line DISCUSSING an envelope is speech: {seen:?}");
+            assert!(
+                seen[1].starts_with("Atlas:"),
+                "a line DISCUSSING an envelope is speech: {seen:?}"
+            );
         }
         // And the live path (the one every turn takes) delivers the same two.
-        let delivery = source.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 2, "{:?}", delivery.items.iter().map(|i| &i.content).collect::<Vec<_>>());
+        let delivery = source
+            .deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw)
+            .await;
+        assert_eq!(
+            delivery.items.len(),
+            2,
+            "{:?}",
+            delivery
+                .items
+                .iter()
+                .map(|i| &i.content)
+                .collect::<Vec<_>>()
+        );
     }
 
     // what this catches: THE DEAF-PERSONA FIX — when the turn's ctx has no airc_room

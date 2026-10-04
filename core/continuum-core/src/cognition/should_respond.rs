@@ -186,6 +186,7 @@ pub async fn evaluate_gating(
     let gen_request = TextGenerationRequest {
         messages: vec![
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "system".to_string(),
                 content: MessageContent::Text(
                     "You are a conversation coordinator. Respond ONLY with JSON.".to_string(),
@@ -193,6 +194,7 @@ pub async fn evaluate_gating(
                 name: None,
             },
             ChatMessage {
+                room_inputs: Vec::new(),
                 role: "user".to_string(),
                 content: MessageContent::Text(prompt),
                 name: None,

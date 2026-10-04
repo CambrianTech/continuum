@@ -120,14 +120,16 @@ impl ChannelDigestRegion {
         let Some((reader, room)) = self.personas.reader_and_room(persona_id) else {
             return TickOutcome::idle();
         };
+        let previous = self.digests.peek(&(persona_id, room));
         match self
             .builder
-            .build(
+            .build_with_progress(
                 persona_id,
                 room,
                 reader.as_ref(),
                 self.fetch_limit,
                 self.grounding,
+                previous.as_deref(),
             )
             .await
         {
@@ -210,7 +212,7 @@ impl PersonaChannelReader for crate::persona::airc_runtime_registry::PersonaAirc
 #[cfg(test)]
 mod tests {
     use super::*;
-        use crate::cognition::channel_element::ChannelElementCache;
+    use crate::cognition::channel_element::ChannelElementCache;
     use crate::cognition::embedding::EmbeddingProvider;
     use airc_core::TranscriptEvent;
     use airc_core::{
@@ -236,12 +238,16 @@ mod tests {
     struct StubReader {
         events: Mutex<Vec<TranscriptEvent>>,
         /// The reader's cursor — airc's durable one in production.
-        cursor: Mutex<u64>,
+        cursor: Mutex<Option<airc_core::TranscriptCursor>>,
     }
     #[async_trait]
     impl AircTranscriptReader for StubReader {
-        async fn read_cursor(&self, _p: Uuid, _r: Uuid) -> Result<u64, AircError> {
-            Ok(*self.cursor.lock().unwrap())
+        async fn read_cursor(
+            &self,
+            _p: Uuid,
+            _r: Uuid,
+        ) -> Result<Option<airc_core::TranscriptCursor>, AircError> {
+            Ok(self.cursor.lock().unwrap().clone())
         }
         async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
             Ok(self
@@ -252,6 +258,27 @@ mod tests {
                 .take(limit)
                 .cloned()
                 .collect())
+        }
+        async fn page_after_in(
+            &self,
+            room: RoomId,
+            cursor: &airc_core::TranscriptCursor,
+            limit: usize,
+        ) -> Result<Vec<TranscriptEvent>, AircError> {
+            use crate::persona::airc_source::cursor_key;
+            let mut events: Vec<_> = self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| {
+                    event.room_id == room && cursor_key(&event.cursor()) > cursor_key(cursor)
+                })
+                .cloned()
+                .collect();
+            events.sort_by_key(|event| cursor_key(&event.cursor()));
+            events.truncate(limit);
+            Ok(events)
         }
     }
 
@@ -308,6 +335,11 @@ mod tests {
         events: Vec<TranscriptEvent>,
         cursor: u64,
     ) -> ChannelDigestRegion {
+        let cursor = events
+            .iter()
+            .filter(|event| event.lamport <= cursor)
+            .max_by_key(|event| crate::persona::airc_source::cursor_key(&event.cursor()))
+            .map(TranscriptEvent::cursor);
         let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
         let builder = Arc::new(ChannelDigestBuilder::new(cache));
         let channels = Arc::new(StubChannels {

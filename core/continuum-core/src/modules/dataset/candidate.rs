@@ -237,6 +237,7 @@ mod tests {
 
     fn submission(id: Uuid) -> SubmitParams {
         let receipt = GenerationReceipt {
+            room_inputs: Vec::new(),
             submitted_request_id: "fixture-request".into(),
             outcome: GenerationOutcome::Served {
                 model: "actual-teacher".into(),

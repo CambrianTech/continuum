@@ -451,6 +451,7 @@ mod tests {
 
     fn user_msg(text: &str) -> ChatMessage {
         ChatMessage {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Text(text.to_string()),
             name: None,

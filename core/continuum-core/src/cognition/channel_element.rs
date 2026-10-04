@@ -40,6 +40,7 @@ use dashmap::DashMap;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
+use crate::airc::realtime_wire::{render_room_content, RoomContentKind};
 use crate::cognition::embedding::EmbeddingProvider;
 
 /// Soft bound on the shared element working set so a long-lived node servicing a
@@ -57,6 +58,8 @@ pub struct ChannelElement {
     event: TranscriptEvent,
     /// Text body extracted once (None for non-text events — they carry no embedding).
     text: Option<String>,
+    /// Decoded once with the text, so consumers retain activity provenance.
+    content_kind: Option<RoomContentKind>,
     /// The envelope's TRUE author for a `chat/send` line (the human/web identity),
     /// `None` for a plain `say()` (transport peer IS the author). See `sender_id()`.
     logical_sender: Option<Uuid>,
@@ -84,18 +87,26 @@ impl ChannelElement {
     /// identity), which `sender_id()` exposes so digests attribute the words to the
     /// speaker, not to the core's relay peer.
     fn new(event: TranscriptEvent, embedder: Arc<dyn EmbeddingProvider>) -> Self {
-        // The ONE room-turn decoder (realtime_wire::room_turn_from_event) recovers
-        // text + logical sender for BOTH wire shapes. A non-turn (presence,
-        // event-bridge, decode error) is simply a text-less element here; the
-        // skip-reason visibility lives on the perception path.
-        let (text, logical_sender) = match crate::airc::realtime_wire::room_turn_from_event(&event)
-        {
-            Ok((sender, text)) => (Some(text), Some(sender)),
-            Err(_) => (None, None),
-        };
+        // Share the generic decoder with perception. Typed work remains room
+        // activity, while only speech may override the transport publisher with
+        // a logical chat sender. Skip visibility lives on the perception path.
+        let (text, logical_sender, content_kind) =
+            match crate::airc::realtime_wire::room_content_from_event(&event) {
+                Ok(turn) => {
+                    let logical_sender =
+                        matches!(turn.kind, RoomContentKind::Speech).then_some(turn.sender);
+                    (
+                        Some(render_room_content(&turn.text, &turn.media)),
+                        logical_sender,
+                        Some(turn.kind),
+                    )
+                }
+                Err(_) => (None, None, None),
+            };
         Self {
             event,
             text,
+            content_kind,
             logical_sender,
             embedder,
             embedding: OnceCell::new(),
@@ -115,6 +126,11 @@ impl ChannelElement {
     /// The message text, if it has a text body.
     pub fn text(&self) -> Option<&str> {
         self.text.as_deref()
+    }
+
+    /// Speech or typed activity; absent for events the shared decoder rejects.
+    pub fn content_kind(&self) -> Option<&RoomContentKind> {
+        self.content_kind.as_ref()
     }
 
     /// Who actually said this: the envelope's logical sender for a `chat/send`
@@ -327,6 +343,7 @@ mod tests {
             human,
             "attributed to the human who wrote it, not the relay peer"
         );
+        assert_eq!(element.content_kind(), Some(&RoomContentKind::Speech));
 
         // And the plain-say sibling keeps transport-peer attribution.
         let say = make_event(Some("hello"), 8);
@@ -336,6 +353,32 @@ mod tests {
             el.sender_id(),
             say_peer,
             "a say() is authored by its transport peer"
+        );
+
+        // The same shared element holds typed activity without turning it into
+        // speech or losing the original event's target, identity and cursor.
+        let mut work_event = make_event(None, 9);
+        let work = airc_work::WorkEvent::CardStateChanged(airc_work::CardStateChanged {
+            card_id: airc_work::WorkCardId::new(),
+            state: airc_work::CardState::Review,
+            changed_by: work_event.peer_id,
+            changed_at_ms: 9,
+        });
+        let (headers, body) = airc_work::encode_work_event(&work).unwrap();
+        work_event.kind = TranscriptKind::System;
+        work_event.headers = headers;
+        work_event.body = Some(body);
+        let publisher = work_event.peer_id.as_uuid();
+        let first = cache.get_or_insert(work_event.clone());
+        let second = cache.get_or_insert(work_event.clone());
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.event(), &work_event);
+        assert_eq!(first.content_kind(), Some(&RoomContentKind::Work(work)));
+        assert_eq!(first.sender_id(), publisher);
+        assert!(first.text().unwrap().starts_with("Room work event ("));
+        assert_eq!(
+            crate::airc::realtime_wire::room_turn_from_event(first.event()),
+            Err("non_speech_content"),
         );
     }
 
@@ -388,6 +431,7 @@ mod tests {
         let embedder = Arc::new(CountingEmbedder::new());
         let cache = ChannelElementCache::new(embedder.clone());
         let element = cache.get_or_insert(make_event(None, 1));
+        assert_eq!(element.content_kind(), None);
         assert!(element.embedding().await.is_none());
         assert_eq!(embedder.calls.load(Ordering::SeqCst), 0);
     }

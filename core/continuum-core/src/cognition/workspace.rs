@@ -607,6 +607,9 @@ pub struct BurstTurn {
     pub occurred_at_ms: Option<u64>,
     /// Speech, or something the system told her. See [`TurnVoice`].
     pub voice: TurnVoice,
+    /// Original room event, when this turn is a room projection. Retained
+    /// through prompt fitting; absent for synthetic or system-authored facts.
+    pub room_input: Option<super::provenance::RoomInput>,
 }
 
 impl BurstTurn {
@@ -623,6 +626,7 @@ impl BurstTurn {
             content: content.into(),
             occurred_at_ms,
             voice: TurnVoice::Speech,
+            room_input: None,
         }
     }
 
@@ -639,6 +643,7 @@ impl BurstTurn {
             content: content.into(),
             occurred_at_ms: None,
             voice: TurnVoice::Speech,
+            room_input: None,
         }
     }
 

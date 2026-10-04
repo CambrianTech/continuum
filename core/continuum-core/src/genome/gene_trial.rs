@@ -626,6 +626,7 @@ mod tests {
         use crate::cognition::provenance::{GenerationOutcome, GenerationReceipt};
         let local = crate::inference::llama_server::PROVIDER_ID;
         let served = |provider: &str, model: &str, genes: &[&str]| GenerationReceipt {
+            room_inputs: Vec::new(),
             submitted_request_id: "r".into(),
             outcome: GenerationOutcome::Served { model: model.into(), provider: provider.into(), provider_request_id: None },
             capture: None,
@@ -660,6 +661,7 @@ mod tests {
         let kimi = Uuid::from_u128(0x6b1);
         let t = store.open(kimi, "kimi-dream-1", Path::new("/genes/k1.gguf"), "qwen-27b", 10).unwrap();
         let served = |genes: &[&str]| GenerationReceipt {
+            room_inputs: Vec::new(),
             submitted_request_id: "r".into(),
             outcome: GenerationOutcome::Served { model: "qwen-27b".into(), provider: crate::inference::llama_server::PROVIDER_ID.into(), provider_request_id: None },
             capture: None,

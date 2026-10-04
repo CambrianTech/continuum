@@ -521,6 +521,7 @@ async fn run_inference_probe(
     let messages: Vec<ChatMessage> = items
         .iter()
         .map(|item| ChatMessage {
+            room_inputs: Vec::new(),
             role: "user".to_string(),
             content: MessageContent::Text(item.content.clone()),
             name: None,

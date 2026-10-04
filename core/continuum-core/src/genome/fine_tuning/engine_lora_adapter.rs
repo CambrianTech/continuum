@@ -1647,6 +1647,7 @@ mod tests {
             messages: vec![
                 ChatMessage::text("user", "the build is red"),
                 ChatMessage {
+                    room_inputs: Vec::new(),
                     role: "assistant".into(),
                     content: MessageContent::Parts(vec![ContentPart::ToolUse {
                         id: "t0".into(),
@@ -1656,6 +1657,7 @@ mod tests {
                     name: None,
                 },
                 ChatMessage {
+                    room_inputs: Vec::new(),
                     role: "user".into(),
                     content: MessageContent::Parts(vec![ContentPart::ToolResult {
                         tool_use_id: "t0".into(),
