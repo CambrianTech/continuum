@@ -1055,6 +1055,7 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
         return Err("work_presence");
     }
     Ok(IncomingMessage {
+    work: None,
         media: turn.media,
         event_id: event.event_id.as_uuid(),
         lamport: event.lamport,
@@ -2001,6 +2002,48 @@ impl AircPersonaConversation {
                     .collect(),
             },
         };
+        // A typed work fact in the room is perception (EVENT-MIND.md §1b): a
+        // verdict, a card move, a submission, a claim. It becomes a labelled board
+        // fact in her burst, attributed to the actor, never dropped as
+        // `non_chat_schema`. Her own acts' echoes are skipped like her own words.
+        match crate::airc::realtime_wire::room_work_from_event(&event) {
+            Ok(Some(work)) => {
+                if event.peer_id.as_uuid() == self.own_peer_id {
+                    return None;
+                }
+                crate::probe!(
+                    class = "persona.inbound.work_fact",
+                    persona = %self.own_peer_id,
+                    from_peer = %event.peer_id,
+                    room = %event.room_id,
+                    work = ?work,
+                    "a typed work fact admitted as perception"
+                );
+                return Some(IncomingMessage {
+                    event_id: event.event_id.as_uuid(),
+                    lamport: event.lamport,
+                    peer_id: event.peer_id.as_uuid(),
+                    text: String::new(),
+                    media: Vec::new(),
+                    room_id: event.room_id.as_uuid(),
+                    work: Some(work),
+                });
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                crate::probe!(
+                    class = "persona.inbound.filtered_non_turn",
+                    persona = %self.own_peer_id,
+                    from_peer = %event.peer_id,
+                    body_kind,
+                    event_kind,
+                    body_preview,
+                    reason,
+                    "a work-hinted event FAILED to decode — a board fact may be unheard"
+                );
+                return None;
+            }
+        }
         let message = match perceptual_from_event(&event) {
             Ok(message) => message,
             Err(reason) => {
