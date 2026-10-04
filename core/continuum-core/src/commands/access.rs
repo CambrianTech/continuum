@@ -82,7 +82,7 @@ crate::action_command! {
     run(_this, _ctx, _p) => {
         let policy = access_decision::policy();
         let rank = access_decision::local_cognitive_rank();
-        let level = policy.citizen_trust(Uuid::nil(), true, rank, None);
+        let level = policy.resident_trust(Uuid::nil());
         Ok(AccessGetResult { policy, local_cognitive_rank: rank, local_citizen_level: level })
     }
 }
@@ -122,7 +122,7 @@ crate::action_command! {
         }
         access_decision::store(policy.clone()).map_err(CommandError::Internal)?;
         let rank = access_decision::local_cognitive_rank();
-        let level = policy.citizen_trust(Uuid::nil(), true, rank, None);
+        let level = policy.resident_trust(Uuid::nil());
         Ok(AccessGetResult { policy, local_cognitive_rank: rank, local_citizen_level: level })
     }
 }

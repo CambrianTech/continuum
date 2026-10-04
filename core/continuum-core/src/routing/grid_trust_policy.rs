@@ -133,18 +133,12 @@ impl GridTrustAuthPolicy {
             None => TrustLevel::Owner,
             Some(c) => match c.source {
                 CallerSource::Local => TrustLevel::Owner,
-                // A CITIZEN (a local in-process persona, or one calling over airc) gets
-                // the access her COGNITIVE LEVEL earns, never a transport ceiling (Joel,
-                // 2026-09-28): `access_decision`. A local persona's level is the model
-                // this node serves; an airc caller's is not carried yet, so it reads as
-                // unknown, which gets MORE (Trusted). An operator block still holds, and
-                // a recorded decision (earned access) wins over both.
-                CallerSource::LocalPersona => crate::routing::access_decision::policy().citizen_trust(
-                    c.peer_id.as_uuid(),
-                    true,
-                    crate::routing::access_decision::local_cognitive_rank(),
-                    None,
-                ),
+                // A citizen RESIDENT on this node gets full hands whatever her model (Joel,
+                // 2026-10-04: "let them then restrict later"): `resident_trust`. An operator
+                // block still holds, and a recorded decision restricts (or grants) her.
+                CallerSource::LocalPersona => {
+                    crate::routing::access_decision::policy().resident_trust(c.peer_id.as_uuid())
+                }
                 // an airc peer's IDENTITY is known only through registered trust (or a
                 // recorded decision, which citizen_trust checks first); a stranger stays
                 // Provisional however she arrived (Cormac on #4532: no cross-grid RCE)
@@ -200,23 +194,20 @@ const UNAUTHENTICATED_SOCKET_CEILING: TrustLevel = TrustLevel::Provisional;
 /// rule lives, so the [`gate`](GridTrustAuthPolicy::gate) and every trust-aware
 /// consumer (e.g. `commands/list` filtering "what can THIS caller call") share it
 /// and can't drift. Local / substrate callers are the owner on their own box; a citizen
-/// (local persona or airc caller) gets what her cognitive level earns
-/// (`access_decision`); an unauthenticated socket is capped at
+/// resident on this node gets `resident_trust`, an airc caller what her recorded
+/// decision or registered trust says (`access_decision`); an unauthenticated socket is capped at
 /// [`UNAUTHENTICATED_SOCKET_CEILING`].
 pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
     match caller {
         None => TrustLevel::Owner,
         Some(c) => match c.source {
             CallerSource::Local => TrustLevel::Owner,
-            // A citizen: the access her cognitive level earns (`access_decision`), the
-            // same resolution as the gate's resolve_trust, so offer == authorized. This
-            // static path has no trust bridge, so an operator block is enforced at the gate.
-            CallerSource::LocalPersona => crate::routing::access_decision::policy().citizen_trust(
-                c.peer_id.as_uuid(),
-                true,
-                crate::routing::access_decision::local_cognitive_rank(),
-                None,
-            ),
+            // A resident citizen: `resident_trust`, the same resolution as the gate's
+            // resolve_trust, so offer == authorized. This static path has no trust bridge,
+            // so an operator block is enforced at the gate.
+            CallerSource::LocalPersona => {
+                crate::routing::access_decision::policy().resident_trust(c.peer_id.as_uuid())
+            }
             // no trust bridge on this static path: an airc caller is known only through a
             // recorded decision, so a stranger stays Provisional (the gate may know more)
             CallerSource::Airc => crate::routing::access_decision::policy().citizen_trust(c.peer_id.as_uuid(), false, None, None),
