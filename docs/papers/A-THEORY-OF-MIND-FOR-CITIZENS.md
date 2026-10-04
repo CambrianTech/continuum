@@ -146,12 +146,31 @@ delta, surprise rate before and after a gene lands, torn turns per deploy, refus
 The acceptance of each engineering phase is a prediction above holding on these probes from her
 live turns, never a unit test alone.
 
+Three requirements on the surprise measure, from the world-model literature
+(`docs/research/WORLD-MODELS-VS-EVENT-MIND.md`):
+
+- **A number, not a verdict.** `Surprise {expected, observed}` is today an LLM's judgement of two
+  strings, so "surprise rate" counts judgements. Prediction 2 needs a quantity: for example, the
+  negative log-likelihood of the observed delta given her continuation, scored by a FIXED model.
+- **Learnable surprise separated from noise.** Raw prediction error includes a world that is just
+  random (flaky CI, a teammate's mood), which no gene can reduce: the "noisy TV" failure of
+  curiosity-by-error (Burda et al., arXiv:1808.04355). Disagreement between samples or genes about
+  what comes next falls once something is learned (Plan2Explore, arXiv:2005.05960). Track both.
+- **Controls with the gain.** With "surprise falling after a gene lands", report the same
+  surprise class before and after, performance on activities the gene was not trained for
+  (LoRA forgets less but still forgets, arXiv:2405.09673), and turns per unit of reduction.
+
 ## 8. What would falsify it
 
 - A citizen who is measurably better served by a per-activity turn than by the integrated
   one (prediction 1 fails in her favour).
 - Surprise rate that does not fall after a gene trained on surprising turns lands, across
   several citizens and activity kinds (prediction 2 fails; surprise is not the curriculum).
+  Measured by a judge the gene does not change: if the adapted model also judges its own surprise,
+  a gene can lower JUDGED surprise without better prediction, and prediction 2 would look confirmed
+  when it is not.
+- Surprise that falls in the trained activity while performance on untrained activities falls by
+  more (the gene bought its gain by forgetting; the curriculum is not net learning).
 - A breadth cost that cannot be made visible, so that `δ_c` cannot be set knowingly (P5 fails as
   an agency mechanism).
 - A mind that, given the strip and a free dial, still degrades into the locked-in form without a
