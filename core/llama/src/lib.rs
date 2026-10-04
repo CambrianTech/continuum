@@ -60,6 +60,8 @@ pub mod sys {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+mod prepared_chat;
+pub use prepared_chat::{ChatDelta, ChatMetadata, ChatOptions, ChatSampling, CommonSampler, GrammarTrigger, PreparedChat};
 mod mtmd;
 mod safe;
 pub use mtmd::{MediaKind, MtmdContext, MtmdEvalParams};

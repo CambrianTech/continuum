@@ -1341,7 +1341,7 @@ async fn serve_persona_loop_inner(
                 // forwards Token chunks to the room/TTS/avatar as `persona.turn.delta`.
                 // Cleared right after the turn, so a non-streamed path is byte-identical.
                 let (tok_tx, tok_rx) =
-                    crate::ai::stream_sinks::channel();
+                    crate::ai::stream_sinks::text_presentation_channel();
                 cycle.set_token_sink(Some(tok_tx));
                 // #169/#170: drain + publish this turn's streamed answer, coalesced.
                 let forwarder = spawn_token_forwarder(
@@ -2437,6 +2437,8 @@ fn spawn_token_forwarder(
     // personas × per-token frames killed subscribers).
     const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
     crate::utils::task::AbortOnDrop(tokio::spawn(async move {
+        let mut citizen = citizen;
+        let mut presentation_live = true;
         let started = std::time::Instant::now();
         let stream_id = uuid::Uuid::new_v4().to_string();
         let mut first = true;
@@ -2471,6 +2473,7 @@ fn spawn_token_forwarder(
                 _ = flush.tick(), if !buf.is_empty() => false,
                 chunk = rx.recv() => match chunk {
                     Ok(crate::ai::adapter::GenerationChunk::Token(t)) if !t.is_empty() => {
+                        if !presentation_live { continue; }
                         if first {
                             first = false;
                             tracing::info!(
@@ -2478,6 +2481,14 @@ fn spawn_token_forwarder(
                                 first_token_ms = started.elapsed().as_millis() as u64,
                                 "persona.turn.first_token — streaming rail live (latency floor)"
                             );
+                        }
+                        if buf.len().saturating_add(t.len()) > crate::ai::stream_sinks::MAX_GENERATION_CHUNK_BYTES {
+                            crate::probe!(class = "inference.presentation.retired", persona = %persona,
+                                reason = "byte_budget", "optional preview exceeded its bounded batch; durable answer remains authoritative");
+                            buf.clear();
+                            presentation_live = false;
+                            tee(seq, String::new(), true);
+                            continue;
                         }
                         buf.push_str(&t);
                         continue;
@@ -2490,9 +2501,16 @@ fn spawn_token_forwarder(
                     Ok(_) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => true,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        crate::probe!(class = "inference.consumer.ring_gap", persona = %persona, skipped,
-                            "persona stream lost continuity; cancelling producer");
-                        break;
+                        if presentation_live {
+                            crate::probe!(class = "inference.presentation.retired", persona = %persona, skipped,
+                                reason = "ring_gap", "optional preview lost continuity; durable answer remains authoritative");
+                            buf.clear();
+                            presentation_live = false;
+                            tee(seq, String::new(), true);
+                        }
+                        // Keep the owned receiver alive until the turn finishes;
+                        // optional display pressure must not cancel useful work.
+                        continue;
                     },
                 },
             };
@@ -2501,13 +2519,16 @@ fn spawn_token_forwarder(
                 // Local subscribers must see this batch before remote publication waits.
                 tee(seq, flushed.clone(), false);
                 if let Some(c) = &citizen {
-                    let _ = c
-                        .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                    let chunk = airc_lib::StreamChunk::text_token(
                             stream_id.clone(),
                             seq,
                             flushed,
-                        ))
-                        .await;
+                        );
+                    if !matches!(tokio::time::timeout(FLUSH_EVERY, c.publish_stream_chunk(&chunk)).await, Ok(Ok(()))) {
+                        crate::probe!(class = "inference.presentation.remote_retired", persona = %persona,
+                            "optional remote preview publication unavailable; local preview and inference continue");
+                        citizen = None;
+                    }
                 }
                 seq += 1;
             }
@@ -2516,11 +2537,10 @@ fn spawn_token_forwarder(
             }
         }
         // Retire the local bubble independently of remote end-marker delivery.
-        tee(seq, String::new(), true);
+        if presentation_live { tee(seq, String::new(), true); }
         if let Some(c) = &citizen {
-            let _ = c
-                .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id.clone(), seq))
-                .await;
+            let end = airc_lib::StreamChunk::text_end(stream_id.clone(), seq);
+            let _ = tokio::time::timeout(FLUSH_EVERY, c.publish_stream_chunk(&end)).await;
         }
     }))
 }
@@ -2856,7 +2876,7 @@ async fn run_self_cycle(
     // Token chunks to the room/TTS/avatar. Cleared after the turn (byte-identical
     // when unused).
     let (tok_tx, tok_rx) =
-        crate::ai::stream_sinks::channel();
+        crate::ai::stream_sinks::text_presentation_channel();
     cycle.set_token_sink(Some(tok_tx));
     // #169/#170: self-tick (autonomic) turns do NOT broadcast a live typing stream —
     // a room doesn't need every persona's idle musing streamed token-by-token (that
@@ -3025,7 +3045,7 @@ mod tests {
 
         let room = Uuid::new_v4().to_string();
         let mut output = stream_rail::subscribe();
-        let (tx, rx) = crate::ai::stream_sinks::channel();
+        let (tx, rx) = crate::ai::stream_sinks::text_presentation_channel();
         let owner = spawn_token_forwarder(
             rx, None, "stream-test".into(), Some(room.clone()), Some("sender".into()),
         );
@@ -3061,7 +3081,7 @@ mod tests {
         // Aborting a turn used to detach its forwarder, leaving the producer
         // alive on a retained cycle sink. The owner must drop the receiver even
         // when a sender remains alive and no further chunks arrive.
-        let (tx, rx) = crate::ai::stream_sinks::channel();
+        let (tx, rx) = crate::ai::stream_sinks::text_presentation_channel();
         let owner = spawn_token_forwarder(rx, None, "cancel-test".into(),
             Some(room.clone()), Some("sender".into()));
         let start = next_for_room(&mut output, &room).await;
@@ -3075,6 +3095,37 @@ mod tests {
         let end = next_for_room(&mut output, &room).await;
         assert!(end.done && end.token.is_empty());
         assert_eq!(end.stream_id, start.stream_id);
+
+        // A stalled OPTIONAL remote display used to stop reading the shared
+        // ring, then cancel useful inference on overflow. Reuse the citizen
+        // fixture to force that exact interleaving without a live daemon.
+        let publishing = std::sync::Arc::new(tokio::sync::Notify::new());
+        let citizen = std::sync::Arc::new(
+            crate::persona::airc_citizen::StubAircCitizen::new(Uuid::new_v4())
+                .with_stalled_stream_publication(publishing.clone()),
+        );
+        let (tx, rx) = crate::ai::stream_sinks::text_presentation_channel();
+        let owner = spawn_token_forwarder(rx, Some(citizen), "slow-preview".into(),
+            Some(room.clone()), Some("sender".into()));
+        let start = next_for_room(&mut output, &room).await;
+        tx.send(GenerationChunk::Token("first batch".into())).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), publishing.notified()).await
+            .expect("remote publication is stalled");
+        for _ in 0..=crate::ai::stream_sinks::GENERATION_RING_CAPACITY {
+            tx.send(GenerationChunk::Token("burst".into())).unwrap();
+        }
+        loop {
+            let delta = next_for_room(&mut output, &room).await;
+            assert_eq!(delta.stream_id, start.stream_id);
+            if delta.done { break; }
+            assert_eq!(delta.token, "first batch", "never render an incomplete suffix after loss");
+        }
+        assert!(!tx.is_closed(), "optional preview overload cannot cancel the persona");
+        tx.send(GenerationChunk::Token("model and tools continue".into())).unwrap();
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(2), owner.join()).await
+            .expect("stalled preview cannot hold the completed turn open")
+            .expect("preview task completes without panicking");
     }
 
     // What this catches (e731576c): publication, not a later work-turn return,

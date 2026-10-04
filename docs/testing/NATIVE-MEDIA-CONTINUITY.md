@@ -1024,3 +1024,118 @@ make comparison with the earlier74s run insufficient to claim a speedup.
 Native audio input/output and actual incremental remote media remain open.
 The installer reported two undrained cognition operations; adoption does not
 establish lossless handoff.
+
+## Native review repairs — 2026-10-04
+
+Anthropic's existing adapter now shares the Messages SSE implementation between
+batch and streaming consumers. Text arrives incrementally; tool JSON, reasoning,
+usage and request identity retain their separate contracts. The llama scheduler's
+existing TokenEvent path shares batch drain, split stop-marker withholding and
+cancelled receiver retirement, including existing KV/footprint cleanup.
+
+The in-process llama adapter refuses public live output before loading a model.
+Its simple chat-template binding does not expose common-chat parser state or tool
+schemas. Binding that existing native owner remains a delivery gap; raw reasoning
+is never exposed as public tokens by this adapter. Batch behavior remains explicit.
+
+Optional text presentation selects its policy before exposing handles, rejects
+native media at publication, and retires a bounded preview after lag without
+aborting useful generation. A stalled remote preview has a250ms publication budget.
+Lossless native/remote channels retain gap and terminal validation. A shared remote
+bus lag keeps this request's expected sequence unchanged instead of assuming its
+own frame was lost. Authenticated remote cancellation and lossless network
+backpressure remain open.
+
+Native PCM ownership now retires after successful queued playback drains, retaining
+the final mixer frame and fencing stale cancellation. Existing fixtures test
+incremental arrival, successful drain, later speech and interrupted playback.
+
+Final source validation session86485 passed33 tests,2 ignored, including27 provider,
+presentation and playback tests plus6 workspace-transfer tests. This is fixture
+and source evidence. Installed core remains5944/d8bca290e; real native audio calls,
+personally observed audio/video and deployed acceptance are still pending.
+
+## Prepared common-chat boundary — 2026-10-04
+
+Source-only bridge in core/llama prepares structured messages/tools through the
+existing vendored common-chat template owner, loads its serialized parser and
+returns separate content/reasoning/tool deltas. An opaque per-request handle
+borrows the selected model and frees native state on Drop. All grammar triggers,
+preserved tokens, additional stops and generation-prompt/parser metadata travel
+together; using the prompt without those constraints is not live integration.
+
+Per-request native log_content suppresses private template/parser exception text;
+existing upstream callers retain their default logging. Opt-in final completeness
+rejects truncated tool syntax before partial AST normalization. FINAL_INPUT permits
+EOF for delimiter-free rest only; required delimiters and incomplete UTF8 retain
+their contracts. No synthetic tool closer or model-stop suffix is invented.
+
+Parent42410 passed all9 llama library tests, including existing split preopened
+reasoning/tool controls, malformed-template errors, terminal truncation and sampler/
+allocation tests. Parent49789 initially failed QwQ terminal content because native
+LENIENT rest reported NEED_MORE at EOF; the explicit final flag repaired it without
+weakening malformed-tool rejection. Independent scoped review found no remaining
+ownership/privacy/completeness blocker. There is no model-load or native-call proof.
+
+Bridge, dependency and four-file vendor changes remain uncommitted pending source
+boundary/pin review; patches and new source files are preserved in the team proof
+directory. The public in-process adapter remains fail-closed until its existing
+scheduler consumes all template constraints and its adapter preserves tool history.
+Remote authenticated cancel, media backpressure, native hearing and actual capable
+voice-gene artifact still require delivery. No temporary observer is running.
+
+2026-10-04 required-grammar follow-up: existing SamplerChainBuilder retains
+Sampler RAII during construction and returns errors for explicit invalid grammar
+instead of panicking on NUL or silently sampling without a constraint. Both mtmd
+batch and scheduler callers propagate setup failure; scheduler emits its existing
+TokenEvent::Error before freeing the unused slot. Ten llama tests passed, and
+parent75061 cargo check continuum-core --tests exited0 in5m07s. These are source
+contract receipts, not installed model-stream acceptance. Common sampler trigger/
+preserved-token integration remains with the existing provider owner.
+
+CommonSampler source slice: shared preserved-token/trigger normalization migrates
+server-schema (31 duplicate lines removed). Per-instance native grammar logging
+policy survives clone/reset; internal overload leaves public ABI unchanged. Native
+sampler lifetime borrows the bound model and validates context/model identity;
+setup exceptions release allocated owners. Prepared scheduler requests explicitly
+refuse admission until typed projection/UTF8/stops/finalization integrate. Parent
+11413 passed10 llama tests in0.55s after41.64s build. Independent source review
+identified missing repeat_penalty finite/positive validation; correction remains
+pending, and C++ grammar test execution is not included in this Rust test receipt.
+
+Repeat-penalty follow-up adds bridge validation before model access: finite,
+positive and finite reciprocal, covered through the actual parser-only C ABI seam.
+The existing common_sampler initializer already validated downstream numerics;
+invalid-logit reachability was not demonstrated. This correction improves explicit
+error reporting without claiming a previously bypassed downstream safeguard.
+
+Shared generated-text decoding source now migrates scheduler and mtmd to one
+owner for incremental UTF8, withheld stop prefixes and earliest complete stop
+inside a chunk. Collector trimming, independent ends_with scans and scheduler
+full-output accumulation are deleted. Raw token bytes retry required native
+buffer size; existing unprepared callers explicitly suppress special tokens.
+mtmd decode failures report failure instead of successful partial completion.
+Focused regression execution is pending parent58623; no prepared adapter or
+installed stream activation is claimed.
+
+Shared decoder execution: parent58623 passed4 existing backend tests,1real-model
+check ignored; parent34928 passed11 llama tests including sized token-byte retry.
+Independent source review found no correctness blocker in UTF8/stop withholding,
+collector migration or failure/cancellation retirement. Overlap/reversed stop
+ordering and model-backed E2E remain unverified; no installed acceptance claimed.
+
+Shared indexed tool assembly execution: parent6825 passed3 SSE tests after
+4m17s build; independent review found no behavior regression. Transport retains
+wire conversion, shared owner merges full IDs/names and argument fragments,
+existing response owner validates final JSON. Neither publishing private text nor
+executing incomplete tools is added; native prepared admission remains closed.
+
+Typed internal prepared decoding: parent72277 passed5 backend tests with1
+real-GGUF prerequisite ignored; independent source review no blocker. Actual
+EOGtoken/stop/length terminal causes retained; final parsing failures stay failed,
+private reasoning and tool fragments stay typed, legacy collector refuses them.
+Public adapter remains closed and stop-hidden required delimiters remain a
+declared strict-failure limitation. No installed/native model proof.
+
+Native delimiter execution receipt: parent29005 llama --lib -j1 completed11/11PASS (2m05s build/.59s test); includes strict observed-closer/tool rejection cases in existing parser test. No model/audio use. Parent25779 now sole continuum-core backend library filter -j1, pending. Retention PR1525 and native changes remain distinct; vendor dirty source has no published reachable pin.
+Delimiter validation: llama11/11PASS; corrected backend-module16956 executes5PASS/1realmodelignored. Initial25779 selectedzero: compilation only, not a test receipt. No native model/media consumer delivery proven.

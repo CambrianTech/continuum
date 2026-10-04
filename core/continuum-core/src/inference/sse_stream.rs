@@ -4,6 +4,7 @@
 //! Carved out of `openai_adapter::generate_stream` (pure code-motion, 2026-09-03, the S3b
 //! decompose) together with the wire types it parses. Behaviour-identical.
 
+use crate::inference::tool_stream::{accumulate_tool_call, StreamToolAccum};
 use std::time::Instant;
 
 use serde::Deserialize;
@@ -218,37 +219,10 @@ pub(crate) struct OpenAIStreamFunction {
     pub(crate) arguments: Option<String>,
 }
 
-/// A tool call assembled across many streamed `delta.tool_calls` fragments. The
-/// model emits the id + name once and then the JSON `arguments` arrive token by
-/// token; we accumulate by `index` until the stream ends.
-#[derive(Default)]
-pub(crate) struct StreamToolAccum {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) arguments: String,
-}
-
-/// Fold one streamed tool-call fragment into the per-index accumulator.
-pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) {
-    let idx = tc.index.unwrap_or(0);
-    if acc.len() <= idx {
-        acc.resize_with(idx + 1, StreamToolAccum::default);
-    }
-    let slot = &mut acc[idx];
-    if let Some(id) = tc.id {
-        if !id.is_empty() {
-            slot.id = id;
-        }
-    }
-    if let Some(f) = tc.function {
-        if let Some(n) = f.name {
-            if !n.is_empty() {
-                slot.name = n;
-            }
-        }
-        if let Some(a) = f.arguments {
-            slot.arguments.push_str(&a);
-        }
+impl From<OpenAIStreamToolCall> for crate::inference::tool_stream::ToolCallDelta {
+    fn from(call: OpenAIStreamToolCall) -> Self {
+        let (name, arguments) = call.function.map(|f| (f.name, f.arguments)).unwrap_or_default();
+        Self { index: call.index.unwrap_or(0), id: call.id, name, arguments }
     }
 }
 
@@ -836,7 +810,7 @@ pub(crate) async fn consume_sse_stream(
                         if let Some(tcs) = delta.tool_calls {
                             if native_media && !tcs.is_empty() { return Err("Combined native audio/tool stream is not implemented".into()); }
                             for tc in tcs {
-                                accumulate_stream_tool_call(&mut acc_tools, tc);
+                                accumulate_tool_call(&mut acc_tools, tc.into());
                                 last_progress = Instant::now();
                             }
                         }
@@ -868,6 +842,42 @@ pub(crate) async fn consume_sse_stream(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    // what this catches: shared assembly must preserve interleaved identities,
+    // full-name updates and incomplete argument bytes across provider deltas.
+    #[test]
+    fn indexed_tool_assembly_preserves_wire_and_native_delta_semantics() {
+        use crate::inference::tool_stream::ToolCallDelta;
+        let mut calls = Vec::new();
+        let wire: OpenAIStreamToolCall = serde_json::from_value(serde_json::json!({
+            "id": "first", "function": { "name": "read", "arguments": "{\"path\":" }
+        })).unwrap();
+        accumulate_tool_call(&mut calls, wire.into());
+        accumulate_tool_call(&mut calls, ToolCallDelta {
+            index: 1, id: Some("second".into()), name: Some("list".into()),
+            arguments: Some("{}".into()),
+        });
+        // Native parser name updates are full names, not suffixes; only the
+        // argument string is appended. Empty metadata preserves prior identity.
+        accumulate_tool_call(&mut calls, ToolCallDelta {
+            index: 0, id: Some(String::new()), name: Some("read_file".into()),
+            arguments: Some("\"src/lib.rs\"}".into()),
+        });
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "first");
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&calls[0].arguments).unwrap(),
+            serde_json::json!({"path": "src/lib.rs"}));
+        assert_eq!(calls[1].id, "second");
+        assert_eq!(calls[1].arguments, "{}");
+        accumulate_tool_call(&mut calls, ToolCallDelta {
+            index: 2, id: None, name: None, arguments: Some("{\"unfinished\":".into()),
+        });
+        assert!(serde_json::from_str::<serde_json::Value>(&calls[2].arguments).is_err());
+        // Assembly never fabricates missing JSON or a tool identity.
+        assert!(calls[2].id.is_empty());
+        assert!(calls[2].name.is_empty());
+    }
 
     // what this catches (card 115f9a14; the IntelMac, 2026-09-28 05:07Z): a turn at 96% prefill
     // failed at the 90 s idle bound while slot 4 prefilled for the whole window. A lane that did

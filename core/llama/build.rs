@@ -206,6 +206,21 @@ fn main() {
         msvc_cache::record(&out, &identity).expect("cannot record MSVC native cache identity");
     }
 
+    // The C ABI shim owns common-chat's C++ state; it must precede its static
+    // common/llama dependencies in link order. cc follows Cargo's target CRT.
+    println!("cargo:rerun-if-changed=src/prepared_chat.cpp");
+    println!("cargo:rerun-if-changed=src/prepared_chat.h");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .flag_if_supported("/EHsc")
+        .include(submodule.join("include"))
+        .include(submodule.join("ggml/include"))
+        .include(submodule.join("common"))
+        .include(submodule.join("vendor"))
+        .file(manifest_dir.join("src/prepared_chat.cpp"))
+        .compile("continuum-prepared-chat");
+
     // Link the static libraries cmake produced. cmake's MULTI-config generators
     // (Visual Studio / windows-msvc) nest libs under a per-config subdir as
     // `<name>.lib`, unlike the single-config Makefile/Ninja layout on Unix
@@ -333,6 +348,12 @@ fn main() {
         link_static("ggml-vulkan", true);
     }
 
+    // ggml-cpu queries Windows processor registry metadata. Standalone llama
+    // consumers need this too; do not rely on a downstream app to link it.
+    if target_os == "windows" {
+        println!("cargo:rustc-link-lib=advapi32");
+    }
+
     // C++ stdlib + OpenMP (llama.cpp CPU backend uses GOMP_parallel on Linux).
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=c++");
@@ -375,6 +396,7 @@ fn main() {
     let mtmd_helper_header = submodule.join("tools").join("mtmd").join("mtmd-helper.h");
     let mut builder = bindgen::Builder::default()
         .header(llama_header.to_str().unwrap())
+        .header(manifest_dir.join("src/prepared_chat.h").to_str().unwrap())
         .header(mtmd_header.to_str().unwrap())
         .header(mtmd_helper_header.to_str().unwrap())
         .clang_arg(format!(
@@ -386,6 +408,8 @@ fn main() {
             "-I{}",
             submodule.join("tools").join("mtmd").display()
         ))
+        .allowlist_function("continuum_chat_.*")
+        .allowlist_type("continuum_chat_.*")
         .allowlist_function("llama_.*")
         .allowlist_function("ggml_.*")
         .allowlist_function("mtmd_.*")

@@ -746,7 +746,19 @@ impl AircInferenceTransport for AircLiveTransport {
                             }
                         }
                     }
-                    Some(Err(lag)) => return Err(RemoteInferenceError::Transport { message: format!("Inference stream continuity lost: {lag}") }),
+                    Some(Err(lag)) => {
+                        // This subscription includes every room, so shared-bus
+                        // lag does not prove that THIS request lost a chunk.
+                        // Keep its expected sequence unchanged: the next chunk
+                        // (including the required terminal marker) proves exact
+                        // continuity or fails before reaching the consumer. If
+                        // no next chunk arrives, the idle/deadline owner retires
+                        // the request; a settled reply alone cannot succeed.
+                        crate::probe!(class = "remote_lane.shared_bus_lag",
+                            peer = %target.0, correlation = %stream_id,
+                            skipped = lag.skipped, expected_sequence = streamed,
+                            "shared bus lagged; awaiting request sequence continuity");
+                    },
                     None => return Err(RemoteInferenceError::Transport { message: "Inference stream ended without terminal marker".into() }),
                 },
                 _ = idle => {

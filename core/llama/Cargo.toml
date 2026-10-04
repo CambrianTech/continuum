@@ -11,11 +11,13 @@ name = "bench"
 path = "src/bin/bench.rs"
 
 [dependencies]
-# Nothing yet — FFI + safe wrapper is self-contained
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [build-dependencies]
 cmake = "0.1"
 bindgen = "0.70"
+cc = "1"
 
 [features]
 default = []

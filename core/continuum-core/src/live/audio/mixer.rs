@@ -288,6 +288,18 @@ impl ParticipantStream {
         }
     }
 
+    fn retire_completed_native_playback(&mut self) {
+        if self.ai_ring_available == 0 && self.native_owner.as_ref().is_some_and(
+            |owner| owner.load(std::sync::atomic::Ordering::Acquire) == 2,
+        ) {
+            // Preserve the frame just pulled: clearing playback would discard
+            // the final frame before the mixer consumes it.
+            self.native_pcm = None;
+            self.native_owner = None;
+            self.ai_generation = None;
+        }
+    }
+
     pub fn push_native_pcm(&mut self, generation: uuid::Uuid, packet: &crate::ai::stream_sinks::MediaChunk) -> Result<(), String> {
         self.apply_native_cancellation();
         if self.ai_generation != Some(generation) { return Err("Native audio belongs to an inactive generation".into()); }
@@ -312,6 +324,7 @@ impl ParticipantStream {
                 return Err("Native playback owner cancelled during completion".into());
             }
         }
+        self.retire_completed_native_playback();
         result
     }
 
@@ -491,6 +504,8 @@ impl ParticipantStream {
                 return &[];
             }
         }
+
+        self.retire_completed_native_playback();
 
         // Return current frame
         if self.frame_len == 0 {
@@ -830,6 +845,26 @@ mod tests {
         drop(lease); // aborted consumer: no async cleanup task required
         assert!(stream.get_audio().is_empty());
         assert!(stream.push_native_pcm(cancelled, &packet).is_err());
+
+        // what this catches: successful playback retains ownership until its
+        // tail drains, then admits later speech without a stale lease flushing it.
+        let completed = uuid::Uuid::new_v4();
+        let lease = stream.begin_native_pcm(completed, mime).unwrap();
+        stream.push_native_pcm(completed, &packet).unwrap();
+        stream.finish_native_pcm(completed).unwrap();
+        assert!(stream.try_push_ai_audio(vec![9; 10]).is_err());
+        let frames = stream.ai_ring_available.div_ceil(super::FRAME_SIZE);
+        for _ in 0..frames {
+            assert_eq!(stream.get_audio().len(), super::FRAME_SIZE);
+        }
+        assert!(stream.get_audio().is_empty());
+        assert_eq!(stream.ai_generation, None);
+        assert!(stream.native_pcm.is_none());
+        assert!(stream.native_owner.is_none());
+        stream.try_push_ai_audio(vec![9; 10]).unwrap();
+        drop(lease);
+        assert!(!stream.cancel_ai_generation(completed));
+        assert_eq!(stream.get_audio()[0], 9);
     }
 
     // what this catches: interruption silences queued speech, rejects delayed
