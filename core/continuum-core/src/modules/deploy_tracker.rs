@@ -220,8 +220,16 @@ impl DeploySource for GitGhDeploySource {
                 return Err(format!("git rev-parse origin/{branch} {}", tip_out.outcome()));
             };
             // Check-state via gh (gh manages its own rate-limiting). gh unreachable → Unknown → wait.
+            // Both reads ask gh for ONLY the fields `parse_tip_checks` uses: the raw bodies
+            // (31 KB and 90 KB on a canary tip, growing with every check) overran the 64 KB
+            // probe capture, the runs body arrived cut in half, and #4706's exclusion never
+            // applied: every node waited on the 44-73 min core-binaries legs.
             let path = format!("repos/{repo}/commits/{tip}/check-runs?per_page=100");
-            let gh_out = probe("gh", &["api", &path], GH_TIMEOUT);
+            let gh_out = probe(
+                "gh",
+                &["api", &path, "--jq", "{check_runs: [.check_runs[] | {name, status, conclusion, check_suite: {id: .check_suite.id}}]}"],
+                GH_TIMEOUT,
+            );
             let Some(check_runs) = gh_out.stdout_if_ok() else {
                 return Ok(Some((tip, Checks::Unknown))); // gh unreachable = Unknown = wait, never a deploy on a guess
             };
@@ -229,7 +237,11 @@ impl DeploySource for GitGhDeploySource {
             // without them a scheduled audit's failure reads as the tip's own (#4243). A
             // failed read here degrades to the all-checks rule inside `parse_tip_checks`.
             let runs_path = format!("repos/{repo}/actions/runs?head_sha={tip}&per_page=100");
-            let runs_out = probe("gh", &["api", &runs_path], GH_TIMEOUT);
+            let runs_out = probe(
+                "gh",
+                &["api", &runs_path, "--jq", "{workflow_runs: [.workflow_runs[] | {event, path, check_suite_id}]}"],
+                GH_TIMEOUT,
+            );
             let read = parse_tip_checks(check_runs, runs_out.stdout_if_ok());
             if read.excluded > 0 || !read.filtered {
                 crate::probe!(
