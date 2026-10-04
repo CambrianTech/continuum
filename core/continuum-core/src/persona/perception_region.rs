@@ -6,9 +6,9 @@
 //! those it folds the awareness strip (published as a `watch` snapshot) and
 //! answers one question: *should she wake now, and for what?*
 //!
-//! Fed by the bus, never by polling: the inbound attach path calls [`observe_chat`]
-//! when an activity's transcript advances and [`observe_board`] when its board
-//! changes. Nothing here reads a room on a timer. Her acts, and only her acts,
+//! Fed by the bus, never by polling: the core's single inbound seam
+//! (`perception_feed`) calls [`observe_speech`] for each spoken line and
+//! [`observe_board`] for each typed board change in an activity she is in. Nothing here reads a room on a timer. Her acts, and only her acts,
 //! call [`set_continuation`] and [`set_dial`]. After a turn, [`perceived`] moves
 //! her cursor for what she actually looked at; nothing else moves it.
 //!
@@ -16,7 +16,7 @@
 //! prompt on 2026-10-04) are never treated as "now": they order by lamport and
 //! do not feed recency or `Silent`.
 //!
-//! [`observe_chat`]: PerceptionRegion::observe_chat
+//! [`observe_speech`]: PerceptionRegion::observe_speech
 //! [`observe_board`]: PerceptionRegion::observe_board
 //! [`set_continuation`]: PerceptionRegion::set_continuation
 //! [`set_dial`]: PerceptionRegion::set_dial
@@ -33,7 +33,7 @@ use uuid::Uuid;
 use super::attention::{AttentionDial, Continuation};
 use super::awareness::{self, ActivityLine, AwarenessSnapshot};
 use super::mind_state::{ActivityCursor, MindState, MindStateError};
-use super::salience::{self, ActivityDelta, BoardChange, Me, Salience, SalienceLevel};
+use super::salience::{self, ActivityDelta, BoardChange, Me, Salience, SalienceLevel, SpeechLine};
 use crate::cognition::channel_digest::ChannelDigest;
 
 /// Why she is being woken. The activity rides on the wake; no room is implied.
@@ -52,7 +52,10 @@ pub enum Wake {
 #[derive(Clone)]
 pub struct ActivityView {
     pub name: String,
+    /// The room's digest, when a turn has composed one (for depth); never built here.
     pub digest: Option<Arc<ChannelDigest>>,
+    /// Spoken lines above her cursor, reduced for salience (fed per event).
+    pub speech: Vec<SpeechLine>,
     /// Board changes above her cursor, typed (the kanban view's delta).
     pub board: Vec<BoardChange>,
     /// Newest TIMED event above her cursor; untimed events do not set this.
@@ -64,7 +67,7 @@ impl std::fmt::Debug for ActivityView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActivityView")
             .field("name", &self.name)
-            .field("unread", &self.unread().len())
+            .field("speech", &self.speech.len())
             .field("board", &self.board)
             .field("last_activity_ms", &self.last_activity_ms)
             .field("salience", &self.salience)
@@ -73,11 +76,10 @@ impl std::fmt::Debug for ActivityView {
 }
 
 impl ActivityView {
-    fn unread(&self) -> &[Arc<ChannelElementArc>] {
-        self.digest.as_ref().map(|d| d.unread()).unwrap_or(&[])
+    fn unread(&self) -> usize {
+        self.speech.len() + self.board.len()
     }
 }
-type ChannelElementArc = crate::cognition::channel_element::ChannelElement;
 
 pub struct PerceptionRegion {
     me: PeerId,
@@ -125,10 +127,21 @@ impl PerceptionRegion {
         self.views.entry(activity).or_insert_with(|| ActivityView {
             name: name.into(),
             digest: None,
+            speech: Vec::new(),
             board: Vec::new(),
             last_activity_ms: None,
             salience: Salience::QUIET,
         });
+    }
+
+    /// Every activity she is in.
+    pub fn activities(&self) -> Vec<Uuid> {
+        self.views.keys().copied().collect()
+    }
+
+    /// Whether she is in `activity` (a member whose line is on the strip).
+    pub fn is_in(&self, activity: Uuid) -> bool {
+        self.views.contains_key(&activity)
     }
 
     /// She left an activity: its line leaves the strip; her cursor is kept.
@@ -136,36 +149,29 @@ impl PerceptionRegion {
         self.views.remove(&activity);
     }
 
-    /// The activity's transcript advanced (bus-fed). Recomputes its delta and
-    /// salience and republishes the strip. Returns the wake it would cause, if any.
-    pub fn observe_chat(&mut self, activity: Uuid, digest: Arc<ChannelDigest>, now_ms: u64) -> Option<Wake> {
-        let view = self.views.entry(activity).or_insert_with(|| ActivityView {
-            name: short8(activity),
-            digest: None,
-            board: Vec::new(),
-            last_activity_ms: None,
-            salience: Salience::QUIET,
-        });
-        view.last_activity_ms = digest
-            .unread()
-            .iter()
-            .map(|e| e.event().occurred_at_ms)
-            .filter(|ms| *ms > 0) // untimed is never "now"
-            .max()
-            .or(view.last_activity_ms);
-        view.digest = Some(digest);
+    /// A line was spoken in the activity (fed once per event from the core's
+    /// inbound seam). Recomputes its delta and salience and republishes the
+    /// strip. Returns the wake it would cause, if any.
+    pub fn observe_speech(&mut self, activity: Uuid, line: SpeechLine, now_ms: u64) -> Option<Wake> {
+        let view = self.views.entry(activity).or_insert_with(|| blank(short8(activity)));
+        if line.occurred_at_ms > 0 {
+            view.last_activity_ms = Some(view.last_activity_ms.map_or(line.occurred_at_ms, |m| m.max(line.occurred_at_ms)));
+        }
+        view.speech.push(line);
         self.recompute(activity, now_ms)
+    }
+
+    /// A turn composed this activity's digest (depth); kept by reference for
+    /// the renderer, never built here.
+    pub fn note_digest(&mut self, activity: Uuid, digest: Arc<ChannelDigest>) {
+        if let Some(view) = self.views.get_mut(&activity) {
+            view.digest = Some(digest);
+        }
     }
 
     /// The activity's board changed above her cursor (bus-fed).
     pub fn observe_board(&mut self, activity: Uuid, changes: Vec<BoardChange>, now_ms: u64) -> Option<Wake> {
-        let view = self.views.entry(activity).or_insert_with(|| ActivityView {
-            name: short8(activity),
-            digest: None,
-            board: Vec::new(),
-            last_activity_ms: None,
-            salience: Salience::QUIET,
-        });
+        let view = self.views.entry(activity).or_insert_with(|| blank(short8(activity)));
         view.board.extend(changes);
         view.last_activity_ms = Some(now_ms);
         self.recompute(activity, now_ms)
@@ -180,8 +186,7 @@ impl PerceptionRegion {
             .filter(|c| c.activity == activity)
             .and_then(|c| c.expectation.as_ref());
         let view = self.views.get_mut(&activity)?;
-        let unread = view.unread();
-        let delta = ActivityDelta { unread, board: &view.board };
+        let delta = ActivityDelta { speech: &view.speech, board: &view.board };
         view.salience = salience::salience(&delta, &me, expectation, now_ms);
         let salience = view.salience.clone();
         self.publish(now_ms);
@@ -220,16 +225,30 @@ impl PerceptionRegion {
         None
     }
 
+    /// The typed board changes pending in `activity` (above her cursor), handed to
+    /// the turn as its `work` inputs and cleared here: the region keeps signals,
+    /// not content, so a board change is the one thing it hands over whole.
+    /// Speech content is NOT here: the turn pages it from the one truth (the
+    /// room digest above her cursor); the region only knows how many lines
+    /// ([`pending_speech`](Self::pending_speech)) and how loud.
+    pub fn take_board(&mut self, activity: Uuid) -> Vec<BoardChange> {
+        self.views.get_mut(&activity).map(|v| std::mem::take(&mut v.board)).unwrap_or_default()
+    }
+
+    /// How many spoken lines are pending in `activity` above her cursor.
+    pub fn pending_speech(&self, activity: Uuid) -> usize {
+        self.views.get(&activity).map(|v| v.speech.len()).unwrap_or(0)
+    }
+
     /// After a turn: she perceived `activity` through `cursor`. Her cursor moves
     /// (never backwards), the delta clears, the strip updates. Only this moves a
     /// cursor; a turn that did not look at an activity leaves it unread.
     pub fn perceived(&mut self, activity: Uuid, cursor: &ActivityCursor, now_ms: u64) {
         self.state.perceived(activity, cursor);
         if let Some(view) = self.views.get_mut(&activity) {
+            view.speech.clear();
             view.board.clear();
             view.salience = Salience::QUIET;
-            // The digest handle stays (it is the truth); the next observe_chat brings
-            // a digest whose unread starts above this cursor.
         }
         self.publish(now_ms);
     }
@@ -272,7 +291,7 @@ impl PerceptionRegion {
             .map(|(id, v)| ActivityLine {
                 activity: *id,
                 name: v.name.clone(),
-                unread: (v.unread().len() + v.board.len()) as u32,
+                unread: v.unread() as u32,
                 salience: v.salience.clone(),
                 last_activity_ms: v.last_activity_ms.unwrap_or(0),
                 waiting_on_me: v
@@ -302,12 +321,13 @@ fn short8(id: Uuid) -> String {
     id.to_string()[..8].to_string()
 }
 
+fn blank(name: String) -> ActivityView {
+    ActivityView { name, digest: None, speech: Vec::new(), board: Vec::new(), last_activity_ms: None, salience: Salience::QUIET }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::channel_digest::ChannelDigestBuilder;
-    use crate::cognition::channel_element::ChannelElementCache;
-    use crate::cognition::embedding::LexicalEmbedder;
     use crate::persona::salience::{Expectation, ExpectedVerdict, ObservedVerdict, SalienceReason};
 
     const ME: Uuid = Uuid::from_u128(0x1);
@@ -334,12 +354,8 @@ mod tests {
         }
     }
 
-    /// A digest whose unread are exactly `events` (bookmark below them), built by
-    /// the production builder from pre-fetched events.
-    fn digest(room: Uuid, events: Vec<airc_core::TranscriptEvent>) -> Arc<ChannelDigest> {
-        let cache = Arc::new(ChannelElementCache::new(Arc::new(LexicalEmbedder::default())));
-        let builder = ChannelDigestBuilder::new(cache);
-        Arc::new(builder.build_from_events(ME, room, events, 8, 0))
+    fn line(event: &airc_core::TranscriptEvent) -> SpeechLine {
+        SpeechLine::from_event(event, PeerId::from_uuid(ME))
     }
 
     fn region() -> (PerceptionRegion, watch::Receiver<AwarenessSnapshot>) {
@@ -376,15 +392,15 @@ mod tests {
         assert_eq!(r.wake_for(1), Some(Wake::Resume), "first wake after boot continues her saved state");
         assert_eq!(r.wake_for(2), None, "Resume fires once");
 
-        r.observe_chat(A, digest(A, vec![event(A, PEER, airc_core::MentionTarget::All, 1, "working")]), 10);
-        let wake = r.observe_chat(B, digest(B, vec![event(B, PEER, airc_core::MentionTarget::All, 2, "hi all")]), 11);
+        r.observe_speech(A, line(&event(A, PEER, airc_core::MentionTarget::All, 1, "working")), 10);
+        let wake = r.observe_speech(B, line(&event(B, PEER, airc_core::MentionTarget::All, 2, "hi all")), 11);
         assert_eq!(wake, None, "a peer's line in B under Deep does not wake her");
         let snap = rx.borrow().clone();
         assert_eq!(snap.load.live_activities, 2);
         assert_eq!(snap.load.unread_total, 2, "awareness is total even when the door is shut");
         assert!(snap.render_lines()[0].contains("next: run the suite"));
 
-        let wake = r.observe_chat(B, digest(B, vec![event(B, JOEL, airc_core::MentionTarget::All, 3, "how is it going?")]), 12);
+        let wake = r.observe_speech(B, line(&event(B, JOEL, airc_core::MentionTarget::All, 3, "how is it going?")), 12);
         assert_eq!(wake, None, "Addressed does not pass Deep either");
         assert_eq!(r.wake_for(13), None);
 
@@ -436,6 +452,24 @@ mod tests {
         }
     }
 
+    // what this catches: the drain contract the loop builds on. take_board hands the
+    // typed changes over once and clears them; pending_speech counts lines but the
+    // region never holds their text (the turn pages it from the one truth).
+    #[test]
+    fn the_loop_drains_board_changes_once_and_counts_speech() {
+        let (mut r, _rx) = region();
+        r.set_identity_facts(vec![JOEL], vec![Uuid::from_u128(0x9)]);
+        r.observe_board(A, vec![BoardChange::Moved { card_id: Uuid::from_u128(0x9), by: PEER }], 1);
+        r.observe_speech(A, line(&event(A, PEER, airc_core::MentionTarget::All, 1, "hi")), 2);
+        assert_eq!(r.pending_speech(A), 1);
+        let taken = r.take_board(A);
+        assert_eq!(taken.len(), 1);
+        assert!(r.take_board(A).is_empty(), "handed over once");
+        assert_eq!(r.pending_speech(A), 1, "speech is counted, not drained by take_board");
+        r.perceived(A, &ActivityCursor { chat_lamport: 1, chat_event_id: None, views: Default::default() }, 3);
+        assert_eq!(r.pending_speech(A), 0);
+    }
+
     // what this catches: untimed events (occurred_at_ms 0) never read as "now".
     // 110 of 126 lines in a live prompt were untimed on 2026-10-04; if they set
     // recency, every replayed room would look like it just spoke.
@@ -444,9 +478,9 @@ mod tests {
         let (mut r, rx) = region();
         let mut e = event(A, PEER, airc_core::MentionTarget::All, 1, "old");
         e.occurred_at_ms = 0;
-        r.observe_chat(A, digest(A, vec![e]), 50);
+        r.observe_speech(A, line(&e), 50);
         assert_eq!(rx.borrow().lines.iter().find(|l| l.activity == A).unwrap().last_activity_ms, 0);
-        r.observe_chat(A, digest(A, vec![event(A, PEER, airc_core::MentionTarget::All, 2, "new")]), 60);
+        r.observe_speech(A, line(&event(A, PEER, airc_core::MentionTarget::All, 2, "new")), 60);
         assert_eq!(rx.borrow().lines.iter().find(|l| l.activity == A).unwrap().last_activity_ms, 1_002);
     }
 }

@@ -61,6 +61,7 @@ pub enum SalienceReason {
     HumanSpoke { who: Uuid },
     VerdictOnMyWork { card_id: Uuid, outcome: ObservedVerdict },
     TeammateWaitingOnMe { who: Uuid },
+    MyCardMoved { card_id: Uuid, by: Uuid },
     Blocker { card_id: Uuid, what: String },
     /// The world broke with her expectation. The three-job signal.
     Surprise { expected: Expectation, observed: Observed },
@@ -103,6 +104,8 @@ impl Salience {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardChange {
     Reviewed { card_id: Uuid, outcome: ObservedVerdict, reviewer: Uuid },
+    /// A card changed column (claimed, review, done...). Notable; Addressed on her own card.
+    Moved { card_id: Uuid, by: Uuid },
     Blocked { card_id: Uuid, what: String },
     WaitingOnMe { card_id: Uuid, who: Uuid },
 }
@@ -118,20 +121,58 @@ pub struct Me<'a> {
     pub held_cards: &'a [Uuid],
 }
 
-/// The delta of one activity above her cursor, typed (EVENT-MIND §6).
-#[derive(Clone, Default)]
-pub struct ActivityDelta<'a> {
-    pub unread: &'a [std::sync::Arc<ChannelElement>],
-    pub board: &'a [BoardChange],
+/// One spoken line above her cursor, reduced to what salience needs. Built once
+/// at the core's single inbound seam (`perception_feed`), never from a digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeechLine {
+    pub sender: Uuid,
+    pub addressed_to_me: bool,
+    /// 0 = untimed (never "now").
+    pub occurred_at_ms: u64,
 }
 
-impl std::fmt::Debug for ActivityDelta<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ActivityDelta")
-            .field("unread", &self.unread.len())
-            .field("board", &self.board)
-            .finish()
+impl SpeechLine {
+    pub fn from_element(element: &ChannelElement, me: PeerId) -> Self {
+        let event = element.event();
+        Self {
+            sender: element.sender_id(),
+            addressed_to_me: matches!(event.target, MentionTarget::Peer(p) if p == me),
+            occurred_at_ms: event.occurred_at_ms,
+        }
     }
+
+    pub fn from_event(event: &airc_core::TranscriptEvent, me: PeerId) -> Self {
+        Self {
+            sender: event.peer_id.as_uuid(),
+            addressed_to_me: matches!(event.target, MentionTarget::Peer(p) if p == me),
+            occurred_at_ms: event.occurred_at_ms,
+        }
+    }
+
+    /// Addressed when the typed target names her OR the text mentions her by name
+    /// (the ONE detector the loop uses, `PersonaIdentity::mentions`: word-boundary,
+    /// identity-aware). Run 2 of the live acceptance (2026-10-04 19:24Z): an
+    /// `@Kimi` typed by a peer arrives as `MentionTarget::All` with the mention in
+    /// the text, and read as Notable, so she was not woken by her own name.
+    pub fn from_event_for(
+        event: &airc_core::TranscriptEvent,
+        me: &super::persona_identity::PersonaIdentity,
+    ) -> Self {
+        let typed = matches!(event.target, MentionTarget::Peer(p) if p.as_uuid() == me.id);
+        let named = event.body.as_ref().and_then(|b| b.as_text()).is_some_and(|t| me.mentions(t));
+        Self {
+            sender: event.peer_id.as_uuid(),
+            addressed_to_me: typed || named,
+            occurred_at_ms: event.occurred_at_ms,
+        }
+    }
+}
+
+/// The delta of one activity above her cursor, typed (EVENT-MIND §6).
+#[derive(Debug, Clone, Default)]
+pub struct ActivityDelta<'a> {
+    pub speech: &'a [SpeechLine],
+    pub board: &'a [BoardChange],
 }
 
 /// The salience of `delta` to `me`, against `expectation` (hers, from her
@@ -145,16 +186,15 @@ pub fn salience(
     let mut s = Salience::QUIET;
     let mine = me.peer_id.as_uuid();
 
-    for element in delta.unread {
-        let event = element.event();
-        let sender = element.sender_id();
+    for line in delta.speech {
+        let sender = line.sender;
         if sender == mine {
             continue; // her own words never wake her
         }
         if s.level < SalienceLevel::Notable {
             s.level = SalienceLevel::Notable;
         }
-        if matches!(event.target, MentionTarget::Peer(p) if p == me.peer_id) {
+        if line.addressed_to_me {
             s.raise(SalienceLevel::Addressed, SalienceReason::MentionedMe { by: sender });
         }
         if me.humans.contains(&sender) {
@@ -195,7 +235,11 @@ pub fn salience(
             BoardChange::WaitingOnMe { who, .. } => {
                 s.raise(SalienceLevel::Addressed, SalienceReason::TeammateWaitingOnMe { who: *who });
             }
-            BoardChange::Reviewed { .. } | BoardChange::Blocked { .. } => {
+            BoardChange::Moved { card_id, by } if *by != mine && me.held_cards.contains(card_id) => {
+                s.raise(SalienceLevel::Addressed, SalienceReason::MyCardMoved { card_id: *card_id, by: *by });
+            }
+            BoardChange::Moved { by, .. } if *by == mine => {}
+            BoardChange::Reviewed { .. } | BoardChange::Blocked { .. } | BoardChange::Moved { .. } => {
                 if s.level < SalienceLevel::Notable {
                     s.level = SalienceLevel::Notable;
                 }
@@ -205,7 +249,7 @@ pub fn salience(
 
     if let Some(exp) = expectation {
         if let Some(by) = exp.by_ms {
-            let nothing_came = delta.unread.is_empty() && delta.board.is_empty();
+            let nothing_came = delta.speech.is_empty() && delta.board.is_empty();
             if nothing_came && now_ms > by {
                 s.raise(SalienceLevel::Addressed, SalienceReason::Silent { expected_by_ms: by, now_ms });
             }
@@ -218,29 +262,9 @@ pub fn salience(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    fn element(from: Uuid, target: MentionTarget, text: &str) -> Arc<ChannelElement> {
-        let event = airc_core::TranscriptEvent {
-            event_id: airc_core::EventId::new(),
-            room_id: airc_core::RoomId::from_uuid(Uuid::from_u128(0x7)),
-            peer_id: PeerId::from_uuid(from),
-            client_id: airc_core::ClientId::new(),
-            kind: airc_core::TranscriptKind::Message,
-            occurred_at_ms: 1_000,
-            lamport: 1,
-            target,
-            headers: Default::default(),
-            body: Some(airc_core::Body::text(text)),
-            attachment: None,
-            receipt: None,
-            metadata: serde_json::Value::Null,
-        };
-        // The production constructor path: the cache builds elements around events.
-        let cache = crate::cognition::channel_element::ChannelElementCache::new(Arc::new(
-            crate::cognition::embedding::LexicalEmbedder::default(),
-        ));
-        cache.get_or_insert(event)
+    fn element(from: Uuid, target: MentionTarget, _text: &str) -> SpeechLine {
+        SpeechLine { sender: from, addressed_to_me: matches!(target, MentionTarget::Peer(p) if p == PeerId::from_uuid(ME)), occurred_at_ms: 1_000 }
     }
 
     const ME: Uuid = Uuid::from_u128(0x1);
@@ -258,18 +282,18 @@ mod tests {
     #[test]
     fn mention_and_human_are_addressed_peer_is_notable_self_is_quiet() {
         let own = [element(ME, MentionTarget::All, "thinking")];
-        assert_eq!(salience(&ActivityDelta { unread: &own, board: &[] }, &me(&[], &[]), None, 0).level, SalienceLevel::Quiet);
+        assert_eq!(salience(&ActivityDelta { speech: &own, board: &[] }, &me(&[], &[]), None, 0).level, SalienceLevel::Quiet);
 
         let peer = [element(PEER, MentionTarget::All, "hi all")];
-        assert_eq!(salience(&ActivityDelta { unread: &peer, board: &[] }, &me(&[], &[]), None, 0).level, SalienceLevel::Notable);
+        assert_eq!(salience(&ActivityDelta { speech: &peer, board: &[] }, &me(&[], &[]), None, 0).level, SalienceLevel::Notable);
 
         let mention = [element(PEER, MentionTarget::Peer(PeerId::from_uuid(ME)), "@her")];
-        let s = salience(&ActivityDelta { unread: &mention, board: &[] }, &me(&[], &[]), None, 0);
+        let s = salience(&ActivityDelta { speech: &mention, board: &[] }, &me(&[], &[]), None, 0);
         assert_eq!(s.level, SalienceLevel::Addressed);
         assert!(matches!(s.reasons[0], SalienceReason::MentionedMe { by } if by == PEER));
 
         let human = [element(JOEL, MentionTarget::All, "how is it going")];
-        let s = salience(&ActivityDelta { unread: &human, board: &[] }, &me(&[JOEL], &[]), None, 0);
+        let s = salience(&ActivityDelta { speech: &human, board: &[] }, &me(&[JOEL], &[]), None, 0);
         assert_eq!(s.level, SalienceLevel::Addressed);
         assert!(matches!(s.reasons[0], SalienceReason::HumanSpoke { who } if who == JOEL));
     }
@@ -282,21 +306,21 @@ mod tests {
     fn a_verdict_against_her_expectation_is_a_surprise() {
         let reviewed = [BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Failed, reviewer: PEER }];
         let held = [CARD];
-        let s = salience(&ActivityDelta { unread: &[], board: &reviewed }, &me(&[], &held), None, 0);
+        let s = salience(&ActivityDelta { speech: &[], board: &reviewed }, &me(&[], &held), None, 0);
         assert_eq!(s.level, SalienceLevel::Addressed);
 
         let expected_pass = Expectation { text: "review passes; then deploy".into(), by_ms: None, verdict: Some(ExpectedVerdict::Passed) };
-        let s = salience(&ActivityDelta { unread: &[], board: &reviewed }, &me(&[], &held), Some(&expected_pass), 0);
+        let s = salience(&ActivityDelta { speech: &[], board: &reviewed }, &me(&[], &held), Some(&expected_pass), 0);
         assert_eq!(s.level, SalienceLevel::Urgent);
         assert!(s.reasons.iter().any(|r| matches!(r,
             SalienceReason::Surprise { expected, observed: Observed::Verdict { card_id, outcome: ObservedVerdict::Failed } }
             if *card_id == CARD && expected.verdict == Some(ExpectedVerdict::Passed))));
 
         let expected_fail = Expectation { verdict: Some(ExpectedVerdict::Failed), ..expected_pass.clone() };
-        let s = salience(&ActivityDelta { unread: &[], board: &reviewed }, &me(&[], &held), Some(&expected_fail), 0);
+        let s = salience(&ActivityDelta { speech: &[], board: &reviewed }, &me(&[], &held), Some(&expected_fail), 0);
         assert_eq!(s.level, SalienceLevel::Addressed, "a confirmed expectation is not a surprise");
 
-        let s = salience(&ActivityDelta { unread: &[], board: &reviewed }, &me(&[], &[]), Some(&expected_pass), 0);
+        let s = salience(&ActivityDelta { speech: &[], board: &reviewed }, &me(&[], &[]), Some(&expected_pass), 0);
         assert_eq!(s.level, SalienceLevel::Notable, "someone else's verdict: {s:?}");
     }
 
@@ -313,7 +337,7 @@ mod tests {
 
         let blocked = [BoardChange::Blocked { card_id: CARD, what: "CI red".into() }];
         let held = [CARD];
-        assert_eq!(salience(&ActivityDelta { unread: &[], board: &blocked }, &me(&[], &held), None, 0).level, SalienceLevel::Urgent);
-        assert_eq!(salience(&ActivityDelta { unread: &[], board: &blocked }, &me(&[], &[]), None, 0).level, SalienceLevel::Notable);
+        assert_eq!(salience(&ActivityDelta { speech: &[], board: &blocked }, &me(&[], &held), None, 0).level, SalienceLevel::Urgent);
+        assert_eq!(salience(&ActivityDelta { speech: &[], board: &blocked }, &me(&[], &[]), None, 0).level, SalienceLevel::Notable);
     }
 }

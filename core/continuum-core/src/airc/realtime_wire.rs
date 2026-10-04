@@ -179,6 +179,50 @@ pub struct RoomTurn {
     pub media: Vec<crate::persona::channel_items::MediaItemRequest>,
 }
 
+/// A typed work fact in the room, as perception (EVENT-MIND.md §1b, phase 1
+/// wiring). Measured live 2026-10-04 on the 5090: a typed `work_submission_reviewed`
+/// (a PASS on her own card) replicated to her node and her inbound dropped it as
+/// `non_chat_schema`, 519 of 520 events; only chat was perception. A citizen who
+/// cannot perceive her own board cannot be woken by it. The decoder now yields the
+/// board's typed events beside speech; `persona::salience` judges them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RoomWork {
+    Reviewed { card_id: uuid::Uuid, outcome: crate::persona::salience::ObservedVerdict, reviewer: uuid::Uuid },
+    StateChanged { card_id: uuid::Uuid, state: airc_work::CardState, by: uuid::Uuid },
+    Submitted { card_id: uuid::Uuid, publisher: uuid::Uuid },
+    Claimed { card_id: uuid::Uuid, owner: uuid::Uuid },
+    /// A work event the mind does not yet render; counted, never dropped silently.
+    Other { kind: String },
+}
+
+/// Decode a typed work event from the room, if the event is one. `Ok(None)` = not a
+/// work event (the chat path applies). Headers decide; the body is decoded once.
+pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>, &'static str> {
+    // The same gate the codec applies, on the public header: a work event carries the
+    // forge work body hint and its kind header. Anything else is the chat path.
+    let kind = match event.headers.get(airc_work::HEADER_FORGE_WORK_EVENT_KIND) {
+        Some(kind) => kind.clone(),
+        None => return Ok(None),
+    };
+    let work = airc_work::decode_work_event(&event.headers, event.body.as_ref()).map_err(|_| "work_event_decode_error")?;
+    use airc_work::WorkEvent as W;
+    Ok(Some(match &work {
+        W::WorkSubmissionReviewed(r) => RoomWork::Reviewed {
+            card_id: r.card_id.as_uuid(),
+            outcome: match r.outcome {
+                airc_work::WorkReviewOutcome::Passed => crate::persona::salience::ObservedVerdict::Passed,
+                airc_work::WorkReviewOutcome::Failed => crate::persona::salience::ObservedVerdict::Failed,
+                airc_work::WorkReviewOutcome::Unknown => crate::persona::salience::ObservedVerdict::Unknown,
+            },
+            reviewer: r.reviewer.as_uuid(),
+        },
+        W::CardStateChanged(c) => RoomWork::StateChanged { card_id: c.card_id.as_uuid(), state: c.state, by: c.changed_by.as_uuid() },
+        W::WorkSubmitted(s) => RoomWork::Submitted { card_id: s.card_id.as_uuid(), publisher: s.publisher.as_uuid() },
+        W::CardClaimed(c) => RoomWork::Claimed { card_id: c.card_id.as_uuid(), owner: c.owner.as_uuid() },
+        _ => RoomWork::Other { kind },
+    }))
+}
+
 pub fn room_turn_from_event(event: &TranscriptEvent) -> Result<(uuid::Uuid, String), &'static str> {
     let turn = room_content_from_event(event)?;
     Ok((turn.sender, render_room_content(&turn.text, &turn.media)))
@@ -198,6 +242,32 @@ pub(crate) fn render_room_content(text: &str, media: &[crate::persona::channel_i
     }
     rendered.push(']');
     rendered
+}
+
+/// Render a typed work fact for her prompt: a labelled BOARD FACT, never the actor's
+/// words. Short ids because that is how the board renders them; the typed event
+/// retains the full ids for her hands.
+pub fn render_room_work(work: &RoomWork, actor: uuid::Uuid) -> String {
+    let short = |id: uuid::Uuid| id.to_string()[..8].to_string();
+    match work {
+        RoomWork::Reviewed { card_id, outcome, reviewer } => format!(
+            "[board fact] review on card {}: {:?} (reviewer {})",
+            short(*card_id), outcome, short(*reviewer)
+        ),
+        RoomWork::StateChanged { card_id, state, by } => format!(
+            "[board fact] card {} moved to {:?} (by {})",
+            short(*card_id), state, short(*by)
+        ),
+        RoomWork::Submitted { card_id, publisher } => format!(
+            "[board fact] submission published on card {} (by {})",
+            short(*card_id), short(*publisher)
+        ),
+        RoomWork::Claimed { card_id, owner } => format!(
+            "[board fact] card {} claimed (by {})",
+            short(*card_id), short(*owner)
+        ),
+        RoomWork::Other { kind } => format!("[board fact] {kind} (by {})", short(actor)),
+    }
 }
 
 pub fn room_content_from_event(event: &TranscriptEvent) -> Result<RoomTurn, &'static str> {

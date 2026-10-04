@@ -636,6 +636,7 @@ mod tests {
         let persona = Uuid::new_v4();
         let room = crate::identity::ActivityRoom::mint();
         let update = Arc::new(IncomingMessage {
+            work: None,
             media: Vec::new(),
             event_id: Uuid::new_v4(),
             lamport: 2,

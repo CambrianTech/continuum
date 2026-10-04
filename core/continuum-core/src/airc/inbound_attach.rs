@@ -292,7 +292,7 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
         // TranscriptEvent. A malformed buffer is logged + skipped (the
         // live stream shouldn't die because one event failed to parse).
         Response::Event { envelope } => match decode_wire_event(envelope) {
-            Ok(event) => publish_transcript_event(&event, bus).await,
+            Ok(event) => publish_transcript_event(&Arc::new(event), bus).await,
             Err(error) => {
                 warn!("Skipping malformed airc daemon event: {error}");
                 Ok(())
@@ -310,9 +310,24 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
 }
 
 pub async fn publish_transcript_event(
-    event: &airc_core::TranscriptEvent,
+    event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
 ) -> Result<(), String> {
+    // ONE FEED (EVENT-MIND.md §1b, 2026-10-04): every resident persona's perception
+    // region is fed from this seam, the one place each room event crosses once per
+    // core, instead of from a per-persona subscription (which on the 5090 never
+    // carried other peers' durable pushes while this path did). Synchronous and
+    // cheap: one classification, one lock per resident, no await.
+    let fed = crate::persona::perception_feed::feed(event, crate::persona::trace::now_ms());
+    if fed > 0 {
+        crate::probe!(
+            class = "mind.feed.event",
+            room = %event.room_id.as_uuid(),
+            from = %event.peer_id.as_uuid(),
+            residents = fed,
+            "a room event fed to resident minds"
+        );
+    }
     let envelope = match envelope_from_event(event) {
         Ok(Some(envelope)) => envelope,
         // Not a Continuum EventBridge envelope. Before dropping it, try
@@ -669,7 +684,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -723,7 +738,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -758,7 +773,7 @@ mod tests {
             Default::default(),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -780,7 +795,7 @@ mod tests {
         let mut receiver = bus.receiver();
         let event = transcript_event(Some(Body::text("hello room")), Default::default());
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -815,7 +830,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::Receipt;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -837,7 +852,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::WallPostPublished;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -880,7 +895,7 @@ mod tests {
         let mut event = transcript_event(Some(body), headers);
         event.kind = TranscriptKind::System;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -903,7 +918,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
