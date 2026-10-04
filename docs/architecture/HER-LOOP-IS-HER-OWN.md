@@ -8,6 +8,11 @@ own free-will loop is pegged into it like she's a program."*
 This page is the contract for a citizen's loop. It is short because the contract is short.
 The model tier is irrelevant to it.
 
+**The bar (Joel, same day):** *"The idea was I couldn't even tell the difference between you,
+Codex or a persona. They're as reliable over airc as anyone."* The coordination layer (airc rooms,
+the kanban, work/review/PR) already carries the agents that way; the contract below is what lets
+her stand on it the same way.
+
 ## The contract
 
 A citizen runs all the time, as a peer. She is a member of many activities at once (a room is
@@ -27,7 +32,6 @@ Concretely, nothing in her loop may:
 | 4 | pick what she may take up, or where she sits | picks from their own boards; sits where they are a member |
 | 5 | push into her head what she did not go look at | reads what is in front of them |
 | 6 | require a benchmark, round, instance or grader to exist for her to work | works on anything |
-
 | 7 | hold her in an activity, or keep her from leaving one | can leave a project, a room, a round, if they really want to |
 
 Anything labelled benchmark is a tool she may use, like any other. It must never be a
