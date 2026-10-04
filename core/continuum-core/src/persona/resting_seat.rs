@@ -16,14 +16,12 @@
 //! forgets it), a trained gene for her (the speech-discipline bucket), or the
 //! operator's word (`persona/instances/wake`).
 //!
-//! A LANE-BOUND rest is the exception to the deploy rule (Joel, 2026-09-20: "23 minds …
-//! the nursery is over-saturated" — the active roster is bounded by the warm slots, the
-//! rest dormant). She was fine; the LANES were short, and a deploy changes nothing about
-//! that — before this, every deploy woke the whole roster and the next hour paged it
-//! again. A `lane_bound` record survives a build change; the lane-bound WAKE
-//! (`citizen_health::lane_bound_wakes`) and the operator's word are its returns. Her durable self is untouched —
-//! the page-out flushes her working memory first (the lake and the rabbits: her
-//! checkpoint, not a bullet) and the next bootstrap resumes her as herself.
+//! Every record is forgotten by a different build: a deploy is a change, and the next
+//! bootstrap resumes her as herself (the page-out flushed her working memory first: the
+//! lake and the rabbits, her checkpoint, not a bullet). Until 2026-10-04 a `lane_bound`
+//! record outlived a deploy; that rest rested seats for deferred CARD PULLS, and the pull
+//! is gone (HER-LOOP-IS-HER-OWN.md row A), so the exception went with it: the next deploy
+//! returns every seat it had rested.
 //!
 //! Consulted at ONE seam family, the same as the hold: the spawner's population
 //! draw ([`crate::persona::spawner_module::seats_under`] and `draw_intents`), so a
@@ -41,16 +39,6 @@ pub struct RestingSeat {
     pub since_ms: u64,
     /// The build that paged her out. A different build is a change: she comes back.
     pub build: String,
-}
-
-/// The reason prefix every lane-bound rest carries — a routing shortfall that pages a
-/// roster must say THIS, never "mindless", so the record explains the empty seats, and
-/// so the record is known to outlive a deploy (see the module doc).
-pub const LANE_BOUND_REASON: &str = "lane_bound";
-
-/// A record that outlives a deploy: the lanes decided it, not the build.
-pub fn survives_a_build_change(seat: &RestingSeat) -> bool {
-    seat.reason.starts_with(LANE_BOUND_REASON)
 }
 
 /// The running core's build — the "change" a resting seat waits for.
@@ -91,7 +79,7 @@ pub fn resting_at(path: &Path, build: &str) -> Vec<RestingSeat> {
         return Vec::new();
     };
     match serde_json::from_str::<Vec<RestingSeat>>(&raw) {
-        Ok(seats) => seats.into_iter().filter(|s| s.build == build || survives_a_build_change(s)).collect(),
+        Ok(seats) => seats.into_iter().filter(|s| s.build == build).collect(),
         Err(e) => {
             tracing::warn!(
                 probe_class = "persona.resting.unreadable",
@@ -233,8 +221,9 @@ mod tests {
     }
 
     // what this catches: a rested seat stays rested under the SAME build, comes back
-    // on a DIFFERENT build (a deploy is the change), comes back on the operator's word,
-    // and a corrupt file never keeps anyone out.
+    // on a DIFFERENT build (a deploy is the change: no record outlives one, since
+    // 2026-10-04), comes back on the operator's word, and a corrupt file never keeps
+    // anyone out.
     #[test]
     fn a_seat_rests_until_a_change_and_never_past_a_corrupt_file() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -243,16 +232,6 @@ mod tests {
         rest_at(&p, seat("Sigurd", "aaaa")).expect("idempotent by name");
         assert_eq!(resting_at(&p, "aaaa").len(), 1);
         assert!(resting_at(&p, "bbbb").is_empty(), "a new build forgets the rest");
-        // A LANE-BOUND rest outlives the build: the lanes decided it, not the gates.
-        let mut aris = seat("Aris", "aaaa");
-        aris.reason = format!("{LANE_BOUND_REASON}: 16 minds on 2 lanes, 424 of 430 pulls deferred");
-        rest_at(&p, aris).expect("rest");
-        let under_new_build: Vec<String> = resting_at(&p, "bbbb").into_iter().map(|s| s.agent_name).collect();
-        assert_eq!(under_new_build, ["Aris"], "the lane-bound seat stays rested across a deploy; the recital does not");
-        // …and the operator's word (or the lane-bound wake) is still its return.
-        assert!(wake_at(&p, "aris"), "a lane-bound seat wakes on the word under any build");
-        assert!(resting_at(&p, "bbbb").is_empty());
-        assert!(!wake_at(&p, "Nobody"));
         // waking reads under the CURRENT build; write the record under it to test the word
         let cur = current_build();
         rest_at(&p, seat("Paige", cur)).expect("rest");
