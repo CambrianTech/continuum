@@ -46,12 +46,11 @@ pub struct AwarenessSnapshot {
     pub at_ms: u64,
 }
 
-/// ~ tokens one strip line costs when rendered (measured shape: name + counts + a
-/// reason word ≈ 18). Errs high, like the other renderers.
-const LINE_TOKENS: u32 = 18;
-
 /// Fold the lines into a snapshot. Ordering: salience level desc, then recency
-/// desc; `load.context_share` is against `turn_budget_tokens` at the dial's depth.
+/// desc; `load.context_share` is the MEASURED cost of the lines she would see at
+/// the dial's depth (the rendered text, at the crate's chars-per-token estimate)
+/// against `turn_budget_tokens`; never a constant, so it scales with the served
+/// window like every other budget in cognition.
 pub fn fold(
     mut lines: Vec<ActivityLine>,
     continuation: Option<Continuation>,
@@ -65,17 +64,24 @@ pub fn fold(
             .cmp(&a.salience.level)
             .then(b.last_activity_ms.cmp(&a.last_activity_ms))
     });
-    let shown = lines.len().min(dial.strip_lines()) as u32;
-    let load = Load {
-        live_activities: lines.len() as u32,
-        unread_total: lines.iter().map(|l| l.unread).sum(),
+    let mut snapshot = AwarenessSnapshot {
+        lines,
+        continuation,
+        dial,
+        load: Load { live_activities: 0, unread_total: 0, context_share: 0.0 },
+        at_ms,
+    };
+    let rendered_chars: usize = snapshot.render_lines().iter().map(|l| l.chars().count()).sum();
+    snapshot.load = Load {
+        live_activities: snapshot.lines.len() as u32,
+        unread_total: snapshot.lines.iter().map(|l| l.unread).sum(),
         context_share: if turn_budget_tokens == 0 {
             0.0
         } else {
-            (shown * LINE_TOKENS) as f32 / turn_budget_tokens as f32
+            (rendered_chars / crate::cognition::deliberation_budget::GUARD_CHARS_PER_TOKEN) as f32 / turn_budget_tokens as f32
         },
     };
-    AwarenessSnapshot { lines, continuation, dial, load, at_ms }
+    snapshot
 }
 
 impl AwarenessSnapshot {
@@ -163,7 +169,7 @@ mod tests {
         assert_eq!(deep.visible().len(), 3);
         assert_eq!(deep.load.live_activities, 5);
         assert_eq!(deep.load.unread_total, 8);
-        assert!((deep.load.context_share - 54.0 / 1_000.0).abs() < 1e-6);
+        assert!(deep.load.context_share > 0.0 && deep.load.context_share < 0.2, "{}", deep.load.context_share);
         assert_eq!(deep.loudest().map(|l| l.name.as_str()), Some("urgent"));
 
         let broad = fold(lines, None, AttentionDial::broad(), 1_000, 10);
