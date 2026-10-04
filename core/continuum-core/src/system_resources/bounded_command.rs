@@ -60,6 +60,12 @@ pub enum Probed {
     /// not on PATH. Distinct from `TimedOut` because it means something
     /// completely different about the host.
     Unstartable { error: String },
+    /// The child exited successfully but wrote more than [`CAPTURE_LIMIT`] bytes, so its
+    /// answer is incomplete. Never handed back as the answer: half a JSON body parses as
+    /// nothing, and the caller then reads "no data" where the data was simply too long.
+    /// That is how the deploy tracker counted every check for days: a 90 KB runs body cut
+    /// at 64 KB, reported "ok", parsed as absent (2026-10-04).
+    Truncated,
 }
 
 impl Probed {
@@ -70,6 +76,7 @@ impl Probed {
             Probed::Exited { success: false, .. } => "absent",
             Probed::TimedOut => "timed_out",
             Probed::Unstartable { .. } => "unstartable",
+            Probed::Truncated => "truncated",
         }
     }
 
@@ -301,6 +308,7 @@ impl Drop for CaptureFile {
 /// "never answered", and "was never there".
 pub fn probe(program: &str, args: &[&str], timeout: Duration) -> Probed {
     match capture(program, args, timeout) {
+        Captured::Exited { truncated: true, code: Some(0), .. } => Probed::Truncated,
         Captured::Exited { code, stdout, .. } => Probed::Exited { stdout, success: code == Some(0) },
         Captured::TimedOut => Probed::TimedOut,
         Captured::Unstartable { error } => Probed::Unstartable { error },
@@ -414,6 +422,13 @@ mod tests {
             }
             other => panic!("large output must not read as {other:?}"),
         }
+        // regression for the deploy tracker (2026-10-04): `probe` turned that same cut-off
+        // stream into an "ok" answer, so a 90 KB JSON body parsed as nothing. A truncated
+        // success is its own outcome and never the caller's answer.
+        let cut = probe("sh", &["-c", "head -c 300000 /dev/zero | tr '\\0' x"], Duration::from_secs(10));
+        assert_eq!(cut, Probed::Truncated);
+        assert_eq!(cut.outcome(), "truncated");
+        assert_eq!(cut.stdout_if_ok(), None);
         let bound = Duration::from_secs(2);
         let started = Instant::now();
         let outcome = capture("sh", &["-c", "sleep 30 & echo parent-done; echo why >&2"], bound);
