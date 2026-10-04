@@ -1206,7 +1206,17 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         // task's RunLevel; see unelevated_service). If the drop itself fails, the host
         // runs as it did before and says so: that is today's state, reported, not a
         // success claimed.
-        let elevated = unelevated_service::token_is_elevated()?;
+        // An unreadable token never stops the node: the core launches as before, and the
+        // line says the drop was not attempted (Cormac's review of #4739).
+        let elevated = match unelevated_service::token_is_elevated() {
+            Ok(elevated) => elevated,
+            Err(why) => {
+                eprintln!(
+                    "service-host: token elevation UNREADABLE ({why}); launching the core without the unelevated relaunch"
+                );
+                false
+            }
+        };
         if unelevated_service::must_relaunch(elevated, std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some()) {
             match tokio::task::spawn_blocking(unelevated_service::relaunch_unelevated).await {
                 Ok(Ok(code)) => return Ok(code),
