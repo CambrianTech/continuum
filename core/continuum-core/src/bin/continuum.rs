@@ -4110,6 +4110,13 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 return Ok(());
             }
             let attempt = async {
+                // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
+                // The CI wait below can run for hours, and without a claim nothing marks
+                // this deploy in flight: the actuator re-launches a consumer once the request
+                // looks stranded (1.5x the last deploy time), and that second consumer would
+                // check the tree out under this one and reboot alongside it. `reboot` re-takes
+                // the same claim for this pid, and its guard releases it at the handoff.
+                let _claim = DeployClaimGuard::take(&tip);
                 git_in(&repo, &["fetch", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
                 // A checkout moves gitlinks, not submodule trees. Without this the llama.cpp
@@ -4184,7 +4191,15 @@ async fn ci_core_for(repo: &Path, tip: &str) -> Option<PathBuf> {
             },
         };
         match missing {
-            MissingArtifact::Wait(why) => deploy_note(&format!("deploy-consume: {why}")),
+            MissingArtifact::Wait(why) => {
+                deploy_note(&format!("deploy-consume: {why}"));
+                // Waiting on CI is this deploy's progress. The claim's renewer judges progress
+                // by CPU, and a wait has none, so without this the claim would read Stalled
+                // after an hour; still excluding, but naming a healthy wait as a hang.
+                if let Ok(root) = continuum_root() {
+                    let _ = continuum_core::runtime::deploy_claim::renew(&root, std::process::id() as i32, now_ms(), true);
+                }
+            }
             MissingArtifact::BuildFromSource(why) => {
                 deploy_note(&format!("deploy-consume: {why}"));
                 return None;
