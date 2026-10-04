@@ -47,7 +47,17 @@ LWCR. Each refused attempt costs a full build and up to ten minutes of downtime.
 **Fix:** make the update path produce a launch launchd accepts for every user. Candidates: a Developer
 ID signed core with a stable Team ID (card 30a8b3ac slice 3), re-registering the job with elevation
 declared once at install, or a stable signed launcher that swaps only what it starts.
-**(update)** Mechanism still being confirmed from the system log (Fable).
+**(update, root cause, Fable)** Confirmed from the M5 system log at 13:54 and 15:02 on 2026-10-03: BTM pins the
+job to a lightweight code requirement for the binary it last ran. The FIRST spawn of a new ad-hoc build dies
+with `Launch Constraint Violation`; the NEXT spawn re-pins the job to whatever is in the slot and runs it.
+`wait_owned` read the first refusal as final and the rollback's own kickstart made that next spawn on the OLD
+binary, so launchd re-pinned to the old build every time.
+**(update, CLOSED)** #4694 waited for a respawn launchd never makes (the job is `KeepAlive { Crashed }` and a
+codesigning kill is not a crash); #4695 has the deploy trigger the repair spawn itself with a plain
+`launchctl kickstart` (permitted to the user; `-k` is not). Receipt, M5 2026-10-04 01:09Z: `deployed: e89da133e
+in 183 s`, the first M5 deploy to land since 2026-10-03 07:10Z; `continuum ping` e89da133e, launchd owns the
+core, 6 residents after 120 s. One refusal per deploy remains and is expected. Developer ID signing stays
+right for users (card 30a8b3ac slice 3) but is not required for updates to work.
 
 ### C4 · macOS: the update kickstarts a system-domain job without root
 The default install registers `system/com.continuum.core` (`continuum.rs:3738-3743`). Updates then run
@@ -80,9 +90,14 @@ leaves a clean stop down.
 
 - **H1 · Windows: re-running the one-liner does not update.** The bootstrap clones only when the folder
   is absent; pulling needs `-Update`, which refuses with git language.
-- **H2 · Windows: one `continuum install` can raise up to four separate admin prompts.** `-Verb RunAs`
-  for the supervisor, gsudo for release and engine registration (a new elevation session per PowerShell
-  child), and another `-Verb RunAs` for teardown. None share a cache.
+- **H2 · Windows: one `continuum install` can raise separate admin prompts.** The direct Rust `RunAs`
+  sites (`supervisor_install.rs:685` for the supervisor, `elevated_teardown.rs:225` for teardown) each
+  raise their own UAC and share no cache with the installer's gsudo session.
+  **(update, BigMama)** The PowerShell side is NOT per-child: `windows-elevation.ps1`
+  `Initialize-ElevationSession` propagates the owner PID/birth (`CAMBRIAN_INSTALL_ELEVATION`) and
+  validates ancestry, descendants borrow the session, `Clear-Elevation` does not close borrowed sessions,
+  and `windows-service.ps1` registration uses the shared `Invoke-Elevated`. The defect is the Rust
+  `RunAs` sites outside that session.
 - **H3 · macOS: the sudo prompt comes with no reason.** Before `sudo` (`launchd.rs:665-668`) the user sees
   only Rust debug output such as `NotOwned { job_pid: … }`.
 - **H4 · macOS: three competing supervisor installers under two labels.** Bash `continuum service install`
@@ -120,7 +135,7 @@ a user is away. The macOS automatic path does rely on the unelevated system-doma
 | 6 | `install-common.sh:76-118` ensure_sudo_warmed | Installer | Declared, one prompt | Keepalive for the run | No |
 | 7 | Docker Desktop vmnetd | Mac prerequisite | Outside the installer | n/a | No |
 | 8 | `install-common.ps1:140` Invoke-Elevated | Windows installer | Declared, one UAC, with a reason | gsudo, installer process | No |
-| 9 | `windows-service.ps1:524` | Release and engine registration | New session per child | Per process | No |
+| 9 | `windows-service.ps1:524` | Release and engine registration | Shared `Invoke-Elevated` session (descendants borrow) | gsudo, installer process | No |
 | 10 | `supervisor_install.rs:685` RunAs | Windows `continuum install` | Separate UAC | No | No |
 | 11 | `elevated_teardown.rs:225` RunAs | Install core teardown | Separate UAC | No | No |
 
