@@ -292,7 +292,7 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
         // TranscriptEvent. A malformed buffer is logged + skipped (the
         // live stream shouldn't die because one event failed to parse).
         Response::Event { envelope } => match decode_wire_event(envelope) {
-            Ok(event) => publish_transcript_event(&event, bus).await,
+            Ok(event) => publish_transcript_event(&Arc::new(event), bus).await,
             Err(error) => {
                 warn!("Skipping malformed airc daemon event: {error}");
                 Ok(())
@@ -310,7 +310,7 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
 }
 
 pub async fn publish_transcript_event(
-    event: &airc_core::TranscriptEvent,
+    event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
 ) -> Result<(), String> {
     // ONE FEED (EVENT-MIND.md §1b, 2026-10-04): every resident persona's perception
@@ -684,7 +684,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -738,7 +738,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -773,7 +773,7 @@ mod tests {
             Default::default(),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -795,7 +795,7 @@ mod tests {
         let mut receiver = bus.receiver();
         let event = transcript_event(Some(Body::text("hello room")), Default::default());
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -830,7 +830,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::Receipt;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -852,7 +852,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::WallPostPublished;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -895,7 +895,7 @@ mod tests {
         let mut event = transcript_event(Some(body), headers);
         event.kind = TranscriptKind::System;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -918,7 +918,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await

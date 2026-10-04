@@ -34,6 +34,10 @@ struct Resident {
     peer: PeerId,
     region: Arc<Mutex<PerceptionRegion>>,
     wake_tx: mpsc::Sender<Wake>,
+    /// Her conversation's admission pipeline (BigMama's consumer, phase 2): the
+    /// feed forwards each room event here in place of the private subscription
+    /// it replaces. `None` = region only (tests, or a mind not yet serving).
+    events_tx: Option<mpsc::Sender<Arc<TranscriptEvent>>>,
 }
 
 fn registry() -> &'static Mutex<HashMap<Uuid, Resident>> {
@@ -44,9 +48,45 @@ fn registry() -> &'static Mutex<HashMap<Uuid, Resident>> {
 /// A persona became resident on this core: her region now receives the feed.
 /// `wake_tx` is where her wakes go; a full channel drops the wake (the region's
 /// salience persists, so the next event or her idle clip re-raises it).
-pub fn register(persona: Uuid, peer: PeerId, region: Arc<Mutex<PerceptionRegion>>, wake_tx: mpsc::Sender<Wake>) {
-    registry().lock().unwrap_or_else(|p| p.into_inner()).insert(persona, Resident { peer, region, wake_tx });
+pub fn register(
+    persona: Uuid,
+    peer: PeerId,
+    region: Arc<Mutex<PerceptionRegion>>,
+    wake_tx: mpsc::Sender<Wake>,
+    events_tx: Option<mpsc::Sender<Arc<TranscriptEvent>>>,
+) {
+    attach_her_rooms(&region);
+    registry()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(persona, Resident { peer, region, wake_tx, events_tx });
     crate::probe!(class = "mind.feed.registered", persona = %persona, "her perception region is on the one feed");
+}
+
+/// Her membership changed (she joined or left a room): the region learns it and
+/// the core attaches to any new room, so a room she joined herself, a DM or a
+/// project nobody else here is in never goes silent for her (Cormac, #4731).
+pub fn refresh_membership(persona: Uuid, rooms: &[(Uuid, String)]) {
+    let residents = registry().lock().unwrap_or_else(|p| p.into_inner());
+    let Some(resident) = residents.get(&persona) else { return };
+    {
+        let mut region = resident.region.lock().unwrap_or_else(|p| p.into_inner());
+        for (id, name) in rooms {
+            region.join(*id, name.clone());
+        }
+    }
+    attach_her_rooms(&resident.region);
+}
+
+/// Under one feed a persona perceives only rooms the core has ATTACHED; the core's
+/// own adoption covers registry, bench, spawned and operator rooms, never the union
+/// of residents' memberships. So every room in her region is attached here.
+fn attach_her_rooms(region: &Arc<Mutex<PerceptionRegion>>) {
+    let Some(registry) = crate::airc::inbound_attach::AttachRegistry::try_global() else { return };
+    let rooms: Vec<Uuid> = region.lock().unwrap_or_else(|p| p.into_inner()).activities();
+    for room in rooms {
+        registry.ensure_attached(airc_core::RoomId::from_uuid(room));
+    }
 }
 
 pub fn unregister(persona: Uuid) {
@@ -82,9 +122,10 @@ pub fn classify(event: &TranscriptEvent) -> Fed {
     }
 }
 
-/// Feed one room event to every resident persona who is in that room. Returns
-/// how many regions were fed (for the seam's probe).
-pub fn feed(event: &TranscriptEvent, now_ms: u64) -> usize {
+/// Feed one room event to every resident persona who is in that room: her region
+/// (salience, the strip, a wake) and her conversation's admission pipeline (the
+/// turn input). Returns how many residents were fed (for the seam's probe).
+pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
     let fed = classify(event);
     let room = event.room_id.as_uuid();
     let mut count = 0;
@@ -114,6 +155,17 @@ pub fn feed(event: &TranscriptEvent, now_ms: u64) -> usize {
                 Fed::OtherWork(_) | Fed::NotPerception(_) => None,
             }
         };
+        if let Some(tx) = &resident.events_tx {
+            if !matches!(fed, Fed::NotPerception(_)) {
+                if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(Arc::clone(event)) {
+                    crate::probe!(
+                        class = "mind.feed.event_dropped",
+                        persona = %persona,
+                        "her admission channel is full; the one truth still holds the event for her next page"
+                    );
+                }
+            }
+        }
         if let Some(wake) = wake {
             match resident.wake_tx.try_send(wake) {
                 Ok(()) => {}
@@ -203,7 +255,7 @@ mod tests {
         let _ = region.wake_for(0); // consume Resume (fresh: none)
         let region = Arc::new(Mutex::new(region));
         let (tx, rx) = mpsc::channel(4);
-        register(KIMI, PeerId::from_uuid(KIMI), region.clone(), tx);
+        register(KIMI, PeerId::from_uuid(KIMI), region.clone(), tx, None);
         (region, rx)
     }
 
@@ -215,10 +267,10 @@ mod tests {
     #[test]
     fn the_feed_reaches_only_her_rooms_and_typed_verdicts_wake_her() {
         let (_region, mut rx) = resident(AttentionDial::default());
-        assert_eq!(feed(&speech(ROOM_B, JOEL), 10), 0, "not her room");
+        assert_eq!(feed(&Arc::new(speech(ROOM_B, JOEL)), 10), 0, "not her room");
         assert!(rx.try_recv().is_err());
 
-        assert_eq!(feed(&speech(ROOM_A, JOEL), 11), 1);
+        assert_eq!(feed(&Arc::new(speech(ROOM_A, JOEL)), 11), 1);
         match rx.try_recv() {
             Ok(Wake::Perceive { activity, salience }) => {
                 assert_eq!(activity, ROOM_A);
@@ -229,7 +281,7 @@ mod tests {
 
         let reviewer = Uuid::from_u128(0x2);
         assert_eq!(classify(&reviewed(ROOM_A, reviewer)), Fed::Board(BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Passed, reviewer }));
-        assert_eq!(feed(&reviewed(ROOM_A, reviewer), 12), 1);
+        assert_eq!(feed(&Arc::new(reviewed(ROOM_A, reviewer)), 12), 1);
         match rx.try_recv() {
             Ok(Wake::Perceive { activity, salience }) => {
                 assert_eq!(activity, ROOM_A);
@@ -238,7 +290,7 @@ mod tests {
             other => panic!("a typed verdict on her card wakes her: {other:?}"),
         }
 
-        assert_eq!(feed(&reviewed(ROOM_A, KIMI), 13), 1, "fed, but her own echo");
+        assert_eq!(feed(&Arc::new(reviewed(ROOM_A, KIMI)), 13), 1, "fed, but her own echo");
         assert!(rx.try_recv().is_err(), "her own review echo is not news");
         unregister(KIMI);
     }

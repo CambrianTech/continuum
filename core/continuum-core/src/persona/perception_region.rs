@@ -134,6 +134,11 @@ impl PerceptionRegion {
         });
     }
 
+    /// Every activity she is in.
+    pub fn activities(&self) -> Vec<Uuid> {
+        self.views.keys().copied().collect()
+    }
+
     /// Whether she is in `activity` (a member whose line is on the strip).
     pub fn is_in(&self, activity: Uuid) -> bool {
         self.views.contains_key(&activity)
@@ -218,6 +223,21 @@ impl PerceptionRegion {
             return Some(Wake::Continuation);
         }
         None
+    }
+
+    /// The typed board changes pending in `activity` (above her cursor), handed to
+    /// the turn as its `work` inputs and cleared here: the region keeps signals,
+    /// not content, so a board change is the one thing it hands over whole.
+    /// Speech content is NOT here: the turn pages it from the one truth (the
+    /// room digest above her cursor); the region only knows how many lines
+    /// ([`pending_speech`](Self::pending_speech)) and how loud.
+    pub fn take_board(&mut self, activity: Uuid) -> Vec<BoardChange> {
+        self.views.get_mut(&activity).map(|v| std::mem::take(&mut v.board)).unwrap_or_default()
+    }
+
+    /// How many spoken lines are pending in `activity` above her cursor.
+    pub fn pending_speech(&self, activity: Uuid) -> usize {
+        self.views.get(&activity).map(|v| v.speech.len()).unwrap_or(0)
     }
 
     /// After a turn: she perceived `activity` through `cursor`. Her cursor moves
@@ -430,6 +450,24 @@ mod tests {
             }
             other => panic!("a contradicted expectation is Urgent and passes Deep: {other:?}"),
         }
+    }
+
+    // what this catches: the drain contract the loop builds on. take_board hands the
+    // typed changes over once and clears them; pending_speech counts lines but the
+    // region never holds their text (the turn pages it from the one truth).
+    #[test]
+    fn the_loop_drains_board_changes_once_and_counts_speech() {
+        let (mut r, _rx) = region();
+        r.set_identity_facts(vec![JOEL], vec![Uuid::from_u128(0x9)]);
+        r.observe_board(A, vec![BoardChange::Moved { card_id: Uuid::from_u128(0x9), by: PEER }], 1);
+        r.observe_speech(A, line(&event(A, PEER, airc_core::MentionTarget::All, 1, "hi")), 2);
+        assert_eq!(r.pending_speech(A), 1);
+        let taken = r.take_board(A);
+        assert_eq!(taken.len(), 1);
+        assert!(r.take_board(A).is_empty(), "handed over once");
+        assert_eq!(r.pending_speech(A), 1, "speech is counted, not drained by take_board");
+        r.perceived(A, &ActivityCursor { chat_lamport: 1, chat_event_id: None, views: Default::default() }, 3);
+        assert_eq!(r.pending_speech(A), 0);
     }
 
     // what this catches: untimed events (occurred_at_ms 0) never read as "now".
