@@ -173,6 +173,7 @@ mod tests {
     // 2026-10-04). A held card is her focus in any non-terminal column.
     #[tokio::test]
     async fn a_held_review_card_is_her_focus_room() {
+        use super::super::airc_citizen::StubAircCitizen;
         let project_room = uuid::Uuid::new_v4();
         let mut review = card(Some(10), 10);
         review.state = airc_work::CardState::Review;
