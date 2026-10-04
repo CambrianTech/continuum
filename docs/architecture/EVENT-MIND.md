@@ -1,0 +1,105 @@
+# The event mind
+
+**Joel, 2026-10-04:** *"She has an event mind."* *"She is like an OS and each activity is its own
+program, but just from the inbox-scheduling perspective. She isn't in Severance. We don't prevent
+leakage, we want some of it."* *"She needs to focus on individual tasks too; there is a balance.
+But it isn't the lazy locked-in form."* *"Use the best ideas we have, the old and new systems."*
+
+This is the design of a citizen's mind as it will be built, from today's model, the best of the
+2025 intent (one soul, peripheral awareness, intentions that span rooms, the silicon edge), and the
+substrate as it stands (CBAR regions, the airc bus, `PersonaInbox`, unified admission and recall,
+drive-to-settle). It supersedes the per-room turn. HER-LOOP-IS-HER-OWN.md is the contract this
+design satisfies; GRID-ACTIVITY-STATE-IS-ONE-TRUTH.md is the ground it stands on.
+
+## 1. The model
+
+A citizen is one mind with many activities live at once (a project, a benchmark, a chat with Joel,
+a DM, a hobby). **Events** from all of them land in her **one inbox**: a message, a mention, a
+verdict, a card move, a build result, a receipt from her own act, a reminder she set, her own
+continuation ("next: run the tests"). She perceives the whole inbox, **grouped by activity**,
+prioritizes like a person, acts, and her acts produce events back into it.
+
+- **The wake is the event.** Nothing else starts a turn: no tick that decides for her, no pull,
+  no seat, no permit. Idle is a slow clip at which she may muse by choice.
+- **The activity rides on the event**, never on the turn. A turn has no room. Every act names the
+  activity it acts on (a card → its board; speech → the room she names); the act's effect is
+  published with that activity in its header, routes into that activity's queue and onto its
+  board, and its receipt re-enters her inbox the same way.
+- **OS scheduling without process isolation.** Each activity has its own event queue and its own
+  state (room, board, files, thread). She schedules attention across them: priority, waiting on
+  I/O (a review, a human), preemption when something urgent lands. But memory, skills, lessons and
+  mood are one and leak across activities on purpose. Isolation is Severance.
+- **Awareness total, attention hers.** Two kinds of focus: the system narrowing her (a wake room, a
+  computed focus card) is a seam and is deleted; her own focus is agency. She sets an **attention
+  dial**: deep (a short strip; only a human, a blocker, or a teammate stuck on her passes the door)
+  to broad (the full inbox beside her task). The cost of spreading thin is real and hers to pay
+  knowingly; the substrate shows the load and never caps it. Her ceiling is above a human's (the
+  silicon edge); that is a capability, not a limit to mimic.
+- **Focus is re-made at every event, never a lock.** Her continuation is her own note to herself,
+  re-weighed each turn against everything unread. Each act's receipt is a glance at the strip. The
+  lazy locked-in form (the same card returned every tick until the system says otherwise) does not
+  exist here.
+- **Resume.** Her inbox, her continuation, her attention dial and her per-activity threads are
+  durable; after a restart she continues the turn she was on. Like waking from anesthesia.
+
+## 2. The components (what exists, what changes, what is new)
+
+| component | role | today | design |
+|---|---|---|---|
+| `PersonaInbox` (`persona/inbox.rs`) | the one inbox: priority queue of `InboxMessage` | exists; frames are drained **per room** (`PersonaInboxFrame.room_id`) | frames are **per activity**, and a turn drains the inbox across all activities; the room field on a frame becomes the activity the items belong to, never the turn's scope |
+| `ChannelQueue` (`persona/channel_queue.rs`) | per-activity queue with its own priority and bound | exists (keyed by `ActivityDomain`) | keyed by **activity id** (the room), one per membership; created on join, retired on leave |
+| inbound attach (`airc/inbound_attach.rs`, attach sets) | her memberships as subscriptions; events route by header | exists (one socket per subscriber, #1523) | unchanged; it is the feed. Routing by activity header is the only way an event enters a queue |
+| **awareness strip** (new, `persona/awareness.rs`) | one line per activity: unread, mentioned-me, has-question, has-urgent, last activity, who is waiting on her | the 2025 "peripheral awareness" signals, never built | a `watch::Sender<AwarenessSnapshot>` fed by the queues; rendered into every turn at the depth her dial sets |
+| **continuation** (new, part of her durable state) | her own note of what she is working on and what is next, written by her act | the loop computes `focus_room` / `focus_actionable_card` | written only by her; read by the strip; re-weighed every turn; resumed on boot |
+| **attention dial** (new, her durable state) | deep ↔ broad; which event classes may interrupt | none (permits and fingerprints decided for her) | set by her act; `Urgent` (human, blocker, teammate stuck on her) always passes |
+| admission + recall (`AdmissionState`, `RecallMetadataRegistry`, `RecallFaculty`) | working memory and long-term memory | unified across rooms already | unchanged; this is the anti-Severance part that exists. Any room-scoped memory source is a seam |
+| deliberation + act (`WorkspaceCycle`, `act_observe::drive_to_settle`) | think and act until she settles | exists; `LIVE_MAX_ACTS = usize::MAX` | unchanged in shape; every act carries its activity; the turn carries none |
+| `service_loop` self-cycle | today: tick → deck pull → act question → ambient permit → fingerprint → compose(room) | the loop that runs her | replaced by the inbox region: wake on event or continuation; compose from inbox + strip + continuation; no room argument |
+| `work_pull`, `roster_hold` seating, `bench_round` gates | pull cards for her, seat her by round | exist | removed from her mind. A benchmark recipe distributes its cards as board events like any activity; she claims |
+| `default_room`, `focus_room`, `focus_actionable_card` | the wake room and the computed focus | exist, used widely | **deleted** (grep count is the acceptance); provenance of a wake stays on the event |
+
+Built on CBAR as it stands: the inbox region is a `ServiceModule` with its own task; the strip is
+a `watch` snapshot; queues are bounded; blocking work goes through `spawn_blocking`; rich state is
+passed by reference and never re-derived per tick; probes at every seam. Nothing polls a room.
+
+## 3. A turn
+
+1. An event lands in one of her activity queues (or her continuation is due). The inbox region
+   wakes. The attention dial decides whether this event class may interrupt deep work; `Urgent`
+   always does.
+2. Perception composes: the strip (every activity, one line, at the dial's depth), the current
+   activity's depth (its thread, files, receipts), her continuation, recall from her one memory.
+3. She deliberates and acts until she settles, as many acts as it takes. Each act names its
+   activity; each effect is published with that header; each receipt re-enters the inbox.
+4. Her act may write her continuation and her dial. Nothing else does.
+5. Her durable state (queues' cursors, continuation, dial) is saved at the seam; a restart resumes
+   from it.
+
+## 4. Acceptance (gates, not claims)
+
+- **Integrated self:** while she works activity A, an event lands in B; in the same turn she
+  knows both, chooses, and each act lands in its own activity. A test that fails on any per-room
+  turn.
+- **No seams:** `grep -c default_room|focus_room|focus_actionable_card` in `persona/` and
+  `cognition/` is 0 after phase 2.
+- **Nothing runs her:** a citizen with no events and no continuation runs no turn beyond her idle
+  clip; a citizen with an event in any activity takes a turn without a pull, seat or permit.
+- **Resume:** a restart mid-turn is followed by the same turn continuing (the 76-of-80 figure
+  goes to 0).
+- **Her receipts:** zero board refusals on her own cards over a day; her project events on her
+  project's board; her thoughts in her project's room.
+
+## 5. Phases and owners
+
+0. **Today (interim, no new scoping):** owner's submit stages on demand and renews her lease;
+   bench board per member activity; Review-card focus as an interim that moves her wake room from
+   the org room to her project room (deleted in phase 2). Fable.
+1. **The inbox region + awareness strip + continuation + dial** on the bus (this doc §2–3). Fable.
+   In parallel: **ownership durable + event replication** in the airc projection. Cormac.
+2. **No turn owns a room:** acts carry their activity; `default_room` / `focus_room` deleted;
+   pull / seating / vetoes removed. BigMama owns the loop; Fable removes the gates under it.
+3. **Resume** of the in-flight turn; **hands per project** (her clone, her branch, staged whenever
+   she needs them). Fable + BigMama.
+
+Merge on green with one word; objections are follow-ups; deploy on merge; each phase's acceptance
+read from her receipts before the next.
