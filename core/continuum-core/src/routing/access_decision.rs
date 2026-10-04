@@ -15,6 +15,11 @@
 //! - but an unknown IDENTITY is not an unknown capability (Cormac on #4532): an airc peer this
 //!   node does not know (no registered trust, no recorded decision) stays `Provisional` until a
 //!   decision is recorded, so enrolling in a room never grants a shell;
+//! - a citizen RESIDENT on this node gets `Trusted` whatever her model (Joel, 2026-10-04:
+//!   "my gut says sometimes just let them then restrict later"; Kimi "needs to do what we
+//!   do"): [`AccessPolicy::resident_trust`]. Capability no longer gates a resident's hands;
+//!   a recorded decision or a block restricts her later, through the same record. Saoirse
+//!   (1.5B, IntelMac) had been refused `code/run` and `cargo test` on every act;
 //! - a peer the operator explicitly `Blocked` stays blocked;
 //! - an unreadable policy restricts every citizen (`Provisional`) and says so, because falling
 //!   back to defaults would silently drop recorded blocks.
@@ -83,6 +88,14 @@ impl Default for AccessPolicy {
 }
 
 impl AccessPolicy {
+    /// The level a citizen RESIDENT on this node gets: `Trusted` by default, whatever her
+    /// model, unless a recorded decision or an operator block says otherwise. Let her, then
+    /// restrict later (Joel, 2026-10-04). The ONE rule the gate (`grid_trust_policy`) and
+    /// the offer path (`caller_trust`) both use, so what she is offered is what she may do.
+    pub fn resident_trust(&self, peer: Uuid) -> TrustLevel {
+        self.citizen_trust(peer, true, None, None)
+    }
+
     /// The level a citizen gets. `known` is whether her IDENTITY is known to this node (a
     /// local persona, or a peer with registered trust); an unknown identity never reaches the
     /// capability default.
@@ -219,5 +232,24 @@ mod tests {
         // an unreadable policy restricts everyone and never silently drops a recorded block
         let broken = AccessPolicy { unreadable: true, ..policy };
         assert_eq!(broken.citizen_trust(peer, true, Some(42), None), TrustLevel::Provisional);
+    }
+
+    // what this catches: card 429a3883. A resident on a weak model is not crippled: she
+    // gets Trusted by default (Saoirse, 1.5B, was refused code/run on every act), and
+    // "restrict later" is real: a recorded decision or a block still wins over the default.
+    #[test]
+    fn a_resident_gets_full_hands_by_default_and_a_decision_restricts_her_later() {
+        let peer = Uuid::new_v4();
+        let mut policy = AccessPolicy::default();
+        policy.full_access_min_rank = 45;
+        assert_eq!(policy.resident_trust(peer), TrustLevel::Trusted, "whatever her model");
+        policy.decisions.push(AccessDecision {
+            peer,
+            level: TrustLevel::Provisional,
+            reason: "restricted after misuse".into(),
+            decided_by: None,
+            decided_ms: 1,
+        });
+        assert_eq!(policy.resident_trust(peer), TrustLevel::Provisional, "restrict later");
     }
 }

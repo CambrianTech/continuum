@@ -5472,9 +5472,6 @@ fn core_hands(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
 }
 
 fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
-    let policy = crate::routing::access_decision::policy();
-    let capable = crate::routing::access_decision::local_cognitive_rank()
-        .map_or(true, |rank| rank >= policy.full_access_min_rank); // an unknown level gets more, not less
     raw.iter()
         .filter(|s| {
             let n = s.name.as_str();
@@ -5496,18 +5493,20 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // 9/16 (#4102), the night the landings stopped. A reviewer who holds a
             // review card, or a citizen reading receipts, reaches them through
             // `commands/list`; the holder's own hands are `work/get` and `work/submit`.
-            // HER HANDS FOLLOW HER COGNITIVE LEVEL (Joel, 2026-09-28: the citizens were
-            // hand-crippled; the point is a team that replaces Claude or Codex). A capable
-            // model also gets the web (search and fetch), like Claude; a model below the
-            // policy's threshold keeps the focused working set. Not every verb: a full dump
-            // blows the prompt budget and has muted personas before (persona_tools bound).
+            // HER HANDS ARE OURS (Joel, 2026-09-28: the citizens were hand-crippled; the
+            // point is a team that replaces Claude or Codex; 2026-10-04: let them, then
+            // restrict later). Every resident gets the web (search and fetch), like Claude,
+            // whatever her model, matching `resident_trust` at the gate so what she is
+            // offered is what she may do; a window too small for the full set carries
+            // `core_hands`. Not every verb: a full dump blows the prompt budget and has
+            // muted personas before (persona_tools bound).
             n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
                 || n.starts_with("cargo/")
                 || n.starts_with("tool/")
                 || n.starts_with("commands/")
-                || (capable && n.starts_with("web/"))
+                || n.starts_with("web/")
         })
         .cloned()
         .collect()
