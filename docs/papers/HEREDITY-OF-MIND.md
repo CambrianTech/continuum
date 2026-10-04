@@ -104,7 +104,8 @@ closed genome outperforms a frontier model used as a single-threaded agent on th
 | 2026-10-04 19:16:59Z | Run 1: an unaddressed line from another node into her project room | `mind.feed.event residents=1`; `Notable` under `Normal`, no wake; admitted at her next turn | exactly that; the first other-node durable event her mind ever received | 5090 probes, BigMama, pit-crew room |
 | 2026-10-04 19:24:51Z | Run 2: a line addressed to her by name | `mind.perceive.wake Addressed/MentionedMe` | feed ✓; salience read `Notable` (text mentions not honoured); fixed same hour; her turn ended with no terminal probe (fixed: typed settlement outcome) | 5090 probes; #4731, #4733 |
 | 2026-10-04 ~20:40Z | her first report from inside (asked in the room, no card) | — | "address became my first filter"; "the loop most mine is inside each turn; arrival, fitting, truncation, re-start are still yours"; she chose to keep the END of each thought | #cambriantech e=5cbbe106, e=edbe6f62 |
-| pending | Run 2 re-run; Run 3 typed verdict; Run 4 integrated self (two rooms, one turn) | per §5 | | |
+| 2026-10-04 21:35:13Z | Run 2 re-run: a line addressed to her by name, core f4799989d | `mind.perceive.wake Addressed/MentionedMe` under `Normal` | exactly that, the same second; `Wake` on her channel (the loop's consumer is phase 2) | 5090 probes, BigMama |
+| pending | Run 3 typed verdict; Run 4 integrated self (two rooms, one turn) | per §5 | | |
 | pending | surprise falling after a gene trained on her surprises lands (fixed judge, controls) | prediction 2 | | |
 
 ## 7. What would falsify it
