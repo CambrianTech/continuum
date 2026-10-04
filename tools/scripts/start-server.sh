@@ -63,6 +63,12 @@ fi
 # An explicit per-shell export still wins (deliberate one-shot against a clean
 # target); we only supply the default so the unattended path can't diverge.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
+# The build's SHA stamp follows the checkout being built (build.rs reruns when this
+# changes). Every checkout shares one target dir, and cargo's record of the stamping build
+# script names the git HEAD file of whichever checkout built LAST: a canary build in the
+# deploy checkout after a worktree build kept the worktree's SHA, and the #194 check then
+# refused three deploys of b6ddc0d0e on the 5090 (2026-10-04) as a stale binary.
+export CONTINUUM_BUILD_SOURCE="$REPO_ROOT@$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 
 # ── PREBUILT MODE (2026-09-16): the CLI's warm-build reboot hands a VERIFIED
 # artifact in CONTINUUM_PREBUILT_CORE. Everything else this script does for the

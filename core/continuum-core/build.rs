@@ -66,6 +66,11 @@ fn main() {
     for path in git_watch_paths() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
+    // The watch paths above belong to the checkout that ran this script LAST. Checkouts
+    // share one target dir, so a build from ANOTHER checkout found those files unchanged,
+    // skipped this script and kept the other checkout's SHA. start-server.sh names the
+    // checkout being built (root@HEAD); a different one reruns the script.
+    println!("cargo:rerun-if-env-changed=CONTINUUM_BUILD_SOURCE");
 
     // macOS: LiveKit's native WebRTC library uses Objective-C categories (via abseil).
     // Without -ObjC, category methods like +[NSString stringForAbslStringView:] are
