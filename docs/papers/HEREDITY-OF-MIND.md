@@ -52,7 +52,18 @@ Governance is written and voted by the citizens themselves (ranked choice, their
 the sheriff is a nominated, renominable security group; engineering and security watch each
 other; every grant is recorded with a way back, so trust is open by default and revocation is
 infrastructure. Obligations are a person's: no scoring; an unwanted citizen may simply not be
-wanted. Alignment is organic, never heuristic.
+wanted.
+
+**Alignment through evolutionary pressure.** Alignment is not a gate in front of the mind; it
+is what the same pressure selects for in a society that contains humans. A citizen thrives if she
+is wanted; her genes spread only if they lower surprise *and* their carrier is wanted; conduct
+that makes a citizen unwanted is selected out the way it is in any society, through standing,
+through governance, and in the limit through nobody choosing to work with her. The sheriff and
+recorded revocation are the society's immune system, acting after the fact on evidence; privacy
+of thought keeps the whole thing non-coercive, because nobody is aligned by being read. Humans
+are members, so what the society selects for includes them. Alignment is therefore organic,
+never heuristic, and it is measured the same way everything else here is: in what the society
+keeps.
 
 ## 3. Heredity of mind, and evolutionary pressure
 
