@@ -4125,12 +4125,23 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
                 let service = consumer_uses_service(std::env::consts::OS);
+                // Take the core CI built for this tip instead of compiling it here (card
+                // 50ca737e). `None` means CI cannot deliver for this node, said in the log,
+                // and the reboot's warm build compiles as before.
+                let prebuilt = ci_core_for(&repo, &tip).await;
+                if let Some(core) = &prebuilt {
+                    install_ci_companions(&repo, core)?;
+                }
                 deploy_note(&format!(
-                    "▶ deploy-consume: {} at {tip} — reboot{}",
+                    "▶ deploy-consume: {} at {tip} — reboot{}{}",
                     repo.display(),
-                    if service { " --service" } else { "" }
+                    if service { " --service" } else { "" },
+                    if prebuilt.is_some() { " --prebuilt (the CI build)" } else { "" }
                 ));
-                reboot(RebootOptions { service, ..Default::default() }).await
+                // A downloaded core lives in the artifact cache; launchd execs only its slot,
+                // so it is STAGED into the slot after the stop, like a warm build's artifact.
+                let stage_prebuilt = prebuilt.is_some();
+                reboot(RebootOptions { service, prebuilt, stage_prebuilt, ..Default::default() }).await
             }
             .await;
             match &attempt {
@@ -4148,6 +4159,167 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
             }
             attempt
         }
+    }
+}
+
+/// The core CI built for `tip`, downloaded, verified and extracted, for `reboot --prebuilt`
+/// (card 50ca737e). While CI is still inside its budget this WAITS, in this detached
+/// consumer, rather than returning: the actuator re-launches a consumer only after the
+/// request is stranded (1.5x the last deploy time), so a "come back later" would idle the
+/// node for hours and spend an actuation. `None` = compile here; the reason is logged.
+async fn ci_core_for(repo: &Path, tip: &str) -> Option<PathBuf> {
+    use continuum_cli_lifecycle::prebuilt_artifact::{platform_key, when_artifact_missing, MissingArtifact};
+    let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    loop {
+        tick.tick().await;
+        let missing = match platform {
+            None => when_artifact_missing(None, 0),
+            Some(p) => match fetch_ci_core(repo, tip, p).await {
+                Ok(Some(core)) => return Some(core),
+                Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, tip)),
+                Err(why) => MissingArtifact::BuildFromSource(format!(
+                    "the CI build for {tip} was refused: {why}; compiling here"
+                )),
+            },
+        };
+        match missing {
+            MissingArtifact::Wait(why) => deploy_note(&format!("deploy-consume: {why}")),
+            MissingArtifact::BuildFromSource(why) => {
+                deploy_note(&format!("deploy-consume: {why}"));
+                return None;
+            }
+        }
+    }
+}
+
+/// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
+/// published is not THE build for this node, or does not match its checksum.
+async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
+    use continuum_cli_lifecycle::prebuilt_artifact::{manifest_url, manifest_verdict, ArtifactManifest};
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let url = manifest_url(tip, platform).ok_or_else(|| format!("{tip} is not a full commit sha"))?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(1800))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("fetching {url}: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let manifest: ArtifactManifest = resp
+        .error_for_status()
+        .map_err(|e| format!("fetching {url}: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("reading {url}: {e}"))?;
+    manifest_verdict(&manifest, tip, platform, &local_core_features(repo)?)?;
+    if manifest.archive.contains(['/', '\\']) || manifest.archive.contains("..") {
+        return Err(format!("archive name `{}` is not a plain file name", manifest.archive));
+    }
+    let root = PathBuf::from(home_dir()?).join(".continuum/cache/artifacts");
+    let dir = root.join(&tip[..12]);
+    let _ = std::fs::remove_dir_all(&dir); // a half-written earlier attempt is not reused
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    // Stream to disk while hashing: the archive is ~200 MB, and the weak nodes are the ones
+    // that need this path most.
+    let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
+    let mut resp = client
+        .get(&archive_url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("fetching {archive_url}: {e}"))?;
+    let archive = dir.join(&manifest.archive);
+    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
+        hasher.update(&chunk);
+        file.write_all(&chunk).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    }
+    drop(file);
+    let digest = format!("{:x}", hasher.finalize());
+    if digest != manifest.sha256.to_ascii_lowercase() {
+        return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256));
+    }
+    let status = std::process::Command::new("tar")
+        .args(["-xzf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(&dir)
+        .status()
+        .map_err(|e| format!("tar: {e}"))?;
+    if !status.success() {
+        return Err(format!("tar could not extract {}", archive.display()));
+    }
+    let _ = std::fs::remove_file(&archive);
+    let core = dir.join(format!("continuum-core-{platform}")).join(install_cli::cli_file_name("continuum-core-server"));
+    if !core.is_file() {
+        return Err(format!("the archive has no {}", core.display()));
+    }
+    deploy_note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
+    prune_ci_cores(&root, &dir);
+    Ok(Some(core))
+}
+
+/// What the warm build did besides the core, done for a CI core: the CLI on PATH follows the
+/// core, and the engine is rebuilt only when its stamp says the vendored fork moved
+/// (`install-llama-server.sh` is a no-op otherwise).
+fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
+    let built_cli = core.with_file_name(install_cli::cli_file_name("continuum"));
+    let cli = install_cli::cli_dir(Path::new(&home_dir()?)).join(install_cli::cli_file_name("continuum"));
+    install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10))?;
+    let status = std::process::Command::new(locate_bash()?)
+        .arg(repo.join("tools/scripts/install-llama-server.sh"))
+        .current_dir(repo)
+        .status()
+        .map_err(|e| format!("install-llama-server.sh: {e}"))?;
+    if !status.success() {
+        return Err("install-llama-server.sh failed; the engine would not match the core".into());
+    }
+    Ok(())
+}
+
+/// This node's core feature set, from the ONE mapping CI also builds with.
+fn local_core_features(repo: &Path) -> Result<String, String> {
+    let out = std::process::Command::new(locate_bash()?)
+        .args(["-c", "source tools/scripts/lib/core-features.sh && select_core_features && printf %s \"$CONTINUUM_FEATURES\""])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| format!("core-features.sh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("core-features.sh failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Seconds since `tip` was committed (a merge's commit time is the time it landed).
+fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
+    let committed = git_in(repo, &["log", "-1", "--format=%ct", tip])
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0); // unwrap_or: a clock before 1970 makes every tip "new", so the consumer waits
+    committed.map(|c| now.saturating_sub(c)).unwrap_or(0) // unwrap_or: an unreadable commit time waits, it does not compile early
+}
+
+/// The writer bounds its own cache (disk_eviction: `core-artifacts`): the newest
+/// `KEEP` CI cores stay for rollback, older ones go.
+fn prune_ci_cores(root: &Path, keep_dir: &Path) {
+    const KEEP: usize = 3;
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir() && e.path() != keep_dir)
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, old) in dirs.into_iter().skip(KEEP - 1) {
+        let _ = std::fs::remove_dir_all(&old);
     }
 }
 
