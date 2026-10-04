@@ -313,6 +313,21 @@ pub async fn publish_transcript_event(
     event: &airc_core::TranscriptEvent,
     bus: &MessageBus,
 ) -> Result<(), String> {
+    // ONE FEED (EVENT-MIND.md §1b, 2026-10-04): every resident persona's perception
+    // region is fed from this seam, the one place each room event crosses once per
+    // core, instead of from a per-persona subscription (which on the 5090 never
+    // carried other peers' durable pushes while this path did). Synchronous and
+    // cheap: one classification, one lock per resident, no await.
+    let fed = crate::persona::perception_feed::feed(event, crate::persona::trace::now_ms());
+    if fed > 0 {
+        crate::probe!(
+            class = "mind.feed.event",
+            room = %event.room_id.as_uuid(),
+            from = %event.peer_id.as_uuid(),
+            residents = fed,
+            "a room event fed to resident minds"
+        );
+    }
     let envelope = match envelope_from_event(event) {
         Ok(Some(envelope)) => envelope,
         // Not a Continuum EventBridge envelope. Before dropping it, try

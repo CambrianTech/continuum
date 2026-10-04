@@ -128,6 +128,7 @@ fn reason_word(r: &super::salience::SalienceReason) -> &'static str {
         HumanSpoke { .. } => "a human spoke",
         VerdictOnMyWork { .. } => "verdict on your work",
         TeammateWaitingOnMe { .. } => "a teammate waits on you",
+        MyCardMoved { .. } => "your card moved",
         Blocker { .. } => "BLOCKER on your card",
         Surprise { .. } => "NOT what you expected",
         Silent { .. } => "no reply by the time you expected",
