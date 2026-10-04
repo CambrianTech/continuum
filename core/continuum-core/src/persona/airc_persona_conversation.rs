@@ -72,6 +72,47 @@ pub(crate) const CATCH_UP_PAGE: usize = 32;
 /// Event ids remembered per room to tell "seen" from "dropped" (bounded).
 const SEEN_RING: usize = 128;
 
+/// Her perception region and its wake channel, registered on the core's one feed.
+struct MindFeed {
+    persona: Uuid,
+    region: Arc<std::sync::Mutex<crate::persona::perception_region::PerceptionRegion>>,
+    wake_tx: tokio::sync::mpsc::Sender<crate::persona::perception_region::Wake>,
+    /// Her wakes until the loop's Wake consumer takes them (`take_wakes`).
+    wakes: Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>>,
+}
+
+impl MindFeed {
+    fn boot(persona: Uuid) -> Option<Self> {
+        let Some(home) = crate::paths::home_dir() else {
+            crate::probe!(
+                class = "mind.feed.unbooted",
+                persona = %persona,
+                "no persistent home: her perception region cannot load her durable state"
+            );
+            return None;
+        };
+        let dir = home.join(".continuum/personas").join(persona.to_string());
+        // Turn budget 0: the awareness strip's context share is unread until the
+        // loop's Wake consumer composes it, so it reports 0 rather than a guess.
+        let (region, _strip) = crate::persona::perception_region::PerceptionRegion::boot(
+            airc_core::PeerId::from_uuid(persona),
+            &dir,
+            0,
+            crate::persona::trace::now_ms(),
+        );
+        let (wake_tx, wakes) = tokio::sync::mpsc::channel(8);
+        Some(Self { persona, region: Arc::new(std::sync::Mutex::new(region)), wake_tx, wakes: Some(wakes) })
+    }
+}
+
+impl Drop for MindFeed {
+    /// A conversation that ends takes her off the feed; the registry would otherwise
+    /// keep feeding a region nobody reads.
+    fn drop(&mut self) {
+        crate::persona::perception_feed::unregister(self.persona);
+    }
+}
+
 /// Per room: the WALL-TIME floor adopted at first sight (nothing older is ever
 /// replayed) and a bounded ring of EVENT IDS actually forwarded (live or paged).
 /// Neither lamport nor "max seen" can stand in for this: a lamport is the
@@ -389,6 +430,10 @@ pub struct AircPersonaConversation {
     /// Room-turns recovered by the rejoin replay, yielded ahead of the live
     /// stream. See the epoch-reopen branch in `next_message`.
     rejoin_backlog: std::collections::VecDeque<IncomingMessage>,
+    /// Her perception region on the core's ONE feed (EVENT-MIND.md §1b), booted at
+    /// the first membership read. `None` until then, or when her durable dir cannot
+    /// be resolved (probe `mind.feed.unbooted` says so).
+    mind: Option<MindFeed>,
 }
 
 impl AircPersonaConversation {
@@ -412,7 +457,50 @@ impl AircPersonaConversation {
             initial_watermark: None,
             next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
             rejoin_backlog: std::collections::VecDeque::new(),
+            mind: None,
         }
+    }
+
+    /// Her wakes from the one feed, for the loop's Wake consumer. `None` before her
+    /// region boots or once taken.
+    pub fn take_wakes(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> {
+        self.mind.as_mut().and_then(|m| m.wakes.take())
+    }
+
+    /// Her events from the ONE feed for `rooms`. Boots her region on first use and
+    /// re-registers with a fresh sender on every membership change (the pump that
+    /// owned the previous receiver is replaced with it).
+    async fn feed_events(
+        &mut self,
+        rooms: &[Uuid],
+    ) -> Option<
+        impl futures::Stream<Item = Result<Arc<TranscriptEvent>, airc_lib::LiveLag>> + Send + 'static,
+    > {
+        use futures::StreamExt as _;
+        let persona = self.own_peer_id;
+        if self.mind.is_none() {
+            self.mind = MindFeed::boot(persona);
+        }
+        let mind = self.mind.as_ref()?;
+        let (tx, rx) = tokio::sync::mpsc::channel(INBOX_CAPACITY);
+        crate::persona::perception_feed::register(
+            persona,
+            airc_core::PeerId::from_uuid(persona),
+            Arc::clone(&mind.region),
+            mind.wake_tx.clone(),
+            Some(tx),
+        );
+        let mut named = Vec::with_capacity(rooms.len());
+        for room in rooms {
+            let name = crate::persona::airc_citizen::room_name_by_id(*room)
+                .await
+                .unwrap_or_else(|| room.to_string()); // unwrap_or: an unnamed room is perceived under its id, never dropped
+            named.push((*room, name));
+        }
+        crate::persona::perception_feed::refresh_membership(persona, &named);
+        Some(tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok))
     }
 
     /// Borrow the underlying citizen — useful for the supervisor's
@@ -446,7 +534,14 @@ impl AircPersonaConversation {
                 .subscribe_all_rooms()
                 .await
                 .map_err(|e| format!("subscribe failed: {e}"))?;
-            self.install_stream(stream);
+            // ONE FEED, phase-in: the core's single attach per room feeds her pump
+            // beside the private subscription, deduped by event id in the pump. The
+            // private subscription and its store catch-up retire together once this
+            // path is proven live (Cormac, 2026-10-04: never a window with no path).
+            match self.feed_events(&rooms).await {
+                Some(feed) => self.install_stream(futures::stream::select(stream, feed)),
+                None => self.install_stream(stream),
+            }
         } else {
             self.stop_stream();
             crate::probe!(
@@ -548,6 +643,11 @@ impl AircPersonaConversation {
                                     continue;
                                 }
                                 let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+                                // Two sources may carry one event (the one feed and,
+                                // until it retires, the private subscription): admit once.
+                                if s.was_seen(ev.room_id.as_uuid(), ev.event_id.as_uuid()) {
+                                    continue;
+                                }
                                 s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
                                 if let Ok((peer, text)) =
                                     crate::airc::realtime_wire::room_turn_from_event(ev)
@@ -1163,8 +1263,14 @@ mod tests {
 
         // A page counts examined events, not stash/admit loop iterations.
         // Fill its first N-1 positions with legitimate non-turn control traffic.
+        // Distinct events: the pump admits one event id once, so N copies of one
+        // control frame would no longer fill N positions.
         let mut page: Vec<_> = (0..CATCH_UP_PAGE - 1)
-            .map(|_| Ok(Arc::clone(&control)))
+            .map(|_| {
+                let mut distinct = (*control).clone();
+                distinct.event_id = airc_core::EventId::new();
+                Ok(Arc::new(distinct))
+            })
             .collect();
         page.push(Ok(Arc::new(event("last event in one admission page"))));
         let (drained, ready) = tokio::sync::oneshot::channel();
@@ -1177,6 +1283,22 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
         let last = conversation.next_message_inner(false, false).await.unwrap().unwrap();
         assert_eq!(last.text, "last event in one admission page");
+
+        // what this catches (5090, 2026-10-04): the one feed runs beside the private
+        // subscription until that retires, so one event can arrive on both. The pump
+        // admits it once; a second copy must not become a second turn.
+        let twice = Arc::new(event("one event, two sources"));
+        let (drained, ready) = tokio::sync::oneshot::channel();
+        conversation.install_stream(
+            futures::stream::iter([Ok(Arc::clone(&twice)), Ok(Arc::clone(&twice))]).chain(
+                futures::stream::once(async move {
+                    drained.send(()).unwrap();
+                    std::future::pending().await
+                }),
+            ),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
+        assert_eq!(conversation.inbox.as_mut().unwrap().len(), 1, "one event on two sources is admitted once");
 
         // Error frames must still reach the consumer, never disappear as noise.
         let (drained, ready) = tokio::sync::oneshot::channel();
