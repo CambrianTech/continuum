@@ -724,25 +724,6 @@ pub fn set_round_team_names(round_id: Uuid, names: Vec<String>) {
     }
 }
 
-/// The union of every WORKING citizen-driven round's named team, deduplicated, in the
-/// order first named. Empty when no working round names a team — the host then seats
-/// the roster as before.
-pub fn working_round_team_names() -> Vec<String> {
-    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
-    let mut out: Vec<String> = Vec::new();
-    for r in rounds.values() {
-        if r.stage != RoundStage::Working || r.driver != WorkDriver::Citizen {
-            continue;
-        }
-        for n in &r.team_names {
-            if !out.iter().any(|o| o.eq_ignore_ascii_case(n)) {
-                out.push(n.clone());
-            }
-        }
-    }
-    out
-}
-
 pub fn set_round_team(round_id: Uuid, team: Vec<Uuid>) {
     let mut rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner());  // poisoned lock = read the last state, same policy as every ROUNDS lock
     if let Some(r) = rounds.get_mut(&round_id) {

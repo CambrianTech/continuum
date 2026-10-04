@@ -70,16 +70,12 @@ fn now_ms() -> u64 {
 /// or corrupt file is REMOVED on read — the hold is self-cleaning, so a stale
 /// file can never quietly gate next week's boot.
 /// The hold that stands right now: the OPERATOR's (a persisted, expiring allow-list),
-/// else the union of every working citizen-driven round's named team. A round staffs
-/// itself; the operator's hold is the override, never the default. (2026-09-13: the five
-/// coders were seated by a 1440-minute hold an operator re-issued by hand after it lapsed
-/// silently and the seats went alphabetical.)
+/// or none. A benchmark round no longer decides who is resident (HER-LOOP row C, Joel
+/// 2026-10-04): a round's team seating itself is how the node's residency followed
+/// whichever test was running; a citizen is here because she lives here, and joins a
+/// round's room only if she chooses to take that test.
 pub fn active() -> Option<RosterHold> {
-    let now = now_ms();
-    if let Some(hold) = operator_hold(now) {
-        return Some(hold);
-    }
-    from_team_names(crate::cognition::bench_round::working_round_team_names(), now)
+    operator_hold(now_ms())
 }
 
 /// The operator's file as this process holds it: read from disk once, then held here
@@ -108,14 +104,14 @@ fn drop_held() {
     *OPERATOR_HELD.write() = None;
 }
 
-/// A hold derived from the working rounds' teams: stands while they do (re-derived on
-/// every read, so it never lapses on its own); empty teams = no hold.
+/// A test fixture: a non-exclusive hold naming `names` for an hour; empty = no hold.
+#[cfg(test)]
 pub fn from_team_names(names: Vec<String>, now_ms: u64) -> Option<RosterHold> {
     if names.is_empty() {
         return None;
     }
     Some(RosterHold {
-        reason: format!("the working rounds' team ({} named) seats itself", names.len()),
+        reason: format!("a named team ({} names)", names.len()),
         only: names,
         until_ms: now_ms.saturating_add(60 * 60 * 1000),
         exclusive: false,
@@ -185,13 +181,13 @@ pub fn clear() -> bool {
 mod tests {
     use super::*;
 
-    // what this catches (2026-09-13): a round's team NOT seating itself — an operator hold
-    // lapsed silently and the seats went alphabetical, three of five coders unseated.
+    // what this catches: a named hold gating by name, case-insensitively, for its hour
+    // (the fixture the host and spawner tests seat with).
     #[test]
-    fn a_working_rounds_team_is_a_hold_of_its_own() {
+    fn a_named_team_hold_gates_by_name() {
         let hold = from_team_names(vec!["Atlas".into(), "Kira".into()], 1_000).expect("a named team holds");
         assert!(hold.allows("atlas") && hold.allows("Kira"));
-        assert!(!hold.allows("Cyrus"), "not on the team = not seated while the round works");
+        assert!(!hold.allows("Cyrus"), "not named = not seated while the hold stands");
         assert!(!hold.expired(1_000 + 59 * 60 * 1000), "stands for the hour it was derived for");
         assert!(from_team_names(vec![], 1_000).is_none(), "no team named = no hold, the roster seats as before");
     }
