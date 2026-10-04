@@ -31,6 +31,7 @@ mkdir -p "$scratch/repo/tools/scripts/lib" "$scratch/repo/tools/scripts/shared" 
 cp "$script_dir/../start-server.sh" "$scratch/repo/tools/scripts/start-server.sh"
 cp "$script_dir/../lib/payload-paths.sh" "$scratch/repo/tools/scripts/lib/payload-paths.sh"
 cp "$script_dir/../lib/cuda-targets.sh" "$scratch/repo/tools/scripts/lib/cuda-targets.sh"
+cp "$script_dir/../lib/core-features.sh" "$scratch/repo/tools/scripts/lib/core-features.sh"
 # Media preparation belongs to warm build; startup must still be deferred.
 printf 'echo MEDIA_PREPARE >> "$FIXTURE_TRACE"\n' > "$scratch/repo/tools/scripts/install-livekit.sh"
 printf '# staged media helper\n' > "$scratch/repo/tools/scripts/start-livekit-windows.ps1"
