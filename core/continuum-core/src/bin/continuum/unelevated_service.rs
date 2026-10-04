@@ -18,6 +18,18 @@
 /// never relaunches again (a token that still read as elevated would otherwise loop).
 pub(crate) const UNELEVATED_MARKER: &str = "CONTINUUM_SERVICE_UNELEVATED";
 
+/// High Mandatory Level's RID; System is above it. The integrity level is what decides
+/// whether a process holds an administrator's hands, so it is what "elevated" means here.
+/// `TokenElevation` is not: measured on the 5090 (2026-10-04), a Safer NORMALUSER token
+/// derived from the elevated S4U token, Medium with Administrators deny-only, still
+/// reported `TokenIsElevated = 1`, and the relaunched host said it was elevated.
+pub(crate) const HIGH_INTEGRITY_RID: u32 = 0x3000;
+
+/// Whether a token at this integrity RID runs with an administrator's hands.
+pub(crate) fn is_elevated_rid(rid: u32) -> bool {
+    rid >= HIGH_INTEGRITY_RID
+}
+
 /// Whether this service host must relaunch itself unelevated before launching the core.
 pub(crate) fn must_relaunch(token_elevated: bool, marker_present: bool) -> bool {
     token_elevated && !marker_present
@@ -28,8 +40,8 @@ pub(crate) use os::{relaunch_unelevated, token_is_elevated};
 mod os {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
     use windows_sys::Win32::Security::{
-        GetTokenInformation, SetTokenInformation, TokenElevation, TokenIntegrityLevel, SAFER_LEVEL_HANDLE,
-        SECURITY_MAX_SID_SIZE, TOKEN_ELEVATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        GetTokenInformation, SetTokenInformation, TokenIntegrityLevel, SAFER_LEVEL_HANDLE,
+        SECURITY_MAX_SID_SIZE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
     };
     use windows_sys::Win32::Security::AppLocker::{
         SaferCloseLevel, SaferComputeTokenFromLevel, SaferCreateLevel, SAFER_LEVELID_NORMALUSER, SAFER_LEVEL_OPEN,
@@ -71,41 +83,18 @@ mod os {
         Ok(unsafe { *GetSidSubAuthority(label.Label.Sid, count - 1) })
     }
 
-    pub(super) fn token_elevated(token: HANDLE) -> Result<bool, String> {
-        elevated(token)
-    }
-
     fn last_error(what: &str) -> String {
         format!("{what} failed (Win32 error {})", unsafe { GetLastError() })
     }
 
-    /// Whether this process's own token is elevated.
+    /// Whether this process's own token is elevated: its integrity is High or above.
     pub(crate) fn token_is_elevated() -> Result<bool, String> {
         let mut token: HANDLE = std::ptr::null_mut();
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
             return Err(last_error("OpenProcessToken"));
         }
         let token = Owned(token);
-        elevated(token.0)
-    }
-
-    /// Whether `token` (borrowed, not closed) is elevated.
-    fn elevated(token: HANDLE) -> Result<bool, String> {
-        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-        let mut len = 0u32;
-        let ok = unsafe {
-            GetTokenInformation(
-                token,
-                TokenElevation,
-                (&mut elevation as *mut TOKEN_ELEVATION).cast(),
-                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-                &mut len,
-            )
-        };
-        if ok == 0 {
-            return Err(last_error("GetTokenInformation(TokenElevation)"));
-        }
-        Ok(elevation.TokenIsElevated != 0)
+        Ok(super::is_elevated_rid(integrity_rid(token.0)?))
     }
 
     /// A NORMALUSER token derived from this process's own (Administrators deny-only),
@@ -263,12 +252,22 @@ mod tests {
     #[test]
     fn the_normal_user_token_is_unelevated_at_medium_integrity() {
         let token = os::normal_user_token().expect("a NORMALUSER token can be computed from any session");
-        assert!(!os::token_elevated(token.0).expect("elevation readable"), "Administrators is deny-only");
-        assert_eq!(os::integrity_rid(token.0).expect("integrity readable"), 0x2000, "Medium Mandatory Level");
+        let rid = os::integrity_rid(token.0).expect("integrity readable");
+        assert_eq!(rid, 0x2000, "Medium Mandatory Level");
+        assert!(!is_elevated_rid(rid), "the relaunched host reads itself as unelevated");
     }
 
     // what this catches: the elevated S4U host launching the core directly (every citizen
     // shell elevated, 5090 2026-10-04), and a relaunched host relaunching again forever.
+    // what this catches (5090, 2026-10-04): "elevated" judged by TokenElevation, which
+    // stayed 1 on the Medium, Administrators-deny-only relaunched token. Integrity decides.
+    #[test]
+    fn elevation_is_the_integrity_level() {
+        assert!(!is_elevated_rid(0x2000), "Medium: a normal user's hands");
+        assert!(is_elevated_rid(0x3000), "High: an administrator's");
+        assert!(is_elevated_rid(0x4000), "System is above High");
+    }
+
     #[test]
     fn only_an_elevated_host_without_the_marker_relaunches() {
         assert!(must_relaunch(true, false), "elevated and not yet relaunched: drop privilege");
