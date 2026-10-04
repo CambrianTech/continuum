@@ -95,7 +95,10 @@ pub struct DeployRequest {
 
 impl DeployRequest {
     pub fn new(tip_sha: impl Into<String>, now_ms: u64) -> Self {
-        Self { tip_sha: tip_sha.into(), requested_ms: now_ms }
+        Self {
+            tip_sha: tip_sha.into(),
+            requested_ms: now_ms,
+        }
     }
 }
 
@@ -160,7 +163,10 @@ fn sha_eq(a: &str, b: &str) -> bool {
 pub fn decide(inp: &TickInputs) -> DeployVerdict {
     let Some(tip) = inp.tip_sha.as_deref() else {
         return DeployVerdict::SourceUnavailable {
-            why: inp.source_error.clone().unwrap_or_else(|| "source unreadable".into()),
+            why: inp
+                .source_error
+                .clone()
+                .unwrap_or_else(|| "source unreadable".into()),
         };
     };
     let Some(running) = inp.running_sha.as_deref() else {
@@ -189,7 +195,9 @@ pub fn decide(inp: &TickInputs) -> DeployVerdict {
     if inp.tree_dirty {
         return DeployVerdict::RefuseDirty;
     }
-    DeployVerdict::Deploy { tip_sha: tip.to_string() }
+    DeployVerdict::Deploy {
+        tip_sha: tip.to_string(),
+    }
 }
 
 /// What a recorded [`DeployRequest`] MEANS once the running build is known — the other
@@ -307,12 +315,21 @@ pub fn reconcile_request(
     };
     let elapsed_ms = now_ms.saturating_sub(req.requested_ms);
     if same_commit(&req.tip_sha, running_sha) {
-        return RequestOutcome::Settled { tip_sha: req.tip_sha.clone(), waited_ms: elapsed_ms };
+        return RequestOutcome::Settled {
+            tip_sha: req.tip_sha.clone(),
+            waited_ms: elapsed_ms,
+        };
     }
     if build_in_flight || elapsed_ms < STRANDED_GRACE_MS {
-        RequestOutcome::InFlight { tip_sha: req.tip_sha.clone(), elapsed_ms }
+        RequestOutcome::InFlight {
+            tip_sha: req.tip_sha.clone(),
+            elapsed_ms,
+        }
     } else {
-        RequestOutcome::Stranded { tip_sha: req.tip_sha.clone(), elapsed_ms }
+        RequestOutcome::Stranded {
+            tip_sha: req.tip_sha.clone(),
+            elapsed_ms,
+        }
     }
 }
 
@@ -359,7 +376,6 @@ pub fn index_lock_verdict(age: Option<std::time::Duration>, git_in_tree: bool) -
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,29 +401,49 @@ mod tests {
     // hold beats an in-flight build.
     #[test]
     fn the_guard_ladder_matches_the_shell_owner_in_order() {
-        assert_eq!(decide(&base()), DeployVerdict::Deploy { tip_sha: "bbbbbbbbb222".into() });
+        assert_eq!(
+            decide(&base()),
+            DeployVerdict::Deploy {
+                tip_sha: "bbbbbbbbb222".into()
+            }
+        );
         // Source down → the running build stands, never a deploy.
-        let mut i = base(); i.tip_sha = None; i.source_error = Some("fetch failed".into());
-        assert_eq!(decide(&i), DeployVerdict::SourceUnavailable { why: "fetch failed".into() });
+        let mut i = base();
+        i.tip_sha = None;
+        i.source_error = Some("fetch failed".into());
+        assert_eq!(
+            decide(&i),
+            DeployVerdict::SourceUnavailable {
+                why: "fetch failed".into()
+            }
+        );
         // Core not answering → not a deploy trigger.
-        let mut i = base(); i.running_sha = None;
+        let mut i = base();
+        i.running_sha = None;
         assert_eq!(decide(&i), DeployVerdict::CoreNotAnswering);
         // Already at the tip (short vs full SHA) → up to date.
-        let mut i = base(); i.tip_sha = Some("aaaaaaaaa111deadbeef".into());
+        let mut i = base();
+        i.tip_sha = Some("aaaaaaaaa111deadbeef".into());
         assert_eq!(decide(&i), DeployVerdict::UpToDate);
         // A red tip is refused BEFORE a dirty tree is consulted.
-        let mut i = base(); i.checks = Checks::Red; i.tree_dirty = true;
+        let mut i = base();
+        i.checks = Checks::Red;
+        i.tree_dirty = true;
         assert_eq!(decide(&i), DeployVerdict::RefuseRed);
         // Pending / unknown wait (unknown != red — gh unreachable never reads as failure).
-        let mut i = base(); i.checks = Checks::Pending;
+        let mut i = base();
+        i.checks = Checks::Pending;
         assert_eq!(decide(&i), DeployVerdict::ChecksPending);
-        let mut i = base(); i.checks = Checks::Unknown;
+        let mut i = base();
+        i.checks = Checks::Unknown;
         assert_eq!(decide(&i), DeployVerdict::ChecksUnknown);
         // A build in flight blocks (before checks).
-        let mut i = base(); i.build_in_flight = true;
+        let mut i = base();
+        i.build_in_flight = true;
         assert_eq!(decide(&i), DeployVerdict::BuildInFlight);
         // Green but dirty tree → refuse (the deploy tree is the deploy tree).
-        let mut i = base(); i.tree_dirty = true;
+        let mut i = base();
+        i.tree_dirty = true;
         assert_eq!(decide(&i), DeployVerdict::RefuseDirty);
     }
 
@@ -418,18 +454,46 @@ mod tests {
     fn a_hold_expires_and_a_stale_one_is_flagged_never_silent() {
         // A TTL-less hold holds, and once past STALE_HOLD_WARN it is flagged stale.
         let mut i = base();
-        i.hold = Some(Hold { reason: "sqlite-14".into(), created_ms: NOW, ttl_ms: None });
-        assert_eq!(decide(&i), DeployVerdict::Held { reason: "sqlite-14".into(), stale: false });
+        i.hold = Some(Hold {
+            reason: "sqlite-14".into(),
+            created_ms: NOW,
+            ttl_ms: None,
+        });
+        assert_eq!(
+            decide(&i),
+            DeployVerdict::Held {
+                reason: "sqlite-14".into(),
+                stale: false
+            }
+        );
         i.now_ms = NOW + STALE_HOLD_WARN.as_millis() as u64;
-        assert_eq!(decide(&i), DeployVerdict::Held { reason: "sqlite-14".into(), stale: true },
-            "a hold standing longer than the warn window is flagged, not skipped in silence");
+        assert_eq!(
+            decide(&i),
+            DeployVerdict::Held {
+                reason: "sqlite-14".into(),
+                stale: true
+            },
+            "a hold standing longer than the warn window is flagged, not skipped in silence"
+        );
         // A TTL'd hold expires and the deploy proceeds — the 3-day-stale-hold bug cannot recur.
         let mut i = base();
-        i.hold = Some(Hold { reason: "quiet round".into(), created_ms: NOW, ttl_ms: Some(3_600_000) });
-        assert!(matches!(decide(&i), DeployVerdict::Held { .. }), "inside its TTL the hold holds");
+        i.hold = Some(Hold {
+            reason: "quiet round".into(),
+            created_ms: NOW,
+            ttl_ms: Some(3_600_000),
+        });
+        assert!(
+            matches!(decide(&i), DeployVerdict::Held { .. }),
+            "inside its TTL the hold holds"
+        );
         i.now_ms = NOW + 3_600_001;
-        assert_eq!(decide(&i), DeployVerdict::Deploy { tip_sha: "bbbbbbbbb222".into() },
-            "past its TTL the hold is gone and tracking resumes");
+        assert_eq!(
+            decide(&i),
+            DeployVerdict::Deploy {
+                tip_sha: "bbbbbbbbb222".into()
+            },
+            "past its TTL the hold is gone and tracking resumes"
+        );
     }
 
     // what this catches: the seam struct the supervisor consumes is idempotent by tip —
@@ -462,7 +526,12 @@ mod tests {
         // and the reverse orientation, so the comparison is not accidentally one-sided
         let req_short = DeployRequest::new("c2344d758", NOW);
         assert!(matches!(
-            reconcile_request(Some(&req_short), "c2344d758225d87911d1ee2934b4e7e42673c26e", false, NOW),
+            reconcile_request(
+                Some(&req_short),
+                "c2344d758225d87911d1ee2934b4e7e42673c26e",
+                false,
+                NOW
+            ),
             RequestOutcome::Settled { .. }
         ));
     }
@@ -473,7 +542,10 @@ mod tests {
     fn an_abbreviation_too_short_to_be_unambiguous_is_not_a_match() {
         let req = DeployRequest::new("c2344d758225d87911d1ee2934b4e7e42673c26e", NOW);
         assert!(
-            !matches!(reconcile_request(Some(&req), "c2344", false, NOW), RequestOutcome::Settled { .. }),
+            !matches!(
+                reconcile_request(Some(&req), "c2344", false, NOW),
+                RequestOutcome::Settled { .. }
+            ),
             "five characters is a coincidence, not a commit"
         );
     }
@@ -487,13 +559,19 @@ mod tests {
         let req = DeployRequest::new("aaaaaaaaa111bbbb", NOW);
         assert_eq!(
             reconcile_request(Some(&req), "999999999", true, NOW + 60_000),
-            RequestOutcome::InFlight { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: 60_000 },
+            RequestOutcome::InFlight {
+                tip_sha: "aaaaaaaaa111bbbb".into(),
+                elapsed_ms: 60_000
+            },
             "a build claim is active — this is working, not broken"
         );
         let late = STRANDED_GRACE_MS + 1;
         assert_eq!(
             reconcile_request(Some(&req), "999999999", false, NOW + late),
-            RequestOutcome::Stranded { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: late },
+            RequestOutcome::Stranded {
+                tip_sha: "aaaaaaaaa111bbbb".into(),
+                elapsed_ms: late
+            },
             "past the grace with nothing building and the tip not running — it did not take"
         );
     }
@@ -514,7 +592,10 @@ mod tests {
         // The exact measured moment, replayed: one 300 s tick, no claim, old sha running.
         assert_eq!(
             reconcile_request(Some(&req), "38be2e1a9", false, NOW + 300_004),
-            RequestOutcome::InFlight { tip_sha: "aaaaaaaaa111bbbb".into(), elapsed_ms: 300_004 },
+            RequestOutcome::InFlight {
+                tip_sha: "aaaaaaaaa111bbbb".into(),
+                elapsed_ms: 300_004
+            },
             "a deploy mid-handoff has no claim and the old sha — that is not a strand"
         );
         // And the boundary is not off by one in the forgiving direction either.
@@ -576,7 +657,10 @@ mod tests {
     // tick on a node that is simply up to date.
     #[test]
     fn no_request_on_record_is_nothing_owed() {
-        assert_eq!(reconcile_request(None, "c2344d758", false, NOW), RequestOutcome::Nothing);
+        assert_eq!(
+            reconcile_request(None, "c2344d758", false, NOW),
+            RequestOutcome::Nothing
+        );
     }
 
     // what this catches (card 677437fa): a git that died mid-write left the deploy tree's
@@ -590,9 +674,25 @@ mod tests {
         let old = Some(STALE_INDEX_LOCK + Duration::from_secs(1));
         let young = Some(Duration::from_secs(5));
         assert_eq!(index_lock_verdict(None, false), IndexLock::Absent);
-        assert_eq!(index_lock_verdict(old, false), IndexLock::Stale, "abandoned: remove it");
-        assert_eq!(index_lock_verdict(old, true), IndexLock::Held, "a git that may own it: leave it");
-        assert_eq!(index_lock_verdict(young, false), IndexLock::Held, "young: a live write");
-        assert_eq!(index_lock_verdict(Some(STALE_INDEX_LOCK), false), IndexLock::Stale, "the bound itself is stale");
+        assert_eq!(
+            index_lock_verdict(old, false),
+            IndexLock::Stale,
+            "abandoned: remove it"
+        );
+        assert_eq!(
+            index_lock_verdict(old, true),
+            IndexLock::Held,
+            "a git that may own it: leave it"
+        );
+        assert_eq!(
+            index_lock_verdict(young, false),
+            IndexLock::Held,
+            "young: a live write"
+        );
+        assert_eq!(
+            index_lock_verdict(Some(STALE_INDEX_LOCK), false),
+            IndexLock::Stale,
+            "the bound itself is stale"
+        );
     }
 }
