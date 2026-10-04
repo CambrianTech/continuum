@@ -83,7 +83,7 @@ struct MindFeed {
 
 impl MindFeed {
     fn boot(persona: Uuid) -> Option<Self> {
-        let Some(home) = crate::paths::home_dir() else {
+        let Some(dir) = crate::persona::perception_feed::mind_dir(persona) else {
             crate::probe!(
                 class = "mind.feed.unbooted",
                 persona = %persona,
@@ -91,7 +91,6 @@ impl MindFeed {
             );
             return None;
         };
-        let dir = home.join(".continuum/personas").join(persona.to_string());
         // Turn budget 0: the awareness strip's context share is unread until the
         // loop's Wake consumer composes it, so it reports 0 rather than a guess.
         let (region, _strip) = crate::persona::perception_region::PerceptionRegion::boot(

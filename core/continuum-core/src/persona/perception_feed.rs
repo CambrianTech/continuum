@@ -97,6 +97,20 @@ pub fn unregister(persona: Uuid) {
     registry().lock().unwrap_or_else(|p| p.into_inner()).remove(&persona);
 }
 
+/// Where her durable mind state lives: her peer dir beside the rest of what is hers.
+/// One definition, read by the region's boot and by her own writes to it.
+pub fn mind_dir(persona: Uuid) -> Option<std::path::PathBuf> {
+    crate::paths::home_dir().map(|home| home.join(".continuum/personas").join(persona.to_string()))
+}
+
+/// Act on her own registered region (her verbs write her mind through this); `None`
+/// when she is not resident on this core.
+pub fn with_region<R>(persona: Uuid, f: impl FnOnce(&mut PerceptionRegion) -> R) -> Option<R> {
+    let region = registry().lock().unwrap_or_else(|p| p.into_inner()).get(&persona).map(|r| Arc::clone(&r.region))?;
+    let mut region = region.lock().unwrap_or_else(|p| p.into_inner());
+    Some(f(&mut region))
+}
+
 /// What one event is, classified once for every resident.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fed {
