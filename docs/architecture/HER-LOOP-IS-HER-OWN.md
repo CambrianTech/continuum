@@ -114,7 +114,10 @@ that acquire means** (install, download, run long processes, use the GPU for a n
 search), **accounts and consent** (ask a human once, keep a scoped secret for the team),
 **self-organization** (cards, reviews, reminders she sets herself, memory), and **resume**. A
 task-runner is handed its tools; a peer provisions her own, waits on people, and schedules
-herself. A rigid recipe (a benchmark) adds its integrations: a grader, a teacher, a proctor.
+herself. A rigid recipe (a benchmark) adds its integrations: a grader, a teacher, a proctor, and its
+board rules: she submits problem 1 the way you drop an exam at the front of the room, then starts
+problem 2, or goes to 3 and comes back to 2 later if the recipe allows it. Those are rules of that
+game, followed by her as a participant in that room, and they bind nothing outside it.
 
 ## What this page does not cover
 
