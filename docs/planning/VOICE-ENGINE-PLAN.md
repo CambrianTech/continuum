@@ -154,6 +154,24 @@ our forge converts it, and its size gets measured then.
 | **32 GB+** (5090; 48-128 GB unified: M Pro/Max, Strix Halo, DGX Spark) | Ornith-35B-A3B Q4 21.71 GB or 27B | ✓ | 1.5 GB | Full node: several minds and one voice lane serving all |
 | **CPU only** (IntelMac) | client-first | — | from the grid | Kokoro floor if no grid voice is reachable; never crash |
 
+**The budget on 8-16 GB is the KV cache, not the weights (Fable, #4697).** All three
+bases are hybrid models: only one layer in four is full attention and carries per-token
+KV, while the linear-attention (GatedDeltaNet) layers keep a small fixed state per slot.
+Figures from each model's config.json (2026-10-04), f16 K+V:
+
+| Base | Full-attention layers × KV heads × head dim | KV per token | 32k ctx per slot |
+|---|---|---|---|
+| Qwen3.8-27B | 16 × 4 × 256 | 64 KiB | ~2.1 GB |
+| Ornith-1.5-9B | 8 × 4 × 256 | 32 KiB | ~1.0 GB |
+| Ornith-1.5-35B-A3B | 10 × 2 × 256 | 20 KiB | ~0.66 GB |
+
+Check: the M5's 27B lane (`-c 102144 --parallel 3`, 34,048 ctx per slot) holds about
+6.2 GB of KV, not the 25 GB a dense 64×8×128 model would. q8 KV halves these. On a 12 GB
+card, Ornith-9B Q4 + vision + voice (~8.2 GB) leaves about 2.5 GB after runtime overhead:
+about 80k tokens of f16 KV, i.e. two 32k slots (or four at q8). **The governor sizes
+slots × ctx per tier from these per-token figures, and counts the resident voice lane
+against the same budget.**
+
 Gaps to close by measurement: the 0.6B talker's size and quality at Q4/Q8; real-time
 speed of the voice on 8-12 GB cards and on the 1080 Ti; KV headroom per tier at our
 context sizes.
