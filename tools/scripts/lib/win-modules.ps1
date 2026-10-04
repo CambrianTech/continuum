@@ -632,6 +632,42 @@ function Save-InstallerSmallFile {
     } finally { $client.Dispose() }
 }
 
+function Expand-InstallerNinjaArchive {
+    param([string]$Archive, [string]$Destination)
+    # Expand-Archive can spin indefinitely on this small archive under Windows
+    # PowerShell 5. Read only the expected entry through the .NET ZIP reader.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    $stage = Join-Path $Destination ('ninja.exe.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -cne 'ninja.exe') {
+            throw 'Ninja archive must contain only ninja.exe.'
+        }
+        $entry = $zip.Entries[0]
+        if ($entry.Length -lt 1 -or $entry.Length -gt 1048576) {
+            throw 'Ninja executable has an unexpected size.'
+        }
+        $inputStream = $entry.Open()
+        try {
+            $outputStream = [IO.File]::Open($stage, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try {
+                $buffer = New-Object byte[] 65536
+                $written = 0
+                while (($count = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $written += $count
+                    if ($written -gt 1048576) { throw 'Ninja executable exceeds the archive limit.' }
+                    $outputStream.Write($buffer, 0, $count)
+                }
+            } finally { $outputStream.Dispose() }
+        } finally { $inputStream.Dispose() }
+        if ($written -ne $entry.Length) { throw 'Ninja archive entry was incomplete.' }
+        [IO.File]::Move($stage, (Join-Path $Destination 'ninja.exe'))
+    } finally {
+        $zip.Dispose()
+        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Force }
+    }
+}
+
 function Invoke-AircSetup {
     param([string[]]$SetupArguments = @())
     $source = (Get-ManifestModule 'airc').source
@@ -1001,7 +1037,7 @@ function Mod-LlamaServer {
         New-Item -ItemType Directory -Force $ninjaDir | Out-Null
         $nz = Join-Path $env:TEMP 'ninja-win.zip'
         Save-InstallerSmallFile -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz
-        Expand-Archive -Path $nz -DestinationPath $ninjaDir -Force
+        Expand-InstallerNinjaArchive -Archive $nz -Destination $ninjaDir
         Remove-Item $nz -ErrorAction SilentlyContinue
     }
 
