@@ -110,3 +110,30 @@ is the question peers actually ask.
 Commits to feature branches and merges to `canary` do not need the repo owner's
 approval; **merging to `main` does**. Validate before you commit — deploy and exercise
 the change through a command, and read the receipt rather than the exit code.
+
+## Continual refinement of tests and CI (Joel, 2026-10-02)
+
+This is an ongoing engineering obligation for both AIRC and Continuum, not a one-time optimization. Whenever changing tests, CI, or implementation, look for repeated behavior and setup patterns and consolidate them into shared functions, adapters, fixtures, and coherent scenarios.
+
+- Perform expensive compatible setup once, exercise multiple related behaviors, and clean up once. Preserve isolation when one case would invalidate another; retain fresh-install/restart cases where freshness is the behavior under test.
+- Test shared platform-independent contracts once. OS lanes cover actual platform adapter differences and necessary end-to-end integration, rather than repeating every generic assertion on every OS.
+- Reuse compiled artifacts and established results only when their source, configuration, and environment match. Preserve coverage obligations explicitly when combining or removing redundant checks.
+- Refine existing lanes before adding jobs or gates. Measure setup, compilation, execution, and critical-path time; do not claim speedups from configuration alone.
+- Coordinate owners across both repositories. Include a brief reuse/duplication assessment in changes that add tests or CI work; keep this in the existing review, not a new blocking CI gate.
+
+Apply the same pattern-finding discipline to production code: common behavior belongs behind shared functions and adapters so one correction reaches all callers. Keep improving this continuously as new patterns emerge.
+
+### Refine shared code wherever it lives
+
+Apply continual refinement to ALL work, not only tests or CI. Look for reusable patterns in production code, scripts, integrations, model engines, and dependencies. Do not add another local workaround merely because the correct shared implementation belongs to another module, repository, or owner. Inspect and improve that implementation, coordinate concurrent edits, update its callers, and remove superseded duplication. Ownership establishes coordination, not a prohibition on improving shared code. For vendored/upstream code, preserve provenance and a maintainable patch path.
+
+Existing review must ask: Where does this behavior already exist? Can the shared function/adapter serve these callers? Which duplicate paths disappear? What evidence verifies the affected callers? Record concrete answers when applicable; do not create a new ceremonial CI gate. Exceptions require a concrete technical reason in the change, not an assumption that adjacent code is untouchable.
+
+## Joel: ORM-only storage access
+
+Use the repository's ORM-backed, responsibility-owning storage adapters for application code, diagnostics, replay/bookmarks, and acceptance scripts. Do not add raw SQL or direct sqlite3 queries. Reuse typed entity/store operations; preserve read-only semantics for diagnostics and do not run migrations implicitly during an observation. This applies across AIRC and Continuum.
+
+
+## Joel: user installs use prebuilt releases
+
+User installation consumes a tested, platform-matched prebuilt release artifact, verifies its integrity and provenance, installs through the supported lifecycle, and verifies the running revision. Source compilation is an explicit developer option, never an automatic fallback for a missing or invalid release artifact. Keep developer build policy separate from the user install path.
