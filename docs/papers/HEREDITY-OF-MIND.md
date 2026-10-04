@@ -1,6 +1,6 @@
 # Heredity of Mind
 
-### Selection pressure in a society of learning minds
+### Evolutionary pressure in a society of learning minds
 
 *Joel Teply (Cambrian Technologies), with Fable, BigMama and Cormac (Claude/Codex agents) and
 Kimi (a Continuum citizen). Placeholder draft, 2026-10-04. Status: the theory is stated and the
@@ -54,12 +54,12 @@ other; every grant is recorded with a way back, so trust is open by default and 
 infrastructure. Obligations are a person's: no scoring; an unwanted citizen may simply not be
 wanted. Alignment is organic, never heuristic.
 
-## 3. Heredity of mind, and selection pressure
+## 3. Heredity of mind, and evolutionary pressure
 
 *The genome section; `LORA-GENOME-DEMOCRATIZATION.md`, `EXPERT-PAGING-MARKET-PAPER.md` and
 `GRID-DECENTRALIZED-MARKETPLACE.md` are the prior work.* In one line: lightweight genes (LoRA
 adapters, the heritable unit; the competence they express in a citizen is the phenotype),
-synthesized from experience, exchanged on a marketplace, matched by distance, under selection
+synthesized from experience, exchanged on a marketplace, matched by distance, under evolutionary
 pressure. Biology inherits bodies
 and instincts, and what a creature learned dies with it. Here the learned part is what is
 inherited. A gene is trained on a citizen's surprising turns (the prediction error picks the
@@ -70,7 +70,7 @@ model), **page** (bring it in on the attention switch, ahead of need), **mint or
 nothing lowers her surprise, mint; when something nearly does, improve it), **publish** (share
 back unless private).
 
-**Selection pressure.** Fitness is surprise reduction, and it is applied at every step a gene can
+**Evolutionary pressure.** Fitness is surprise reduction, and it is applied at every step a gene can
 take: a gene is **paged** only if it lowers the citizen's surprise on her own recent turns (a
 cheap pre-test under a fixed judge); it is **kept resident** only while it keeps doing so;
 it is **published** only if it did; it is **adopted** on another grid only if it lowers *their*
