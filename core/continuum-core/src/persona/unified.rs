@@ -48,6 +48,9 @@ const ROSTER_WINDOW_FRACTION: u32 = 64;
 /// a richer room contract without competing with engram/airc for grow headroom.
 // context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
 const DOCTRINE_WINDOW_FRACTION: u32 = 16;
+/// The strip: one line per activity, a few words each, plus her note. A 32k window
+/// gives it ~680 tokens, a 4k window ~85 (two or three activities), fitted loudest first.
+const AWARENESS_WINDOW_FRACTION: u32 = 48;
 
 /// What a heavyweight grounding source gets when there IS room — its comfortable
 /// size, not its survival minimum. Formerly this same number was ALSO used as the
@@ -115,6 +118,8 @@ pub struct PersonaCognition {
     /// persona confabulating other citizens' turns. See
     /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
     pub roster_source: Option<Arc<dyn RagSource>>,
+    /// Her awareness strip across all activities (`AwarenessRagSource`); turn churn.
+    pub awareness_source: Option<Arc<dyn RagSource>>,
     /// The persona's benchmark-board RAG source — the live run rows
     /// (`ViewStateRagSource::<BenchViewState>::per_room` over
     /// `ipc::global_room_substrates()`): the board of the ROOM the turn is
@@ -224,6 +229,7 @@ impl PersonaCognition {
             engram_source,
             airc_source: None,
             roster_source: None,
+            awareness_source: None,
             bench_source: None,
             doctrine_source: None,
             capture_sink,
@@ -283,6 +289,17 @@ impl PersonaCognition {
             self.capture_sink.clone(),
         ));
         self.roster_source = Some(decorated);
+    }
+
+    /// Bind the brain's awareness-strip source (`AwarenessRagSource`): what she
+    /// perceives across ALL her activities, loudest first, with her continuation. Same
+    /// boot-time wire and capture decoration as the roster.
+    pub fn set_awareness_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.awareness_source = Some(decorated);
     }
 
     /// Bind the brain's benchmark-board RAG source
@@ -389,6 +406,12 @@ impl PersonaCognition {
         if let Some(ref bench) = self.bench_source {
             sources.push(bench.clone());
         }
+        // Her awareness across every activity (EVENT-MIND §6): the strip. Lightweight,
+        // loudest first, fitted by its own source; the one block that says where else
+        // she is needed while she works here.
+        if let Some(ref awareness) = self.awareness_source {
+            sources.push(awareness.clone());
+        }
 
         // Per-source budget claims. The two HEAVYWEIGHT sources (engram
         // long-term memory + airc recent conversation) split idle
@@ -428,6 +451,11 @@ impl PersonaCognition {
                         0,
                         0,
                         (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max),
+                    ),
+                    crate::persona::awareness_source::SOURCE_ID => (
+                        0,
+                        0,
+                        (context_window / AWARENESS_WINDOW_FRACTION).min(per_source_max),
                     ),
                     _ => {
                         // FLOOR is what the source needs to say ONE true thing;

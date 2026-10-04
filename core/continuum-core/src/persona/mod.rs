@@ -16,6 +16,7 @@ pub mod admission_persistence;
 pub mod admission_state;
 pub mod attention;
 pub mod awareness;
+pub mod awareness_source;
 pub mod airc_admission;
 pub mod airc_citizen;
 pub mod airc_persona_conversation;
