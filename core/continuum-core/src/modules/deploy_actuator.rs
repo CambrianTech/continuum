@@ -288,6 +288,10 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// How long a leftover tracker's unload (launchctl bootout / systemctl disable) may take.
+#[cfg(unix)]
+const LEGACY_UNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// The real spawner.
 pub(crate) struct CliSpawner;
 
@@ -325,7 +329,7 @@ impl DeploySpawner for CliSpawner {
             }
             LegacyTracker::Systemd(_) => ("systemctl", vec!["--user", "disable", "--now", "continuum-track-canary.timer"]),
         };
-        let probed = crate::system_resources::bounded_command::probe(program, &args, TASK_RUN_TIMEOUT);
+        let probed = crate::system_resources::bounded_command::probe(program, &args, LEGACY_UNLOAD_TIMEOUT);
         probed
             .stdout_if_ok()
             .map(|_| ())
