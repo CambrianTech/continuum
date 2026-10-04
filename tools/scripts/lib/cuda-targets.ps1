@@ -10,7 +10,13 @@ function Get-CudaTargets {
         [int]($Matches[1] + $Matches[2])
     } | Sort-Object -Unique)
     if (-not $architectures.Count) { throw 'No CUDA device capabilities detected.' }
-    $compiler = if ($env:CUDA_PATH) { Join-Path $env:CUDA_PATH 'bin\nvcc.exe' } else { 'nvcc' }
+    # Both toolkit layouts: NVIDIA's (bin\) and conda's (Library\bin\), as cuda-targets.sh.
+    $compiler = if ($env:CUDA_PATH) {
+        $found = @('bin\nvcc.exe', 'Library\bin\nvcc.exe') | ForEach-Object { Join-Path $env:CUDA_PATH $_ } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if (-not $found) { throw "No nvcc under CUDA_PATH=$($env:CUDA_PATH) (bin\ or Library\bin\)" }
+        $found
+    } else { 'nvcc' }
     $supported = @(Invoke-InstallerProcess -OwnProcessTree $compiler @('--list-gpu-arch') 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "CUDA compiler architecture query failed: $supported" }
     foreach ($arch in $architectures) {

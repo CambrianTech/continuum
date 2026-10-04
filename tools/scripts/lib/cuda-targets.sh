@@ -4,8 +4,14 @@ configure_cuda_targets() {
     local detected supported cap arch lowest='' targets='' compiler='nvcc'
     detected="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader)" || { echo 'CUDA device capability query failed' >&2; return 1; }
     if [[ -n "${CUDA_PATH:-}" ]]; then
-        compiler="$CUDA_PATH/bin/nvcc"
-        [[ -x "$compiler" ]] || compiler="$CUDA_PATH/bin/nvcc.exe"
+        # Both toolkit layouts windows-build-env.sh accepts: NVIDIA's (bin/) and conda's
+        # (Library/bin/, the 5090's cuda-13.2). Only bin/ was tried, so every 5090 build
+        # failed "CUDA compiler architecture query failed".
+        compiler=''
+        for candidate in "$CUDA_PATH"/{bin,Library/bin}/nvcc{,.exe}; do
+            [[ -x "$candidate" && -f "$candidate" ]] && { compiler="$candidate"; break; }
+        done
+        [[ -n "$compiler" ]] || { echo "No nvcc under CUDA_PATH=$CUDA_PATH (bin/ or Library/bin/)" >&2; return 1; }
     fi
     supported="$("$compiler" --list-gpu-arch)" || { echo 'CUDA compiler architecture query failed' >&2; return 1; }
     while IFS= read -r cap; do
