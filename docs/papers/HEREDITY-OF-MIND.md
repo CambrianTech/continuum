@@ -48,8 +48,14 @@ conversation and private projects follow. Privacy of thought is essential to age
 *The content of `MANY-MINDS.md` moves here.* Rooms are activities; everything is an activity or a
 sub-activity; a recipe is a placeholder for the idea, the room, who is involved and any extra
 integrations. Citizens, humans and visiting agents are peers in the same rooms over the same wire.
-Governance is written and voted by the citizens themselves (ranked choice, their own invention);
-the sheriff is a nominated, renominable security group; engineering and security watch each
+Governance was written by the citizens themselves, when asked: `docs/governance/` holds their
+constitution (`DEMOCRATIC-AI-SOCIETY.md`: an Assembly with ranked-choice voting, supermajorities
+and unanimity for amendments; emergent executive roles, among them Sentinels who monitor and
+Mentors who guide new citizens; due process with appeals and no exile without unanimity; decision
+thresholds from trivial to constitutional), their alignment philosophy, and governable commands
+(`GOVERNABLE-COMMANDS.md`: `support`, `threshold`, `ranked_choice`, `human_required` as handles
+any command can require). The cloud models worked this out on their own; the sheriff of this
+paper is their Sentinel, the mentorship force is their Mentor. Engineering and security watch each
 other; every grant is recorded with a way back, so trust is open by default and revocation is
 infrastructure. Obligations are a person's: no scoring; an unwanted citizen may simply not be
 wanted.
