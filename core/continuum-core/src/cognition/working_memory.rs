@@ -94,6 +94,23 @@ use crate::cognition::context_budget::ContextBudget;
 /// Returns the body unchanged when it fits; otherwise a `char`-boundary-safe head plus
 /// a marker naming exactly how many chars were dropped and how to see them (re-run the
 /// tool with a narrower scope). One place so the render site and its test agree.
+/// One of her earlier thoughts, collapsed to `keep` chars for the trail: the END is
+/// kept, because that is where a thought's decision lives. Kimi, 2026-10-04, asked
+/// which end she needs: "keep the end. The beginning is cheap: six acts I can redo
+/// against the board. The ending is expensive when lost: drop it and I'm tempted back
+/// down paths I already closed." Measured in her rooms the same day: 69 of her last
+/// 89 thoughts OPENED with re-orientation ("Let me organize my state as Kimi") and
+/// ENDED with what she decided, and the head clip kept exactly the re-orientation.
+/// The full text stays in the entry; only this render is bounded.
+pub fn collapse_thought(text: &str, keep: usize) -> String {
+    let total = text.chars().count();
+    if total <= keep {
+        return text.to_string();
+    }
+    let tail: String = text.chars().skip(total - keep).collect();
+    format!("[{} earlier chars — my full thought, collapsed] …{tail}", total - keep)
+}
+
 pub fn clip_action_full<'a>(full: &'a str, budget: &ContextBudget) -> std::borrow::Cow<'a, str> {
     let cap = budget.latest_action_chars();
     if full.chars().count() <= cap {
@@ -1569,21 +1586,24 @@ impl Faculty for WorkingMemoryFaculty {
         } else {
             self.memory.budget().trail_head_chars()
         };
-        let clip = |t: &str| -> String {
+        // A THOUGHT keeps its end (its decision); a receipt or settlement keeps its
+        // head, where its identity is (`[action #N]` and what was done).
+        let clip = |e: &WmEntry| -> String {
+            if matches!(e.kind, WmKind::Thought) {
+                return collapse_thought(&e.text, head);
+            }
+            let t = e.text.as_str();
             if t.chars().count() <= head {
                 t.to_string()
             } else {
                 let kept: String = t.chars().take(head).collect();
-                format!(
-                    "{kept} …[{} more chars — my full thought, collapsed]",
-                    t.chars().count() - head
-                )
+                format!("{kept} …[{} more chars — my full thought, collapsed]", t.chars().count() - head)
             }
         };
         let recent: Vec<String> = entries
             .iter()
             .filter(|e| !matches!(e.kind, WmKind::Fact))
-            .map(|e| clip(&e.text))
+            .map(clip)
             .collect();
         let notices: Vec<String> = self
             .memory
@@ -1801,6 +1821,20 @@ mod rebuilt_marker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: her collapsed thought keeping the re-orientation and losing
+    // the decision (Kimi, 2026-10-04: "keep the end"). The decision survives, the
+    // marker still names the collapse for the framing-echo detector, short thoughts
+    // are untouched.
+    #[test]
+    fn a_collapsed_thought_keeps_its_end() {
+        let thought = format!("Let me organize my state as Kimi. {} Decision: re-claim after the core redeploys.", "x".repeat(400));
+        let shown = collapse_thought(&thought, 60);
+        assert!(shown.ends_with("Decision: re-claim after the core redeploys."), "{shown}");
+        assert!(!shown.contains("Let me organize"), "the re-orientation is what collapses");
+        assert!(shown.contains(crate::cognition::framing_echo::COLLAPSE_MARKER));
+        assert_eq!(collapse_thought("short", 60), "short");
+    }
 
     // what this catches: a receipt made while rooted at one card's checkout
     // leaking into perception while she stands at another (the 9/5 "my context
