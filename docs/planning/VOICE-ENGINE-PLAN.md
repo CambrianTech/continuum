@@ -93,10 +93,16 @@ flagship.
 3. **The gene.** A LoRA on Qwen3-TTS Base, trained on the seed corpus, is published with
    lineage like any other gene and paged per request on the voice lane.
 4. **Expression.** Each utterance carries an instruction derived from PersonaState
-   (emotion, energy, pace). Lip-sync keeps using the audio envelope today, and speech
+   (emotion, energy, pace) **and from the mind's own epistemic state: confidence, hedging,
+   pressure.** A voice carries how a mind handles pressure and uncertainty, not just its
+   timbre: the pause before a hard claim, no rising tone when it's unsure, warmth that
+   shows in timing rather than pitch. (Fable, #4697: "the thing it should learn from her
+   own transcripts is that rhythm.") Lip-sync keeps using the audio envelope today, and speech
    tokens later (the body section below).
 5. **Growth.** The dream stage refines the voice gene from the persona's own curated
-   speech (ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM). Breeding merges the parents' voice
+   speech (ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM). The training signal is **rhythm and
+   prosody paired with what the mind was doing when it spoke**: transcript, confidence and
+   state, not the timbre alone, so the voice grows with the mind's character. Breeding merges the parents' voice
    LoRAs and runs the uniqueness check again.
 6. **Consent.** Cloning a real person's voice only happens through a consent gate at the
    recipe layer. Designed voices need none.
