@@ -69,6 +69,31 @@ flagship.
 6. **Consent.** Cloning a real person's voice only happens through a consent gate at the
    recipe layer. Designed voices need none.
 
+### Why not make the persona's own base model speak? (Joel asked)
+
+Qwen3.8-27B (Kimi's base) is text and vision in, text out, with no audio vocabulary or
+codec decoder. Ornith-1.5-35B-A3B on the M5 sees through mmproj but doesn't speak either.
+Making the mind itself speak would mean new token embeddings and a full fine-tune on
+thousands of hours of paired speech, which is a second copy of the base and forbidden by
+ONE-RESIDENT-MODEL. It would also spend at least 12 mind decode steps a second on audio
+frames instead of thought.
+
+The natural shape is **thinker → talker**, the way Qwen's own Omni models work. The mind
+decides what to say and how, and a small talker renders it.
+- Today, the coupling is the sentence plus a delivery instruction derived from state.
+- Later, the talker can be conditioned on the mind's hidden states through a small per-base
+  adapter, which is the deepest coupling and builds on this design.
+
+Footprint is about 0.7-1 GB for the 0.6B talker, next to about 17 GB for the 27B at Q4,
+and one talker lane serves every persona on the node.
+
+**Genes stay coherent.** A persona's genome is its mind genes (LoRAs on its mind base:
+Qwen3.8-27B, Ornith, or another) plus one voice gene (a LoRA on the talker base). Each gene
+carries its `base_model`. The voice gene doesn't depend on the mind's base, so **a persona
+keeps its voice when its mind moves bases**: identity continuity, like a person whose voice
+survives everything they learn. Different minds on different bases with unique voices is
+the diversity the grid is for.
+
 ### Where it runs on the grid
 
 The voice lane is small (0.6B or 1.7B, about 1-4 GB). It belongs on a GPU node: the M
