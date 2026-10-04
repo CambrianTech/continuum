@@ -47,9 +47,15 @@ on:
       - '.github/workflows/core-binaries.yml'
   workflow_dispatch:
 
+# A canary push must never cancel the canary build in progress. Each canary tip's core is what
+# the deploy consumers download (card 50ca737e); the build takes 45-73 min and canary merges land
+# every 15-30 min, so cancel-in-progress cancelled EVERY build after b6ddc0d0e on 2026-10-04 and
+# no node could download anything. Without cancellation GitHub keeps one run going and only the
+# NEWEST push queued behind it (older queued pushes are dropped), so a build always finishes and
+# the queue cannot grow. Pull requests still cancel their own superseded runs.
 concurrency:
   group: core-binaries-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
