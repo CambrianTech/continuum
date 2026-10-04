@@ -54,13 +54,44 @@ pub struct ActivityView {
     pub name: String,
     /// The room's digest, when a turn has composed one (for depth); never built here.
     pub digest: Option<Arc<ChannelDigest>>,
-    /// Spoken lines above her cursor, reduced for salience (fed per event).
+    /// Spoken lines above her cursor, reduced for salience (fed per event). Bounded
+    /// by [`UNPERCEIVED_CAP`]: a view holds the newest lines she has not perceived,
+    /// never every line since her cursor (see `overflow`).
     pub speech: Vec<SpeechLine>,
-    /// Board changes above her cursor, typed (the kanban view's delta).
+    /// Board changes above her cursor, typed (the kanban view's delta). Same bound.
     pub board: Vec<BoardChange>,
+    /// Unperceived lines and changes the bound let go of, oldest first, since she last
+    /// perceived this activity. The truth that there is MORE above her cursor than the
+    /// view holds, kept as a count so the strip can say so; cleared by `perceived`.
+    pub overflow: u64,
     /// Newest TIMED event above her cursor; untimed events do not set this.
     pub last_activity_ms: Option<u64>,
     pub salience: Salience,
+}
+
+/// The most unperceived lines (and, separately, board changes) one activity's view
+/// holds. A producer with no bound was live on the 5090 for hours on 2026-10-04 (the
+/// consumer that drains a view landed in a later PR), growing with every line in forty
+/// rooms; a bound belongs at the source, whatever calls `perceived`. Past the cap the
+/// view halves, oldest first, and counts what it let go; one probe per halving, so a
+/// busy room cannot turn the probe stream into the leak.
+pub const UNPERCEIVED_CAP: usize = 256;
+
+fn bound<T>(items: &mut Vec<T>, overflow: &mut u64, activity: Uuid, what: &'static str) {
+    if items.len() <= UNPERCEIVED_CAP {
+        return;
+    }
+    let drop = items.len() - UNPERCEIVED_CAP / 2;
+    items.drain(..drop);
+    *overflow += drop as u64;
+    crate::probe!(
+        class = "mind.region.overflow",
+        activity = %short8(activity),
+        what,
+        dropped = drop as u64,
+        overflow_since_perceived = *overflow,
+        "an activity's unperceived view passed its bound and let its oldest go — she is far behind here"
+    );
 }
 
 impl std::fmt::Debug for ActivityView {
@@ -129,6 +160,7 @@ impl PerceptionRegion {
             digest: None,
             speech: Vec::new(),
             board: Vec::new(),
+            overflow: 0,
             last_activity_ms: None,
             salience: Salience::QUIET,
         });
@@ -158,6 +190,7 @@ impl PerceptionRegion {
             view.last_activity_ms = Some(view.last_activity_ms.map_or(line.occurred_at_ms, |m| m.max(line.occurred_at_ms)));
         }
         view.speech.push(line);
+        bound(&mut view.speech, &mut view.overflow, activity, "speech");
         self.recompute(activity, now_ms)
     }
 
@@ -173,6 +206,7 @@ impl PerceptionRegion {
     pub fn observe_board(&mut self, activity: Uuid, changes: Vec<BoardChange>, now_ms: u64) -> Option<Wake> {
         let view = self.views.entry(activity).or_insert_with(|| blank(short8(activity)));
         view.board.extend(changes);
+        bound(&mut view.board, &mut view.overflow, activity, "board");
         view.last_activity_ms = Some(now_ms);
         self.recompute(activity, now_ms)
     }
@@ -248,6 +282,7 @@ impl PerceptionRegion {
         if let Some(view) = self.views.get_mut(&activity) {
             view.speech.clear();
             view.board.clear();
+            view.overflow = 0;
             view.salience = Salience::QUIET;
         }
         self.publish(now_ms);
@@ -322,7 +357,7 @@ fn short8(id: Uuid) -> String {
 }
 
 fn blank(name: String) -> ActivityView {
-    ActivityView { name, digest: None, speech: Vec::new(), board: Vec::new(), last_activity_ms: None, salience: Salience::QUIET }
+    ActivityView { name, digest: None, speech: Vec::new(), board: Vec::new(), overflow: 0, last_activity_ms: None, salience: Salience::QUIET }
 }
 
 #[cfg(test)]
@@ -483,4 +518,26 @@ mod tests {
         r.observe_speech(A, line(&event(A, PEER, airc_core::MentionTarget::All, 2, "new")), 60);
         assert_eq!(rx.borrow().lines.iter().find(|l| l.activity == A).unwrap().last_activity_ms, 1_002);
     }
+
+    // what this catches: the 2026-10-04 leak — a view growing with every line in a room
+    // nobody drained. Past the cap the view halves (newest kept), the count says how far
+    // behind she is, and perceiving the activity clears both.
+    #[test]
+    fn an_unperceived_view_is_bounded_and_counts_what_it_let_go() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut r, _rx) = PerceptionRegion::boot(PeerId::from_uuid(ME), dir.path(), 1_000, 0);
+        r.join(A, "a");
+        let n = UNPERCEIVED_CAP as u64 + 10;
+        for i in 0..n {
+            r.observe_speech(A, SpeechLine { sender: Uuid::new_v4(), addressed_to_me: false, occurred_at_ms: 1_000 + i }, 2_000 + i);
+        }
+        let view = r.views.get(&A).expect("the view");
+        assert_eq!(view.speech.len(), UNPERCEIVED_CAP / 2 + 9, "halved at the cap, then one per line");
+        assert_eq!(view.overflow, (UNPERCEIVED_CAP as u64 + 1) - (UNPERCEIVED_CAP as u64 / 2));
+        assert_eq!(view.speech.last().map(|l| l.occurred_at_ms), Some(1_000 + n - 1), "the newest line is kept");
+        r.perceived(A, &ActivityCursor { chat_lamport: n, chat_event_id: None, views: Default::default() }, 9_000);
+        let view = r.views.get(&A).expect("the view");
+        assert!(view.speech.is_empty() && view.overflow == 0, "perceiving the activity clears the view and the count");
+    }
+
 }
