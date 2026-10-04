@@ -131,3 +131,99 @@ duplicates one.
 
 Merge on green with one word; objections are follow-ups; deploy on merge; each phase's acceptance
 read from her receipts before the next.
+
+## 6. Build: phase 1, the perception region (concrete)
+
+Anchored to the types as they are. New files under `persona/`, each one concern, under 200 lines
+where the guide asks it; one `#[cfg(test)] mod tests` each; probes at every seam.
+
+```rust
+// persona/activity_view.rs — one activity as she perceives it. No copies: Arcs onto the truth.
+pub struct ActivityId(pub Uuid);                     // the room id (derived, never assigned)
+pub struct ActivityView {
+    pub id: ActivityId, pub name: String,
+    pub truth: ActivityTruth,                        // the one truth, borrowed
+    pub cursor: ActivityCursor,                      // what she has perceived (durable)
+    pub delta: ActivityDelta,                        // truth above the cursor
+    pub salience: Salience,                          // from the delta (pure)
+}
+pub struct ActivityTruth {                           // what the human screen renders, same handles
+    pub chat: Option<Arc<ChannelDigest>>,            // cognition/channel_digest.rs (incremental)
+    pub board: Option<Arc<StateEnvelope>>,           // kind "kanban" from global_room_substrates()
+    pub roster: Option<Arc<StateEnvelope>>,          // kind "roster"
+    pub wall: Option<Arc<StateEnvelope>>,            // kind "wall"
+}
+pub struct ActivityCursor { pub chat: TranscriptCursor, pub board_rev: u64, pub wall_rev: u64 }
+pub struct ActivityDelta {                           // typed, never text
+    pub unread: Vec<Arc<ChannelElement>>,            // digest.elements[unread_start..]
+    pub board_changes: Vec<BoardChange>,             // cards moved/claimed/reviewed since board_rev
+    pub wall_changes: u32,
+}
+
+// persona/salience.rs — a pure function of the delta, her identity and her expectation.
+pub enum SalienceLevel { Quiet, Notable, Addressed, Urgent }
+pub enum SalienceReason {
+    MentionedMe, HumanSpoke(PeerId), VerdictOnMyWork(CardId), TeammateWaitingOnMe(PeerId),
+    Blocker(String), Surprise { expected: Expectation, observed: String }, Silent { since_ms: u64 },
+}
+pub struct Salience { pub level: SalienceLevel, pub reasons: Vec<SalienceReason> }
+pub fn salience(delta: &ActivityDelta, me: PeerId, humans: &[PeerId],
+                expectation: Option<&Expectation>, now_ms: u64) -> Salience;
+
+// persona/attention.rs — hers. Written only by her acts (verbs `self/attention`, `self/continue`).
+pub enum Depth { Deep, Normal, Broad }
+pub struct AttentionDial { pub depth: Depth, pub pass: SalienceLevel }   // what may interrupt
+pub struct Expectation { pub text: String, pub by_ms: Option<u64> }       // "review passes; then deploy"
+pub struct Continuation { pub activity: ActivityId, pub note: String,
+                          pub expectation: Option<Expectation>, pub written_at_ms: u64 }
+
+// persona/awareness.rs — the strip: a watch snapshot folded from every ActivityView.
+pub struct ActivityLine { pub id: ActivityId, pub name: String, pub unread: u32,
+                          pub salience: Salience, pub last_activity_ms: u64,
+                          pub waiting_on_me: Vec<PeerId> }
+pub struct Load { pub live_activities: u32, pub unread_total: u32, pub context_share: f32 }
+pub struct AwarenessSnapshot { pub lines: Vec<ActivityLine>, pub continuation: Option<Continuation>,
+                               pub dial: AttentionDial, pub load: Load, pub at_ms: u64 }
+pub struct AwarenessSource;                            // RagSource: renders the snapshot at dial depth
+
+// persona/mind_state.rs — her durable state, saved at the seam, loaded at boot (rule 8).
+pub struct MindState { pub cursors: BTreeMap<ActivityId, ActivityCursor>,
+                       pub continuation: Option<Continuation>, pub dial: AttentionDial }
+
+// persona/perception_region.rs — the ServiceModule (CONCURRENCY-STYLE-GUIDE shape).
+pub enum Wake { Perceive { activity: ActivityId, salience: Salience }, Continuation, Resume, Idle, Stop }
+pub struct PerceptionRegion { /* own task; per-membership inbound (attach set); watch::Sender<AwarenessSnapshot>;
+                                 wake_tx: mpsc::Sender<Wake>; MindState; atomic gate; quarantine */ }
+```
+
+**Data flow.** The inbound attach set delivers an event for activity `A` → the region updates `A`'s
+truth (incremental digest; ViewState envelope read from the per-room registry; `spawn_blocking`
+for anything that touches disk) → recomputes `A.delta` and `A.salience` → folds the
+`AwarenessSnapshot` and publishes it → if `A.salience.level >= dial.pass` (or `Urgent`), sends
+`Wake::Perceive`. A due `Continuation.expectation.by_ms` sends `Wake::Continuation`. Boot sends
+`Wake::Resume` once. An `interval` at the idle clip sends `Wake::Idle`, which she may ignore.
+Nothing polls a room; a quiet activity costs nothing.
+
+**The turn** (`service_loop`, interim shape until phase 2 deletes the room parameter): on any
+`Wake`, compose with the `AwarenessSource` (strip at dial depth) + the depth sources of
+`continuation.activity` (its digest, board, wall via `per_room`, resolved from HER continuation,
+never from the wake) + global recall; deliberate and act until settled; her acts may write
+`continuation` and `dial`; cursors advance only for what she perceived; `MindState` is saved.
+
+**Retired by this phase:** `Wake::Tick` as a decision, the deck pull, the ambient permit, the
+fingerprint veto (all replaced by salience against her dial); `PersonaInbox` / `ChannelQueue` as
+stores. **Kept until phase 2:** the room parameter on `compose_for_turn` (fed from her
+continuation, not the wake), `default_room` as provenance only.
+
+**Tests (one mod per file, each with `what this catches`).** `salience`: a mention beats a quiet
+room; a human beats a peer; a verdict on her card is `Addressed`; a contradicted expectation is
+`Surprise`; silence past `by_ms` is `Silent`. `awareness`: the fold orders by salience then
+recency and reports load. `mind_state`: save/load round-trip; cursors never regress. `perception_
+region` (integrated-self acceptance): two activities, depth on A, an `Addressed` event in B →
+snapshot has both, `Wake::Perceive{B}` fires, the composed turn contains A's depth and B's line;
+a `Quiet` event in B under `Deep` does not wake. `resume`: boot after a saved state emits
+`Wake::Resume` and the first compose carries the saved continuation.
+
+**Probes.** `mind.perceive.wake {activity, level, reasons, dial}`, `mind.perceive.quiet`,
+`mind.continuation.written {by_act}`, `mind.dial.set`, `mind.resume`, `mind.load {live, unread,
+context_share}`.
