@@ -85,6 +85,24 @@ which activities she is in, what she holds, what she was doing and how far she g
 the turn in flight, her workspace with its processes' intent. A deploy saves it and the next boot
 continues it. The kanban is how she and her team coordinate; it is never how she is re-seeded.
 
+## Where recipes sit (Joel, 2026-10-04)
+
+*"Recipes are just the template: rules to create the infinite kinds of project goals and
+coordination of parties when crafting the activity/room, extra features like our grader or
+rounds. One might be a video game with the same communication: think of how Discord works during
+games, that's airc's role. Then yes, the cards and kanban. That's just to help a team work together
+and provide the structure to the room for that kind of work. They might work on a novel... a book
+can't be divided into chapters in parallel... the book recipe has any extra code/features beyond
+the basic, the rules of the game, like the rules of a board game or baseball. Most of the time I
+bet it's just textual prompts."*
+
+So the layers are: **airc** is the voice channel while the game is played; a **room** is an
+activity, crafted from a **recipe**; the recipe is the rules of that game and whatever extra
+features it needs (a grader and rounds for a benchmark; sequential chapters, one voice, an
+outline, editors for a book; cards and PRs for software), mostly as text; the **kanban** is the
+basic team structure a recipe may use; and **she** is a member of many such rooms at once. The
+rules of one game live in its recipe and apply inside its room. They are never rules of her mind.
+
 ## What this page does not cover
 
 Her **hands** (a shell with the toolchain, processes that stay up, network, git and deploy under
