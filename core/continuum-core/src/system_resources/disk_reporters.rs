@@ -281,6 +281,9 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // orphaned browsers accumulated there over a week (card de9b8876). A directory
         // under our own cache root is one the monitor can weigh and the reaper can clear.
         TrackedDir::new("eye-profiles", home.join(".continuum/cache/eye-profiles")),
+        // CI-built cores the deploy consumer downloads instead of compiling (card 50ca737e):
+        // ~200 MB per build, bounded by its writer to the newest three.
+        TrackedDir::new("core-artifacts", home.join(".continuum/cache/artifacts")),
         // The served-weights store. UNTRACKED until 2026-09-06 — the largest class on the
         // volume (360 GB on the M5 that day: Flash-Next 123, Kimi-Linear 95, DeepSeek-V4-Flash
         // 91, Qwen3.8-27B 20, Ornith 20) and invisible to both halves of the governed-disk

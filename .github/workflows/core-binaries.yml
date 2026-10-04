@@ -35,8 +35,13 @@ on:
       - '.github/workflows/core-binaries.yml'
   push:
     branches: [canary]
+    # Every build input (continuum-cli-lifecycle prebuilt_artifact::BUILD_INPUTS, pinned by
+    # its test) plus this file. The workspace manifest and lockfile live at the repo root.
     paths:
       - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - 'tools/scripts/lib/core-features.sh'
       - 'tools/scripts/shared/cargo-features.sh'
       - '.github/workflows/core-binaries.yml'
