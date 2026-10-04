@@ -1303,8 +1303,10 @@ async fn serve_persona_loop_inner(
                     match crate::cognition::resource_admission::try_hold_ambient_turn() {
                         Some(permit) => Some(permit),
                         None => {
-                            tracing::info!(
+                            crate::probe!(
+                                class = "persona.turn.ambient_yielded",
                                 persona = %ctx.identity.agent_name,
+                                lamport = msg.lamport,
                                 "ambient turn yielded — ambient slots busy; the addressed \
                                  question is served first (#171)"
                             );
@@ -1459,7 +1461,12 @@ async fn serve_persona_loop_inner(
                     crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent } => {
                         // No hands or the executor errored. Abstain — never a
                         // fabricated result, never a raw call envelope to the room.
-                        tracing::warn!(
+                        // Every turn ends on a probe (Kimi, 5090, 2026-10-04: a turn on an
+                        // addressed line ended with no outcome on the probe stream, so a
+                        // chosen silence and a failed act read the same).
+                        crate::probe!(
+                            class = "persona.turn.act_unfulfilled",
+                            persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
                             calls = calls.len(),
                             intent = %intent,
@@ -1570,7 +1577,9 @@ async fn serve_persona_loop_inner(
         // peers with JSON (observed live). Treat it as silence — the deliberation
         // already executes real calls internally; only prose is a contribution.
         if crate::ai::json_in_prompt_tools::parse_tool_call(&response_text).is_some() {
-            tracing::info!(
+            crate::probe!(
+                class = "persona.turn.raw_envelope_withheld",
+                persona = %ctx.identity.agent_name,
                 lamport = msg.lamport,
                 "verdict was a raw tool-call envelope — not broadcasting"
             );
