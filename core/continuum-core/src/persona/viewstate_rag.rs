@@ -256,10 +256,22 @@ pub trait RoomScopedView: RagRenderable {}
 /// not a guard, and this is the half that catches an over-tight bound:
 ///
 /// ```
-/// use continuum_core::persona::viewstate_rag::ViewStateRagSource;
-/// use continuum_positron::bench::BenchViewState;
+/// use continuum_core::persona::viewstate_rag::{NodeScopedView, RagRenderable, ViewStateRagSource};
 /// use continuum_positron::Substrate;
-/// let _ = ViewStateRagSource::<BenchViewState>::new(Substrate::new());
+/// // No production kind is node-scoped any more (the bench board went per room on
+/// // 2026-10-04, HER-LOOP-IS-HER-OWN.md rule 5), so the mirror carries its own: a
+/// // kind that genuinely describes the node still constructs with one substrate.
+/// #[derive(serde::Deserialize)]
+/// struct NodeTemperature { celsius: f32 }
+/// impl RagRenderable for NodeTemperature {
+///     const KIND: &'static str = "node-temperature";
+///     const BLOCK: &'static str = "node temperature";
+///     const EXPAND: Option<&'static str> = None;
+///     fn floor_tokens() -> u32 { 4 }
+///     fn units(&self, _viewer: uuid::Uuid) -> Vec<String> { vec![format!("{} C", self.celsius)] }
+/// }
+/// impl NodeScopedView for NodeTemperature {}
+/// let _ = ViewStateRagSource::<NodeTemperature>::new(Substrate::new());
 /// ```
 ///
 /// A doctest is used deliberately: `trybuild` would be a new dev-dependency for
