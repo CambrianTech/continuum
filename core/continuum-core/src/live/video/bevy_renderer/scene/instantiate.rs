@@ -262,22 +262,25 @@ impl SceneWalk<'_, '_, '_> {
             if !std::path::Path::new(&glb_path).exists()
                 && std::path::Path::new(&model_path).exists()
             {
-                let vrm_filename = std::path::Path::new(&model_path)
-                    .file_name()
-                    .unwrap_or_default();
+                // Unix: a relative symlink beside the model. Elsewhere a copy (a Windows
+                // symlink needs a privilege a normal user lacks; bevy only needs the bytes
+                // at the .glb path). A failure is reported: the old `let _` meant a
+                // missing alias surfaced later as an avatar that silently never loads.
                 #[cfg(unix)]
-                {
-                    #[cfg(unix)]
-                    let _ = std::os::unix::fs::symlink(vrm_filename, &glb_path);
-                    // Windows symlinks need privilege; a copy serves the same
-                    // purpose (bevy just needs the bytes at the .glb path).
-                    #[cfg(windows)]
-                    let _ = std::os::windows::fs::symlink_file(vrm_filename, &glb_path)
-                        .or_else(|_| std::fs::copy(vrm_filename, &glb_path).map(|_| ()));
-                }
+                let aliased = std::os::unix::fs::symlink(
+                    std::path::Path::new(&model_path).file_name().unwrap_or_default(),
+                    &glb_path,
+                );
                 #[cfg(not(unix))]
-                {
-                    let _ = std::fs::copy(&model_path, &glb_path);
+                let aliased = std::fs::copy(&model_path, &glb_path).map(|_| ());
+                if let Err(error) = aliased {
+                    crate::probe!(
+                        class = "avatar.model.alias_failed",
+                        model = %model_path,
+                        alias = %glb_path,
+                        error = %error,
+                        "the .glb alias for this avatar model could not be made; the renderer will not find it"
+                    );
                 }
             }
             glb_path

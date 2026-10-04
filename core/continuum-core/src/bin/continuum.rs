@@ -59,6 +59,10 @@ use continuum_cli_lifecycle::launchd;
 #[cfg(windows)]
 #[path = "continuum/elevated_teardown.rs"]
 mod elevated_teardown;
+// The service host's one drop of privilege (S4U ignores RunLevel); Windows-only like its caller.
+#[cfg(windows)]
+#[path = "continuum/unelevated_service.rs"]
+mod unelevated_service;
 use continuum_cli_lifecycle::elevated_teardown::StopOptions;
 
 #[derive(Debug, thiserror::Error)]
@@ -1197,6 +1201,34 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         use std::os::windows::process::CommandExt;
         if !(3..=4).contains(&args.len()) || args.iter().any(|arg| arg.is_empty()) {
             return Err("service-host requires <core-path> <socket> <engine-path> [eye-root]".to_string());
+        }
+        // The core runs with its user's hands, not an administrator's (S4U ignores the
+        // task's RunLevel; see unelevated_service). If the drop itself fails, the host
+        // runs as it did before and says so: that is today's state, reported, not a
+        // success claimed.
+        // An unreadable token never stops the node: the core launches as before, and the
+        // line says the drop was not attempted (Cormac's review of #4739).
+        let elevated = match unelevated_service::token_is_elevated() {
+            Ok(elevated) => elevated,
+            Err(why) => {
+                eprintln!(
+                    "service-host: token elevation UNREADABLE ({why}); launching the core without the unelevated relaunch"
+                );
+                false
+            }
+        };
+        if unelevated_service::must_relaunch(elevated, std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some()) {
+            match tokio::task::spawn_blocking(unelevated_service::relaunch_unelevated).await {
+                Ok(Ok(code)) => return Ok(code),
+                Ok(Err(why)) => eprintln!(
+                    "service-host: ELEVATED — could not relaunch as the normal user ({why}); the core and every citizen shell run with Administrator's token"
+                ),
+                Err(join) => eprintln!(
+                    "service-host: ELEVATED — the unelevated relaunch did not complete ({join}); the core runs with Administrator's token"
+                ),
+            }
+        } else if elevated {
+            eprintln!("service-host: ELEVATED although relaunched as the normal user; the token still reads elevated");
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command)?;
