@@ -57,6 +57,16 @@ survives as the name for the set of unperceived deltas, implemented as cursors o
 `PersonaInbox` (copied `InboxMessage`s, per-room frames) is retired, not extended. One truth, N
 renderers, and she is one of the renderers ([[the-grid-is-one-computer]]).
 
+**The world-model shape.** This is the current state of the art's picture of what makes a model
+more like a mind: a world model (the live state of each activity, one truth, event-fed), the
+agent's own state (cursors, continuation, dial, memory), and perception as the rendering of the
+delta. The step it adds on top is **prediction**: a mind notices what changed *against what it
+expected*. Her continuation already states her expectation ("the review should pass; next,
+deploy"), so salience extends to **surprise**: a verdict that contradicts her expectation is louder
+than one that confirms it; a teammate's silence past the reply she expected is a signal; a build
+that fails when she expected green is urgent. One more term in the salience function, and the
+seam where a predictive (JEPA-style) layer slots in later without rebuilding anything.
+
 ## 2. The components (what exists, what changes, what is new)
 
 | component | role | today | design |
