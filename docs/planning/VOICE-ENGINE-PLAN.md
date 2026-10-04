@@ -36,6 +36,24 @@ It fits the substrate on every axis we care about:
 | Tiers | 0.6B and 1.7B | The 0.6B is the grid's portable voice; the 1.7B is the quality tier |
 | Identity check | A speaker encoder (ECAPA-style x-vector), already in the fork | Measures how close two voices are; this is what makes "unique in the world" testable |
 
+**Fit beats leaderboard rank.** Qwen3-TTS is today's best fit, not a permanent choice;
+any model can take the seat by fitting better. Score a candidate on these criteria, in
+order. The first three are gates:
+1. **Local and open:** weights we can run and ship (a commercial-use license); no hosted API.
+2. **One engine:** it runs in our llama.cpp fork (GGUF), or can be added there for less
+   than the cost of a second runtime.
+3. **Voice as a gene:** the voice can be a LoRA (or an equally small, base-bound
+   artifact) that pages per request.
+4. **Unique without cloning a person:** voice design from a description, or a speaker
+   space we can sample and measure.
+5. **Controlled delivery:** per-utterance emotion, pace and prosody, driven by state.
+6. **Live:** streaming, and time to first audio that a call can carry.
+7. **Footprint:** small enough that a node holds the mind plus the voice lane; a CPU tier
+   for weak nodes, or a grid stream.
+8. **Grid-portable:** the same gene works on Metal, CUDA and CPU.
+
+Breeze TTS 2 leads the leaderboard and fails gate 1. That is what "fit beats rank" means.
+
 **Second outlier (CLAUDE.md: build outlier B before trusting the interface):
 Maya1** (Apache-2.0). It's a Llama-3B decoder over the SNAC codec, with voice design from
 a description and 20+ inline emotion tags (laugh, sigh, whisper…). It's the same SNAC
