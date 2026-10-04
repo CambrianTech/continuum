@@ -26,3 +26,24 @@ this canary candidate is identical after newline normalization. Independent loca
 diff review found no blocking issue. Exact canary CI and deployed acceptance remain
 owed. Kimi's application worktree was observed only; her recovery and new submission
 remain hers, and Fable retains independent application review authorship.
+
+Branch publication follows the same owner and immutable-tip ancestry contract.
+Before: HEAD reachable from any origin branch was treated as published, although
+the receiving node fetches the exact card branch. After: both sync and placement
+require publication to that branch; a missing card branch needs a push even if its
+base already exists on main. Deleted the all-origin reachability counter and
+shared history_counts with arrival. The existing two-machine setup verifies a
+missing card branch, a successor on another remote branch, blocked placement,
+successful card push and the receiving node's actual file content.
+
+The generic publication defect is source-confirmed; it is not established as the
+cause of Kimi's missing push. Read-only observation at 01:32 UTC found her checkout
+restored to clean5184f8568; reflog records reset to that tip at01:11:37 UTC. No parent
+application edit or recovery was performed. Recovery actor, fresh tests and revised
+submission remain unverified. Independent review and final scoped validation follow.
+
+Follow-up validation: parent session80768 passed all7 workspace-transfer tests on
+the final source in the integration checkout; candidate source was copied exactly.
+Independent scoped review found no introduced correctness blockers. Fable's earlier
+approval covers4cfd13052 only; renewed exact-head review and canary CI remain owed.
+No install or deployed continuity claim.

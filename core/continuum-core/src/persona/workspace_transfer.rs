@@ -252,18 +252,40 @@ fn is_dirty(root: &Path) -> Result<bool, String> {
     run_git(root, &["status", "--porcelain", "--untracked-files=all"]).map(|s| !s.trim().is_empty())
 }
 
-/// Commits reachable from HEAD that no `origin/*` ref holds — the exact set a push
-/// would carry. A branch cut from the clone's HEAD and never edited counts 0: nothing
-/// is lost by leaving it, so it never defers a move.
-fn unpushed_commit_count(root: &Path) -> Result<u64, String> {
-    let out = run_git(root, &["rev-list", "--count", "HEAD", "--not", "--remotes=origin"])?;
-    out.trim().parse::<u64>().map_err(|e| format!("rev-list count unreadable ({e}): {out:?}"))
+/// Count each side of two immutable tips. Arrival and branch publication use the
+/// same ancestry question; reachability from an unrelated branch is not delivery.
+fn history_counts(root: &Path, remote: &str, local: &str) -> Result<(u64, u64), String> {
+    let output = run_git(root, &["rev-list", "--left-right", "--count", &format!("{remote}...{local}")])?;
+    let counts = output.split_whitespace().map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("rev-list counts unreadable ({error}): {output:?}"))?;
+    match counts.as_slice() {
+        [remote, local] => Ok((*remote, *local)),
+        _ => Err(format!("rev-list expected two counts: {output:?}")),
+    }
+}
+
+/// The receiving node fetches THIS branch, not whichever origin ref contains HEAD.
+/// A missing branch needs publication even when its initial commit exists on main.
+fn needs_branch_publication(root: &Path) -> Result<bool, String> {
+    let branch = current_branch(root).ok_or_else(|| "cannot read current branch".to_string())?;
+    let local = run_git(root, &["rev-parse", "--verify", "HEAD"])?;
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    // A successful empty listing means absent. Do not turn a failed git read into
+    // absence; placement must retain its fail-closed error behavior.
+    let refs = run_git(root, &["for-each-ref", "--format=%(objectname) %(refname)", &remote_ref])?;
+    let remote = refs.lines().filter_map(|line| line.split_once(' '))
+        .find_map(|(sha, name)| (name == remote_ref).then_some(sha));
+    match remote {
+        Some(remote) => history_counts(root, remote, local.trim()).map(|(_, local_only)| local_only > 0),
+        None => Ok(true),
+    }
 }
 
 /// Is there work here that `origin` does not hold — so a move would strand it?
 ///
 /// A carryable checkout ([`Carry::Via`]) answers on the push's own terms: a dirty tree,
-/// or commits no `origin/*` ref reaches. A checkout that CANNOT carry but can hold work
+/// or work not published to its exact origin branch. A checkout that CANNOT carry but can hold work
 /// (a local-path origin — every `--shared` clone of this node's cache — or no origin)
 /// answers on what sits there, and a yes PINS her: moving would leave it behind with
 /// nothing able to fetch it. Only a checkout with no branch of hers at all answers `false`
@@ -274,8 +296,8 @@ pub fn has_unpushed_work(root: &Path) -> bool {
         // No origin refs exist to count commits against, so the dirty tree IS the work:
         // nothing ever commits into a checkout that cannot carry (see `sync_after_act`).
         Carry::NoOrigin => is_dirty(root).unwrap_or(true), // unwrap_or: unreadable = assume work, never move on a guess
-        Carry::Via(_) | Carry::LocalOrigin => match (is_dirty(root), unpushed_commit_count(root)) {
-            (Ok(dirty), Ok(ahead)) => dirty || ahead > 0,
+        Carry::Via(_) | Carry::LocalOrigin => match (is_dirty(root), needs_branch_publication(root)) {
+            (Ok(dirty), Ok(unpublished)) => dirty || unpublished,
             _ => true,
         },
     }
@@ -399,11 +421,11 @@ fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry) -> Pus
         Err(error) => return PushOutcome::CommitFailed { branch, error },
     }
     let sha = head_sha(root).unwrap_or_default(); // unwrap_or_default: an unborn branch has no sha; the push below says so
-    let ahead = match unpushed_commit_count(root) {
+    let unpublished = match needs_branch_publication(root) {
         Ok(n) => n,
         Err(error) => return PushOutcome::CommitFailed { branch, error },
     };
-    if ahead == 0 {
+    if !unpublished {
         return PushOutcome::Ok { branch, sha, committed, pushed: false };
     }
     match run_git(root, &["push", "-u", "origin", &branch]) {
@@ -567,16 +589,7 @@ fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
     // divergence: re-claiming must not reset reviewed work to an older origin.
     let (remote_only, local_only) = match head.as_deref() {
         Some(sha) => {
-            let counts = run_git(root, &["rev-list", "--left-right", "--count", &format!("{fetched}...{sha}")])
-                .and_then(|output| {
-                    let counts = output.split_whitespace().map(str::parse::<u64>)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|error| format!("rev-list counts unreadable ({error}): {output:?}"))?;
-                    match counts.as_slice() {
-                        [remote, local] => Ok((*remote, *local)),
-                        _ => Err(format!("rev-list expected two counts: {output:?}")),
-                    }
-                });
+            let counts = history_counts(root, &fetched, sha);
             match counts {
                 Ok(counts) => counts,
                 Err(error) => return ArrivalOutcome::Failed { branch: branch_s, stage: "rev_list", error },
@@ -772,6 +785,37 @@ mod tests {
         assert_eq!(git(&m.b, &["status", "--porcelain"]).trim(), "");
         assert!(matches!(arrive_over(&m.b, &m.branch, 8), ArrivalOutcome::Current { .. }), "a second arrival moves nothing");
         assert!(!has_unpushed_work(&m.b), "at origin's tip: nothing to carry");
+    }
+
+    // what this catches: another origin branch containing her commit does not deliver
+    // it to the card branch that the receiving node fetches (nor release placement).
+    #[test]
+    fn publication_and_placement_follow_the_exact_card_branch() {
+        let m = two_machines();
+        let (card, persona) = (Uuid::new_v4(), Uuid::new_v4());
+        note_acted_root(persona, m.a.clone());
+        // The new card branch is absent, although its base already exists on main.
+        assert!(move_blocker_over(persona, None).is_some());
+        assert!(matches!(sync(&m.a, card, "node-a"), PushOutcome::Ok { committed: false, pushed: true, .. }));
+        let base = head(&m.a);
+        assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).trim(), base);
+        assert!(move_blocker_over(persona, None).is_none());
+
+        std::fs::write(m.a.join("review.txt"), "reviewed successor\n").unwrap();
+        git(&m.a, &["add", "review.txt"]);
+        git(&m.a, &["commit", "-q", "-m", "reviewed successor"]);
+        let successor = head(&m.a);
+        git(&m.a, &["push", "-q", "origin", "HEAD:refs/heads/other"]);
+        assert_eq!(git(&m.a, &["rev-parse", "refs/remotes/origin/other"]).trim(), successor);
+        assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).trim(), base);
+        assert!(move_blocker_over(persona, None).is_some(), "another branch is not card delivery");
+        assert!(matches!(sync(&m.a, card, "node-a"), PushOutcome::Ok { committed: false, pushed: true, .. }));
+        assert!(move_blocker_over(persona, None).is_none(), "card publication releases placement");
+        assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).trim(), successor);
+        git(&m.b, &["checkout", "-q", "-B", &m.branch]);
+        assert!(matches!(arrive_over(&m.b, &m.branch, 40), ArrivalOutcome::Transferred { .. }));
+        assert_eq!(head(&m.b), successor);
+        assert_eq!(std::fs::read_to_string(m.b.join("review.txt")).unwrap(), "reviewed successor\n");
     }
 
     // what this catches: a push that cannot reach origin is a NAMED outcome, the work is
