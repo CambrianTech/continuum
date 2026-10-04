@@ -51,6 +51,12 @@ order. The first three are gates:
 7. **Footprint:** small enough that a node holds the mind plus the voice lane; a CPU tier
    for weak nodes, or a grid stream.
 8. **Grid-portable:** the same gene works on Metal, CUDA and CPU.
+9. **Quantizes well:** quality holds at Q4/Q8 (measured on `voice/selftest`, not
+   assumed), ideally quantized by our own forge with the alloy receipt. A well-quantized
+   larger model can beat a small unquantized one at the same footprint.
+10. **Newest first:** the field moves monthly (most of the candidates above shipped in
+    2026), so re-scan new open releases against this list before each voice milestone,
+    and take the seat on the bench.
 
 Breeze TTS 2 leads the leaderboard and fails gate 1. That is what "fit beats rank" means.
 
