@@ -58,7 +58,14 @@ const OWN_SUITE_EVENTS: [&str; 3] = ["push", "pull_request", "workflow_dispatch"
 /// hand (`workflow_dispatch`, an own-suite event); it moves main to canary's tip and its
 /// failure says nothing about the tip's code — a red run there must not read as a red
 /// tip and refuse every deploy on the fleet (the #4243 shape, by a different door).
-const NON_DEPLOY_WORKFLOW_PATHS: [&str; 1] = [".github/workflows/promote-main.yml"];
+/// `core-binaries` (#4691) PUBLISHES the tip's prebuilt core: 44-73 min per macOS leg,
+/// and `cancel-in-progress` on the branch, so every push cancels the previous tip's run.
+/// Counted as a verdict it held the M5 at `ChecksPending` for 2.5 h across five merges on
+/// 2026-10-04 (no deploy landed between 01:36Z and 04:00Z). It judges nothing about the
+/// code; the deploy consumer waits for its artifact on its own budget (#4702), and a tip
+/// whose suites are green is deployable the moment they are.
+const NON_DEPLOY_WORKFLOW_PATHS: [&str; 2] =
+    [".github/workflows/promote-main.yml", ".github/workflows/core-binaries.yml"];
 
 /// The tip's verdict plus what the read excluded — the numbers a probe wants when a
 /// verdict surprises someone reading the tick.
@@ -642,5 +649,36 @@ mod tests {
         assert_eq!(verdict(checks, Some(only_promote)), Checks::Unknown, "promote-main as the only suite = no own suite = wait, never green by absence");
         let own_failure = r#"{"check_runs":[{"name":"cargo test","status":"completed","conclusion":"failure","check_suite":{"id":22}}]}"#;
         assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "the push's own failure is still the tip's verdict");
+    }
+
+    // what this catches (M5 2026-10-04, 01:36Z-04:00Z): the core-binaries workflow (#4691)
+    // runs 44-73 min per macOS leg on every canary push and cancels the previous tip's
+    // run; counted as the tip's verdict it held the tracker at ChecksPending across five
+    // merges and nothing deployed for 2.5 h. It publishes an artifact; it judges no code.
+    // A tip whose own suites are green is green while core-binaries is in flight or
+    // cancelled, and a sha whose only suite is core-binaries is unknown, never green.
+    #[test]
+    fn a_core_binaries_run_is_never_the_tips_verdict() {
+        let runs = r#"{"workflow_runs":[
+            {"id":1,"event":"push","path":".github/workflows/core-binaries.yml","check_suite_id":31},
+            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
+        ]}"#;
+        let in_flight = r#"{"check_runs":[
+            {"name":"core binaries (macos-arm64)","status":"in_progress","check_suite":{"id":31}},
+            {"name":"core binaries (macos-x86_64)","status":"in_progress","check_suite":{"id":31}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(
+            parse_tip_checks(in_flight, Some(runs)),
+            TipChecks { checks: Checks::Green, total: 3, excluded: 2, filtered: true },
+            "core-binaries in flight is not a pending tip"
+        );
+        let cancelled = r#"{"check_runs":[
+            {"name":"core binaries (macos-arm64)","status":"completed","conclusion":"cancelled","check_suite":{"id":31}},
+            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
+        ]}"#;
+        assert_eq!(verdict(cancelled, Some(runs)), Checks::Green, "a cancelled core-binaries run (the next push superseded it) is not a red tip");
+        let only_binaries = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/core-binaries.yml","check_suite_id":31}]}"#;
+        assert_eq!(verdict(in_flight, Some(only_binaries)), Checks::Unknown, "core-binaries as the only suite = no own suite = wait, never green by absence");
     }
 }
