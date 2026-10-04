@@ -222,7 +222,7 @@ pub(crate) async fn ask_the_act_question(
                             crate::persona::work_burst::acts_since_last_write_since(
                                 rows,
                                 ctx.identity.peer_id.as_uuid(),
-                                crate::persona::work_pull::last_pull_ms(
+                                crate::persona::work_burst::last_hold_boundary_ms(
                                     ctx.identity.peer_id.as_uuid(),
                                 ),
                             )

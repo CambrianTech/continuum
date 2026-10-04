@@ -986,7 +986,7 @@ impl ActionCommand for WorkClaim {
             }
         }
         // A claim is a hold boundary for the governor, whichever path took it.
-        crate::persona::work_pull::note_hold_boundary(airc.peer_id().as_uuid());
+        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid());
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
@@ -1923,7 +1923,7 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
-        crate::persona::work_pull::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
+        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
         crate::persona::held_claims::forget(airc.peer_id().as_uuid(), airc.home(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }

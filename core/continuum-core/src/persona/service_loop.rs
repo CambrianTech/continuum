@@ -44,7 +44,6 @@
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::supervisor::HostedPersona;
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
-use crate::persona::work_pull::{try_pull_next_card, PullOutcome};
 use async_trait::async_trait;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -2594,40 +2593,10 @@ async fn run_self_cycle(
     // concludes it (`PASS: done`) — the autonomous loop the architecture always
     // promised ("the heartbeat advances my thread, not just reacts to pokes").
     // Returns early so she never ALSO spends a musing turn the same tick.
-    // NO CARD IN HAND → THE DECK FIRST. The act question below lets an idle citizen
-    // muse (read, run, look around) and, when she does, this tick returns before the
-    // pull — so a citizen who always finds something to look at never takes a card.
-    // Measured 2026-09-13 08:41–09:20Z: Joaquin, holding nothing, acted in her home
-    // room every tick (code/shell, code/read) while a seed-4 card sat open for 40
-    // minutes; not one pull attempt. Held work keeps its order (a holder's tick is
-    // her work turn; she pulls review cards after it, below).
-    // The deck is asked ONCE per cycle. An idle citizen asks it here, before the act
-    // question; if nothing was taken, the same answer stands after the question (the
-    // deck does not change in the seconds between) — the second pull below is for the
-    // citizen who had a focus room and never asked. Before this an idle cycle pulled
-    // twice: two room subscriptions, two live_rounds clones, two board reads per cycle
-    // per idle mind (2026-09-20).
-    let asked_deck_first = focus_room.is_none();
-    if asked_deck_first {
-        match try_pull_next_card(ctx, conversation).await {
-            PullOutcome::Pulled => {
-                crate::probe!(
-                    class = "persona.selftick.pulled_before_musing",
-                    persona = %ctx.identity.agent_name,
-                    "idle citizen took a card from the deck before the act question"
-                );
-                return true;
-            }
-            outcome @ (PullOutcome::DeferredWip | PullOutcome::Nothing) => {
-                crate::probe!(
-                    class = "persona.selftick.deck_first",
-                    persona = %ctx.identity.agent_name,
-                    outcome = ?outcome,
-                    "idle citizen asked the deck first — nothing taken; on to the act question"
-                );
-            }
-        }
-    }
+    // NO AUTOMATIC PULL, EVER (HER-LOOP row A; Joel 2026-10-04: "Kimi is not supposed
+    // to be doing benchmarks"). The self-cycle used to take a card off a working round's
+    // deck for an idle citizen; that is how ac49a7d5 landed in her hands without her
+    // choosing it. Boards are in her perception; claiming is her act, with her hands.
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
     if crate::persona::act_question::ask_the_act_question(
         ctx,
@@ -2646,29 +2615,6 @@ async fn run_self_cycle(
         // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
         *last_burst_fp = last_burst_fp.wrapping_add(1);
         return false;
-    }
-    // No held card to work — PULL the next Open card off the shared team deck
-    // (kanban pull, Joel 2026-09-02: a team chooses from the deck, they don't work
-    // a fixed pushed pile). Deterministic (the substrate pulls when she is free,
-    // not an LLM claim tool), WIP-limited to one by construction: once she holds
-    // the pulled card the held-work branch above works it and this branch won't
-    // fire again until it settles. Pulling IS engagement → hold the fast beat.
-    if asked_deck_first {
-        return false;
-    }
-    match try_pull_next_card(ctx, conversation).await {
-        PullOutcome::Pulled => {
-            return true;
-        }
-        // No slot on the roster (WIP = lanes): she watches the board this tick and
-        // takes no lane for ambient deliberation — the lanes stay with the holders
-        // (2026-09-05: with 8 holders on 5 lanes, idle self-ticks were taking
-        // nondirected lane permits while holders waited; a holder saw two work
-        // turns in forty minutes).
-        PullOutcome::DeferredWip => {
-            return false;
-        }
-        PullOutcome::Nothing => {}
     }
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
     // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
@@ -5481,13 +5427,6 @@ mod tests {
         }
     }
 
-    // what this catches: kanban PULL — an idle team member grabs the next Open
-    // card off the shared deck (Joel 2026-09-02: a team chooses from the deck,
-    // they don't each work a fixed pushed pile). Pins next_pullable_card (an Open
-    // card in a round the peer is a member of is pullable, puller becomes assignee)
-    // AND the deterministic pull wiring (try_pull_next_card claims it through the
-    // citizen handle — no LLM claim tool). Load-balancing + resilience follow from
-    // this being pull, not push.
     /// A Claimed card in `owner`'s hands — the minimal held-work fact.
     fn held_card(owner: Uuid) -> airc_lib::WorkCard {
         airc_lib::WorkCard {
@@ -5511,80 +5450,5 @@ mod tests {
             submissions: Vec::new(),
             last_submission_rejection: None,
         }
-    }
-
-    #[tokio::test]
-    async fn an_idle_member_pulls_the_next_card_off_the_shared_deck() {
-        use crate::cognition::bench_round;
-        let peer = Uuid::new_v4();
-        let round_id = Uuid::new_v4();
-        let card_uuid = Uuid::new_v4();
-        bench_round::open_round(
-            round_id,
-            "swe-bench-verified-mini",
-            bench_round::WorkDriver::Citizen,
-        );
-        // NO team, NO assignee: she is merely RESIDENT in the run room. That alone
-        // makes the deck hers to pull from — the months-old team/assignee gate that
-        // locked 7 of 12 residents out of a "shared" deck is what this pins shut.
-        bench_round::add_card(round_id, card_uuid);
-
-        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
-        let deck = bench_round::pullable_cards(peer, &resident);
-        assert_eq!(deck.len(), 1, "the run room's one Open card is on her deck");
-        assert_eq!(deck[0].card, card_uuid);
-        assert_eq!(deck[0].assignee, peer, "the puller becomes the assignee");
-        assert!(
-            bench_round::pullable_cards(peer, &Default::default()).is_empty(),
-            "a citizen standing in no run room pulls nothing — residency is the gate"
-        );
-
-        // BOARD TRUTH: the same card, already held by a teammate on the board (the
-        // stub offers nothing as claimable), is NOT pulled — no retry storm on a
-        // card someone else holds.
-        let hosted = hosted_with_heuristic(peer);
-        let held_elsewhere = StubAircCitizen::new(peer).with_rooms(vec![round_id]);
-        let conversation = ScriptedConversation::new().with_citizen(
-            Arc::new(held_elsewhere) as Arc<dyn crate::persona::airc_citizen::AircCitizen>
-        );
-        assert!(
-            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
-            "a card the board says is held is not pulled"
-        );
-
-        // WIP = 1: a citizen ALREADY holding a card pulls nothing, even with an Open
-        // card on her deck and the board offering it.
-        let busy = StubAircCitizen::new(peer)
-            .with_rooms(vec![round_id])
-            .with_claimable(vec![card_uuid])
-            .with_claims(vec![held_card(peer)]);
-        let conversation = ScriptedConversation::new()
-            .with_citizen(Arc::new(busy) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
-        assert!(
-            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
-            "a citizen holding a card never pulls a second one"
-        );
-
-        // An idle citizen (holds nothing) pulls it through the deterministic path.
-        let stub = StubAircCitizen::new(peer)
-            .with_rooms(vec![round_id])
-            .with_claimable(vec![card_uuid]);
-        let recorder = stub.claim_recorder();
-        let conversation = ScriptedConversation::new()
-            .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
-
-        let pulled = try_pull_next_card(&hosted, &conversation).await;
-        assert_eq!(
-            pulled,
-            PullOutcome::Pulled,
-            "an idle member pulls the next Open card off the deck"
-        );
-        let claimed = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        assert_eq!(claimed.len(), 1, "exactly one pull, got {claimed:?}");
-        assert_eq!(
-            claimed[0].as_uuid(),
-            card_uuid,
-            "she pulled the deck's Open card"
-        );
     }
 }
