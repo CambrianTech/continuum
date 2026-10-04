@@ -22,7 +22,12 @@ pub const RELEASE_DOWNLOAD_BASE: &str =
 
 /// The four bins every archive carries, kept together in one directory: the core resolves
 /// `forge-custodian` as its own sibling.
-pub const REQUIRED_BINS: [&str; 4] = ["continuum-core-server", "continuum", "continuum-mcp", "forge-custodian"];
+pub const REQUIRED_BINS: [&str; 4] = [
+    "continuum-core-server",
+    "continuum",
+    "continuum-mcp",
+    "forge-custodian",
+];
 
 /// The files whose change changes the binary. A tip that touches none of them since the
 /// running build is not a deploy: the node keeps its core, and CI built nothing for it.
@@ -59,7 +64,8 @@ pub fn release_tag(sha: &str) -> Option<String> {
 
 /// The manifest URL for `sha` on `platform`.
 pub fn manifest_url(sha: &str, platform: &str) -> Option<String> {
-    release_tag(sha).map(|tag| format!("{RELEASE_DOWNLOAD_BASE}/{tag}/continuum-core-{platform}.json"))
+    release_tag(sha)
+        .map(|tag| format!("{RELEASE_DOWNLOAD_BASE}/{tag}/continuum-core-{platform}.json"))
 }
 
 /// The `.json` CI writes beside each archive.
@@ -83,10 +89,16 @@ pub fn manifest_verdict(
     local_features: &str,
 ) -> Result<(), String> {
     if manifest.platform != platform {
-        return Err(format!("artifact is for {}, this node is {platform}", manifest.platform));
+        return Err(format!(
+            "artifact is for {}, this node is {platform}",
+            manifest.platform
+        ));
     }
     if !(manifest.git_sha.len() == 40 && sha_matches(&manifest.git_sha, tip)) {
-        return Err(format!("artifact is build {}, the tip is {tip}", manifest.git_sha));
+        return Err(format!(
+            "artifact is build {}, the tip is {tip}",
+            manifest.git_sha
+        ));
     }
     let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     if words(&manifest.features) != words(local_features) {
@@ -96,9 +108,15 @@ pub fn manifest_verdict(
         ));
     }
     if !(manifest.sha256.len() == 64 && manifest.sha256.bytes().all(|b| b.is_ascii_hexdigit())) {
-        return Err(format!("artifact checksum `{}` is not a sha256", manifest.sha256));
+        return Err(format!(
+            "artifact checksum `{}` is not a sha256",
+            manifest.sha256
+        ));
     }
-    if let Some(missing) = REQUIRED_BINS.iter().find(|b| !manifest.bins.iter().any(|m| m == *b)) {
+    if let Some(missing) = REQUIRED_BINS
+        .iter()
+        .find(|b| !manifest.bins.iter().any(|m| m == *b))
+    {
         return Err(format!("artifact has no {missing}"));
     }
     Ok(())
@@ -108,10 +126,12 @@ pub fn manifest_verdict(
 /// without a deploy.
 pub fn touches_build_inputs<'a>(changed: impl IntoIterator<Item = &'a str>) -> bool {
     changed.into_iter().any(|path| {
-        BUILD_INPUTS.iter().any(|input| match input.strip_suffix('/') {
-            Some(dir) => path.starts_with(&format!("{dir}/")),
-            None => path == *input,
-        })
+        BUILD_INPUTS
+            .iter()
+            .any(|input| match input.strip_suffix('/') {
+                Some(dir) => path.starts_with(&format!("{dir}/")),
+                None => path == *input,
+            })
     })
 }
 
@@ -164,16 +184,41 @@ mod tests {
     #[test]
     fn only_the_exact_build_for_this_node_is_accepted() {
         let local = "--no-default-features  --features livekit-webrtc,llama/mac-cpu-only";
-        assert_eq!(manifest_verdict(&manifest(), TIP, "macos-x86_64", local), Ok(()), "whitespace is not a difference");
-        assert!(manifest_verdict(&manifest(), &TIP.replace('5', "6"), "macos-x86_64", local).is_err(), "another commit");
-        assert!(manifest_verdict(&manifest(), TIP, "macos-arm64", local).is_err(), "another platform");
-        assert!(manifest_verdict(&manifest(), TIP, "macos-x86_64", "--features metal,accelerate").is_err(), "another feature set");
+        assert_eq!(
+            manifest_verdict(&manifest(), TIP, "macos-x86_64", local),
+            Ok(()),
+            "whitespace is not a difference"
+        );
+        assert!(
+            manifest_verdict(&manifest(), &TIP.replace('5', "6"), "macos-x86_64", local).is_err(),
+            "another commit"
+        );
+        assert!(
+            manifest_verdict(&manifest(), TIP, "macos-arm64", local).is_err(),
+            "another platform"
+        );
+        assert!(
+            manifest_verdict(
+                &manifest(),
+                TIP,
+                "macos-x86_64",
+                "--features metal,accelerate"
+            )
+            .is_err(),
+            "another feature set"
+        );
         let mut short = manifest();
         short.git_sha = TIP[..9].into();
-        assert!(manifest_verdict(&short, TIP, "macos-x86_64", local).is_err(), "a short sha is not provenance");
+        assert!(
+            manifest_verdict(&short, TIP, "macos-x86_64", local).is_err(),
+            "a short sha is not provenance"
+        );
         let mut partial = manifest();
         partial.bins.retain(|b| b != "forge-custodian");
-        assert!(manifest_verdict(&partial, TIP, "macos-x86_64", local).is_err(), "a sibling bin is missing");
+        assert!(
+            manifest_verdict(&partial, TIP, "macos-x86_64", local).is_err(),
+            "a sibling bin is missing"
+        );
     }
 
     // what this catches: a docs-only tip forcing every node to rebuild (and CI to build) a
@@ -181,9 +226,18 @@ mod tests {
     // Cargo.lock being treated as not-a-build (#4691 first shipped with that hole).
     #[test]
     fn only_a_change_to_a_build_input_is_a_deploy() {
-        assert!(!touches_build_inputs(["README.md", "docs/planning/VOICE-ENGINE-PLAN.md"]));
-        assert!(!touches_build_inputs(["core-notes.md", "coreutils/x"]), "a prefix is a directory, not a substring");
-        assert!(touches_build_inputs(["docs/x.md", "core/continuum-core/src/lib.rs"]));
+        assert!(!touches_build_inputs([
+            "README.md",
+            "docs/planning/VOICE-ENGINE-PLAN.md"
+        ]));
+        assert!(
+            !touches_build_inputs(["core-notes.md", "coreutils/x"]),
+            "a prefix is a directory, not a substring"
+        );
+        assert!(touches_build_inputs([
+            "docs/x.md",
+            "core/continuum-core/src/lib.rs"
+        ]));
         assert!(touches_build_inputs(["Cargo.lock"]));
         assert!(touches_build_inputs(["tools/scripts/lib/core-features.sh"]));
     }
@@ -193,13 +247,19 @@ mod tests {
     #[test]
     fn ci_builds_on_every_build_input() {
         let workflow = include_str!("../../../.github/workflows/core-binaries.yml");
-        let push = workflow.split("  push:").nth(1).expect("core-binaries.yml has a push trigger");
+        let push = workflow
+            .split("  push:")
+            .nth(1)
+            .expect("core-binaries.yml has a push trigger");
         for input in BUILD_INPUTS {
             let pattern = match input.strip_suffix('/') {
                 Some(dir) => format!("- '{dir}/**'"),
                 None => format!("- '{input}'"),
             };
-            assert!(push.contains(&pattern), "core-binaries.yml push.paths lacks {pattern}");
+            assert!(
+                push.contains(&pattern),
+                "core-binaries.yml push.paths lacks {pattern}"
+            );
         }
     }
 
@@ -207,12 +267,25 @@ mod tests {
     // or waiting forever for a platform CI never builds.
     #[test]
     fn a_missing_artifact_waits_only_while_ci_can_still_deliver() {
-        assert!(matches!(when_artifact_missing(Some("macos-x86_64"), 20 * 60), MissingArtifact::Wait(_)));
-        assert!(matches!(when_artifact_missing(Some("macos-x86_64"), CI_PUBLISH_BUDGET_SECS), MissingArtifact::BuildFromSource(_)));
-        assert!(matches!(when_artifact_missing(None, 0), MissingArtifact::BuildFromSource(_)));
+        assert!(matches!(
+            when_artifact_missing(Some("macos-x86_64"), 20 * 60),
+            MissingArtifact::Wait(_)
+        ));
+        assert!(matches!(
+            when_artifact_missing(Some("macos-x86_64"), CI_PUBLISH_BUDGET_SECS),
+            MissingArtifact::BuildFromSource(_)
+        ));
+        assert!(matches!(
+            when_artifact_missing(None, 0),
+            MissingArtifact::BuildFromSource(_)
+        ));
         assert_eq!(platform_key("macos", "x86_64"), Some("macos-x86_64"));
         assert_eq!(platform_key("linux", "x86_64"), None);
         assert_eq!(release_tag(TIP).as_deref(), Some("canary-54cbe937f012"));
-        assert_eq!(release_tag("54cbe937f"), None, "a short sha cannot name a release");
+        assert_eq!(
+            release_tag("54cbe937f"),
+            None,
+            "a short sha cannot name a release"
+        );
     }
 }

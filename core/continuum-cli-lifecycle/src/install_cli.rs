@@ -72,7 +72,8 @@ pub fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<Cli
             out.push(CliDrift::Missing(name.to_string()));
         } else if digest_file(&file)? != want {
             out.push(CliDrift::Stale(name.to_string()));
-        } else if name == "uu" && alias_is_duplicate(&dir.join(cli_file_name("continuum")), &file)? {
+        } else if name == "uu" && alias_is_duplicate(&dir.join(cli_file_name("continuum")), &file)?
+        {
             out.push(CliDrift::DuplicateAlias);
         }
     }
@@ -84,21 +85,35 @@ pub fn cli_drift(slot_cli: &Path, dir: &Path, user_path: &str) -> Result<Vec<Cli
 
 #[cfg(windows)]
 fn alias_is_duplicate(primary: &Path, alias: &Path) -> Result<bool, String> {
-    if !primary.is_file() { return Ok(true); }
+    if !primary.is_file() {
+        return Ok(true);
+    }
     same_file::is_same_file(primary, alias)
         .map(|same| !same)
-        .map_err(|e| format!("cannot compare CLI alias {} with {}: {e}", alias.display(), primary.display()))
+        .map_err(|e| {
+            format!(
+                "cannot compare CLI alias {} with {}: {e}",
+                alias.display(),
+                primary.display()
+            )
+        })
 }
 
 #[cfg(not(windows))]
-fn alias_is_duplicate(_primary: &Path, _alias: &Path) -> Result<bool, String> { Ok(false) }
+fn alias_is_duplicate(_primary: &Path, _alias: &Path) -> Result<bool, String> {
+    Ok(false)
+}
 
 /// Does a PATH value name `dir`? Trailing separators and case (on Windows) are not a
 /// difference; `~` is not expanded because the stored user PATH never carries it.
 pub fn path_contains(path_value: &str, dir: &Path) -> bool {
     let norm = |s: &str| {
         let t = s.trim().trim_end_matches(['\\', '/']).replace('/', "\\");
-        if cfg!(windows) { t.to_ascii_lowercase() } else { t }
+        if cfg!(windows) {
+            t.to_ascii_lowercase()
+        } else {
+            t
+        }
     };
     let want = norm(&dir.to_string_lossy());
     std::env::split_paths(path_value).any(|p| norm(&p.to_string_lossy()) == want)
@@ -108,16 +123,28 @@ pub fn path_contains(path_value: &str, dir: &Path) -> bool {
 /// file open (Windows: a running CLI's image is locked; the installer waits the same
 /// ten seconds rather than terminating a user's command).
 pub fn copy_with_retry(from: &Path, to: &Path, budget: std::time::Duration) -> Result<(), String> {
-    replace_with_retry(from, to, budget, |source, target| std::fs::copy(source, target).map(|_| ()))
+    replace_with_retry(from, to, budget, |source, target| {
+        std::fs::copy(source, target).map(|_| ())
+    })
 }
 
 /// Give the short Windows name another directory entry for the same executable.
-pub fn hard_link_with_retry(from: &Path, to: &Path, budget: std::time::Duration) -> Result<(), String> {
-    replace_with_retry(from, to, budget, |source, target| std::fs::hard_link(source, target))
+pub fn hard_link_with_retry(
+    from: &Path,
+    to: &Path,
+    budget: std::time::Duration,
+) -> Result<(), String> {
+    replace_with_retry(from, to, budget, |source, target| {
+        std::fs::hard_link(source, target)
+    })
 }
 
-fn replace_with_retry(from: &Path, to: &Path, budget: std::time::Duration,
-    create: impl Fn(&Path, &Path) -> std::io::Result<()>) -> Result<(), String> {
+fn replace_with_retry(
+    from: &Path,
+    to: &Path,
+    budget: std::time::Duration,
+    create: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + budget;
     loop {
         // Move the live file aside first: a mapped image cannot be overwritten, but it
@@ -153,38 +180,84 @@ mod tests {
         std::fs::write(&slot, b"release-bytes").unwrap(); // unwrap: the test's own file
         let bin = dir.path().join("local").join("bin");
         std::fs::create_dir_all(&bin).unwrap(); // unwrap: the test's own dir
-        let on_path = format!("{}{}{}", r"C:\other", if cfg!(windows) { ";" } else { ":" }, bin.display());
+        let on_path = format!(
+            "{}{}{}",
+            r"C:\other",
+            if cfg!(windows) { ";" } else { ":" },
+            bin.display()
+        );
 
         let d = cli_drift(&slot, &bin, "").unwrap(); // unwrap: the valid case — an Err here IS the failure
         assert_eq!(
             d,
-            vec![CliDrift::Missing("continuum".into()), CliDrift::Missing("uu".into()), CliDrift::NotOnPath(bin.clone())]
+            vec![
+                CliDrift::Missing("continuum".into()),
+                CliDrift::Missing("uu".into()),
+                CliDrift::NotOnPath(bin.clone())
+            ]
         );
 
         std::fs::write(bin.join(cli_file_name("continuum")), b"release-bytes").unwrap(); // unwrap: the test's own file
         std::fs::write(bin.join(cli_file_name("uu")), b"yesterday").unwrap(); // unwrap: the test's own file
         let d = cli_drift(&slot, &bin, &on_path).unwrap(); // unwrap: the valid case — an Err here IS the failure
-        assert_eq!(d, vec![CliDrift::Stale("uu".into())], "a stale alias is named; the dir is on PATH");
+        assert_eq!(
+            d,
+            vec![CliDrift::Stale("uu".into())],
+            "a stale alias is named; the dir is on PATH"
+        );
 
-        copy_with_retry(&slot, &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap(); // unwrap: the valid case — an Err here IS the failure
+        copy_with_retry(
+            &slot,
+            &bin.join(cli_file_name("uu")),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap(); // unwrap: the valid case — an Err here IS the failure
         #[cfg(windows)]
-        assert_eq!(cli_drift(&slot, &bin, &on_path).unwrap(), vec![CliDrift::DuplicateAlias]);
+        assert_eq!(
+            cli_drift(&slot, &bin, &on_path).unwrap(),
+            vec![CliDrift::DuplicateAlias]
+        );
         #[cfg(windows)]
-        hard_link_with_retry(&bin.join(cli_file_name("continuum")), &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap();
-        assert!(cli_drift(&slot, &bin, &on_path).unwrap().is_empty(), "converged is silent"); // unwrap: the valid case — an Err here IS the failure
+        hard_link_with_retry(
+            &bin.join(cli_file_name("continuum")),
+            &bin.join(cli_file_name("uu")),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(
+            cli_drift(&slot, &bin, &on_path).unwrap().is_empty(),
+            "converged is silent"
+        ); // unwrap: the valid case — an Err here IS the failure
         #[cfg(windows)]
         {
             // Removing only the primary name must repair both entries in one install.
             let primary = bin.join(cli_file_name("continuum"));
             std::fs::remove_file(&primary).unwrap();
-            assert_eq!(cli_drift(&slot, &bin, &on_path).unwrap(), vec![CliDrift::Missing("continuum".into()), CliDrift::DuplicateAlias]);
+            assert_eq!(
+                cli_drift(&slot, &bin, &on_path).unwrap(),
+                vec![
+                    CliDrift::Missing("continuum".into()),
+                    CliDrift::DuplicateAlias
+                ]
+            );
             copy_with_retry(&slot, &primary, std::time::Duration::from_secs(1)).unwrap();
-            hard_link_with_retry(&primary, &bin.join(cli_file_name("uu")), std::time::Duration::from_secs(1)).unwrap();
+            hard_link_with_retry(
+                &primary,
+                &bin.join(cli_file_name("uu")),
+                std::time::Duration::from_secs(1),
+            )
+            .unwrap();
             assert!(cli_drift(&slot, &bin, &on_path).unwrap().is_empty());
         }
-        assert!(bin.join("uu.prev").is_file() || !cfg!(windows), "the old copy is moved aside, not deleted under a running process");
+        assert!(
+            bin.join("uu.prev").is_file() || !cfg!(windows),
+            "the old copy is moved aside, not deleted under a running process"
+        );
 
         let with_slash = format!("{}{}", bin.display(), std::path::MAIN_SEPARATOR);
-        assert!(path_contains(&with_slash, &bin), "a trailing separator is not a different dir");
+        assert!(
+            path_contains(&with_slash, &bin),
+            "a trailing separator is not a different dir"
+        );
     }
 }

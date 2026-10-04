@@ -34,7 +34,8 @@ use continuum_client::{ClientError, Connection};
 use continuum_cli_lifecycle::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use continuum_cli_lifecycle::deploy_provenance::{
-    cli_self_build, cli_staleness_note, deploy_verdict, sha_matches, CliSelfBuild,
+    cli_replaced_this_run, cli_self_build, cli_staleness_note, deploy_verdict, sha_matches,
+    CliSelfBuild,
 };
 use serde_json::Value;
 
@@ -1063,6 +1064,12 @@ struct RebootOptions {
     require_engine_receipt: bool,
     /// Installer-to-reboot transfer binds the entire selected release.
     service_descriptor_sha: Option<String>,
+    /// The caller already installed the CLI that ships with `prebuilt` (deploy-consume's
+    /// CI companions, card 50ca737e). Not a CLI flag. Without it, a download deploy that
+    /// DID replace the CLI reported "⚠ STALE CLI ... nothing in this run replaced it" and
+    /// told the operator to `reboot`, which on a slow node is a multi-hour compile that
+    /// fixes nothing (IntelMac, 2026-10-04, card cca11352).
+    cli_installed: bool,
 }
 
 impl RebootOptions {
@@ -2050,6 +2057,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         None => None,
     };
     let requested_source_build = prebuilt.is_none();
+    let cli_installed = options.cli_installed;
     if options.validate_only {
         let candidate = prebuilt
             .as_ref()
@@ -2391,9 +2399,12 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // installed node with no checkout nothing was rebuilt, and on Windows `cli_self_build`
     // deliberately skips. Getting this wrong in either direction re-creates the noise this
     // flag exists to remove, or hides a genuinely stale CLI behind a reassuring handoff line.
-    let rebuilt_cli = requested_source_build
-        && locate_start_script().is_ok()
-        && matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild);
+    let rebuilt_cli = cli_replaced_this_run(
+        cli_installed,
+        requested_source_build,
+        locate_start_script().is_ok(),
+        matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
+    );
     verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await
 }
 
@@ -4185,7 +4196,9 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 // A downloaded core lives in the artifact cache; launchd execs only its slot,
                 // so it is STAGED into the slot after the stop, like a warm build's artifact.
                 let stage_prebuilt = prebuilt.is_some();
-                reboot(RebootOptions { service, prebuilt, stage_prebuilt, ..Default::default() }).await
+                // install_ci_companions above already put this core's CLI on PATH.
+                let cli_installed = prebuilt.is_some();
+                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await
             }
             .await;
             match &attempt {

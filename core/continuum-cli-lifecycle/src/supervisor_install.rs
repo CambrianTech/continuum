@@ -254,7 +254,11 @@ pub enum Drift {
 
 /// The drift of both tasks from what `plan` would register. Pure; the elevated
 /// step runs only when this is non-empty, and the verify after it demands empty.
-pub fn drift(core: &TaskReport, deploy: &TaskReport, plan: &SupervisorPlan) -> Vec<(&'static str, Drift)> {
+pub fn drift(
+    core: &TaskReport,
+    deploy: &TaskReport,
+    plan: &SupervisorPlan,
+) -> Vec<(&'static str, Drift)> {
     let mut out = Vec::new();
     let core_spec = TaskSpec::core(plan);
     for d in drift_of(core, &core_spec, "MSFT_TaskBootTrigger") {
@@ -373,7 +377,10 @@ impl ArmReport {
         Self::default()
     }
     pub fn read_only(drift: usize) -> Self {
-        Self { drift_before: drift, drift_after: drift }
+        Self {
+            drift_before: drift,
+            drift_after: drift,
+        }
     }
 }
 
@@ -435,11 +442,15 @@ impl InstallOptions {
         if options.check && options.elevated {
             return Err("install: --check reads; --elevated writes — not both".to_string());
         }
-        if options.elevated != options.plan.is_some() || options.elevated != options.plan_sha.is_some() {
+        if options.elevated != options.plan.is_some()
+            || options.elevated != options.plan_sha.is_some()
+        {
             return Err("install: --elevated, --plan and --plan-sha go together (the elevated child registers exactly one plan, bound by its digest)".to_string());
         }
         if options.elevated && (options.cli || options.core || options.airc || options.user) {
-            return Err("install: the elevated child registers the supervisor plan only".to_string());
+            return Err(
+                "install: the elevated child registers the supervisor plan only".to_string(),
+            );
         }
         Ok(options)
     }
@@ -510,7 +521,8 @@ pub use crate::process::quiet_command;
 pub fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
     let mut bytes = vec![0xFF, 0xFE];
     bytes.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
-    std::fs::write(path, bytes).map_err(|e| format!("install: cannot write {}: {e}", path.display()))
+    std::fs::write(path, bytes)
+        .map_err(|e| format!("install: cannot write {}: {e}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -579,7 +591,10 @@ pub fn run_installer_script(shell: &std::path::Path, script: &str) -> Result<(),
         } else {
             &diagnostic
         };
-        return Err(format!("installer operation failed ({}): {detail}", output.status));
+        return Err(format!(
+            "installer operation failed ({}): {detail}",
+            output.status
+        ));
     }
     // Successful native commands may still have warnings; do not swallow them.
     if !diagnostic.is_empty() {
@@ -610,7 +625,12 @@ pub fn plain_stderr(raw: &str) -> String {
             .replace("&amp;", "&");
         let text = text.trim();
         // Keep the message lines; drop PowerShell's position/category trailer.
-        if !text.is_empty() && !text.starts_with('+') && !text.starts_with("At line:") && !text.contains("CategoryInfo") && !text.contains("FullyQualifiedErrorId") {
+        if !text.is_empty()
+            && !text.starts_with('+')
+            && !text.starts_with("At line:")
+            && !text.contains("CategoryInfo")
+            && !text.contains("FullyQualifiedErrorId")
+        {
             lines.push(text.to_string());
         }
         rest = &body[end..];
@@ -706,12 +726,14 @@ pub async fn install_supervisor(
         "→ one elevation to register both tasks under the contract (S4U, boot / every {DEPLOY_EVERY_MIN} min); the core and builds stay unelevated"
     );
 
-    let plan_path = std::env::temp_dir().join(format!("continuum-supervisor-{}.json", std::process::id()));
+    let plan_path =
+        std::env::temp_dir().join(format!("continuum-supervisor-{}.json", std::process::id()));
     let receipt = receipt_path(&plan_path);
     let _ = std::fs::remove_file(&receipt);
     let plan_bytes = serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?;
     let plan_sha = plan_digest(&plan_bytes);
-    std::fs::write(&plan_path, &plan_bytes).map_err(|e| format!("install: cannot write the plan: {e}"))?;
+    std::fs::write(&plan_path, &plan_bytes)
+        .map_err(|e| format!("install: cannot write the plan: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("install: own path: {e}"))?;
     let quote = |s: String| s.replace('\'', "''");
     let script = format!(
@@ -753,7 +775,10 @@ pub async fn install_supervisor(
         "✓ supervisor: converged — {CORE_TASK} S4U at boot (state {}), {DEPLOY_TASK} S4U every {DEPLOY_EVERY_MIN} min (state {}); the caller has read/execute on both",
         core.state, deploy.state
     );
-    Ok(ArmReport { drift_before: before.len(), drift_after: 0 })
+    Ok(ArmReport {
+        drift_before: before.len(),
+        drift_after: 0,
+    })
 }
 
 /// The elevated child: register exactly the plan, grant the caller read/execute,
@@ -761,7 +786,8 @@ pub async fn install_supervisor(
 #[cfg(windows)]
 pub fn install_supervisor_elevated(plan_path: &Path, plan_sha: &str) -> Result<(), String> {
     let receipt = receipt_path(plan_path);
-    let result = read_bound_plan(plan_path, plan_sha).and_then(|plan| register_plan(plan_path, plan));
+    let result =
+        read_bound_plan(plan_path, plan_sha).and_then(|plan| register_plan(plan_path, plan));
     let text = match &result {
         Ok(lines) => lines.join("\n"),
         Err(why) => format!("elevated registration failed: {why}"),
@@ -774,7 +800,8 @@ pub fn install_supervisor_elevated(plan_path: &Path, plan_sha: &str) -> Result<(
 /// the digest on this process's argv. Pure and pinned — the one gate between "a file
 /// in %TEMP%" and "a task that runs as some account at boot".
 pub fn read_bound_plan(plan_path: &Path, plan_sha: &str) -> Result<SupervisorPlan, String> {
-    let bytes = std::fs::read(plan_path).map_err(|e| format!("cannot read the plan {}: {e}", plan_path.display()))?;
+    let bytes = std::fs::read(plan_path)
+        .map_err(|e| format!("cannot read the plan {}: {e}", plan_path.display()))?;
     let actual = plan_digest(&bytes);
     if !actual.eq_ignore_ascii_case(plan_sha) {
         return Err(format!(
@@ -868,7 +895,10 @@ mod tests {
             user_sid: spec.user_sid.clone(),
             triggers: vec![trigger.to_string()],
             actions: 1,
-            sddl: format!("D:(A;;0x1200a9;;;{})(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)", spec.user_sid),
+            sddl: format!(
+                "D:(A;;0x1200a9;;;{})(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)",
+                spec.user_sid
+            ),
         }
     }
 
@@ -883,25 +913,46 @@ mod tests {
         let core = TaskSpec::core(&p).to_xml();
         assert!(core.contains("<LogonType>S4U</LogonType>"));
         assert!(core.contains("<RunLevel>LeastPrivilege</RunLevel>"));
-        assert!(core.contains("<BootTrigger>"), "the supervisor fires at boot, not at logon");
+        assert!(
+            core.contains("<BootTrigger>"),
+            "the supervisor fires at boot, not at logon"
+        );
         assert!(!core.contains("LogonTrigger"));
-        assert!(core.contains("<RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>"));
+        assert!(core.contains(
+            "<RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>"
+        ));
         assert!(core.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
         assert!(core.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
-        assert!(core.contains("<Arguments>-NoProfile -File &quot;C:\\slot\\run-service-hidden.ps1&quot;"), "quotes escaped, not dropped");
+        assert!(
+            core.contains(
+                "<Arguments>-NoProfile -File &quot;C:\\slot\\run-service-hidden.ps1&quot;"
+            ),
+            "quotes escaped, not dropped"
+        );
         assert!(core.contains("<UserId>S-1-5-21-1-2-3-1004</UserId>"));
 
         let deploy = TaskSpec::deploy(&p, "2026-09-19T12:00:00".to_string()).to_xml();
-        assert!(deploy.contains("<LogonType>S4U</LogonType>"), "the consumer rides the same principal");
+        assert!(
+            deploy.contains("<LogonType>S4U</LogonType>"),
+            "the consumer rides the same principal"
+        );
         assert!(deploy.contains("<TimeTrigger><StartBoundary>2026-09-19T12:00:00</StartBoundary>"));
-        assert!(deploy.contains("<Interval>PT10M</Interval><StopAtDurationEnd>false</StopAtDurationEnd>"));
+        assert!(deploy
+            .contains("<Interval>PT10M</Interval><StopAtDurationEnd>false</StopAtDurationEnd>"));
         assert!(deploy.contains("<ExecutionTimeLimit>PT4H</ExecutionTimeLimit>"));
-        assert!(!deploy.contains("RestartOnFailure"), "a failed deploy tick is the ledger's business, not a retry loop");
-        assert!(deploy.contains("<Command>C:\\slot\\continuum.exe</Command><Arguments>deploy-consume</Arguments>"));
+        assert!(
+            !deploy.contains("RestartOnFailure"),
+            "a failed deploy tick is the ledger's business, not a retry loop"
+        );
+        assert!(deploy.contains(
+            "<Command>C:\\slot\\continuum.exe</Command><Arguments>deploy-consume</Arguments>"
+        ));
 
         let mut odd = p.clone();
         odd.cli = r"C:\a&b\continuum.exe".to_string();
-        assert!(TaskSpec::deploy(&odd, String::new()).to_xml().contains("C:\\a&amp;b\\continuum.exe"));
+        assert!(TaskSpec::deploy(&odd, String::new())
+            .to_xml()
+            .contains("C:\\a&amp;b\\continuum.exe"));
     }
 
     // what this catches: the verdict the elevation is gated on and verified by. The
@@ -925,27 +976,45 @@ mod tests {
             drift(&interactive, &deploy, &p),
             vec![
                 (CORE_TASK, Drift::LogonType("Interactive".to_string())),
-                (CORE_TASK, Drift::Triggers(vec!["MSFT_TaskLogonTrigger".to_string()])),
+                (
+                    CORE_TASK,
+                    Drift::Triggers(vec!["MSFT_TaskLogonTrigger".to_string()])
+                ),
             ]
         );
 
-        assert_eq!(drift(&core, &TaskReport::default(), &p), vec![(DEPLOY_TASK, Drift::Absent)]);
+        assert_eq!(
+            drift(&core, &TaskReport::default(), &p),
+            vec![(DEPLOY_TASK, Drift::Absent)]
+        );
 
         let mut theirs = core.clone();
         theirs.user_sid = "S-1-5-21-9-9-9-1001".to_string();
         theirs.sddl = "D:(A;;0x1200a9;;;S-1-5-21-9-9-9-1001)".to_string();
         assert_eq!(
             drift(&theirs, &deploy, &p),
-            vec![(CORE_TASK, Drift::Principal("S-1-5-21-9-9-9-1001".to_string())), (CORE_TASK, Drift::CallerAccess)]
+            vec![
+                (
+                    CORE_TASK,
+                    Drift::Principal("S-1-5-21-9-9-9-1001".to_string())
+                ),
+                (CORE_TASK, Drift::CallerAccess)
+            ]
         );
 
         let mut other_release = core.clone();
         other_release.arguments = "-File other.ps1".to_string();
-        assert_eq!(drift(&other_release, &deploy, &p), vec![(CORE_TASK, Drift::Action)]);
+        assert_eq!(
+            drift(&other_release, &deploy, &p),
+            vec![(CORE_TASK, Drift::Action)]
+        );
 
         let mut spelled = core.clone();
         spelled.command = spelled.command.to_ascii_uppercase();
-        assert!(drift(&spelled, &deploy, &p).is_empty(), "case and separators are not drift");
+        assert!(
+            drift(&spelled, &deploy, &p).is_empty(),
+            "case and separators are not drift"
+        );
     }
 
     // what this catches: the ACL read the handoff depends on — RX in either SDDL
@@ -954,14 +1023,35 @@ mod tests {
     #[test]
     fn caller_access_reads_grants_and_fails_closed_on_deny() {
         let sid = "S-1-5-21-1-2-3-1004";
-        assert!(caller_has_read_execute(&format!("D:(A;;0x1200a9;;;{sid})(A;ID;FA;;;BA)"), sid));
-        assert!(caller_has_read_execute(&format!("D:(A;;FRFX;;;{sid})"), sid));
+        assert!(caller_has_read_execute(
+            &format!("D:(A;;0x1200a9;;;{sid})(A;ID;FA;;;BA)"),
+            sid
+        ));
+        assert!(caller_has_read_execute(
+            &format!("D:(A;;FRFX;;;{sid})"),
+            sid
+        ));
         assert!(caller_has_read_execute(&format!("D:(A;;FA;;;{sid})"), sid));
-        assert!(!caller_has_read_execute("D:(A;ID;FA;;;BA)(A;ID;0x1f019f;;;SY)", sid), "admins' inherited ACEs are not the caller's grant");
-        assert!(!caller_has_read_execute(&format!("D:(A;;FR;;;{sid})"), sid), "read without execute cannot run the task");
-        assert!(caller_has_read_execute(&format!("D:(A;;0x1f01ff;;;{sid})"), sid), "full control as a mask contains RX");
-        assert!(!caller_has_read_execute(&format!("D:(A;;0x120089;;;{sid})"), sid), "a read-only mask lacks execute");
-        assert!(!caller_has_read_execute(&format!("D:(D;;GX;;;{sid})(A;;0x1200a9;;;{sid})"), sid), "a deny outranks the grant");
+        assert!(
+            !caller_has_read_execute("D:(A;ID;FA;;;BA)(A;ID;0x1f019f;;;SY)", sid),
+            "admins' inherited ACEs are not the caller's grant"
+        );
+        assert!(
+            !caller_has_read_execute(&format!("D:(A;;FR;;;{sid})"), sid),
+            "read without execute cannot run the task"
+        );
+        assert!(
+            caller_has_read_execute(&format!("D:(A;;0x1f01ff;;;{sid})"), sid),
+            "full control as a mask contains RX"
+        );
+        assert!(
+            !caller_has_read_execute(&format!("D:(A;;0x120089;;;{sid})"), sid),
+            "a read-only mask lacks execute"
+        );
+        assert!(
+            !caller_has_read_execute(&format!("D:(D;;GX;;;{sid})(A;;0x1200a9;;;{sid})"), sid),
+            "a deny outranks the grant"
+        );
         assert!(!caller_has_read_execute("", sid));
     }
 
@@ -992,7 +1082,10 @@ mod tests {
         assert!(error.contains("installer diagnostic sentinel"), "{error}");
         assert!(error.contains("installer operation failed"), "{error}");
         let silent = run_installer_script(&shell, "exit 17").expect_err("nonzero exit");
-        assert!(silent.contains("17") && silent.contains("no stderr"), "{silent}");
+        assert!(
+            silent.contains("17") && silent.contains("no stderr"),
+            "{silent}"
+        );
         run_installer_script(&shell, "exit 0").expect("successful child");
     }
 
@@ -1008,13 +1101,23 @@ mod tests {
         let bytes = serde_json::to_vec_pretty(&plan()).unwrap(); // unwrap: the fixture serializes
         std::fs::write(&path, &bytes).unwrap(); // unwrap: the test's own file
         let sha = plan_digest(&bytes);
-        assert_eq!(read_bound_plan(&path, &sha).unwrap(), plan(), "the bytes the parent wrote"); // unwrap: the valid case — an Err here IS the failure
-        assert!(read_bound_plan(&path, &sha.to_ascii_uppercase()).is_ok(), "digest case is not identity");
+        assert_eq!(
+            read_bound_plan(&path, &sha).unwrap(),
+            plan(),
+            "the bytes the parent wrote"
+        ); // unwrap: the valid case — an Err here IS the failure
+        assert!(
+            read_bound_plan(&path, &sha.to_ascii_uppercase()).is_ok(),
+            "digest case is not identity"
+        );
         let mut swapped = plan();
         swapped.user_sid = "S-1-5-21-9-9-9-500".to_string();
         std::fs::write(&path, serde_json::to_vec_pretty(&swapped).unwrap()).unwrap(); // unwrap: the test's own file
         let why = read_bound_plan(&path, &sha).unwrap_err();
-        assert!(why.contains("not the one the consent was given for"), "{why}");
+        assert!(
+            why.contains("not the one the consent was given for"),
+            "{why}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1022,8 +1125,11 @@ mod tests {
     // (PowerShell 5.1's ConvertTo-Json) reads the same as the array form.
     #[test]
     fn a_report_reads_one_trigger_as_string_or_array() {
-        let one: TaskReport = serde_json::from_str(r#"{"present":true,"triggers":"MSFT_TaskBootTrigger"}"#).unwrap(); // unwrap: the fixture is the valid form under test
-        let many: TaskReport = serde_json::from_str(r#"{"present":true,"triggers":["MSFT_TaskBootTrigger"]}"#).unwrap(); // unwrap: the fixture is the valid form under test
+        let one: TaskReport =
+            serde_json::from_str(r#"{"present":true,"triggers":"MSFT_TaskBootTrigger"}"#).unwrap(); // unwrap: the fixture is the valid form under test
+        let many: TaskReport =
+            serde_json::from_str(r#"{"present":true,"triggers":["MSFT_TaskBootTrigger"]}"#)
+                .unwrap(); // unwrap: the fixture is the valid form under test
         assert_eq!(one.triggers, many.triggers);
         let absent: TaskReport = serde_json::from_str(r#"{"present":false}"#).unwrap(); // unwrap: the fixture is the valid form under test
         assert!(!absent.present);
@@ -1036,10 +1142,15 @@ mod tests {
         assert_eq!(airc_drift(true, None), Vec::<AircDrift>::new());
         assert_eq!(
             airc_drift(true, Some("airc-join is registered but disabled".into())),
-            vec![AircDrift::Unsupervised("airc-join is registered but disabled".into())],
+            vec![AircDrift::Unsupervised(
+                "airc-join is registered but disabled".into()
+            )],
             "a disabled or stale task is drift, with the registrar's reason, not a converged name"
         );
-        assert_eq!(airc_drift(false, Some("x".into())), vec![AircDrift::Missing]);
+        assert_eq!(
+            airc_drift(false, Some("x".into())),
+            vec![AircDrift::Missing]
+        );
         assert_eq!(airc_drift(false, None), vec![AircDrift::Missing]);
     }
 
@@ -1050,22 +1161,70 @@ mod tests {
         let parse = |a: &[&str]| InstallOptions::parse(a.iter().map(|s| s.to_string()));
         assert!(parse(&["--supervisor"]).is_ok());
         let bare = parse(&[]).unwrap(); // unwrap: the valid case — an Err here IS the failure
-        assert!([Arm::Supervisor, Arm::Core, Arm::Cli, Arm::Airc].iter().all(|a| bare.runs(*a)), "bare install runs every arm");
+        assert!(
+            [Arm::Supervisor, Arm::Core, Arm::Cli, Arm::Airc]
+                .iter()
+                .all(|a| bare.runs(*a)),
+            "bare install runs every arm"
+        );
         let airc = parse(&["--airc"]).unwrap(); // unwrap: the valid case — an Err here IS the failure
-        assert!(airc.runs(Arm::Airc) && !airc.runs(Arm::Core), "--airc names only the mesh arm");
+        assert!(
+            airc.runs(Arm::Airc) && !airc.runs(Arm::Core),
+            "--airc names only the mesh arm"
+        );
         assert!(parse(&["--airc", "--airc"]).is_err());
         let one = parse(&["--cli"]).unwrap(); // unwrap: the valid case — an Err here IS the failure
-        assert!(one.runs(Arm::Cli) && !one.runs(Arm::Core) && !one.runs(Arm::Supervisor), "naming an arm restricts to it");
-        assert!(parse(&["--cli", "--elevated", "--plan", "x", "--plan-sha", &"b".repeat(64)]).is_err(), "the elevated child is the supervisor's only");
+        assert!(
+            one.runs(Arm::Cli) && !one.runs(Arm::Core) && !one.runs(Arm::Supervisor),
+            "naming an arm restricts to it"
+        );
+        assert!(
+            parse(&[
+                "--cli",
+                "--elevated",
+                "--plan",
+                "x",
+                "--plan-sha",
+                &"b".repeat(64)
+            ])
+            .is_err(),
+            "the elevated child is the supervisor's only"
+        );
         assert!(parse(&["--supervisor", "--elevated"]).is_err());
         assert!(parse(&["--supervisor", "--plan", "x.json"]).is_err());
-        assert!(parse(&["--supervisor", "--elevated", "--plan", "x.json"]).is_err(), "a plan without its digest is unbound");
+        assert!(
+            parse(&["--supervisor", "--elevated", "--plan", "x.json"]).is_err(),
+            "a plan without its digest is unbound"
+        );
         let sha = "a".repeat(64);
-        let child = parse(&["--supervisor", "--elevated", "--plan", "x.json", "--plan-sha", &sha]).unwrap(); // unwrap: the valid case — an Err here IS the failure
-        assert!(child.elevated && child.plan.as_deref() == Some(Path::new("x.json")) && child.plan_sha.as_deref() == Some(sha.as_str()));
-        assert!(parse(&["--supervisor", "--elevated", "--plan", "x.json", "--plan-sha", "not-hex"]).is_err());
+        let child = parse(&[
+            "--supervisor",
+            "--elevated",
+            "--plan",
+            "x.json",
+            "--plan-sha",
+            &sha,
+        ])
+        .unwrap(); // unwrap: the valid case — an Err here IS the failure
+        assert!(
+            child.elevated
+                && child.plan.as_deref() == Some(Path::new("x.json"))
+                && child.plan_sha.as_deref() == Some(sha.as_str())
+        );
+        assert!(parse(&[
+            "--supervisor",
+            "--elevated",
+            "--plan",
+            "x.json",
+            "--plan-sha",
+            "not-hex"
+        ])
+        .is_err());
         assert!(parse(&["--supervisor", "--supervisor"]).is_err());
         assert!(parse(&["--supervisor", "--check"]).unwrap().check); // unwrap: the valid case — an Err here IS the failure
-        assert!(parse(&["--supervisor", "--check", "--elevated", "--plan", "x.json"]).is_err(), "check reads, elevated writes");
+        assert!(
+            parse(&["--supervisor", "--check", "--elevated", "--plan", "x.json"]).is_err(),
+            "check reads, elevated writes"
+        );
     }
 }
