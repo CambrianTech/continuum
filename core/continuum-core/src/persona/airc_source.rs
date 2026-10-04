@@ -273,7 +273,7 @@ impl AircRagSource {
     ) -> TranscriptEvent {
         super::durable_history::event_from_row(room_id, super::durable_history::RoomRow {
             id: uuid::Uuid::parse_str(&line.message_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-            sender, occurred_at_ms: 0, text: line.text.clone(), media: line.media.clone(),
+            sender, occurred_at_ms: line.occurred_at_ms, text: line.text.clone(), media: line.media.clone(),
         })
     }
 
@@ -1303,12 +1303,14 @@ mod tests {
             lines: vec![
                 crate::persona::durable_history::HydratedLine {
                     message_id: "m1".into(),
+                    occurred_at_ms: 1791078791935,
                     sender_id: sender.to_string(),
                     media: Vec::new(),
                     text: "the wordstats tests are next".into(),
                 },
                 crate::persona::durable_history::HydratedLine {
                     message_id: "m2".into(),
+                    occurred_at_ms: 1791078792935,
                     sender_id: sender.to_string(),
                     // Duplicate of the live event — must be deduped, not doubled.
                     media: Vec::new(),
@@ -1316,6 +1318,7 @@ mod tests {
                 },
                 crate::persona::durable_history::HydratedLine {
                     message_id: "m3".into(),
+                    occurred_at_ms: 1791078793935,
                     sender_id: sender.to_string(),
                     media: Vec::new(),
                     text: "Atlas claimed card 7cedd4cf".into(),
@@ -1350,5 +1353,17 @@ mod tests {
             hist_pos < benchy_pos,
             "hydrated history is PRIOR context, before the live tail"
         );
+        // regression (Kimi, 2026-10-04): hydration dropped each line's time and rebuilt it
+        // as 0, so history rendered "[occurrence time unknown]". It keeps the store's time;
+        // lamport 0 alone keeps it on the grounding side (asserted above).
+        let line = crate::persona::durable_history::HydratedLine {
+            message_id: uuid::Uuid::new_v4().to_string(),
+            sender_id: sender.to_string(),
+            occurred_at_ms: 1791078791935,
+            media: Vec::new(),
+            text: "timed".into(),
+        };
+        let event = AircRagSource::hydrated_event(room.as_uuid(), uuid::Uuid::parse_str(&sender).expect("peer uuid"), &line);
+        assert_eq!(event.occurred_at_ms, 1791078791935, "a hydrated line keeps its own time");
     }
 }
