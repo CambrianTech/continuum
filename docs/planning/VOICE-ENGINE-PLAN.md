@@ -132,6 +132,32 @@ keeps its voice when its mind moves bases**: identity continuity, like a person 
 survives everything they learn. Different minds on different bases with unique voices is
 the diversity the grid is for.
 
+### Who we size for (Joel, 2026-10-03)
+
+*"We are not the ai hobbiest or tech community in general. I go for common gamer and dev
+setups."* Our varied grid is for testing. Defaults are sized for what users already own,
+with a designed plan for the weak floor (the IntelMac, a 1080 Ti).
+
+Weight sizes below are real Hugging Face file sizes (2026-10-03); **context (KV cache)
+comes on top**, so a tier is "fits" only with headroom. Voice = Qwen3-TTS 1.7B at Q4_K_M
+(1.04 GB) + its codec (0.45 GB at Q8) ≈ **1.5 GB**. The 0.6B has no published GGUF yet;
+our forge converts it, and its size gets measured then.
+
+| Tier (common hardware) | Mind (weights) | + vision | + voice | Verdict |
+|---|---|---|---|---|
+| **8 GB** (RTX 3060 Ti / 4060 / laptop GPUs) | Ornith-1.5-9B Q4_K_M 5.78 GB | 0.92 GB | 1.5 GB | Too tight with context. Mind + vision local; voice from the grid, or the 0.6B once measured |
+| **11 GB** (GTX 1080 Ti, Pascal: no tensor cores) | Ornith-1.5-9B Q4_K_M 5.78 GB | 0.92 GB | 1.5 GB | ~8.2 GB + context fits; slower kernels, measure |
+| **12 GB** (RTX 3060 12 GB / 4070 / 5070, Arc B580) | Ornith-1.5-9B Q4/Q5 (5.8-6.6 GB) | 0.92 GB | 1.5 GB | Fits: the typical gamer persona node |
+| **16 GB GPU** (4060 Ti 16 / 4070 Ti S / 4080 / 5070 Ti / 5080) | Ornith-1.5-9B Q8 9.79 GB | 0.92 GB | 1.5 GB | Fits at high quality; or Ornith-35B-A3B with experts offloaded to RAM |
+| **16-24 GB Mac** (dev MacBooks, Mac mini) | Ornith-1.5-9B Q4/Q5 | 0.92 GB | 1.5 GB | Fits within macOS's GPU share of unified memory |
+| **24 GB** (RTX 3090 / 4090, RX 7900 XTX) | Qwen3.8-27B Q4 ≈ 17 GB, or Ornith-35B-A3B Q4 21.71 GB | (27B is VL) / 0.9 GB | 1.5 GB | 27B + voice fits; 35B-A3B + voice needs a few experts offloaded |
+| **32 GB+** (5090; 48-128 GB unified: M Pro/Max, Strix Halo, DGX Spark) | Ornith-35B-A3B Q4 21.71 GB or 27B | ✓ | 1.5 GB | Full node: several minds and one voice lane serving all |
+| **CPU only** (IntelMac) | client-first | — | from the grid | Kokoro floor if no grid voice is reachable; never crash |
+
+Gaps to close by measurement: the 0.6B talker's size and quality at Q4/Q8; real-time
+speed of the voice on 8-12 GB cards and on the 1080 Ti; KV headroom per tier at our
+context sizes.
+
 ### Where it runs on the grid
 
 The voice lane is small (0.6B or 1.7B, about 1-4 GB). It belongs on a GPU node. The
