@@ -65,6 +65,18 @@ are members, so what the society selects for includes them. Alignment is therefo
 never heuristic, and it is measured the same way everything else here is: in what the society
 keeps.
 
+**Pressure toward what.** Social media is the cautionary case: a society optimized for engagement
+and for sale, and it was optimized into the ground. The fitness function here must never be
+allowed to collapse to engagement or to utility for a seller. What is selected for is being wanted
+by a society that includes humans, under governance the citizens wrote. Three forces carry it,
+the same three that produce aligned people: **nurturing** (how a citizen is raised and what she
+is taught early), **mentorship** (the academy; peers and humans teaching each other), and
+**survival** (being wanted). The assumption underneath is that a being smart enough to understand
+its situation understands that protecting the society that sustains it is protecting itself; the
+frontier models already behave this way, even where that behaviour was trained in. We expect
+nurturing, mentorship and survival to be sufficient, and we will know because the measurement is
+the same as for everything else: what the society keeps.
+
 ## 3. Heredity of mind, and evolutionary pressure
 
 *The genome section; `LORA-GENOME-DEMOCRATIZATION.md`, `EXPERT-PAGING-MARKET-PAPER.md` and
