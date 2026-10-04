@@ -75,6 +75,9 @@ rises at that moment (more depth in the strip and the activity, finer capture of
 lesson is recorded well. `SalienceReason::Surprise` therefore carries the expectation and the
 observation as typed data, the recorder captures at higher resolution while it is raised, and the
 experience/curriculum lifters key on it ([[a-mind-evolves-from-notable-experience-wonder-and-daydreams-not-only-graded-turns]]).
+It transcends directly into the LoRA genome (Joel): the surprising turns are the ones the dream
+stage trains on, so a gene learns exactly what the world showed her she did not know, never
+everything she did ([[learning-is-the-serving-loop-not-a-training-job]]).
 
 ## 2. The components (what exists, what changes, what is new)
 
