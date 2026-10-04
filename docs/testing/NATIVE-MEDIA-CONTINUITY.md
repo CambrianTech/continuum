@@ -1024,3 +1024,33 @@ make comparison with the earlier74s run insufficient to claim a speedup.
 Native audio input/output and actual incremental remote media remain open.
 The installer reported two undrained cognition operations; adoption does not
 establish lossless handoff.
+
+## Native review repairs — 2026-10-04
+
+Anthropic's existing adapter now shares the Messages SSE implementation between
+batch and streaming consumers. Text arrives incrementally; tool JSON, reasoning,
+usage and request identity retain their separate contracts. The llama scheduler's
+existing TokenEvent path shares batch drain, split stop-marker withholding and
+cancelled receiver retirement, including existing KV/footprint cleanup.
+
+The in-process llama adapter refuses public live output before loading a model.
+Its simple chat-template binding does not expose common-chat parser state or tool
+schemas. Binding that existing native owner remains a delivery gap; raw reasoning
+is never exposed as public tokens by this adapter. Batch behavior remains explicit.
+
+Optional text presentation selects its policy before exposing handles, rejects
+native media at publication, and retires a bounded preview after lag without
+aborting useful generation. A stalled remote preview has a250ms publication budget.
+Lossless native/remote channels retain gap and terminal validation. A shared remote
+bus lag keeps this request's expected sequence unchanged instead of assuming its
+own frame was lost. Authenticated remote cancellation and lossless network
+backpressure remain open.
+
+Native PCM ownership now retires after successful queued playback drains, retaining
+the final mixer frame and fencing stale cancellation. Existing fixtures test
+incremental arrival, successful drain, later speech and interrupted playback.
+
+Final source validation session86485 passed33 tests,2 ignored, including27 provider,
+presentation and playback tests plus6 workspace-transfer tests. This is fixture
+and source evidence. Installed core remains5944/d8bca290e; real native audio calls,
+personally observed audio/video and deployed acceptance are still pending.

@@ -655,18 +655,12 @@ impl LlamaCppBackend {
             logits_last: true,
         };
         let eval_result = match kind {
-            llama::MediaKind::Image => mtmd.eval_image(
-                &mut ctx,
-                prompt_with_marker,
-                media_bytes,
-                &eval_params,
-            ),
-            llama::MediaKind::Audio => mtmd.eval_audio(
-                &mut ctx,
-                prompt_with_marker,
-                media_bytes,
-                &eval_params,
-            ),
+            llama::MediaKind::Image => {
+                mtmd.eval_image(&mut ctx, prompt_with_marker, media_bytes, &eval_params)
+            }
+            llama::MediaKind::Audio => {
+                mtmd.eval_audio(&mut ctx, prompt_with_marker, media_bytes, &eval_params)
+            }
         };
         let n_past = eval_result.map_err(|e| format!("mtmd eval ({:?}) failed: {e}", kind))?;
         log.info(&format!(
@@ -893,12 +887,36 @@ impl LlamaCppBackend {
         stop_sequences: &[&str],
         active_loras: &[(String, f32)],
     ) -> Result<(String, usize), String> {
-        let log = runtime::logger("llamacpp");
+        self.generate_for_persona_stream(
+            persona_id,
+            prompt,
+            max_tokens,
+            sampling,
+            stop_sequences,
+            active_loras,
+            crate::ai::stream_sinks::GenerationSink::discard(),
+        )
+    }
+
+    /// Internal raw-token transport, not yet a public persona stream: the adapter
+    /// must bind the model-native reasoning/tool parser before publishing it.
+    /// Same scheduler and persona/LoRA ownership; deliver decoded pieces before Done.
+    /// Closing the sink drops the receiver, which retires the scheduler sequence.
+    pub fn generate_for_persona_stream(
+        &self,
+        persona_id: Option<uuid::Uuid>,
+        prompt: &str,
+        max_tokens: usize,
+        sampling: SamplingConfig,
+        stop_sequences: &[&str],
+        active_loras: &[(String, f32)],
+        sink: crate::ai::stream_sinks::GenerationSink,
+    ) -> Result<(String, usize), String> {
         let gen_start = Instant::now();
         let prompt_len_chars = prompt.len();
 
         // Channel for streaming tokens back from the scheduler.
-        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
+        let (response_tx, response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
 
         // Resolve requested genes (`id`, scale) to live adapter handles from
         // the cache BEFORE crossing to the scheduler thread (which can't lock
@@ -946,82 +964,171 @@ impl LlamaCppBackend {
 
         self.scheduler().enqueue(req)?;
 
-        // Collect tokens from the channel until Done/Error. We're called
-        // synchronously from spawn_blocking by CandleAdapter — block_in_place
-        // a tokio runtime handle to await the channel.
-        //
-        // Stop-sequence trimming happens here (at the boundary): the
-        // scheduler emits the stop sequence's tokens before signaling Done,
-        // so we strip them from the collected output.
-        let mut output = String::new();
-        let runtime_handle = tokio::runtime::Handle::try_current().ok();
+        collect_scheduler_stream(
+            response_rx,
+            sink,
+            stop_sequences,
+            gen_start,
+            prompt_len_chars,
+        )
+    }
+}
 
-        loop {
-            let event = if let Some(ref h) = runtime_handle {
-                h.block_on(response_rx.recv())
-            } else {
-                // Fallback for non-tokio callers (e.g. tests). Spin briefly.
-                let mut tries = 0u32;
-                loop {
-                    match response_rx.try_recv() {
-                        Ok(e) => break Some(e),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+fn collect_scheduler_stream(
+    mut response_rx: tokio::sync::mpsc::UnboundedReceiver<TokenEvent>,
+    sink: crate::ai::stream_sinks::GenerationSink,
+    stop_sequences: &[&str],
+    gen_start: Instant,
+    prompt_len_chars: usize,
+) -> Result<(String, usize), String> {
+    let log = runtime::logger("llamacpp");
+    // Both drains use the same token receiver. Only a stop-prefix suffix is
+    // withheld so a stop marker split across token pieces never leaks live.
+    let mut output = String::new();
+    let mut published = 0;
+    let runtime_handle = tokio::runtime::Handle::try_current().ok();
+
+    loop {
+        let event = if let Some(ref h) = runtime_handle {
+            h.block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = sink.closed() => None,
+                    event = response_rx.recv() => event,
+                }
+            })
+        } else {
+            // Fallback for non-tokio callers (e.g. tests). Spin briefly.
+            let mut tries = 0u32;
+            loop {
+                match response_rx.try_recv() {
+                    Ok(e) => break Some(e),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        break None;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        tries += 1;
+                        if tries > 60_000 {
+                            // 2 minutes without a token — treat as fatal.
                             break None;
                         }
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                            std::thread::sleep(std::time::Duration::from_millis(2));
-                            tries += 1;
-                            if tries > 60_000 {
-                                // 2 minutes without a token — treat as fatal.
-                                break None;
-                            }
-                        }
                     }
                 }
-            };
-            match event {
-                Some(TokenEvent::Token(piece)) => {
-                    output.push_str(&piece);
+            }
+        };
+        match event {
+            Some(TokenEvent::Token(piece)) => {
+                output.push_str(&piece);
+                let safe_end = stop_safe_end(&output, stop_sequences);
+                if safe_end > published {
+                    sink.send(crate::ai::adapter::GenerationChunk::Token(
+                        output[published..safe_end].into(),
+                    ))?;
+                    published = safe_end;
                 }
-                Some(TokenEvent::Done {
-                    tokens_generated,
+            }
+            Some(TokenEvent::Done {
+                tokens_generated,
+                elapsed_ms,
+            }) => {
+                // The scheduler's own count is the receipt; a per-piece tally here
+                // was never read (rustc: value assigned is never read).
+                let n_decoded = tokens_generated;
+                let elapsed = gen_start.elapsed();
+                log.info(&format!(
+                    "Generated {} tokens in {:.3}s ({:.1} tok/s, scheduler={}ms, prompt={}chars)",
+                    n_decoded,
+                    elapsed.as_secs_f64(),
+                    n_decoded as f64 / elapsed.as_secs_f64().max(0.001),
                     elapsed_ms,
-                }) => {
-                    // The scheduler's own count is the receipt; a per-piece tally here
-                    // was never read (rustc: value assigned is never read).
-                    let n_decoded = tokens_generated;
-                    let elapsed = gen_start.elapsed();
-                    log.info(&format!(
-                        "Generated {} tokens in {:.3}s ({:.1} tok/s, scheduler={}ms, prompt={}chars)",
-                        n_decoded,
-                        elapsed.as_secs_f64(),
-                        n_decoded as f64 / elapsed.as_secs_f64().max(0.001),
-                        elapsed_ms,
-                        prompt_len_chars
-                    ));
-                    // Trim trailing stop sequence(s) — scheduler emits them
-                    // before signaling Done.
-                    for s in stop_sequences {
-                        if output.ends_with(s) {
-                            output.truncate(output.len() - s.len());
-                        }
+                    prompt_len_chars
+                ));
+                // Trim trailing stop sequence(s) — scheduler emits them
+                // before signaling Done.
+                for s in stop_sequences {
+                    if output.ends_with(s) {
+                        output.truncate(output.len() - s.len());
                     }
-                    return Ok((output, n_decoded));
                 }
-                Some(TokenEvent::Error(e)) => {
-                    return Err(format!("scheduler error: {e}"));
+                if output.len() > published {
+                    sink.send(crate::ai::adapter::GenerationChunk::Token(
+                        output[published..].into(),
+                    ))?;
                 }
-                None => {
-                    return Err("scheduler closed without Done event".to_string());
-                }
+                return Ok((output, n_decoded));
+            }
+            Some(TokenEvent::Error(e)) => {
+                return Err(format!("scheduler error: {e}"));
+            }
+            None => {
+                return Err("scheduler closed without Done event".to_string());
             }
         }
     }
 }
 
+/// The longest suffix that could still become a stop marker stays buffered.
+fn stop_safe_end(output: &str, stops: &[&str]) -> usize {
+    let withheld = stops
+        .iter()
+        .flat_map(|stop| {
+            stop.char_indices()
+                .map(|(i, _)| i)
+                .chain(std::iter::once(stop.len()))
+                .filter(move |&n| n > 0 && output.ends_with(&stop[..n]))
+        })
+        .max()
+        .unwrap_or(0);
+    output.len() - withheld
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Native-stream regression: a persona sees decoded text before Done, stop
+    // markers split across tokens stay off the wire, and cancellation drops ownership.
+    #[tokio::test]
+    async fn scheduler_stream_delivers_before_done_and_retires_on_cancel() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sink, mut received) = crate::ai::stream_sinks::channel();
+        let task = tokio::task::spawn_blocking(move || {
+            collect_scheduler_stream(rx, sink, &["<end>"], Instant::now(), 1)
+        });
+        tx.send(TokenEvent::Token("hello<en".into())).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            crate::ai::adapter::GenerationChunk::Token("hello".into())
+        );
+        assert!(!task.is_finished());
+        tx.send(TokenEvent::Token("d>".into())).unwrap();
+        tx.send(TokenEvent::Done {
+            tokens_generated: 2,
+            elapsed_ms: 1,
+        })
+        .unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), ("hello".into(), 2));
+        assert!(received.try_recv().is_err());
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sink, received) = crate::ai::stream_sinks::channel();
+        let task = tokio::task::spawn_blocking(move || {
+            collect_scheduler_stream(rx, sink, &[], Instant::now(), 1)
+        });
+        drop(received);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(tx.is_closed());
+    }
 
     // what this catches: the KV-per-token cost is derived from the model's
     // REAL dimensions (the rule behind task #46), not a hardcoded "typical"

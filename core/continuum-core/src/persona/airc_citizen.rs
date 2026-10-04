@@ -369,6 +369,8 @@ pub(crate) async fn room_name_by_id(room_id: Uuid) -> Option<String> {
 /// stub that satisfies the same interface. Per [[no-fallbacks-ever]]
 /// — no Option, no expect, no silent substitution.
 pub struct StubAircCitizen {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    stalled_stream_publication: Option<std::sync::Arc<tokio::sync::Notify>>,
     peer_id: Uuid,
     /// Rooms the stub reports as resident in (see [`AircCitizen::subscribed_rooms`]).
     rooms: Vec<Uuid>,
@@ -396,6 +398,8 @@ impl StubAircCitizen {
     /// persona so cognition's self-filter behaves consistently.
     pub fn new(peer_id: Uuid) -> Self {
         Self {
+            #[cfg(any(test, feature = "test-fixtures"))]
+            stalled_stream_publication: None,
             peer_id,
             rooms: Vec::new(),
             claimable: Vec::new(),
@@ -404,6 +408,14 @@ impl StubAircCitizen {
             advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             claimed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
+    }
+
+    /// Reuse this citizen fixture to hold optional publication until its owner
+    /// cancels the future; notify the test only once publication is in flight.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_stalled_stream_publication(mut self, started: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        self.stalled_stream_publication = Some(started);
+        self
     }
 
     /// A handle to the `claim_card` (pull) recording — clone before moving the
@@ -553,6 +565,14 @@ impl crate::persona::room_board_source::RoomBoardReader for StubAircCitizen {
 
 #[async_trait]
 impl AircCitizen for StubAircCitizen {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    async fn publish_stream_chunk(&self, _chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
+        if let Some(started) = &self.stalled_stream_publication {
+            started.notify_one();
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
     fn peer_id(&self) -> Uuid {
         self.peer_id
     }

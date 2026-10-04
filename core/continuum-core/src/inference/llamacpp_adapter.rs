@@ -689,18 +689,19 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .as_ref()
             .map(|b| b.n_ctx_train())
             .unwrap_or(0);
-        // llama.cpp does text + chat + streaming, native (prompt-driven) tool
+        // The in-process adapter does text + chat and prompt-driven tool
         // calls, and embeddings (--embedding mode). Vision is handled by the
         // mmproj adapter when loaded, not declared at this text-LLM layer;
         // audio is bridged via STT (whisper) / TTS in the substrate.
         // Tools are prompt-driven (no native protocol); structured output via
         // GBNF grammar-constrained sampling, which IS native to llama.cpp.
+        // Raw scheduler tokens alone are not a safe public stream. Declare
+        // Streaming only once the model-native reasoning/tool parser is bound.
         AdapterCapabilities::builder()
             .capabilities([
                 Capability::TextGeneration,
                 Capability::Chat,
                 Capability::ToolUse,
-                Capability::Streaming,
                 Capability::Embedding,
             ])
             .local()
@@ -1161,7 +1162,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 estimated_cost: None,
             },
             response_time_ms: elapsed.as_millis() as u64,
-            request_id: format!("llamacpp-{}", chrono::Utc::now().timestamp_millis()),
+            request_id: request
+                .request_id
+                .unwrap_or_else(|| format!("llamacpp-{}", chrono::Utc::now().timestamp_millis())),
             content: None,
             tool_calls: None,
             // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
@@ -1173,6 +1176,42 @@ impl AIProviderAdapter for LlamaCppAdapter {
             error: None,
             timing: None,
         })
+    }
+
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        _sink: crate::ai::stream_sinks::GenerationSink,
+    ) -> Result<TextGenerationResponse, String> {
+        request.require_text_output_transport(self.provider_id())?;
+        if request
+            .messages
+            .iter()
+            .any(|message| match &message.content {
+                MessageContent::Parts(parts) => parts.iter().any(|part| {
+                    matches!(
+                        part,
+                        crate::ai::types::ContentPart::Image { .. }
+                            | crate::ai::types::ContentPart::Audio { .. }
+                            | crate::ai::types::ContentPart::Video { .. }
+                    )
+                }),
+                _ => false,
+            })
+        {
+            return Err(
+                "llamacpp-local native media streaming is not implemented; no media was consumed"
+                    .into(),
+            );
+        }
+        // The in-process binding currently renders only role/content via
+        // llama_chat_apply_template. Its raw TokenEvents can begin INSIDE
+        // template-open reasoning and include tool protocol text. A batch
+        // tag stripper cannot safely classify a partial prefix. Until the
+        // existing llama owner exposes common_chat_templates_apply's parser
+        // state + common_chat_parse(is_partial), refuse before model load;
+        // never publish undecoded reasoning as public GenerationChunk::Token.
+        Err("llamacpp-local live streaming requires the model-native common-chat parser binding; no generation was started".into())
     }
 
     /// Embeddings via the backend's dedicated embedding-mode context. The loaded
@@ -1402,6 +1441,46 @@ impl AIProviderAdapter for LlamaCppAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: raw model tokens can contain template-open reasoning and
+    // tool envelopes need the native parser before the adapter may publish.
+    #[tokio::test]
+    async fn live_stream_refuses_raw_output_before_model_load() {
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("missing-stream-test.gguf"),
+            "test".into(),
+        );
+        let request = TextGenerationRequest::default();
+        let (sink, mut received) = crate::ai::stream_sinks::channel();
+        let error = adapter.generate_stream(request, sink).await.unwrap_err();
+        assert!(
+            error.contains("model-native common-chat parser binding"),
+            "{error}"
+        );
+        assert!(received.try_recv().is_err());
+    }
+
+    // what this catches: native streaming refuses unsupported media before loading a model,
+    // never turn the existing batch-only mtmd result into a fake stream.
+    #[tokio::test]
+    async fn native_media_stream_refuses_before_model_load() {
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("missing-stream-test.gguf"),
+            "test".into(),
+        );
+        let request: TextGenerationRequest = serde_json::from_value(serde_json::json!({
+            "messages":[{"role":"user","content":[{"type":"image","image":{"base64":"aW1hZ2U=","mimeType":"image/png"}}]}]
+        })).unwrap();
+        let error = adapter
+            .generate_stream(request, crate::ai::stream_sinks::GenerationSink::discard())
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("native media streaming is not implemented"),
+            "{error}"
+        );
+    }
+
     use crate::ai::{ChatMessage, MessageContent};
     use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
     use crate::model_registry::Model;

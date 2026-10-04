@@ -71,19 +71,33 @@ pub struct GenerationSink {
     observing: bool,
     request_active: std::sync::Arc<AtomicBool>,
     retired: Option<watch::Sender<bool>>,
+    text_presentation: bool,
 }
 
 pub struct GenerationReceiver {
     rx: broadcast::Receiver<GenerationChunk>,
     cancelled: watch::Sender<bool>,
+    text_presentation: bool,
 }
 
 pub fn channel() -> (GenerationSink, GenerationReceiver) {
     let (tx, rx) = broadcast::channel(GENERATION_RING_CAPACITY);
     let cancelled = watch::channel(false).0;
     (GenerationSink { tx, cancelled: cancelled.clone(), observing: true,
-        request_active: std::sync::Arc::new(AtomicBool::new(false)), retired: None },
-     GenerationReceiver { rx, cancelled })
+        request_active: std::sync::Arc::new(AtomicBool::new(false)), retired: None,
+        text_presentation: false },
+     GenerationReceiver { rx, cancelled, text_presentation: false })
+}
+
+/// Optional progressive text display may retire its preview after lag without
+/// cancelling useful inference. Native media is refused at publication, even if
+/// its packet would fall out of the ring. Policy is fixed before either handle
+/// escapes; dropping the receiver still cancels the owning turn.
+pub(crate) fn text_presentation_channel() -> (GenerationSink, GenerationReceiver) {
+    let (mut sink, mut receiver) = channel();
+    sink.text_presentation = true;
+    receiver.text_presentation = true;
+    (sink, receiver)
 }
 
 impl GenerationSink {
@@ -154,6 +168,9 @@ impl GenerationSink {
         else { std::future::pending::<()>().await }
     }
     pub fn send(&self, chunk: GenerationChunk) -> Result<(), String> {
+        if self.text_presentation && matches!(chunk, GenerationChunk::Media(_)) {
+            return Err("Optional text presentation cannot consume native media".into());
+        }
         // Keep the read guard until publication ends. Retirement obtains the
         // write guard before emitting the boundary, so stale chunks cannot race
         // past that boundary. Neither side holds this guard across an await.
@@ -177,12 +194,14 @@ impl GenerationSink {
 impl GenerationReceiver {
     pub async fn recv(&mut self) -> Result<GenerationChunk, broadcast::error::RecvError> {
         let result = self.rx.recv().await;
-        if matches!(result, Err(broadcast::error::RecvError::Lagged(_))) { self.cancelled.send_replace(true); }
+        if matches!(result, Err(broadcast::error::RecvError::Lagged(_)))
+            && !self.text_presentation { self.cancelled.send_replace(true); }
         result
     }
     pub fn try_recv(&mut self) -> Result<GenerationChunk, broadcast::error::TryRecvError> {
         let result = self.rx.try_recv();
-        if matches!(result, Err(broadcast::error::TryRecvError::Lagged(_))) { self.cancelled.send_replace(true); }
+        if matches!(result, Err(broadcast::error::TryRecvError::Lagged(_)))
+            && !self.text_presentation { self.cancelled.send_replace(true); }
         result
     }
 }
@@ -294,6 +313,23 @@ mod tests {
         drop(rx);
         tx.closed().await;
         assert!(tx.is_closed());
+
+        // Optional text display is the explicit exception. Overload can retire
+        // its preview, but must neither kill inference nor conceal native media.
+        let (tx, mut rx) = text_presentation_channel();
+        assert!(tx.send(GenerationChunk::Media(std::sync::Arc::new(MediaChunk {
+            sequence: 0, presentation_time_us: 0, mime_type: "audio/pcm".into(),
+            data: std::sync::Arc::from([0u8, 0]),
+        }))).unwrap_err().contains("cannot consume native media"));
+        for _ in 0..=GENERATION_RING_CAPACITY { tx.send(GenerationChunk::Token("x".into())).unwrap(); }
+        assert!(matches!(rx.recv().await, Err(broadcast::error::RecvError::Lagged(1))));
+        assert!(!tx.is_closed());
+        tx.send(GenerationChunk::Token("useful inference continues".into())).unwrap();
+        assert!(matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Lagged(1))));
+        assert!(!tx.is_closed());
+        drop(rx);
+        tx.closed().await;
+        assert!(tx.is_closed(), "turn ownership still cancels optional presentation");
     }
 
     // what this catches: an unwired media consumer cannot report successful

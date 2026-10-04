@@ -22,7 +22,8 @@ use std::time::Instant;
 use crate::model_registry::Capability;
 use crate::secrets::get_secret;
 
-use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
+use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk};
+use super::stream_sinks::GenerationSink;
 use super::types::{
     ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
     TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
@@ -47,7 +48,7 @@ pub struct AnthropicAdapter {
 impl AnthropicAdapter {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(120))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -144,7 +145,7 @@ impl AnthropicAdapter {
     /// Map Anthropic stop reason to our enum
     fn map_finish_reason(&self, reason: &str) -> FinishReason {
         match reason {
-            "end_turn" => FinishReason::Stop,
+            "end_turn" | "stop_sequence" | "pause_turn" => FinishReason::Stop,
             "max_tokens" => FinishReason::Length,
             "tool_use" => FinishReason::ToolUse,
             _ => FinishReason::Error,
@@ -173,6 +174,10 @@ struct AnthropicResponse {
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking,
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -185,6 +190,232 @@ enum AnthropicContentBlock {
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+}
+
+/// Messages SSE owns indexed content assembly; deltas reach the existing sink
+/// before message_stop. Tools remain structured and reasoning never becomes text.
+#[derive(Default)]
+struct AnthropicStream {
+    frame: Vec<u8>,
+    message: Option<Value>,
+    active: Option<usize>,
+    tool_json: String,
+    stopped: bool,
+}
+
+impl AnthropicStream {
+    fn feed(&mut self, bytes: &[u8], sink: &GenerationSink) -> Result<(), String> {
+        for &byte in bytes {
+            if byte == b'\r' {
+                continue;
+            }
+            self.frame.push(byte);
+            if self.frame.len() > super::stream_sinks::MAX_GENERATION_CHUNK_BYTES * 2 {
+                return Err("Anthropic SSE event exceeds shared stream byte budget".into());
+            }
+            if !self.frame.ends_with(b"\n\n") {
+                continue;
+            }
+            let frame = std::mem::take(&mut self.frame);
+            let frame =
+                std::str::from_utf8(&frame).map_err(|e| format!("Anthropic SSE UTF-8: {e}"))?;
+            let data = frame
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if data.is_empty() {
+                continue;
+            }
+            let event: Value =
+                serde_json::from_str(&data).map_err(|e| format!("Anthropic SSE JSON: {e}"))?;
+            self.event(event, sink)?;
+            if self.stopped {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn event(&mut self, event: Value, sink: &GenerationSink) -> Result<(), String> {
+        let kind = event["type"]
+            .as_str()
+            .ok_or("Anthropic SSE missing event type")?;
+        if kind == "error" {
+            return Err(format!("Anthropic stream error: {}", event["error"]));
+        }
+        if kind == "message_start" {
+            if self.message.is_some() {
+                return Err("Anthropic duplicate message_start".into());
+            }
+            let mut message = event["message"].clone();
+            if message["model"]
+                .as_str()
+                .filter(|m| !m.is_empty())
+                .is_none()
+            {
+                return Err("Anthropic message_start missing model identity".into());
+            }
+            message["content"] = json!([]);
+            self.message = Some(message);
+            return Ok(());
+        }
+        if kind == "ping" {
+            return Ok(());
+        }
+        let message = self
+            .message
+            .as_mut()
+            .ok_or("Anthropic event before message_start")?;
+        match kind {
+            "content_block_start" => {
+                let index = event["index"]
+                    .as_u64()
+                    .ok_or("Anthropic content index missing")? as usize;
+                let blocks = message["content"]
+                    .as_array_mut()
+                    .ok_or("Anthropic content is not an array")?;
+                if self.active.is_some() || index != blocks.len() {
+                    return Err("Anthropic out-of-order content block".into());
+                }
+                let block = event["content_block"].clone();
+                match block["type"].as_str() {
+                    Some("text") => {
+                        let text = block["text"]
+                            .as_str()
+                            .ok_or("Anthropic text block missing text")?;
+                        if !text.is_empty() {
+                            sink.send(GenerationChunk::Token(text.into()))?;
+                        }
+                    }
+                    Some("thinking") => {
+                        let text = block["thinking"].as_str().unwrap_or_default();
+                        if !text.is_empty() {
+                            sink.send(GenerationChunk::Reasoning(text.into()))?;
+                        }
+                    }
+                    Some("tool_use" | "redacted_thinking") => {}
+                    _ => {
+                        return Err(
+                            "Anthropic unsupported content block; refusing to discard output"
+                                .into(),
+                        )
+                    }
+                }
+                blocks.push(block);
+                self.active = Some(index);
+                self.tool_json.clear();
+            }
+            "content_block_delta" | "content_block_stop" => {
+                let index = event["index"]
+                    .as_u64()
+                    .ok_or("Anthropic content index missing")? as usize;
+                if self.active != Some(index) {
+                    return Err("Anthropic delta/stop has no matching content block".into());
+                }
+                let block = &mut message["content"][index];
+                if kind == "content_block_stop" {
+                    if !self.tool_json.is_empty() {
+                        block["input"] = serde_json::from_str(&self.tool_json)
+                            .map_err(|e| format!("Anthropic incomplete tool JSON: {e}"))?;
+                    }
+                    self.active = None;
+                    self.tool_json.clear();
+                } else {
+                    let delta = &event["delta"];
+                    let (field, chunk) = match delta["type"].as_str() {
+                        Some("text_delta") if block["type"] == "text" => ("text", Some(false)),
+                        Some("thinking_delta") if block["type"] == "thinking" => {
+                            ("thinking", Some(true))
+                        }
+                        Some("signature_delta") if block["type"] == "thinking" => {
+                            ("signature", None)
+                        }
+                        Some("input_json_delta") if block["type"] == "tool_use" => {
+                            self.tool_json.push_str(
+                                delta["partial_json"]
+                                    .as_str()
+                                    .ok_or("Anthropic tool delta missing JSON")?,
+                            );
+                            return Ok(());
+                        }
+                        // Citation metadata does not change the text content.
+                        Some("citations_delta") if block["type"] == "text" => return Ok(()),
+                        _ => return Err("Anthropic unsupported or mismatched content delta".into()),
+                    };
+                    let text = delta[field]
+                        .as_str()
+                        .ok_or("Anthropic delta missing content")?;
+                    if let Some(reasoning) = chunk {
+                        if !text.is_empty() {
+                            sink.send(if reasoning {
+                                GenerationChunk::Reasoning(text.into())
+                            } else {
+                                GenerationChunk::Token(text.into())
+                            })?;
+                        }
+                    }
+                    let mut accumulated = block[field].as_str().unwrap_or_default().to_owned();
+                    accumulated.push_str(text);
+                    block[field] = json!(accumulated);
+                }
+            }
+            "message_delta" => {
+                if let Some(reason) = event["delta"]["stop_reason"].as_str() {
+                    message["stop_reason"] = json!(reason);
+                }
+                if let Some(usage) = event["usage"].as_object() {
+                    for (key, value) in usage {
+                        message["usage"][key] = value.clone();
+                    }
+                }
+            }
+            "message_stop" => {
+                if self.active.is_some() || message["stop_reason"].as_str().is_none() {
+                    return Err(
+                        "Anthropic stopped with unfinished content or missing stop reason".into(),
+                    );
+                }
+                self.stopped = true;
+            }
+            // Forward-compatible non-content events do not replace a terminal receipt.
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<AnthropicResponse, String> {
+        if !self.stopped {
+            return Err("Anthropic stream ended before message_stop".into());
+        }
+        serde_json::from_value(self.message.ok_or("Anthropic stream has no message")?)
+            .map_err(|e| format!("Anthropic streamed message invalid: {e}"))
+    }
+}
+
+async fn receive_anthropic_stream(
+    mut response: reqwest::Response,
+    sink: &GenerationSink,
+) -> Result<AnthropicResponse, String> {
+    let mut stream = AnthropicStream::default();
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = sink.closed() => return Err("Anthropic stream consumer cancelled".into()),
+            next = tokio::time::timeout(
+                std::time::Duration::from_secs(crate::inference::sse_stream::STREAM_IDLE_TIMEOUT_SECS),
+                response.chunk()) => next.map_err(|_| "Anthropic stream stalled".to_string())?
+                    .map_err(|e| format!("Anthropic stream read failed: {e}"))?,
+        };
+        let Some(bytes) = next else {
+            break;
+        };
+        stream.feed(&bytes, sink)?;
+        if stream.stopped {
+            break;
+        }
+    }
+    stream.finish()
 }
 
 // Model IDs
@@ -251,6 +482,15 @@ impl AIProviderAdapter for AnthropicAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        self.generate_stream(request, GenerationSink::discard())
+            .await
+    }
+
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        sink: GenerationSink,
+    ) -> Result<TextGenerationResponse, String> {
         request.require_text_output_transport(self.provider_id())?;
         let api_key = self
             .api_key
@@ -291,6 +531,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         // Build request body
         let mut body = json!({
             "model": model,
+            "stream": true,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": request.temperature.unwrap_or(0.7)
@@ -345,27 +586,33 @@ impl AIProviderAdapter for AnthropicAdapter {
         }
 
         // Make request
-        let response = self
+        let send = self
             .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Anthropic request failed: {}", e))?;
+            .send();
+        let response = tokio::select! {
+            biased;
+            _ = sink.closed() => return Err("Anthropic request consumer cancelled".into()),
+            response = tokio::time::timeout(std::time::Duration::from_secs(120), send) =>
+                response.map_err(|_| "Anthropic response headers timed out".to_string())?
+                    .map_err(|e| format!("Anthropic request failed: {e}"))?,
+        };
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(std::time::Duration::from_secs(5), response.text())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
             return Err(format!("Anthropic returned {}: {}", status, body));
         }
 
-        let response_json: AnthropicResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
+        let response_json = receive_anthropic_stream(response, &sink).await?;
 
         let response_time_ms = start.elapsed().as_millis() as u64;
 
@@ -373,9 +620,12 @@ impl AIProviderAdapter for AnthropicAdapter {
         let mut text = String::new();
         let mut tool_calls = Vec::new();
         let mut content_blocks = Vec::new();
+        let mut reasoning = String::new();
 
         for block in &response_json.content {
             match block {
+                AnthropicContentBlock::Thinking { thinking } => reasoning.push_str(thinking),
+                AnthropicContentBlock::RedactedThinking => {}
                 AnthropicContentBlock::Text { text: t } => {
                     text.push_str(t);
                     content_blocks.push(ContentPart::Text { text: t.clone() });
@@ -543,6 +793,106 @@ impl AnthropicAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (native-stream review): text arrives before terminal receipt,
+    // UTF-8 survives packet splits, tool JSON is reassembled, and thinking stays private.
+    #[test]
+    fn messages_stream_delivers_incrementally_and_preserves_structured_output() {
+        let (sink, mut receiver) = super::super::stream_sinks::channel();
+        let mut stream = AnthropicStream::default();
+        let events = [
+            json!({"type":"message_start", "message":{"id":"m1","model":"claude-test","usage":{"input_tokens":7,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"h\u{e9}llo"}}),
+        ];
+        for event in events {
+            let frame = format!(
+                "event: {}\r\ndata: {event}\r\n\r\n",
+                event["type"].as_str().unwrap()
+            );
+            for byte in frame.as_bytes() {
+                stream.feed(&[*byte], &sink).unwrap();
+            }
+        }
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            GenerationChunk::Token("h\u{e9}llo".into())
+        );
+        assert!(!stream.stopped);
+        for event in [
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"inspect","input":{}}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"src\"}"}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":""}}),
+            json!({"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":"fixture-private"}}),
+            json!({"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"signed"}}),
+            json!({"type":"content_block_stop","index":2}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}),
+            json!({"type":"message_stop"}),
+        ] {
+            stream
+                .feed(format!("data: {event}\n\n").as_bytes(), &sink)
+                .unwrap();
+        }
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            GenerationChunk::Reasoning("fixture-private".into())
+        );
+        assert!(receiver.try_recv().is_err());
+        let response = stream.finish().unwrap();
+        assert_eq!(response.model, "claude-test");
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+        let usage = response.usage.unwrap();
+        assert_eq!((usage.input_tokens, usage.output_tokens), (7, 9));
+        match &response.content[1] {
+            AnthropicContentBlock::ToolUse { id, name, input } => {
+                assert_eq!((id.as_str(), name.as_str()), ("t1", "inspect"));
+                assert_eq!(input, &json!({"path":"src"}));
+            }
+            _ => panic!("structured tool lost"),
+        }
+    }
+
+    // what this catches: truncated/error streams and cancelled consumers cannot report a complete answer.
+    #[test]
+    fn messages_stream_rejects_incomplete_error_and_cancelled_delivery() {
+        let sink = GenerationSink::discard();
+        assert!(AnthropicStream::default()
+            .finish()
+            .unwrap_err()
+            .contains("message_stop"));
+        assert!(AnthropicStream::default()
+            .feed(
+                b"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n",
+                &sink
+            )
+            .unwrap_err()
+            .contains("overloaded_error"));
+        let mut stream = AnthropicStream::default();
+        stream
+            .event(
+                json!({"type":"message_start","message":{"id":"m","model":"test"}}),
+                &sink,
+            )
+            .unwrap();
+        stream.event(json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t","name":"f","input":{}}}), &sink).unwrap();
+        stream.event(json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{"}}), &sink).unwrap();
+        assert!(stream
+            .event(json!({"type":"content_block_stop","index":0}), &sink)
+            .is_err());
+        let (sink, receiver) = super::super::stream_sinks::channel();
+        drop(receiver);
+        let mut stream = AnthropicStream::default();
+        stream
+            .event(
+                json!({"type":"message_start","message":{"id":"m","model":"test"}}),
+                &sink,
+            )
+            .unwrap();
+        assert!(stream.event(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"late"}}), &sink).is_err());
+    }
 
     // Every part must survive in order or fail explicitly before network dispatch,
     // including media beside tool blocks and non-text system content.

@@ -280,6 +280,13 @@ fn driver_loop(
     // context-budget-exempt: how often the scheduler emits a throughput log line — a logging cadence
     const PERF_LOG_INTERVAL_TOKENS: u64 = 50;
     loop {
+        let cancelled: Vec<i32> = active
+            .iter()
+            .filter_map(|(&id, seq)| seq.response_tx.is_closed().then_some(id))
+            .collect();
+        for id in cancelled {
+            retire_sequence(&mut ctx, &mut active, &mut free_seqs, id);
+        }
         // ── Phase 1: Accept new requests into free slots ──
         // If nothing is active, block on the first request (avoid spinning).
         // Otherwise non-blocking try_recv to keep the decode loop hot.
@@ -300,6 +307,9 @@ fn driver_loop(
             };
             match recv {
                 Ok(req) => {
+                    if req.response_tx.is_closed() {
+                        continue;
+                    }
                     let seq_id = free_seqs.pop().unwrap();
                     match start_request(&model, seq_id, req) {
                         Ok(seq) => {
@@ -674,34 +684,44 @@ fn driver_loop(
         // remove it. seq_state_bytes(seq_id) is still valid before
         // memory_seq_rm.
         for seq_id in to_remove {
-            // Fallback registry cleanup (only fires for paths that didn't
-            // already clean up — the decode-error path is the only one).
-            if let Some(seq) = active.get(&seq_id) {
-                if let Some(pid) = seq.persona_id {
-                    let key =
-                        FootprintKey::for_persona(pid, ResourceType::KvCache, Residency::Active);
-                    // If the entry was already cleaned up by Phase 4, this
-                    // is a no-op (remove on missing key does nothing). If
-                    // it's still here (decode-error path), drain it to 0.
-                    let bytes = ctx.seq_state_bytes(seq_id);
-                    footprint_registry::global().remove(&key, bytes);
-                }
-            }
-
-            ctx.memory_seq_rm(seq_id, -1, -1);
-
-            if let Some(seq) = active.remove(&seq_id) {
-                log.info(&format!(
-                    "Seq {} finished: {} tokens in {}ms ({:.1} tok/s)",
-                    seq_id,
-                    seq.tokens_generated,
-                    seq.started_at.elapsed().as_millis(),
-                    seq.tokens_generated as f64 / seq.started_at.elapsed().as_secs_f64().max(0.001)
-                ));
-            }
-            free_seqs.push(seq_id);
+            retire_sequence(&mut ctx, &mut active, &mut free_seqs, seq_id);
         }
     }
+}
+
+/// Completion, decode failure and consumer cancellation release the same KV owner.
+fn retire_sequence(
+    ctx: &mut llama::Context<'_>,
+    active: &mut HashMap<i32, ActiveSeq>,
+    free_seqs: &mut Vec<i32>,
+    seq_id: i32,
+) {
+    let log = runtime::logger("llamacpp");
+    // Fallback registry cleanup (only fires for paths that didn't
+    // already clean up — the decode-error path is the only one).
+    if let Some(seq) = active.get(&seq_id) {
+        if let Some(pid) = seq.persona_id {
+            let key = FootprintKey::for_persona(pid, ResourceType::KvCache, Residency::Active);
+            // If the entry was already cleaned up by Phase 4, this
+            // is a no-op (remove on missing key does nothing). If
+            // it's still here (decode-error path), drain it to 0.
+            let bytes = ctx.seq_state_bytes(seq_id);
+            footprint_registry::global().remove(&key, bytes);
+        }
+    }
+
+    ctx.memory_seq_rm(seq_id, -1, -1);
+
+    if let Some(seq) = active.remove(&seq_id) {
+        log.info(&format!(
+            "Seq {} finished: {} tokens in {}ms ({:.1} tok/s)",
+            seq_id,
+            seq.tokens_generated,
+            seq.started_at.elapsed().as_millis(),
+            seq.tokens_generated as f64 / seq.started_at.elapsed().as_secs_f64().max(0.001)
+        ));
+    }
+    free_seqs.push(seq_id);
 }
 
 /// Canonical signature of a gene set — sorted `id:scale`, comma-joined.
