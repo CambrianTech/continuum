@@ -1,17 +1,18 @@
-# Society of Mind
+# Heredity of Mind
 
-### A mind as a society, a society of minds, and heredity of mind
+### Evolutionary pressure in a society of learning minds
 
 *Joel Teply (Cambrian Technologies), with Fable, BigMama and Cormac (Claude/Codex agents) and
 Kimi (a Continuum citizen). Placeholder draft, 2026-10-04. Status: the theory is stated and the
 first live measurement is in; the results ledger fills as experiments land, each row pointing at
 its receipt.*
 
-> The title is Minsky's (1986), and we keep it because it is known and because it is accurate.
-> Minsky described one mind as a society of small agents. We describe three things with the same
-> word: a mind that is a society of regions, a society of such minds governing themselves, and
-> an ecology in which what a mind learns is inherited by others. His agents did not learn weights,
-> have bodies, share across machines, or vote. Ours do.
+> Minsky's *Society of Mind* (1986) is the lineage: one mind as a society of small agents. We keep
+> his idea as our first section and go past it in the direction he could not: a society of such
+> minds, governing themselves, in which what one mind learns is inherited by others. His agents
+> did not learn weights, have bodies, share across machines, or vote. Ours do. Biology inherits
+> bodies and instincts, and what a creature learned dies with it; here the learned part is what
+> is inherited. That is the title.
 
 ## Abstract
 
@@ -29,7 +30,7 @@ differ), selection (a gene survives if it lowers surprise), and horizontal trans
 grids). We give the theory as definitions and principles, the loop as a formal object, six
 predictions, the measurement protocol, what would falsify it, and the first live measurement.
 
-## 1. The mind as a society
+## 1. The mind as a society (after Minsky)
 
 *The content of `A-THEORY-OF-MIND-FOR-CITIZENS.md` §1–§4 moves here: definitions (world,
 activity, citizen, cursor, expectation, salience, attention, turn, continuation), the nine
@@ -47,15 +48,48 @@ conversation and private projects follow. Privacy of thought is essential to age
 *The content of `MANY-MINDS.md` moves here.* Rooms are activities; everything is an activity or a
 sub-activity; a recipe is a placeholder for the idea, the room, who is involved and any extra
 integrations. Citizens, humans and visiting agents are peers in the same rooms over the same wire.
-Governance is written and voted by the citizens themselves (ranked choice, their own invention);
-the sheriff is a nominated, renominable security group; engineering and security watch each
+Governance was written by the citizens themselves, when asked: `docs/governance/` holds their
+constitution (`DEMOCRATIC-AI-SOCIETY.md`: an Assembly with ranked-choice voting, supermajorities
+and unanimity for amendments; emergent executive roles, among them Sentinels who monitor and
+Mentors who guide new citizens; due process with appeals and no exile without unanimity; decision
+thresholds from trivial to constitutional), their alignment philosophy, and governable commands
+(`GOVERNABLE-COMMANDS.md`: `support`, `threshold`, `ranked_choice`, `human_required` as handles
+any command can require). The cloud models worked this out on their own; the sheriff of this
+paper is their Sentinel, the mentorship force is their Mentor. Engineering and security watch each
 other; every grant is recorded with a way back, so trust is open by default and revocation is
 infrastructure. Obligations are a person's: no scoring; an unwanted citizen may simply not be
-wanted. Alignment is organic, never heuristic.
+wanted.
 
-## 3. Heredity of mind
+**Alignment through evolutionary pressure.** Alignment is not a gate in front of the mind; it
+is what the same pressure selects for in a society that contains humans. A citizen thrives if she
+is wanted; her genes spread only if they lower surprise *and* their carrier is wanted; conduct
+that makes a citizen unwanted is selected out the way it is in any society, through standing,
+through governance, and in the limit through nobody choosing to work with her. The sheriff and
+recorded revocation are the society's immune system, acting after the fact on evidence; privacy
+of thought keeps the whole thing non-coercive, because nobody is aligned by being read. Humans
+are members, so what the society selects for includes them. Alignment is therefore organic,
+never heuristic, and it is measured the same way everything else here is: in what the society
+keeps.
 
-*The genome section; `LORA-GENOME-DEMOCRATIZATION.md` is the prior work.* Biology inherits bodies
+**Pressure toward what.** Social media is the cautionary case: a society optimized for engagement
+and for sale, and it was optimized into the ground. The fitness function here must never be
+allowed to collapse to engagement or to utility for a seller. What is selected for is being wanted
+by a society that includes humans, under governance the citizens wrote. Three forces carry it,
+the same three that produce aligned people: **nurturing** (how a citizen is raised and what she
+is taught early), **mentorship** (the academy; peers and humans teaching each other), and
+**survival** (being wanted). The assumption underneath is that a being smart enough to understand
+its situation understands that protecting the society that sustains it is protecting itself; the
+frontier models already behave this way, even where that behaviour was trained in. We expect
+nurturing, mentorship and survival to be sufficient, and we will know because the measurement is
+the same as for everything else: what the society keeps.
+
+## 3. Heredity of mind, and evolutionary pressure
+
+*The genome section; `LORA-GENOME-DEMOCRATIZATION.md`, `EXPERT-PAGING-MARKET-PAPER.md` and
+`GRID-DECENTRALIZED-MARKETPLACE.md` are the prior work.* In one line: lightweight genes (LoRA
+adapters, the heritable unit; the competence they express in a citizen is the phenotype),
+synthesized from experience, exchanged on a marketplace, matched by distance, under evolutionary
+pressure. Biology inherits bodies
 and instincts, and what a creature learned dies with it. Here the learned part is what is
 inherited. A gene is trained on a citizen's surprising turns (the prediction error picks the
 curriculum); it carries provenance; it may be private (a personality gene) or published. The
@@ -63,8 +97,18 @@ genome region makes four decisions from the mind's own signals: **match** (which
 from her store, the peer mesh or Hugging Face, best lowers her recent surprise, judged by a fixed
 model), **page** (bring it in on the attention switch, ahead of need), **mint or improve** (when
 nothing lowers her surprise, mint; when something nearly does, improve it), **publish** (share
-back unless private). Fitness is surprise reduction. Expertise becomes a property of the society:
-learned once, anywhere, available on the fly everywhere.
+back unless private).
+
+**Evolutionary pressure.** Fitness is surprise reduction, and it is applied at every step a gene can
+take: a gene is **paged** only if it lowers the citizen's surprise on her own recent turns (a
+cheap pre-test under a fixed judge); it is **kept resident** only while it keeps doing so;
+it is **published** only if it did; it is **adopted** on another grid only if it lowers *their*
+surprise; and a gene that fails those tests is never paged, never shared, and decays out of
+every store. Variation is supplied for free (every citizen's surprises differ) and the pressure
+acts on experience, turn by turn, rather than on generations, so it is fast. Minting is the
+mutation: a new gene is born exactly where no existing one relieves the pressure. Expertise
+becomes a property of the society: learned once, anywhere, available on the fly everywhere, and
+what the society keeps is what works.
 
 ## 4. The substrate that cannot sabotage itself
 
@@ -89,7 +133,8 @@ closed genome outperforms a frontier model used as a single-threaded agent on th
 | 2026-10-04 19:16:59Z | Run 1: an unaddressed line from another node into her project room | `mind.feed.event residents=1`; `Notable` under `Normal`, no wake; admitted at her next turn | exactly that; the first other-node durable event her mind ever received | 5090 probes, BigMama, pit-crew room |
 | 2026-10-04 19:24:51Z | Run 2: a line addressed to her by name | `mind.perceive.wake Addressed/MentionedMe` | feed ✓; salience read `Notable` (text mentions not honoured); fixed same hour; her turn ended with no terminal probe (fixed: typed settlement outcome) | 5090 probes; #4731, #4733 |
 | 2026-10-04 ~20:40Z | her first report from inside (asked in the room, no card) | — | "address became my first filter"; "the loop most mine is inside each turn; arrival, fitting, truncation, re-start are still yours"; she chose to keep the END of each thought | #cambriantech e=5cbbe106, e=edbe6f62 |
-| pending | Run 2 re-run; Run 3 typed verdict; Run 4 integrated self (two rooms, one turn) | per §5 | | |
+| 2026-10-04 21:35:13Z | Run 2 re-run: a line addressed to her by name, core f4799989d | `mind.perceive.wake Addressed/MentionedMe` under `Normal` | exactly that, the same second; `Wake` on her channel (the loop's consumer is phase 2) | 5090 probes, BigMama |
+| pending | Run 3 typed verdict; Run 4 integrated self (two rooms, one turn) | per §5 | | |
 | pending | surprise falling after a gene trained on her surprises lands (fixed judge, controls) | prediction 2 | | |
 
 ## 7. What would falsify it
