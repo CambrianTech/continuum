@@ -23,8 +23,9 @@
 //!    while she has unpushed work or a turn in flight (`placement.move.deferred_unpushed`).
 //! 3. [`arrive`] — when the card is staged on a node (`card_staging::stage_for_card`),
 //!    `git fetch origin <branch>` and check the branch out AT the fetched commit before
-//!    her first turn there. A local checkout that diverged (its own commits, or a dirty
-//!    tree) is saved whole under `refs/continuum/stranded/<branch>-<ts>` and the remote
+//!    her first turn there. Same-branch local successors and dirty work are preserved
+//!    when the fetched tip adds no commits. A genuinely diverged local checkout
+//!    is saved whole under `refs/continuum/stranded/<branch>-<ts>` and the remote
 //!    wins — receipted on `workspace.transfer`, never silently discarded.
 //!
 //! ## A push is a TRANSFER only when the other node can read its target
@@ -202,6 +203,9 @@ pub enum ArrivalOutcome {
     Unreachable { branch: String, error: String },
     /// Already at the fetched commit with a clean tree: nothing moved.
     Current { branch: String, sha: String },
+    /// Same branch already contains the fetched history; keep unpublished commits
+    /// and edits in place. This is local continuity, not a successful push/transfer.
+    LocalWorkPreserved { branch: String, sha: String, remote_sha: String, local_commits: u64, dirty: bool },
     /// The branch is checked out at the fetched commit. `stranded` names the ref that
     /// holds what this node had (its own commits and any dirty edit) when it diverged.
     Transferred { branch: String, sha: String, from_node: Option<String>, stranded: Option<String> },
@@ -219,6 +223,7 @@ impl ArrivalOutcome {
             ArrivalOutcome::NoRemoteBranch { .. } => "no_remote_branch",
             ArrivalOutcome::Unreachable { .. } => "unreachable",
             ArrivalOutcome::Current { .. } => "current",
+            ArrivalOutcome::LocalWorkPreserved { .. } => "local_work_preserved",
             ArrivalOutcome::Transferred { .. } => "transferred",
             ArrivalOutcome::Failed { .. } => "failed",
             ArrivalOutcome::NotTransferable { .. } => "not_transferable",
@@ -247,18 +252,40 @@ fn is_dirty(root: &Path) -> Result<bool, String> {
     run_git(root, &["status", "--porcelain", "--untracked-files=all"]).map(|s| !s.trim().is_empty())
 }
 
-/// Commits reachable from HEAD that no `origin/*` ref holds — the exact set a push
-/// would carry. A branch cut from the clone's HEAD and never edited counts 0: nothing
-/// is lost by leaving it, so it never defers a move.
-fn unpushed_commit_count(root: &Path) -> Result<u64, String> {
-    let out = run_git(root, &["rev-list", "--count", "HEAD", "--not", "--remotes=origin"])?;
-    out.trim().parse::<u64>().map_err(|e| format!("rev-list count unreadable ({e}): {out:?}"))
+/// Count each side of two immutable tips. Arrival and branch publication use the
+/// same ancestry question; reachability from an unrelated branch is not delivery.
+fn history_counts(root: &Path, remote: &str, local: &str) -> Result<(u64, u64), String> {
+    let output = run_git(root, &["rev-list", "--left-right", "--count", &format!("{remote}...{local}")])?;
+    let counts = output.split_whitespace().map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("rev-list counts unreadable ({error}): {output:?}"))?;
+    match counts.as_slice() {
+        [remote, local] => Ok((*remote, *local)),
+        _ => Err(format!("rev-list expected two counts: {output:?}")),
+    }
+}
+
+/// The receiving node fetches THIS branch, not whichever origin ref contains HEAD.
+/// A missing branch needs publication even when its initial commit exists on main.
+fn needs_branch_publication(root: &Path) -> Result<bool, String> {
+    let branch = current_branch(root).ok_or_else(|| "cannot read current branch".to_string())?;
+    let local = run_git(root, &["rev-parse", "--verify", "HEAD"])?;
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    // A successful empty listing means absent. Do not turn a failed git read into
+    // absence; placement must retain its fail-closed error behavior.
+    let refs = run_git(root, &["for-each-ref", "--format=%(objectname) %(refname)", &remote_ref])?;
+    let remote = refs.lines().filter_map(|line| line.split_once(' '))
+        .find_map(|(sha, name)| (name == remote_ref).then_some(sha));
+    match remote {
+        Some(remote) => history_counts(root, remote, local.trim()).map(|(_, local_only)| local_only > 0),
+        None => Ok(true),
+    }
 }
 
 /// Is there work here that `origin` does not hold — so a move would strand it?
 ///
 /// A carryable checkout ([`Carry::Via`]) answers on the push's own terms: a dirty tree,
-/// or commits no `origin/*` ref reaches. A checkout that CANNOT carry but can hold work
+/// or work not published to its exact origin branch. A checkout that CANNOT carry but can hold work
 /// (a local-path origin — every `--shared` clone of this node's cache — or no origin)
 /// answers on what sits there, and a yes PINS her: moving would leave it behind with
 /// nothing able to fetch it. Only a checkout with no branch of hers at all answers `false`
@@ -269,8 +296,8 @@ pub fn has_unpushed_work(root: &Path) -> bool {
         // No origin refs exist to count commits against, so the dirty tree IS the work:
         // nothing ever commits into a checkout that cannot carry (see `sync_after_act`).
         Carry::NoOrigin => is_dirty(root).unwrap_or(true), // unwrap_or: unreadable = assume work, never move on a guess
-        Carry::Via(_) | Carry::LocalOrigin => match (is_dirty(root), unpushed_commit_count(root)) {
-            (Ok(dirty), Ok(ahead)) => dirty || ahead > 0,
+        Carry::Via(_) | Carry::LocalOrigin => match (is_dirty(root), needs_branch_publication(root)) {
+            (Ok(dirty), Ok(unpublished)) => dirty || unpublished,
             _ => true,
         },
     }
@@ -394,11 +421,11 @@ fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry) -> Pus
         Err(error) => return PushOutcome::CommitFailed { branch, error },
     }
     let sha = head_sha(root).unwrap_or_default(); // unwrap_or_default: an unborn branch has no sha; the push below says so
-    let ahead = match unpushed_commit_count(root) {
+    let unpublished = match needs_branch_publication(root) {
         Ok(n) => n,
         Err(error) => return PushOutcome::CommitFailed { branch, error },
     };
-    if ahead == 0 {
+    if !unpublished {
         return PushOutcome::Ok { branch, sha, committed, pushed: false };
     }
     match run_git(root, &["push", "-u", "origin", &branch]) {
@@ -517,9 +544,9 @@ pub async fn move_blocker_bounded(persona: Uuid) -> Option<String> {
 // ── seam 3: arrival ─────────────────────────────────────────────────────────────────
 
 /// Bring `root` to `origin/<branch>`'s tip before her first turn on this node: fetch,
-/// then check `branch` out AT the fetched commit. What this node had that the remote
-/// does not — its own commits on the branch, a dirty tree — is committed whole (no
-/// hooks) and kept under [`STRANDED_REF_PREFIX`]`<branch>-<now_ms>`; the remote wins the
+/// then retain same-branch local work if it already contains the fetched history.
+/// Otherwise check `branch` out AT the fetched commit. Diverged local commits and
+/// dirty edits are committed whole (no hooks) and kept under [`STRANDED_REF_PREFIX`]`<branch>-<now_ms>`; the remote wins the
 /// branch and the tree. Synchronous git; [`arrive_for`] is the bounded, probed form.
 pub fn arrive(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
     // The mirror of the push guard (and the same policy/mechanism split): fetching from a
@@ -558,14 +585,25 @@ fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
     if head.as_deref() == Some(fetched.as_str()) && !dirty && current_branch(root).as_deref() == Some(branch) {
         return ArrivalOutcome::Current { branch: branch_s, sha: fetched };
     }
-    // Local-only commits: what HEAD reaches that the fetched tip does not.
-    let local_only = match head {
-        Some(_) => match run_git(root, &["rev-list", "--count", &format!("{fetched}..HEAD")]) {
-            Ok(s) => s.trim().parse::<u64>().unwrap_or(0), // unwrap_or: unreadable count reads as none; the dirty check still strands edits
-            Err(error) => return ArrivalOutcome::Failed { branch: branch_s, stage: "rev_list", error },
-        },
-        None => 0,
+    // Count both sides against immutable tips. A local successor is not a
+    // divergence: re-claiming must not reset reviewed work to an older origin.
+    let (remote_only, local_only) = match head.as_deref() {
+        Some(sha) => {
+            let counts = history_counts(root, &fetched, sha);
+            match counts {
+                Ok(counts) => counts,
+                Err(error) => return ArrivalOutcome::Failed { branch: branch_s, stage: "rev_list", error },
+            }
+        }
+        None => (0, 0),
     };
+    if remote_only == 0 && (local_only > 0 || dirty) && current_branch(root).as_deref() == Some(branch) {
+        if let Some(sha) = &head {
+            return ArrivalOutcome::LocalWorkPreserved {
+                branch: branch_s, sha: sha.clone(), remote_sha: fetched, local_commits: local_only, dirty,
+            };
+        }
+    }
     let mut stranded = None;
     if dirty || local_only > 0 {
         let reference = format!("{STRANDED_REF_PREFIX}{branch}-{now_ms}");
@@ -621,10 +659,16 @@ pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOut
         ArrivalOutcome::Transferred { sha, from_node, stranded, .. } => {
             (sha.as_str(), from_node.clone().unwrap_or_default(), stranded.clone().unwrap_or_default(), String::new()) // unwrap_or_default: probe labels only
         }
-        ArrivalOutcome::Current { sha, .. } => (sha.as_str(), String::new(), String::new(), String::new()),
+        ArrivalOutcome::Current { sha, .. } | ArrivalOutcome::LocalWorkPreserved { sha, .. } =>
+            (sha.as_str(), String::new(), String::new(), String::new()),
         ArrivalOutcome::Unreachable { error, .. } | ArrivalOutcome::Failed { error, .. } => ("", String::new(), String::new(), error.clone()),
         ArrivalOutcome::NotTransferable { reason, .. } => ("", String::new(), String::new(), (*reason).to_string()),
         ArrivalOutcome::NoRemoteBranch { .. } => ("", String::new(), String::new(), String::new()),
+    };
+    let (remote_sha, local_commits, dirty) = match &outcome {
+        ArrivalOutcome::LocalWorkPreserved { remote_sha, local_commits, dirty, .. } =>
+            (remote_sha.as_str(), *local_commits, *dirty),
+        _ => ("", 0, false), // Other outcomes do not carry a local-preservation receipt.
     };
     let to_node = crate::capacity::gossip::this_process_origin().to_string();
     crate::probe!(
@@ -636,10 +680,13 @@ pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOut
         from_node = %from_node,
         to_node = %to_node,
         stranded = %stranded,
+        remote_sha = %remote_sha,
+        local_commits = local_commits,
+        dirty = dirty,
         outcome = %outcome.label(),
         error = %error,
         ms = started.elapsed().as_millis() as u64,
-        "the card's branch arrived on this node before her first turn here"
+        "card workspace arrival reconciled; outcome distinguishes transferred and preserved local work"
     );
     outcome
 }
@@ -740,6 +787,37 @@ mod tests {
         assert!(!has_unpushed_work(&m.b), "at origin's tip: nothing to carry");
     }
 
+    // what this catches: another origin branch containing her commit does not deliver
+    // it to the card branch that the receiving node fetches (nor release placement).
+    #[test]
+    fn publication_and_placement_follow_the_exact_card_branch() {
+        let m = two_machines();
+        let (card, persona) = (Uuid::new_v4(), Uuid::new_v4());
+        note_acted_root(persona, m.a.clone());
+        // The new card branch is absent, although its base already exists on main.
+        assert!(move_blocker_over(persona, None).is_some());
+        assert!(matches!(sync(&m.a, card, "node-a"), PushOutcome::Ok { committed: false, pushed: true, .. }));
+        let base = head(&m.a);
+        assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).trim(), base);
+        assert!(move_blocker_over(persona, None).is_none());
+
+        std::fs::write(m.a.join("review.txt"), "reviewed successor\n").unwrap();
+        git(&m.a, &["add", "review.txt"]);
+        git(&m.a, &["commit", "-q", "-m", "reviewed successor"]);
+        let successor = head(&m.a);
+        git(&m.a, &["push", "-q", "origin", "HEAD:refs/heads/other"]);
+        assert_eq!(git(&m.a, &["rev-parse", "refs/remotes/origin/other"]).trim(), successor);
+        assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).trim(), base);
+        assert!(move_blocker_over(persona, None).is_some(), "another branch is not card delivery");
+        assert!(matches!(sync(&m.a, card, "node-a"), PushOutcome::Ok { committed: false, pushed: true, .. }));
+        assert!(move_blocker_over(persona, None).is_none(), "card publication releases placement");
+        assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).trim(), successor);
+        git(&m.b, &["checkout", "-q", "-B", &m.branch]);
+        assert!(matches!(arrive_over(&m.b, &m.branch, 40), ArrivalOutcome::Transferred { .. }));
+        assert_eq!(head(&m.b), successor);
+        assert_eq!(std::fs::read_to_string(m.b.join("review.txt")).unwrap(), "reviewed successor\n");
+    }
+
     // what this catches: a push that cannot reach origin is a NAMED outcome, the work is
     // committed locally (nothing lost), and the placement question answers "blocked"
     // until a later act's sync lands the push — never a panic, never a silent move.
@@ -770,6 +848,49 @@ mod tests {
         // A vanished root is pruned, not a permanent blocker.
         note_acted_root(persona, m.tmp.path().join("never-existed"));
         assert!(move_blocker_over(persona, None).is_none());
+    }
+
+    // what this catches (Kimi card 74ec9613): re-claiming reset her reviewed successor
+    // commit to an older origin. Repeated arrival preserves both committed and dirty work.
+    #[test]
+    fn repeated_arrival_preserves_same_branch_successors_and_dirty_work() {
+        let m = two_machines();
+        let card = Uuid::new_v4();
+        std::fs::write(m.a.join("src.txt"), "published base\n").unwrap();
+        let PushOutcome::Ok { sha: remote_sha, .. } = sync(&m.a, card, "node-a") else { panic!("push") };
+        std::fs::write(m.a.join("src.txt"), "review corrections\n").unwrap();
+        git(&m.a, &["add", "src.txt"]);
+        git(&m.a, &["commit", "-q", "-m", "independent review corrections"]);
+        let successor = head(&m.a);
+        for now in [50, 51] {
+            assert_eq!(arrive_over(&m.a, &m.branch, now), ArrivalOutcome::LocalWorkPreserved {
+                branch: m.branch.clone(), sha: successor.clone(), remote_sha: remote_sha.clone(),
+                local_commits: 1, dirty: false,
+            });
+            assert_eq!(head(&m.a), successor);
+            assert_eq!(std::fs::read_to_string(m.a.join("src.txt")).unwrap(), "review corrections\n");
+        }
+        assert!(git(&m.a, &["for-each-ref", "--format=%(refname)", STRANDED_REF_PREFIX]).trim().is_empty());
+        assert!(sync(&m.a, card, "node-a").is_ok());
+        // Equal HEAD/origin with staged, unstaged and untracked edits: preserve all three.
+        std::fs::write(m.a.join("src.txt"), "staged corrections\n").unwrap();
+        git(&m.a, &["add", "src.txt"]);
+        std::fs::write(m.a.join("src.txt"), "continued corrections\n").unwrap();
+        std::fs::write(m.a.join("untracked.txt"), "new work\n").unwrap();
+        let index = git(&m.a, &["write-tree"]);
+        let status = git(&m.a, &["status", "--porcelain", "--untracked-files=all"]);
+        for now in [52, 53] {
+            assert_eq!(arrive_over(&m.a, &m.branch, now), ArrivalOutcome::LocalWorkPreserved {
+                branch: m.branch.clone(), sha: successor.clone(), remote_sha: successor.clone(),
+                local_commits: 0, dirty: true,
+            });
+            assert_eq!(head(&m.a), successor);
+            assert_eq!(git(&m.a, &["write-tree"]), index);
+            assert_eq!(git(&m.a, &["status", "--porcelain", "--untracked-files=all"]), status);
+            assert_eq!(std::fs::read_to_string(m.a.join("src.txt")).unwrap(), "continued corrections\n");
+            assert_eq!(std::fs::read_to_string(m.a.join("untracked.txt")).unwrap(), "new work\n");
+        }
+        assert!(git(&m.a, &["for-each-ref", "--format=%(refname)", STRANDED_REF_PREFIX]).trim().is_empty());
     }
 
     // what this catches: a local checkout that DIVERGED from what origin holds (its own
