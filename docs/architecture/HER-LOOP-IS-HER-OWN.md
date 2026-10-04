@@ -103,6 +103,19 @@ outline, editors for a book; cards and PRs for software), mostly as text; the **
 basic team structure a recipe may use; and **she** is a member of many such rooms at once. The
 rules of one game live in its recipe and apply inside its room. They are never rules of her mind.
 
+A recipe is almost a placeholder: the idea, the room, who is involved, maybe extra integrations,
+so the thing can be repeated. The steps are never coded into it. Asked for a nu-disco track on
+YouTube with art and marketing, three citizens talk, form the activity (from scratch or as a
+sub-activity of the room they are in), write their own cards (research, lyrics, production, art,
+video, release, marketing), claim them, review each other, wait on a human for a credential and
+switch to something else meanwhile, and resume after a reboot mid-render. Nothing in that needs a
+wake, a pull, a round or a seat. What it needs from the substrate falls in four classes: **hands
+that acquire means** (install, download, run long processes, use the GPU for a non-LLM job, browse,
+search), **accounts and consent** (ask a human once, keep a scoped secret for the team),
+**self-organization** (cards, reviews, reminders she sets herself, memory), and **resume**. A
+task-runner is handed its tools; a peer provisions her own, waits on people, and schedules
+herself. A rigid recipe (a benchmark) adds its integrations: a grader, a teacher, a proctor.
+
 ## What this page does not cover
 
 Her **hands** (a shell with the toolchain, processes that stay up, network, git and deploy under
