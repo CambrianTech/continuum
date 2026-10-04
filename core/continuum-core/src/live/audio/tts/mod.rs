@@ -18,6 +18,7 @@ mod kokoro;
 mod orpheus;
 mod phonemizer;
 mod piper;
+#[cfg(feature = "pocket-tts")]
 mod pocket;
 mod silence;
 
@@ -25,6 +26,7 @@ pub use kokoro::KokoroTTS;
 pub use orpheus::OrpheusTts;
 pub(crate) use phonemizer::Phonemizer;
 pub use piper::PiperTTS;
+#[cfg(feature = "pocket-tts")]
 pub use pocket::PocketTTS;
 pub use silence::SilenceTTS;
 
@@ -306,7 +308,9 @@ pub fn init_registry() {
         let mut reg = TTSRegistry::new();
 
         // Register Pocket-TTS (local, Candle, 100M) - fast CPU TTS with voice cloning
-        // ≤600ms TTFA, 8 preset voices, clone any voice from 5-15s WAV reference audio
+        // ≤600ms TTFA, 8 preset voices, clone any voice from 5-15s WAV reference audio.
+        // Optional (feature `pocket-tts`); the priority lists below skip it when absent.
+        #[cfg(feature = "pocket-tts")]
         reg.register(Arc::new(PocketTTS::new()));
 
         // Register Orpheus (local, Candle GGUF, 3B) - expressive with emotion tags
