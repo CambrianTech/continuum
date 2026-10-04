@@ -82,6 +82,14 @@ flagship.
 2. **Unique in the world, measured.** The speaker encoder embeds the seed. A grid-wide
    registry of persona voice embeddings refuses a newborn voice that falls within a
    distance threshold of any existing persona's, and the voice is redesigned.
+   **The registry is grid state, so it needs an owner (Fable, #4697 review).** An
+   embedding is part of the voice gene's published record (lineage, alloy), so the
+   registry is a projection of the published genes, not a separate store. Each node keeps
+   its view; a birth checks against that view and records the view's high-water mark.
+   A partitioned node can still give birth, but the voice is marked **provisional**
+   until its node rejoins and the check is replayed against the merged view. A collision
+   found then is resolved by redesigning the YOUNGER voice. Nothing is evicted: published
+   genes are permanent, and a retired persona's voice stays reserved.
 3. **The gene.** A LoRA on Qwen3-TTS Base, trained on the seed corpus, is published with
    lineage like any other gene and paged per request on the voice lane.
 4. **Expression.** Each utterance carries an instruction derived from PersonaState
@@ -120,8 +128,12 @@ the diversity the grid is for.
 
 ### Where it runs on the grid
 
-The voice lane is small (0.6B or 1.7B, about 1-4 GB). It belongs on a GPU node: the M
-series on Metal, or the 5090. Community numbers for Qwen3-TTS-0.6B on CPU put it at or
+The voice lane is small (0.6B or 1.7B, about 1-4 GB). It belongs on a GPU node. The
+grid's machines (Joel, 2026-10-03) are the 5090 and the 3090 (CUDA), the M5 Pros and an
+M1 (Metal), the IntelMac (CPU) and BIGGIEDESK (Windows). The 3090 (24 GB) and the M1 can
+each carry a voice lane beside a smaller mind, or serve voice for the grid, so the 5090's
+and the M5s' memory stays with the big minds. Which machine serves voice is a placement
+decision for the grid governor, measured, not fixed here. Community numbers for Qwen3-TTS-0.6B on CPU put it at or
 slower than real time, so a CPU-only node like the IntelMac asks the grid for speech
 (24 kHz audio is cheap to stream). If no grid voice is reachable, it uses the Kokoro
 floor and says so. **To measure before deciding:** the 0.6B's real-time factor (Q4 and
@@ -131,16 +143,20 @@ Q8) on the IntelMac and the M5, and time to first audio on the M5 and the 5090.
 
 1. **ab567967 (P0):** remove Edge. Kokoro becomes the floor. Gate: `otool -L` shows no
    Homebrew libraries.
-2. **Fork:** a streaming speech endpoint in llama-server on mtmd generation, with
-   per-request LoRA and the VoiceDesign and instruction prompt formats. Today `llama-tts`
-   wires only Base plus a reference speaker file.
-3. **Core:** a Qwen3-TTS adapter on the serving daemon's voice lane, at the top of the
-   priority list once `voice/selftest --adapter qwen3tts` passes.
-4. **Forge:** the voice-gene recipe (description → VoiceDesign seed → Base LoRA), plus the
-   uniqueness registry.
-5. **Outlier B:** Maya1 through the same interface.
+2. **Outlier A, the core adapter:** a Qwen3-TTS adapter against the fork's EXISTING
+   non-streaming `llama-tts` path (Base + reference speaker, plus a LoRA), proven by
+   `voice/selftest --adapter qwen3tts`.
+3. **Outlier B:** Maya1 (Llama + SNAC, a different stack) through the same interface.
+   Only once both fit without forcing is the interface trusted (CLAUDE.md outlier rule;
+   Fable, #4697: otherwise it gets designed around one engine's streaming shape).
+4. **Fork:** the streaming speech endpoint in llama-server on mtmd generation, with
+   per-request LoRA and the VoiceDesign and instruction prompt formats, built to the
+   proven interface.
+5. **Forge:** the voice-gene recipe (description → VoiceDesign seed → Base LoRA), plus the
+   uniqueness registry as described above.
 6. **Acceptance** (card 3f44bd80): two personas in a live call, with two distinct
-   learned voices and state-driven emotion, on local models, with receipts.
+   learned voices and state-driven emotion, on local models, with receipts. Then the
+   learned voice takes the top of the priority list.
 
 Sources: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) ·
 [Qwen3-TTS LoRA fine-tuning](https://github.com/instavar/qwen3-tts-lora-finetuning) ·
