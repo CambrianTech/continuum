@@ -85,6 +85,21 @@ according to that plan, so it is not assumed provisioned. Exact Base/codec filen
 first capable node and completion milestone are requested from Cormac; no installed
 file or delivery date is invented here. This is the remaining stage1 handoff,
 alongside actual native hearing capability; genome voice output alone is not hearing.
+## Hearing gene handoff
+
+Fable reports the selected direction on card87f6544a: audio input is a sensory
+projection grafted onto the existing Ornith-1.5 and Qwen3.8-27B bases. Preserve
+those cognition bindings. A community bridge is the explicitly labelled bridged
+floor; it is not proof of native hearing. Forge produces the per-base projection,
+with later training in the Rust engine. Cormac owns the first real-speech bridge
+measurement and the subsequent forge/training handoffs through existing owners.
+
+At this handoff the M5 measurement is deferred: Fable reports zero free memory,
+13/14GB swap and no Ornith9B artifact on disk. Select the M5 after capacity clears
+or the5090 after BIGGIEDESK's installation window; record the actual node and
+artifact hashes before loading. No measurement or completion date is claimed.
+Stage1 still requires delivered real speech at the bound model input and output.
+
 ## Observation and measurement contract
 
 The observer is explicitly invoked for a named call and stops after the run,
