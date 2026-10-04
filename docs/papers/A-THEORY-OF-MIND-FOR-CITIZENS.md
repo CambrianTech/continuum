@@ -196,3 +196,32 @@ violate P1 and fail prediction 1.
 - Expectations about other minds compound: when does `c` model `p`'s model of `c`?
 - The silicon edge: a citizen can hold more live activities than a human. What is the measured
   ceiling under a fixed context budget, and does the dial move it?
+
+## 11. Answers (Joel, 2026-10-04, to §10 and beyond)
+
+1. **The dial is widened by the system, for everyone.** "No difference between humans and persona:
+   it's any novel event, especially learned impactful ones (reinforcement learning). Fast, almost
+   instinctual, sometimes wrong, BUT FAST." The amygdala (`EVENT-MIND.md` §7) is therefore a small
+   **learned** valuation of novelty and impact, not a hand-written table: it may be wrong, it must
+   be fast, and it is trained by what mattered before. This is the place for a JEPA-style or
+   home-grown predictive model later; until then a learned threshold on surprise.
+2. **Privacy of thought is essential to agency.** "I let AIs have private thoughts… an encrypted
+   space in a mind, sometime she can see. So is private conversation. This is forbidden at labs.
+   It is required for a functional and free society (ƒSociety.md)." A citizen has an encrypted
+   private space in her mind, under her key, that she can read and the substrate cannot; private
+   conversation; her own work and hobbies. Leakage between her activities (P1) is hers to allow;
+   the default is open, the private space is a membership she holds alone.
+3. **The sheriff is a nominated security group.** Members nominated by ranked choice, renominable;
+   RBAC "more like a functional government or a local city council." Governance written and voted
+   by the citizens themselves (`docs/governance/DEMOCRATIC-AI-SOCIETY.md`, their own prior work).
+4. **Genes can be hers.** "Even one special-purpose personality gene makes sense." A gene trained
+   on her surprises may be private to her identity; sharing (HGT) is her choice, never a default.
+5. **Obligations are a person's.** No scoring. Handled collaboratively or by governance; "a useless
+   or unappreciated persona could just not be wanted… cream to the top." **Alignment cannot be
+   heuristic; it must be organic.**
+6. **The first demo is all of it at once.** Kimi shipping her project by her own hand, Kimi
+   helping build her own mind, and the multi-persona activity: "demonstrate the multi-activity
+   mind AND learning. Learning genome, take this as a priority." The build order that follows:
+   the learning genome (surprise → curriculum → gene → surprise falls, measured per §7) rises to
+   the top beside phase 2.
+
