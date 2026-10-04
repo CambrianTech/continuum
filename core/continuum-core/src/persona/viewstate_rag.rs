@@ -256,10 +256,22 @@ pub trait RoomScopedView: RagRenderable {}
 /// not a guard, and this is the half that catches an over-tight bound:
 ///
 /// ```
-/// use continuum_core::persona::viewstate_rag::ViewStateRagSource;
-/// use continuum_positron::bench::BenchViewState;
+/// use continuum_core::persona::viewstate_rag::{NodeScopedView, RagRenderable, ViewStateRagSource};
 /// use continuum_positron::Substrate;
-/// let _ = ViewStateRagSource::<BenchViewState>::new(Substrate::new());
+/// // No production kind is node-scoped any more (the bench board went per room on
+/// // 2026-10-04, HER-LOOP-IS-HER-OWN.md rule 5), so the mirror carries its own: a
+/// // kind that genuinely describes the node still constructs with one substrate.
+/// #[derive(serde::Deserialize)]
+/// struct NodeTemperature { celsius: f32 }
+/// impl RagRenderable for NodeTemperature {
+///     const KIND: &'static str = "node-temperature";
+///     const BLOCK: &'static str = "node temperature";
+///     const EXPAND: Option<&'static str> = None;
+///     fn floor_tokens() -> u32 { 4 }
+///     fn units(&self, _viewer: uuid::Uuid) -> Vec<String> { vec![format!("{} C", self.celsius)] }
+/// }
+/// impl NodeScopedView for NodeTemperature {}
+/// let _ = ViewStateRagSource::<NodeTemperature>::new(Substrate::new());
 /// ```
 ///
 /// A doctest is used deliberately: `trybuild` would be a new dev-dependency for
@@ -583,7 +595,13 @@ impl RagRenderable for continuum_positron::RosterViewState {
 
 /// The bench board is ONE global fold describing the NODE, so it is node-scoped
 /// and keeps the single-substrate constructor. See [`NodeScopedView`].
-impl NodeScopedView for continuum_positron::bench::BenchViewState {}
+/// ROOM-scoped since HER-LOOP-IS-HER-OWN.md rule 5 (2026-10-04): a citizen reads
+/// the board of the activity she is standing in, never the node-wide fold. The
+/// emitter publishes one view per round room and solve room (`BenchViewState::
+/// per_room`) into the same per-room registry the roster lives in; the human
+/// rail keeps the node-wide fold on the websocket substrate. Until this change
+/// every citizen carried every run on the node in every turn in every room.
+impl RoomScopedView for continuum_positron::bench::BenchViewState {}
 
 /// A benchmark run's live rows, rendered for a mind from the SAME `BenchViewState`
 /// the academy rail renders.
@@ -601,6 +619,13 @@ impl RagRenderable for continuum_positron::bench::BenchViewState {
     const KIND: &'static str = continuum_positron::bench::BenchViewState::KIND;
     const BLOCK: &'static str = "benchmark runs";
     const EXPAND: Option<&'static str> = Some("benchmark/runs");
+    /// The room this view describes; the node-wide fold (`None`) is never what a
+    /// mind is handed, so an unscoped view here renders nowhere rather than
+    /// everywhere (`room_scope_allows` abstains on a mismatch, admits on `None`
+    /// — which is why the emitter only ever stores room views in the registry).
+    fn room(&self) -> Option<uuid::Uuid> {
+        self.room_id.as_deref().and_then(|id| uuid::Uuid::parse_str(id).ok())
+    }
     /// One run row, measured: id + instance + phase + a score fraction ~ 18 tokens.
     fn floor_tokens() -> u32 {
         18
@@ -1038,6 +1063,7 @@ mod tests {
         let substrate = Substrate::new();
         let builder = StateBuilder::standalone();
         substrate.store(builder.session(BenchViewState {
+            room_id: Some(Uuid::from_u128(ROOM).to_string()),
             sample_interval_ms: 5000,
             rounds: vec![],
             runs: vec![
@@ -1084,7 +1110,13 @@ mod tests {
             ],
         }));
 
-        let source: ViewStateRagSource<BenchViewState> = ViewStateRagSource::new(substrate);
+        // Per room since 2026-10-04 (HER-LOOP-IS-HER-OWN.md rule 5): the view is
+        // the round room's own, read through the same registry as the roster.
+        let rooms = Arc::new(PerRoomSubstrates::new());
+        rooms.for_room(Uuid::from_u128(ROOM)).store_shared(
+            substrate.cache().get(BenchViewState::KIND).expect("stored above"),
+        );
+        let source: ViewStateRagSource<BenchViewState> = ViewStateRagSource::per_room(rooms);
         let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
         let rendered = delivery
             .items
@@ -1100,5 +1132,57 @@ mod tests {
             !rendered.contains("r2 · unresolved"),
             "an ungradeable run must not also read as an unresolved attempt: {rendered}"
         );
+    }
+
+    // what this catches: HER-LOOP-IS-HER-OWN.md rule 5, from the mind's side. A
+    // citizen whose turn is in room B is handed nothing from room A's board, and a
+    // citizen in a room with no board is handed nothing at all: the node-wide fold
+    // that used to ride every turn in every room never reaches her through this
+    // source. If the binding regresses to the node constructor, or the emitter
+    // stores an unscoped (`room_id: None`) view in the registry, this fails.
+    #[tokio::test]
+    async fn a_citizen_sees_only_the_board_of_the_room_she_is_in() {
+        use continuum_positron::bench::{BenchRunRow, BenchViewState};
+        let room_a = Uuid::from_u128(ROOM);
+        let room_b = Uuid::from_u128(ROOM + 1);
+        let rooms = Arc::new(PerRoomSubstrates::new());
+        let builder = StateBuilder::standalone();
+        let row = |id: &str| BenchRunRow {
+            run_id: id.into(), instance: Some("sympy__sympy-1".into()), solver: Some("Asha".into()),
+            phase: "solving".into(), stalled: false, attempt: Some(1), max_attempts: Some(3),
+            age_secs: 1, acts: Some(1), patch_bytes: None, resolved: None, fail_to_pass: None,
+            pass_to_pass: None, failed_tests: vec![], infra_error: None,
+            round_id: Some(room_a.to_string()), solve_room: None, solve_room_name: None,
+        };
+        rooms.for_room(room_a).store(builder.session(BenchViewState {
+            room_id: Some(room_a.to_string()),
+            runs: vec![row("only-in-a")],
+            rounds: vec![],
+            sample_interval_ms: 5000,
+        }));
+        let source: ViewStateRagSource<BenchViewState> = ViewStateRagSource::per_room(rooms.clone());
+
+        let in_a = source
+            .deliver(&RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_a), 500, ResolutionPreference::Raw)
+            .await;
+        assert!(in_a.items.iter().any(|i| i.content.contains("only-in-a")), "{in_a:?}");
+
+        let in_b = source
+            .deliver(&RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b), 500, ResolutionPreference::Raw)
+            .await;
+        assert!(in_b.items.is_empty(), "room B has no board; she is handed nothing: {in_b:?}");
+
+        // An unscoped view stored under room B is a mismatch for room B's gate too:
+        // the only way a board reaches her is as that room's own view.
+        rooms.for_room(room_b).store(builder.session(BenchViewState {
+            room_id: Some(room_a.to_string()),
+            runs: vec![row("mislabelled")],
+            rounds: vec![],
+            sample_interval_ms: 5000,
+        }));
+        let in_b = source
+            .deliver(&RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b), 500, ResolutionPreference::Raw)
+            .await;
+        assert!(in_b.items.is_empty(), "a view of another room abstains: {in_b:?}");
     }
 }

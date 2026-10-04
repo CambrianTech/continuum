@@ -250,6 +250,74 @@ fn is_placeholder_hash(h: &str) -> bool {
 /// citizen #4309 was written to unblock. Each half now says what it saw, and the stale-id
 /// half names the way out that actually works: omitting `claim_id` makes the caller read
 /// the live claim off the board, and this guard then passes.
+/// Stage the owner's checkout at submit time, with the same path claim time takes
+/// (`card_staging::stage_for_card`), so a submit never depends on a verb she cannot
+/// call. `Ordinary` (a card with no repo step) is still "no tree to read a patch
+/// from", said plainly; a staging failure names its stage.
+async fn stage_for_owner_on_demand(
+    runtime: &std::sync::Arc<crate::persona::PersonaAircRuntime>,
+    card: &airc_lib::WorkCard,
+) -> Result<std::path::PathBuf, CommandError> {
+    use crate::modules::card_staging::Staging;
+    let home = crate::commands::benchmark::continuum_home()
+        .map_err(|e| CommandError::Internal(format!("continuum home: {e}")))?;
+    let card_uuid = card.card_id.as_uuid();
+    match crate::modules::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
+        Staging::Ready { path } => {
+            crate::probe!(
+                class = "work.submit.staged_on_demand",
+                card_id = %short8(card_uuid),
+                path = %path.display(),
+                "the owner's checkout was missing at submit time — staged it here, the way her claim would have"
+            );
+            Ok(path)
+        }
+        Staging::Ordinary => Err(CommandError::Invalid(format!(
+            "card {card_uuid} has no repo to stage a checkout from on this node, so there is no \
+             tree to read a patch from: pass the artifact (hash, size_bytes) you are submitting \
+             explicitly, or say so in the room — your patch is not the problem.",
+        ))),
+        Staging::Failed { stage, error } => Err(CommandError::Internal(format!(
+            "staging card {card_uuid}'s checkout failed at `{stage}`: {error}. That is a substrate \
+             fault on this node, not your work; say so in the room."
+        ))),
+    }
+}
+
+/// Renew the owner's lease as part of her act. Best effort: the wire's refusal
+/// (a superseded claim, a node race) is a probe, not a reason to stop her submit,
+/// because `holder_guard` already established she is the owner.
+async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::WorkCard, claim_id: ClaimId) {
+    let lapsed = card.claim_expires_at_ms.is_none_or(|e| e <= crate::persona::trace::now_ms());
+    if !lapsed {
+        return;
+    }
+    match airc
+        .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
+            card_id: card.card_id,
+            claim_id,
+            ttl_ms: OWNER_ACT_LEASE_TTL_MS,
+        })
+        .await
+    {
+        Ok(()) => crate::probe!(
+            class = "work.submit.lease_renewed_by_act",
+            card_id = %short8(card.card_id.as_uuid()),
+            "the owner's lease had lapsed between wakes — her submit renewed it"
+        ),
+        Err(error) => crate::probe!(
+            class = "work.submit.lease_renewal_refused",
+            card_id = %short8(card.card_id.as_uuid()),
+            error = %error,
+            "the wire refused the renewal; the submit proceeds on her ownership"
+        ),
+    }
+}
+
+/// The lease an owner's act renews. The claim default is 30 min; an act is a stronger
+/// presence signal than a heartbeat, and a Review card waits on others for hours.
+const OWNER_ACT_LEASE_TTL_MS: u64 = 4 * 60 * 60 * 1000;
+
 fn holder_guard(
     owner: Option<airc_core::PeerId>,
     me: airc_core::PeerId,
@@ -555,6 +623,12 @@ impl ActionCommand for WorkSubmit {
         // (#4309). Publication below still validates the current lease against the
         // latest board. The decision is pure so both refusals are pinned by a test.
         holder_guard(card.owner, airc.peer_id(), card.claim_id, claim_id, card_uuid)?;
+        // Her act IS her presence: a lease that lapsed between wakes is renewed by the
+        // submit itself, never a reason to refuse the owner. Responsibility is durable,
+        // the lease is only presence (2026-09-28); the board kept her as owner through
+        // the expiry, so this is a renewal, not a claim. A renewal the wire refuses is
+        // reported and the submit proceeds on her ownership (holder_guard passed).
+        renew_owner_lease(&airc, card, claim_id).await;
         // A complete, real artifact she wrote herself is honoured as-is; anything less
         // — an omitted part, or the manual's zero hash read back as a value — is read
         // off her checkout, and a placeholder says so in the ledger.
@@ -577,15 +651,16 @@ impl ActionCommand for WorkSubmit {
         } else {
             // Claim-time staging owns this binding. Ambient turn focus can be home,
             // another card, or absent after restart; none changes this card's checkout.
-            let checkout = crate::modules::card_staging::checkout_path_for(&runtime.persona_id(), card)
-                .ok_or_else(|| CommandError::Invalid(format!(
-                    "card {} has no staged checkout on this node, so there is no tree to read a \
-                     patch from. Staging is CLAIM-TIME work, not a verb you can call: re-claim \
-                     the card (work/claim) and it is staged for you. If a re-claim does not \
-                     produce one, that is a substrate fault — say so in the room rather than \
-                     re-doing the work, your patch is not the problem.",
-                    card_uuid,
-                )))?;
+            // A checkout missing here (a restart, a node the card moved to) used to
+            // bounce her to a re-claim, and work/claim refuses a card in Review, so the
+            // owner of a Review card could never submit again (Kimi, 2026-10-04: 7
+            // submit refusals, 3 claim refusals, 29 of 42 board calls failed). The
+            // owner's submit stages the same way her claim does; staging is the
+            // substrate's job whenever she needs her hands, never a verb she must find.
+            let checkout = match crate::modules::card_staging::checkout_path_for(&runtime.persona_id(), card) {
+                Some(path) => path,
+                None => stage_for_owner_on_demand(&runtime, card).await?,
+            };
             let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone()).await?;
             (d.instance, d.base_sha, d.artifact)
         };
