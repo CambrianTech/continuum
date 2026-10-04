@@ -42,6 +42,24 @@ pub const BUILD_INPUTS: [&str; 6] = [
     "tools/scripts/shared/cargo-features.sh",
 ];
 
+/// `git log` arguments naming `tip`'s BUILD KEY: the newest commit at or before `tip` that
+/// touched a [`BUILD_INPUTS`] path. The core binary is a function of those inputs, so every
+/// commit between the key and the tip builds the same core, and CI only publishes a core for
+/// a commit that touched them (the workflow's `paths`, pinned equal to `BUILD_INPUTS`). A
+/// docs-only tip is therefore served by its key's artifact, and a node already running the
+/// key is current: no download, no build, no restart (card 9080ffb0).
+pub fn build_key_log_args(tip: &str) -> Vec<String> {
+    let mut args = vec![
+        "log".to_string(),
+        "-1".to_string(),
+        "--format=%H".to_string(),
+        tip.to_string(),
+        "--".to_string(),
+    ];
+    args.extend(BUILD_INPUTS.iter().map(|input| input.to_string()));
+    args
+}
+
 /// How long a consumer waits for CI to publish a tip before compiling it itself. The
 /// workflow's timeout is 150 min; the measured cold builds were 58 min (arm64) and 73 min
 /// (x86_64), 2026-10-03. Past this, waiting longer only keeps the node on an old build.
@@ -287,5 +305,16 @@ mod tests {
             None,
             "a short sha cannot name a release"
         );
+    }
+
+    // what this catches: the build key must be computed over exactly the inputs CI builds
+    // on (the workflow's paths are pinned to BUILD_INPUTS by the drift test above), with
+    // the tip before `--` so git reads every input as a path.
+    #[test]
+    fn the_build_key_query_covers_every_build_input() {
+        let args = build_key_log_args("4e3bc6477");
+        let sep = args.iter().position(|a| a == "--").expect("a -- separator");
+        assert_eq!(&args[..sep], ["log", "-1", "--format=%H", "4e3bc6477"]);
+        assert_eq!(&args[sep + 1..], BUILD_INPUTS.map(String::from));
     }
 }

@@ -3137,6 +3137,7 @@ const CONSUME_MAX_ATTEMPTS: u32 = 3;
 
 fn consume_verdict(
     request_tip: Option<&str>,
+    tip_build_key: Option<&str>,
     running_sha: Option<&str>,
     checkout_dirty: bool,
     build_in_flight: bool,
@@ -3145,9 +3146,11 @@ fn consume_verdict(
     let Some(tip) = request_tip else {
         return ConsumeVerdict::NothingOwed;
     };
-    // ONE sha-equivalence rule for the fleet's deploy owner (the 7-char floor, either
-    // spelling as the prefix) — the tracker's, not a second copy of it.
-    if running_sha.is_some_and(|running| continuum_cli_lifecycle::deploy_tracker::same_commit(tip, running)) {
+    // ONE rule for "already running what the tip asks for", the tracker's: the tip itself
+    // or its build key (a docs-only tip names the same core, card 9080ffb0).
+    if running_sha.is_some_and(|running| {
+        continuum_cli_lifecycle::deploy_tracker::running_satisfies(running, tip, tip_build_key)
+    }) {
         return ConsumeVerdict::AlreadyRunning;
     }
     if build_in_flight {
@@ -3210,6 +3213,14 @@ fn tracked_repo_dir() -> Result<PathBuf, String> {
         Ok(None) => Err(format!("deploy-consume: no checkout to deploy from (set {TRACK_REPO_DIR_KEY})")),
         Err(e) => Err(format!("deploy-consume: {e}")),
     }
+}
+
+/// `tip`'s build key in `repo` (`prebuilt_artifact::build_key_log_args`), or `None` if git
+/// cannot say; `None` falls back to the tip itself.
+fn build_key_in(repo: &Path, tip: &str) -> Option<String> {
+    let args = continuum_cli_lifecycle::prebuilt_artifact::build_key_log_args(tip);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    git_in(repo, &args).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
 }
 
 fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
@@ -4125,8 +4136,11 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         .as_deref()
         .map(|t| read_consume_failures(&attempts_path, t))
         .unwrap_or(0); // unwrap_or: no request = nothing to have failed
+    // The tip's build key, read from the same checkout the tracker fetched into.
+    let tip_build_key = tip.as_deref().and_then(|t| build_key_in(&repo, t));
     let verdict = consume_verdict(
         tip.as_deref(),
+        tip_build_key.as_deref(),
         running.as_deref(),
         dirty,
         build_in_flight,
@@ -4183,7 +4197,9 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 // Take the core CI built for this tip instead of compiling it here (card
                 // 50ca737e). `None` means CI cannot deliver for this node, said in the log,
                 // and the reboot's warm build compiles as before.
-                let prebuilt = ci_core_for(&repo, &tip).await;
+                // CI publishes a core for the commit that last touched a build input; a
+                // docs-only tip is served by that commit's core (card 9080ffb0).
+                let prebuilt = ci_core_for(&repo, tip_build_key.as_deref().unwrap_or(&tip)).await;
                 if let Some(core) = &prebuilt {
                     install_ci_companions(&repo, core)?;
                 }
@@ -6781,7 +6797,7 @@ mod tests {
     #[test]
     fn the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running() {
         use super::{consume_verdict, ConsumeVerdict, DeployConsumeOptions};
-        let v = |tip: Option<&str>, running: Option<&str>, dirty: bool| consume_verdict(tip, running, dirty, false, 0);
+        let v = |tip: Option<&str>, running: Option<&str>, dirty: bool| consume_verdict(tip, None, running, dirty, false, 0);
         assert_eq!(v(None, Some("6d8fc04de"), false), ConsumeVerdict::NothingOwed);
         assert_eq!(v(Some("6d8fc04de"), Some("6d8fc04de1234567"), false), ConsumeVerdict::AlreadyRunning);
         assert_eq!(v(Some("6d8fc04de1234567"), Some("6d8fc04de"), false), ConsumeVerdict::AlreadyRunning, "either spelling as the prefix");
@@ -6796,12 +6812,12 @@ mod tests {
         // A live deploy claim = a build in flight from an earlier tick: NEVER a second
         // reboot into it (the 10-min task vs a 50-min build). It outranks dirty and the
         // ledger because nothing about this tick should act at all.
-        assert_eq!(consume_verdict(Some("abc1234"), None, false, true, 0), ConsumeVerdict::BuildInFlight);
-        assert_eq!(consume_verdict(Some("abc1234"), None, true, true, 9), ConsumeVerdict::BuildInFlight);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, false, true, 0), ConsumeVerdict::BuildInFlight);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, true, true, 9), ConsumeVerdict::BuildInFlight);
         // A tip that would not land here is tried CONSUME_MAX_ATTEMPTS times, then left to
         // deploy.stranded — never a rebuild loop every tick until the claim ages out.
-        assert_eq!(consume_verdict(Some("abc1234"), None, false, false, 2), ConsumeVerdict::Deploy);
-        assert_eq!(consume_verdict(Some("abc1234"), None, false, false, 3), ConsumeVerdict::GaveUp);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 2), ConsumeVerdict::Deploy);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 3), ConsumeVerdict::GaveUp);
         // The ledger is per tip: a new tip starts at zero.
         let dir = std::env::temp_dir().join(format!("consume-ledger-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture — a temp dir that cannot be made fails the test loudly
