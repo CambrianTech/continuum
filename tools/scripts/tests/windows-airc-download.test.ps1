@@ -63,6 +63,60 @@ try {
             throw 'Downloaded binary archive bytes changed.'
         }
     } finally { $server.Dispose() }
+    # Exercise the real small-file download and Ninja extraction together. The
+    # prior Expand-Archive call spun without producing a file under PS5.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipPath = Join-Path $scratch 'ninja-fixture.zip'
+    $zip = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $entry = $zip.CreateEntry('ninja.exe')
+        $entryStream = $entry.Open()
+        try { $entryStream.Write($binary, 0, $binary.Length) }
+        finally { $entryStream.Dispose() }
+    } finally { $zip.Dispose() }
+    $downloadedZip = Join-Path $scratch 'ninja-win.zip'
+    $server = New-Object InstallerHttpFixture(200, [IO.File]::ReadAllBytes($zipPath), 0, -1)
+    try { Save-InstallerSmallFile -Uri $server.Url -OutFile $downloadedZip }
+    finally { $server.Dispose() }
+    $ninjaDir = Join-Path $scratch 'ninja'
+    New-Item -ItemType Directory -Path $ninjaDir | Out-Null
+    Expand-InstallerNinjaArchive -Archive $downloadedZip -Destination $ninjaDir
+    if ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $ninjaDir 'ninja.exe'))) -cne [Convert]::ToBase64String($binary)) {
+        throw 'Extracted Ninja bytes changed.'
+    }
+    $badZipPath = Join-Path $scratch 'ninja-bad.zip'
+    $zip = [IO.Compression.ZipFile]::Open($badZipPath, [IO.Compression.ZipArchiveMode]::Create)
+    try { $null = $zip.CreateEntry('../outside.exe') }
+    finally { $zip.Dispose() }
+    $rejected = $false
+    try { Expand-InstallerNinjaArchive -Archive $badZipPath -Destination $ninjaDir }
+    catch { $rejected = $_ -match 'only ninja.exe' }
+    if (-not $rejected -or (Test-Path -LiteralPath (Join-Path $scratch 'outside.exe'))) {
+        throw 'Unexpected Ninja archive entry was published.'
+    }
+    $oversizeZipPath = Join-Path $scratch 'ninja-oversize.zip'
+    $zip = [IO.Compression.ZipFile]::Open($oversizeZipPath, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $entry = $zip.CreateEntry('ninja.exe')
+        $entryStream = $entry.Open()
+        try {
+            $oversize = New-Object byte[] 1048577
+            $entryStream.Write($oversize, 0, $oversize.Length)
+        } finally { $entryStream.Dispose() }
+    } finally { $zip.Dispose() }
+    $rejected = $false
+    try { Expand-InstallerNinjaArchive -Archive $oversizeZipPath -Destination $ninjaDir }
+    catch { $rejected = $_ -match 'unexpected size' }
+    if (-not $rejected -or @(Get-ChildItem -LiteralPath $ninjaDir -Filter 'ninja.exe.*.tmp').Count -ne 0) {
+        throw 'Oversize Ninja archive left a published or staged executable.'
+    }
+    $rejected = $false
+    try { Expand-InstallerNinjaArchive -Archive $downloadedZip -Destination $ninjaDir }
+    catch { $rejected = $true }
+    if (-not $rejected -or [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $ninjaDir 'ninja.exe'))) -cne [Convert]::ToBase64String($binary)) {
+        throw 'Repeated Ninja extraction replaced an existing executable.'
+    }
     foreach ($case in @(@(404,0,-1), @(200,0,1048577), @(200,3000,-1))) {
         Remove-Item -LiteralPath $path -Force
         $server = New-Object InstallerHttpFixture($case[0], 'bad', $case[1], $case[2])
@@ -86,6 +140,6 @@ try {
         catch { $failed = $_ -match 'AIRC setup failed \(exit 23\)' }
         if (-not $failed) { throw 'Actual downloaded child exit was lost.' }
     } finally { $server.Dispose() }
-    Write-Host 'PASS: exact entry bytes, HTTP/size/timeout refusal, downloaded child exit propagation'
+    Write-Host 'PASS: exact entry bytes, Ninja archive, HTTP/size/timeout refusal, downloaded child exit propagation'
 } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
 exit 0

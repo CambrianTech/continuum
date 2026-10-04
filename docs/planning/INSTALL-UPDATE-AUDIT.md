@@ -47,13 +47,17 @@ LWCR. Each refused attempt costs a full build and up to ten minutes of downtime.
 **Fix:** make the update path produce a launch launchd accepts for every user. Candidates: a Developer
 ID signed core with a stable Team ID (card 30a8b3ac slice 3), re-registering the job with elevation
 declared once at install, or a stable signed launcher that swaps only what it starts.
-**(update, root cause, Fable)** Confirmed from the M5 system log at 13:54 and 15:02: BTM pins the job to a
-lightweight code requirement for the binary it last ran. The FIRST spawn of a new ad-hoc build dies with
-`Launch Constraint Violation`; launchd logs `Requesting LWCR update on next spawn` and its throttled respawn
-~10 s later repairs the pin and runs the slot. `wait_owned` read the first refusal as final and the rollback
-restored the old binary inside that window, so launchd re-pinned to the OLD build. Fix: #4694 waits for the
-repair respawn before a codesigning refusal counts. Developer ID signing stays right for users but is not
-required for updates to work.
+**(update, root cause, Fable)** Confirmed from the M5 system log at 13:54 and 15:02 on 2026-10-03: BTM pins the
+job to a lightweight code requirement for the binary it last ran. The FIRST spawn of a new ad-hoc build dies
+with `Launch Constraint Violation`; the NEXT spawn re-pins the job to whatever is in the slot and runs it.
+`wait_owned` read the first refusal as final and the rollback's own kickstart made that next spawn on the OLD
+binary, so launchd re-pinned to the old build every time.
+**(update, CLOSED)** #4694 waited for a respawn launchd never makes (the job is `KeepAlive { Crashed }` and a
+codesigning kill is not a crash); #4695 has the deploy trigger the repair spawn itself with a plain
+`launchctl kickstart` (permitted to the user; `-k` is not). Receipt, M5 2026-10-04 01:09Z: `deployed: e89da133e
+in 183 s`, the first M5 deploy to land since 2026-10-03 07:10Z; `continuum ping` e89da133e, launchd owns the
+core, 6 residents after 120 s. One refusal per deploy remains and is expected. Developer ID signing stays
+right for users (card 30a8b3ac slice 3) but is not required for updates to work.
 
 ### C4 · macOS: the update kickstarts a system-domain job without root
 The default install registers `system/com.continuum.core` (`continuum.rs:3738-3743`). Updates then run
