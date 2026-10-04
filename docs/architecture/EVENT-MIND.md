@@ -147,17 +147,24 @@ pub struct ActivityView {
     pub delta: ActivityDelta,                        // truth above the cursor
     pub salience: Salience,                          // from the delta (pure)
 }
-pub struct ActivityTruth {                           // what the human screen renders, same handles
-    pub chat: Option<Arc<ChannelDigest>>,            // cognition/channel_digest.rs (incremental)
-    pub board: Option<Arc<StateEnvelope>>,           // kind "kanban" from global_room_substrates()
-    pub roster: Option<Arc<StateEnvelope>>,          // kind "roster"
-    pub wall: Option<Arc<StateEnvelope>>,            // kind "wall"
+pub struct ActivityTruth {                           // what the human screen renders, same handles:
+    pub views: BTreeMap<ViewKind, Arc<StateEnvelope>>, // EVERY ViewState kind registered for the room
+    pub chat: Option<Arc<ChannelDigest>>,            // the transcript digest (incremental)
 }
-pub struct ActivityCursor { pub chat: TranscriptCursor, pub board_rev: u64, pub wall_rev: u64 }
+// Joel: "With positron we build perception and multi-activity into anything she does; any
+// activity wires into her mind easily. This is merely a view." An activity's truth is the set of
+// ViewState kinds registered for its room (open registration: chat, kanban, roster, wall, bench,
+// a game, a book, a call), each already a RagRenderable. Perception renders the set; each kind
+// contributes its own delta and salience through one trait, so a new activity kind reaches her
+// mind by registering its view and never by touching the mind:
+pub trait PerceivedView: RagRenderable {
+    fn delta(&self, since: &Self) -> ViewDelta;                 // typed, per kind
+    fn salience(&self, delta: &ViewDelta, me: PeerId, expectation: Option<&Expectation>) -> Salience;
+}
+pub struct ActivityCursor { pub chat: TranscriptCursor, pub views: BTreeMap<ViewKind, u64> }  // revision per kind
 pub struct ActivityDelta {                           // typed, never text
     pub unread: Vec<Arc<ChannelElement>>,            // digest.elements[unread_start..]
-    pub board_changes: Vec<BoardChange>,             // cards moved/claimed/reviewed since board_rev
-    pub wall_changes: u32,
+    pub views: BTreeMap<ViewKind, ViewDelta>,        // each registered kind's own delta
 }
 
 // persona/salience.rs — a pure function of the delta, her identity and her expectation.
