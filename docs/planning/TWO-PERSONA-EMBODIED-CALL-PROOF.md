@@ -35,20 +35,56 @@ These are proposed beta targets for review, not measured performance claims.
 Baseline and compare the same model/artifacts, context, resolution and workload.
 Report both cold and warm turns and outliers; cache hits cannot conceal cold cost.
 
-| Stage | Reused seams and execution node | Receipt and acceptance target |
-|---|---|---|
-| 0. Product peer and capability baseline | Kimi Slice2, work submission/review, grid placement;5090 cognition, M5 capability check, IntelMac observer | Kimi authors useful code, tests it, incorporates independent review and submits the actual bytes. Record serving revision, model/gene hashes, capabilities, CPU/RSS/GPU/swap and available capacity. No native audio claim until actual input/output is observed. |
-| 1. One speaker reaches one listener | Native model adapters and generation events; call_server begin_persona_generation/push_persona_generation/finish_persona_generation; mixer and NativePlaybackLease. M5 Metal first where the required artifact is actually supported;5090 second | Twenty alternating turns of real audio at the receiving model input and real model speech at receiver playout. Preserve request/phase/sequence/model/gene identity. Proposed warm TTFA p95<=2s, no underruns during speech and no hidden batch replay. Cold TTFA reported separately. If unsupported on M5, record refusal and run capable5090 path; do not claim Metal acceptance. |
-| 2. Interrupt, cancel and continue | Existing RequestBoundary, request guard, playback lease, admission and grid cancellation; same nodes | Ten controlled mid-utterance interruptions plus disconnect/rejoin. Proposed stop-audible p95<=200ms after local cancellation; network contribution separately measured. No stale generation resumes, no duplicate turns or persona/UI replay, final PCM drains on success, failed call names its gap. Identity, memory and activity survive reconnect. |
-| 3. Rendered body and native vision | Existing Bevy avatar renderer, speech clips/visemes, adaptive idle cadence, GPU frame publishers and perception/observe. M5 render first,5090 render second; IntelMac low-resolution receiver | Two speaker tiles deliver>=24fps at declared480x360, proposed p95 absolute lip/audio offset<=80ms and capture-to-remote-display<=250ms. Each persona answers a changing visible gesture/object from actual video input, not room text. Existing envelope mouth motion is the first measured baseline; speech-token viseme mapping is a later refinement on this same stream. |
-| 4. Outside observer and churn | Existing call subscription/media tracks, perception/observe, public live-state/typed probes and PumpTally summaries. IntelMac observer/floor; M5/5090 own heavy inference/render | Observer sees both delivered streams with proposed p95 extra observation lag<=500ms; records public transcript separately. Alternate one serving node off/on, preserve model/gene ownership and durable cursor, no duplicated side effects. Weak machine can remain a useful observer/tool peer without loading the large model. Ten-minute two-persona soak: no growing queue/RSS, no persistent CPU saturation attributable to idle avatar work. |
-| 5. Scale the same contracts | Same render governor, pooled publishers, admission and grid owners; M5/5090 with IntelMac observer | Four-persona baseline then14 resident tiles with natural speaker scheduling. Speaker>=24fps; idle cadence reported separately. Compare process CPU/core-seconds, GPU load, frame copies/bytes, queue age, TTFA and p95/p99 latency against two-persona run. No mandatory14 concurrent model decodes or duplicated audio encodes. Reuse shared prefixes only when exact tokens/positions/model/LoRA match; persona-private branches remain isolated. |
+| Stage | Reused seams and execution node | Receipt and acceptance target | README promise proved |
+|---|---|---|---|
+| 0. Parallel product peer and capability baseline | Kimi Slice2, work submission/review, grid placement;5090 cognition, M5 capability check, IntelMac observer | Kimi authors useful code, tests it, incorporates independent review and submits the actual bytes. Record serving revision, model/gene hashes, capabilities, CPU/RSS/GPU/swap and available capacity. No native audio claim until actual input/output is observed. | Persistent citizen/tools; independent product work |
+| 1. One speaker reaches one listener | Native model adapters and generation events; call_server begin_persona_generation/push_persona_generation/finish_persona_generation; mixer and NativePlaybackLease. M5 Metal first where the required artifact is actually supported;5090 second | Twenty alternating turns of real audio at the receiving model input and real model speech at receiver playout. Preserve request/phase/sequence/model/gene identity. Proposed warm TTFA p95<=2s, no underruns during speech and no hidden batch replay. Cold TTFA reported separately. If unsupported on M5, record refusal and run capable5090 path; do not claim Metal acceptance. | Voice/video client table: delivered local voices |
+| 2. Interrupt, cancel and continue | Existing RequestBoundary, request guard, playback lease, admission and grid cancellation; same nodes | Ten controlled mid-utterance interruptions plus disconnect/rejoin. Proposed stop-audible p95<=200ms after local cancellation; network contribution separately measured. No stale generation resumes, no duplicate turns or persona/UI replay, final PCM drains on success, failed call names its gap. Identity, memory and activity survive reconnect. | Same personas everywhere: continuity through interruption |
+| 3. Rendered body and native vision | Existing Bevy avatar renderer, speech clips/visemes, adaptive idle cadence, GPU frame publishers and perception/observe. M5 render first,5090 render second; IntelMac low-resolution receiver | Two speaker tiles deliver>=24fps at declared480x360, proposed p95 absolute lip/audio offset<=80ms and capture-to-remote-display<=250ms. Each persona answers a changing visible gesture/object from actual video input, not room text. Existing envelope mouth motion is the first measured baseline; speech-token viseme mapping is a later refinement on this same stream. | README hero live-session image and P1 vision |
+| 4. Outside observer and churn | Existing call subscription/media tracks, perception/observe, public live-state/typed probes and PumpTally summaries. IntelMac observer/floor; M5/5090 own heavy inference/render | Observer sees both delivered streams with proposed p95 extra observation lag<=500ms; records public transcript separately. Alternate one serving node off/on, preserve model/gene ownership and durable cursor, no duplicated side effects. Weak machine can remain a useful observer/tool peer without loading the large model. Ten-minute two-persona soak: no growing queue/RSS, no persistent CPU saturation attributable to idle avatar work. | Same personas everywhere; weak-node grid membership |
+| 5. Scale the same contracts | Same render governor, pooled publishers, admission and grid owners; M5/5090 with IntelMac observer | Four-persona baseline then14 resident tiles with natural speaker scheduling. Speaker>=24fps; idle cadence reported separately. Compare process CPU/core-seconds, GPU load, frame copies/bytes, queue age, TTFA and p95/p99 latency against two-persona run. No mandatory14 concurrent model decodes or duplicated audio encodes. Reuse shared prefixes only when exact tokens/positions/model/LoRA match; persona-private branches remain isolated. | Client table and hero under multi-persona load |
 
-Native audio input and output, streaming rendering and observed call behavior may
+Stage0 project review runs in parallel; Kimi is the product peer we call, and her
+Slice2 review cycle does not gate stage1. Capability validation belongs to the call
+itself. Native audio input and output, streaming rendering and observed call behavior may
 advance independently. Passing an earlier stage never fabricates missing native
 capabilities for the next stage. LiveKit/desktop integration follows demonstrated
 persona-to-persona behavior; it does not block these substrate proofs.
 
+
+## Run it again through one authored activity
+
+Acceptance card42656796 must author purpose embodied-call/proof in the existing
+ExperienceRecipe catalogue, reusing RecipeStep and PipelineExecutor through
+activity/spawn. This is a proposed purpose, not an installed command today.
+One activity/spawn invocation supplies two stable persona IDs, observer identity,
+stage, node preferences, workload seed, context, resolution, duration and a prior
+receipt ID. The same recipe shape serves every stage; its version is in receipts.
+
+The pipeline validates bindings/capabilities, opens the existing call, joins the
+two personas, explicitly attaches the external observer, runs the declared turn/
+interruption/churn scenario, collects phase summaries, and emits one ORM receipt
+row with an artifact reference. Existing call/lease ownership must release observer,
+call resources and temporary captures on success, cancellation or failed steps.
+A stop-on-error pipeline alone is not a cleanup guarantee. No script daemon or
+always-on listener. A rerun creates a new call/generation and isolated sample set;
+it cannot replay last run's tool side effects or overwrite persona memory.
+
+A regression is a diff of two receipt rows with identical recipe version and
+declared workload/artifact controls; differing nodes, models or clock uncertainty
+are shown, not folded into a speedup. The output includes metrics, cleanup result,
+unsupported stages and the remaining gap. CI can exercise generic ownership/
+receipt contracts once; actual Metal/CUDA adapters and delivered media still
+require their real node receipts.
+
+First provisioning candidate follows reviewed PR4697: Qwen3-TTS1.7B Base Q4_K_M
+plus its Q8 codec on M5 Metal, repeated on5090 CUDA, with separately base-bound
+persona voice LoRAs. Cormac card3f44bd80 owns the actual files, hashes and
+voice/selftest adapter proof before stage1. The0.6B tier requires forge conversion
+according to that plan, so it is not assumed provisioned. Exact Base/codec filenames,
+first capable node and completion milestone are requested from Cormac; no installed
+file or delivery date is invented here. This is the remaining stage1 handoff,
+alongside actual native hearing capability; genome voice output alone is not hearing.
 ## Observation and measurement contract
 
 The observer is explicitly invoked for a named call and stops after the run,
