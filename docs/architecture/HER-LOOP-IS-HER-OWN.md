@@ -33,6 +33,8 @@ Concretely, nothing in her loop may:
 | 5 | push into her head what she did not go look at | reads what is in front of them |
 | 6 | require a benchmark, round, instance or grader to exist for her to work | works on anything |
 | 7 | hold her in an activity, or keep her from leaving one | can leave a project, a room, a round, if they really want to |
+| 8 | lose where she was when her node restarts | comes back from anesthesia as the same person mid-thought: same activity, same task, same thread, same desk, same held cards; nothing re-derived from the room, nothing re-pumped |
+| 9 | limit what her hands can do to a catalogue of acts | can do whatever a computer can: build a site, deploy, AWS, install, download, research, write a script to munge a file, for as long as it takes |
 
 Anything labelled benchmark is a tool she may use, like any other. It must never be a
 *condition* of her loop.
@@ -61,7 +63,7 @@ DM and post are all there for her when she looks, and that her hands work.
 
 | # | place | what it does now | contract rule broken | replacement |
 |---|---|---|---|---|
-| A | `persona/work_pull.rs:260` | the only card supply for a pull is `bench_round::pullable_cards` (Working rounds driven by citizens); a project-board card is never pulled | 4, 6 | pullable = unclaimed cards on every board she is a member of, any activity |
+| A | `persona/work_pull.rs:131-348`, `service_loop.rs:2591-2653` | the loop PULLS a card for her on an idle tick, and the only supply is `bench_round::pullable_cards` (Working rounds driven by citizens) | 4, 6 | **no automatic pull at all.** Her boards are in her perception (the per-room kanban view); claiming is her act, with her hands, when she decides. Nothing pumps cards into her (Joel: "we don't need to do anything to pump project cards into her") |
 | B | `persona/airc_runtime.rs:841-857` | a lapsed claim is recovered only if `card_round_is_working` | 4, 6 | recovered because the card is hers |
 | C | `persona/roster_hold.rs:76-83` (→ `host.rs:450,559`, `spawner_module.rs:385,730`, `grid_allocator.rs:420`) | with no operator hold, seating follows the working rounds' team names | 4, 6 | seated because she is a member of the room |
 | D | `persona/service_loop.rs:2591-2653` | self-cycle: asks the deck first and `return`s on `DeferredWip` (a batch's in-flight cards filled the lanes) before she composes anything | 1, 3 | no early return; she composes her own view and decides |
@@ -70,14 +72,24 @@ DM and post are all there for her when she looks, and that her hands work.
 | G | `persona/supervisor.rs:777`, `viewstate_rag.rs:586` | the node-wide benchmark board (`BenchViewState`, `NodeScopedView`) is in every turn's grounding in every room | 5 | the board is perceived in its own room, like the roster (`RoomScopedView`, split by the room ids the rows already carry) |
 | H | `persona/act_question.rs:331-361`, `staged_workspace.rs` | hands and pinned facts keyed on `[bench …]` / `instance` titles; workspace shape is `workspace/swe/<instance>` | 6 | her desk is per project (her clone, her branch); pinned facts come from the activity she is in |
 
-Order: G (stop pushing) → D/E/F (stop stopping her) → A/B/C (stop picking for her) → H (her desk).
+| I | boot path (`working_set.rehydrated` re-adopts window demand; the thread is re-derived from the room on the next tick) | a restart loses the turn she was on: 76 of 80 deploy stops tore a citizen mid-thought (2026-09-22) | 8 | her state of being is durable and resumed on boot: activity, task, turn thread, desk, held cards; the first thing she does after a restart is continue |
+
+Order: G (stop pushing) → D/E/F (stop stopping her) → A/B/C (stop picking for her) → H (her desk) → I (resume).
 One PR each. Acceptance for each: her live turns, in her room, doing what she chose.
+
+## What "resume" means (Joel, 2026-10-04)
+
+*"She just resumes her mind, man, as if the turn she was on last just resumes her entire state of
+being. Like waking up from anesthesia."* Her mind's state between sittings is substrate data:
+which activities she is in, what she holds, what she was doing and how far she got, the thread of
+the turn in flight, her workspace with its processes' intent. A deploy saves it and the next boot
+continues it. The kanban is how she and her team coordinate; it is never how she is re-seeded.
 
 ## What this page does not cover
 
 Her **hands** (a shell with the toolchain, processes that stay up, network, git and deploy under
-her identity): the gap list comes from watching her try to ship something real, not from a
-grep. Embodiment, genome and learning sit on top of a person who can already work.
+her identity, and anything else a computer can do): the gap list comes from watching her try to
+ship something real, end to end, not from a grep. Embodiment, genome and learning sit on top of a person who can already work.
 
 ## The test for any future change to persona/ or cognition/
 
