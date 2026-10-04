@@ -125,6 +125,10 @@ duplicates one.
   goes to 0).
 - **Her receipts:** zero board refusals on her own cards over a day; her project events on her
   project's board; her thoughts in her project's room.
+- **Surprised by the world, not by noise (phase 2, BigMama):** when her acts land on the right
+  activity's truth, `Surprise` fires only for what the world did, never for her own misrouted
+  stamps. Measured as the share of `Surprise` reasons whose `observed` is her own act's effect:
+  it goes to 0.
 
 ## 5. Phases and owners
 
