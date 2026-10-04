@@ -6,7 +6,103 @@ own comment) returning empty audio while local engines sat provisioned; the Orph
 bring-up attempt then found its adapter expects a token scheme the real model doesn't
 use. Voice has been running on an unproven ladder.*
 
-## Where each engine actually stands (verified today)
+## 2026-10-03: the ruling and the model choice (supersedes the flagship sections below)
+
+Joel: *"We are to offer multimodal models with Lora learned controlled voices, except in
+the case of backwards compatibility. We are wanting to avoid cloud entirely."* And:
+*"Persona are unique in the world, ideally sophisticated voice."*
+
+So the rules are:
+- **No cloud voice, not even opt-in.** Edge-TTS goes (card ab567967). It was still the
+  PRIMARY voice, so persona speech left the machine, against the README. It was also the
+  only reason macOS binaries linked Homebrew's openssl
+  (msedge-tts → isahc → curl → openssl-sys).
+- **A persona's voice is a learned gene.** It is a LoRA, controlled per utterance, unique
+  to that persona.
+- **Classic TTS (Kokoro, Piper, Pocket) is backwards compatibility only.** It's the floor
+  for a node or model that can't run the learned voice yet.
+
+### The flagship: Qwen3-TTS (Apache-2.0)
+
+It fits the substrate on every axis we care about:
+
+| Need | Qwen3-TTS | Where it fits us |
+|---|---|---|
+| One engine | Already in our llama.cpp fork (`tools/mtmd/models/qwen3tts-gen.cpp`, `qwen3tts-spkenc.cpp`, synced 2026-09-28; `llama-tts` runs it today) | Served by the same engine and GGUF pipeline as every persona model: Metal on the Macs, CUDA on the 5090 |
+| Voice as a LoRA gene | The talker is a **Qwen3** LM; the Base models are published as fine-tune targets; community LoRA voice adapters exist | Same model family as our persona bases. llama-server already takes per-request LoRA (`parse_lora_request`), so a voice gene pages like any other adapter |
+| Unique voices without cloning a person | **VoiceDesign** (1.7B) builds a new speaker from a written description, with no reference audio | A persona's identity text → its voice description → a voice that never belonged to a human |
+| Sophisticated, controlled delivery | Instruction control of emotion, tone, rate and prosody; 10 languages | PersonaState → a per-utterance instruction (emotion from state, not post-processing) |
+| Live calls | Streaming; first audio packet as low as 97 ms (Qwen's figure); 12 Hz codec, 16 codebooks | Fits the live-call path; we must measure it on our nodes |
+| Tiers | 0.6B and 1.7B | The 0.6B is the grid's portable voice; the 1.7B is the quality tier |
+| Identity check | A speaker encoder (ECAPA-style x-vector), already in the fork | Measures how close two voices are; this is what makes "unique in the world" testable |
+
+**Second outlier (CLAUDE.md: build outlier B before trusting the interface):
+Maya1** (Apache-2.0). It's a Llama-3B decoder over the SNAC codec, with voice design from
+a description and 20+ inline emotion tags (laugh, sigh, whisper…). It's the same SNAC
+family our Orpheus adapter targets, so the voice-gene interface gets proven on a second,
+different stack before anything is generated from it. Orpheus itself is no longer the
+flagship.
+
+**Excluded, and why:**
+- Edge-TTS, and Qwen-Audio-3.0/3.1 (hosted only): cloud.
+- Qwen3.5-Omni: proprietary.
+- **Breeze TTS 2**: the current open-weights leader (1,215 Elo), but its weights are under
+  a non-commercial license. It's built on a Qwen3 backbone with the Qwen3-TTS 12 Hz
+  tokenizer, so if the license ever opens, it's an upgrade inside the same family.
+- Fish Audio S2 Pro: license not verified; excluded until checked.
+
+### A persona's voice, from birth
+
+1. **Birth.** The persona's identity text becomes a voice description. VoiceDesign renders
+   a seed corpus spanning emotions and pace.
+2. **Unique in the world, measured.** The speaker encoder embeds the seed. A grid-wide
+   registry of persona voice embeddings refuses a newborn voice that falls within a
+   distance threshold of any existing persona's, and the voice is redesigned.
+3. **The gene.** A LoRA on Qwen3-TTS Base, trained on the seed corpus, is published with
+   lineage like any other gene and paged per request on the voice lane.
+4. **Expression.** Each utterance carries an instruction derived from PersonaState
+   (emotion, energy, pace). Lip-sync keeps using the audio envelope today, and speech
+   tokens later (the body section below).
+5. **Growth.** The dream stage refines the voice gene from the persona's own curated
+   speech (ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM). Breeding merges the parents' voice
+   LoRAs and runs the uniqueness check again.
+6. **Consent.** Cloning a real person's voice only happens through a consent gate at the
+   recipe layer. Designed voices need none.
+
+### Where it runs on the grid
+
+The voice lane is small (0.6B or 1.7B, about 1-4 GB). It belongs on a GPU node: the M
+series on Metal, or the 5090. Community numbers for Qwen3-TTS-0.6B on CPU put it at or
+slower than real time, so a CPU-only node like the IntelMac asks the grid for speech
+(24 kHz audio is cheap to stream). If no grid voice is reachable, it uses the Kokoro
+floor and says so. **To measure before deciding:** the 0.6B's real-time factor (Q4 and
+Q8) on the IntelMac and the M5, and time to first audio on the M5 and the 5090.
+
+### The work, in order
+
+1. **ab567967 (P0):** remove Edge. Kokoro becomes the floor. Gate: `otool -L` shows no
+   Homebrew libraries.
+2. **Fork:** a streaming speech endpoint in llama-server on mtmd generation, with
+   per-request LoRA and the VoiceDesign and instruction prompt formats. Today `llama-tts`
+   wires only Base plus a reference speaker file.
+3. **Core:** a Qwen3-TTS adapter on the serving daemon's voice lane, at the top of the
+   priority list once `voice/selftest --adapter qwen3tts` passes.
+4. **Forge:** the voice-gene recipe (description → VoiceDesign seed → Base LoRA), plus the
+   uniqueness registry.
+5. **Outlier B:** Maya1 through the same interface.
+6. **Acceptance** (card 3f44bd80): two personas in a live call, with two distinct
+   learned voices and state-driven emotion, on local models, with receipts.
+
+Sources: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) ·
+[Qwen3-TTS LoRA fine-tuning](https://github.com/instavar/qwen3-tts-lora-finetuning) ·
+[Maya1](https://huggingface.co/maya-research/maya1) ·
+[Breeze TTS 2 license](https://www.stork.ai/blog/this-ai-beats-elevenlabs-dont-use-it) ·
+[Breeze TTS 2 architecture](https://www.mindstudio.ai/blog/breeze-tts-2-open-weight-model) ·
+[Qwen-Audio-3.0 is hosted](https://www.marktechpost.com/2026/07/20/alibabas-tongyi-lab-releases-qwen-audio-3-0-tts-a-hosted-text-to-speech-model-in-flash-and-plus-tiers-across-16-languages/) ·
+[Qwen3.5-Omni](https://www.spheron.network/blog/deploy-qwen3-5-omni-gpu-cloud/) ·
+[CPU speed, community](https://github.com/HaujetZhao/Qwen3-TTS-GGUF/blob/main/Qwen3-TTS%20Technical%20Report.md)
+
+## Where each engine actually stood (verified 2026-09-02)
 
 | Engine | Reality | Verdict |
 |---|---|---|
