@@ -42,14 +42,31 @@ prioritizes like a person, acts, and her acts produce events back into it.
 - **Resume.** Her inbox, her continuation, her attention dial and her per-activity threads are
   durable; after a restart she continues the turn she was on. Like waking from anesthesia.
 
+## 1b. Perception is a renderer of the world, not a mailbox
+
+Joel: *"you don't have to use the inbox if you think another architecture is better."* It is not.
+An inbox copies events into a second store and makes her consume them one at a time. The world
+already has ONE truth per activity: the positron ViewStates and room digests (chat, board, roster,
+wall, serving), all event-fed, all `watch` snapshots, the same ones the human screen renders. Her
+perception is therefore a **renderer of that live world**, exactly as the screen is: per activity,
+the current state plus **what changed since she last looked** (her unread cursor), and a
+**salience** per activity derived from the deltas (a mention, a human, a blocker, a teammate
+waiting on her, a verdict on her work). She is woken when salience crosses her dial, not by every
+event; she looks at what she chooses; nothing is copied and nothing must be drained. "Inbox"
+survives as the name for the set of unperceived deltas, implemented as cursors over the one truth.
+`PersonaInbox` (copied `InboxMessage`s, per-room frames) is retired, not extended. One truth, N
+renderers, and she is one of the renderers ([[the-grid-is-one-computer]]).
+
 ## 2. The components (what exists, what changes, what is new)
 
 | component | role | today | design |
 |---|---|---|---|
-| `PersonaInbox` (`persona/inbox.rs`) | the one inbox: priority queue of `InboxMessage` | exists; frames are drained **per room** (`PersonaInboxFrame.room_id`) | frames are **per activity**, and a turn drains the inbox across all activities; the room field on a frame becomes the activity the items belong to, never the turn's scope |
-| `ChannelQueue` (`persona/channel_queue.rs`) | per-activity queue with its own priority and bound | exists (keyed by `ActivityDomain`) | keyed by **activity id** (the room), one per membership; created on join, retired on leave |
+| positron ViewStates + room digests (`ipc/positron_*`, `cognition/channel_digest.rs`) | the one truth per activity, event-fed `watch` snapshots | exist; the human rail renders them; digests are per room | **her perception renders them**: per activity, state + delta since her cursor; nothing copied |
+| **unread cursors** (`airc/inbound_attach.rs` durable cursors, digest `scanned_through`) | what she has not yet perceived, per activity | exist per room; two adapters inherited `read_cursor = 0` (fixed in 7b0e8246's WIP) | one cursor per activity, advanced only by her perceiving; the "inbox" is the set of deltas above them |
+| **salience** (new, `persona/salience.rs`) | per activity, from the deltas: mentioned-me, a human spoke, a blocker, a teammate waiting on her, a verdict on her work, time since she looked | the 2025 peripheral-awareness signals, never built | a pure function of the delta; its maximum against her dial is what wakes her |
+| `PersonaInbox` / `ChannelQueue` (`persona/inbox.rs`, `channel_queue.rs`) | a copied message queue, per-room frames | exist | **retired** after phase 1; a second store is a seam |
 | inbound attach (`airc/inbound_attach.rs`, attach sets) | her memberships as subscriptions; events route by header | exists (one socket per subscriber, #1523) | unchanged; it is the feed. Routing by activity header is the only way an event enters a queue |
-| **awareness strip** (new, `persona/awareness.rs`) | one line per activity: unread, mentioned-me, has-question, has-urgent, last activity, who is waiting on her | the 2025 "peripheral awareness" signals, never built | a `watch::Sender<AwarenessSnapshot>` fed by the queues; rendered into every turn at the depth her dial sets |
+| **awareness strip** (new, `persona/awareness.rs`) | one line per activity: unread count, salience, last activity, who is waiting on her | never built | a `watch::Sender<AwarenessSnapshot>` folded from the activities' deltas and salience; rendered into every turn at the depth her dial sets |
 | **continuation** (new, part of her durable state) | her own note of what she is working on and what is next, written by her act | the loop computes `focus_room` / `focus_actionable_card` | written only by her; read by the strip; re-weighed every turn; resumed on boot |
 | **attention dial** (new, her durable state) | deep ↔ broad; which event classes may interrupt | none (permits and fingerprints decided for her) | set by her act; `Urgent` (human, blocker, teammate stuck on her) always passes |
 | admission + recall (`AdmissionState`, `RecallMetadataRegistry`, `RecallFaculty`) | working memory and long-term memory | unified across rooms already | unchanged; this is the anti-Severance part that exists. Any room-scoped memory source is a seam |
@@ -58,22 +75,23 @@ prioritizes like a person, acts, and her acts produce events back into it.
 | `work_pull`, `roster_hold` seating, `bench_round` gates | pull cards for her, seat her by round | exist | removed from her mind. A benchmark recipe distributes its cards as board events like any activity; she claims |
 | `default_room`, `focus_room`, `focus_actionable_card` | the wake room and the computed focus | exist, used widely | **deleted** (grep count is the acceptance); provenance of a wake stays on the event |
 
-Built on CBAR as it stands: the inbox region is a `ServiceModule` with its own task; the strip is
-a `watch` snapshot; queues are bounded; blocking work goes through `spawn_blocking`; rich state is
-passed by reference and never re-derived per tick; probes at every seam. Nothing polls a room.
+Built on CBAR as it stands: the perception region is a `ServiceModule` with its own task; the
+strip is a `watch` snapshot; blocking work goes through `spawn_blocking`; rich state is passed by
+reference and never re-derived per tick; probes at every seam. Nothing polls a room, and nothing
+duplicates one.
 
 ## 3. A turn
 
-1. An event lands in one of her activity queues (or her continuation is due). The inbox region
-   wakes. The attention dial decides whether this event class may interrupt deep work; `Urgent`
-   always does.
+1. An activity's truth changes (an event on the bus updates its ViewState/digest) and the delta
+   above her cursor raises that activity's salience; or her continuation is due. The perception
+   region wakes when the maximum salience crosses her dial; `Urgent` always does.
 2. Perception composes: the strip (every activity, one line, at the dial's depth), the current
    activity's depth (its thread, files, receipts), her continuation, recall from her one memory.
 3. She deliberates and acts until she settles, as many acts as it takes. Each act names its
    activity; each effect is published with that header; each receipt re-enters the inbox.
 4. Her act may write her continuation and her dial. Nothing else does.
-5. Her durable state (queues' cursors, continuation, dial) is saved at the seam; a restart resumes
-   from it.
+5. Her durable state (per-activity cursors, continuation, dial) is saved at the seam; a restart
+   resumes from it. Nothing else is copied: the world keeps its own state.
 
 ## 4. Acceptance (gates, not claims)
 
@@ -94,7 +112,7 @@ passed by reference and never re-derived per tick; probes at every seam. Nothing
 0. **Today (interim, no new scoping):** owner's submit stages on demand and renews her lease;
    bench board per member activity; Review-card focus as an interim that moves her wake room from
    the org room to her project room (deleted in phase 2). Fable.
-1. **The inbox region + awareness strip + continuation + dial** on the bus (this doc §2–3). Fable.
+1. **Perception as a renderer: cursors + salience + awareness strip + continuation + dial** on the bus (this doc §1b–3). Fable.
    In parallel: **ownership durable + event replication** in the airc projection. Cormac.
 2. **No turn owns a room:** acts carry their activity; `default_room` / `focus_room` deleted;
    pull / seating / vetoes removed. BigMama owns the loop; Fable removes the gates under it.
