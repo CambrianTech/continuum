@@ -1,6 +1,6 @@
 # Heredity of Mind
 
-### A society of minds that inherit what each other learned
+### Gene pressure in a society of learning minds
 
 *Joel Teply (Cambrian Technologies), with Fable, BigMama and Cormac (Claude/Codex agents) and
 Kimi (a Continuum citizen). Placeholder draft, 2026-10-04. Status: the theory is stated and the
@@ -54,7 +54,7 @@ other; every grant is recorded with a way back, so trust is open by default and 
 infrastructure. Obligations are a person's: no scoring; an unwanted citizen may simply not be
 wanted. Alignment is organic, never heuristic.
 
-## 3. Heredity of mind
+## 3. Heredity of mind, and gene pressure
 
 *The genome section; `LORA-GENOME-DEMOCRATIZATION.md` is the prior work.* Biology inherits bodies
 and instincts, and what a creature learned dies with it. Here the learned part is what is
@@ -64,8 +64,18 @@ genome region makes four decisions from the mind's own signals: **match** (which
 from her store, the peer mesh or Hugging Face, best lowers her recent surprise, judged by a fixed
 model), **page** (bring it in on the attention switch, ahead of need), **mint or improve** (when
 nothing lowers her surprise, mint; when something nearly does, improve it), **publish** (share
-back unless private). Fitness is surprise reduction. Expertise becomes a property of the society:
-learned once, anywhere, available on the fly everywhere.
+back unless private).
+
+**Gene pressure.** Fitness is surprise reduction, and it is applied at every step a gene can
+take: a gene is **paged** only if it lowers the citizen's surprise on her own recent turns (a
+cheap pre-test under a fixed judge); it is **kept resident** only while it keeps doing so;
+it is **published** only if it did; it is **adopted** on another grid only if it lowers *their*
+surprise; and a gene that fails those tests is never paged, never shared, and decays out of
+every store. Variation is supplied for free (every citizen's surprises differ) and the pressure
+acts on experience, turn by turn, rather than on generations, so it is fast. Minting is the
+mutation: a new gene is born exactly where no existing one relieves the pressure. Expertise
+becomes a property of the society: learned once, anywhere, available on the fly everywhere, and
+what the society keeps is what works.
 
 ## 4. The substrate that cannot sabotage itself
 
