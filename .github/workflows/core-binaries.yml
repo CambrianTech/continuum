@@ -68,6 +68,9 @@ jobs:
     env:
       # The canary profile: no LTO, for a fast link (#4687). main keeps LTO.
       CARGO_PROFILE_RELEASE_LTO: 'false'
+      # Pinned so a runner-image bump can't silently raise the oldest macOS these run on
+      # (Fable, #4691 review: minos is 11.0 today).
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -121,6 +124,15 @@ jobs:
           mkdir -p "$stage"
           for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
             cp "$target_dir/release/$bin" "$stage/"
+          done
+          # A downloaded binary must launch on a Mac that has nothing but macOS: every linked
+          # library is the system's. Homebrew openssl (/usr/local or /opt/homebrew) was linked
+          # until the cloud TTS crate left (card ab567967); this keeps anything like it out.
+          for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
+            foreign="$(otool -L "$stage/$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)' || true)"
+            if [ -n "$foreign" ]; then
+              echo "::error::$bin links libraries a plain Mac does not have:"; echo "$foreign"; exit 1
+            fi
           done
           # The binary must report the commit it was built from: the deploy verifies the
           # running core's sha, and an artifact stamped with the wrong one would be refused.
