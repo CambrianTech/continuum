@@ -138,6 +138,10 @@ pub struct TickInputs {
     pub running_sha: Option<String>,
     /// The deployable tip's SHA, or `None` if the source could not be read.
     pub tip_sha: Option<String>,
+    /// The tip's build key ([`crate::prebuilt_artifact::build_key_log_args`]): the newest
+    /// commit at or before the tip that touched a build input. `None` when unknown, in
+    /// which case only the tip itself satisfies.
+    pub tip_build_key: Option<String>,
     /// Why the source was unreadable (only meaningful when `tip_sha` is `None`).
     pub source_error: Option<String>,
     pub checks: Checks,
@@ -145,15 +149,6 @@ pub struct TickInputs {
     pub build_in_flight: bool,
     pub tree_dirty: bool,
     pub now_ms: u64,
-}
-
-/// SHAs compare on their first [`SHA_PREFIX`] hex chars — a short SHA from `ping`
-/// matches a full SHA from `git rev-parse`.
-pub const SHA_PREFIX: usize = 9;
-
-fn sha_eq(a: &str, b: &str) -> bool {
-    let n = SHA_PREFIX.min(a.len()).min(b.len());
-    n > 0 && a.as_bytes()[..n] == b.as_bytes()[..n]
 }
 
 /// The pure decision — the guards of `track-canary.sh`, in the same order, as one
@@ -172,7 +167,7 @@ pub fn decide(inp: &TickInputs) -> DeployVerdict {
     let Some(running) = inp.running_sha.as_deref() else {
         return DeployVerdict::CoreNotAnswering;
     };
-    if sha_eq(running, tip) {
+    if running_satisfies(running, tip, inp.tip_build_key.as_deref()) {
         return DeployVerdict::UpToDate;
     }
     if let Some(hold) = &inp.hold {
@@ -239,6 +234,16 @@ pub enum RequestOutcome {
 /// [`RequestOutcome::Settled`], and the whole reconcile would be correct code on a branch
 /// nothing reaches. Compare as a prefix, shorter against longer, and require enough
 /// characters that a coincidence is not a match.
+/// THE rule for "this node already runs what `tip` asks for", shared by the tracker's
+/// [`decide`], its [`reconcile_request`] and the consumer's verdict: the running build is the
+/// tip itself, or the tip's build key. A docs-only tip names the same core as its key, so a
+/// node running the key owes nothing; without this, IntelMac waited 117+ min (2026-10-04) for
+/// a CI core that is never built for a docs-only commit, and would then have compiled and
+/// restarted into the code it was already running (card 9080ffb0).
+pub fn running_satisfies(running: &str, tip: &str, tip_build_key: Option<&str>) -> bool {
+    same_commit(tip, running) || tip_build_key.is_some_and(|key| same_commit(key, running))
+}
+
 pub fn same_commit(a: &str, b: &str) -> bool {
     const MIN_ABBREV: usize = 7; // git's own floor for an unambiguous short sha
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
@@ -307,6 +312,7 @@ pub fn request_to_persist(
 pub fn reconcile_request(
     request: Option<&DeployRequest>,
     running_sha: &str,
+    request_build_key: Option<&str>,
     build_in_flight: bool,
     now_ms: u64,
 ) -> RequestOutcome {
@@ -314,7 +320,7 @@ pub fn reconcile_request(
         return RequestOutcome::Nothing;
     };
     let elapsed_ms = now_ms.saturating_sub(req.requested_ms);
-    if same_commit(&req.tip_sha, running_sha) {
+    if running_satisfies(running_sha, &req.tip_sha, request_build_key) {
         return RequestOutcome::Settled {
             tip_sha: req.tip_sha.clone(),
             waited_ms: elapsed_ms,
@@ -343,6 +349,12 @@ pub trait DeploySource: Send + Sync {
     /// The tracked branch's tip SHA and its check-state. `Ok(None)` = reachable but no
     /// tip (empty branch); `Err` = unreachable (offline) → the running build stands.
     async fn tip(&self) -> Result<Option<(String, Checks)>, String>;
+
+    /// `tip`'s build key ([`crate::prebuilt_artifact::build_key_log_args`]), or `None` when
+    /// it cannot be read; `None` makes only the tip itself satisfy, which is the old rule.
+    async fn build_key(&self, _tip: &str) -> Option<String> {
+        None
+    }
 }
 
 /// How old a git `index.lock` must be before the deploy consumer treats it as abandoned
@@ -386,6 +398,7 @@ mod tests {
         TickInputs {
             running_sha: Some("aaaaaaaaa111".into()),
             tip_sha: Some("bbbbbbbbb222".into()),
+            tip_build_key: None,
             source_error: None,
             checks: Checks::Green,
             hold: None,
@@ -516,7 +529,7 @@ mod tests {
     fn a_short_running_sha_settles_a_full_requested_tip() {
         let req = DeployRequest::new("c2344d758225d87911d1ee2934b4e7e42673c26e", NOW);
         assert_eq!(
-            reconcile_request(Some(&req), "c2344d758", false, NOW + 90_000),
+            reconcile_request(Some(&req), "c2344d758", None, false, NOW + 90_000),
             RequestOutcome::Settled {
                 tip_sha: "c2344d758225d87911d1ee2934b4e7e42673c26e".into(),
                 waited_ms: 90_000
@@ -529,6 +542,7 @@ mod tests {
             reconcile_request(
                 Some(&req_short),
                 "c2344d758225d87911d1ee2934b4e7e42673c26e",
+                None,
                 false,
                 NOW
             ),
@@ -543,7 +557,7 @@ mod tests {
         let req = DeployRequest::new("c2344d758225d87911d1ee2934b4e7e42673c26e", NOW);
         assert!(
             !matches!(
-                reconcile_request(Some(&req), "c2344", false, NOW),
+                reconcile_request(Some(&req), "c2344", None, false, NOW),
                 RequestOutcome::Settled { .. }
             ),
             "five characters is a coincidence, not a commit"
@@ -558,7 +572,7 @@ mod tests {
     fn a_request_that_did_not_take_is_stranded_not_in_flight() {
         let req = DeployRequest::new("aaaaaaaaa111bbbb", NOW);
         assert_eq!(
-            reconcile_request(Some(&req), "999999999", true, NOW + 60_000),
+            reconcile_request(Some(&req), "999999999", None, true, NOW + 60_000),
             RequestOutcome::InFlight {
                 tip_sha: "aaaaaaaaa111bbbb".into(),
                 elapsed_ms: 60_000
@@ -567,7 +581,7 @@ mod tests {
         );
         let late = STRANDED_GRACE_MS + 1;
         assert_eq!(
-            reconcile_request(Some(&req), "999999999", false, NOW + late),
+            reconcile_request(Some(&req), "999999999", None, false, NOW + late),
             RequestOutcome::Stranded {
                 tip_sha: "aaaaaaaaa111bbbb".into(),
                 elapsed_ms: late
@@ -591,7 +605,7 @@ mod tests {
         let req = DeployRequest::new("aaaaaaaaa111bbbb", NOW);
         // The exact measured moment, replayed: one 300 s tick, no claim, old sha running.
         assert_eq!(
-            reconcile_request(Some(&req), "38be2e1a9", false, NOW + 300_004),
+            reconcile_request(Some(&req), "38be2e1a9", None, false, NOW + 300_004),
             RequestOutcome::InFlight {
                 tip_sha: "aaaaaaaaa111bbbb".into(),
                 elapsed_ms: 300_004
@@ -600,11 +614,23 @@ mod tests {
         );
         // And the boundary is not off by one in the forgiving direction either.
         assert!(matches!(
-            reconcile_request(Some(&req), "38be2e1a9", false, NOW + STRANDED_GRACE_MS),
+            reconcile_request(
+                Some(&req),
+                "38be2e1a9",
+                None,
+                false,
+                NOW + STRANDED_GRACE_MS
+            ),
             RequestOutcome::Stranded { .. }
         ));
         assert!(matches!(
-            reconcile_request(Some(&req), "38be2e1a9", false, NOW + STRANDED_GRACE_MS - 1),
+            reconcile_request(
+                Some(&req),
+                "38be2e1a9",
+                None,
+                false,
+                NOW + STRANDED_GRACE_MS - 1
+            ),
             RequestOutcome::InFlight { .. }
         ));
     }
@@ -640,7 +666,7 @@ mod tests {
         let late = NOW + STRANDED_GRACE_MS + TICK;
         assert!(
             matches!(
-                reconcile_request(Some(&first), "999999999", false, late),
+                reconcile_request(Some(&first), "999999999", None, false, late),
                 RequestOutcome::Stranded { .. }
             ),
             "a request standing past the grace with nothing building IS stranded"
@@ -658,7 +684,7 @@ mod tests {
     #[test]
     fn no_request_on_record_is_nothing_owed() {
         assert_eq!(
-            reconcile_request(None, "c2344d758", false, NOW),
+            reconcile_request(None, "c2344d758", None, false, NOW),
             RequestOutcome::Nothing
         );
     }
@@ -694,5 +720,40 @@ mod tests {
             IndexLock::Stale,
             "the bound itself is stale"
         );
+    }
+
+    // what this catches: card 9080ffb0. A docs-only tip names the same core as its build
+    // key. A node running the key is current (no download, build or restart), and a standing
+    // request for that tip settles on the key; a node running neither still deploys.
+    #[test]
+    fn a_node_running_the_tips_build_key_is_current() {
+        let key = "aaaaaaaaa111";
+        let mut inp = base(); // running aaaaaaaaa111, tip bbbbbbbbb222
+        assert!(
+            matches!(decide(&inp), DeployVerdict::Deploy { .. }),
+            "no key known: the tip is owed"
+        );
+        inp.tip_build_key = Some(key.into());
+        assert_eq!(
+            decide(&inp),
+            DeployVerdict::UpToDate,
+            "running the key is running the tip's core"
+        );
+        inp.tip_build_key = Some("ccccccccc333".into());
+        assert!(
+            matches!(decide(&inp), DeployVerdict::Deploy { .. }),
+            "a different key is still owed"
+        );
+
+        let req = DeployRequest::new("bbbbbbbbb222", NOW);
+        assert!(matches!(
+            reconcile_request(Some(&req), key, Some(key), false, NOW + 60_000),
+            RequestOutcome::Settled { .. }
+        ));
+        assert!(!running_satisfies(
+            "ccccccccc333",
+            "bbbbbbbbb222",
+            Some(key)
+        ));
     }
 }

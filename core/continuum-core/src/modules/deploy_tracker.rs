@@ -201,6 +201,23 @@ fn origin_repo(repo_dir: &std::path::Path) -> Option<String> {
 
 #[async_trait]
 impl DeploySource for GitGhDeploySource {
+    async fn build_key(&self, tip: &str) -> Option<String> {
+        let tip = tip.to_string();
+        tokio::task::spawn_blocking(move || {
+            let dir = checkout_now().ok()?.to_string_lossy().into_owned();
+            let mut args = vec!["-C".to_string(), dir];
+            args.extend(continuum_cli_lifecycle::prebuilt_artifact::build_key_log_args(&tip));
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            crate::system_resources::bounded_command::probe("git", &args, GIT_TIMEOUT)
+                .stdout_if_ok()
+                .map(|out| out.trim().to_string())
+                .filter(|key| !key.is_empty())
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     async fn tip(&self) -> Result<Option<(String, Checks)>, String> {
         let branch = self.branch.clone();
         tokio::task::spawn_blocking(move || {
@@ -396,9 +413,14 @@ impl ServiceModule for DeployTrackerModule {
         // a live owner excludes a new deploy even past its claim's expiry (card 634f644d)
         let build_in_flight =
             crate::runtime::deploy_claim::in_flight(&self.root, now).excludes_deploy();
+        let tip_build_key = match &tip_sha {
+            Some(tip) => self.source.build_key(tip).await,
+            None => None,
+        };
         let inputs = TickInputs {
             running_sha: Some(running_sha().to_string()),
             tip_sha,
+            tip_build_key,
             source_error,
             checks,
             hold: read_hold(&self.state_dir),
@@ -417,9 +439,17 @@ impl ServiceModule for DeployTrackerModule {
         // Whether the standing request is stranded — the only condition under which the
         // actuator may launch the consumer a second time for one request.
         let mut stranded = false;
+        let request = read_deploy_request(state_dir);
+        // The request's own key: the same as this tick's when it asks for this tip.
+        let request_build_key = match &request {
+            Some(req) if inputs.tip_sha.as_deref() == Some(req.tip_sha.as_str()) => inputs.tip_build_key.clone(),
+            Some(req) => self.source.build_key(&req.tip_sha).await,
+            None => None,
+        };
         match crate::runtime::deploy_tracker::reconcile_request(
-            read_deploy_request(state_dir).as_ref(),
+            request.as_ref(),
             running_sha(),
+            request_build_key.as_deref(),
             build_in_flight,
             now,
         ) {
