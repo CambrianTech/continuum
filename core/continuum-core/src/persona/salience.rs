@@ -148,6 +148,24 @@ impl SpeechLine {
             occurred_at_ms: event.occurred_at_ms,
         }
     }
+
+    /// Addressed when the typed target names her OR the text mentions her by name
+    /// (the ONE detector the loop uses, `PersonaIdentity::mentions`: word-boundary,
+    /// identity-aware). Run 2 of the live acceptance (2026-10-04 19:24Z): an
+    /// `@Kimi` typed by a peer arrives as `MentionTarget::All` with the mention in
+    /// the text, and read as Notable, so she was not woken by her own name.
+    pub fn from_event_for(
+        event: &airc_core::TranscriptEvent,
+        me: &super::persona_identity::PersonaIdentity,
+    ) -> Self {
+        let typed = matches!(event.target, MentionTarget::Peer(p) if p.as_uuid() == me.id);
+        let named = event.body.as_ref().and_then(|b| b.as_text()).is_some_and(|t| me.mentions(t));
+        Self {
+            sender: event.peer_id.as_uuid(),
+            addressed_to_me: typed || named,
+            occurred_at_ms: event.occurred_at_ms,
+        }
+    }
 }
 
 /// The delta of one activity above her cursor, typed (EVENT-MIND §6).

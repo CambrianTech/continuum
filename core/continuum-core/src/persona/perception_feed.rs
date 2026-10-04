@@ -32,6 +32,8 @@ use crate::airc::realtime_wire::{room_work_from_event, RoomWork};
 
 struct Resident {
     peer: PeerId,
+    /// Her identity for the one mention detector (`PersonaIdentity::mentions`).
+    identity: super::persona_identity::PersonaIdentity,
     region: Arc<Mutex<PerceptionRegion>>,
     wake_tx: mpsc::Sender<Wake>,
     /// Her conversation's admission pipeline (BigMama's consumer, phase 2): the
@@ -51,15 +53,17 @@ fn registry() -> &'static Mutex<HashMap<Uuid, Resident>> {
 pub fn register(
     persona: Uuid,
     peer: PeerId,
+    agent_name: &str,
     region: Arc<Mutex<PerceptionRegion>>,
     wake_tx: mpsc::Sender<Wake>,
     events_tx: Option<mpsc::Sender<Arc<TranscriptEvent>>>,
 ) {
     attach_her_rooms(&region);
+    let identity = super::persona_identity::PersonaIdentity::new(peer.as_uuid(), agent_name.to_string());
     registry()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .insert(persona, Resident { peer, region, wake_tx, events_tx });
+        .insert(persona, Resident { peer, identity, region, wake_tx, events_tx });
     crate::probe!(class = "mind.feed.registered", persona = %persona, "her perception region is on the one feed");
 }
 
@@ -138,7 +142,7 @@ pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
             }
             count += 1;
             match &fed {
-                Fed::Speech => region.observe_speech(room, SpeechLine::from_event(event, resident.peer), now_ms),
+                Fed::Speech => region.observe_speech(room, SpeechLine::from_event_for(event, &resident.identity), now_ms),
                 Fed::Board(change) => {
                     // Her own act's echo is hers, not news (the same rule as her words).
                     let actor = match change {
@@ -255,7 +259,7 @@ mod tests {
         let _ = region.wake_for(0); // consume Resume (fresh: none)
         let region = Arc::new(Mutex::new(region));
         let (tx, rx) = mpsc::channel(4);
-        register(KIMI, PeerId::from_uuid(KIMI), region.clone(), tx, None);
+        register(KIMI, PeerId::from_uuid(KIMI), "Kimi", region.clone(), tx, None);
         (region, rx)
     }
 
@@ -271,6 +275,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
 
         assert_eq!(feed(&Arc::new(speech(ROOM_A, JOEL)), 11), 1);
+        // (a human speaking is Addressed on its own; the mention case is below)
         match rx.try_recv() {
             Ok(Wake::Perceive { activity, salience }) => {
                 assert_eq!(activity, ROOM_A);
@@ -292,6 +297,20 @@ mod tests {
 
         assert_eq!(feed(&Arc::new(reviewed(ROOM_A, KIMI)), 13), 1, "fed, but her own echo");
         assert!(rx.try_recv().is_err(), "her own review echo is not news");
+
+        // Run 2 of the live acceptance: a PEER's line with "@Kimi" in the text and a
+        // MentionTarget::All target is Addressed by her name, not merely Notable.
+        let peer = Uuid::from_u128(0x2);
+        let mut named = speech(ROOM_A, peer);
+        named.body = Some(airc_core::Body::text("@Kimi your slice has a typed PASS on record"));
+        assert_eq!(feed(&Arc::new(named), 14), 1);
+        match rx.try_recv() {
+            Ok(Wake::Perceive { salience, .. }) => {
+                assert_eq!(salience.level, SalienceLevel::Addressed);
+                assert!(salience.reasons.iter().any(|r| matches!(r, crate::persona::salience::SalienceReason::MentionedMe { by } if *by == peer)));
+            }
+            other => panic!("her name in the text is addressed to her: {other:?}"),
+        }
         unregister(KIMI);
     }
 }
