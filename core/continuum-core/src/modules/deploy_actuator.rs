@@ -16,11 +16,13 @@
 //! registered), writes an ACTUATION RECEIPT (`<state>/deploy-actuation.json`), and at the
 //! next boot says whether the actuation produced the tip.
 //!
-//! OWNERSHIP — exactly one owner per node. Where the bash tracker's launchd agent (or its
-//! systemd timer) is installed, or the operator switch `CONTINUUM_DEPLOY_ACTUATOR=off`
-//! is set, the actuator DEFERS and says so; nothing changes on a node that already has an
-//! owner. The switch is an operator switch, never a tuning knob. The follow-up deletes
-//! `track-canary.sh` once the actuator has produced one verified deploy on a Unix node.
+//! OWNERSHIP — exactly one owner per node: this actuator. Only the operator switch
+//! `CONTINUUM_DEPLOY_ACTUATOR=off` makes it stand down (an operator switch, never a tuning
+//! knob). The bash tracker that once shared the decision (`track-canary.sh`) was deleted
+//! after the actuator landed verified deploys on both Unix nodes (IntelMac b8dd32da8 and
+//! M5 f3339be61, 2026-10-04; card 22d06209). An agent or timer it left installed can
+//! only fail, since its script is gone, so the actuator RETIRES it: unload, move the file
+//! into the state dir, probe the receipt. It never defers to it.
 //!
 //! WHY THE CONSUMER VERB AND NOT A BARE `reboot`: `continuum reboot` builds the tracked
 //! checkout's CURRENT HEAD. The request names a TIP. `deploy-consume` is the verb that
@@ -89,10 +91,6 @@ pub(crate) struct ActuationReceipt {
 /// Who else owns deploy on this node. When one is present the actuator does not act.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExternalOwner {
-    /// macOS: `~/Library/LaunchAgents/com.continuum.track-canary.plist` — the bash tracker.
-    LaunchdTracker(PathBuf),
-    /// Linux: `~/.config/systemd/user/continuum-track-canary.timer` — the same tracker.
-    SystemdTimer(PathBuf),
     /// `CONTINUUM_DEPLOY_ACTUATOR=off`.
     OperatorSwitch,
 }
@@ -100,11 +98,28 @@ pub(crate) enum ExternalOwner {
 impl ExternalOwner {
     pub(crate) fn name(&self) -> &'static str {
         match self {
-            ExternalOwner::LaunchdTracker(_) => "launchd track-canary agent",
-            ExternalOwner::SystemdTimer(_) => "systemd track-canary timer",
             ExternalOwner::OperatorSwitch => "operator switch",
         }
     }
+}
+
+/// An install the deleted bash tracker left behind. Its script is gone, so it can only
+/// fail on its cadence; the actuator retires it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LegacyTracker {
+    /// macOS: `~/Library/LaunchAgents/com.continuum.track-canary.plist`.
+    Launchd(PathBuf),
+    /// Linux: `~/.config/systemd/user/continuum-track-canary.timer`.
+    Systemd(PathBuf),
+}
+
+pub(crate) fn legacy_tracker(user_home: &Path) -> Option<LegacyTracker> {
+    let plist = launchd_tracker_plist(user_home);
+    if plist.is_file() {
+        return Some(LegacyTracker::Launchd(plist));
+    }
+    let timer = systemd_tracker_timer(user_home);
+    timer.is_file().then_some(LegacyTracker::Systemd(timer))
 }
 
 pub(crate) fn launchd_tracker_plist(user_home: &Path) -> PathBuf {
@@ -115,21 +130,11 @@ pub(crate) fn systemd_tracker_timer(user_home: &Path) -> PathBuf {
     user_home.join(".config").join("systemd").join("user").join("continuum-track-canary.timer")
 }
 
-/// The ownership rule, over paths and the switch value — pure enough to assert with a
-/// temp dir. The switch outranks everything; then whichever tracker install is present.
-pub(crate) fn external_owner(user_home: &Path, switch: Option<&str>) -> Option<ExternalOwner> {
-    if switch.is_some_and(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false")) {
-        return Some(ExternalOwner::OperatorSwitch);
-    }
-    let plist = launchd_tracker_plist(user_home);
-    if plist.is_file() {
-        return Some(ExternalOwner::LaunchdTracker(plist));
-    }
-    let timer = systemd_tracker_timer(user_home);
-    if timer.is_file() {
-        return Some(ExternalOwner::SystemdTimer(timer));
-    }
-    None
+/// The ownership rule over the switch value: only "off" (or 0/false) stands the actuator down.
+pub(crate) fn external_owner(switch: Option<&str>) -> Option<ExternalOwner> {
+    switch
+        .is_some_and(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false"))
+        .then_some(ExternalOwner::OperatorSwitch)
 }
 
 /// What this tick does about a wanted deploy, given the last receipt.
@@ -243,6 +248,12 @@ pub(crate) struct Spawned {
 /// ([`CliSpawner`]); the recording one is a test fixture.
 pub(crate) trait DeploySpawner: Send + Sync {
     fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String>;
+    /// Unload a retired tracker install from the OS supervisor. Behind the spawner seam so a
+    /// test never touches a developer machine's real agent.
+    fn unload_legacy_tracker(&self, tracker: &LegacyTracker) -> Result<(), String> {
+        let _ = tracker;
+        Ok(())
+    }
 }
 
 /// The installed CLI, as the core can find it: beside its own executable (a build dir,
@@ -303,6 +314,23 @@ impl DeploySpawner for CliSpawner {
             child: Some(child),
         })
     }
+
+    fn unload_legacy_tracker(&self, tracker: &LegacyTracker) -> Result<(), String> {
+        let target;
+        let (program, args): (&str, Vec<&str>) = match tracker {
+            LegacyTracker::Launchd(_) => {
+                // SAFETY: getuid has no preconditions and cannot fail.
+                target = format!("gui/{}/com.continuum.track-canary", unsafe { libc::getuid() });
+                ("launchctl", vec!["bootout", &target])
+            }
+            LegacyTracker::Systemd(_) => ("systemctl", vec!["--user", "disable", "--now", "continuum-track-canary.timer"]),
+        };
+        let probed = crate::system_resources::bounded_command::probe(program, &args, TASK_RUN_TIMEOUT);
+        probed
+            .stdout_if_ok()
+            .map(|_| ())
+            .ok_or_else(|| format!("{program} {}: {:?}", args.join(" "), probed.outcome()))
+    }
 }
 
 #[cfg(windows)]
@@ -362,6 +390,7 @@ impl DeploySpawner for CliSpawner {
 #[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) struct RecordingSpawner {
     pub plans: parking_lot::Mutex<Vec<SpawnPlan>>,
+    pub unloaded: parking_lot::Mutex<Vec<LegacyTracker>>,
     /// `Some(pid)` = report a launch with this pid; `None` = fail every spawn.
     pub pid: Option<u32>,
 }
@@ -369,7 +398,7 @@ pub(crate) struct RecordingSpawner {
 #[cfg(any(test, feature = "test-fixtures"))]
 impl RecordingSpawner {
     pub(crate) fn new(pid: Option<u32>) -> Self {
-        Self { plans: parking_lot::Mutex::new(Vec::new()), pid }
+        Self { plans: parking_lot::Mutex::new(Vec::new()), unloaded: parking_lot::Mutex::new(Vec::new()), pid }
     }
 }
 
@@ -381,6 +410,11 @@ impl DeploySpawner for RecordingSpawner {
             Some(pid) => Ok(Spawned { pid: Some(pid), mode: "recorded".into(), child: None }),
             None => Err("recording spawner refuses".into()),
         }
+    }
+
+    fn unload_legacy_tracker(&self, tracker: &LegacyTracker) -> Result<(), String> {
+        self.unloaded.lock().push(tracker.clone());
+        Ok(())
     }
 }
 
@@ -437,6 +471,37 @@ impl DeployActuator {
         }
     }
 
+    /// Unload a leftover tracker install and move its files into the state dir, with a
+    /// receipt. A failed unload is reported and the files still move, so the next boot does
+    /// not load it again; a failed move is reported and retried next tick.
+    fn retire_legacy_tracker(&self, legacy: &LegacyTracker) {
+        let unloaded = self.spawner.unload_legacy_tracker(legacy);
+        let files: Vec<PathBuf> = match legacy {
+            LegacyTracker::Launchd(plist) => vec![plist.clone()],
+            LegacyTracker::Systemd(timer) => vec![timer.clone(), timer.with_extension("service")],
+        };
+        let _ = std::fs::create_dir_all(&self.state_dir);
+        let moved: Vec<String> = files
+            .iter()
+            .filter(|f| f.is_file())
+            .map(|f| {
+                let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); // unwrap_or_default: a path with no file name cannot be one of ours
+                let to = self.state_dir.join(format!("retired-{name}"));
+                match std::fs::rename(f, &to) {
+                    Ok(()) => format!("{} -> {}", f.display(), to.display()),
+                    Err(e) => format!("{} NOT moved: {e}", f.display()),
+                }
+            })
+            .collect();
+        crate::probe!(
+            class = "deploy.actuate.retired_legacy_tracker",
+            tracker = ?legacy,
+            unload = ?unloaded,
+            moved = ?moved,
+            "the deleted bash tracker was still installed; retired it so the actuator is the one deploy owner"
+        );
+    }
+
     fn receipt_path(&self) -> PathBuf {
         self.state_dir.join(ACTUATION_FILE)
     }
@@ -463,7 +528,10 @@ impl DeployActuator {
     /// standing request stranded). Defer to an external owner, or decide and act. Sync;
     /// the tracker runs it off its tick.
     pub(crate) fn on_deploy_wanted(&self, req: &DeployRequest, stranded: bool, now_ms: u64) -> ActuateOutcome {
-        if let Some(owner) = external_owner(&self.user_home, self.switch.as_deref()) {
+        if let Some(legacy) = legacy_tracker(&self.user_home) {
+            self.retire_legacy_tracker(&legacy);
+        }
+        if let Some(owner) = external_owner(self.switch.as_deref()) {
             let mut said = self.said_deferred.lock();
             if said.as_deref() != Some(req.tip_sha.as_str()) {
                 *said = Some(req.tip_sha.clone());
@@ -623,52 +691,55 @@ mod tests {
             fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
                 self.0.spawn(plan)
             }
+            fn unload_legacy_tracker(&self, tracker: &LegacyTracker) -> Result<(), String> {
+                self.0.unload_legacy_tracker(tracker)
+            }
         }
         let act = DeployActuator::with_spawner(user_home, root, switch.map(str::to_string), Box::new(Shared(spawner.clone())));
         (act, spawner)
     }
 
-    // what this catches: OWNERSHIP — exactly one owner per node. With the bash tracker's
-    // launchd agent installed (the M5, the IntelMac tonight), or the operator switch off,
-    // the actuator records nothing and spawns nothing; with neither, it acts. A second
-    // owner of the same decision is how two builds race one target dir.
+    // what this catches: OWNERSHIP — exactly one owner per node, the actuator. A tracker
+    // install the deleted bash script left behind is RETIRED (unloaded, files moved into
+    // the state dir) and the actuator acts; deferring to it would leave the node never
+    // deploying, since the agent's script is gone. Only the operator switch stands it down.
     #[test]
-    fn the_actuator_does_not_act_when_an_external_owner_is_present() {
+    fn a_leftover_tracker_is_retired_and_only_the_switch_stands_the_actuator_down() {
         let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
-        let req = DeployRequest::new("bbbbbbbbb222", NOW);
-        // The launchd plist present → deferred, nothing spawned, no receipt.
+        let home = dir.path().join("home");
+        let state = home.join(".continuum").join("state");
+        // A launchd plist left behind → unloaded, moved aside, and the actuator acts.
         let (act, spawner) = actuator(dir.path(), None, Some(4242));
-        let plist = launchd_tracker_plist(&dir.path().join("home"));
+        let plist = launchd_tracker_plist(&home);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap(); // unwrap: the test's own dir
         std::fs::write(&plist, "<plist/>").unwrap(); // unwrap: the test's own file
-        assert!(matches!(act.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Deferred(ExternalOwner::LaunchdTracker(_))));
-        assert!(spawner.plans.lock().is_empty(), "an external owner means no spawn");
-        assert!(act.receipt().is_none(), "a deferral writes no receipt");
-        std::fs::remove_file(&plist).unwrap(); // unwrap: the test's own file
-        // The systemd timer is the same owner on Linux.
-        let timer = systemd_tracker_timer(&dir.path().join("home"));
-        std::fs::create_dir_all(timer.parent().unwrap()).unwrap(); // unwrap: the test's own dir
-        std::fs::write(&timer, "[Timer]").unwrap(); // unwrap: the test's own file
-        assert!(matches!(act.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Deferred(ExternalOwner::SystemdTimer(_))));
-        std::fs::remove_file(&timer).unwrap(); // unwrap: the test's own file
-        // The operator switch outranks everything, and it is a switch: only "off" is off.
-        let (off, off_spawner) = actuator(dir.path(), Some("off"), Some(4242));
-        assert!(matches!(off.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Deferred(ExternalOwner::OperatorSwitch)));
-        assert!(off_spawner.plans.lock().is_empty());
-        assert_eq!(external_owner(&dir.path().join("home"), Some("on")), None, "any other value is not a switch position");
-        // No owner → the actuator acts.
+        let req = DeployRequest::new("bbbbbbbbb222", NOW);
         assert!(matches!(act.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Spawned { attempt: 1, pid: Some(4242), .. }));
+        assert_eq!(spawner.unloaded.lock().as_slice(), [LegacyTracker::Launchd(plist.clone())]);
+        assert!(!plist.exists(), "the plist leaves LaunchAgents, so the next login does not load it");
+        assert!(state.join("retired-com.continuum.track-canary.plist").is_file(), "kept, not deleted");
         let plans = spawner.plans.lock();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].args, vec![CONSUMER_VERB.to_string()], "the consumer verb, not a bare reboot: the request names a tip, reboot builds HEAD");
-        assert_eq!(plans[0].log, dir.path().join("home").join(".continuum").join("logs").join(ACTUATION_LOG));
+        assert_eq!(plans[0].log, home.join(".continuum").join("logs").join(ACTUATION_LOG));
+        drop(plans);
+        // The systemd timer and its service are the same tracker on Linux.
+        let dir2 = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
+        let (act2, spawner2) = actuator(dir2.path(), None, Some(4243));
+        let timer = systemd_tracker_timer(&dir2.path().join("home"));
+        std::fs::create_dir_all(timer.parent().unwrap()).unwrap(); // unwrap: the test's own dir
+        std::fs::write(&timer, "[Timer]").unwrap(); // unwrap: the test's own file
+        std::fs::write(timer.with_extension("service"), "[Service]").unwrap(); // unwrap: the test's own file
+        assert!(matches!(act2.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Spawned { .. }));
+        assert_eq!(spawner2.unloaded.lock().as_slice(), [LegacyTracker::Systemd(timer.clone())]);
+        assert!(!timer.exists() && !timer.with_extension("service").exists());
+        // The operator switch outranks everything, and it is a switch: only "off" is off.
+        let (off, off_spawner) = actuator(dir.path(), Some("off"), Some(4242));
+        assert!(matches!(off.on_deploy_wanted(&DeployRequest::new("ccccccccc333", NOW), false, NOW), ActuateOutcome::Deferred(ExternalOwner::OperatorSwitch)));
+        assert!(off_spawner.plans.lock().is_empty());
+        assert_eq!(external_owner(Some("on")), None, "any other value is not a switch position");
     }
 
-    // what this catches: ONE actuation per request. The tracker re-decides Deploy every
-    // 300 s tick while the tip is not running; without the receipt the actuator would
-    // launch the consumer every tick into its own build. A retry happens only after the
-    // tracker's stranded verdict, only past the bound derived from the last measured
-    // deploy, only up to the cap — and a request written AFTER the receipt is a new one.
     #[test]
     fn one_actuation_per_request_retried_only_after_a_strand_and_past_the_bound() {
         let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir

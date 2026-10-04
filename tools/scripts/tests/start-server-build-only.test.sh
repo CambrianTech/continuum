@@ -83,7 +83,6 @@ chmod +x "$scratch/forbidden"
 for tool in taskkill tasklist pkill pgrep airc llama-server curl powershell.exe; do
   cp "$scratch/forbidden" "$fixture_home/.cargo/bin/$tool"
 done
-cp "$scratch/forbidden" "$scratch/repo/tools/scripts/track-canary.sh"
 # The engine install is the one sibling a warm build RUNS, on macOS and Linux only
 # (card 7c5f139d): it is stamp-gated and installs atomically beside a live lane, so
 # a deploy moves the engine with the pin. It is recorded, not forbidden, and its
