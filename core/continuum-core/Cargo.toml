@@ -162,7 +162,7 @@ tokenizers = { workspace = true, features = ["onig"] }
 
 # Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
 # Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
-pocket-tts = { version = "0.6", default-features = false }
+pocket-tts = { version = "0.6", default-features = false, optional = true }  # behind feature `pocket-tts`: 0.6 pulls intel-mkl-src even without its mkl feature
 
 # Model loading (for inference module)
 safetensors.workspace = true  # Model weight files
@@ -330,6 +330,12 @@ livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
 # request for 3D rendering fails loudly naming this feature — never a silent
 # substitute.
 avatar-3d = ["dep:bevy", "dep:wgpu", "dep:wgpu-hal"]
+# Pocket-TTS (117M Candle, voice cloning, 23x slower than realtime on CPU). Backwards
+# compatibility only: Kokoro is the voice floor (#4698) and learned voices are the plan
+# (docs/planning/VOICE-ENGINE-PLAN.md). OFF by default because pocket-tts 0.6 pulls
+# intel-mkl-src even with default-features = false, which broke packaging the Windows CLI
+# (#4665, BIGGIEDESK). Enable it explicitly to get the adapter.
+pocket-tts = ["dep:pocket-tts"]
 # Legacy TypeScript-SDK generator (sdk_codegen::emit). OFF by default: nothing
 # live consumes its output (the new client SDKs are independent), so it's pure
 # CI/compile cost + a tempting-but-wrong extension point. The HEADLESS command
