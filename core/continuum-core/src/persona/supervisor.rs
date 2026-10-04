@@ -774,10 +774,13 @@ pub async fn materialize_adapters(
         // ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
         // The board is ONE global fold (unlike the per-room roster), so the
         // handle is the global bench substrate the emitter dual-publishes into.
+        // Per ROOM since 2026-10-04 (HER-LOOP-IS-HER-OWN.md rule 5): she reads the
+        // board of the activity she is in, the way she reads its roster. The
+        // node-wide fold stays on the human rail; it is no longer in her head.
         let bench_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::bench::BenchViewState,
-            >::new(crate::ipc::global_bench_substrate()));
+            >::per_room(crate::ipc::global_room_substrates()));
         cognition.set_bench_source(bench_source);
 
         // Bind the room-doctrine source from the same runtime (upcasts to

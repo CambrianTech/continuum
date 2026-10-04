@@ -2665,21 +2665,29 @@ async fn run_self_cycle(
         // (2026-09-05: with 8 holders on 5 lanes, idle self-ticks were taking
         // nondirected lane permits while holders waited; a holder saw two work
         // turns in forty minutes).
-        PullOutcome::DeferredWip => {
-            return false;
-        }
-        PullOutcome::Nothing => {}
+        // A batch's in-flight cards filling the lanes is that batch's load, never a
+        // reason to end HER cycle before she has looked at her own world
+        // (HER-LOOP-IS-HER-OWN.md rule 3, row D). She composes below like any tick;
+        // the lane she would need for a directed turn is still admitted there.
+        PullOutcome::DeferredWip | PullOutcome::Nothing => {}
     }
-    // Only the MUSING tail below is ambient inference: it pays for an ambient permit
-    // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
-    // needed one.
-    let Some(_ambient_permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
-        ctx.identity.peer_id.as_uuid(),
-        now_ms,
-    )
-    .await
-    else {
-        return true;
+    // Only an IDLE citizen's musing tail is ambient inference and pays for an
+    // ambient permit (lanes-1 pool, keeps the GPU for live speakers and held work).
+    // A citizen who HOLDS a card is doing directed work: her cycle is never vetoed
+    // by the ambient pool (rule 3, row E); load shapes her speed in the lane, not
+    // whether she thinks.
+    let _ambient_permit = if focus_room.is_some() {
+        None
+    } else {
+        let Some(permit) = crate::cognition::resource_admission::hold_ambient_turn_for(
+            ctx.identity.peer_id.as_uuid(),
+            now_ms,
+        )
+        .await
+        else {
+            return true;
+        };
+        Some(permit)
     };
     let composed = {
         let cognition = ctx.cognition.lock().await;
@@ -2705,8 +2713,11 @@ async fn run_self_cycle(
     // so my speech can't spiral into self-talk) OR my own active work (so the
     // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
     let fp = burst_fingerprint(&deliveries, &ctx.identity.peer_id.to_string());
-    if fp == *last_burst_fp {
-        return false; // nothing NEW to attend to (no external change, no work progress) → sleep
+    // The fingerprint shapes cadence for an IDLE citizen; it never vetoes the turn
+    // of one who holds a card (rule 2, row F): her held work is a reason to think
+    // whether or not the room changed, and what she does with it is hers.
+    if fp == *last_burst_fp && focus_room.is_none() {
+        return false; // idle and nothing NEW to attend to → sleep
     }
     *last_burst_fp = fp;
     // Structured turns (own posts attributed as self → assistant, peers → user),
