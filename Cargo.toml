@@ -316,8 +316,6 @@ ndarray = "0.17"  # ort 2.0.0-rc.11 requires ndarray 0.17 for OwnedTensorArrayDa
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 
-# Edge-TTS (Microsoft Edge Read Aloud API — free, no API key)
-msedge-tts = "0.3"
 
 
 # Protobuf symbol conflict (ort vs webrtc-sys) is fixed by module declaration

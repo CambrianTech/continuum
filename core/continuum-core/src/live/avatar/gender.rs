@@ -1,6 +1,6 @@
 //! Gender detection from TTS voice names and persona identities.
 //!
-//! Maps voice names from all TTS backends (Edge, Kokoro, Orpheus, Piper, Pocket)
+//! Maps voice names from all TTS backends (Kokoro, Orpheus, Piper, Pocket)
 //! to AvatarGender for model selection. Falls back to deterministic identity hashing.
 
 use super::hash::deterministic_pick;
@@ -9,7 +9,6 @@ use super::types::AvatarGender;
 /// Extract gender from a TTS voice name.
 ///
 /// Covers all TTS backends used in the system:
-/// - Edge TTS: names like "en-US-GuyNeural" (male), "en-US-JennyNeural" (female)
 /// - Kokoro: prefixes "af_"/"bf_" (female), "am_"/"bm_" (male)
 /// - Orpheus: gendered names (tara/leah/jess/mia/zoe = female, leo/dan/zac = male)
 /// - Piper/Pocket: character names (alba/cosette/eponine = female, jean/marius = male)
@@ -24,30 +23,6 @@ pub fn gender_from_voice_name(voice: &str) -> Option<AvatarGender> {
     }
     if lower.starts_with("am_") || lower.starts_with("bm_") {
         return Some(AvatarGender::Male);
-    }
-
-    // Edge TTS: contains "Guy" or known male names → male, known female names → female
-    if lower.contains("guyneural")
-        || lower.contains("andrewneural")
-        || lower.contains("brianneural")
-        || lower.contains("ericneural")
-        || lower.contains("rogerneural")
-        || lower.contains("steffanneural")
-        || lower.contains("christopherneural")
-        || lower.contains("davisneural")
-    {
-        return Some(AvatarGender::Male);
-    }
-    if lower.contains("jennyneural")
-        || lower.contains("arianeural")
-        || lower.contains("emmaneural")
-        || lower.contains("janeneural")
-        || lower.contains("nancyneural")
-        || lower.contains("saraneural")
-        || lower.contains("michelleneural")
-        || lower.contains("amberneural")
-    {
-        return Some(AvatarGender::Female);
     }
 
     // Orpheus: gendered character names
@@ -167,22 +142,6 @@ mod tests {
         assert_eq!(gender_from_voice_name("am_adam"), Some(AvatarGender::Male));
         assert_eq!(
             gender_from_voice_name("bm_george"),
-            Some(AvatarGender::Male)
-        );
-    }
-
-    #[test]
-    fn test_gender_from_voice_edge_tts() {
-        assert_eq!(
-            gender_from_voice_name("en-US-GuyNeural"),
-            Some(AvatarGender::Male)
-        );
-        assert_eq!(
-            gender_from_voice_name("en-US-JennyNeural"),
-            Some(AvatarGender::Female)
-        );
-        assert_eq!(
-            gender_from_voice_name("en-US-BrianNeural"),
             Some(AvatarGender::Male)
         );
     }

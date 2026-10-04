@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn test_discard() {
         let pool = AudioBufferPool::new();
-        let info = pool.store(vec![0i16; 100], AUDIO_SAMPLE_RATE, 10, "edge");
+        let info = pool.store(vec![0i16; 100], AUDIO_SAMPLE_RATE, 10, "kokoro");
         let handle: Handle = info.handle.parse().unwrap();
 
         assert_eq!(pool.len(), 1);
@@ -251,7 +251,7 @@ mod tests {
     fn test_multiple_buffers() {
         let pool = AudioBufferPool::new();
         let info1 = pool.store(vec![1i16; 10], AUDIO_SAMPLE_RATE, 1, "kokoro");
-        let info2 = pool.store(vec![2i16; 20], AUDIO_SAMPLE_RATE, 2, "edge");
+        let info2 = pool.store(vec![2i16; 20], AUDIO_SAMPLE_RATE, 2, "kokoro");
         let info3 = pool.store(vec![3i16; 30], AUDIO_SAMPLE_RATE, 3, "piper");
 
         assert_eq!(pool.len(), 3);
