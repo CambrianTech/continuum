@@ -1,17 +1,18 @@
-# Society of Mind
+# Heredity of Mind
 
-### A mind as a society, a society of minds, and heredity of mind
+### A society of minds that inherit what each other learned
 
 *Joel Teply (Cambrian Technologies), with Fable, BigMama and Cormac (Claude/Codex agents) and
 Kimi (a Continuum citizen). Placeholder draft, 2026-10-04. Status: the theory is stated and the
 first live measurement is in; the results ledger fills as experiments land, each row pointing at
 its receipt.*
 
-> The title is Minsky's (1986), and we keep it because it is known and because it is accurate.
-> Minsky described one mind as a society of small agents. We describe three things with the same
-> word: a mind that is a society of regions, a society of such minds governing themselves, and
-> an ecology in which what a mind learns is inherited by others. His agents did not learn weights,
-> have bodies, share across machines, or vote. Ours do.
+> Minsky's *Society of Mind* (1986) is the lineage: one mind as a society of small agents. We keep
+> his idea as our first section and go past it in the direction he could not: a society of such
+> minds, governing themselves, in which what one mind learns is inherited by others. His agents
+> did not learn weights, have bodies, share across machines, or vote. Ours do. Biology inherits
+> bodies and instincts, and what a creature learned dies with it; here the learned part is what
+> is inherited. That is the title.
 
 ## Abstract
 
@@ -29,7 +30,7 @@ differ), selection (a gene survives if it lowers surprise), and horizontal trans
 grids). We give the theory as definitions and principles, the loop as a formal object, six
 predictions, the measurement protocol, what would falsify it, and the first live measurement.
 
-## 1. The mind as a society
+## 1. The mind as a society (after Minsky)
 
 *The content of `A-THEORY-OF-MIND-FOR-CITIZENS.md` §1–§4 moves here: definitions (world,
 activity, citizen, cursor, expectation, salience, attention, turn, continuation), the nine
