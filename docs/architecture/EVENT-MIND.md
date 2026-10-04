@@ -250,3 +250,30 @@ a `Quiet` event in B under `Deep` does not wake. `resume`: boot after a saved st
 **Probes.** `mind.perceive.wake {activity, level, reasons, dial}`, `mind.perceive.quiet`,
 `mind.continuation.written {by_act}`, `mind.dial.set`, `mind.resume`, `mind.load {live, unread,
 context_share}`.
+
+## 7. The mind's own bus: regions subscribe (Joel, 2026-10-04)
+
+*"When we build the mind's world-state model and event system, it's just a matter of subscriptions
+within this mind making it into other areas of the mind, and those driving memory, recall, and the
+genome corpus itself via the same thing. We now have a way to measure. An amygdala can even have
+a role."*
+
+The perception region publishes typed mind events (the same shape as the substrate bus, routed on
+headers): `ActivityChanged {activity, delta, salience}`, `Surprise {expected, observed}`,
+`AttentionSwitched {from, to}`, `ContinuationWritten`, `TurnSettled {activity, receipts}`. Every
+other region is a subscriber (CBAR `BrainRegion`s with their own cadence), never a caller:
+
+| region | subscribes to | does |
+|---|---|---|
+| **admission** (`AdmissionState`) | `ActivityChanged`, `TurnSettled` | decides what is memorable; salience is the admission weight (an `Addressed` or `Surprise` moment is admitted at higher fidelity) |
+| **recall** (`RecallFaculty`) | the composed perception | pulls the relevant past into the working set; unchanged in shape, now fed by the strip and the current activity's depth |
+| **genome** (gene paging) | `AttentionSwitched`, `ContinuationWritten` | pages the genes the activity she is switching to needs, LRU on the rest: gene selection is dynamic and driven by her attention, never by a fixed per-persona set. Which genes, and when they are minted and why, is answered by the same events: a gene is minted for a competence the curriculum names, and paged in for an activity that exercises it |
+| **curriculum** (experience lifters, the dream stage) | `Surprise`, `TurnSettled` | the surprising turns are the corpus; the prediction error names the gene to train (§1); the recorder captures at raised resolution while `Surprise` is live |
+| **amygdala** (new, small, fast) | `ActivityChanged` before anything else | a fast valuation of threat and urgency (a human in distress, a production outage, a blocker on committed work, a deadline she set passing): raises arousal, which widens her dial for the moment and promotes the activity's salience to `Urgent`; decays on its own. It never acts; it tunes attention. The dial she sets is the cortex; the amygdala is what makes her look up |
+| **governor** | `Load`, `AttentionSwitched` | backpressure on inference lanes and gene paging; shapes speed, never whether she thinks |
+
+**We now have a way to measure.** Every one of these is a typed event with a probe, so each
+region's behaviour is observable per activity: how often she switches, what wakes her, what she
+admits, what surprises her and whether a gene trained on it reduced the surprise next time. That
+last number, surprise falling after a gene lands, is the measurement of learning the README asks
+for ("the benchmark isn't the point; the trajectory is").
