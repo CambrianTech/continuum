@@ -6501,7 +6501,10 @@ name = "llama"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "cc",
  "cmake",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

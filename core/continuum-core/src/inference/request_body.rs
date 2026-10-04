@@ -366,6 +366,8 @@ pub(crate) fn wire_messages(
         if !is_tool_reply {
             result.append(&mut observations);
         }
+        let result_start = result.len();
+        let observations_start = observations.len();
         match &msg.content {
             MessageContent::Text(text) => {
                 result.push(json!({
@@ -484,6 +486,12 @@ pub(crate) fn wire_messages(
                         }
                     }
                 }
+            }
+        }
+        // Name each projection of THIS message, never preceding queued observations.
+        if let Some(name) = &msg.name {
+            for wire in result[result_start..].iter_mut().chain(observations[observations_start..].iter_mut()) {
+                wire["name"] = json!(name);
             }
         }
     }
@@ -662,7 +670,7 @@ mod tests {
     #[test]
     fn tool_result_keeps_sibling_media_after_protocol_reply() {
         let message: ChatMessage = serde_json::from_value(json!({
-            "role": "user", "content": [
+            "role": "user", "name": "camera", "content": [
                 {"type":"tool_result", "tool_use_id":"capture-1", "content":"captured"},
                 {"type":"text", "text":"Current rendering"},
                 {"type":"image", "image":{"base64":"pixels", "mimeType":"image/png"}},
@@ -671,6 +679,7 @@ mod tests {
         })).unwrap();
         let wire = wire_messages(&[message.clone()], None, true, true, "test");
         assert_eq!(wire.len(), 2);
+        assert!(wire.iter().all(|message| message["name"] == "camera"));
         assert_eq!(wire[0]["tool_call_id"], "capture-1");
         assert_eq!(wire[1]["role"], "user");
         assert_eq!(wire[1]["content"][1]["image_url"]["url"], "data:image/png;base64,pixels");

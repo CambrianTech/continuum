@@ -84,10 +84,14 @@ was inconsistent, and nobody owned repairing it.
     her hands were rooted at a card, the act's work is WIP-committed (plumbing, no hooks)
     and pushed to `origin`; a push that fails is a named outcome, never the turn's. A seat
     change between machines is DEFERRED while a turn is in flight or a checkout she acted
-    in holds unpushed work. When the card is staged on a node — a re-claim after it
+    in holds unpushed work. Publication and placement compare against the exact card
+    branch on origin: a commit on another remote branch is not delivery, and a missing
+    card branch still needs publishing. When the card is staged on a node — a re-claim after it
     changed hands, a fresh worktree cut from that node's clone — the branch is fetched and
-    checked out at origin's tip before her first turn; a diverged local checkout is kept
-    whole under `refs/continuum/stranded/<branch>-<ts>`, the remote wins, and the receipt
+    reconciled before her first turn. A same-branch local successor (or edits atop the
+    fetched tip) stays in place when origin adds no commits, with a
+    `local_work_preserved` receipt; re-claiming does not undo unpublished work.
+    A genuinely diverged local checkout is kept whole under `refs/continuum/stranded/<branch>-<ts>`, the remote wins, and the receipt
     says so. Probes: `workspace.push`, `placement.move.deferred_unpushed`,
     `workspace.transfer`.
     **A push is a transfer only when the other node can read its target** (Cormac's

@@ -59,25 +59,44 @@ use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
 
-use super::SamplingConfig;
+use super::{generated_text::{GeneratedText, StopOrigin, TerminalText}, SamplingConfig};
+use crate::inference::tool_stream::{accumulate_tool_call, StreamToolAccum, ToolCallDelta};
+
+/// Observed scheduler boundary; never inferred from text content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionCause {
+    Eog { token: i32 },
+    Stop { matched: String },
+    Length,
+}
 
 /// Token event streamed from the scheduler to the requester.
 #[derive(Debug)]
 pub enum TokenEvent {
     /// One generated token piece (UTF-8 fragment from llama tokenizer).
     Token(String),
+    /// Private native reasoning; never route to public Token presentation.
+    Reasoning(String),
+    /// Assembly delta only. Not executable before successful final validation.
+    Tool { index: usize, id: String, name: String, arguments: String },
     /// Generation finished cleanly (EOG / max_tokens / stop sequence).
     Done {
+        cause: CompletionCause,
         tokens_generated: usize,
         elapsed_ms: u64,
     },
     /// Generation failed — decode error, batch overflow, etc.
     Error(String),
+    /// Native parsing rejected output at an observed terminal boundary.
+    Failed { cause: CompletionCause, error: String },
 }
 
 /// What a caller submits to the scheduler.
 pub struct GenerationRequest {
     pub prompt: String,
+    /// Structured template input for the already-bound model. Internal only;
+    /// public adapter admission remains closed pending history/call acceptance.
+    pub prepared_chat: Option<llama::ChatOptions>,
     pub max_tokens: usize,
     pub sampling: SamplingConfig,
     pub stop_sequences: Vec<String>,
@@ -150,7 +169,7 @@ impl Scheduler {
 }
 
 /// Per-sequence state inside the driver.
-struct ActiveSeq {
+struct ActiveSeq<'model> {
     seq_id: i32,
     prompt_tokens: Vec<i32>,
     /// How many of `prompt_tokens` have been pushed into the context KV.
@@ -162,9 +181,8 @@ struct ActiveSeq {
     next_token: Option<i32>,
     tokens_generated: usize,
     max_tokens: usize,
-    sampler: Sampler,
-    stop_sequences: Vec<String>,
-    output_so_far: String,
+    generator: SequenceGenerator<'model>,
+    decoded: GeneratedText,
     response_tx: tokio::sync::mpsc::UnboundedSender<TokenEvent>,
     started_at: Instant,
     /// Persona that owns this seq slot — copied from
@@ -180,6 +198,82 @@ struct ActiveSeq {
     /// empty string = base). The homogeneity gate compares these to decide
     /// which seqs co-batch under one context-level `set_loras`.
     lora_sig: String,
+}
+
+enum SequenceGenerator<'model> {
+    Legacy(Sampler),
+    Prepared {
+        sampler: llama::CommonSampler<'model>,
+        parser: llama::PreparedChat<'model>,
+        tools: Vec<StreamToolAccum>,
+    },
+}
+
+impl SequenceGenerator<'_> {
+    fn sample(&mut self, context: &mut llama::Context<'_>, index: i32) -> Result<i32, String> {
+        match self {
+            Self::Legacy(sampler) => Ok(sampler.sample(context, index)),
+            Self::Prepared { sampler, .. } => sampler.sample(context, index),
+        }
+    }
+
+    fn preserves_token(&self, token: i32) -> bool {
+        match self {
+            Self::Legacy(_) => false,
+            Self::Prepared { sampler, .. } => sampler.preserves_token(token),
+        }
+    }
+
+    fn observed_eog_closer(&self, model: &Model, token: i32) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::Legacy(_) => Ok(None),
+            Self::Prepared { parser, .. } => {
+                let bytes = model.token_to_piece_bytes(token, true)?;
+                // EOG is normally control-only. Only native parser-owned endings
+                // authorize observed token bytes as terminal syntax.
+                Ok(parser.metadata().parser_closers.iter()
+                    .any(|s| s.as_bytes() == bytes.as_slice()).then_some(bytes))
+            }
+        }
+    }
+
+    fn project(&mut self, text: &str, final_chunk: bool, terminal: Option<&TerminalText>) -> Result<Vec<TokenEvent>, String> {
+        match self {
+            Self::Legacy(_) => Ok(if text.is_empty() { vec![] } else { vec![TokenEvent::Token(text.into())] }),
+            Self::Prepared { parser, tools, .. } => {
+                let deltas = match terminal {
+                    Some(stop) if stop.origin == StopOrigin::Template => parser.finish_observed(text, &stop.observed)?,
+                    _ => parser.append(text, final_chunk)?,
+                };
+                let events = project_native_deltas(deltas, tools);
+                if final_chunk {
+                    if terminal.is_some_and(|s| s.origin == StopOrigin::Caller) && !tools.is_empty() {
+                        return Err("caller stop cannot complete native tool calls".into());
+                    }
+                    for call in tools {
+                        if call.id.is_empty() || call.name.is_empty() ||
+                            serde_json::from_str::<serde_json::Value>(&call.arguments).is_err() {
+                            return Err("native final tool call is incomplete or invalid".into());
+                        }
+                    }
+                }
+                Ok(events)
+            }
+        }
+    }
+}
+
+pub(super) fn project_native_deltas(deltas: Vec<llama::ChatDelta>, tools: &mut Vec<StreamToolAccum>) -> Vec<TokenEvent> {
+    deltas.into_iter().map(|delta| match delta {
+        llama::ChatDelta::Content { text } => TokenEvent::Token(text),
+        llama::ChatDelta::Reasoning { text } => TokenEvent::Reasoning(text),
+        llama::ChatDelta::Tool { index, id, name, arguments } => {
+            accumulate_tool_call(tools, ToolCallDelta {
+                index, id: Some(id.clone()), name: Some(name.clone()), arguments: Some(arguments.clone()),
+            });
+            TokenEvent::Tool { index, id, name, arguments }
+        }
+    }).collect()
 }
 
 /// Per-batch-slot bookkeeping so we know which logit index to sample for
@@ -244,7 +338,7 @@ fn driver_loop(
     let n_seq_max = config.n_seq_max as i32;
     let mut batch = Batch::allocated(n_batch as i32, n_seq_max);
 
-    let mut active: HashMap<i32, ActiveSeq> = HashMap::new();
+    let mut active: HashMap<i32, ActiveSeq<'_>> = HashMap::new();
     let mut free_seqs: Vec<i32> = (0..n_seq_max).collect();
 
     // The gene set currently applied to the shared context (its signature).
@@ -311,6 +405,7 @@ fn driver_loop(
                         continue;
                     }
                     let seq_id = free_seqs.pop().unwrap();
+                    let response_tx = req.response_tx.clone();
                     match start_request(&model, seq_id, req) {
                         Ok(seq) => {
                             log.info(&format!(
@@ -338,6 +433,7 @@ fn driver_loop(
                         }
                         Err(e) => {
                             log.warn(&format!("start_request failed: {e}"));
+                            let _ = response_tx.send(TokenEvent::Error(format!("generation setup failed: {e}")));
                             free_seqs.push(seq_id);
                         }
                     }
@@ -536,7 +632,14 @@ fn driver_loop(
                 // most of the apparent "sample" cost lives here, not in the
                 // post-sample work below.
                 let sample_call_start = Instant::now();
-                let token = seq.sampler.sample(&ctx, logit_idx);
+                let token = match seq.generator.sample(&mut ctx, logit_idx) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        let _ = seq.response_tx.send(TokenEvent::Error(error));
+                        to_remove.push(seq_id);
+                        continue;
+                    }
+                };
                 let sample_call_elapsed = sample_call_start.elapsed();
                 sample_call_iter_total += sample_call_elapsed;
 
@@ -564,23 +667,65 @@ fn driver_loop(
                     }
                 }
 
-                if model.is_eog_token(token) {
-                    // Registry cleanup MUST happen before sending Done, so
-                    // any caller awaiting on the channel sees a consistent
-                    // registry state (entry removed) the moment generate
-                    // returns. Phase 5 only does memory_seq_rm + free_seq.
+                let eog = model.is_eog_token(token);
+                let decoded = if eog {
+                    seq.generator.observed_eog_closer(&model, token).and_then(|closer| match closer {
+                        Some(bytes) => seq.decoded.push_template_end(&bytes),
+                        None => seq.decoded.finish(),
+                    })
+                } else {
+                    seq.tokens_generated += 1;
+                    // Native normalized policy owns special-token projection.
+                    model.token_to_piece_bytes(token, seq.generator.preserves_token(token)).and_then(|bytes| seq.decoded.push(&bytes))
+                };
+                let piece = match decoded {
+                    Ok(piece) => piece,
+                    Err(error) => {
+                        let event = if eog { TokenEvent::Failed { cause: CompletionCause::Eog { token }, error } }
+                            else if seq.tokens_generated >= seq.max_tokens { TokenEvent::Failed { cause: CompletionCause::Length, error } }
+                            else { TokenEvent::Error(error) };
+                        let _ = seq.response_tx.send(event);
+                        to_remove.push(seq_id);
+                        continue;
+                    }
+                };
+                let mut piece = piece;
+                let cause = if eog { Some(CompletionCause::Eog { token }) }
+                    else if let Some(matched) = seq.decoded.matched_stop() { Some(CompletionCause::Stop { matched: matched.into() }) }
+                    else if seq.tokens_generated >= seq.max_tokens { Some(CompletionCause::Length) }
+                    else { None };
+                if let Some(cause) = cause {
+                    if !eog {
+                        match seq.decoded.finish() {
+                            Ok(tail) => {
+                                piece.push_str(&tail);
+                            }
+                            Err(error) => {
+                                let _ = seq.response_tx.send(TokenEvent::Failed { cause, error });
+                                to_remove.push(seq_id);
+                                continue;
+                            }
+                        }
+                    }
+                    // Only an observed, native-mapped terminal receipt is parser syntax.
+                    // Public stop withholding never fabricates a missing tool close.
+                    match seq.generator.project(&piece, true, seq.decoded.terminal_text()) {
+                        Ok(events) => { for event in events { let _ = seq.response_tx.send(event); } }
+                        Err(error) => {
+                            let _ = seq.response_tx.send(TokenEvent::Failed { cause, error });
+                            to_remove.push(seq_id);
+                            continue;
+                        }
+                    }
+                    // Retain registry-before-Done ordering; the existing retirement
+                    // owner releases KV/slot state below for every terminal path.
                     if let Some(pid) = seq.persona_id {
                         let bytes = ctx.seq_state_bytes(seq_id);
                         footprint_registry::global().remove(
-                            &FootprintKey::for_persona(
-                                pid,
-                                ResourceType::KvCache,
-                                Residency::Active,
-                            ),
-                            bytes,
-                        );
+                            &FootprintKey::for_persona(pid, ResourceType::KvCache, Residency::Active), bytes);
                     }
                     let _ = seq.response_tx.send(TokenEvent::Done {
+                        cause,
                         tokens_generated: seq.tokens_generated,
                         elapsed_ms: seq.started_at.elapsed().as_millis() as u64,
                     });
@@ -588,38 +733,14 @@ fn driver_loop(
                     continue;
                 }
 
-                let piece = model.token_to_piece(token);
-                seq.output_so_far.push_str(&piece);
-                let _ = seq.response_tx.send(TokenEvent::Token(piece));
-                seq.tokens_generated += 1;
-
-                let stop_hit = seq
-                    .stop_sequences
-                    .iter()
-                    .any(|s| seq.output_so_far.ends_with(s));
-                if stop_hit || seq.tokens_generated >= seq.max_tokens {
-                    // Same pre-Done registry cleanup as the EOG path —
-                    // single source of truth on what state the channel
-                    // completion signals.
-                    if let Some(pid) = seq.persona_id {
-                        let bytes = ctx.seq_state_bytes(seq_id);
-                        footprint_registry::global().remove(
-                            &FootprintKey::for_persona(
-                                pid,
-                                ResourceType::KvCache,
-                                Residency::Active,
-                            ),
-                            bytes,
-                        );
+                match seq.generator.project(&piece, false, None) {
+                    Ok(events) => { for event in events { let _ = seq.response_tx.send(event); } }
+                    Err(error) => {
+                        let _ = seq.response_tx.send(TokenEvent::Error(error));
+                        to_remove.push(seq_id);
+                        continue;
                     }
-                    let _ = seq.response_tx.send(TokenEvent::Done {
-                        tokens_generated: seq.tokens_generated,
-                        elapsed_ms: seq.started_at.elapsed().as_millis() as u64,
-                    });
-                    to_remove.push(seq_id);
-                    continue;
                 }
-
                 seq.next_token = Some(token);
                 seq.gen_pos = advance_pos;
             }
@@ -692,7 +813,7 @@ fn driver_loop(
 /// Completion, decode failure and consumer cancellation release the same KV owner.
 fn retire_sequence(
     ctx: &mut llama::Context<'_>,
-    active: &mut HashMap<i32, ActiveSeq>,
+    active: &mut HashMap<i32, ActiveSeq<'_>>,
     free_seqs: &mut Vec<i32>,
     seq_id: i32,
 ) {
@@ -736,7 +857,7 @@ fn lora_signature(loras: &[(String, Arc<LoraAdapter>, f32)]) -> String {
     parts.join(",")
 }
 
-fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<ActiveSeq, String> {
+fn start_request<'model>(model: &'model Model, _seq_id: i32, req: GenerationRequest) -> Result<ActiveSeq<'model>, String> {
     let lora_sig = lora_signature(&req.active_loras);
     let active_loras: Vec<(Arc<LoraAdapter>, f32)> = req
         .active_loras
@@ -749,32 +870,51 @@ fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<
     // special=false the model never sees the boundary tokens it was
     // trained on — output collapsed to short fragments terminating early
     // at character-matched stop sequences.
-    let prompt_tokens = model.tokenize(&req.prompt, true, true)?;
-    let sampler = if req.sampling.temperature <= 0.0 && req.sampling.grammar.is_none() {
-        Sampler::greedy()
+    let mut stops: Vec<_> = req.stop_sequences.into_iter().map(|s| (s, StopOrigin::Caller)).collect();
+    let (prompt_tokens, generator) = if let Some(options) = req.prepared_chat {
+        if req.sampling.grammar.is_some() {
+            return Err("prepared constraints must be supplied through structured chat options".into());
+        }
+        let parser = model.prepare_chat(&options)?;
+        let prompt_tokens = model.tokenize(&parser.metadata().prompt, true, true)?;
+        stops.extend(parser.metadata().additional_stops.iter().cloned().map(|s| (s, StopOrigin::Template)));
+        let sampler = parser.sampler(&llama::ChatSampling {
+            temperature: req.sampling.temperature as f32,
+            repeat_penalty: req.sampling.repeat_penalty,
+            top_k: i32::try_from(req.sampling.top_k).map_err(|_| "prepared top_k exceeds native range")?,
+            top_p: req.sampling.top_p as f32,
+            seed: 42,
+        })?;
+        (prompt_tokens, SequenceGenerator::Prepared { sampler, parser, tools: Vec::new() })
     } else {
-        // Build the full sampler chain. Order: grammar → top_k → top_p →
-        // penalties → temp → dist. Grammar early so structural constraint
-        // applies BEFORE probabilistic sampling (otherwise temp could pick
-        // a token that the grammar would have rejected).
-        let mut chain = Sampler::chain();
-        if let Some(g) = req.sampling.grammar.as_ref() {
-            chain = chain.grammar(model, g, "root");
-        }
-        if req.sampling.top_k > 0 {
-            chain = chain.top_k(req.sampling.top_k as i32);
-        }
-        if req.sampling.top_p > 0.0 && req.sampling.top_p < 1.0 {
-            chain = chain.top_p(req.sampling.top_p as f32, 1);
-        }
-        // 64 = llama.cpp default last-n window for the penalty calculation.
-        chain = chain.penalties(model.n_vocab(), 64, req.sampling.repeat_penalty, 0.0, 0.0);
-        let temp = if req.sampling.temperature > 0.0 {
-            req.sampling.temperature as f32
+        let prompt_tokens = model.tokenize(&req.prompt, true, true)?;
+        let sampler = if req.sampling.temperature <= 0.0 && req.sampling.grammar.is_none() {
+            Sampler::greedy()
         } else {
-            0.01
+            // Build the full sampler chain. Order: grammar → top_k → top_p →
+            // penalties → temp → dist. Grammar early so structural constraint
+            // applies BEFORE probabilistic sampling (otherwise temp could pick
+            // a token that the grammar would have rejected).
+            let mut chain = Sampler::chain();
+            if let Some(g) = req.sampling.grammar.as_ref() {
+                chain = chain.grammar(model, g, "root")?;
+            }
+            if req.sampling.top_k > 0 {
+                chain = chain.top_k(req.sampling.top_k as i32);
+            }
+            if req.sampling.top_p > 0.0 && req.sampling.top_p < 1.0 {
+                chain = chain.top_p(req.sampling.top_p as f32, 1);
+            }
+            // 64 = llama.cpp default last-n window for the penalty calculation.
+            chain = chain.penalties(model.n_vocab(), 64, req.sampling.repeat_penalty, 0.0, 0.0);
+            let temp = if req.sampling.temperature > 0.0 {
+                req.sampling.temperature as f32
+            } else {
+                0.01
+            };
+            chain.temp(temp).dist(42).build()
         };
-        chain.temp(temp).dist(42).build()
+        (prompt_tokens, SequenceGenerator::Legacy(sampler))
     };
     Ok(ActiveSeq {
         seq_id: _seq_id,
@@ -784,9 +924,8 @@ fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<
         next_token: None,
         tokens_generated: 0,
         max_tokens: req.max_tokens,
-        sampler,
-        stop_sequences: req.stop_sequences,
-        output_so_far: String::new(),
+        generator,
+        decoded: GeneratedText::with_origins(stops),
         response_tx: req.response_tx,
         started_at: Instant::now(),
         persona_id: req.persona_id,

@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
 
-use super::llamacpp_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, TokenEvent};
+use super::llamacpp_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, TokenEvent, CompletionCause};
 use super::SamplingConfig;
 use crate::runtime;
 
@@ -678,7 +678,7 @@ impl LlamaCppBackend {
         } else {
             let mut chain = llama::Sampler::chain();
             if let Some(g) = sampling.grammar.as_ref() {
-                chain = chain.grammar(&self.model, g, "root");
+                chain = chain.grammar(&self.model, g, "root")?;
             }
             if sampling.top_k > 0 {
                 chain = chain.top_k(sampling.top_k as i32);
@@ -716,6 +716,7 @@ impl LlamaCppBackend {
         }
 
         let mut output = String::new();
+        let mut decoded = super::generated_text::GeneratedText::new(stop_sequences.iter().map(|s| s.to_string()));
         let mut pos = n_past;
         let mut tokens_generated = 0usize;
         // Sample at -1 = "last logits in last batch" — same convention
@@ -729,12 +730,10 @@ impl LlamaCppBackend {
             if self.model.is_eog_token(token) {
                 break;
             }
-            let piece = self.model.token_to_piece(token);
-            output.push_str(&piece);
+            let bytes = self.model.token_to_piece_bytes(token, false)?;
+            output.push_str(&decoded.push(&bytes)?);
             tokens_generated += 1;
-            // Stop sequence early-exit — same end-of-output trim shape
-            // as the scheduler path.
-            if stop_sequences.iter().any(|s| output.ends_with(s)) {
+            if decoded.matched_stop().is_some() {
                 break;
             }
             if tokens_generated >= max_tokens {
@@ -744,11 +743,12 @@ impl LlamaCppBackend {
             let mut batch = llama::Batch::allocated(1, 1);
             batch.push(token, pos, &[0], true);
             if let Err(e) = ctx.decode(&batch) {
-                log.warn(&format!("decode failed mid-generation: {e}"));
-                break;
+                return Err(format!("decode failed mid-generation: {e}"));
             }
             pos += 1;
         }
+
+        output.push_str(&decoded.finish()?);
 
         log.info(&format!(
             "generate_with_image done: {} tokens in {}ms ({:.1} tok/s)",
@@ -912,8 +912,30 @@ impl LlamaCppBackend {
         active_loras: &[(String, f32)],
         sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<(String, usize), String> {
+        let output = self.generate_scheduler_stream(persona_id, prompt, None, max_tokens, sampling,
+            stop_sequences, active_loras, sink)?;
+        Ok((output.text, output.tokens_generated))
+    }
+
+    /// Internal structured seam, bound to this backend's original model and LoRA cache.
+    /// Public adapter activation is separately held until consumer acceptance.
+    pub fn generate_prepared_for_persona_stream(
+        &self, persona_id: Option<uuid::Uuid>, options: llama::ChatOptions,
+        max_tokens: usize, sampling: SamplingConfig, stop_sequences: &[&str],
+        active_loras: &[(String, f32)], sink: crate::ai::stream_sinks::GenerationSink,
+    ) -> Result<NativeGeneration, String> {
+        self.generate_scheduler_stream(persona_id, "", Some(options), max_tokens, sampling,
+            stop_sequences, active_loras, sink)
+    }
+
+    fn generate_scheduler_stream(
+        &self, persona_id: Option<uuid::Uuid>, prompt: &str, prepared_chat: Option<llama::ChatOptions>,
+        max_tokens: usize, sampling: SamplingConfig, stop_sequences: &[&str],
+        active_loras: &[(String, f32)], sink: crate::ai::stream_sinks::GenerationSink,
+    ) -> Result<NativeGeneration, String> {
         let gen_start = Instant::now();
         let prompt_len_chars = prompt.len();
+        let typed = prepared_chat.is_some();
 
         // Channel for streaming tokens back from the scheduler.
         let (response_tx, response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
@@ -954,6 +976,7 @@ impl LlamaCppBackend {
         // top_k/top_p/repeat_penalty fields with no-op defaults.
         let req = GenerationRequest {
             prompt: prompt.to_string(),
+            prepared_chat,
             max_tokens,
             sampling,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),
@@ -964,28 +987,42 @@ impl LlamaCppBackend {
 
         self.scheduler().enqueue(req)?;
 
-        collect_scheduler_stream(
-            response_rx,
-            sink,
-            stop_sequences,
-            gen_start,
-            prompt_len_chars,
-        )
+        collect_scheduler_output(response_rx, sink, gen_start, prompt_len_chars, typed)
     }
 }
 
+/// A successful native parse plus its real scheduler completion cause.
+/// Tool calls are never returned as executable results at a length boundary.
+pub struct NativeGeneration {
+    pub text: String,
+    pub reasoning: String,
+    pub tool_calls: Vec<crate::ai::types::ToolCall>,
+    pub cause: CompletionCause,
+    pub tokens_generated: usize,
+}
+
+#[cfg(test)]
 fn collect_scheduler_stream(
+    response_rx: tokio::sync::mpsc::UnboundedReceiver<TokenEvent>,
+    sink: crate::ai::stream_sinks::GenerationSink,
+    gen_start: Instant, prompt_len_chars: usize,
+) -> Result<(String, usize), String> {
+    let output = collect_scheduler_output(response_rx, sink, gen_start, prompt_len_chars, false)?;
+    Ok((output.text, output.tokens_generated))
+}
+
+fn collect_scheduler_output(
     mut response_rx: tokio::sync::mpsc::UnboundedReceiver<TokenEvent>,
     sink: crate::ai::stream_sinks::GenerationSink,
-    stop_sequences: &[&str],
     gen_start: Instant,
     prompt_len_chars: usize,
-) -> Result<(String, usize), String> {
+    typed: bool,
+) -> Result<NativeGeneration, String> {
     let log = runtime::logger("llamacpp");
-    // Both drains use the same token receiver. Only a stop-prefix suffix is
-    // withheld so a stop marker split across token pieces never leaks live.
+    // Both drains consume scheduler-owned UTF-8/stop projection exactly once.
     let mut output = String::new();
-    let mut published = 0;
+    let mut reasoning = String::new();
+    let mut tools = Vec::new();
     let runtime_handle = tokio::runtime::Handle::try_current().ok();
 
     loop {
@@ -1020,15 +1057,10 @@ fn collect_scheduler_stream(
         match event {
             Some(TokenEvent::Token(piece)) => {
                 output.push_str(&piece);
-                let safe_end = stop_safe_end(&output, stop_sequences);
-                if safe_end > published {
-                    sink.send(crate::ai::adapter::GenerationChunk::Token(
-                        output[published..safe_end].into(),
-                    ))?;
-                    published = safe_end;
-                }
+                sink.send(crate::ai::adapter::GenerationChunk::Token(piece))?;
             }
             Some(TokenEvent::Done {
+                cause,
                 tokens_generated,
                 elapsed_ms,
             }) => {
@@ -1044,19 +1076,32 @@ fn collect_scheduler_stream(
                     elapsed_ms,
                     prompt_len_chars
                 ));
-                // Trim trailing stop sequence(s) — scheduler emits them
-                // before signaling Done.
-                for s in stop_sequences {
-                    if output.ends_with(s) {
-                        output.truncate(output.len() - s.len());
-                    }
-                }
-                if output.len() > published {
-                    sink.send(crate::ai::adapter::GenerationChunk::Token(
-                        output[published..].into(),
-                    ))?;
-                }
-                return Ok((output, n_decoded));
+                let tool_calls = if matches!(cause, CompletionCause::Length) { Vec::new() } else {
+                    tools.into_iter().map(|call: crate::inference::tool_stream::StreamToolAccum| {
+                        let input = serde_json::from_str(&call.arguments)
+                            .map_err(|_| "native final tool arguments are invalid".to_string())?;
+                        Ok(crate::ai::types::ToolCall { id: call.id, name: call.name, input })
+                    }).collect::<Result<Vec<_>, String>>()?
+                };
+                return Ok(NativeGeneration { text: output, reasoning, tool_calls, cause, tokens_generated: n_decoded });
+            }
+            Some(TokenEvent::Reasoning(piece)) if typed => {
+                reasoning.push_str(&piece);
+                sink.send(crate::ai::adapter::GenerationChunk::Reasoning(piece))?;
+            }
+            Some(TokenEvent::Tool { index, id, name, arguments }) if typed => {
+                crate::inference::tool_stream::accumulate_tool_call(&mut tools,
+                    crate::inference::tool_stream::ToolCallDelta {
+                        index, id: Some(id), name: Some(name), arguments: Some(arguments),
+                    });
+            }
+            Some(TokenEvent::Reasoning(_) | TokenEvent::Tool { .. }) => {
+                return Err("legacy text collector cannot consume prepared typed output".into());
+            }
+            Some(TokenEvent::Failed { cause, error }) => {
+                let boundary = match cause { CompletionCause::Eog { .. } => "EOG",
+                    CompletionCause::Stop { .. } => "stop", CompletionCause::Length => "length" };
+                return Err(format!("native completion failed at {boundary}: {error}"));
             }
             Some(TokenEvent::Error(e)) => {
                 return Err(format!("scheduler error: {e}"));
@@ -1068,24 +1113,88 @@ fn collect_scheduler_stream(
     }
 }
 
-/// The longest suffix that could still become a stop marker stays buffered.
-fn stop_safe_end(output: &str, stops: &[&str]) -> usize {
-    let withheld = stops
-        .iter()
-        .flat_map(|stop| {
-            stop.char_indices()
-                .map(|(i, _)| i)
-                .chain(std::iter::once(stop.len()))
-                .filter(move |&n| n > 0 && output.ends_with(&stop[..n]))
-        })
-        .max()
-        .unwrap_or(0);
-    output.len() - withheld
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_projection_keeps_private_reasoning_and_tool_assembly_typed() {
+        use super::super::llamacpp_scheduler::project_native_deltas;
+        let mut tools = Vec::new();
+        let events = project_native_deltas(vec![
+            llama::ChatDelta::Reasoning { text: "private".into() },
+            llama::ChatDelta::Content { text: "answer".into() },
+            llama::ChatDelta::Tool { index: 0, id: "call-1".into(), name: "read".into(), arguments: "{\"path\":".into() },
+            llama::ChatDelta::Tool { index: 0, id: String::new(), name: "read_file".into(), arguments: "\"x\"}".into() },
+        ], &mut tools);
+        assert!(matches!(&events[0], TokenEvent::Reasoning(text) if text == "private"));
+        assert!(matches!(&events[1], TokenEvent::Token(text) if text == "answer"));
+        assert!(matches!(&events[2], TokenEvent::Tool { index: 0, .. }));
+        assert_eq!(tools[0].id, "call-1");
+        assert_eq!(tools[0].name, "read_file");
+        assert_eq!(tools[0].arguments, "{\"path\":\"x\"}");
+        // Exercise the real shared drain without weights: reasoning stays typed,
+        // terminal cause survives, and length never yields executable tools.
+        for cause in [CompletionCause::Eog { token: 7 }, CompletionCause::Length] {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            tx.send(TokenEvent::Reasoning("private".into())).unwrap();
+            tx.send(TokenEvent::Token("answer".into())).unwrap();
+            tx.send(TokenEvent::Tool { index: 0, id: "call-1".into(), name: "inspect".into(), arguments: "{}".into() }).unwrap();
+            tx.send(TokenEvent::Done { cause: cause.clone(), tokens_generated: 3, elapsed_ms: 1 }).unwrap();
+            let output = collect_scheduler_output(rx, crate::ai::stream_sinks::GenerationSink::discard(), Instant::now(), 0, true).unwrap();
+            assert_eq!(output.text, "answer");
+            assert_eq!(output.reasoning, "private");
+            assert_eq!(output.cause, cause);
+            assert_eq!(output.tool_calls.len(), usize::from(!matches!(cause, CompletionCause::Length)));
+            assert!(tx.is_closed());
+        }
+    }
+
+    #[test]
+    fn generated_text_preserves_utf8_and_actual_stop_boundaries() {
+        use super::super::generated_text::{GeneratedText, StopOrigin};
+        let mut decoded = GeneratedText::new(["<end>".into(), "later".into()]);
+        assert_eq!(decoded.push(b"hello \xf0\x9f").unwrap(), "hello ");
+        assert_eq!(decoded.push(b"\x98\x80<en").unwrap(), "\u{1f600}");
+        assert_eq!(decoded.push(b"d>later trailing").unwrap(), "");
+        assert_eq!(decoded.matched_stop(), Some("<end>"));
+        assert_eq!(decoded.finish().unwrap(), "");
+        assert!(decoded.push(b"late").is_err());
+        let mut decoded = GeneratedText::new(["<end>".into()]);
+        assert_eq!(decoded.push(b"answer<en").unwrap(), "answer");
+        assert_eq!(decoded.finish().unwrap(), "<en");
+        assert_eq!(decoded.matched_stop(), None);
+        let mut decoded = GeneratedText::new(["\u{1f600}!".into()]);
+        assert_eq!(decoded.push(b"x\xf0\x9f\x98").unwrap(), "x");
+        assert_eq!(decoded.push(b"\x80!").unwrap(), "");
+        assert_eq!(decoded.matched_stop(), Some("\u{1f600}!"));
+        // A withheld template delimiter is observed syntax, not a reconstructed
+        // configured string; trailing bytes must never reach the native parser.
+        let mut decoded = GeneratedText::with_origins([("<end>".into(), StopOrigin::Template)]);
+        assert_eq!(decoded.push(b"answer<en").unwrap(), "answer");
+        assert_eq!(decoded.push(b"d>ignored").unwrap(), "");
+        let receipt = decoded.terminal_text().unwrap();
+        assert_eq!(receipt.observed, "<end>");
+        assert!(receipt.origin == StopOrigin::Template);
+        let mut decoded = GeneratedText::new(["<end>".into()]);
+        assert_eq!(decoded.push(b"answer").unwrap(), "answer");
+        assert_eq!(decoded.push_template_end(b"<end>").unwrap(), "");
+        assert!(decoded.terminal_text().unwrap().origin == StopOrigin::Caller);
+        let mut decoded = GeneratedText::new([]);
+        assert_eq!(decoded.push(b"answer").unwrap(), "answer");
+        assert_eq!(decoded.push_template_end(b"<end>").unwrap(), "");
+        assert!(decoded.terminal_text().unwrap().origin == StopOrigin::Template);
+        for (bytes, incomplete) in [(&b"\xff"[..], false), (&b"\xf0\x9f"[..], true)] {
+            let mut decoded = GeneratedText::new([]);
+            if incomplete {
+                assert_eq!(decoded.push(bytes).unwrap(), "");
+                assert!(decoded.finish().is_err());
+            } else {
+                assert!(decoded.push(bytes).is_err());
+                assert!(decoded.finish().is_err());
+            }
+        }
+    }
 
     // Native-stream regression: a persona sees decoded text before Done, stop
     // markers split across tokens stay off the wire, and cancellation drops ownership.
@@ -1094,9 +1203,10 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (sink, mut received) = crate::ai::stream_sinks::channel();
         let task = tokio::task::spawn_blocking(move || {
-            collect_scheduler_stream(rx, sink, &["<end>"], Instant::now(), 1)
+            collect_scheduler_stream(rx, sink, Instant::now(), 1)
         });
-        tx.send(TokenEvent::Token("hello<en".into())).unwrap();
+        let mut decoded = super::super::generated_text::GeneratedText::new(["<end>".into()]);
+        tx.send(TokenEvent::Token(decoded.push(b"hello<en").unwrap())).unwrap();
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
                 .await
@@ -1105,8 +1215,10 @@ mod tests {
             crate::ai::adapter::GenerationChunk::Token("hello".into())
         );
         assert!(!task.is_finished());
-        tx.send(TokenEvent::Token("d>".into())).unwrap();
+        assert_eq!(decoded.push(b"d>ignored").unwrap(), "");
+        assert_eq!(decoded.matched_stop(), Some("<end>"));
         tx.send(TokenEvent::Done {
+            cause: super::super::llamacpp_scheduler::CompletionCause::Stop { matched: "<end>".into() },
             tokens_generated: 2,
             elapsed_ms: 1,
         })
@@ -1117,7 +1229,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (sink, received) = crate::ai::stream_sinks::channel();
         let task = tokio::task::spawn_blocking(move || {
-            collect_scheduler_stream(rx, sink, &[], Instant::now(), 1)
+            collect_scheduler_stream(rx, sink, Instant::now(), 1)
         });
         drop(received);
         assert!(
@@ -1128,6 +1240,17 @@ mod tests {
                 .is_err()
         );
         assert!(tx.is_closed());
+
+        // A legacy text-only consumer must fail instead of publishing or
+        // silently discarding a prepared stream's private/tool channel.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sink, mut received) = crate::ai::stream_sinks::channel();
+        tx.send(TokenEvent::Reasoning("private".into())).unwrap();
+        let result = tokio::task::spawn_blocking(move || {
+            collect_scheduler_stream(rx, sink, Instant::now(), 1)
+        }).await.unwrap();
+        assert!(result.is_err());
+        assert!(received.try_recv().is_err());
     }
 
     // what this catches: the KV-per-token cost is derived from the model's

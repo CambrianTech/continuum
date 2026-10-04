@@ -88,6 +88,57 @@ fn model_info_with_runtime(
     info
 }
 
+/// Pure structured admission: never loads or chooses a model.
+fn native_chat_options(request: &TextGenerationRequest, bound_model: &str) -> Result<llama::ChatOptions, String> {
+    use crate::ai::types::{ContentPart, ToolChoice};
+    request.require_text_output_transport(LLAMACPP_PROVIDER_ID)?;
+    if request.model.as_ref().is_some_and(|model| !model.eq_ignore_ascii_case(bound_model)) {
+        return Err("native request does not match the bound model".into());
+    }
+    if request.persona_id.as_deref().is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) {
+        return Err("native request has an invalid persona identity".into());
+    }
+    if request.frequency_penalty.is_some() || request.repeat_last_n.is_some() {
+        return Err("native prepared sampling does not yet support frequency_penalty/repeat_last_n".into());
+    }
+    for message in &request.messages {
+        if let MessageContent::Parts(parts) = &message.content {
+            if parts.iter().any(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Audio { .. } | ContentPart::Video { .. })) {
+                return Err("llamacpp-local native media streaming is not implemented; no media was consumed".into());
+            }
+            if parts.iter().any(|part| matches!(part, ContentPart::ToolUse { .. })) &&
+                parts.iter().any(|part| matches!(part, ContentPart::ToolResult { .. })) {
+                return Err("native history requires separate tool-call and tool-result messages".into());
+            }
+        }
+    }
+    let tool_choice = match &request.tool_choice {
+        None => "auto",
+        Some(ToolChoice::Mode(mode)) => match mode.as_str() {
+            "auto" => "auto", "none" => "none", "any" | "required" => "required",
+            _ => return Err("unsupported native tool-choice mode".into()),
+        },
+        Some(ToolChoice::Specific { .. }) => return Err("native named tool choice is not implemented".into()),
+    };
+    if tool_choice == "required" && request.tools.as_ref().is_none_or(Vec::is_empty) {
+        return Err("required native tool choice has no tools".into());
+    }
+    let request_id = request.request_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if request_id.is_empty() { return Err("native request identity is empty".into()); }
+    Ok(llama::ChatOptions {
+        request_id, template_override: String::new(),
+        messages: serde_json::Value::Array(super::request_body::wire_messages(
+            &request.messages, request.system_prompt.as_deref(), false, false, LLAMACPP_PROVIDER_ID)),
+        tools: serde_json::Value::Array(super::request_body::openai_tools(request.tools.as_deref().unwrap_or(&[]))),
+        tool_choice: tool_choice.into(), parallel_tool_calls: false,
+        enable_thinking: !matches!(request.response_format, Some(crate::ai::types::ResponseFormat::JsonObject)),
+        template_kwargs: Default::default(), grammar: String::new(),
+        json_schema: if matches!(request.response_format, Some(crate::ai::types::ResponseFormat::JsonObject)) {
+            "{\"type\":\"object\"}".into()
+        } else { String::new() },
+    })
+}
+
 fn sampling_config_from_request(request: &TextGenerationRequest) -> SamplingConfig {
     let mut sampling = SamplingConfig::chat();
     if let Some(t) = request.temperature {
@@ -1183,35 +1234,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
         request: TextGenerationRequest,
         _sink: crate::ai::stream_sinks::GenerationSink,
     ) -> Result<TextGenerationResponse, String> {
-        request.require_text_output_transport(self.provider_id())?;
-        if request
-            .messages
-            .iter()
-            .any(|message| match &message.content {
-                MessageContent::Parts(parts) => parts.iter().any(|part| {
-                    matches!(
-                        part,
-                        crate::ai::types::ContentPart::Image { .. }
-                            | crate::ai::types::ContentPart::Audio { .. }
-                            | crate::ai::types::ContentPart::Video { .. }
-                    )
-                }),
-                _ => false,
-            })
-        {
-            return Err(
-                "llamacpp-local native media streaming is not implemented; no media was consumed"
-                    .into(),
-            );
-        }
-        // The in-process binding currently renders only role/content via
-        // llama_chat_apply_template. Its raw TokenEvents can begin INSIDE
-        // template-open reasoning and include tool protocol text. A batch
-        // tag stripper cannot safely classify a partial prefix. Until the
-        // existing llama owner exposes common_chat_templates_apply's parser
-        // state + common_chat_parse(is_partial), refuse before model load;
-        // never publish undecoded reasoning as public GenerationChunk::Token.
-        Err("llamacpp-local live streaming requires the model-native common-chat parser binding; no generation was started".into())
+        let _prepared = native_chat_options(&request, &self.default_model)?;
+        // Activation still requires purpose/sampling policy, vendor pin and bound-model acceptance.
+        Err("llamacpp-local model-native common-chat parser binding awaits consumer acceptance; no generation was started".into())
     }
 
     /// Embeddings via the backend's dedicated embedding-mode context. The loaded
@@ -1441,6 +1466,39 @@ impl AIProviderAdapter for LlamaCppAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: native admission preserves authored tool history and
+    // schema, refuses substitutions, and never needs a model to validate shape.
+    #[test]
+    fn native_admission_preserves_structured_history_and_refuses_loss() {
+        let mut request: TextGenerationRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"native-history", "model":"bound", "systemPrompt":"identity",
+            "messages":[
+                {"role":"assistant","name":"Kimi","content":[{"type":"tool_use","id":"call-1","name":"inspect","input":{"path":"src"}}]},
+                {"role":"user","name":"reviewer","content":[{"type":"tool_result","tool_use_id":"call-1","content":"review"}]}
+            ],
+            "tools":[{"name":"inspect","description":"read","input_schema":{"type":"object","properties":{}}}],
+            "toolChoice":"any"
+        })).unwrap();
+        let options = native_chat_options(&request, "bound").unwrap();
+        assert_eq!(options.request_id, "native-history");
+        assert_eq!(options.tool_choice, "required");
+        assert_eq!(options.messages[1]["name"], "Kimi");
+        assert_eq!(options.messages[1]["tool_calls"][0]["id"], "call-1");
+        assert_eq!(options.messages[2]["tool_call_id"], "call-1");
+        assert_eq!(options.messages[2]["name"], "reviewer");
+        assert_eq!(options.tools[0]["function"]["parameters"]["type"], "object");
+        assert!(native_chat_options(&request, "different").is_err());
+        request.tool_choice = Some(crate::ai::types::ToolChoice::Specific { name: "inspect".into() });
+        assert!(native_chat_options(&request, "bound").is_err());
+        request.tool_choice = None;
+        request.frequency_penalty = Some(0.3);
+        assert!(native_chat_options(&request, "bound").is_err());
+        request.frequency_penalty = None;
+        let result = match &request.messages[1].content { MessageContent::Parts(parts) => parts[0].clone(), _ => unreachable!() };
+        if let MessageContent::Parts(parts) = &mut request.messages[0].content { parts.push(result); }
+        assert!(native_chat_options(&request, "bound").is_err());
+    }
 
     // what this catches: raw model tokens can contain template-open reasoning and
     // tool envelopes need the native parser before the adapter may publish.

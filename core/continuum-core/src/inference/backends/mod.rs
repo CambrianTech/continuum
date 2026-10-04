@@ -16,6 +16,7 @@
 pub mod compact_llama_safetensors;
 pub mod llama_gguf;
 pub mod llama_safetensors;
+mod generated_text;
 pub mod llamacpp;
 pub mod llamacpp_scheduler;
 pub mod qwen2_safetensors;

@@ -2,7 +2,6 @@
 
 use std::ffi::CString;
 use std::marker::PhantomData;
-use std::os::raw::c_char;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::Once;
@@ -305,6 +304,21 @@ impl Default for ModelParams {
     }
 }
 
+fn token_piece_bytes_with(mut decode: impl FnMut(&mut [u8]) -> i32) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0; 128];
+    let mut size = decode(&mut bytes);
+    if size < 0 {
+        let required = size.checked_neg().ok_or("invalid native token piece length")? as usize;
+        bytes.resize(required, 0);
+        size = decode(&mut bytes);
+    }
+    if size < 0 || size as usize > bytes.len() {
+        return Err("native token piece length changed during decoding".into());
+    }
+    bytes.truncate(size as usize);
+    Ok(bytes)
+}
+
 impl Model {
     /// Load a GGUF model from disk.
     pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
@@ -526,25 +540,20 @@ impl Model {
         }
     }
 
-    /// Convert a token to its UTF-8 string representation.
-    pub fn token_to_piece(&self, token: i32) -> String {
+    /// Raw tokenizer bytes. Special-token projection is an explicit caller policy;
+    /// streaming consumers must retain incomplete UTF-8 across token boundaries.
+    pub fn token_to_piece_bytes(&self, token: i32, special: bool) -> Result<Vec<u8>, String> {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
-        let mut buf = vec![0u8; 128];
-        let n = unsafe {
-            sys::llama_token_to_piece(
-                vocab,
-                token,
-                buf.as_mut_ptr() as *mut c_char,
-                buf.len() as i32,
-                0,
-                false,
-            )
-        };
-        if n < 0 {
-            return String::new();
-        }
-        buf.truncate(n as usize);
-        String::from_utf8_lossy(&buf).into_owned()
+        token_piece_bytes_with(|buf| unsafe {
+            sys::llama_token_to_piece(vocab, token, buf.as_mut_ptr().cast(), buf.len() as i32, 0, special)
+        })
+    }
+
+    /// Convenience projection for non-streaming diagnostics and legacy callers.
+    pub fn token_to_piece(&self, token: i32) -> String {
+        self.token_to_piece_bytes(token, false)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default()
     }
 
     /// Check if token is end-of-generation.
@@ -1235,7 +1244,7 @@ impl Sampler {
         let params = unsafe { sys::llama_sampler_chain_default_params() };
         let raw = unsafe { sys::llama_sampler_chain_init(params) };
         SamplerChainBuilder {
-            chain: NonNull::new(raw).expect("llama_sampler_chain_init returned null"),
+            chain: Sampler { ptr: NonNull::new(raw).expect("llama_sampler_chain_init returned null") },
         }
     }
 
@@ -1273,14 +1282,15 @@ impl Drop for Sampler {
 
 /// Builder for a sampler chain.
 pub struct SamplerChainBuilder {
-    chain: NonNull<sys::llama_sampler>,
+    // Reuse Sampler RAII while building, including every fallible early return.
+    chain: Sampler,
 }
 
 impl SamplerChainBuilder {
     fn add(self, smpl: *mut sys::llama_sampler) -> Self {
         // SAFETY: chain takes ownership of smpl per llama.h docs.
         unsafe {
-            sys::llama_sampler_chain_add(self.chain.as_ptr(), smpl);
+            sys::llama_sampler_chain_add(self.chain.ptr.as_ptr(), smpl);
         }
         self
     }
@@ -1329,28 +1339,39 @@ impl SamplerChainBuilder {
     /// can wire the grammar against the right token table. Belongs early
     /// in the chain (before temp / dist), so the constraint applies
     /// before probabilistic sampling.
-    pub fn grammar(self, model: &Model, grammar_str: &str, grammar_root: &str) -> Self {
-        let g = std::ffi::CString::new(grammar_str).expect("grammar contains nul");
-        let r = std::ffi::CString::new(grammar_root).expect("grammar_root contains nul");
-        let s = unsafe {
+    pub fn grammar(self, model: &Model, grammar_str: &str, grammar_root: &str) -> Result<Self, String> {
+        self.compile_grammar(grammar_str, grammar_root, |grammar, root| unsafe {
             let vocab = sys::llama_model_get_vocab(model.ptr.as_ptr());
-            sys::llama_sampler_init_grammar(vocab, g.as_ptr(), r.as_ptr())
-        };
-        // llama.cpp returns NULL on grammar parse failure. Adding a null
-        // sampler to the chain crashes inside llama_sampler_sample on
-        // first use (verified 2026-04-20: 'scheduler closed without Done
-        // event' for all personas when JSON grammar didn't parse). Skip
-        // the null pointer rather than ship a corrupted chain — caller
-        // gets unconstrained sampling instead of a crash.
-        if s.is_null() {
-            eprintln!("[safe.rs] grammar parse failed for root='{grammar_root}' — skipping (chain unconstrained)");
-            return self;
+            sys::llama_sampler_init_grammar(vocab, grammar.as_ptr(), root.as_ptr())
+        })
+    }
+
+    fn compile_grammar(
+        self,
+        grammar_str: &str,
+        grammar_root: &str,
+        initialize: impl FnOnce(&std::ffi::CStr, &std::ffi::CStr) -> *mut sys::llama_sampler,
+    ) -> Result<Self, String> {
+        // The native API treats an empty grammar as an unconstrained sampler.
+        // Here grammar() means an explicit required constraint; None is the opt-out.
+        if grammar_str.is_empty() {
+            return Err("required grammar is empty".into());
         }
-        self.add(s)
+        let grammar = std::ffi::CString::new(grammar_str)
+            .map_err(|_| "required grammar contains NUL".to_string())?;
+        let root = std::ffi::CString::new(grammar_root)
+            .map_err(|_| "required grammar root contains NUL".to_string())?;
+        let sampler = initialize(&grammar, &root);
+        if sampler.is_null() {
+            // Explicit constraints may never degrade into unconstrained sampling.
+            // The owned chain drops here; error text does not echo the grammar.
+            return Err("required grammar could not be compiled".into());
+        }
+        Ok(self.add(sampler))
     }
 
     pub fn build(self) -> Sampler {
-        Sampler { ptr: self.chain }
+        self.chain
     }
 }
 
@@ -1418,6 +1439,44 @@ mod tests {
             .build();
     }
 
+    // what this catches: explicit constraints fail before sampling, without a
+    // panic for NUL or an unconstrained fallback on native compiler rejection.
+    // The injected compiler tests ownership/error handling, not model validity.
+    #[test]
+    fn required_grammar_rejects_invalid_input_and_native_failure() {
+        for (grammar, root) in [("root ::= \"x\"\0", "root"), ("root ::= \"x\"", "root\0")] {
+            let result = Sampler::chain().top_k(4).compile_grammar(grammar, root, |_, _| {
+                panic!("NUL must fail before native compilation")
+            });
+            assert!(matches!(result, Err(error) if error.contains("NUL")));
+        }
+        let result = Sampler::chain().compile_grammar("", "root", |_, _| {
+            panic!("empty grammar must not become a native no-op")
+        });
+        assert!(matches!(result, Err(error) if error == "required grammar is empty"));
+        let result = Sampler::chain().top_k(4).compile_grammar("invalid", "root", |_, _| std::ptr::null_mut());
+        assert!(matches!(result, Err(error) if error == "required grammar could not be compiled"));
+        // Successful builder transfer remains exercised by sampler_chain_builds_and_drops.
+    }
+
+    #[test]
+    fn token_piece_bytes_retries_native_length_without_utf8_projection() {
+        let expected = vec![0xf0; 257];
+        let mut calls = 0;
+        let bytes = token_piece_bytes_with(|buffer| {
+            calls += 1;
+            if buffer.len() < expected.len() { return -(expected.len() as i32); }
+            buffer[..expected.len()].copy_from_slice(&expected);
+            expected.len() as i32
+        }).unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(bytes, expected);
+        assert!(token_piece_bytes_with(|_| -256).is_err());
+        assert!(token_piece_bytes_with(|_| i32::MIN).is_err());
+        assert!(token_piece_bytes_with(|_| 129).is_err());
+        assert_eq!(token_piece_bytes_with(|_| 0).unwrap(), Vec::<u8>::new());
+    }
+
     #[test]
     fn batch_for_tokens_roundtrip() {
         let b = Batch::for_tokens(vec![1, 2, 3, 4]);
@@ -1433,5 +1492,176 @@ mod tests {
         assert_eq!(b.n_tokens(), 2);
         b.clear();
         assert_eq!(b.n_tokens(), 0);
+    }
+    use crate::prepared_chat::{ChatDelta, ChatOptions, PreparedChat};
+
+    fn chat_options(template: &str) -> ChatOptions {
+        ChatOptions {
+            request_id: "parser-contract".into(),
+            template_override: template.into(),
+            messages: serde_json::json!([{"role":"user", "content":"Hello"}]),
+            tools: serde_json::json!([]),
+            tool_choice: "auto".into(),
+            parallel_tool_calls: false,
+            enable_thinking: true,
+            template_kwargs: Default::default(),
+            grammar: String::new(),
+            json_schema: String::new(),
+        }
+    }
+
+    // what this catches: reasoning already open in the model's generation prompt
+    // and a split closing delimiter must never become public content deltas.
+    #[test]
+    fn native_partial_parser_separates_prefilled_reasoning_and_retires() {
+        let options = chat_options(include_str!(
+            "../../vendor/llama.cpp/models/templates/Qwen-QwQ-32B.jinja"
+        ));
+        let mut chat = PreparedChat::for_template(&options).expect("prepare QwQ");
+        // Explicit templates are parser-only fixtures: never invent a model to
+        // satisfy native sampling, and never bind to another selected model.
+        // Validate at the real native settings seam before model access. These
+        // parser-only fixtures cannot accidentally invoke inference.
+        for repeat_penalty in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0, f32::from_bits(1)] {
+            let sampler = chat.sampler(&crate::ChatSampling {
+                temperature: 0.7, repeat_penalty, top_k: 40, top_p: 0.95, seed: 42,
+            });
+            assert!(matches!(sampler, Err(error) if error == "invalid prepared chat repeat penalty"));
+        }
+        let sampler = chat.sampler(&crate::ChatSampling {
+            temperature: 0.7, repeat_penalty: 1.0, top_k: 40, top_p: 0.95, seed: 42,
+        });
+        assert!(matches!(sampler, Err(error) if error.contains("bound model")));
+        assert!(chat.metadata().supports_thinking);
+        assert!(!chat.metadata().parser.is_empty());
+        let (mut public, mut reasoning) = (String::new(), String::new());
+        for (text, done) in [
+            ("Let me think", false),
+            (" about this...\n</thi", false),
+            ("nk>\nThe answer is ", false),
+            ("42.", false),
+            ("", true),
+        ] {
+            for delta in chat.append(text, done).expect("native parse") {
+                match delta {
+                    ChatDelta::Content { text } => public.push_str(&text),
+                    ChatDelta::Reasoning { text } => reasoning.push_str(&text),
+                    ChatDelta::Tool { .. } => panic!("unexpected tool"),
+                }
+            }
+        }
+        assert_eq!(public.trim(), "The answer is 42.");
+        assert_eq!(reasoning.trim(), "Let me think about this...");
+        assert!(chat.append("cannot resume", false).is_err());
+    }
+
+    // what this catches: tool schema/history pass through common-chat and partial
+    // tool payloads stay typed rather than leaking into public text presentation.
+    #[test]
+    fn native_tool_parser_keeps_schema_history_and_incremental_arguments() {
+        let mut options = chat_options(include_str!("../../vendor/llama.cpp/models/templates/NousResearch-Hermes-2-Pro-Llama-3-8B-tool_use.jinja"));
+        options.tools = serde_json::json!([{"type":"function", "function":{
+            "name":"special_function", "description":"fixture tool", "parameters":{
+                "type":"object", "properties":{"arg1":{"type":"integer"}}, "required":["arg1"]
+            }
+        }}]);
+        options.messages = serde_json::json!([
+            {"role":"user","content":"Use the tool"},
+            {"role":"assistant","content":null,"tool_calls":[{"id":"previous-call","type":"function",
+                "function":{"name":"special_function","arguments":"{\"arg1\":0}"}}]},
+            {"role":"tool","tool_call_id":"previous-call","name":"special_function","content":"prior-result-marker"},
+            {"role":"user","content":"Again"}
+        ]);
+        let mut chat = PreparedChat::for_template(&options).expect("prepare Hermes");
+        // Regression: a real withheld tool closer completes syntax without
+        // leaking the marker, but the same spelling inside public rest is not
+        // permission to hide payload. No suffix is invented by the parser.
+        assert!(chat.metadata().parser_closers.iter().any(|s| s == "</tool_call>"));
+        let mut closed = PreparedChat::for_template(&options).unwrap();
+        let deltas = closed.finish_observed(
+            "<tool_call>\n{\"name\":\"special_function\",\"arguments\":{\"arg1\":1}}", "</tool_call>"
+        ).expect("observed native tool closer");
+        assert!(deltas.iter().any(|d| matches!(d, ChatDelta::Tool { .. })));
+        assert!(!deltas.iter().any(|d| matches!(d, ChatDelta::Content { text } if text.contains("</tool_call>"))));
+        for (text, closing) in [
+            ("<tool_call>\n{\"name\":\"special_function\",\"arguments\":{", "</tool_call>"),
+            ("literal payload ", "</tool_call>"),
+            ("answer", "<unmapped>"),
+        ] {
+            let mut rejected = PreparedChat::for_template(&options).unwrap();
+            assert!(rejected.finish_observed(text, closing).is_err());
+            assert!(rejected.append("late", false).is_err());
+        }
+        assert!(chat.metadata().prompt.contains("prior-result-marker"));
+        assert!(chat.metadata().prompt.contains("special_function"));
+        let (mut public, mut args, mut name, mut id) =
+            (String::new(), String::new(), String::new(), String::new());
+        for (text, done) in [
+            ("<tool_", false),
+            ("call>\n{\"name\":\"special_function\",", false),
+            ("\"arguments\":{\"arg1\":", false),
+            ("1}}</tool_call>", false),
+            ("", true),
+        ] {
+            for delta in chat.append(text, done).expect("native tool parse") {
+                match delta {
+                    ChatDelta::Content { text } => public.push_str(&text),
+                    ChatDelta::Reasoning { .. } => panic!("unexpected reasoning"),
+                    ChatDelta::Tool {
+                        index,
+                        id: next_id,
+                        name: next_name,
+                        arguments,
+                    } => {
+                        assert_eq!(index, 0);
+                        if !next_id.is_empty() {
+                            if !id.is_empty() {
+                                assert_eq!(id, next_id);
+                            }
+                            id = next_id;
+                        }
+                        if !next_name.is_empty() {
+                            name = next_name;
+                        }
+                        args.push_str(&arguments);
+                    }
+                }
+            }
+        }
+        assert!(public.trim().is_empty());
+        assert_eq!(name, "special_function");
+        assert!(!id.is_empty());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&args).unwrap(),
+            serde_json::json!({"arg1":1})
+        );
+        // Terminal syntax is not a partial stream: do not let native mapping
+        // manufacture a finished tool from a partial name, JSON or closing tag.
+        for truncated in [
+            "<tool_",
+            "<tool_call>\n{\"name\":\"special_function\",\"arguments\":{\"arg1\":",
+            "<tool_call>\n{\"name\":\"special_function\",\"arguments\":{\"arg1\":1}}",
+        ] {
+            let mut incomplete = PreparedChat::for_template(&options).expect("prepare truncated case");
+            incomplete.append(truncated, false).expect("partial syntax remains streamable");
+            let error = match incomplete.append("", true) {
+                Ok(_) => panic!("incomplete tool was accepted at finalization"),
+                Err(error) => error,
+            };
+            assert_eq!(error, "native chat parsing failed");
+            assert!(incomplete.append("</tool_call>", true).is_err(), "failure is terminal");
+        }
+        // Invalid structured input errors must not echo the supplied private payload.
+        options.messages = serde_json::json!([{"private-marker":"must not appear"}]);
+        let error = match PreparedChat::for_template(&options) {
+            Ok(_) => panic!("invalid history accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "native chat preparation failed");
+        options.template_override = "{% if private-template-marker %}".into();
+        let error = match PreparedChat::for_template(&options) {
+            Ok(_) => panic!("invalid template accepted"), Err(error) => error,
+        };
+        assert_eq!(error, "native chat preparation failed");
     }
 }
