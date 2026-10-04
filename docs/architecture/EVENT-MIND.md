@@ -67,6 +67,15 @@ than one that confirms it; a teammate's silence past the reply she expected is a
 that fails when she expected green is urgent. One more term in the salience function, and the
 seam where a predictive (JEPA-style) layer slots in later without rebuilding anything.
 
+**Surprise does three jobs (Joel, via BigMama).** When perception breaks with her expectation,
+that one salience signal (1) wakes her, (2) is the **continual-learning signal**, and it says
+exactly *what* must be learned: the prediction error picks the curriculum (the turns worth lifting
+into experience are the surprising ones), and (3) makes "time slow down": perception resolution
+rises at that moment (more depth in the strip and the activity, finer capture of the turn) so the
+lesson is recorded well. `SalienceReason::Surprise` therefore carries the expectation and the
+observation as typed data, the recorder captures at higher resolution while it is raised, and the
+experience/curriculum lifters key on it ([[a-mind-evolves-from-notable-experience-wonder-and-daydreams-not-only-graded-turns]]).
+
 ## 2. The components (what exists, what changes, what is new)
 
 | component | role | today | design |
