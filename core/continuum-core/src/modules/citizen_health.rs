@@ -1086,7 +1086,7 @@ impl CitizenHealthModule {
 fn round_supply() -> (u64, bool) {
     let rounds_working = crate::cognition::bench_round::live_rounds()
         .iter()
-        .filter(|r| crate::persona::work_pull::is_working_citizen_round(r))
+        .filter(|r| crate::cognition::bench_round::is_working_citizen_round(r))
         .count() as u64;
     (rounds_working, crate::modules::benchmark_standing::is_enabled())
 }

@@ -1859,6 +1859,13 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
     out
 }
 
+
+/// A working round driven by citizens (a detached solve's cards are the solver's). The
+/// node-health receipt counts these for its "IDLE because …" line.
+pub(crate) fn is_working_citizen_round(round: &RoundSnapshot) -> bool {
+    round.stage.eq_ignore_ascii_case("working") && round.driver.to_ascii_lowercase().contains("citizen")
+}
+
 #[cfg(test)]
 mod tests {
     // what this catches: the sensor 2026-09-01 lacked — `working 0/8` was
