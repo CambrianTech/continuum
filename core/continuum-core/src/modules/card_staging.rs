@@ -123,8 +123,9 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     if let Some(existing) = checkout_path_for(&claimer, card) {
         // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already
         // exists here may be BEHIND what another node pushed on this branch (the card
-        // changed hands), or DIVERGED from it. Fetch and stand at origin's tip before
-        // her first turn; what this node had is stranded under a ref, never discarded.
+        // changed hands), or DIVERGED from it. The transfer owner fetches and
+        // preserves same-branch unpublished successors/edits when origin adds no
+        // commits; genuine divergence is saved under a ref before transferring.
         crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
         return Staging::Ready { path: existing };
     }
