@@ -2614,34 +2614,71 @@ fn core_artifact_candidates(home: &str, payload: &Path, cargo_target_dir: Option
 /// `root`. Pure over the filesystem so the selection rule is testable without
 /// spawning anything.
 ///
-/// Mirrors the manifest's `runtime_path` entries: fixed-name tool dirs
-/// (`tools/<tool>/bin`) and versioned CUDA trees (`cuda-*/Library/bin`). The
-/// CUDA sweep reads the directory rather than shelling a glob, so it behaves
-/// identically on every platform and never depends on a shell being present.
+/// Fixed-name tool dirs (`tools/<tool>/bin`), plus the runtime dir of ONE CUDA
+/// tree: [`declared_cuda_runtime_dir`]. Every `cuda-*` tree on PATH at once is the
+/// multi-tree bug `windows-build-env.sh` fixed on 2026-08-07: the first tree on PATH
+/// decides which `cublas64_<major>.dll` the loader and linker bind, whatever
+/// CUDA_PATH declares. #4653 re-introduced it here (`cuda-toolkit/bin`, CUDA 12,
+/// ahead of `cuda-13.2/Library/bin`), and every deploy's warm build on the 5090 then
+/// refused with "CUDA MAJOR MISMATCH" (28 times from 10-01 to 10-04), because the
+/// build inherits this PATH.
 fn runtime_library_dirs(root: &std::path::Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    for relative in ["tools/cmake/bin", "tools/llvm/bin", "tools/poppler/Library/bin", "cuda-toolkit/bin"] {
+    for relative in ["tools/cmake/bin", "tools/llvm/bin", "tools/poppler/Library/bin"] {
         let bin = root.join(relative);
         if bin.is_dir() {
             dirs.push(bin);
         }
     }
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if !name.starts_with("cuda-") {
-                continue;
-            }
-            let bin = entry.path().join("Library").join("bin");
-            if bin.is_dir() {
-                dirs.push(bin);
-            }
+    dirs.extend(declared_cuda_runtime_dir(root));
+    dirs
+}
+
+/// The ONE CUDA tree's runtime dir: the same selection `windows-build-env.sh` makes
+/// before a build, so the core runs on the major it was linked against. Over the
+/// `cuda-*` trees under `root` that ship a runtime (`cublas64_<major>.dll` in
+/// `Library/bin` or `bin`), prefer a linkable one (`cuda.lib` + `curand.lib` in
+/// `Library/lib/x64` or `lib/x64`), then the highest major, then the most DLLs, then
+/// the name, so two machines with the same trees choose the same one. A node with
+/// only a runtime (a prebuilt install, nothing to link) still gets its runtime.
+fn declared_cuda_runtime_dir(root: &std::path::Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut best: Option<((bool, u32, usize, String), PathBuf)> = None;
+    for entry in entries.flatten() {
+        let tree = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !name.starts_with("cuda-") || !tree.is_dir() {
+            continue;
+        }
+        let linkable = ["Library/lib/x64", "lib/x64"]
+            .iter()
+            .any(|sub| tree.join(sub).join("cuda.lib").is_file() && tree.join(sub).join("curand.lib").is_file());
+        let runtime = ["Library/bin", "bin"].iter().find_map(|sub| {
+            let dir = tree.join(sub);
+            let major = std::fs::read_dir(&dir).ok()?.flatten().find_map(|f| {
+                f.file_name()
+                    .to_str()?
+                    .strip_prefix("cublas64_")?
+                    .strip_suffix(".dll")?
+                    .parse::<u32>()
+                    .ok()
+            })?;
+            Some((dir, major))
+        });
+        let Some((dir, major)) = runtime else {
+            continue; // no runtime: nothing here a process can load
+        };
+        let dlls = std::fs::read_dir(&dir)
+            .map(|d| d.flatten().filter(|f| f.path().extension().is_some_and(|x| x == "dll")).count())
+            .unwrap_or(0); // unwrap_or: just listed; an unreadable dir ranks as having none
+        let rank = (linkable, major, dlls, name);
+        if best.as_ref().is_none_or(|(b, _)| rank > *b) {
+            best = Some((rank, dir));
         }
     }
-    dirs
+    best.map(|(_, dir)| dir)
 }
 
 /// Prepend the manifest-declared runtime library dirs to the child's PATH.
@@ -7370,41 +7407,50 @@ mod tests {
     // with it.
     //
     // Asserts the SELECTION RULE rather than spawning a process: only
-    // existing dirs are contributed (a node without CUDA is unaffected), each
-    // real cuda-* major contributes its own Library/bin, and unrelated
-    // directories are never picked up.
+    // existing dirs are contributed (a node without CUDA is unaffected), ONE
+    // CUDA tree's runtime dir is contributed (the one the build links), and
+    // unrelated directories are never picked up.
     #[test]
     fn runtime_library_dirs_take_only_real_toolchain_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
+        let touch = |rel: &str| {
+            let f = root.join(rel);
+            std::fs::create_dir_all(f.parent().expect("parent")).expect("dir");
+            std::fs::write(f, b"").expect("file");
+        };
         std::fs::create_dir_all(root.join("tools/cmake/bin")).expect("cmake bin");
-        std::fs::create_dir_all(root.join("cuda-toolkit/bin")).expect("native CUDA bin");
         std::fs::create_dir_all(root.join("tools/poppler/Library/bin")).expect("PDF tools");
-        std::fs::create_dir_all(root.join("cuda-13.2/Library/bin")).expect("cuda bin");
-        // Present but NOT a runtime dir: must never be contributed.
-        std::fs::create_dir_all(root.join("cuda-12.1/Library/lib")).expect("cuda lib only");
+        // The 5090's trees (2026-10-04): two complete CUDA 12 trees and one complete 13.
+        for tree in ["cuda-toolkit", "cuda-env"] {
+            let (lib, bin) = if tree == "cuda-toolkit" { ("lib/x64", "bin") } else { ("Library/lib/x64", "Library/bin") };
+            touch(&format!("{tree}/{lib}/cuda.lib"));
+            touch(&format!("{tree}/{lib}/curand.lib"));
+            touch(&format!("{tree}/{bin}/cublas64_12.dll"));
+        }
+        touch("cuda-13.2/Library/lib/x64/cuda.lib");
+        touch("cuda-13.2/Library/lib/x64/curand.lib");
+        touch("cuda-13.2/Library/bin/cublas64_13.dll");
+        // A newer major with a runtime but no import libs: a build could not link it.
+        touch("cuda-14.0/bin/cublas64_14.dll");
+        std::fs::create_dir_all(root.join("cuda-build-venv")).expect("empty tree");
         std::fs::create_dir_all(root.join("models")).expect("models");
 
         let dirs = super::runtime_library_dirs(root);
-        assert!(dirs.contains(&root.join("cuda-toolkit/bin")));
-        assert!(dirs.contains(&root.join("tools/poppler/Library/bin")));
+        assert!(dirs.contains(&root.join("tools/cmake/bin")), "a provisioned tool's bin/ must be contributed: {dirs:?}");
+        assert!(dirs.contains(&root.join("tools/poppler/Library/bin")), "{dirs:?}");
+        // what this catches: the multi-tree PATH #4653 re-introduced. Exactly one CUDA dir
+        // reaches PATH, and it is the tree the build links (complete, highest major), so the
+        // warm build's "CUDA MAJOR MISMATCH" check and the core's loader agree.
+        let cuda: Vec<_> = dirs.iter().filter(|d| d.starts_with(root) && d.strip_prefix(root).is_ok_and(|r| r.to_string_lossy().starts_with("cuda-"))).collect();
+        assert_eq!(cuda, vec![&root.join("cuda-13.2/Library/bin")], "{dirs:?}");
+        assert!(!dirs.iter().any(|d| d.ends_with("models")), "unrelated continuum-root dirs are never runtime library paths: {dirs:?}");
 
-        assert!(
-            dirs.contains(&root.join("tools/cmake/bin")),
-            "a provisioned tool's bin/ must be contributed: {dirs:?}"
-        );
-        assert!(
-            dirs.contains(&root.join("cuda-13.2/Library/bin")),
-            "a real CUDA tree's Library/bin is the dir whose absence kills the loader: {dirs:?}"
-        );
-        assert!(
-            !dirs.iter().any(|d| d.starts_with(root.join("cuda-12.1"))),
-            "a cuda-* tree with no Library/bin contributes nothing: {dirs:?}"
-        );
-        assert!(
-            !dirs.iter().any(|d| d.ends_with("models")),
-            "unrelated continuum-root dirs are never runtime library paths: {dirs:?}"
-        );
+        // A runtime-only node (prebuilt install, nothing to link) still gets its runtime.
+        let only = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(only.path().join("cuda-toolkit/bin")).expect("bin");
+        std::fs::write(only.path().join("cuda-toolkit/bin/cublas64_12.dll"), b"").expect("dll");
+        assert_eq!(super::declared_cuda_runtime_dir(only.path()), Some(only.path().join("cuda-toolkit/bin")));
     }
 
     // what this catches: card d2698cdc — ONNX selection must work without any
