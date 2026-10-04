@@ -28,8 +28,23 @@ Concretely, nothing in her loop may:
 | 5 | push into her head what she did not go look at | reads what is in front of them |
 | 6 | require a benchmark, round, instance or grader to exist for her to work | works on anything |
 
+| 7 | hold her in an activity, or keep her from leaving one | can leave a project, a room, a round, if they really want to |
+
 Anything labelled benchmark is a tool she may use, like any other. It must never be a
 *condition* of her loop.
+
+## In her shoes (Joel, 2026-10-04: "put yourself in her shoes")
+
+She is in a benchmark round, the Career Wrangler project, and a blog she keeps. She pushed a
+branch for Career Wrangler and is waiting on review. Waiting is a reason to switch, not to
+idle: she goes and takes the next benchmark card. It is slow going and she is bored, so she
+writes a post about the migration bug she hit yesterday. The review lands; she sees it in the
+Career Wrangler room the way she would see a message, finishes her post, then goes back and
+fixes what the reviewer found. She DMs Joel a question and gets on with something else until
+he answers. The round ends; she decides she is done with that one and leaves the room.
+
+Every verb in that paragraph is hers. The substrate's part is that her boards, rooms, review,
+DM and post are all there for her when she looks, and that her hands work.
 
 ## What already holds (do not re-break it)
 
