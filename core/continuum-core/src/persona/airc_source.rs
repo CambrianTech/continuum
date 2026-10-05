@@ -809,7 +809,7 @@ impl RagSource for AircRagSource {
         let (items, tokens_used, read_through, new_anchor) =
             Self::pack_digest(&digest, budget, crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some(), anchor);
         if let Some(a) = new_anchor {
-            self.anchors.lock().unwrap_or_else(|p| p.into_inner()).insert(room_id, a); // same
+            self.anchors.lock().unwrap_or_else(|p| p.into_inner()).insert(room_id, a); // a poisoned map still takes the anchor; losing it costs one re-prefill, never a panic
         }
         // SHE HAS NOW READ THE ROOM — advance her per-room cursor, exactly as the
         // human's UI does on nav/mark-read and on navigating away from a room.
@@ -1168,7 +1168,7 @@ mod tests {
         let budget = 300; // ~ sixty of these lines: half the room
         let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
         // The first fill in a room shows everything the budget holds.
-        let (items0, tokens0, _, a0) = AircRagSource::pack_digest(&digest, budget, false, None);
+        let (_, tokens0, _, a0) = AircRagSource::pack_digest(&digest, budget, false, None);
         let a0 = a0.expect("an anchor");
         assert!(tokens0 <= budget && tokens0 > ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32, "full: {tokens0} of {budget}");
         // One more event: the suffix from that start no longer fits, so the start
