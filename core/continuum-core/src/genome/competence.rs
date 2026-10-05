@@ -10,8 +10,33 @@
 //! The same clustering kernel recall and gene signatures use
 //! (`modules::embedding::detect_clusters`), never a parallel space.
 
+use std::path::PathBuf;
+
+use uuid::Uuid;
+
 use crate::genome::signature::SignatureStore;
 use crate::modules::embedding::detect_clusters;
+
+/// A gene's identity, as the two places a gene can live spell it: an adapter PATH on
+/// this node (what the manifest, the serving daemon and the signature store key by),
+/// or a REPO on the hub (what `genome/pull` takes). An enum, never a string that is
+/// sometimes a path and sometimes a repo: the variant says which, and the stores keep
+/// their own key types.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "at", rename_all = "snake_case")]
+pub enum GeneRef {
+    Local { path: PathBuf },
+    Hub { repo: String },
+}
+
+impl std::fmt::Display for GeneRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GeneRef::Local { path } => write!(f, "{}", path.display()),
+            GeneRef::Hub { repo } => f.write_str(repo),
+        }
+    }
+}
 
 /// Fewer settled examples than this is not a competence; it is memories. Measured
 /// against the first signatures in the repository, re-pinned as the ledger grows.
@@ -68,13 +93,11 @@ pub fn competences(embeddings: &[Vec<f32>]) -> Vec<Competence> {
 }
 
 /// The nearest existing gene to a competence: from her signature store today, the mesh
-/// and the HF repository as later sources of the same lookup. `gene` is the adapter path
-/// the signature store keys by (a gene's identity on this node, as the manifest and the
-/// serving daemon spell it); `similarity` is the signature's `similarity_in` (max over
-/// its centroid and subspaces).
+/// and the HF repository as later sources of the same lookup; `similarity` is the
+/// signature's `similarity_in` (max over its centroid and subspaces).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NearestGene {
-    pub gene: String,
+    pub gene: GeneRef,
     pub similarity: f32,
     pub resident: bool,
 }
@@ -88,7 +111,7 @@ pub fn nearest_in_store(competence: &Competence, store: &SignatureStore, embedde
         .iter()
         .filter_map(|(path, sig)| {
             let similarity = sig.similarity_in(embedder_id, &competence.centroid)?;
-            Some(NearestGene { gene: path.clone(), similarity, resident: resident.iter().any(|r| r == path) })
+            Some(NearestGene { gene: GeneRef::Local { path: PathBuf::from(path) }, similarity, resident: resident.iter().any(|r| r == path) })
         })
         .max_by(|a, b| a.similarity.total_cmp(&b.similarity))
 }
@@ -101,17 +124,17 @@ pub enum Decision {
     /// Memories suffice, or the cluster is too small to be a competence.
     Nothing { why: NothingBecause },
     /// Page the nearest gene in and trial it on her cards; no training.
-    Reuse { gene: String, similarity: f32 },
+    Reuse { gene: GeneRef, similarity: f32 },
     /// The nearest gene is already resident and she is still surprised: it is not
     /// enough; train a child of it on her examples (warm start, lineage parent).
-    Fork { parent: String, similarity: f32 },
+    Fork { parent: GeneRef, similarity: f32 },
     /// Nothing near: train a new gene on her examples from the base.
     Mint,
     /// A gene for this competence is already being born: a job of hers in flight whose
     /// signature is within reuse distance. These examples join it (or wait for it); a
     /// second mint for one competence is the design's falsifier #2 (four Mints for one
     /// card's credit on the 5090, 2026-10-05 13:17Z, before this branch existed).
-    Join { job: String, similarity: f32 },
+    Join { job: Uuid, similarity: f32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -136,7 +159,8 @@ pub enum Surprise {
 /// signature it was minted with. `None` signature = a job from before signatures.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InFlightJob {
-    pub job: String,
+    /// The job's local id: a u128 on the stack, as the job board keys it.
+    pub job: Uuid,
     pub similarity: f32,
 }
 
@@ -145,7 +169,7 @@ pub struct InFlightJob {
 pub fn nearest_in_flight<'a>(
     competence: &Competence,
     embedder_id: &str,
-    jobs: impl Iterator<Item = (String, &'a crate::genome::signature::GeneSignature)>,
+    jobs: impl Iterator<Item = (Uuid, &'a crate::genome::signature::GeneSignature)>,
 ) -> Option<InFlightJob> {
     jobs.filter_map(|(job, sig)| {
         let similarity = sig.similarity_in(embedder_id, &competence.centroid)?;
@@ -172,7 +196,7 @@ pub fn decide_with_in_flight(
     }
     if let Some(j) = in_flight {
         if j.similarity >= SIM_REUSE {
-            return Decision::Join { job: j.job.clone(), similarity: j.similarity };
+            return Decision::Join { job: j.job, similarity: j.similarity };
         }
     }
     if let Surprise::Measured { s } = surprise {
@@ -250,7 +274,7 @@ mod tests {
     fn the_decision_reuses_before_forking_and_forks_before_minting() {
         let c = Competence { centroid: vec![1.0, 0.0], members: (0..MIN_EXAMPLES).collect(), cohesion: 0.9, representative: 0 };
         let small = Competence { members: vec![0, 1], ..c.clone() };
-        let g = "/genes/rust-tests.gguf".to_string();
+        let g = GeneRef::Local { path: PathBuf::from("/genes/rust-tests.gguf") };
         let near = |similarity, resident| NearestGene { gene: g.clone(), similarity, resident };
         let s = |x| Surprise::Measured { s: x };
         assert_eq!(decide(&small, s(0.9), None), Decision::Nothing { why: NothingBecause::TooFewExamples });
@@ -264,10 +288,11 @@ mod tests {
         assert!(SIM_FORK < SIM_REUSE, "the thresholds order the branches");
         // A job of hers already training this competence: join it, whatever the store says
         // (the four-Mints-for-one-card shape); a distant job in flight changes nothing.
-        let flying = InFlightJob { job: "bcb7316f".into(), similarity: 0.97 };
-        assert_eq!(decide_with_in_flight(&c, s(0.5), None, Some(&flying)), Decision::Join { job: "bcb7316f".into(), similarity: 0.97 });
-        assert_eq!(decide_with_in_flight(&c, s(0.5), Some(&near(0.95, false)), Some(&flying)), Decision::Join { job: "bcb7316f".into(), similarity: 0.97 }, "join before reuse: the gene being born is hers");
-        let far = InFlightJob { job: "other".into(), similarity: 0.3 };
+        let flying_id = Uuid::from_u128(0xbcb7316f);
+        let flying = InFlightJob { job: flying_id, similarity: 0.97 };
+        assert_eq!(decide_with_in_flight(&c, s(0.5), None, Some(&flying)), Decision::Join { job: flying_id, similarity: 0.97 });
+        assert_eq!(decide_with_in_flight(&c, s(0.5), Some(&near(0.95, false)), Some(&flying)), Decision::Join { job: flying_id, similarity: 0.97 }, "join before reuse: the gene being born is hers");
+        let far = InFlightJob { job: Uuid::from_u128(0x0f), similarity: 0.3 };
         assert_eq!(decide_with_in_flight(&c, s(0.5), None, Some(&far)), Decision::Mint);
     }
 
@@ -292,7 +317,7 @@ mod tests {
         store.by_path.insert("/g/other-space.gguf".into(), sig("e2", vec![1.0, 0.0]));
         let c = Competence { centroid: vec![1.0, 0.0], members: (0..MIN_EXAMPLES).collect(), cohesion: 0.9, representative: 0 };
         let n = nearest_in_store(&c, &store, "e1", &["/g/near.gguf".to_string()]).expect("a nearest gene");
-        assert_eq!(n.gene, "/g/near.gguf");
+        assert_eq!(n.gene, GeneRef::Local { path: PathBuf::from("/g/near.gguf") });
         assert!(n.similarity > 0.9 && n.resident, "{n:?}");
         assert!(nearest_in_store(&c, &store, "e3", &[]).is_none(), "nothing comparable in another space");
     }

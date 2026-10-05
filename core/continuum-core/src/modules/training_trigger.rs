@@ -409,15 +409,14 @@ impl TrainingTriggerState {
                     // the next restart must not return the same examples again. The same
                     // `resumed` row the Job arm writes, with the joined job as the new id;
                     // a failed resubmit leaves the orphan for the next restart to try.
-                    match (&resubmitted, Uuid::parse_str(&job)) {
-                        (Ok(_), Ok(into)) => board.journal_resumed(origin, orphan.local_id, into, attempt),
-                        _ => {}
+                    if resubmitted.is_ok() {
+                        board.journal_resumed(origin, orphan.local_id, job, attempt);
                     }
                     crate::probe!(
                         class = "training.job.resume_joined",
                         origin = %origin,
                         from = %orphan.local_id,
-                        joined = job.as_str(),
+                        joined = %job,
                         examples_returned = resubmitted.is_ok(),
                         "an orphan whose competence is already training was not re-created: its examples returned to her bucket"
                     );
@@ -602,7 +601,7 @@ pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_
 #[derive(Debug, Clone)]
 pub(crate) enum Created {
     Job(JobHandle, String),
-    Joined(String),
+    Joined(Uuid),
 }
 
 fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
@@ -619,7 +618,7 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         DispatchFailure::Uncertain(format!("genome/job-create response parse: {error}"))
     })?;
     if response.success {
-        if let Some(job) = response.joined.filter(|j| !j.is_empty()) {
+        if let Some(job) = response.joined {
             return Ok(Created::Joined(job));
         }
         let result = response.result.ok_or_else(|| {

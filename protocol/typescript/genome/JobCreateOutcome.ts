@@ -9,8 +9,8 @@ import type { JobCreateResult } from "./JobCreateResult";
  */
 export type JobCreateOutcome = { success: boolean, result?: JobCreateResult, error?: string, errorKind?: string, 
 /**
- * `Decision::Join`: a job of hers already training this competence (its id); no
- * job was created and `result` is `None`. The caller keeps the examples for the
+ * `Decision::Join`: a job of hers already training this competence (its local id);
+ * no job was created and `result` is `None`. The caller keeps the examples for the
  * next fill, which decides against the gene that job produces.
  */
 joined?: string, };
