@@ -157,6 +157,25 @@ async fn card_elsewhere(airc: &std::sync::Arc<airc_lib::Airc>, raw: &str, asked:
         })
 }
 
+/// PURE: where a submission handle comes from, said with the handles themselves. A
+/// refused handle used to name only its SHAPE ("a full UUID or at least 4 leading hex
+/// characters"), and Kimi, wanting a card's submissions, sent `placeholder` (2026-10-05
+/// 12:01Z): a citizen with no handle cannot type one. The card's submissions are already
+/// in hand where the handle is resolved, so the refusal lists them, each as the leading
+/// eight hex characters the resolver accepts as a prefix.
+fn submissions_on_card(on_card: &[(Uuid, Uuid)]) -> String {
+    if on_card.is_empty() {
+        return "this card has no submissions yet; publish yours with work/submit".into();
+    }
+    let lines: Vec<String> = on_card
+        .iter()
+        .map(|(id, publisher)| {
+            format!("{} by {}", &id.simple().to_string()[..8], &publisher.simple().to_string()[..8])
+        })
+        .collect();
+    format!("submissions on this card: {}", lines.join(", "))
+}
+
 /// PURE: `e` with the where-it-is hint appended, keeping its error class.
 fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {
     match (e, hint) {
@@ -1209,7 +1228,15 @@ impl ActionCommand for WorkSubmission {
                 .map(|s| s.submission_id.as_uuid())
                 .collect::<Vec<_>>(),
             "submission",
-        )?;
+        )
+        .map_err(|e| {
+            let on_card: Vec<(Uuid, Uuid)> = card
+                .submissions
+                .iter()
+                .map(|s| (s.submission_id.as_uuid(), s.publisher.as_uuid()))
+                .collect();
+            with_hint(e, Some(submissions_on_card(&on_card)))
+        })?;
         let submitted = card
             .submissions
             .iter()
@@ -1309,6 +1336,22 @@ crate::register_command!(WorkSubmission);
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (Kimi, 2026-10-05 12:01Z): a refused submission handle that
+    // names only its shape. The refusal lists the card's submissions as prefixes the
+    // resolver accepts, or says there are none, so the next call can be a real one.
+    #[test]
+    fn a_refused_submission_handle_is_told_the_cards_submissions() {
+        let id = uuid::Uuid::parse_str("0a5b96b8-1111-4222-8333-444455556666").expect("test: id");
+        let publisher = uuid::Uuid::parse_str("e2f0e022-04ac-4f66-a26c-7146551745b4").expect("test: publisher");
+        let hint = super::submissions_on_card(&[(id, publisher)]);
+        assert_eq!(hint, "submissions on this card: 0a5b96b8 by e2f0e022");
+        let refused = super::resolve_shown("placeholder", &[id], "submission").expect_err("test: not a handle");
+        let told = super::with_hint(refused, Some(hint));
+        assert!(matches!(&told, super::CommandError::Invalid(m) if m.contains("0a5b96b8 by e2f0e022")), "{told:?}");
+        assert!(super::resolve_shown("0a5b96b8", &[id], "submission").is_ok(), "the listed prefix resolves");
+        assert!(super::submissions_on_card(&[]).contains("work/submit"));
+    }
     // what this catches (2026-09-17): a submit the citizen could not satisfy by hand —
     // the manual's zero hash is a placeholder and never an artifact; the artifact is
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
