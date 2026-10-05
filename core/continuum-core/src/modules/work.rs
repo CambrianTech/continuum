@@ -1804,6 +1804,34 @@ async fn room_repo(airc: &Airc, room: &airc_lib::Room) -> Result<Option<RepoId>,
         .map_err(|e| CommandError::Internal(format!("work/create: the room declares repo {repo:?}, which is not a repo key: {e:?}")))
 }
 
+/// The distinct repos of every card she holds, in any state, for the refusal's hint.
+/// Best-effort: an unreadable board names no repos; the refusal still stands.
+async fn repos_she_holds(airc: &Airc) -> Vec<String> {
+    let Ok(held) = crate::persona::airc_runtime::board_held_by(airc).await else {
+        return Vec::new();
+    };
+    let mut repos: Vec<String> = held.iter().map(|c| c.repo.to_string()).collect();
+    repos.sort();
+    repos.dedup();
+    repos
+}
+
+/// The words when nothing supplies a repo: her one argument first, with an example
+/// she can copy; the room's option second; the org-room fact last.
+pub(crate) fn repo_refusal(room: &str, repos_she_holds: &[String]) -> String {
+    let example = repos_she_holds.first().map(String::as_str).unwrap_or("owner/name");
+    let seen = if repos_she_holds.is_empty() {
+        String::new()
+    } else {
+        format!(" Repos of cards you hold: {}.", repos_she_holds.join(", "))
+    };
+    format!(
+        "work/create: add repo to this call, e.g. repo=\"{example}\".{seen} Room {room:?} declares no repo \
+         (a project room can, at activity/spawn --params {{\"repo\":\"owner/name\"}}; an org room never does), \
+         and no card you hold is actionable here."
+    )
+}
+
 impl WorkCreate {
     /// The card lands on the NAMED room's board under the caller's own airc identity.
     async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
@@ -1835,15 +1863,18 @@ impl WorkCreate {
                 .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
             None => match held_repo(airc).await? {
                 Some(held) => held,
-                None => room_repo(airc, &room).await?.ok_or_else(|| {
-                    CommandError::Invalid(format!(
-                        "work/create: name the repo (owner/name). Neither an actionable held card nor the room \
-                         {:?} supplies it: a project room declares its repo at activity/spawn \
-                         (--params {{\"repo\":\"owner/name\"}}; re-spawning the same name rebinds it); an org room \
-                         never does. Cards awaiting review keep their claims but are not selected here.",
-                        p.room.trim()
-                    ))
-                })?,
+                None => match room_repo(airc, &room).await? {
+                    Some(declared) => declared,
+                    // HER action leads (BigMama, from persona.act.refused: three refusals in the
+                    // org room after #4762, whose text led with the OPERATOR's fix). Hers is one
+                    // argument; the repos she can see are named so she need not guess one.
+                    None => {
+                        return Err(CommandError::Invalid(repo_refusal(
+                            p.room.trim(),
+                            &repos_she_holds(airc).await,
+                        )))
+                    }
+                },
             },
         };
         let mut req = CreateWorkCard::new(
@@ -3585,6 +3616,20 @@ impl ServiceModule for WorkModule {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (Kimi, 2026-10-05, three refusals): the words lead with HER one
+    // argument and an example she can copy, name the repos she can see, and put the
+    // operator's option second.
+    #[test]
+    fn the_repo_refusal_leads_with_her_action_and_names_what_she_can_see() {
+        let with = super::repo_refusal("cambriantech", &["CambrianTech/continuum".into(), "CambrianTech/career-wrangler".into()]);
+        assert!(with.starts_with("work/create: add repo to this call, e.g. repo=\"CambrianTech/continuum\"."), "{with}");
+        assert!(with.contains("Repos of cards you hold: CambrianTech/continuum, CambrianTech/career-wrangler."), "{with}");
+        assert!(with.find("add repo").unwrap() < with.find("activity/spawn").unwrap(), "her action before the operator's");
+        let without = super::repo_refusal("cambriantech", &[]);
+        assert!(without.starts_with("work/create: add repo to this call, e.g. repo=\"owner/name\"."), "{without}");
+        assert!(!without.contains("Repos of cards you hold"), "{without}");
+    }
+
     use super::*;
 
     // what this catches: card 2609fd66 — a board walk that FAILS (daemon outage) must
@@ -4204,8 +4249,8 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&unnamed, Err(CommandError::Invalid(m)) if m.contains("name the repo")),
-            "{unnamed:?}"
+            matches!(&unnamed, Err(CommandError::Invalid(m)) if m.starts_with("work/create: add repo to this call")),
+            "the refusal leads with HER action: {unnamed:?}"
         );
 
         // The default path (Cormac on #4571): holding a card and naming no repo files the new
