@@ -896,17 +896,27 @@ impl EngineRun {
                 }
                 TrainState::Done => {
                     // THE SHARE, as the engine itself counted it (Cormac on #4798): auditable on
-                    // every node from the run's own receipt, no second run.
-                    if let (Some(windows), Some(busy), Some(yielded)) = (s.windows, s.windows_while_busy, s.yielded_ms) {
-                        crate::probe!(
+                    // every node from the run's own receipt, no second run. An engine before
+                    // fork #32 reports no counts: the probe says so, so "not reported" is
+                    // never read as a zero share, and an old engine is told apart from a probe
+                    // that never fired.
+                    match (s.windows, s.windows_while_busy, s.yielded_ms) {
+                        (Some(windows), Some(busy), Some(yielded)) => crate::probe!(
                             class = "training.run.share",
                             out = self.out.as_str(),
+                            reported = true,
                             windows,
                             windows_while_busy = busy,
                             yielded_ms = yielded,
-                            share_ppm = s.share_ppm.unwrap_or(0), // 0 = an engine that took the share but did not report the policy; the counts above are the receipt
+                            share_ppm = s.share_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = counts reported, policy not (an engine between the counts and the policy); never a 0 that reads as a zero share
                             "the in-engine run finished: how many windows it took beside busy serving, and how long it yielded"
-                        );
+                        ),
+                        _ => crate::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            reported = false,
+                            "the in-engine run finished on an engine that does not report its share (before fork #32): the counts are not known"
+                        ),
                     }
                     return InPlaceEnd::Finished;
                 }
