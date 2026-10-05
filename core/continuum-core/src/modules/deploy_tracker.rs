@@ -581,6 +581,30 @@ impl ServiceModule for DeployTrackerModule {
                 }
             }
             DeployVerdict::UpToDate => {}
+            DeployVerdict::BuildInFlight { deployable_tip } => {
+                // THE REQUEST FOLLOWS THE TIP, THE ACTUATION WAITS. A consumer in flight may
+                // be waiting on CI for a tip that is now superseded (its run cancelled); the
+                // request on disk is how it learns that. Recorded, never actuated here.
+                if let Some(tip_sha) = deployable_tip {
+                    let standing = read_deploy_request(state_dir);
+                    if let Some(req) = crate::runtime::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
+                        write_deploy_request(state_dir, &req);
+                        crate::probe!(
+                            class = "deploy.track.request_moved_in_flight",
+                            tip = tip_sha.as_str(),
+                            running = running_sha(),
+                            "a newer green tip while a deploy is in flight — the request now names it; the consumer follows"
+                        );
+                    }
+                }
+                crate::probe!(
+                    class = "deploy.track.decision",
+                    verdict = "build_in_flight",
+                    deployable_tip = deployable_tip.as_deref().unwrap_or(""), // "" = not deployable yet
+                    running = running_sha(),
+                    "deploy not taken this tick — a build is in flight"
+                );
+            }
             DeployVerdict::Held { reason, stale } => {
                 crate::probe!(
                     class = "deploy.track.decision",
