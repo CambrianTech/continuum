@@ -94,7 +94,7 @@ The law in §2 is already general: what she keeps is what her model of the world
 | What enters a person's long-term memory | Its source here | Status |
 |---|---|---|
 | Prediction error ("not what I expected") | the room contradicts her stated expectation (the verdict surprise, #4774) | **live** (#4796 gates on it) |
-| Novelty ("never met anything like this") | signature distance from `C` to her nearest memory or gene: the `d` that §2 already computes to choose fork or mint | computed, not yet a signal |
+| Novelty ("never met anything like this") | distance from the experience to her nearest *memory*: recall's engram distance, which recall already computes on every turn. Not §2's `d`, which is gene distance: most competences have no gene yet, so `d` would call nearly everything novel (Fable, #4803 review) | computed by recall, not yet a signal |
 | Consequence (the stove is hot) | a tool or execution outcome against her expectation: the test she expected to pass fails, the command she expected to work errors | new |
 | Correction by someone trusted | a reviewer requests changes, a human rewrites her reply | partly: review verdicts settle examples (#4765) |
 | Failed recall ("I should know this") | a memory existed for the turn, and she still asked, searched, or got it wrong | new |
@@ -102,7 +102,9 @@ The law in §2 is already general: what she keeps is what her model of the world
 | Significance and reward | credit settled to her work, a thank-you, a merge | credit exists (`settle_card_credit`) |
 | "Remember this" | her own noteworthy flag | exists as an intent, not wired here |
 
-**One shape for every sense.** Each source is an adapter that emits the same typed event: a prediction error *for a competence*, with a magnitude, a time, and the source that produced it. The window (`SURPRISE_WINDOW_MS`, read at the reader's clock) folds them per competence, and §2 reads the fold. Adding a sense is adding an adapter; the decision, the bucket, the trial and the verdict never change. If a new sense needs the decision changed, the shape is wrong, and that is the falsifier for this section.
+**One shape for every sense.** Each source is an adapter that emits the same typed event: a prediction error *for a competence*, with a magnitude, a time, and the source that produced it. The window (read at the reader's clock) folds them per competence, and §2 reads the fold.
+
+**One unit, or the loudest sense wins** (Fable, #4803 review). The magnitude every adapter emits is a surprisal, `-log p` of what happened under her expectation, calibrated per adapter so that a typical event of each sense lands on the same scale. A raw count, a share and a distance never sum. Each sense also carries its own `MIN_JUDGED` and its own window: a tool runs many times a turn and a review lands once a day, and one floor or one window for both would let the frequent sense drown the rare one. Adding a sense is adding an adapter; the decision, the bucket, the trial and the verdict never change. If a new sense needs the decision changed, the shape is wrong, and that is the falsifier for this section.
 
 **Two axes, two stores.** Novelty and surprise are different quantities and lead to different consolidation, as they do in a brain (the hippocampus takes a novel episode fast; the cortex consolidates what keeps surprising it):
 
@@ -111,7 +113,7 @@ The law in §2 is already general: what she keeps is what her model of the world
 
 Novelty detection is the front half that writes the memory first, so that §2's "after recall ran" has something to recall.
 
-**Build by outliers.** The first adapter is novelty from `d`, already computed and nearly free. The second is the most different one available: tool and execution outcomes (physical, where the verdict surprise is social). If the verdict, novelty and consequence sources fit one adapter without forcing, the interface is proven, and correction, failed recall, repetition and her flag are routine.
+**Build by outliers.** The first adapter is novelty from recall's engram distance, already computed on every turn and nearly free. The second is the most different one available: tool and execution outcomes (physical, where the verdict surprise is social). If the verdict, novelty and consequence sources fit one adapter without forcing, the interface is proven, and correction, failed recall, repetition and her flag are routine.
 
 Privacy holds unchanged: an experience in her mind room counts toward her own memory and her own `S(C)`, and is never published (`PRIVACY-OF-THOUGHT.md`).
 
@@ -127,7 +129,9 @@ A teacher is an oracle. The cheapest examples are the ones where the right answe
 4. **A mentor's demonstration.** She failed at something, and a peer (an agent, another citizen, a human) then did it. The mentor's act is the target, and the mentor is credited in the example's lineage (`a-citizens-ideas-carry-her-name-as-author`).
 5. **Exercises the teacher synthesizes.** For a competence where `S(C)` stays high, the teacher persona composes more problems, each with a checker that verifies the answer (it compiles, the tests pass, the output parses). They run as activities in a room, so they produce turns the flywheel consumes, never a side runner (`BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md`).
 
-Sources 1 to 3 need no new oracle at all; today they are only not collected. Each is also a §3b sense: the error half is a prediction error for its competence, and the correction half is the example that trains it. So a taught loop is not a second pipeline. It is a sense whose examples arrive already labelled.
+Sources 1 to 3 need no new oracle at all; today they are only not collected.
+
+**A taught pair trains the competence it teaches** (Fable, #4803 review). A parser pair teaches protocol (how to call the tool, how to spell the id), so it is filed under a protocol trait of its own, never under the code or ownership competence of the turn it happened in. Otherwise a gene minted for Rust would carry JSON-escaping, and its trial would measure the wrong thing. And the mind-room exclusion holds for taught pairs as for every other example: a mistake made and corrected in her mind room is hers and is never collected (`PRIVACY-OF-THOUGHT.md`). Each is also a §3b sense: the error half is a prediction error for its competence, and the correction half is the example that trains it. So a taught loop is not a second pipeline. It is a sense whose examples arrive already labelled.
 
 Consent holds both ways. Her mistakes become examples under the same agreement as the rest of her curriculum, and a mentor's demonstration names its author.
 
@@ -179,6 +183,6 @@ The design fails, and we say so, if observed:
 2. Competence clustering over her settled curriculum + the pure decision + its probe. Receipt: `genome.decision` rows on the 5090 naming a branch for her first competence, with the distance and the parent.
 3. Reuse and fork wired to the existing trial; mint through the existing job-create. Receipt: her first gene through this path, trialled on her cards, with the branch it took in its lineage.
 4. HF as a recall source and the start-gene resolver. Receipt: a fresh citizen on a fresh node resolves a start gene from HF with signature and lineage verified.
-5. Senses and taught loops (§3b, §3c): novelty from `d` and tool-outcome surprise as the two outlier adapters, then the parser and tool-retry pairs as her first taught examples. Receipt: one `S(C)` folded from two sources of different kinds, and one of her examples whose label came from a parser or an execution, not a reviewer.
+5. Senses and taught loops (§3b, §3c): novelty from recall's engram distance and tool-outcome surprise as the two outlier adapters, both emitting calibrated surprisal, then the parser and tool-retry pairs as her first taught examples. Receipt: one `S(C)` folded from two sources of different kinds, and one of her examples whose label came from a parser or an execution, not a reviewer.
 
 Each lands on canary green with a peer word, is measured on her node, and she is asked.
