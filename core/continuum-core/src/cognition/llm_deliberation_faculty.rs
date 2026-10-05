@@ -5472,6 +5472,10 @@ fn is_extended_hand(name: &str) -> bool {
     // description says to poll a running execution with it. Idris (2026-09-29) started a
     // long command on a core-hands window and had no verb to see it finish.
     name.starts_with("web/")
+        // Her self-determination verbs (focus/continue, nudge, mute) ride every window
+        // that holds them; on the 8192 survival window the newest line outranks them
+        // (the guard below this file's tool_surface test), as it does the web.
+        || name.starts_with("focus/")
         || matches!(name, "code/git/add" | "code/git/push" | "code/github/pr-create" | "code/github/pr-comment")
 }
 
@@ -5757,8 +5761,10 @@ mod tests {
         );
         // what this also catches: a window too small for the extended verbs keeps her CORE
         // hands (never nothing), with the web and the push/PR verbs one commands/list away.
+        // focus/continue is EXTENDED since #4758: the survival window keeps the newest line
+        // over her self-determination verbs, as it does over the web.
         let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
-        assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit", "focus/continue"]);
+        assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
         // regression (Idris, 2026-09-29): a verb and the verb that finishes it travel
         // together. code/shell tells her to poll a running execution with code/shell-poll,
         // so a window that carries shell carries shell-poll.
@@ -8502,7 +8508,12 @@ mod tests {
             // selector, encoding, dimensions and delivery parameters instead of
             // an empty schema. The real typed contract adds 552 measured guard
             // tokens; this test ceiling is not a runtime context-budget change.
-            const AGENTIC_SURFACE_CEILING: u32 = 15731;
+            // 15731 -> 17087 (PR #4758): focus/continue, focus/nudge and focus/mute join
+            // the offer, her self-determination verbs (Joel 2026-10-05: agency; her loop
+            // is her own). ~450 guard tokens each, in line with the ~330 average of the
+            // other hands: a continuation carries a note, a room, an expectation and a
+            // verdict, each described. Real demand, accounted for, not hidden.
+            const AGENTIC_SURFACE_CEILING: u32 = 17087;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

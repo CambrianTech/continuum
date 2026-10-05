@@ -747,6 +747,24 @@ mod tests {
         );
     }
 
+    // what this catches (Kimi, 2026-10-05, twice): her self-determination verbs were
+    // registered, documented, AiSafe, on the hands allowlist (#4755) — and never in the
+    // offered list, because NATIVE defaults to false and nobody set it. The allowlist
+    // filters the offered list; a verb absent from the offered list is uncallable
+    // whatever the allowlist says. This asserts PRESENCE IN THE OFFER, like the yield test.
+    #[test]
+    fn her_self_determination_verbs_are_actually_offered_to_the_model() {
+        let offered = native_tool_specs();
+        for verb in ["focus/continue", "focus/nudge", "focus/mute"] {
+            assert!(
+                offered.iter().any(|s| s.name == verb),
+                "{verb} missing from the offered surface ({} tools): {:?}",
+                offered.len(),
+                offered.iter().map(|s| &s.name).collect::<Vec<_>>()
+            );
+        }
+    }
+
     // what this catches: the name→verb mapping is a NAME match on a verb we defined
     // (protocol), which is the whole reason this replaced a prose phrase-list. Aliases
     // resolve; an unrelated command must never be mistaken for a yield.
@@ -826,8 +844,12 @@ mod tests {
         // < 48 -> < 49, stated plainly (2026-09-28, Joel: help her screenshot and drive her
         // own site): perception/interact joined, a persistent browser session she drives
         // and sees after each step, so a slice's "Accepts" has visual evidence (card 3569675f).
+        // < 49 -> < 52, stated plainly (2026-10-05, Joel: agency; her loop is her own):
+        // focus/continue, focus/nudge and focus/mute joined, her self-determination verbs,
+        // which were registered and documented but never offered (NATIVE unset); Kimi
+        // reported "present in the registry, absent from my menu" twice before this.
         assert!(
-            names.len() < 49,
+            names.len() < 52,
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );
