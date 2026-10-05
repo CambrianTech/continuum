@@ -226,6 +226,24 @@ fn take_ledger_ownership(ledger: &Path) -> Option<std::fs::File> {
     }
 }
 
+/// A registration row as the job it describes: THE one reading of a registration
+/// (orphan reconciliation, `registration`). `None` when its ids do not parse.
+fn orphan_of(id: &str, reg: &serde_json::Value) -> Option<OrphanedJob> {
+    let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let local_id = Uuid::parse_str(id).ok()?;
+    let persona_id = field("persona_id").and_then(|p| Uuid::parse_str(&p).ok())?;
+    Some(OrphanedJob {
+        local_id,
+        trigger_dispatch_id: field("trigger_dispatch_id").and_then(|d| Uuid::parse_str(&d).ok()),
+        provider_id: field("provider_id").unwrap_or_default(), // unwrap_or_default: an unknown provider lets job-create choose
+        persona_id,
+        persona_name: field("persona_name").unwrap_or_default(), // unwrap_or_default: the job dir lookup then fails loud as not-resumable
+        base_model: field("base_model").unwrap_or_default(), // unwrap_or_default: same — the request.json carries the truth
+        trait_kind: field("trait_kind").unwrap_or_default(), // unwrap_or_default: same
+        eval_set: field("eval_set"),
+    })
+}
+
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -528,6 +546,34 @@ impl TrainingJobBoard {
     /// survive a restart). Journal each as `terminal/killed-by-reboot`, log loud,
     /// and return the count. Idempotent — the terminal lines written here close
     /// the ids for the next replay. A missing ledger is a first boot, not an error.
+    /// The ledger's latest registration of `local_id`, as the job it describes.
+    pub fn registration(&self, local_id: Uuid) -> Option<OrphanedJob> {
+        let id = local_id.to_string();
+        self.ledger_rows()
+            .filter(|row| row.get("event").and_then(|e| e.as_str()) == Some("registered"))
+            .filter(|row| row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str()))
+            .last()
+            .and_then(|row| orphan_of(&id, &row))
+    }
+
+    /// Has `local_id` reached a terminal row on the ledger?
+    pub fn is_terminal(&self, local_id: Uuid) -> bool {
+        let id = local_id.to_string();
+        self.ledger_rows().any(|row| {
+            row.get("event").and_then(|e| e.as_str()) == Some("terminal")
+                && row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str())
+        })
+    }
+
+    /// Every parseable row of the ledger, oldest first (none when there is no ledger).
+    fn ledger_rows(&self) -> impl Iterator<Item = serde_json::Value> {
+        let text = self.ledger.as_ref().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default(); // unwrap_or_default: no ledger file yet = no rows
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
     pub fn reconcile_orphans(&self) -> Vec<OrphanedJob> {
         let Some(path) = &self.ledger else { return Vec::new() };
         // Only the ledger's owner reconciles it: an open entry is a dead board's ONLY to the
@@ -576,23 +622,10 @@ impl TrainingJobBoard {
                 "local_id": id,
                 "at_ms": now_ms(),
             }));
-            let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_string);
-            let (Ok(local_id), Some(persona_id)) = (
-                Uuid::parse_str(id),
-                field("persona_id").and_then(|p| Uuid::parse_str(&p).ok()),
-            ) else {
-                continue; // a registration without parseable ids cannot be resumed, only reported
-            };
-            orphans.push(OrphanedJob {
-                local_id,
-                trigger_dispatch_id: field("trigger_dispatch_id").and_then(|d| Uuid::parse_str(&d).ok()),
-                provider_id: field("provider_id").unwrap_or_default(), // unwrap_or_default: an unknown provider lets job-create choose
-                persona_id,
-                persona_name: field("persona_name").unwrap_or_default(), // unwrap_or_default: the job dir lookup then fails loud as not-resumable
-                base_model: field("base_model").unwrap_or_default(), // unwrap_or_default: same — the request.json carries the truth
-                trait_kind: field("trait_kind").unwrap_or_default(), // unwrap_or_default: same
-                eval_set: field("eval_set"),
-            });
+            // a registration without parseable ids cannot be resumed, only reported
+            if let Some(orphan) = orphan_of(id, reg) {
+                orphans.push(orphan);
+            }
         }
         if let Ok(mut held) = self.orphans.lock() {
             held.extend(orphans.iter().cloned());
