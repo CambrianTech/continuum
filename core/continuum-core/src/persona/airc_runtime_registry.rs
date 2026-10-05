@@ -195,6 +195,25 @@ impl PersonaAircRuntimeRegistry {
             "registry: {agent_name} entered The Grid (roster size now {})",
             self.inner.len(),
         );
+        // What the room already judged on her cards while she was away settles now
+        // (`training_producer::reconcile_reviews`): the live settle fires only at the
+        // inbound seam of a resident core. Off the registration path, owned by her
+        // runtime so it ends with her. Outside a runtime (tests, sync boot) the live
+        // path alone applies, and the probe says so.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let rt = runtime_arc.clone();
+                let task = handle.spawn(async move {
+                    crate::persona::training_producer::reconcile_reviews(rt.agent_name(), rt.airc()).await;
+                });
+                crate::persona::airc_citizen::AircCitizen::own_task(runtime_arc.as_ref(), task);
+            }
+            Err(_) => crate::probe!(
+                class = "training.credit.reconcile_deferred",
+                persona = %agent_name,
+                "registered outside a runtime — reviews already on her boards settle on the next live verdict"
+            ),
+        }
         runtime_arc
     }
 

@@ -2014,6 +2014,92 @@ pub fn settle_on_review(event: &airc_core::TranscriptEvent) {
     handle.spawn(settle_card_credit(card, passed));
 }
 
+/// RECONCILE AT REGISTRATION. [`settle_on_review`] fires at the inbound seam of a LIVE
+/// core: a review that arrived while she was not resident (a deploy, a sleeping node, a
+/// review filed before #4765 existed) settled nothing at the time, and her staged credit
+/// on that card sat still with the verdict already on the board. Her registration asks
+/// every board she is on what the room has already judged on her cards
+/// (`submission_reviews_for_card`, airc #1537) and settles what the live path missed.
+/// Idempotent: a revision already transferred returns on `settle_overlap`, never a
+/// second submission. Measured 2026-10-05: Kimi registered with 27 staged / 0 settled
+/// and a passed review on the board.
+pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
+    let owned = match crate::persona::airc_runtime::scoped_board_owned_by(airc).await {
+        Ok(owned) => owned,
+        Err(error) => {
+            crate::probe!(
+                class = "training.credit.reconcile_unreadable",
+                persona = %persona_name,
+                error = %error,
+                "her boards could not be walked at registration — reviews already on them settle on the next live verdict"
+            );
+            return;
+        }
+    };
+    let mut boards: std::collections::BTreeMap<Uuid, airc_work::WorkBoardProjection> = std::collections::BTreeMap::new();
+    let (mut cards, mut judged) = (0u64, 0u64);
+    for (room, card) in owned {
+        cards += 1;
+        let room_id = room.channel.as_uuid();
+        if !boards.contains_key(&room_id) {
+            match airc.work_board_in(&room).await {
+                Ok(board) => {
+                    boards.insert(room_id, board);
+                }
+                Err(error) => {
+                    crate::probe!(
+                        class = "training.credit.reconcile_unreadable",
+                        persona = %persona_name,
+                        room = %room_id,
+                        error = %error,
+                        "one board could not be projected at registration — its reviews settle on the next live verdict"
+                    );
+                    continue;
+                }
+            }
+        }
+        let Some(board) = boards.get(&room_id) else { continue };
+        let Some(passed) = reconciled_verdict(
+            board
+                .submission_reviews_for_card(card.card_id)
+                .map(|r| (r.reviewed_at_ms, &r.outcome)),
+        ) else {
+            continue;
+        };
+        judged += 1;
+        crate::probe!(
+            class = "training.credit.reconcile_card",
+            persona = %persona_name,
+            card = %card.card_id.as_uuid(),
+            passed,
+            "the board already judged this card of hers — its staged credit settles now"
+        );
+        settle_card_credit(card.card_id.as_uuid(), passed).await;
+    }
+    crate::probe!(
+        class = "training.credit.reconciled",
+        persona = %persona_name,
+        cards,
+        judged,
+        "registration asked her boards what the room already judged; those cards settled"
+    );
+}
+
+/// The verdict the board holds on a card: the LATEST review with a real outcome. An
+/// `Unknown` review is not a verdict and never hides an earlier real one.
+pub(crate) fn reconciled_verdict<'a>(
+    reviews: impl Iterator<Item = (u64, &'a airc_work::WorkReviewOutcome)>,
+) -> Option<bool> {
+    reviews
+        .filter_map(|(at, outcome)| match outcome {
+            airc_work::WorkReviewOutcome::Passed => Some((at, true)),
+            airc_work::WorkReviewOutcome::Failed => Some((at, false)),
+            airc_work::WorkReviewOutcome::Unknown => None,
+        })
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, passed)| passed)
+}
+
 /// `Some((card, passed))` when `event` is a review with a real outcome; `None` for every
 /// other event and for a review whose outcome is `Unknown`.
 pub(crate) fn review_settlement(event: &airc_core::TranscriptEvent) -> Option<(Uuid, bool)> {
@@ -2057,6 +2143,21 @@ pub(crate) mod tests {
     // fired only from a benchmark instance's verdict, so a project card could never settle.
     mod a_review_settles_the_cards_credit {
         use super::*;
+
+        // what this catches (airc #1537, 2026-10-05: Kimi registered with 27 staged / 0
+        // settled and a passed review already on her board): the reconcile reads the
+        // LATEST real verdict on a card; an Unknown review, however late, is not a
+        // verdict and does not hide the real one; no real review settles nothing.
+        #[test]
+        fn the_reconcile_reads_the_latest_real_verdict_and_ignores_unknown() {
+            use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
+            assert_eq!(reconciled_verdict(std::iter::empty()), None);
+            assert_eq!(reconciled_verdict([(5, &Unknown)].into_iter()), None, "unknown is not a verdict");
+            assert_eq!(reconciled_verdict([(1, &Failed), (2, &Passed)].into_iter()), Some(true), "the latest real verdict");
+            assert_eq!(reconciled_verdict([(2, &Passed), (1, &Failed)].into_iter()), Some(true), "order of arrival does not matter");
+            assert_eq!(reconciled_verdict([(1, &Passed), (9, &Unknown)].into_iter()), Some(true), "a late unknown hides nothing");
+            assert_eq!(reconciled_verdict([(3, &Failed), (1, &Passed)].into_iter()), Some(false));
+        }
 
         fn event_with(work: airc_work::WorkEvent) -> airc_core::TranscriptEvent {
             let (headers, body) = airc_work::encode_work_event(&work).expect("a work event encodes");
