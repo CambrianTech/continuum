@@ -166,6 +166,9 @@ impl LaneInvocation {
 /// measurement"), never the sizing decision itself.
 pub const CACHE_RAM_MIB: u32 = 4096;
 
+// context-budget-exempt: a COUNT of saved recurrent-state checkpoints (each a fixed
+// slice of host memory), not a context or prompt size; the token spacing that does scale
+// with the served window is derived from it in `checkpoint_min_step`.
 /// Context checkpoints each slot keeps (llama.cpp `--ctx-checkpoints`). Their count
 /// is their memory: the spacing, not the count, is what scales with the window.
 pub const CTX_CHECKPOINTS: u32 = 32;
