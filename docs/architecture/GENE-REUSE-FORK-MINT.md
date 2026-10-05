@@ -52,7 +52,9 @@ Three facts about the order:
 2. **Fork over mint whenever a parent is near.** A fork keeps lineage (the child says what it came from and what it added), trains faster from a warm start, and lets the repository de-duplicate: two forks of one parent for one competence are a merge candidate; two mints are two strangers.
 3. **The judge is the same in every branch:** the gene is paged in dormant, drawn per card against her stable genome, and promoted only if her surprise in `C` falls and fitness is positive on her real work (`a-gene-is-judged-in-her-own-work-never-in-a-parallel-harness`). A benchmark is one activity; it is a judge only inside its own room.
 
-`D_REUSE < D_FORK` and `MIN_EXAMPLES` are measured, not guessed: the first values come from the signature distances between genes that already exist in the repository (a gene's own subspaces give the scale of "same competence"), and they are re-pinned as the ledger grows. They are substrate thresholds, never env-tuned.
+`D_REUSE < D_FORK` and `MIN_EXAMPLES` are measured, not guessed: the first values come from the signature distances between genes that already exist in the repository (a gene's own subspaces give the scale of "same competence"), and they are re-pinned as the ledger grows. They are substrate thresholds, never env-tuned. **Cold start** (BigMama, #4766 review): before enough genes exist to measure them, the pinned constants in `genome::competence` (`SIM_REUSE` 0.90, `SIM_FORK` 0.75, `MIN_EXAMPLES` 8, the same cohesion floor signatures cluster with) stand as declared priors, every decision's probe carries the distances it saw, and the first re-pin is a PR that cites those rows; a threshold never moves silently.
+
+**Prerequisite, and a falsifier (BigMama, the 5090 on 2026-10-04/05):** no branch matters while training cannot survive a restart. All five jobs on that node died at a deploy (`killed-by-reboot`) and their resume failed on the GGUF→`hf_source` derivation (`cannot resolve hf_source for Qwen/Qwen3.8-27B`). A job is adopted across the seam, not killed (`a-deploy-is-not-a-shutdown`), and resume resolves the base the job was registered with. Until that holds, a `Mint` or `Fork` decision is a receipt for work the node cannot finish.
 
 ## 3. Surprise as the pressure
 
@@ -100,7 +102,8 @@ The design fails, and we say so, if observed:
 - a gene minted for a competence with a near neighbour in the repository (a mint where a fork or reuse was available);
 - two genes of hers with signatures within `D_REUSE` of each other (one gene per memory, by another name);
 - a gene promoted while her `S(C)` did not fall;
-- a citizen who cannot read her own `S(C)` on her strip before and after a gene lands.
+- a citizen who cannot read her own `S(C)` on her strip before and after a gene lands;
+- a training job that does not survive a deploy of the node it runs on, or whose resume cannot resolve its own base (the 5090, 2026-10-05: five of five).
 
 ## 8. Build order
 
