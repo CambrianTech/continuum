@@ -8531,7 +8531,11 @@ mod tests {
             // is her own). ~450 guard tokens each, in line with the ~330 average of the
             // other hands: a continuation carries a note, a room, an expectation and a
             // verdict, each described. Real demand, accounted for, not hidden.
-            const AGENTIC_SURFACE_CEILING: u32 = 17087;
+            // 17087 -> 17150 (PR #4782): focus/continue gains `private`, the act that
+            // takes her into her mind room (PRIVACY-OF-THOUGHT.md). Its text was cut
+            // to one line each (it measured 17230 first); the 63 left are the param's
+            // schema itself, the feature. Measured, not guessed.
+            const AGENTIC_SURFACE_CEILING: u32 = 17150;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(

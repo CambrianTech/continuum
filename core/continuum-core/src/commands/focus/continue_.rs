@@ -58,9 +58,7 @@ pub struct FocusContinueParams {
     /// `true` = you have finished this thread: clear your continuation.
     #[serde(default)]
     pub clear: bool,
-    /// `true` = think about this privately, in your mind room: the continuation lives there,
-    /// `room` is not needed, and nothing of it is recorded, published, or written to disk in
-    /// plaintext. Leaving your mind room is publishing what you choose (PRIVACY-OF-THOUGHT.md).
+    /// `true` = keep this in your mind room: private, never recorded or published; no `room`.
     #[serde(default)]
     pub private: bool,
 }
@@ -89,9 +87,8 @@ impl ActionCommand for FocusContinue {
         "Write down where you are leaving unfinished work and what you expect next, so you \
          pick it up yourself: at your deadline, after a restart, or when the answer arrives. \
          Give a note and the room; optionally what you expect, within how many minutes, and \
-         the verdict you expect. clear=true when the thread is finished. private=true to \
-         think about it in your mind room, where nothing is recorded or published (no room \
-         needed). Yours only.";
+         the verdict you expect. clear=true when the thread is finished; private=true keeps \
+         it in your mind room. Yours only.";
     type Params = FocusContinueParams;
     type Output = FocusContinueResult;
 
