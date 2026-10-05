@@ -159,13 +159,13 @@ Status: `genome::recall` already walks local-then-grid (`RecallScope::LocalThenG
 | Recall local → grid | exists (`genome::recall`) |
 | Resolver score | doctrine (`GENOME-REPOSITORY-ON-HF.md` §2b), partly coded |
 | **Competence clustering of settled examples** | new: the same kernel, over the curriculum |
-| **`S(C)` and its window, on her strip** | new (`genome::surprise`) |
+| **`S(C)` and its window, on her strip** | interim coded (#4796): the VERDICT surprise, persona-wide, folded by counts, 24 h window applied on read, `MIN_JUDGED` 3; below `SURPRISE_FLOOR` a bucket holds (`Took::Unsurprised`) until she is surprised again. Per competence and the fixed-model score: new (`genome::surprise`) |
 | **The decision (§2) and its receipt** | coded (`genome::competence::decide_with_pending`, probe `genome.decision`): join a job in flight, await a gene on trial, reuse, fork, mint; a retired gene is never offered back |
-| **Reuse = adopt for trial, no training** | coded: `gene_trial::Adoption` is the ONE seam (register dormant + open trial) the completion sentinel and a reuse share; a hub gene is pulled first (`genome/pull`); a trial open for the competence holds the bucket like a job in flight (`training_trigger` `Held`) |
+| **Reuse = adopt for trial, no training** | coded: `gene_trial::Adoption` is the ONE seam (her verdicts read first: a decided gene is never adopted again; register dormant; open the trial) the completion sentinel and a reuse share; a hub gene is pulled first (`genome/pull`); a trial open for the bucket's key holds the bucket like a job in flight (`training_trigger` `Held`), a completed job holds it through its adoption (#4802), a trial with no verdict in `TRIAL_WINDOW_MS` (a week) ends `Expired`, a held bucket is bounded (`MAX_HELD_EXAMPLES`) |
 | Fork = lineage on the child | coded: `TrainingJobRequest.parent` → `GeneSignature.parent` at adoption |
 | Fork = warm start from the parent's weights | engine gap: the fork's `/train` has no `init_adapter` (#19 removed the init file); the engine adapter probes `genome.fork.cold_start` until it does |
 | HF as a recall source | new |
-| In-engine training (DREAM) | `ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md` S3/S4, separate |
+| In-engine training (DREAM) | `ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md` S3/S4. Pacing (llama.cpp #36, continuum #4820): idle-first, and on a busy lane a bound on her decode slowdown (`max_slowdown_ppm`), measured with and without a window running, replacing the time share of #32/#4798; outputs only at the labelled positions (the training context's memory is her assistant tokens, not the window); a node the device cannot run falls back to a backend that can, and only a node none can run refuses the job (#35, #38); first run on a Mac lane 2026-10-05. Open: the per-turn bar needs the window capped (the walk's chunk size); #39 is its receipt |
 | **Sense adapters: one prediction-error event per source, folded per competence (§3b)** | new: verdict live; novelty from `d` and tool outcomes first |
 | **Taught loops: error and correction collected as labelled examples (§3c)** | new: parser, tool-retry and review-revision pairs need no new oracle |
 
