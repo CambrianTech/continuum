@@ -116,16 +116,26 @@ pub enum NothingBecause {
     SurpriseLow,
 }
 
-/// The decision, in the order the design states. `surprise` is `S` for this competence
-/// (`None` = no judged expectation yet, which is not "low": it is unknown, and unknown
-/// never mints).
-pub fn decide(competence: &Competence, surprise: Option<f32>, nearest: Option<&NearestGene>) -> Decision {
+/// Her surprise in a competence, as the decision receives it. `NotYetMeasured` is not
+/// "low": the floor applies only to a measured number. Until surprise is folded per
+/// competence (step 1 measures it per activity, #4774), a full bucket decides on
+/// distance alone, as the trigger did before this, and the probe says `not_measured`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(tag = "surprise", rename_all = "snake_case")]
+pub enum Surprise {
+    Measured { s: f32 },
+    NotYetMeasured,
+}
+
+/// The decision, in the order the design states.
+pub fn decide(competence: &Competence, surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
     if competence.members.len() < MIN_EXAMPLES {
         return Decision::Nothing { why: NothingBecause::TooFewExamples };
     }
-    match surprise {
-        Some(s) if s >= SURPRISE_FLOOR => {}
-        _ => return Decision::Nothing { why: NothingBecause::SurpriseLow },
+    if let Surprise::Measured { s } = surprise {
+        if s < SURPRISE_FLOOR {
+            return Decision::Nothing { why: NothingBecause::SurpriseLow };
+        }
     }
     match nearest {
         // Near enough to BE this competence's gene, and not yet in her: reuse.
@@ -199,14 +209,15 @@ mod tests {
         let small = Competence { members: vec![0, 1], ..c.clone() };
         let g = "/genes/rust-tests.gguf".to_string();
         let near = |similarity, resident| NearestGene { gene: g.clone(), similarity, resident };
-        assert_eq!(decide(&small, Some(0.9), None), Decision::Nothing { why: NothingBecause::TooFewExamples });
-        assert_eq!(decide(&c, None, None), Decision::Nothing { why: NothingBecause::SurpriseLow }, "unknown never mints");
-        assert_eq!(decide(&c, Some(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.95, true))), Decision::Fork { parent: g.clone(), similarity: 0.95 }, "resident and still surprised: a child");
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.80, false))), Decision::Fork { parent: g.clone(), similarity: 0.80 }, "a cousin: a child with lineage");
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.40, false))), Decision::Mint);
-        assert_eq!(decide(&c, Some(0.5), None), Decision::Mint);
+        let s = |x| Surprise::Measured { s: x };
+        assert_eq!(decide(&small, s(0.9), None), Decision::Nothing { why: NothingBecause::TooFewExamples });
+        assert_eq!(decide(&c, s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
+        assert_eq!(decide(&c, Surprise::NotYetMeasured, None), Decision::Mint, "not yet measured is not low: distance decides, as before");
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.95, true))), Decision::Fork { parent: g.clone(), similarity: 0.95 }, "resident and still surprised: a child");
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.80, false))), Decision::Fork { parent: g.clone(), similarity: 0.80 }, "a cousin: a child with lineage");
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.40, false))), Decision::Mint);
+        assert_eq!(decide(&c, s(0.5), None), Decision::Mint);
         assert!(SIM_FORK < SIM_REUSE, "the thresholds order the branches");
     }
 
