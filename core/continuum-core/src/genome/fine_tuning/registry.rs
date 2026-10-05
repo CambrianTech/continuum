@@ -92,6 +92,7 @@ mod tests {
                 produces_local_artifact: false,
                 supported_base_model_prefixes: vec![],
                 requires: TrainerHardware::Any,
+                trains_on_resident_weights: false,
             }
         }
 

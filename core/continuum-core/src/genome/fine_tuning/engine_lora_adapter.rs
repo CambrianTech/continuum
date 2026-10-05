@@ -1108,7 +1108,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             // any base a live lane on this node serves; create_job checks the lane
             supported_base_model_prefixes: vec![],
             requires: TrainerHardware::Any,
+            trains_on_resident_weights: true,
         }
+    }
+
+    fn serves_base(&self, base_model: &str) -> bool {
+        (self.lane)(base_model).is_some()
     }
 
     async fn create_job(&self, mut request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
