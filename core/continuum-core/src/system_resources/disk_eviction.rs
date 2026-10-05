@@ -182,6 +182,22 @@ enum LockAttempt {
     Unavailable(String),
 }
 
+/// The first process whose executable lives under `dir`, if any: the test binary cargo
+/// is running, a build script, a tool it built. Read from the process table the other
+/// pools already consult; a table that cannot be read answers "nobody", which keeps the
+/// eviction honest in the direction it already errs (derived artifacts, next build
+/// recreates them). Canonicalized on both sides so a symlinked target dir still matches.
+pub(crate) fn process_executing_under(dir: &Path) -> Option<(u32, String)> {
+    let dir = dir.canonicalize().ok()?;
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    sys.processes().iter().find_map(|(pid, p)| {
+        let exe = p.exe()?;
+        let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf()); // unwrap_or_else: an exe that vanished mid-read compares by its recorded path
+        exe.starts_with(&dir).then(|| (pid.as_u32(), exe.display().to_string()))
+    })
+}
+
 fn try_exclusive_flock_detailed(path: &Path) -> LockAttempt {
     use fs2::FileExt;
     let file = match std::fs::OpenOptions::new()
@@ -255,6 +271,13 @@ pub enum DeclinedEviction {
     BuildHoldsRootLock,
     /// A live cargo build holds `debug/.cargo-lock`. Same as above, one level in.
     BuildHoldsDebugLock,
+    /// A process is EXECUTING an image under `debug/` (a test binary, a tool cargo built
+    /// and ran). Cargo releases its locks at "Finished" and then runs what it built, so
+    /// the locks say nothing about that window, and deleting a running image is a
+    /// SIGKILL when its next page faults in (the M5, 2026-10-05: three test runs killed
+    /// at launch while the pool sat 14 GB over budget). The debug rung is declined while
+    /// it is in use; the earlier rungs still cut.
+    DebugProfileInUse { pid: u32, exe: String },
     /// The lock could not be opened or queried — permissions, a vanished path, a
     /// filesystem that cannot lock. @Astra, #3910 review: the first version folded
     /// this into the two above, so an IO failure was reported as "a live build holds
@@ -273,6 +296,7 @@ impl DeclinedEviction {
             Self::BuildHoldsRootLock => 1,
             Self::BuildHoldsDebugLock => 2,
             Self::LockUnavailable(_) => 3,
+            Self::DebugProfileInUse { .. } => 4,
         }
     }
 
@@ -290,6 +314,10 @@ impl DeclinedEviction {
             Self::BuildHoldsDebugLock => {
                 "a live cargo build holds debug/.cargo-lock — standing down, the \
                  build's cache is safe"
+            }
+            Self::DebugProfileInUse { .. } => {
+                "a process is executing an image under debug/ (a test binary cargo just \
+                 built) — the debug rung stands down; deleting a running image kills it"
             }
             Self::LockUnavailable(_) => {
                 "the lock could not be opened or queried — NOT evidence a build was                  protected, and NOT evidence the guard ran; the cache was left alone                  because we could not establish it was safe to touch"
@@ -577,12 +605,23 @@ impl ResourcePool for CargoTargetPool {
         };
 
         let mut freed = 0u64;
+        let debug = root.join("debug");
         for rung in Self::ladder(&root) {
             if freed >= want_bytes.max(1) {
                 break;
             }
             if !rung.exists() {
                 continue;
+            }
+            // THE WINDOW THE LOCKS DO NOT COVER: cargo has finished and is RUNNING what it
+            // built. The debug rung is the one that deletes those images; it is declined
+            // while any process executes one, and the pool stays over budget until the
+            // run ends (the next tick cuts it).
+            if rung == debug {
+                if let Some((pid, exe)) = process_executing_under(&debug) {
+                    self.declined(DeclinedEviction::DebugProfileInUse { pid, exe });
+                    break;
+                }
             }
             freed = freed.saturating_add(Self::free_rung(&rung, &root));
         }
@@ -1000,6 +1039,34 @@ mod tests {
     // (incremental before the whole debug tree), stops once `want` is met,
     // NEVER touches release/, and decrements the shared TrackedDir so the
     // broker doesn't re-fire against space already freed.
+    // what this catches (the M5, 2026-10-05): cargo has finished and is RUNNING what it
+    // built, no lock held, and the debug rung deleted the executing test binary three
+    // runs in a row. With a process executing an image under debug/, the earlier rungs
+    // still cut and the debug rung stands down with the pid; once it exits, the rung cuts.
+    #[cfg(unix)]
+    #[test]
+    fn the_debug_rung_stands_down_while_a_process_executes_under_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracked = seeded_target(tmp.path());
+        let deps = tmp.path().join("debug/deps");
+        std::fs::create_dir_all(&deps).expect("mkdir");
+        let sleeper = deps.join("continuum_core-test");
+        std::fs::copy("/bin/sleep", &sleeper).expect("a sleeper to run from debug/deps");
+        let mut child = std::process::Command::new(&sleeper).arg("30").spawn().expect("spawn the sleeper");
+        let pool = CargoTargetPool::new(tracked.clone(), 1);
+        // Ask for more than the first two rungs hold, so the ladder reaches debug/.
+        let freed = pool.evict_at_least(100_000);
+        assert!(!tmp.path().join("debug/incremental").exists(), "the first rung still cuts");
+        assert!(!tmp.path().join("tests").exists(), "the second rung still cuts");
+        assert!(sleeper.exists(), "the executing image survives");
+        assert!(tmp.path().join("debug/lib.rlib").exists(), "the debug rung stood down whole");
+        assert_eq!(freed, 6000, "only the two safe rungs");
+        child.kill().expect("stop the sleeper");
+        let _ = child.wait();
+        let freed_after = pool.evict_at_least(100_000);
+        assert!(!sleeper.exists() && freed_after > 0, "once nothing executes there, the rung cuts");
+    }
+
     #[test]
     fn ladder_frees_in_order_and_never_touches_release() {
         let tmp = tempfile::tempdir().expect("tempdir");
