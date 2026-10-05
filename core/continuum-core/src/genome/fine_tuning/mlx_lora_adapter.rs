@@ -100,6 +100,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             // Apple's MLX path — the coordinator routes here only on a
             // host whose probed HardwareProfile reports a Metal device.
             requires: TrainerHardware::Metal,
+            trains_on_resident_weights: false,
         }
     }
 

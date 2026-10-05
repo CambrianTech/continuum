@@ -107,6 +107,11 @@ pub enum Decision {
     Fork { parent: String, similarity: f32 },
     /// Nothing near: train a new gene on her examples from the base.
     Mint,
+    /// A gene for this competence is already being born: a job of hers in flight whose
+    /// signature is within reuse distance. These examples join it (or wait for it); a
+    /// second mint for one competence is the design's falsifier #2 (four Mints for one
+    /// card's credit on the 5090, 2026-10-05 13:17Z, before this branch existed).
+    Join { job: String, similarity: f32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -127,10 +132,48 @@ pub enum Surprise {
     NotYetMeasured,
 }
 
-/// The decision, in the order the design states.
+/// A job of hers already training, as the job board holds it: its identity and the
+/// signature it was minted with. `None` signature = a job from before signatures.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InFlightJob {
+    pub job: String,
+    pub similarity: f32,
+}
+
+/// The nearest job in flight for her whose minted signature sits within the
+/// competence's space; the caller filters the board to her jobs and the same base.
+pub fn nearest_in_flight<'a>(
+    competence: &Competence,
+    embedder_id: &str,
+    jobs: impl Iterator<Item = (String, &'a crate::genome::signature::GeneSignature)>,
+) -> Option<InFlightJob> {
+    jobs.filter_map(|(job, sig)| {
+        let similarity = sig.similarity_in(embedder_id, &competence.centroid)?;
+        Some(InFlightJob { job, similarity })
+    })
+    .max_by(|a, b| a.similarity.total_cmp(&b.similarity))
+}
+
+/// The decision, in the order the design states. `in_flight` is checked before any
+/// branch that would train: a competence already being learned is joined, never minted
+/// twice.
 pub fn decide(competence: &Competence, surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
+    decide_with_in_flight(competence, surprise, nearest, None)
+}
+
+pub fn decide_with_in_flight(
+    competence: &Competence,
+    surprise: Surprise,
+    nearest: Option<&NearestGene>,
+    in_flight: Option<&InFlightJob>,
+) -> Decision {
     if competence.members.len() < MIN_EXAMPLES {
         return Decision::Nothing { why: NothingBecause::TooFewExamples };
+    }
+    if let Some(j) = in_flight {
+        if j.similarity >= SIM_REUSE {
+            return Decision::Join { job: j.job.clone(), similarity: j.similarity };
+        }
     }
     if let Surprise::Measured { s } = surprise {
         if s < SURPRISE_FLOOR {
@@ -219,6 +262,13 @@ mod tests {
         assert_eq!(decide(&c, s(0.5), Some(&near(0.40, false))), Decision::Mint);
         assert_eq!(decide(&c, s(0.5), None), Decision::Mint);
         assert!(SIM_FORK < SIM_REUSE, "the thresholds order the branches");
+        // A job of hers already training this competence: join it, whatever the store says
+        // (the four-Mints-for-one-card shape); a distant job in flight changes nothing.
+        let flying = InFlightJob { job: "bcb7316f".into(), similarity: 0.97 };
+        assert_eq!(decide_with_in_flight(&c, s(0.5), None, Some(&flying)), Decision::Join { job: "bcb7316f".into(), similarity: 0.97 });
+        assert_eq!(decide_with_in_flight(&c, s(0.5), Some(&near(0.95, false)), Some(&flying)), Decision::Join { job: "bcb7316f".into(), similarity: 0.97 }, "join before reuse: the gene being born is hers");
+        let far = InFlightJob { job: "other".into(), similarity: 0.3 };
+        assert_eq!(decide_with_in_flight(&c, s(0.5), None, Some(&far)), Decision::Mint);
     }
 
     // what this catches: the nearest gene is read from the signature store in the SAME

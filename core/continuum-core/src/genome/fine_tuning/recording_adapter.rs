@@ -140,6 +140,7 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
             // Test fixture — no real accelerator needed; selectable on
             // any host.
             requires: TrainerHardware::Any,
+            trains_on_resident_weights: false,
         }
     }
 

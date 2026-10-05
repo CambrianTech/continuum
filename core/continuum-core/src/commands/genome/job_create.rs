@@ -251,7 +251,7 @@ crate::action_command! {
         let decision = match watched_signature.as_ref() {
             None => None,
             Some(sig) => {
-            use crate::genome::competence::{decide, nearest_in_store, Competence, Surprise, SIM_FORK};
+            use crate::genome::competence::{decide_with_in_flight, nearest_in_flight, nearest_in_store, Competence, Surprise, SIM_FORK};
             let competence = Competence {
                 centroid: sig.centroid.clone(),
                 members: (0..p.request.dataset.examples.len()).collect(),
@@ -282,7 +282,23 @@ crate::action_command! {
                     _ => (local, "store"),
                 },
             };
-            let decision = decide(&competence, Surprise::NotYetMeasured, nearest.as_ref());
+            // A JOB OF HERS ALREADY TRAINING THIS COMPETENCE is checked before any branch
+            // that would train: the board's watched jobs for this persona and base, by the
+            // signature each was minted with. Four Mints for one card's credit (the 5090,
+            // 2026-10-05) is the falsifier this closes.
+            #[cfg(not(test))]
+            let board_jobs = crate::genome::fine_tuning::TrainingJobBoard::global().snapshot();
+            #[cfg(test)]
+            let board_jobs = this.test_job_board.as_ref().snapshot();
+            let in_flight = nearest_in_flight(
+                &competence,
+                &sig.embedder,
+                board_jobs
+                    .iter()
+                    .filter(|j| j.persona_id == watched_persona_id && j.base_model == p.request.base_model)
+                    .filter_map(|j| j.signature.as_ref().map(|s| (j.handle.local_id.to_string(), s))),
+            );
+            let decision = decide_with_in_flight(&competence, Surprise::NotYetMeasured, nearest.as_ref(), in_flight.as_ref());
             crate::probe!(
                 class = "genome.decision",
                 persona = %p.request.persona_name,
@@ -293,6 +309,7 @@ crate::action_command! {
                 similarity = nearest.as_ref().map(|n| n.similarity).unwrap_or(0.0), // 0.0 = nothing in any source
                 nearest_resident = nearest.as_ref().is_some_and(|n| n.resident),
                 source,
+                in_flight = in_flight.as_ref().map(|j| j.job.as_str()).unwrap_or(""), // "" = no job of hers training nearby
                 surprise = "not_measured",
                 action = "mint", // until card 17dc0a7b wires reuse to a trial and fork to a parent
                 "a full bucket decided: reuse, fork or mint, against her store and the hub"
