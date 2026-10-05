@@ -1107,6 +1107,14 @@ impl PersonaConversation for AircPersonaConversation {
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
+        // Speech in her mind room reaches its only member, her (PRIVACY-OF-THOUGHT.md §4):
+        // it is never published, so no airc channel (not even one named by the room's
+        // uuid) ever carries it. Saying it to the room is publishing; that is her act.
+        let me = self.own_peer_id;
+        if crate::persona::mind_room::is_private_room(me, room_id) {
+            crate::persona::mind_room::note_withheld(me, "speech");
+            return Ok(());
+        }
         self.runtime
             .say_in(room_id, text)
             .await
@@ -1332,6 +1340,28 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("lagged 7"), "{error}");
         conversation.stop_stream();
+    }
+
+    // what this catches: speech in her mind room published to airc (PRIVACY-OF-THOUGHT.md
+    // §4). It reaches its only member, her, and nothing goes out: without the gate the
+    // runtime would publish to a room NAMED by the mind room's uuid, which this scope
+    // has never joined.
+    #[tokio::test]
+    async fn speech_in_her_mind_room_is_never_published() {
+        use crate::persona::identity_provider::PersonaIdentitySource;
+        use crate::persona::PersonaAircRuntime;
+        let home = tempfile::tempdir().unwrap();
+        let airc = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await.unwrap());
+        let room = airc.join("open-room").await.unwrap().channel;
+        let runtime = Arc::new(PersonaAircRuntime::from_attached(
+            airc.peer_id().as_uuid(), "open-room", home.path().to_path_buf(),
+            airc.clone(), room, PersonaIdentitySource::FreshlyMinted,
+        ));
+        let conversation = AircPersonaConversation::new(runtime.clone());
+        let mind = crate::persona::mind_room::mind_room_id(airc.peer_id().as_uuid());
+        conversation.say_in(mind, "a private word").await.expect("said to herself, never published");
+        conversation.say_in(room.as_uuid(), "an open word").await.expect("an open room still publishes");
     }
 
     // Regression: priming establishes readiness once; the live loop must not

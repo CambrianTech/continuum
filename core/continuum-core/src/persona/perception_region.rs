@@ -403,6 +403,17 @@ impl PerceptionRegion {
 
     /// Save her durable state (the seam: deploy stop, periodic, after each turn).
     pub fn save(&self, peer_dir: &Path, now_ms: u64) -> Result<(), MindStateError> {
+        // A continuation in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 10): never
+        // written to mind-state.json in plaintext. Until her sealed store exists it lives in
+        // memory only, and a restart forgets it, which is the honest cost (the same as her
+        // mind cycle's working memory). Her open state is saved as always.
+        let me = self.me.as_uuid();
+        if self.state.continuation.as_ref().is_some_and(|c| crate::persona::mind_room::is_private_room(me, c.activity)) {
+            crate::persona::mind_room::note_withheld(me, "mind_state_continuation");
+            let mut open = self.state.clone();
+            open.continuation = None;
+            return open.save(peer_dir, now_ms);
+        }
         self.state.save(peer_dir, now_ms)
     }
 
@@ -491,6 +502,34 @@ mod tests {
 
     fn region() -> (PerceptionRegion, watch::Receiver<AwarenessSnapshot>) {
         region_with_saved(None)
+    }
+
+    // what this catches: a private continuation (her note, in her mind room) written to
+    // mind-state.json in plaintext (sink 10 of PRIVACY-OF-THOUGHT.md). She holds it in
+    // memory; the file holds neither it nor its note, and an open continuation still saves.
+    #[test]
+    fn a_private_continuation_is_never_written_to_her_mind_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, _rx) = PerceptionRegion::boot(PeerId::from_uuid(ME), dir.path(), 1_000, 0);
+        let mind = crate::persona::mind_room::mind_room_id(ME);
+        r.set_continuation(
+            Some(Continuation { activity: mind, note: "a private plan".into(), expectation: None, written_at_ms: 1 }),
+            1,
+        );
+        r.save(dir.path(), 2).unwrap();
+        assert_eq!(r.continuation().map(|c| c.activity), Some(mind), "she still holds it");
+        let on_disk: String = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok())
+            .collect();
+        assert!(!on_disk.contains("a private plan"), "no plaintext note on disk");
+        assert!(MindState::load(dir.path()).continuation.is_none(), "no continuation on disk");
+        r.set_continuation(
+            Some(Continuation { activity: A, note: "an open plan".into(), expectation: None, written_at_ms: 3 }),
+            3,
+        );
+        r.save(dir.path(), 4).unwrap();
+        assert_eq!(MindState::load(dir.path()).continuation.map(|c| c.note), Some("an open plan".to_string()));
     }
 
     /// Boot from a peer dir that holds `saved` (a prior sitting's continuation), so

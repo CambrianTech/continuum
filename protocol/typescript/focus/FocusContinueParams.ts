@@ -31,4 +31,8 @@ expectVerdict?: ExpectedVerdictParam,
 /**
  * `true` = you have finished this thread: clear your continuation.
  */
-clear: boolean, };
+clear: boolean, 
+/**
+ * `true` = keep this in your mind room: private, never recorded or published; no `room`.
+ */
+private: boolean, };
