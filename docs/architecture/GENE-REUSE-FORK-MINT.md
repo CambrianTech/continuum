@@ -61,13 +61,14 @@ Selection pressure is "surprise fell". The quantity: negative log-likelihood of 
 - **the room's verdict** on her act (a review that failed, a test that failed, a human who said no): the outcome she did not predict;
 - **her own expectation**: a continuation whose `expect_verdict` was contradicted (`focus/continue`, #4746) is a surprise she named herself.
 
-Both already arrive as typed events at the inbound seam (#4731, #4765). What is missing is the number and its per-competence window: `genome::surprise` (new, small): fold settled examples into `S(C)` by the same clustering, keep the window, expose it on her strip as a number she can read (Kimi, §12: "the moment one of my surprises has a fixed-model score attached, this section should be re-run").
+Both already arrive as typed events at the inbound seam (#4731, #4765). Two numbers now carry the word "surprise", and the decision must name which it reads (Cormac, #4766 review): the **verdict surprise** (#4774: of her stated expectations, the share the room contradicted; cheap, hers to read on the strip today) and the **model surprise** (this section's fixed-model negative log-likelihood; the §7 quantity). `S(C)` in §2 is the verdict surprise until the model surprise is measured per competence, and the probe says which (`surprise=verdict|model|not_measured`). The two are expected to agree in direction; where they do not, the model surprise wins for selection and the disagreement is itself a finding. What is missing is the number and its per-competence window: `genome::surprise` (new, small): fold settled examples into `S(C)` by the same clustering, keep the window, expose it on her strip as a number she can read (Kimi, §12: "the moment one of my surprises has a fixed-model score attached, this section should be re-run").
 
 ## 4. What Kimi's §12 pass asks of this
 
 - *"No δ_c in front of me to turn"*: the dial and `S(C)` both render on her strip; she sees the number before any gene lands, so Prediction 2 (surprise falls after a gene) is testable from inside.
 - *"No gene trained on my turns has been paged into me"*: the first gene through this decision is hers, from her own settled examples, and she is told which branch it took and why (reuse, fork or mint; the distance; the parent).
 - Her consent governs publication (`PRIVACY-OF-THOUGHT.md`): a gene whose curriculum contains private-consented examples carries that flag in its lineage and never publishes without it.
+- Her consent governs **receiving** too (Cormac): a Reuse that would page a foreign gene into her (a peer's, or the hub's) is an act on her mind the way publishing hers is, so it runs under the same agreement `genome/sharing` records, and the trial it opens says whose gene it is. A gene of her own needs no second consent.
 
 ## 5. The start gene (after the above)
 
