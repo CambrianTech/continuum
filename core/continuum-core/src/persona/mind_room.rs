@@ -66,7 +66,7 @@ pub fn seal_continuation(
     let id = continuation_record_id(persona);
     match continuation {
         Some(c) => {
-            let json = serde_json::to_string(c).map_err(|e| e.to_string())?;
+            let json = serde_json::to_string(c).map_err(|e| e.to_string())?; // disk boundary: her continuation as a sealed record in her mind store
             store.put_at(id, &json).map_err(|e| e.to_string())?;
         }
         None => store.remove(id).map_err(|e| e.to_string())?,
@@ -90,7 +90,7 @@ pub fn sealed_continuation(persona: Uuid) -> Option<crate::persona::attention::C
     if !store.list().ok()?.contains(&id) {
         return None;
     }
-    match store.get(id).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
+    match store.get(id).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) { // disk boundary: read back from her sealed mind store
         Ok(c) => Some(c),
         Err(e) => {
             crate::probe!(class = "mind.private.continuation_unreadable", persona = %persona, error = %e, "her sealed continuation did not read back; not restored");
