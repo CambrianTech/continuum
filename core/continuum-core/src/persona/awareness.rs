@@ -101,9 +101,27 @@ impl AwarenessSnapshot {
     /// One line of text per visible activity, for the renderer. Her own
     /// continuation leads when present, so the task she chose reads first.
     pub fn render_lines(&self) -> Vec<String> {
+        self.render_with(|_| true)
+    }
+
+    /// The lines as one turn of `persona` in `room` sees them. A continuation in her mind
+    /// room is hers (PRIVACY-OF-THOUGHT.md §4): outside her mind room the strip says only
+    /// that private work is pending, never its note, so a private continuation never
+    /// reaches a public turn's prompt or capture.
+    pub fn render_lines_in(&self, persona: Uuid, room: Option<Uuid>) -> Vec<String> {
+        self.render_with(|c| {
+            !crate::persona::mind_room::is_private_room(persona, c.activity) || room == Some(c.activity)
+        })
+    }
+
+    fn render_with(&self, shows_note: impl Fn(&Continuation) -> bool) -> Vec<String> {
         let mut out = Vec::with_capacity(self.visible().len() + 1);
         if let Some(c) = &self.continuation {
-            out.push(format!("[working] {} — {}", short8(c.activity), c.note));
+            out.push(if shows_note(c) {
+                format!("[working] {} — {}", short8(c.activity), c.note)
+            } else {
+                "[working] private work pending in your mind room".to_string()
+            });
         }
         for l in self.visible() {
             let mut line = format!("{} · {} unread · {:?}", l.name, l.unread, l.salience.level);
@@ -207,5 +225,20 @@ mod tests {
         assert!(text[0].starts_with("[working]"), "{text:?}");
         assert!(text[0].contains("next: run the suite"));
         assert!(text[1].contains("career-wrangler") && text[1].contains("BLOCKER") && text[1].contains("1 waiting on you"), "{text:?}");
+    }
+
+    // what this catches: a private continuation (her note, in her mind room) rendered into
+    // a PUBLIC turn's strip, and so into that turn's prompt and capture. Outside her mind
+    // room the strip says only that private work is pending; inside it, the note reads.
+    #[test]
+    fn a_private_continuation_shows_its_note_only_in_her_mind_room() {
+        let her = Uuid::new_v4();
+        let mind = crate::persona::mind_room::mind_room_id(her);
+        let c = Continuation { activity: mind, note: "a private plan".into(), expectation: None, written_at_ms: 0 };
+        let snap = fold(vec![], Some(c), AttentionDial::default(), 1_000, 1);
+        let public = snap.render_lines_in(her, Some(Uuid::new_v4()));
+        assert!(!public.concat().contains("a private plan"), "{public:?}");
+        assert!(public[0].contains("private work pending"), "{public:?}");
+        assert!(snap.render_lines_in(her, Some(mind))[0].contains("a private plan"));
     }
 }

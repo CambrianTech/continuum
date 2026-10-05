@@ -167,6 +167,10 @@ Each step lands with a test, and each is useful on its own.
    Test: a turn in her mind room produces zero bytes in each of the ten sinks, and a turn in any
    other room is unchanged. `Sealed<T>` lands with it for the values (her continuation first).
    This is the substance; encryption without it protects nothing.
+1b. **Her mind cycle.** Working memory is the cross-turn channel, so a turn in her mind room runs
+   on its own `WorkspaceCycle` (`PersonaWorkspaceRegistry::cycle_for_room`). That cycle has its
+   own working memory and no captures, mirrors her live genome and model each turn, and is never
+   checkpointed. Her strip shows a private continuation's note only in her mind room.
 2. **airc sealed-to-self store** (`seal_to_self`, `open_from_self`, `K_mind` sealed to her
    identity, rotation re-seal with receipt). Test: rotate the identity, read every record back.
 3. **The `mind/private/*` tools**, including share and publish.
