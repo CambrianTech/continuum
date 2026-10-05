@@ -156,7 +156,7 @@ fn now_ms_for_decision() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .unwrap_or(0) // pre-epoch clock: 0 puts every tally outside its window = not measured, which never halts training
 }
 
 crate::action_command! {
@@ -447,7 +447,7 @@ crate::action_command! {
                 retired = retired.len() as u64,
                 surprise = if surprise.is_some() { "verdict" } else { "not_measured" },
                 s = surprise.map(|v| v.s).unwrap_or(0.0), // 0.0 = not measured; read `surprise` first
-                judged = surprise.map(|v| v.judged).unwrap_or(0) as u64,
+                judged = surprise.map(|v| v.judged).unwrap_or(0) as u64, // 0 = not measured; read `surprise` first
                 "a full bucket decided: join, await, reuse, fork or mint, against her surprise, her store, her trials and the hub"
             );
             Some(decision)
