@@ -83,11 +83,9 @@ pub struct SubmitParams {
 
 impl SubmitParams {
     /// A job's examples handed back to her bucket: THE one conversion from a job's request
-    /// to a submit (a held orphan at boot, `genome/training-trigger/return`). Only the
-    /// bucket key and the examples ride back. The job's LoRA, schedule and eval set are
-    /// left to the bucket, whose first-arrival policy would refuse a disagreeing one
-    /// `InconsistentBucket`. The job's id is the batch identity, so a second return of
-    /// the same job is a replay the bucket recognises, never a second copy.
+    /// to a submit, carrying the job's own policy (which [`return_request`] replaces with
+    /// the bucket's when the key already holds one). The job's id is the batch identity, so
+    /// a second return of the same job is a replay the bucket recognises, never a copy.
     pub(crate) fn returning(request: crate::genome::fine_tuning::types::TrainingJobRequest, job: Uuid) -> Self {
         Self {
             submission_id: Some(job),
@@ -97,15 +95,51 @@ impl SubmitParams {
             trait_kind: request.trait_kind,
             examples: request.dataset.examples,
             source: request.dataset.source,
-            eval_set: None,
-            lora: None,
-            schedule: None,
-            local_artifact_dir: None,
+            eval_set: request.eval_set,
+            lora: request.lora,
+            schedule: request.schedule,
+            local_artifact_dir: request.local_artifact_dir,
             preferred_provider: None,
             min_examples: None,
-            validation_split: None,
+            validation_split: Some(request.dataset.validation_split),
         }
     }
+
+    /// Take `policy` as this batch's: a returned job's examples JOIN the bucket they go
+    /// back to, whatever the job's request.json says (the trainer's adapter writes its own
+    /// defaults into it, so a returned `lora: Some(default)` would never equal a
+    /// producer's `None`).
+    fn adopting(mut self, policy: crate::modules::training_trigger::BucketPolicy) -> Self {
+        self.source = policy.source;
+        self.lora = policy.lora;
+        self.schedule = policy.schedule;
+        self.validation_split = Some(policy.validation_split);
+        self.local_artifact_dir = policy.local_artifact_dir;
+        self.preferred_provider = policy.preferred_provider;
+        self.eval_set = policy.eval_set;
+        self
+    }
+}
+
+/// A job's examples back into her bucket: THE one return (a held orphan at boot,
+/// `genome/training-trigger/return`). Into a key that already holds a batch they adopt its
+/// policy; into an empty key they pin the job's own.
+pub(crate) async fn return_request(
+    state: &Arc<TrainingTriggerState>,
+    request: crate::genome::fine_tuning::types::TrainingJobRequest,
+    job: Uuid,
+) -> Result<SubmitOutcome, CommandError> {
+    let params = SubmitParams::returning(request, job);
+    let key = BucketKey {
+        persona_id: params.persona_id,
+        trait_kind: params.trait_kind.clone(),
+        base_model: params.base_model.clone(),
+    };
+    let params = match state.held_policy(&key) {
+        Some(policy) => params.adopting(policy),
+        None => params,
+    };
+    submit_batch(state, params).await
 }
 
 /// Outcome-as-data extends the legacy envelope with an acceptance receipt.

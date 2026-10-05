@@ -125,6 +125,19 @@ pub(crate) struct BucketKey {
     pub(crate) base_model: String,
 }
 
+/// What a bucket pins at its first arrival ([`PendingBatch::policy`]); a later batch
+/// that disagrees is refused `InconsistentBucket`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BucketPolicy {
+    pub(crate) source: TrainingSource,
+    pub(crate) lora: Option<LoRAHyperparams>,
+    pub(crate) schedule: Option<ScheduleParams>,
+    pub(crate) validation_split: f32,
+    pub(crate) local_artifact_dir: Option<PathBuf>,
+    pub(crate) preferred_provider: Option<String>,
+    pub(crate) eval_set: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PendingBatch {
     /// Durable submission identities; payloads are stored separately, once each.
@@ -336,7 +349,16 @@ impl TrainingTriggerState {
     /// Every later tick re-asks the HELD orphans (re-attach uncertain or unanswered) once their
     /// wait is up, so an engine that answers later is re-attached or released then; a held
     /// orphan is never resumed (step 3, Cormac on #4537).
-    pub(crate) async fn resume_orphans_once(&self) {
+    /// The policy a batch for `key` must agree with right now: the pending bucket's, else
+    /// the active dispatch's. `None` when the key holds nothing and a batch pins its own.
+    pub(crate) fn held_policy(&self, key: &BucketKey) -> Option<BucketPolicy> {
+        self.buckets
+            .get(key)
+            .map(|pending| pending.policy())
+            .or_else(|| self.active_dispatches.get(key).map(|active| active.batch.policy()))
+    }
+
+    pub(crate) async fn resume_orphans_once(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
         if self.resumed_orphans.load(Ordering::Acquire)
             && self.held_orphans.lock().map_or(true, |held| held.is_empty())
@@ -431,25 +453,14 @@ impl TrainingTriggerState {
                         );
                         continue;
                     }
-                    let resubmitted = match read_job_request(&dir).and_then(|request| {
-                        serde_json::to_value(crate::commands::training_trigger::submit::SubmitParams::returning(request, orphan.local_id))
-                            .map_err(|e| format!("the returned batch does not serialize: {e}"))
-                    }) {
-                        Ok(returned) => executor
-                            .execute_json("genome/training-trigger/submit", returned)
-                            .await
-                            .map_err(|e| e.to_string())
-                            .and_then(|out| {
-                                // The call returning is not the batch being taken: a refused
-                                // submit (InconsistentBucket, …) returns success=false.
-                                let outcome: crate::commands::training_trigger::submit::SubmitOutcome =
-                                    serde_json::from_value(out).map_err(|e| format!("submit's outcome is unreadable: {e}"))?;
-                                if outcome.success {
-                                    Ok(())
-                                } else {
-                                    Err(format!("{:?}: {:?}", outcome.error_kind, outcome.error))
-                                }
-                            }),
+                    let resubmitted = match read_job_request(&dir) {
+                        // The call returning is not the batch being taken: a refused submit
+                        // (InconsistentBucket, …) comes back success=false.
+                        Ok(request) => match crate::commands::training_trigger::submit::return_request(self, request, orphan.local_id).await {
+                            Ok(outcome) if outcome.success => Ok(()),
+                            Ok(outcome) => Err(format!("{:?}: {:?}", outcome.error_kind, outcome.error)),
+                            Err(error) => Err(error.to_string()),
+                        },
                         Err(error) => Err(error),
                     };
                     // JOURNALED AS RESOLVED (BigMama on #4791): the orphan's examples now

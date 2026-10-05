@@ -24,7 +24,7 @@ use serde::Deserialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::submit::{submit_batch, SubmitOutcome, SubmitParams};
+use super::submit::{return_request, SubmitOutcome};
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::modules::training_trigger::{genome_root, job_dir_under, read_job_request, TrainingTriggerState};
 use crate::sdk_codegen::CommandError;
@@ -84,7 +84,7 @@ pub(crate) async fn return_job(
         )));
     }
     let request = read_job_request(&dir).map_err(CommandError::NotFound)?;
-    let outcome = submit_batch(state, SubmitParams::returning(request, job_id)).await?;
+    let outcome = return_request(state, request, job_id).await?;
     if outcome.success {
         board.journal_returned(job_id, job_id, "genome/training-trigger/return", 0);
     }
@@ -94,6 +94,7 @@ pub(crate) async fn return_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::training_trigger::submit::{submit_batch, SubmitParams};
     use crate::commands::training_trigger::test_support::{build_runtime_trigger_only, ex};
     use crate::genome::fine_tuning::job_board::WatchedJob;
     use crate::genome::fine_tuning::types::{JobHandle, TrainingSource, TrainingStatus};
@@ -138,10 +139,14 @@ mod tests {
             std::fs::write(jd.join("request.json"), serde_json::to_vec(&request).expect("test: json")).expect("test: write");
             jd
         };
-        let ended = |job: Uuid| {
-            board.register(watched(job));
+        let ended_for = |job: Uuid, persona: Uuid, name: &str| {
+            let mut w = watched(job);
+            w.persona_id = persona;
+            w.persona_name = name.into();
+            board.register(w);
             board.claim(job, &TrainingStatus::Failed { error: "ended before training".into() });
         };
+        let ended = |job: Uuid| ended_for(job, persona, "Kimi");
 
         let stranded = Uuid::new_v4();
         ended(stranded);
@@ -157,6 +162,47 @@ mod tests {
         };
         let held = trigger.state.buckets.get(&key).map(|b| b.examples.len());
         assert_eq!(held, Some(3), "the three examples are in her bucket once, not twice");
+
+        // Fable on #4800: a return into a bucket that already holds a producer's batch
+        // (code traits carry the gym's evalSet; the adapter wrote a default lora into the
+        // job's request.json) joins that bucket instead of being refused InconsistentBucket.
+        let other = Uuid::from_u128(8);
+        let producer = SubmitParams {
+            submission_id: None,
+            persona_id: other,
+            persona_name: "Sahar".into(),
+            base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+            trait_kind: "code/owner".into(),
+            examples: vec![ex("q", "a")],
+            source: TrainingSource::TeacherSynthesized,
+            eval_set: Some("docs/genome/coder-eval.jsonl".into()),
+            lora: None,
+            schedule: None,
+            local_artifact_dir: None,
+            preferred_provider: None,
+            min_examples: Some(50),
+            validation_split: None,
+        };
+        assert!(submit_batch(&trigger.state, producer).await.expect("test: producer").success);
+        let joining = Uuid::new_v4();
+        ended_for(joining, other, "Sahar");
+        let jd = job_dir_under(&root, "Sahar", "code/owner", joining);
+        std::fs::create_dir_all(&jd).expect("test: dir");
+        std::fs::write(jd.join("request.json"), serde_json::json!({
+            "personaId": other.to_string(), "personaName": "Sahar",
+            "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "traitKind": "code/owner",
+            "dataset": {"examples": [ex("r1", "s1"), ex("r2", "s2")], "source": TrainingSource::TeacherSynthesized, "validationSplit": 0.1},
+            "evalSet": "docs/genome/coder-eval.jsonl",
+            "lora": {"rank": 8, "alpha": 16, "dropout": 0.0, "targetModules": ["q_proj", "v_proj"]}
+        }).to_string()).expect("test: write");
+        let joined = return_job(&trigger.state, &board, &root, joining).await.expect("test: joined");
+        assert!(joined.success, "a return joins the bucket's policy: {joined:?}");
+        let other_key = crate::modules::training_trigger::BucketKey {
+            persona_id: other,
+            trait_kind: "code/owner".into(),
+            base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+        };
+        assert_eq!(trigger.state.buckets.get(&other_key).map(|b| b.examples.len()), Some(3), "1 produced + 2 returned");
 
         let open = Uuid::new_v4();
         board.register(watched(open));
