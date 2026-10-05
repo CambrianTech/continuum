@@ -136,6 +136,18 @@
       "command": "work/submit"
     },
     {
+      "verb": "continue",
+      "command": "focus/continue"
+    },
+    {
+      "verb": "nudge",
+      "command": "focus/nudge"
+    },
+    {
+      "verb": "mute",
+      "command": "focus/mute"
+    },
+    {
       "verb": "review",
       "command": "work/review"
     },
