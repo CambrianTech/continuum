@@ -788,11 +788,22 @@ impl ActionCommand for WorkSubmit {
             })?;
             bound_staged_revision_id = Some(binding.selection.staged_revision_id);
         }
+        let grade_title = card.title.clone();
+        let grade_hash = candidate.artifact.hash.to_string();
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
             "submission publication was not acknowledged; retry the same submission_id and selection: {e}")))?;
+        // A hand-in on a bench card is graded now, here, where the artifact lives; a
+        // card that is not a SWE bench card returns at once.
+        tokio::spawn(crate::modules::benchmark_grade::grade_submission(
+            Arc::clone(airc),
+            room.channel.as_uuid(),
+            grade_title,
+            published.instance.clone(),
+            grade_hash,
+        ));
         Ok(WorkSubmitResult {
             submission_id: published.submission_id.as_uuid(),
             card_id: published.card_id.as_uuid(),

@@ -72,21 +72,8 @@ impl ServiceModule for BenchmarkGradeModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
-        // Finished work is graded on the tick, not at the next boot: the verdict
-        // sweep starts here when something is pending and none is in flight
-        // (one sweep at a time; it scans directories, then grades serially).
-        // The scan spawns a `git status` per staged checkout — minutes of blocking work on
-        // a big box — so it runs on the blocking pool, never on the runtime the minds
-        // share (2026-09-20 00:05Z: it had been running on a worker thread, continuously).
-        let started = tokio::task::spawn_blocking(crate::cognition::swe_verdict_sweep::sweep_if_due)
-            .await
-            .unwrap_or(false); // JUSTIFIED unwrap_or: a panicked scan started no sweep; the next tick scans again
-        if started {
-            crate::probe!(
-                class = "benchmark.verdict.sweep_started_by_tick",
-                "pending citizen work found on the tick — grading now, not at the next boot"
-            );
-        }
+        // No desk sweep: a hand-in is graded when it is submitted (`grade_submission`,
+        // fired by work/submit), never by scanning citizens' workspaces on a clock.
         // THE VERDICT LAW on the tick (card 52842311): verdicts on file settle the
         // cards the board left open — review-parked parents, unpulled review cards.
         crate::modules::verdict_board::reconcile_verdicted().await;
@@ -94,50 +81,9 @@ impl ServiceModule for BenchmarkGradeModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        // RECONCILE the artifacts already on disk, once, as this module comes up.
-        //
-        // Grading belongs to the benchmark recipe — it IS the activity's outcome score
-        // (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md), so it is owned HERE,
-        // by the module that owns every other grade path, and never by some unrelated daemon's
-        // boot sequence. (Written after doing exactly that and being corrected: a sweep hung
-        // off `serving_daemon` start is the parallel-runner shape this repo has a whole
-        // document forbidding. Joel: "Grading is supposed to be part of the regular benchmark
-        // recipe".)
-        //
-        // Why a reconciliation exists at all, next to two event paths that are both correct:
-        // the grade-on-done subscriber fires on a card TRANSITION, and the tick sweep detects
-        // a LAPSED lease. Neither can see an artifact with no card — detached `agent/solve`
-        // runs (#425) produce exactly that, and 17 unscored citizen patches were sitting on
-        // this box the night it was written, two of them PASSES over a day old. This is the
-        // same reap-or-adopt boot owns for every other resource (#452): an orphaned ARTIFACT
-        // is an orphaned run.
-        //
-        // Deterministic and idempotent (see the sweep's module doc), so it is a reconciliation
-        // and not the forbidden condition-poll: it enumerates ALL staged instances in sorted
-        // order with no cap and no recency sort, skips anything already carrying a verdict, and
-        // refuses ambiguity rather than guessing. Same disk, same outcome, every time.
-        //
-        // DETACHED because each grade is a fresh clone plus a real test suite — minutes apiece.
-        // Module init must not block on it, and the citizens' first turn must not queue behind
-        // it.
-        tokio::spawn(async {
-            // The boot sweep holds the same in-flight guard the tick honours:
-            // on 0babe4c78 the 180 s tick started a SECOND sweep at 15:33Z while
-            // the boot's was still grading (the guard only knew about ticks).
-            use std::sync::atomic::Ordering;
-            if crate::cognition::swe_verdict_sweep::SWEEP_IN_FLIGHT.swap(true, Ordering::AcqRel) {
-                return;
-            }
-            let report = crate::cognition::swe_verdict_sweep::sweep().await;
-            crate::cognition::swe_verdict_sweep::SWEEP_IN_FLIGHT.store(false, Ordering::Release);
-            if report.graded > 0 {
-                tracing::info!(
-                    graded = report.graded,
-                    resolved = report.resolved,
-                    "benchmark artifact reconciliation scored citizen work that had no verdict"
-                );
-            }
-        });
+        // No boot reconciliation of desks: grading is of hand-ins (`grade_submission`,
+        // fired by work/submit). The desk sweep graded every staged copy in every
+        // citizen's workspace, including citizens who chose no benchmark (2026-10-05).
         // THE live wiring. `config().event_subscriptions` installs a SYNCHRONOUS-tier
         // subscription the registry marks `synchronous: false` — which `publish()`
         // filters OUT, and runtime.rs:99 says so out loud: "event_subscriptions are
@@ -407,6 +353,85 @@ async fn grade_card(
             .map_err(|e| format!("post verdict: {e}"))?;
     }
     Ok(())
+}
+
+/// Grade a HAND-IN: the patch a citizen submitted on a SWE bench card, graded the moment she
+/// submits it. A grader grades what was handed in, never a desk (Joel and Cormac,
+/// 2026-10-05: "read the nouns literally"). Before this, a 180 s sweep graded every staged
+/// copy in every citizen's workspace, so it kept diffing Kimi's autopilot-staged copies
+/// though she had chosen no benchmark (385 unreadable diffs in 50 minutes on her desk).
+///
+/// The patch is read back from the artifact store by the hash she published, so the grade
+/// is exactly her submission even if her checkout moved on. `grade_swe` grades it in a
+/// fresh clone at the base, records the verdict and follows it onto the board, as every
+/// grade path does. Not a bench card, or not a SWE one: nothing to grade, returns quietly.
+pub(crate) async fn grade_submission(
+    airc: std::sync::Arc<airc_lib::Airc>,
+    room_id: uuid::Uuid,
+    card_title: String,
+    instance: String,
+    patch_hash: String,
+) {
+    let Some((bench, _)) = parse_bench_title(&card_title) else {
+        return;
+    };
+    let Some(dataset) = known_benchmarks().iter().find(|b| b.name == bench).and_then(|s| s.swe_dataset()) else {
+        return;
+    };
+    let patch = match read_patch(&patch_hash) {
+        Ok(p) => p,
+        Err(why) => {
+            crate::probe!(
+                class = "benchmark.grade.submission_unreadable",
+                instance = %instance,
+                hash = %patch_hash,
+                why = %why,
+                "the submitted patch could not be read back from the artifact store — not graded"
+            );
+            return;
+        }
+    };
+    crate::probe!(class = "benchmark.grade.submission", instance = %instance, room_id = %room_id, "grading a hand-in");
+    match grade_swe(SweGradeParams {
+        instance: instance.clone(),
+        dataset: Some(dataset.to_string()),
+        gold: None,
+        patch: Some(patch),
+        workspace: None,
+    })
+    .await
+    {
+        Ok(verdict) => {
+            if let Some(err) = &verdict.error {
+                // The refusal record the desk sweep used to write: an env fault stands so
+                // card selection and import skip what this box cannot grade.
+                crate::cognition::swe_verdict_sweep::record_refusal(&instance, err, None);
+                let msg = format!("🧪 [bench {bench}] {instance} — grade could not run (infra, not a score): {err}");
+                if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg).await {
+                    crate::probe!(
+                        class = "benchmark.grade.submission_unposted",
+                        instance = %instance,
+                        error = %e,
+                        "the infra-error line for a hand-in could not be posted to its room"
+                    );
+                }
+            }
+        }
+        Err(e) => crate::probe!(
+            class = "benchmark.grade.submission_failed",
+            instance = %instance,
+            error = ?e,
+            "grading the hand-in failed before a verdict"
+        ),
+    }
+}
+
+fn read_patch(hash: &str) -> Result<String, String> {
+    use airc_blobs::ContentAddressedStore;
+    let store = crate::media::artifact::store()?;
+    let hash = airc_blobs::ContentHash::from_hex(hash).ok_or_else(|| format!("not a content hash: {hash}"))?;
+    let bytes = store.get(&hash).map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map_err(|e| format!("patch is not UTF-8: {e}"))
 }
 
 /// Resolve one gym task by id and normalize it with the SAME `require_hands_for_code`
