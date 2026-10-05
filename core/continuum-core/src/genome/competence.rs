@@ -296,13 +296,11 @@ mod tests {
     // mint. Each branch carries the numbers that decided it.
     #[test]
     fn the_decision_reuses_before_forking_and_forks_before_minting() {
-        let c = Competence { centroid: vec![1.0, 0.0], members: (0..MIN_EXAMPLES).collect(), cohesion: 0.9, representative: 0 };
-        let small = Competence { members: vec![0, 1], ..c.clone() };
         let g = GeneRef::Local { path: PathBuf::from("/genes/rust-tests.gguf") };
         let near = |similarity, resident| NearestGene { gene: g.clone(), similarity, resident };
         let s = |x| Surprise::Measured { s: x };
         // The size of a competence is settled by whoever made it (the clustering floor, or
-        // the bucket's threshold): a two-member one still joins, awaits, reuses or mints.
+        // the bucket's threshold): the decision takes no competence and never second-guesses it.
         assert_eq!(decide(s(0.9), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
         assert_eq!(decide(s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
         assert_eq!(decide(Surprise::NotYetMeasured, None), Decision::Mint, "not yet measured is not low: distance decides, as before");
