@@ -5471,11 +5471,16 @@ fn is_extended_hand(name: &str) -> bool {
     // `code/shell-poll` is NOT extended: it is the second half of `code/shell`, whose own
     // description says to poll a running execution with it. Idris (2026-09-29) started a
     // long command on a core-hands window and had no verb to see it finish.
+    // Rooms and chat are hers (Joel: "join in anywhere like any of you"), and extended:
+    // a window too small for the full set keeps the focused working set and its
+    // conversation; a window that holds them (Kimi's does) carries her rooms and voice.
     name.starts_with("web/")
         // Her self-determination verbs (focus/continue, nudge, mute) ride every window
         // that holds them; on the 8192 survival window the newest line outranks them
         // (the guard below this file's tool_surface test), as it does the web.
         || name.starts_with("focus/")
+        || name.starts_with("room/")
+        || name.starts_with("chat/")
         || matches!(name, "code/git/add" | "code/git/push" | "code/github/pr-create" | "code/github/pr-comment")
 }
 
@@ -5518,6 +5523,13 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // slot to call it. Kimi, 2026-10-05: "present in the registry, absent from my
             // surface ... I've read it six times ... there is nothing to invoke against."
             n.starts_with("focus/")
+                // Her rooms and her voice in them are hers (room/join, room/leave,
+                // room/list, room/members, chat/send): with no automatic seating
+                // (HER-LOOP row C), a citizen who cannot join a room can be unseated but
+                // never choose one. Joel: "she ought to be able to just join in anywhere
+                // like any of you."
+                || n.starts_with("room/")
+                || n.starts_with("chat/")
                 || n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
@@ -5744,14 +5756,16 @@ mod tests {
         .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
         // A capable citizen (an unknown level counts as capable: more, not less) also gets
-        // the web, like Claude (Joel, 2026-09-28); chat and room verbs are not hands, and
+        // the web, like Claude (Joel, 2026-09-28); her rooms and chat are hands, and
         // the misread reviewer verbs stay out of her hands.
         assert_eq!(
             hands,
             [
                 "code/read",
                 "work/state",
+                "chat/send",
                 "commands/list",
+                "room/join",
                 "code/git/status",
                 "work/submit",
                 "web/fetch",
