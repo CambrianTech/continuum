@@ -312,6 +312,12 @@ impl Footprints {
     }
 }
 
+/// The share of a lane's time training takes while serving is busy: one in four windows'
+/// worth. The lane's lease is where this belongs once the lease registry carries a time
+/// share beside its memory bound (INFERENCE-LANES-REALISTIC.md); until then ONE value here,
+/// sent explicitly so the engine's own default is never load-bearing. Not an env var.
+pub const TRAINING_SHARE_PPM: u32 = 250_000;
+
 /// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
 /// ONCE here instead of assembled field by field at the call site.
 #[derive(Debug, Clone, Serialize)]
@@ -335,6 +341,12 @@ struct TrainRequest {
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_budget_mib: Option<u64>,
+    /// The trainer's share of the lane's time, parts per million (fork card 36c3c00a): after a
+    /// window that took d ms the engine yields to busy slots for d·(1−s)/s, then takes the
+    /// next window whether or not serving is busy. Before this the engine yielded while ANY
+    /// slot was busy, which on a lane with residents was starvation (the M5, 2026-10-05: 12
+    /// minutes at batch 0). An engine before the card ignores the key and yields as before.
+    share_ppm: u32,
     /// "middle" (fork #29): at the served window a lived example trains whole; only a
     /// conversation longer than serving's own window drops its OLDEST history exchanges, and
     /// always keeps the system and tool head and her reply, the context serving always has
@@ -1189,7 +1201,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             requested = schedule.sequence_length as u64,
             served = u64::from(served_window),
             sent = window as u64,
-            "the training window: the matched lane's served per-slot window, rounded to the engine's 256 granularity; the request's length never decides it"
+            share_ppm = u64::from(TRAINING_SHARE_PPM),
+            "the training window: the matched lane's served per-slot window as the CEILING (the engine sizes the context to the longest example, fork #30), rounded to the engine's 256 granularity; the request's length never decides it; and the share of the lane's time training takes while serving is busy"
         );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
@@ -1214,6 +1227,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             seed: 42,
             top_layers: depth,
             memory_budget_mib: None,
+            share_ppm: TRAINING_SHARE_PPM,
             fit: "middle",
         };
         let measured = self.footprints.get(&shape);
