@@ -77,7 +77,13 @@ So fitness is never declared by a judge; it is counted:
 
 What `genome::fitness` computes today (`lift × demand / (cost × redundancy)`, harm → 0) is **admission**: whether the gene is allowed into HER stable genome after its trial. A gene that passes admission and is then never drawn has no fitness. A gene drawn on every node for every coding card has high fitness even if her own lift on it was modest. The two are different quantities and the probes name them separately (`genome.trial.*` vs `genome.fitness.*`).
 
-The resolver's `popularity` term (`GENOME-REPOSITORY-ON-HF.md` §2b) is the propagation half of this; the utilization half is the gap: a per-gene draw count, per node, published with the signature so a pull sees how much the gene is used where it lives. Retirement follows the same law: a gene nobody draws is paged out of the pool by the LRU already there, and is retired from the repository when no node reports a draw across the window. Market forces, not a verdict.
+The resolver's `popularity` term (`GENOME-REPOSITORY-ON-HF.md` §2b) is the propagation half of this; the utilization half is the gap: a per-gene draw count, per node, published with the signature so a pull sees how much the gene is used where it lives. Market forces, not a verdict.
+
+Three laws on the ledger (Cormac, #4793 review):
+
+- **The draw ledger is a privacy sink.** A per-gene draw count published per node says what a citizen is working on. A draw made in her mind room is not counted, the same as the ten sinks `is_private_room` already gates (`PRIVACY-OF-THOUGHT.md`); the draw ledger is the eleventh, gated from its first commit.
+- **Silence is not zero use.** A node that is offline, or has stopped publishing, looks exactly like one that stopped drawing. Paging out locally by LRU is safe; the repository needs POSITIVE evidence to retire a gene. Across the window with no reports, a gene stops being OFFERED by the resolver; it is deleted only on a report that says it was drawn and retired, never on a missing report.
+- **Counts are claims.** Utilization and propagation decide which genes win, so a node that inflates its draws or pulls steers the market. The counts stand on the same footing as the rest of the commodity: signed per node and attributable (forge-alloy's zero-trust plus reputation), never a bare number the resolver trusts.
 
 ## 4. What Kimi's §12 pass asks of this
 
