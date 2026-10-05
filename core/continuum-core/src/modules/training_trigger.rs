@@ -547,9 +547,15 @@ pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_
             request.resume_from = Some(checkpoint);
         }
     }
+    // The dead job's trainer is pinned ONLY when it left a checkpoint: a checkpoint is that
+    // trainer's format (a PEFT directory cannot continue in-engine). With none, the job never
+    // trained, and the coordinator chooses again. Measured on the 5090 2026-10-05: eight of
+    // Kimi's jobs sat on cuda-local waiting for a second 29.9 GB copy beside the lane that
+    // could have trained them in place; a pinned resume would have parked them there again.
+    let pin = request.resume_from.is_some() && !provider.is_empty();
     let mut params = serde_json::to_value(&request).ok()?;
     params["triggerDispatchId"] = Value::String(dispatch_id.to_string());
-    if !provider.is_empty() {
+    if pin {
         params["preferredProvider"] = Value::String(provider.to_string());
     }
     Some(params)
@@ -852,7 +858,10 @@ mod tests {
         std::fs::write(dir.path().join("request.json"), spec.to_string()).expect("test: write");
         let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
         assert_eq!(params["triggerDispatchId"], serde_json::json!(dispatch.to_string()));
-        assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"));
+        assert!(
+            params.get("preferredProvider").is_none(),
+            "a job that never checkpointed is re-chosen, not pinned to the trainer that never ran it"
+        );
         assert_eq!(params["personaName"], serde_json::json!("Kimi"));
         assert_eq!(
             params["baseModel"],
@@ -869,6 +878,7 @@ mod tests {
         std::fs::write(dir.path().join("checkpoints").join("LATEST"), "step-8\n").expect("test: pointer");
         let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
         assert_eq!(params["resumeFrom"], serde_json::json!(ck.to_string_lossy()), "continues from the latest checkpoint");
+        assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"), "a checkpoint is its trainer's format: pinned");
         let d = default_job_dir("Kimi", "code/owner", Uuid::from_u128(9));
         assert!(d.ends_with(std::path::Path::new("Kimi").join("code_owner").join(Uuid::from_u128(9).to_string())), "{d:?}");
     }
