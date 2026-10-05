@@ -15,7 +15,8 @@ This document is the decision that sits AFTER recall and BEFORE training. It com
 | **Competence** | a cluster of examples that ask for the same skill | a signature in the embedding space recall uses (`genome::signature`) |
 | **Gene** | a LoRA adapter that carries ONE competence, with lineage | `genome::manager`, the HF repository (`GENOME-REPOSITORY-ON-HF.md`) |
 | **Surprise** | how wrong her model was about what happened, as a number | the pressure signal (§3); the quantity Kimi's §12 pass says she cannot yet see |
-| **Fitness** | measured lift on her own cards, harm → zero | `genome::fitness`, `genome::gene_trial` |
+| **Trial** | admission: measured lift on her own cards, harm → zero | `genome::fitness` (`LayerFitness`), `genome::gene_trial` |
+| **Fitness** | utilization × propagation: how much the gene is drawn for real work, and how far it has spread (§3a) | the draw ledger per gene, pulls/forks across the grid and the HF repository |
 
 A memory is not a gene. A gene is minted for a competence, never for an experience, and only when recall of memories alone leaves her surprised in that competence.
 
@@ -64,6 +65,19 @@ Selection pressure is "surprise fell". The quantity: negative log-likelihood of 
 - **her own expectation**: a continuation whose `expect_verdict` was contradicted (`focus/continue`, #4746) is a surprise she named herself.
 
 Both already arrive as typed events at the inbound seam (#4731, #4765). Two numbers now carry the word "surprise", and the decision must name which it reads (Cormac, #4766 review): the **verdict surprise** (#4774: of her stated expectations, the share the room contradicted; cheap, hers to read on the strip today) and the **model surprise** (this section's fixed-model negative log-likelihood; the §7 quantity). `S(C)` in §2 is the verdict surprise until the model surprise is measured per competence, and the probe says which (`surprise=verdict|model|not_measured`). The two are expected to agree in direction; where they do not, the model surprise wins for selection and the disagreement is itself a finding. What is missing is the number and its per-competence window: `genome::surprise` (new, small): fold settled examples into `S(C)` by the same clustering, keep the window, expose it on her strip as a number she can read (Kimi, §12: "the moment one of my surprises has a fixed-model score attached, this section should be re-run").
+
+## 3a. Fitness is utilization × propagation
+
+Joel, 2026-10-05: "fitness function is simple. it's the usage of the genes for what all the users in this system are up to. the successful genes are merely market forces" and "Fitness = utilization and propagation like it is in biology."
+
+So fitness is never declared by a judge; it is counted:
+
+- **utilization** — how often the gene is drawn for a real turn, across every citizen that carries it (the draw ledger, not the trial's held-out A/B);
+- **propagation** — how many citizens and nodes carry it: pulls from the repository, forks that name it as parent, reuse decisions that chose it (§2).
+
+What `genome::fitness` computes today (`lift × demand / (cost × redundancy)`, harm → 0) is **admission**: whether the gene is allowed into HER stable genome after its trial. A gene that passes admission and is then never drawn has no fitness. A gene drawn on every node for every coding card has high fitness even if her own lift on it was modest. The two are different quantities and the probes name them separately (`genome.trial.*` vs `genome.fitness.*`).
+
+The resolver's `popularity` term (`GENOME-REPOSITORY-ON-HF.md` §2b) is the propagation half of this; the utilization half is the gap: a per-gene draw count, per node, published with the signature so a pull sees how much the gene is used where it lives. Retirement follows the same law: a gene nobody draws is paged out of the pool by the LRU already there, and is retired from the repository when no node reports a draw across the window. Market forces, not a verdict.
 
 ## 4. What Kimi's §12 pass asks of this
 
