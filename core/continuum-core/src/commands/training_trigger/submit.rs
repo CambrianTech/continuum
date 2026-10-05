@@ -256,6 +256,25 @@ crate::action_command! {
         };
         let submission_id = p.submission_id;
         state.run_owned(key, move |state, key| async move {
+            // A held bucket is bounded: past MAX_HELD_EXAMPLES a new submit is refused and
+            // the producer keeps its evidence for a later pass (never silently dropped).
+            if let Some(held_by) = state.held_for(&key) {
+                let pending = state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0); // unwrap_or: no bucket yet = nothing pending
+                if pending >= crate::modules::training_trigger::MAX_HELD_EXAMPLES {
+                    crate::probe!(
+                        class = "training.trigger.held_full",
+                        persona = %key.persona_id,
+                        trait_kind = %key.trait_kind,
+                        pending = pending as u64,
+                        held_by = ?held_by,
+                        "a held bucket is at its bound: this submit is refused, its evidence stays staged with the producer"
+                    );
+                    return SubmitOutcome::refused(
+                        "BucketHeldFull",
+                        format!("the bucket for this competence holds {pending} examples waiting on {held_by:?}; at its bound, this submit is refused and retried after the hold lifts"),
+                    );
+                }
+            }
             let acceptance = match state.accept(&key, submission_id, batch).await {
                 Ok(receipt) => receipt,
                 Err((kind, error)) => return SubmitOutcome::refused(kind, error),
@@ -701,7 +720,7 @@ mod tests {
         let trial = trigger
             .state
             .test_trials
-            .open(persona, "test-trait", &gene, "synthetic", 1)
+            .open(persona, "test-trait", &gene, "synthetic", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64)
             .expect("the trial file takes a trial");
         assert_eq!(trial.state, crate::genome::gene_trial::TrialState::Trial);
 

@@ -85,6 +85,15 @@ pub use durable::{AcceptanceReceipt, DispatchPhase};
 pub(crate) use durable::{DispatchFailure, DispatchResult};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
+/// THE BOUND ON A HELD BUCKET. A bucket held by a job in flight, a trial open, or her
+/// surprise below the floor keeps filling, in memory and durably, until the hold lifts
+/// (Cormac on #4794: a trial with no verdict grew it without limit). Past this many
+/// pending examples a submit into a held bucket is refused as `BucketHeldFull`; the
+/// producer keeps its staged rows (a refused submit is "evidence retained") and settles
+/// them on a later pass, so nothing is lost, only deferred. Sixteen fills' worth at the
+/// default floor: more than the fill after the hold lifts can use at once.
+pub const MAX_HELD_EXAMPLES: usize = 16 * DEFAULT_MIN_EXAMPLES as usize;
+
 /// LoRA-training floor — large enough to give SGD signal,
 /// small enough that latency-to-first-layer stays minutes not hours
 /// on the substrate-native trainer. Override per-submit via
@@ -402,6 +411,17 @@ impl TrainingTriggerState {
                     let into = match &took {
                         Took::Joined { job } => *job,
                         Took::Awaited { trial } | Took::Reused { trial, .. } => *trial,
+                        // Her trial file could not be read: nothing is returned or journaled
+                        // blind; the orphan stays for the next restart, which reads again.
+                        Took::TrialFileUnreadable => {
+                            crate::probe!(
+                                class = "training.job.resume_deferred",
+                                origin = %origin,
+                                from = %orphan.local_id,
+                                "an orphan's fate waits on her trial file, which could not be read; the next restart tries again"
+                            );
+                            continue;
+                        }
                     };
                     let examples = params
                         .get("dataset")
@@ -662,9 +682,16 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         "genome/job-create rejected: {}",
         response.error.unwrap_or_default()
     );
+    use crate::commands::genome::job_create::{ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
     Err(match response.error_kind.as_deref() {
         // No kind is the command's pre-provider validation/selection refusal.
         None | Some("InvalidRequest" | "MissingCredentials" | "ProviderRejected") => {
+            DispatchFailure::Retryable(error)
+        }
+        // A decision that created nothing is certain, never recovery: a hub pull that
+        // failed, a gene not adopted, a trial file not read. The next fill retries
+        // (Cormac on #4794: Uncertain here wedged the bucket in RecoveryRequired).
+        Some(kind) if kind == ERROR_KIND_REUSE_PULL_FAILED || kind == ERROR_KIND_REUSE_ADOPT_FAILED || kind == ERROR_KIND_TRIAL_FILE_UNREADABLE => {
             DispatchFailure::Retryable(error)
         }
         Some(_) => DispatchFailure::Uncertain(error),
@@ -830,11 +857,17 @@ mod tests {
                 Err(DispatchFailure::Uncertain(_))
             ));
         }
+        // what this catches (Cormac on #4794): a refusal that created no job is retryable,
+        // never Uncertain; Uncertain froze the bucket in RecoveryRequired with no journal
+        // row to recover from.
         for kind in [
             None,
             Some("InvalidRequest"),
             Some("MissingCredentials"),
             Some("ProviderRejected"),
+            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_PULL_FAILED),
+            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_ADOPT_FAILED),
+            Some(crate::commands::genome::job_create::ERROR_KIND_TRIAL_FILE_UNREADABLE),
         ] {
             let mut response = json!({"success": false, "error": "explicit refusal"});
             if let Some(kind) = kind {

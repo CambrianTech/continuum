@@ -6,4 +6,4 @@ import type { GeneRef } from "./GeneRef";
  * examples in her bucket for every arm: they are the competence's evidence, no gene
  * was trained on them, and the fill after the pending thing settles decides again.
  */
-export type Took = { "kind": "joined", job: string, } | { "kind": "awaited", trial: string, } | { "kind": "reused", trial: string, gene: GeneRef, };
+export type Took = { "kind": "joined", job: string, } | { "kind": "awaited", trial: string, } | { "kind": "reused", trial: string, gene: GeneRef, } | { "kind": "trialFileUnreadable" };

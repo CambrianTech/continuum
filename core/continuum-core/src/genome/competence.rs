@@ -159,7 +159,6 @@ pub enum Decision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NothingBecause {
-    TooFewExamples,
     SurpriseLow,
 }
 
@@ -203,7 +202,11 @@ pub fn nearest_pending<'a>(
 
 /// The decision, in the order the design states. A job in flight and a trial open are
 /// checked before any branch that would train or reuse: a competence already being
-/// learned is joined, one already being judged is awaited, never minted twice.
+/// learned is joined, one already being judged is awaited, never minted twice. The
+/// competence handed in IS one: [`competences`] applies [`MIN_EXAMPLES`] when it clusters
+/// her curriculum, and a full bucket is one by the room's own threshold; the decision
+/// never second-guesses its size (a smaller bucket skipped Join and Await on the way to
+/// a mint, 2026-10-05).
 pub fn decide(competence: &Competence, surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
     decide_with_pending(competence, surprise, nearest, None, None)
 }
@@ -215,9 +218,6 @@ pub fn decide_with_pending(
     in_flight: Option<&Pending>,
     on_trial: Option<&Pending>,
 ) -> Decision {
-    if competence.members.len() < MIN_EXAMPLES {
-        return Decision::Nothing { why: NothingBecause::TooFewExamples };
-    }
     if let Some(j) = in_flight.filter(|j| j.similarity >= SIM_REUSE) {
         return Decision::Join { job: j.id, similarity: j.similarity };
     }
@@ -302,7 +302,9 @@ mod tests {
         let g = GeneRef::Local { path: PathBuf::from("/genes/rust-tests.gguf") };
         let near = |similarity, resident| NearestGene { gene: g.clone(), similarity, resident };
         let s = |x| Surprise::Measured { s: x };
-        assert_eq!(decide(&small, s(0.9), None), Decision::Nothing { why: NothingBecause::TooFewExamples });
+        // The size of a competence is settled by whoever made it (the clustering floor, or
+        // the bucket's threshold): a two-member one still joins, awaits, reuses or mints.
+        assert_eq!(decide(&small, s(0.9), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
         assert_eq!(decide(&c, s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
         assert_eq!(decide(&c, Surprise::NotYetMeasured, None), Decision::Mint, "not yet measured is not low: distance decides, as before");
         assert_eq!(decide(&c, s(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });

@@ -781,30 +781,50 @@ impl TrainingTriggerState {
     /// the key, else a gene of hers on trial for it. `None` = nothing pending; the bucket
     /// dispatches when full. ONE computation serves the gate and the submit receipt.
     pub(crate) fn held_for(&self, key: &BucketKey) -> Option<Took> {
-        self.job_in_flight_for(key)
-            .map(|job| Took::Joined { job })
-            .or_else(|| self.trial_open_for(key).map(|trial| Took::Awaited { trial }))
+        if let Some(job) = self.job_in_flight_for(key) {
+            return Some(Took::Joined { job });
+        }
+        match self.trial_open_for(key) {
+            Ok(Some(trial)) => Some(Took::Awaited { trial }),
+            Ok(None) => None,
+            Err(()) => Some(Took::TrialFileUnreadable),
+        }
     }
 
     /// The open trial of a gene of hers for this bucket's `(persona, trait, base)`, if
     /// one is being judged in her work (its id). The trial file is one small JSON read,
-    /// bounded by the genes ever trialled.
-    fn trial_open_for(&self, key: &BucketKey) -> Option<Uuid> {
+    /// bounded by the genes ever trialled. A trial past its window holds nothing
+    /// (`is_live`). An UNREADABLE file holds the bucket, loudly: nothing dispatches
+    /// beside a trial nobody can see (Cormac on #4794, point 5).
+    fn trial_open_for(&self, key: &BucketKey) -> Result<Option<Uuid>, ()> {
         #[cfg(not(test))]
         let trials = crate::genome::gene_trial::GeneTrials::default_store();
         #[cfg(test)]
         let trials = Some(crate::genome::gene_trial::GeneTrials::at(self.test_trials.path()));
-        trials
-            .and_then(|t| t.load().ok())
-            .unwrap_or_default() // unwrap_or_default: an unreadable trial file cannot hold the bucket; job-create's own Await arm still refuses the fork
+        let Some(trials) = trials else {
+            return Ok(None); // no home directory: no trial file can exist, nothing to hold
+        };
+        let all = match trials.load() {
+            Ok(all) => all,
+            Err(error) => {
+                crate::probe!(
+                    class = "training.trigger.trial_file_unreadable",
+                    persona = %key.persona_id,
+                    trait_kind = %key.trait_kind,
+                    error = %error,
+                    "her trial file could not be read: the bucket holds until it can, nothing dispatches beside a trial nobody can see"
+                );
+                return Err(());
+            }
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0); // pre-epoch clock: every open trial reads as live, the conservative side
+        Ok(all
             .iter()
-            .find(|t| {
-                t.persona_id == key.persona_id
-                    && t.alias == key.trait_kind
-                    && t.base_model_id == key.base_model
-                    && t.state == crate::genome::gene_trial::TrialState::Trial
-            })
-            .map(|t| t.id)
+            .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_live(now_ms))
+            .map(|t| t.id))
     }
 
     fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {

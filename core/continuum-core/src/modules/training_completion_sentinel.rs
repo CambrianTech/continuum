@@ -376,6 +376,18 @@ impl ServiceModule for TrainingCompletionSentinel {
     /// runs on a 15s background cadence; the only heavy work (the eval chain) is
     /// spawned off-tick so the poll loop never blocks on it.
     async fn tick(&self) -> Result<(), String> {
+        // Trials past their window end unjudged on this cadence, so a bucket they held is
+        // released and their gene leaves serving (gene_trial::TRIAL_WINDOW_MS).
+        if let Some(trials) = crate::genome::gene_trial::GeneTrials::default_store() {
+            let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+            if let Err(error) = trials.expire_stale(now_ms) {
+                crate::probe!(
+                    class = "genome.trial.expire_unreadable",
+                    error = error.as_str(),
+                    "the trial file could not be read on the sentinel's tick: no trial expired this tick"
+                );
+            }
+        }
         let jobs = TrainingJobBoard::global().snapshot();
         if jobs.is_empty() {
             return Ok(());

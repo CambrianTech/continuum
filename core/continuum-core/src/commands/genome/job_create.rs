@@ -116,6 +116,32 @@ pub enum Took {
         trial: uuid::Uuid,
         gene: GeneRef,
     },
+    /// Her trial file could not be read: the bucket holds until it can, since nothing may
+    /// dispatch beside a trial nobody can see. Set by the trigger's gate, never by a
+    /// decision (job-create refuses with `TrialFileUnreadable` instead).
+    TrialFileUnreadable,
+}
+
+/// A reuse that could not pull its gene: no job, the bucket keeps its examples, the next
+/// fill retries (the trigger decodes it as retryable, never as recovery).
+pub const ERROR_KIND_REUSE_PULL_FAILED: &str = "ReusePullFailed";
+/// A reuse whose gene was not adopted (manifest, trial file, or already decided): same.
+pub const ERROR_KIND_REUSE_ADOPT_FAILED: &str = "ReuseAdoptFailed";
+/// Her trial file could not be read: nothing decided blind; the next fill retries.
+pub const ERROR_KIND_TRIAL_FILE_UNREADABLE: &str = "TrialFileUnreadable";
+
+/// The decision could not be made: a typed refusal the trigger retries on the next fill,
+/// probed so a bucket that keeps refusing is readable.
+fn refused_decision(error_kind: &str, request: &TrainingJobRequest, error: &str) -> Result<JobCreateOutcome, crate::sdk_codegen::CommandError> {
+    crate::probe!(
+        class = "genome.decision.refused",
+        persona = %request.persona_name,
+        trait_kind = %request.trait_kind,
+        error_kind,
+        error,
+        "a full bucket could not decide: no job, the bucket keeps its examples, the next fill retries"
+    );
+    Ok(JobCreateOutcome { success: false, result: None, error: Some(error.to_string()), error_kind: Some(error_kind.to_string()), took: None })
 }
 
 crate::action_command! {
@@ -282,10 +308,10 @@ crate::action_command! {
         // 1b. THE DECISION (GENE-REUSE-FORK-MINT.md, step 2's receipt): with the corpus's
         //     signature in hand, is this competence one an existing gene already carries
         //     (reuse), a child of one (fork), or new (mint)? Decided against her signature
-        //     store, with residency from the manifest's genes for this base (they load at
-        //     launch), probed as `genome.decision`, and recorded on the job. The ACTION is
-        //     still the mint below for every branch: these rows measure how often reuse
-        //     or fork would have applied before the action changes (the next slice).
+        //     store and her OWN trials (residency = a gene her work holds open or promoted,
+        //     never the node's manifest, which carries every citizen's genes), probed as
+        //     `genome.decision`, recorded on the job, and ACTED on below: join, await,
+        //     reuse (adopt for trial), fork (lineage on the request), mint.
         // The node's serving manifest and her trial file, resolved once: residency and her
         // verdicts are read from them, and a reuse adopts through them.
         #[cfg(not(test))]
@@ -305,25 +331,42 @@ crate::action_command! {
                 cohesion: 1.0, // one bucket is one competence here; clustering within it is step 2's follow-on
                 representative: 0,
             };
-            let store = crate::genome::signature::signature_store_path()
-                .and_then(|path| crate::genome::signature::SignatureStore::load_at(&path))
+            // The signature store lives beside the manifest the adoption serves through: ONE
+            // derivation of the path, in tests and in production alike.
+            let adoption = match adoption.as_ref() {
+                Ok(a) => a,
+                Err(refusal) => return refused_decision("TrialFileUnreadable", &p.request, &format!("her trial file has no place: {refusal}")),
+            };
+            let store_path = adoption.manifest().with_file_name("signatures.json");
+            let store = crate::genome::signature::SignatureStore::load_at(&store_path)
                 .unwrap_or_default(); // unwrap_or_default: no store yet = nothing near, which decides "mint" honestly
-            let resident: Vec<std::path::PathBuf> = adoption
-                .as_ref()
-                .ok()
-                .and_then(|a| crate::forge::adapter_manifest::load_from(a.manifest()).ok())
-                .map(|all| crate::forge::adapter_manifest::for_base(&all, &p.request.base_model).into_iter().map(|a| a.path).collect())
-                .unwrap_or_default(); // unwrap_or_default: an unreadable manifest reads as nothing resident; a near gene then reads as reuse, never fork
-            // HER TRIALS, read once: the open ones hold the competence (Await); the retired
-            // ones are never offered back as a reuse.
-            let trials = adoption
-                .as_ref()
-                .ok()
-                .and_then(|a| a.trials().load().ok())
-                .unwrap_or_default(); // unwrap_or_default: an unreadable trial file hides her verdicts for this fill; the trial file's own dedup by path still refuses a doubled trial
+            // HER TRIALS, read once and LOUD when unreadable (Cormac on #4794): a corrupt
+            // trial file read as empty would let a fork or a mint go ahead beside her open
+            // trial, and would offer a retired gene back. Nothing is decided blind.
+            let trials = match adoption.trials().load() {
+                Ok(t) => t,
+                Err(e) => return refused_decision("TrialFileUnreadable", &p.request, &format!("her trial file could not be read: {e}")),
+            };
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0); // pre-epoch clock: every open trial then reads as live, the conservative side (held, never forked beside)
+            let hers = |t: &&crate::genome::gene_trial::GeneTrial| t.persona_id == watched_persona_id;
+            // Residency is HERS: a gene her work holds open or promoted on this base. The
+            // node's manifest carries every citizen's genes; a teammate's promoted gene near
+            // her competence is a reuse for her, never a fork (Cormac on #4794, point 7).
+            let resident: Vec<std::path::PathBuf> = trials
+                .iter()
+                .filter(hers)
+                .filter(|t| t.base_model_id == p.request.base_model && matches!(t.state, TrialState::Trial | TrialState::Promoted))
+                .map(|t| t.path.clone())
+                .collect();
+            // A gene her work already decided against, or left unjudged, is never offered
+            // back as a reuse, from the store or the hub.
             let retired: Vec<std::path::PathBuf> = trials
                 .iter()
-                .filter(|t| t.persona_id == watched_persona_id && t.state == TrialState::Retired)
+                .filter(hers)
+                .filter(|t| matches!(t.state, TrialState::Retired | TrialState::Expired))
                 .map(|t| t.path.clone())
                 .collect();
             // ONE LOOKUP, THREE SOURCES (GENE-REUSE-FORK-MINT.md §5): her store first; the
@@ -334,7 +377,7 @@ crate::action_command! {
             let local = nearest_in_store(&competence, &store, &sig.embedder, &resident, &retired);
             let (nearest, source) = match local {
                 Some(n) if n.similarity >= SIM_FORK => (Some(n), "store"),
-                local => match crate::commands::genome_share::nearest_on_hub(&competence, &sig.embedder, &p.request.base_model, None, 20).await {
+                local => match crate::commands::genome_share::nearest_on_hub(&competence, &sig.embedder, &p.request.base_model, None, 20, &retired).await {
                     Some(hub) if local.as_ref().is_none_or(|l| hub.similarity > l.similarity) => (Some(hub), "hub"),
                     _ => (local, "store"),
                 },
@@ -355,17 +398,20 @@ crate::action_command! {
                     .filter(|j| j.persona_id == watched_persona_id && j.base_model == p.request.base_model)
                     .filter_map(|j| j.signature.as_ref().map(|s| (j.handle.local_id, s))),
             );
-            // A GENE ALREADY ON TRIAL for this competence is checked the same way, by the
-            // signature its gene carries in her store: the fill after a reuse must await
-            // her verdict, not fork the gene while her cards are still judging it.
-            let on_trial = nearest_pending(
-                &competence,
-                &sig.embedder,
-                trials
-                    .iter()
-                    .filter(|t| t.persona_id == watched_persona_id && t.base_model_id == p.request.base_model && t.state == TrialState::Trial)
-                    .filter_map(|t| store.by_path.get(&t.path.display().to_string()).map(|s| (t.id, s))),
-            );
+            // A GENE ALREADY ON TRIAL for this competence: ONE matching rule, the bucket's
+            // key (her, this trait, this base), the same rule the trigger holds the bucket
+            // by (Cormac on #4794, point 4: two rules churned a bucket between them). The
+            // signature similarity rides along as a measurement, never as the decision; a
+            // trial past its window is ended already (`is_live`).
+            let on_trial = trials
+                .iter()
+                .filter(hers)
+                .filter(|t| t.base_model_id == p.request.base_model && t.alias == p.request.trait_kind && t.is_live(now_ms))
+                .map(|t| crate::genome::competence::Pending {
+                    id: t.id,
+                    similarity: store.by_path.get(&t.path.display().to_string()).and_then(|s| s.similarity_in(&sig.embedder, &competence.centroid)).unwrap_or(1.0), // 1.0 = the key already says it is this competence; the number is a measurement when the signature exists
+                })
+                .max_by(|a, b| a.similarity.total_cmp(&b.similarity));
             let decision = decide_with_pending(&competence, Surprise::NotYetMeasured, nearest.as_ref(), in_flight.as_ref(), on_trial.as_ref());
             crate::probe!(
                 class = "genome.decision",
@@ -446,7 +492,7 @@ crate::action_command! {
                                     error = %e,
                                     "the hub gene this competence would reuse did not pull: no trial, no job; the bucket keeps its examples"
                                 );
-                                return refused("ReusePullFailed", format!("reuse of {gene}: pull failed: {e}"));
+                                return refused(ERROR_KIND_REUSE_PULL_FAILED, format!("reuse of {gene}: pull failed: {e}"));
                             }
                         }
                     }
@@ -484,7 +530,7 @@ crate::action_command! {
                             refusal = %refusal,
                             "the gene this competence would reuse was not adopted: no trial, no job; the bucket keeps its examples"
                         );
-                        return refused("ReuseAdoptFailed", format!("reuse of {gene}: {refusal}"));
+                        return refused(ERROR_KIND_REUSE_ADOPT_FAILED, format!("reuse of {gene}: {refusal}"));
                     }
                 }
             }
@@ -576,6 +622,161 @@ mod tests {
         }
     }
 
+    /// The decision's world for one test: a recording adapter (so a created job is
+    /// visible and its request readable), the test artifacts dir (manifest, trial file
+    /// and signature store beside each other, as in production), and a signature for a
+    /// gene at `gene_path` minted from the SAME texts the request carries, so the store's
+    /// nearest gene is this competence exactly (similarity 1.0 in the lexical space the
+    /// tests embed in).
+    struct DecisionWorld {
+        command: GenomeJobCreate,
+        adapter: Arc<crate::genome::fine_tuning::RecordingFineTuningAdapter>,
+        board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+        artifacts: Arc<tempfile::TempDir>,
+        persona: uuid::Uuid,
+        request: TrainingJobRequest,
+        gene_path: std::path::PathBuf,
+    }
+
+    async fn decision_world() -> DecisionWorld {
+        use crate::genome::fine_tuning::{FineTuningRegistry, RecordingFineTuningAdapter, TrainingJobBoard, RECORDING_BASE_PREFIX};
+        let artifacts = Arc::new(tempfile::tempdir().unwrap());
+        let board = Arc::new(TrainingJobBoard::with_test_storage(artifacts.clone()));
+        let adapter = Arc::new(RecordingFineTuningAdapter::new());
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(adapter.clone());
+        let command = GenomeJobCreate {
+            coordinator: Arc::new(FineTuningCoordinator::new(registry)),
+            test_job_board: board.clone(),
+            test_artifacts: artifacts.clone(),
+        };
+        let persona = uuid::Uuid::from_u128(0x17dc0a7b);
+        let mut request = request_for(RECORDING_BASE_PREFIX);
+        request.persona_id = persona;
+        let texts: Vec<String> = request.dataset.examples.iter().map(|ex| format!("{}\n{}", ex.prompt, ex.completion)).collect();
+        let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
+        let sig = crate::genome::signature::GeneSignature::mint(
+            &texts,
+            crate::forge::recipe::CorpusRef { name: "near".into(), content_hash: "sha256:near".into(), size_bytes: 1, source_url: None },
+            &embedder,
+            1,
+        )
+        .await
+        .expect("test: a signature mints in the lexical space");
+        let gene_path = artifacts.path().join("genes").join("near.gguf");
+        crate::genome::signature::SignatureStore::stamp_at(&artifacts.path().join("signatures.json"), &gene_path.display().to_string(), sig)
+            .expect("test: the store takes the signature");
+        DecisionWorld { command, adapter, board, artifacts, persona, request, gene_path }
+    }
+
+    impl DecisionWorld {
+        fn trials(&self) -> crate::genome::gene_trial::GeneTrials {
+            crate::genome::gene_trial::GeneTrials::at(self.artifacts.path().join("trials.json"))
+        }
+        fn manifest(&self) -> std::path::PathBuf {
+            self.artifacts.path().join("adapters.json")
+        }
+        async fn fill(&self) -> JobCreateOutcome {
+            self.command
+                .run(
+                    &Ctx::default(),
+                    JobCreateParams { trigger_dispatch_id: None, request: self.request.clone(), preferred_provider: None, dataset_name: None },
+                )
+                .await
+                .unwrap()
+        }
+        fn open_trial(&self, state: crate::genome::gene_trial::TrialState) -> crate::genome::gene_trial::GeneTrial {
+            let trials = self.trials();
+            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+            let t = trials.open(self.persona, &self.request.trait_kind, &self.gene_path, &self.request.base_model, now_ms).unwrap();
+            if state != crate::genome::gene_trial::TrialState::Trial {
+                let mut all = trials.load().unwrap();
+                all[0].state = state;
+                trials.save_for_test(&all).unwrap();
+            }
+            t
+        }
+    }
+
+    // what this catches (card 17dc0a7b, Reuse ACTS): a gene near her competence that her
+    // work does not hold is adopted for trial, no job created: the trial file has the row,
+    // the serving manifest has the path, the outcome names both, and the adapter saw
+    // nothing.
+    #[tokio::test]
+    async fn a_near_gene_she_lacks_is_adopted_for_trial_and_nothing_trains() {
+        let w = decision_world().await;
+        let out = w.fill().await;
+        assert!(out.success, "{out:?}");
+        let Some(Took::Reused { trial, gene }) = out.took else { panic!("reuse expected: {out:?}") };
+        assert_eq!(gene, GeneRef::Local { path: w.gene_path.clone() });
+        let rows = w.trials().load().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].id, rows[0].persona_id, rows[0].state), (trial, w.persona, crate::genome::gene_trial::TrialState::Trial));
+        let registered = crate::forge::adapter_manifest::load_from(&w.manifest()).unwrap();
+        assert!(registered.iter().any(|a| a.path == w.gene_path), "the gene serves, dormant: {registered:?}");
+        assert_eq!(w.adapter.captured_job_count(), 0, "a reuse trains nothing");
+        assert!(w.board.snapshot().is_empty());
+    }
+
+    // what this catches (Cormac on #4794, point 4: ONE matching rule): a trial open for the
+    // bucket's key holds the fill as Awaited, and the fill after her verdict decides again.
+    #[tokio::test]
+    async fn a_trial_open_for_the_key_holds_the_fill_until_it_is_decided() {
+        let w = decision_world().await;
+        let t = w.open_trial(crate::genome::gene_trial::TrialState::Trial);
+        let out = w.fill().await;
+        assert_eq!(out.took, Some(Took::Awaited { trial: t.id }), "{out:?}");
+        assert_eq!(w.adapter.captured_job_count(), 0);
+    }
+
+    // what this catches (card 17dc0a7b, Fork carries lineage): a gene her work holds
+    // (promoted) near her competence is a parent: the job is created with the parent on
+    // its request, and the signature the child is adopted with records it.
+    #[tokio::test]
+    async fn a_resident_gene_is_forked_with_its_lineage_on_the_request_and_the_signature() {
+        let w = decision_world().await;
+        w.open_trial(crate::genome::gene_trial::TrialState::Promoted);
+        let out = w.fill().await;
+        assert!(out.success && out.result.is_some() && out.took.is_none(), "a fork trains: {out:?}");
+        let parent = GeneRef::Local { path: w.gene_path.clone() };
+        let captured = w.adapter.captures();
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].parent, Some(parent.clone()), "the trainer is told the parent");
+        let jobs = w.board.snapshot();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].signature.as_ref().and_then(|s| s.parent.clone()), Some(parent), "the child's signature carries its lineage");
+        assert!(matches!(jobs[0].decision, Some(Decision::Fork { .. })), "{:?}", jobs[0].decision);
+    }
+
+    // what this catches (Cormac on #4794, point 2): a gene her work retired (or left
+    // unjudged) is never a candidate again and is never adopted again: the decision mints
+    // past it, and a direct adoption refuses before touching the manifest.
+    #[tokio::test]
+    async fn a_decided_gene_is_never_offered_or_adopted_again() {
+        let w = decision_world().await;
+        w.open_trial(crate::genome::gene_trial::TrialState::Retired);
+        let out = w.fill().await;
+        assert!(out.result.is_some() && out.took.is_none(), "a retired gene is not reused: {out:?}");
+        assert!(matches!(w.board.snapshot()[0].decision, Some(Decision::Mint)));
+        let adoption = Adoption::at(w.manifest(), w.trials());
+        let refused = adoption.adopt(w.persona, &w.request.trait_kind, &w.gene_path, &w.request.base_model, 2);
+        assert_eq!(refused, Err(crate::genome::gene_trial::AdoptRefusal::AlreadyDecided(crate::genome::gene_trial::TrialState::Retired)));
+        assert!(!w.manifest().exists(), "a refused adoption never registered the gene");
+    }
+
+    // what this catches (Cormac on #4794, point 5): a trial file that cannot be read
+    // refuses the decision loudly and retryably; nothing is minted or reused blind.
+    #[tokio::test]
+    async fn an_unreadable_trial_file_refuses_the_decision_rather_than_deciding_blind() {
+        let w = decision_world().await;
+        std::fs::write(w.artifacts.path().join("trials.json"), b"{not json").unwrap();
+        let out = w.fill().await;
+        assert!(!out.success);
+        assert_eq!(out.error_kind.as_deref(), Some(ERROR_KIND_TRIAL_FILE_UNREADABLE), "{out:?}");
+        assert_eq!(w.adapter.captured_job_count(), 0);
+    }
+
     // what this catches: name/access wiring — creating a training job spends compute +
     // touches provider credentials, so it lives on the Privileged surface, not AiSafe.
     #[test]
@@ -634,6 +835,10 @@ mod tests {
         for output in [None, Some(explicit_output.clone())] {
             let mut request = request_for(RECORDING_BASE_PREFIX);
             request.local_artifact_dir = output;
+            // Each round is its own citizen: the first round's job is still on the board,
+            // and a second fill of the same competence by the same persona JOINS it (#4791)
+            // instead of creating the job this round asserts on.
+            request.persona_id = uuid::Uuid::new_v4();
             let dispatch_id = uuid::Uuid::new_v4();
             let outcome = command
                 .run(

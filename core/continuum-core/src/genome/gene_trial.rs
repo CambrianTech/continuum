@@ -34,6 +34,29 @@ pub enum TrialState {
     Promoted,
     /// Out of her genome and out of the serving catalog.
     Retired,
+    /// No verdict within [`TRIAL_WINDOW_MS`] of opening: she did no card work on this base
+    /// in the window (or her cards were judged elsewhere), so the trial is over without a
+    /// result. Out of the serving catalog like Retired, but typed apart: the gene was not
+    /// found worse, it was not judged. The bucket it held is released.
+    Expired,
+}
+
+/// How long an open trial may wait for a verdict. A week: long enough for a citizen's
+/// cards on one base to reach the gate's counts, short enough that a trial on a base she
+/// no longer serves, or a gene file that went away, cannot hold her bucket for a month
+/// (Cormac on #4794: a trial with no verdict held the bucket forever).
+pub const TRIAL_WINDOW_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+impl GeneTrial {
+    /// An open trial past its window: expired on read, before the file says so.
+    pub fn is_stale(&self, now_ms: u64) -> bool {
+        self.state == TrialState::Trial && now_ms.saturating_sub(self.opened_at_ms) > TRIAL_WINDOW_MS
+    }
+
+    /// Open AND within its window: the only trial that holds a bucket or awaits a decision.
+    pub fn is_live(&self, now_ms: u64) -> bool {
+        self.state == TrialState::Trial && !self.is_stale(now_ms)
+    }
 }
 
 /// Settled cards and how many passed, for one arm.
@@ -246,7 +269,7 @@ pub fn genes_for_turn(
         .filter(|t| match t.state {
             TrialState::Promoted => true,
             TrialState::Trial => card.is_some_and(|c| t.candidate_arm(c)),
-            TrialState::Retired => false,
+            TrialState::Retired | TrialState::Expired => false,
         })
         .map(GeneTrial::page)
         .collect()
@@ -328,7 +351,7 @@ pub fn credit_settled_card(persona: Uuid, card: Uuid, passed: bool, turns: &[Car
 /// out of the adapter manifest, so the serving engine retires it in place, and the same
 /// ledger row records the loss. Either way the trial row, already written, is the receipt.
 fn apply_decision(t: &GeneTrial, now_ms: u64) {
-    if t.state == TrialState::Retired {
+    if matches!(t.state, TrialState::Retired | TrialState::Expired) {
         if let Err(error) = crate::forge::adapter_manifest::unregister(&t.path) {
             crate::probe!(
                 class = "genome.trial.unregister_failed",
@@ -404,6 +427,12 @@ fn fitness_receipt(t: &GeneTrial, now_ms: u64) -> serde_json::Value {
 pub enum AdoptRefusal {
     /// The serving manifest would not take the gene: the engine never loads it.
     NotRegistered(String),
+    /// Her work already decided this gene (promoted, retired, or expired unjudged): it is
+    /// never adopted again as if new, and never re-registered first (Cormac on #4794: a
+    /// retired hub gene came back through the manifest on every fill).
+    AlreadyDecided(TrialState),
+    /// The trial file could not be read: nothing is adopted blind.
+    TrialFileUnreadable(String),
     /// No home directory: the trial file has no place.
     NoHome,
     /// The trial file would not take the row.
@@ -414,6 +443,8 @@ impl std::fmt::Display for AdoptRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AdoptRefusal::NotRegistered(e) => write!(f, "the gene could not be registered for serving: {e}"),
+            AdoptRefusal::AlreadyDecided(state) => write!(f, "her work already decided this gene ({state:?}): it is not adopted again"),
+            AdoptRefusal::TrialFileUnreadable(e) => write!(f, "the trial file could not be read, nothing adopted blind: {e}"),
             AdoptRefusal::NoHome => f.write_str("no home directory: the gene trial file has no place"),
             AdoptRefusal::TrialFileRefused(e) => write!(f, "the gene trial file did not take the trial: {e}"),
         }
@@ -458,6 +489,15 @@ impl Adoption {
         base_model_id: &str,
         now_ms: u64,
     ) -> Result<GeneTrial, AdoptRefusal> {
+        // Her verdicts first, before the manifest: a decided gene never serves again by
+        // this path, and an open one is returned as it is.
+        let all = self.trials.load().map_err(AdoptRefusal::TrialFileUnreadable)?;
+        if let Some(existing) = all.iter().find(|t| t.persona_id == persona_id && t.path == path) {
+            return match existing.state {
+                TrialState::Trial => Ok(existing.clone()),
+                decided => Err(AdoptRefusal::AlreadyDecided(decided)),
+            };
+        }
         crate::forge::adapter_manifest::register_at(
             &self.manifest,
             crate::forge::adapter_manifest::TrainedAdapter {
@@ -521,7 +561,8 @@ impl GeneTrials {
     }
 
     /// Open a trial for a freshly trained gene. A gene already on file (the same path for
-    /// the same persona) is not opened twice: its existing row is returned.
+    /// the same persona) is not opened twice: its existing row is returned whatever its
+    /// state; [`Adoption::adopt`] is the seam that refuses a decided one before serving it.
     pub fn open(
         &self,
         persona_id: Uuid,
@@ -553,6 +594,42 @@ impl GeneTrials {
         all.push(trial.clone());
         self.save(&all)?;
         Ok(trial)
+    }
+
+    /// End every open trial past its window as `Expired` (no verdict: not judged, not worse)
+    /// and take its gene out of serving like a retirement. Returns the rows it ended. Called
+    /// on a cadence by the completion sentinel; the readers that hold a bucket treat a stale
+    /// row as ended before this writes it (`GeneTrial::is_live`).
+    pub fn expire_stale(&self, now_ms: u64) -> Result<Vec<GeneTrial>, String> {
+        let mut all = self.load()?;
+        let mut expired = Vec::new();
+        for t in all.iter_mut().filter(|t| t.is_stale(now_ms)) {
+            t.state = TrialState::Expired;
+            t.decided_at_ms = Some(now_ms);
+            t.verdict = Some(TrialVerdict {
+                candidate: t.candidate,
+                stable: t.stable,
+                reason: format!("no verdict within {} days of opening", TRIAL_WINDOW_MS / (24 * 60 * 60 * 1000)),
+            });
+            expired.push(t.clone());
+        }
+        if !expired.is_empty() {
+            self.save(&all)?;
+            for t in &expired {
+                crate::probe!(
+                    class = "genome.trial.expired",
+                    persona = %t.persona_id,
+                    gene = t.alias.as_str(),
+                    trial = %t.id,
+                    opened_at_ms = t.opened_at_ms,
+                    candidate_settled = t.candidate.settled as u64,
+                    stable_settled = t.stable.settled as u64,
+                    "a trial waited its whole window with no verdict: ended unjudged, its gene out of serving, its bucket released"
+                );
+                apply_decision(t, now_ms);
+            }
+        }
+        Ok(expired)
     }
 
     /// Credit one settled card to each open trial of `persona` it is evidence about
@@ -627,6 +704,30 @@ impl GeneTrials {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Cormac on #4794, point 3): an open trial past its window ends as
+    // Expired on the sentinel's cadence, with a verdict that says it was not judged (not
+    // worse), and a reader treats a stale row as ended before the file says so; a trial
+    // inside its window is untouched.
+    #[test]
+    fn a_trial_with_no_verdict_in_its_window_expires_unjudged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GeneTrials::at(dir.path().join("trials.json"));
+        let persona = Uuid::from_u128(0x7);
+        let old = store.open(persona, "code", std::path::Path::new("/g/old.gguf"), "base", 1_000).unwrap();
+        let young = store.open(persona, "code", std::path::Path::new("/g/young.gguf"), "base", 1_000 + TRIAL_WINDOW_MS).unwrap();
+        let now = 1_000 + TRIAL_WINDOW_MS + 1;
+        assert!(old.is_stale(now) && !old.is_live(now), "past its window: ended on read");
+        assert!(young.is_live(now));
+        let expired = store.expire_stale(now).unwrap();
+        assert_eq!(expired.iter().map(|t| t.id).collect::<Vec<_>>(), vec![old.id]);
+        let all = store.load().unwrap();
+        let o = all.iter().find(|t| t.id == old.id).unwrap();
+        assert_eq!((o.state, o.decided_at_ms), (TrialState::Expired, Some(now)));
+        assert!(o.verdict.as_ref().unwrap().reason.contains("no verdict"), "{:?}", o.verdict);
+        assert_eq!(all.iter().find(|t| t.id == young.id).unwrap().state, TrialState::Trial);
+        assert!(store.expire_stale(now).unwrap().is_empty(), "idempotent");
+    }
 
     // what this catches: a card's outcome credited to a genome that did not work it. The arm
     // must be one fixed answer per (trial, card), whatever turn or restart asks; the share
