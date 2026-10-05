@@ -1158,27 +1158,29 @@ impl PrebuiltCore {
             .map_err(|e| format!("cannot locate checkout for prebuilt verification: {e}"))?;
         let git_dir = std::env::var_os("GIT_DIR");
         let checkout_sha = prebuilt_checkout_sha(&cwd, git_dir.as_deref()).await?;
-        Self::from_report(path, build_sha, checkout_sha.as_deref())
+        // THE BUILD KEY, NOT HEAD (card 9080ffb0 / #4732). The core is a function of the
+        // build inputs, so CI publishes one artifact per commit that touched them and a
+        // docs-only tip is served by its key's artifact. Checking that artifact against
+        // HEAD refused every such tip in two seconds ("DEPLOY MISMATCH ... shipped build
+        // 937976559 (git HEAD)" on the M5, 2026-10-05 01:55Z, for the key f8c69966e).
+        let expected = match checkout_sha.as_deref() {
+            Some(head) => Some(prebuilt_checkout_build_key(&cwd, git_dir.as_deref(), head)),
+            None => None,
+        };
+        Self::from_report(path, build_sha, expected.as_ref().map(|(sha, src)| (sha.as_str(), *src)))
     }
 
     fn from_report(
         path: PathBuf,
         build_sha: String,
-        checkout_sha: Option<&str>,
+        expected: Option<(&str, &'static str)>,
     ) -> Result<Self, String> {
         // Reuse #194's credible-SHA and short/full-SHA comparison. Without a
         // checkout the artifact anchors its own receipt; unknown/malformed
-        // provenance still fails. With a checkout it must also match HEAD.
-        deploy_verdict(
-            Some(&build_sha),
-            checkout_sha.unwrap_or(&build_sha),
-            if checkout_sha.is_some() {
-                "git HEAD of this checkout"
-            } else {
-                "selected prebuilt artifact"
-            },
-            &path.display().to_string(),
-        )?;
+        // provenance still fails. With a checkout it must match the checkout's
+        // build key (its HEAD when git cannot name the key).
+        let (expected_sha, source) = expected.unwrap_or((&build_sha, "selected prebuilt artifact"));
+        deploy_verdict(Some(&build_sha), expected_sha, source, &path.display().to_string())?;
         Ok(Self { path, build_sha })
     }
 }
@@ -4552,6 +4554,34 @@ async fn prebuilt_checkout_sha(
     Ok(Some(head.to_owned()))
 }
 
+/// The checkout's BUILD KEY: the newest commit at or before `head` that touched a build
+/// input (`prebuilt_artifact::BUILD_INPUTS`), which is the commit CI built a core for. Falls
+/// back to `head` itself, named as such, when git cannot say.
+fn prebuilt_checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &str) -> (String, &'static str) {
+    let args = continuum_cli_lifecycle::prebuilt_artifact::build_key_log_args(head);
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(cwd).args(&args).env_remove("GIT_DIR").stdin(Stdio::null());
+    if let Some(git_dir) = git_dir {
+        cmd.env("GIT_DIR", git_dir);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if key.is_empty() {
+                (head.to_string(), "git HEAD of this checkout (no build key found)")
+            } else {
+                (key, "build key of this checkout (newest commit touching a build input)")
+            }
+        }
+        _ => (head.to_string(), "git HEAD of this checkout (build key unreadable)"),
+    }
+}
+
 /// Detect repository metadata without asking Git to read HEAD. Both a normal
 /// `.git` directory and a linked worktree/submodule's `.git` file count, even if
 /// broken; Git must then verify the selected checkout. Bare repositories count
@@ -7290,7 +7320,7 @@ mod tests {
             assert!(super::PrebuiltCore::from_report(
                 artifact.clone(),
                 report.into(),
-                Some("abc123f")
+                Some(("abc123f", "git HEAD of this checkout"))
             )
             .is_err());
         }
@@ -7300,7 +7330,7 @@ mod tests {
             );
         }
         let ready =
-            super::PrebuiltCore::from_report(artifact, "abc123f0123456789".into(), Some("abc123f"))
+            super::PrebuiltCore::from_report(artifact, "abc123f0123456789".into(), Some(("abc123f", "git HEAD of this checkout")))
                 .unwrap();
         assert_eq!(ready.build_sha, "abc123f0123456789");
     }
@@ -7396,7 +7426,7 @@ mod tests {
         assert!(super::PrebuiltCore::from_report(
             standalone.join("core"),
             "abc123f".into(),
-            absent.as_deref(),
+            absent.as_deref().map(|h| (h, "git HEAD of this checkout")),
         )
         .is_ok());
         assert_eq!(
@@ -7417,6 +7447,49 @@ mod tests {
             super::prebuilt_checkout_sha(&nested, None).await.is_err(),
             "a broken worktree gitfile is not a standalone installation"
         );
+    }
+
+    // what this catches (M5, 2026-10-05 01:55Z): a prebuilt core is CI's build of the
+    // checkout's BUILD KEY, so a docs-only HEAD on top of a core change must accept the
+    // key's artifact; HEAD itself is the expectation only when no build input was ever
+    // touched. Checked against HEAD, every docs-only tip refused in two seconds.
+    #[tokio::test]
+    async fn a_prebuilt_is_expected_to_be_the_checkouts_build_key_not_its_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let hooks = tmp.path().join("empty-hooks");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&hooks).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"])
+                .arg("-c")
+                .arg(format!("core.hooksPath={}", hooks.display()))
+                .env_remove("GIT_DIR")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::create_dir_all(repo.join("core")).unwrap();
+        std::fs::write(repo.join("core/lib.rs"), "// core").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "core change"]);
+        let key = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("README.md"), "docs only").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "docs only"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        assert_ne!(key, head);
+        let (expected, source) = super::prebuilt_checkout_build_key(&repo, None, &head);
+        assert_eq!(expected, key, "the expectation is the key, not HEAD");
+        assert!(source.starts_with("build key"), "{source}");
+        // The key's artifact is accepted; HEAD's would not have been built by CI at all.
+        assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), key.clone(), Some((&expected, source))).is_ok());
+        assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), head.clone(), Some((&expected, source))).is_err());
     }
 
     // what this catches: card 67f53b63 — an inherited build request, an available
