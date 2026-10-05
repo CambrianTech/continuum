@@ -40,6 +40,7 @@ use crate::runtime::{
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
+pub mod review_gate;
 pub mod submission;
 
 /// The bus event published the moment a card transitions — by [`bridge_wire_work_event`]
@@ -2215,13 +2216,25 @@ pub(crate) async fn advance_card_state_effective(
 ) -> Result<CardState, String> {
     use crate::cognition::bench_round as round;
     let finishing = matches!(state, CardState::Closed | CardState::Merged);
+    // THE GATE READS THE ROOM (card fa4aaaaa): a room that declares a review policy
+    // decides; one that declares none keeps the round's gate (bench rooms, until their
+    // recipes declare the policy). Read only on transitions that can finish.
+    let room_gate = if finishing || matches!(state, CardState::Review | CardState::Blocked) {
+        self::review_gate::room_review(airc, card_id).await
+    } else {
+        None
+    };
+    let gated = match &room_gate {
+        Some(r) => r.outstanding(),
+        None => round::review_required(card_id.as_uuid()),
+    };
     // Card 381ccf3a: a citizen's `done` (or `review`) on a GATED card must carry a
     // write. Measured 2026-09-06/07: cards moved to REVIEW with zero edits as a
     // release valve — the reviewer then reviewed nothing and the grade ran on the
     // base commit. Her acting root is the checkout the card staged for her; no
     // change there since staging = nothing to review.
     if (finishing || state == CardState::Review)
-        && round::review_required(card_id.as_uuid())
+        && gated
         && round::review_parent(card_id.as_uuid()).is_none()
     {
         if let Some(root) = actor.and_then(crate::cognition::persona_workspace::acting_root_of) {
@@ -2254,12 +2267,34 @@ pub(crate) async fn advance_card_state_effective(
             }
         }
     }
-    if let Some(parent) = round::review_parent(card_id.as_uuid()) {
+    let review_parent = match round::review_parent(card_id.as_uuid()) {
+        Some(p) => Some(p),
+        None if finishing || state == CardState::Blocked => native_review_parent(airc, card_id).await,
+        None => None,
+    };
+    if let Some(parent) = review_parent {
         if finishing || state == CardState::Blocked {
             let passed = finishing;
             round::settle_review_card(card_id.as_uuid(), passed);
             raw_advance(airc, card_id, CardState::Closed, via).await?;
             let parent_id = WorkCardId::from_uuid(parent);
+            // A room with a policy counts PASSING REVIEWS by distinct reviewers on the
+            // parent's submission: one review card closing is not enough when it asks
+            // for more, and the parent waits in Review (card fa4aaaaa).
+            if passed {
+                if let Some(parent_gate) = self::review_gate::room_review(airc, parent_id).await {
+                    if parent_gate.outstanding() {
+                        crate::probe!(
+                            class = "work.review.awaiting_more",
+                            parent = %short8(parent),
+                            passed = parent_gate.passed as u64,
+                            required = parent_gate.policy.required,
+                            "a review closed, but the room's policy asks for more passing reviews — the parent waits"
+                        );
+                        return Ok(CardState::Review);
+                    }
+                }
+            }
             let next = if passed {
                 CardState::Closed
             } else {
@@ -2279,7 +2314,7 @@ pub(crate) async fn advance_card_state_effective(
     }
     // A VERDICT is the review's outcome: it closes the parent outright. Every
     // other finisher on a gated card goes to review first.
-    if finishing && via != VIA_VERDICT && round::review_required(card_id.as_uuid()) {
+    if finishing && via != VIA_VERDICT && gated {
         raw_advance(airc, card_id, CardState::Review, via).await?;
         match open_review_card(airc, card_id).await {
             Ok(review) => crate::probe!(
@@ -2310,8 +2345,12 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
     let (room, card) = card_in_subscribed_rooms(airc, parent)
         .await
         .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
-    let (_, instance) = crate::commands::benchmark::parse_card_title(&card.title)
-        .ok_or_else(|| "parent is not a bench card".to_string())?;
+    let Some((_, instance)) = crate::commands::benchmark::parse_card_title(&card.title) else {
+        // A room's own card (not a bench card): its review card comes from the parent
+        // itself, under the room's policy (card fa4aaaaa). The bench branch below is
+        // unchanged.
+        return open_room_review_card(airc, &room, &card, parent).await;
+    };
     let owner = card
         .owner
         .and_then(|o| {
@@ -2349,6 +2388,43 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
     crate::cognition::bench_round::register_review_card(parent.as_uuid(), review.as_uuid())
         .ok_or_else(|| "parent left its round before the review was registered".to_string())?;
     Ok(review)
+}
+
+/// Post the review card for a ROOM's own card (not a bench card): titled and described
+/// from the parent, linked natively (`reviewing(parent)`), never registered with a round.
+/// Whoever the room's policy admits reviews it with `work/review` (card fa4aaaaa).
+async fn open_room_review_card(
+    airc: &Arc<Airc>,
+    room: &airc_lib::Room,
+    card: &airc_lib::WorkCard,
+    parent: WorkCardId,
+) -> Result<WorkCardId, String> {
+    let owner = card
+        .owner
+        .and_then(|o| {
+            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(o.as_uuid()))
+                .map(|rt| rt.agent_name().to_string())
+        })
+        .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
+    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
+    let title: String = format!("review: {}", card.title).chars().take(160).collect();
+    let body = format!(
+        "Review {owner}'s work on card {p8} (\"{}\"). Read the latest submission          (work/submission) and the change it carries, judge it against the card, then give          your verdict with work/review (passed or failed, with evidence). This room's review          policy decides how many passing reviews finish the card and whether the author may          review her own work.",
+        card.title
+    );
+    airc.join(&room.name).await.map_err(|e| e.to_string())?;
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    req.body = Some(body);
+    airc.create_work_card(req).await.map_err(|e| e.to_string())
+}
+
+/// The card a review card reviews, by airc's native link (`reviews`), for review cards no
+/// round registered (a room's own cards).
+async fn native_review_parent(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<Uuid> {
+    card_in_subscribed_rooms(airc, card_id)
+        .await
+        .and_then(|(_, card)| card.reviews.map(|p| p.as_uuid()))
 }
 
 /// The raw advance + the bus event — what [`advance_card_state`] was before the gate.

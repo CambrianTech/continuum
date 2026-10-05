@@ -1019,6 +1019,19 @@ impl ActionCommand for WorkReview {
                     ))
                 })?,
         };
+        // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
+        // submission is admitted only where the room's policy says `self`; a room that
+        // declares no policy keeps today's behaviour. Refused up front, by name, rather
+        // than counted as nothing after the fact.
+        if submission.publisher == airc.peer_id() {
+            if let Some(policy) = crate::modules::work::review_gate::room_policy(airc, &room).await {
+                if !policy.self_review {
+                    return Err(CommandError::Invalid(format!(
+                        "this room's review policy does not admit the author's own review                          (review.self is false): a member other than you reviews card {card_id}.                          A room can allow it: activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
+                    )));
+                }
+            }
+        }
         let artifact = match p.artifact.clone() {
             Some(a) => a.into_artifact()?,
             None => submission.artifact.clone(),
