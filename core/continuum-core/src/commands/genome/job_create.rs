@@ -241,6 +241,50 @@ crate::action_command! {
             }
         };
 
+        // 1b. THE DECISION (GENE-REUSE-FORK-MINT.md, step 2's receipt): with the corpus's
+        //     signature in hand, is this competence one an existing gene already carries
+        //     (reuse), a child of one (fork), or new (mint)? Decided against her signature
+        //     store, with residency from the manifest's genes for this base (they load at
+        //     launch), probed as `genome.decision`, and recorded on the job. The ACTION is
+        //     still the mint below for every branch: these rows measure how often reuse
+        //     or fork would have applied before the action changes (the next slice).
+        let decision = watched_signature.as_ref().map(|sig| {
+            use crate::genome::competence::{decide, nearest_in_store, Competence, Surprise};
+            let competence = Competence {
+                centroid: sig.centroid.clone(),
+                members: (0..p.request.dataset.examples.len()).collect(),
+                cohesion: 1.0, // one bucket is one competence here; clustering within it is step 2's follow-on
+                representative: 0,
+            };
+            let store = crate::genome::signature::signature_store_path()
+                .and_then(|path| crate::genome::signature::SignatureStore::load_at(&path))
+                .unwrap_or_default(); // unwrap_or_default: no store yet = nothing near, which decides "mint" honestly
+            let resident: Vec<String> = crate::forge::adapter_manifest::load()
+                .map(|all| {
+                    crate::forge::adapter_manifest::for_base(&all, &p.request.base_model)
+                        .into_iter()
+                        .map(|a| a.path.display().to_string())
+                        .collect()
+                })
+                .unwrap_or_default(); // unwrap_or_default: an unreadable manifest reads as nothing resident; a near gene then reads as reuse, never fork
+            let nearest = nearest_in_store(&competence, &store, &sig.embedder, &resident);
+            let decision = decide(&competence, Surprise::NotYetMeasured, nearest.as_ref());
+            crate::probe!(
+                class = "genome.decision",
+                persona = %p.request.persona_name,
+                trait_kind = %p.request.trait_kind,
+                examples = p.request.dataset.examples.len() as u64,
+                branch = ?decision,
+                nearest = nearest.as_ref().map(|n| n.gene.as_str()).unwrap_or(""), // "" = nothing in the store
+                similarity = nearest.as_ref().map(|n| n.similarity).unwrap_or(0.0), // 0.0 = nothing in the store
+                nearest_resident = nearest.as_ref().is_some_and(|n| n.resident),
+                surprise = "not_measured",
+                action = "mint", // until the next slice wires reuse to a trial and fork to a parent
+                "a full bucket decided: reuse, fork or mint, against her signature store"
+            );
+            decision
+        });
+
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
         //    slug callers branch on for retry-vs-surface.
         match adapter.create_job(p.request).await {
@@ -268,6 +312,7 @@ crate::action_command! {
                         trait_kind: watched_trait_kind,
                         eval_set: watched_eval_set,
                         signature: watched_signature,
+                        decision,
                     },
                 );
                 Ok(JobCreateOutcome {
