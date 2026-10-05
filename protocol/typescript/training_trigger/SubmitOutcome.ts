@@ -38,6 +38,11 @@ selectedProvider?: string,
  */
 jobHandle?: JobHandle, 
 /**
+ * BatchAppended after a fill that was HELD: the job of hers already training this
+ * competence (its local id). The examples wait in the bucket for it.
+ */
+heldBy?: string, 
+/**
  * Rejections: the diagnostic message.
  */
 error?: string, 

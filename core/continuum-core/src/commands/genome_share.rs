@@ -741,7 +741,7 @@ pub(crate) async fn nearest_on_hub(
             continue; // another embedder's signature: not comparable, never mis-scored
         };
         if nearest.as_ref().is_none_or(|n| similarity > n.similarity) {
-            nearest = Some(crate::genome::competence::NearestGene { gene: hit.id, similarity, resident: false });
+            nearest = Some(crate::genome::competence::NearestGene { gene: crate::genome::competence::GeneRef::Hub { repo: hit.id }, similarity, resident: false });
         }
     }
     nearest
