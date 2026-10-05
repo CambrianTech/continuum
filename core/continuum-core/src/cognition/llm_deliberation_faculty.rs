@@ -5500,7 +5500,12 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // offered is what she may do; a window too small for the full set carries
             // `core_hands`. Not every verb: a full dump blows the prompt budget and has
             // muted personas before (persona_tools bound).
-            n.starts_with("code/")
+            // Her own mind's verbs are hands (focus/continue, focus/nudge, focus/mute): the
+            // self-determination seam is decorative if she can read its manual but has no
+            // slot to call it. Kimi, 2026-10-05: "present in the registry, absent from my
+            // surface ... I've read it six times ... there is nothing to invoke against."
+            n.starts_with("focus/")
+                || n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
                 || n.starts_with("cargo/")
@@ -5693,6 +5698,7 @@ mod tests {
             "work/review",
             "work/submit",
             "web/fetch",
+            "focus/continue",
         ]
         .iter()
         .map(|n| NativeToolSpec {
@@ -5718,14 +5724,15 @@ mod tests {
                 "commands/list",
                 "code/git/status",
                 "work/submit",
-                "web/fetch"
+                "web/fetch",
+                "focus/continue"
             ],
             "git/apply, work/submission and work/review are reviewer verbs, not hands; work/submit is the holder's"
         );
         // what this also catches: a window too small for the extended verbs keeps her CORE
         // hands (never nothing), with the web and the push/PR verbs one commands/list away.
         let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
-        assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
+        assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit", "focus/continue"]);
         // regression (Idris, 2026-09-29): a verb and the verb that finishes it travel
         // together. code/shell tells her to poll a running execution with code/shell-poll,
         // so a window that carries shell carries shell-poll.
