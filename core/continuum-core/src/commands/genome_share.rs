@@ -705,6 +705,67 @@ crate::register_stateless_command!(GenomeBootstrap);
 /// Default commons org — the shared cards the README promises personas seed from.
 const COMMONS_ORG: &str = "continuum-ai";
 
+/// The hub as a source for the NEAREST GENE (GENE-REUSE-FORK-MINT.md §5: store, mesh,
+/// HF, one lookup). Reads each candidate repo's `signature.json` ALONE, one small file,
+/// never the weights: a competence is compared on the hub before anything is pulled,
+/// and only a `Reuse` decision pulls the gene (`genome/pull`, which stamps the same
+/// signature into her store). Candidates come from the same search `genome/bootstrap`
+/// uses; a repo with no readable signature is skipped, never mis-scored. `gene` is the
+/// hub repo id, the identity `genome/pull` takes.
+pub(crate) async fn nearest_on_hub(
+    competence: &crate::genome::competence::Competence,
+    embedder_id: &str,
+    base_model: &str,
+    org: Option<&str>,
+    limit: usize,
+) -> Option<crate::genome::competence::NearestGene> {
+    let org = org.unwrap_or(COMMONS_ORG); // unwrap_or: the commons org is the documented default
+    let base_segment = base_model.rsplit('/').next().unwrap_or(base_model); // unwrap_or: an id with no '/' IS its own segment
+    let found = crate::commands::hf::search_hub(
+        crate::commands::hf::HubKind::Models,
+        crate::commands::hf::HfSearchParams {
+            query: format!("{org} {base_segment} lora"),
+            limit: Some(limit.max(1) as u32),
+            sort: None,
+            filter: None,
+        },
+    )
+    .await
+    .ok()?;
+    let mut nearest: Option<crate::genome::competence::NearestGene> = None;
+    for hit in found.hits.into_iter().filter(|r| r.id.starts_with(&format!("{org}/"))).take(limit) {
+        let Some(sig) = hub_signature(&hit.id).await else {
+            continue;
+        };
+        let Some(similarity) = sig.similarity_in(embedder_id, &competence.centroid) else {
+            continue; // another embedder's signature: not comparable, never mis-scored
+        };
+        if nearest.as_ref().is_none_or(|n| similarity > n.similarity) {
+            nearest = Some(crate::genome::competence::NearestGene { gene: hit.id, similarity, resident: false });
+        }
+    }
+    nearest
+}
+
+/// One repo's `signature.json`, downloaded alone into a scratch dir under the pulled
+/// genes' root (the `hf` CLI owns auth and transfer, as `genome/pull` and the publisher do).
+async fn hub_signature(repo: &str) -> Option<crate::genome::signature::GeneSignature> {
+    let dest = pulled_dir(repo).ok()?.join(".signature-probe");
+    std::fs::create_dir_all(&dest).ok()?;
+    let out = tokio::process::Command::new("hf")
+        .args(["download", repo, "--include", "signature.json", "--local-dir"])
+        .arg(&dest)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = std::fs::read_to_string(dest.join("signature.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+
 pub(crate) async fn bootstrap_for(
     p: &GenomeBootstrapParams,
 ) -> Result<GenomeBootstrapResult, CommandError> {
