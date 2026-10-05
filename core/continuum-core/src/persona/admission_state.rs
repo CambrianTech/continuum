@@ -315,6 +315,24 @@ impl AdmissionState {
     /// Bind this store to the persona that owns it (its own user id). Called once
     /// at spawn (`persona_workspace` ActingBody construction). Enables the
     /// own-authored-chat recall gate (#166). Idempotent; last write wins.
+    /// A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 8): what it
+    /// remembers is not written to `engrams.sqlite`. Until her sealed private space exists
+    /// (build step 2) it is not written at all, which is the honest choice between those two.
+    /// The ONE gate both ingestion paths (`admit`, `admit_reflection`) ask. A bare store with
+    /// no owner (tests, replay) has no mind room.
+    fn withheld_in_her_mind_room(&self, room: Uuid) -> Option<AdmissionDecision> {
+        let owner = (*self.owner_id.read().unwrap())?;
+        crate::persona::mind_room::is_private_room(owner, room).then(|| {
+            crate::persona::mind_room::note_withheld(owner, "engrams");
+            AdmissionDecision::Drop {
+                reason: crate::persona::engram::AdmissionDropReason::PolicyDeniedAdmission {
+                    policy_id: "mind-room".to_string(),
+                    explanation: "a turn in her mind room is hers; it is not written to engrams.sqlite".to_string(),
+                },
+            }
+        })
+    }
+
     pub fn set_owner_id(&self, id: Uuid) {
         *self.owner_id.write().unwrap() = Some(id);
     }
@@ -432,6 +450,9 @@ impl AdmissionState {
         message: &InboxMessage,
         trace: Option<&mut CognitionTrace>,
     ) -> Result<AdmissionDecision, AdmissionError> {
+        if let Some(withheld) = self.withheld_in_her_mind_room(message.room_id) {
+            return Ok(withheld);
+        }
         let decision = self.runner.admit(
             message,
             self.seen_content.as_ref(),
@@ -484,6 +505,9 @@ impl AdmissionState {
     /// shape (e.g. `Semantic` + `SelfReflection` + `SelfTrust`); this method
     /// records, it does not synthesize them.
     pub fn admit_reflection(&self, engram: Engram) -> Result<AdmissionDecision, AdmissionError> {
+        if let Some(withheld) = engram.context_id.and_then(|room| self.withheld_in_her_mind_room(room)) {
+            return Ok(withheld);
+        }
         let hash = content_hash_sha256(&engram.content);
         if let Some(existing_engram_id) = self.seen_content.find_by_content_hash(&hash) {
             // Idempotent dream: this exact fact is already engrammed.
@@ -1729,6 +1753,29 @@ mod tests {
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].content, fact.content);
         assert_eq!(recent[0].kind, EngramKind::Semantic);
+    }
+
+    // what this catches: a turn in her mind room becoming an engram in engrams.sqlite
+    // (sink 8 of PRIVACY-OF-THOUGHT.md). Both ingestion paths are withheld for her mind room;
+    // the same memory in an ordinary room still admits.
+    #[test]
+    fn a_memory_from_her_mind_room_is_not_written_to_her_engrams() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let her = Uuid::new_v4();
+        state.set_owner_id(her);
+        let mut private = semantic_reflection("a private thought", Uuid::new_v4());
+        private.context_id = Some(crate::persona::mind_room::mind_room_id(her));
+        assert!(matches!(
+            state.admit_reflection(private).expect("no error"),
+            AdmissionDecision::Drop { reason: crate::persona::engram::AdmissionDropReason::PolicyDeniedAdmission { .. } }
+        ));
+        assert_eq!(state.engram_count(), 0, "her mind room: nothing in her engrams");
+        let mut open = semantic_reflection("an open thought", Uuid::new_v4());
+        open.context_id = Some(Uuid::new_v4());
+        assert!(matches!(state.admit_reflection(open).expect("no error"), AdmissionDecision::Admit { .. }));
+        assert_eq!(state.engram_count(), 1, "an ordinary room still remembers");
     }
 
     /// What this catches: `redact` is the surgical complement to

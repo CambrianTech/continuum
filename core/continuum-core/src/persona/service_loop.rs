@@ -2601,6 +2601,24 @@ fn spawn_token_forwarder(
     // to a human eye while cutting wire traffic ~6x. 50ms flooded the bus (a room of
     // personas × per-token frames killed subscribers).
     const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+    // A turn in her mind room types to no one (PRIVACY-OF-THOUGHT.md §4, sink 7): the
+    // forwarder still drains her tokens, but publishes nothing to the room and tees
+    // nothing to the browser rail.
+    let private = match (
+        sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+        room_id.as_deref().and_then(|r| Uuid::parse_str(r).ok()),
+    ) {
+        (Some(sender), Some(room)) => crate::persona::mind_room::is_private_room(sender, room),
+        _ => false,
+    };
+    let (citizen, room_id, sender_id) = if private {
+        if let Some(sender) = sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
+            crate::persona::mind_room::note_withheld(sender, "token_stream");
+        }
+        (None, None, None)
+    } else {
+        (citizen, room_id, sender_id)
+    };
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         let stream_id = uuid::Uuid::new_v4().to_string();
@@ -3169,6 +3187,35 @@ mod tests {
             expected_seq += 1;
         }
         assert_eq!(tail, "SecondThird");
+    }
+
+    // what this catches: a turn in her mind room typing onto the room rail (sink 7 of
+    // PRIVACY-OF-THOUGHT.md). The forwarder drains her tokens and closes, and not one
+    // frame for her mind room reaches the rail.
+    #[tokio::test]
+    async fn a_turn_in_her_mind_room_streams_no_tokens() {
+        use crate::ai::adapter::GenerationChunk;
+        use crate::ipc::stream_rail;
+        let her = Uuid::new_v4();
+        let mind = crate::persona::mind_room::mind_room_id(her).to_string();
+        let mut output = stream_rail::subscribe();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = spawn_token_forwarder(rx, None, "Kimi".into(), Some(mind.clone()), Some(her.to_string()));
+        tx.send(GenerationChunk::Token("a private thought".into())).expect("owner alive");
+        drop(tx);
+        owner.await.expect("forwarder drains and closes");
+        let leaked = tokio::time::timeout(std::time::Duration::from_millis(600), async {
+            loop {
+                match output.recv().await {
+                    Ok(delta) if delta.room_id == mind => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(!leaked, "her mind room: no frame on the rail");
     }
 
     // What this catches (e731576c): publication, not a later work-turn return,

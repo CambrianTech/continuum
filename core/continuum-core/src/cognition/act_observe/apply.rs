@@ -134,7 +134,12 @@ pub async fn apply_act(
     // rounds only, so Kimi's Career Wrangler work was stamped and radiated into the org
     // room `cb2e21a1` all day (2026-10-04, "[result #9327; room cb2e21a1; ...]").
     let wake_room = room_id;
-    let room_id = act_activity_room(body.persona_id, wake_room).await;
+    // A turn in her mind room stays in her mind room (PRIVACY-OF-THOUGHT.md §4): its acts
+    // are never re-homed to a card's public activity, and nothing about them is published
+    // (no thought line, no receipt; sink 6). Her tools still act on the world; telling the
+    // room about it is hers to do, by publishing.
+    let private = crate::persona::mind_room::is_private_room(body.persona_id, wake_room);
+    let room_id = if private { wake_room } else { act_activity_room(body.persona_id, wake_room).await };
     if room_id != wake_room {
         crate::probe!(
             class = "act.activity.resolved",
@@ -542,7 +547,9 @@ pub async fn apply_act(
         // rooted her hands — the room her reviewer and teammates watch — not
         // the room whose line triggered the turn (`acting_card_of`).
         let receipt_room = room_id;
-        if !lines.is_empty() {
+        if private {
+            crate::persona::mind_room::note_withheld(body.persona_id, "thought_line");
+        } else if !lines.is_empty() {
             if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|reg| reg.get(body.persona_id))
             {

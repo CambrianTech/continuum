@@ -258,6 +258,7 @@ async fn drive_with_input(
     conversation: Option<&mut dyn crate::persona::service_loop::PersonaConversation>,
     mut credit: Option<&mut crate::persona::training_producer::TurnCreditCapture>,
 ) -> SettleOutcome {
+    let turn_room = burst.room.as_uuid();
     let settled = settle_to_outcome(
         cycle,
         burst,
@@ -267,6 +268,18 @@ async fn drive_with_input(
         credit.as_deref_mut(),
     )
     .await;
+    // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 9): it becomes neither
+    // curriculum (experience.jsonl) nor training credit. Until her sealed private space exists
+    // (build step 2) it is not written at all.
+    let private = cycle
+        .acting()
+        .is_some_and(|body| crate::persona::mind_room::is_private_room(body.persona_id, turn_room));
+    if private {
+        if let Some(body) = cycle.acting() {
+            crate::persona::mind_room::note_withheld(body.persona_id, "experience_and_credit");
+        }
+        return settled;
+    }
     if let Some(body) = cycle.acting() {
         crate::cognition::experience::record_lived_turn(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),

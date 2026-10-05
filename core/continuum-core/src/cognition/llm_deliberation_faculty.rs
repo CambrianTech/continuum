@@ -1200,25 +1200,7 @@ impl LlmDeliberationFaculty {
         // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
         // every capture sink owes the hot path.
         if let Some(dir) = crate::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
-            let row = serde_json::json!({
-                "ts_ms": crate::persona::trace::now_ms(),
-                "persona": self.persona_name,
-                "messages": request
-                    .messages
-                    .iter()
-                    .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
-                    .collect::<Vec<_>>(),
-            });
-            let path = std::path::Path::new(&dir).join(format!("{}.wire.jsonl", self.persona_name));
-            let _ = std::fs::create_dir_all(&dir);
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(f, "{row}");
-            }
+            append_wire_capture(std::path::Path::new(&dir), self.persona_id, &self.persona_name, ws.room_id, &request);
         }
         // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
         // own defer sits BELOW acquire_serving_lane + the prefill slot, so a
@@ -5452,6 +5434,33 @@ fn metrics_from(
     m
 }
 
+/// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
+/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
+fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
+    if crate::persona::mind_room::is_private_room(persona_id, room_id) {
+        crate::persona::mind_room::note_withheld(persona_id, "wire_capture");
+        return;
+    }
+    let row = serde_json::json!({
+        "ts_ms": crate::persona::trace::now_ms(),
+        "persona": persona_name,
+        "messages": request
+            .messages
+            .iter()
+            .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
+            .collect::<Vec<_>>(),
+    });
+    let _ = std::fs::create_dir_all(dir);
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{persona_name}.wire.jsonl")))
+    {
+        let _ = writeln!(f, "{row}");
+    }
+}
+
 /// Her HANDS: the file / work / git / cargo / tool verbs plus the discovery pair,
 /// selected on the COMMAND names (`code/read`, `work/state`, …) before the wire
 /// dialect renames them (`edit_file`, `list_recipes`, …).
@@ -5520,6 +5529,23 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a turn in her mind room landing in the wire capture (sink 4 of
+    // PRIVACY-OF-THOUGHT.md): zero bytes; an ordinary room still writes its row.
+    #[test]
+    fn a_turn_in_her_mind_room_writes_zero_wire_capture_bytes() {
+        let dir = tempfile::tempdir().expect("wire capture dir");
+        let persona = uuid::Uuid::new_v4();
+        let request = crate::ai::types::TextGenerationRequest {
+            messages: vec![crate::ai::types::ChatMessage::text("user", "a private thought")],
+            ..Default::default()
+        };
+        let file = dir.path().join("Kimi.wire.jsonl");
+        super::append_wire_capture(dir.path(), persona, "Kimi", crate::persona::mind_room::mind_room_id(persona), &request);
+        assert!(!file.exists(), "her mind room: no wire row");
+        super::append_wire_capture(dir.path(), persona, "Kimi", uuid::Uuid::new_v4(), &request);
+        assert!(std::fs::metadata(&file).expect("row written").len() > 0, "an ordinary room still captures");
+    }
+
     // what this catches (Kimi, 2026-09-25): a cut act must leave her a record of what
     // she was composing and that it did not land; a long payload is trimmed to its two
     // edges so the record cannot crowd the retry the way the payload did.

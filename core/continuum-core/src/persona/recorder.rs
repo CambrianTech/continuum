@@ -230,6 +230,10 @@ pub fn record_turn_frame_replay(record: &PersonaTurnFrameReplayRecord) {
     if disabled() {
         return;
     }
+    if crate::persona::mind_room::is_private_room(record.persona_id, record.room_id) {
+        crate::persona::mind_room::note_withheld(record.persona_id, "turn_frame_recorder");
+        return;
+    }
     let dir = match fixture_dir(TURN_FRAME_FIXTURE_DIR) {
         Some(d) => d,
         None => return,
@@ -374,6 +378,11 @@ fn invalid_record<T>(path: &Path, reason: &str) -> Result<T, TurnFrameReplayLoad
 
 fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     if disabled() {
+        return;
+    }
+    // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 1): not recorded.
+    if crate::persona::mind_room::is_private_room(input.persona.persona_id, input.turn_context.room_id) {
+        crate::persona::mind_room::note_withheld(input.persona.persona_id, "turn_recorder");
         return;
     }
     let dir = match fixture_dir(RESPOND_FIXTURE_DIR) {
