@@ -36,6 +36,10 @@
     "repo": {
       "default": "",
       "doc": "Repository key this project builds (owner/name, from the checkout's git remote). Cards on this board name it; card rooms nest under this room."
+    },
+    "review": {
+      "default": { "required": 1, "roles": [], "self": false },
+      "doc": "The room's review policy: passing reviews (by distinct reviewers) a card needs before it finishes, the roles a reviewer must hold (empty = any member), and whether the author may review her own work."
     }
   }
 }
