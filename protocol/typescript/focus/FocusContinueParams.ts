@@ -11,7 +11,8 @@ export type FocusContinueParams = {
  */
 note: string, 
 /**
- * The activity (room NAME) this work lives in.
+ * The activity (room NAME) this work lives in. Omit it to mean the room you are
+ * acting in now.
  */
 room: string, 
 /**

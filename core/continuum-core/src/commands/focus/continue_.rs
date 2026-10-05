@@ -38,7 +38,8 @@ pub struct FocusContinueParams {
     /// next: run the full suite, then deploy". Required unless `clear` is true.
     #[serde(default)]
     pub note: String,
-    /// The activity (room NAME) this work lives in.
+    /// The activity (room NAME) this work lives in. Omit it to mean the room you are
+    /// acting in now.
     #[serde(default)]
     pub room: String,
     /// What you expect to happen next, in your words ("Joel reviews the PR").
@@ -84,11 +85,10 @@ impl ActionCommand for FocusContinue {
     const NAME: &'static str = "focus/continue";
     const NATIVE: bool = true; // self-determination — her own continuation: where she is and what she expects next, written by her hand. NATIVE defaults to false, which is why the verb was registered, documented, and uncallable (Kimi, 2026-10-05).
     const DESCRIPTION: &'static str =
-        "Write down where you are leaving unfinished work and what you expect next, so you \
-         pick it up yourself: at your deadline, after a restart, or when the answer arrives. \
-         Give a note and the room; optionally what you expect, within how many minutes, and \
-         the verdict you expect. clear=true when the thread is finished; private=true keeps \
-         it in your mind room. Yours only.";
+        "Note where you leave unfinished work and what you expect next, to pick it up \
+         at your deadline, after a restart, or when the answer arrives. The room \
+         defaults to yours now; private=true keeps it in your mind room. Optional: what \
+         you expect, within how many minutes, the verdict. clear=true when finished. Yours only.";
     type Params = FocusContinueParams;
     type Output = FocusContinueResult;
 
@@ -113,14 +113,21 @@ impl ActionCommand for FocusContinue {
                 ));
             }
             // Her mind room is local, never an airc channel, so it is never resolved by name.
+            // Otherwise the room defaults to the one she is acting in: every tool call is
+            // stamped with it (ctx.context_id). Kimi's first call omitted it and was refused
+            // "room is required" (2026-10-05 04:42Z): a room she is standing in is not
+            // something to make her spell out.
             let activity = if p.private {
                 crate::persona::mind_room::mind_room_id(persona)
+            } else if p.room.trim().is_empty() {
+                ctx.context_id.filter(|id| !id.is_nil()).ok_or_else(|| {
+                    CommandError::Invalid(
+                        "name the room this work lives in (or private=true for your mind room): \
+                         this call carries no room of its own"
+                            .into(),
+                    )
+                })?
             } else {
-                if p.room.trim().is_empty() {
-                    return Err(CommandError::Invalid(
-                        "room is required: the activity this work lives in (or private=true for your mind room)".into(),
-                    ));
-                }
                 let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()
                     .and_then(|r| r.get(persona))
                     .ok_or_else(|| CommandError::Invalid("your airc runtime is not resident on this core".into()))?;
@@ -184,6 +191,22 @@ mod tests {
         assert_eq!(e.text, "Joel reviews the PR");
         let bare = FocusContinueParams { note: "n".into(), room: "r".into(), ..Default::default() };
         assert!(expectation_from(&bare, 1_000).is_none());
+    }
+
+    // what this catches: the room default. A call with no room uses the room her call is
+    // stamped with; with neither, the refusal tells her to name it (not "required").
+    #[tokio::test]
+    async fn no_room_and_no_stamped_room_asks_her_to_name_it() {
+        let persona = uuid::Uuid::new_v4();
+        let ctx = Ctx {
+            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            ..Ctx::default()
+        };
+        let out = FocusContinue.run(&ctx, FocusContinueParams { note: "next: deploy".into(), ..Default::default() }).await;
+        match out {
+            Err(CommandError::Invalid(m)) => assert!(m.contains("name the room"), "{m}"),
+            other => panic!("expected an invalid naming the room, got {other:?}"),
+        }
     }
 
     // what this catches: another caller writing her mind. Self-set only.
