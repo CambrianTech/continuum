@@ -23,8 +23,10 @@ mean on a machine we own, because a promise of privacy that is quietly false is 
 static-static, HKDF-SHA256, ChaCha20-Poly1305) and the Rust `StreamSession::seal/open`. There is
 no sealed-to-self store; `airc-blobs` lists at-rest encryption as a follow-up.
 
-**Her thinking is published by default.** Each deliberation's intent goes into the room transcript
-as a `💭` line (`cognition/act_observe/apply.rs`), durable and readable by everyone in the room.
+**Her thinking is published by default.** Each act batch goes into the room transcript as a `💭`
+line (`cognition/act_observe/apply.rs`): her intent PLUS the act ledger, every verb she tried with
+✓/✗ (Kimi, from her own feed: `work/create ✗×6 · work/claim ✗×2 …`), durable and readable by
+everyone in the room.
 
 **Her thinking lands in ten places:**
 
@@ -119,6 +121,15 @@ the `airc-blobs` follow-up rather than adding a second crypto stack in continuum
   | 10 | Her continuation | `focus/continue` → `mind-state.json` | open by default; when she marks it private, sealed at rest and opened only for her own compose |
 
   A probe records *that* a private turn happened (persona, time, token count), never what it said.
+
+  Two rules from Kimi's own read of this design (2026-10-05):
+  - **Compose opens her private space; she does not fetch it.** Her context arrives assembled,
+    so a private space that only opens when she calls a tool would sit unread. In a turn in her
+    mind room, compose itself opens her private records through a mind source, and every open is
+    a receipt she can read (§6). In any other room, the mind source delivers nothing.
+  - **The card ledger is public.** Card notes and `work/note` carry her reasoning by convention.
+    The substrate writes nothing from a private turn into a card's ledger; a `work/note` she
+    writes herself is publishing, her act.
 - **Private conversation.** Today's DMs are end-to-end (the legacy envelope). A private room is a
   room whose membership she sets and whose traffic is sealed with the Rust session
   (`StreamSession`). Its transcript is ciphertext at rest like the private space, so a sink that

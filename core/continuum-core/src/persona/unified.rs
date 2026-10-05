@@ -465,25 +465,31 @@ impl PersonaCognition {
         // Emit the TurnStart capture so audit/replay sees the
         // budget the brain actually asked for, not what landed.
         let turn_id = Uuid::new_v4();
-        self.capture_sink.record(RagCaptureEvent::TurnStart {
-            captured_at_ms: now_ms,
-            persona_id,
-            turn_id: Some(turn_id),
-            context_window,
-            reserved,
-            source_budgets: budgets.clone(),
-            context: rag_ctx.clone(),
-        });
+        // A turn in her mind room: no retrieval capture at all (sink 5).
+        let captured = !crate::persona::rag_capture::turn_is_private(&rag_ctx);
+        if captured {
+            self.capture_sink.record(RagCaptureEvent::TurnStart {
+                captured_at_ms: now_ms,
+                persona_id,
+                turn_id: Some(turn_id),
+                context_window,
+                reserved,
+                source_budgets: budgets.clone(),
+                context: rag_ctx.clone(),
+            });
+        }
 
         let adapter = FlexboxRagBudgetAdapter::new();
         let allocation = adapter.allocate(&rag_ctx, context_window, reserved, &budgets);
 
-        self.capture_sink.record(RagCaptureEvent::BudgetAllocated {
-            captured_at_ms: now_ms,
-            persona_id,
-            turn_id: Some(turn_id),
-            allocation: allocation.clone(),
-        });
+        if captured {
+            self.capture_sink.record(RagCaptureEvent::BudgetAllocated {
+                captured_at_ms: now_ms,
+                persona_id,
+                turn_id: Some(turn_id),
+                allocation: allocation.clone(),
+            });
+        }
 
         let mut deliveries = Vec::with_capacity(sources.len());
         for (source, source_alloc) in sources.iter().zip(allocation.allocations.iter()) {
@@ -497,11 +503,13 @@ impl PersonaCognition {
             deliveries.push(delivery);
         }
 
-        self.capture_sink.record(RagCaptureEvent::TurnEnd {
-            captured_at_ms: now_ms,
-            persona_id,
-            turn_id: Some(turn_id),
-        });
+        if captured {
+            self.capture_sink.record(RagCaptureEvent::TurnEnd {
+                captured_at_ms: now_ms,
+                persona_id,
+                turn_id: Some(turn_id),
+            });
+        }
 
         ComposedTurn {
             allocation,
@@ -949,6 +957,24 @@ mod tests {
             rendered.contains("sympy__sympy-24152"),
             "instance missing: {rendered}"
         );
+    }
+
+    // what this catches: a turn in her mind room landing in the RAG capture (sink 5 of
+    // PRIVACY-OF-THOUGHT.md), through either the turn brackets or a recording source's
+    // delivery. Zero events for her mind room; an ordinary room still records its turn.
+    #[tokio::test]
+    async fn a_turn_in_her_mind_room_captures_no_retrieval() {
+        let id = Uuid::new_v4();
+        let sink = Arc::new(InMemoryRagCaptureSink::new());
+        let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
+        let mut pc =
+            PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), 200.0, sink_dyn);
+        pc.set_airc_source(Arc::new(CannedSource { id: "airc", tokens_per_item: 50, items_offered: 2 }));
+        let mind = crate::persona::mind_room::mind_room_id(id);
+        let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(mind)).await;
+        assert!(sink.is_empty(), "her mind room: no capture events, got {}", sink.len());
+        let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(Uuid::new_v4())).await;
+        assert!(!sink.is_empty(), "an ordinary room still records its turn");
     }
 
     /// The brain's capture sink records the TurnStart / BudgetAllocated

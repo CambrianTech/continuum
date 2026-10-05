@@ -103,7 +103,15 @@ impl CaptureLease {
         call: &PromptCall,
         request: &TextGenerationRequest,
     ) -> Self {
-        let token = sink.submitted(call, request);
+        // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 2): the lease is
+        // inert, so neither `finish` nor `Drop` writes, and every dataset built from
+        // captures (sink 3) has nothing to read.
+        let token = if crate::persona::mind_room::is_private_room(call.persona_id, call.room_id) {
+            crate::persona::mind_room::note_withheld(call.persona_id, "prompt_capture");
+            None
+        } else {
+            sink.submitted(call, request)
+        };
         Self {
             sink,
             token,
@@ -632,6 +640,43 @@ pub(crate) fn completed_file(path: &Path, limit: usize) -> std::io::Result<Vec<s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a turn in her mind room landing in the prompt capture (and so in
+    // every SFT dataset built from it). Sink 2 of PRIVACY-OF-THOUGHT.md: zero bytes, through
+    // start, finish AND the lease's Drop; an ordinary room still captures.
+    #[test]
+    fn a_turn_in_her_mind_room_writes_zero_capture_bytes() {
+        let dir = tempfile::tempdir().expect("capture fixture directory");
+        let persona = Uuid::new_v4();
+        let sink: Arc<dyn PromptCaptureSink> =
+            Arc::new(JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture owner"));
+        let call = |room| PromptCall {
+            request_id: "r".into(),
+            persona_id: persona,
+            room_id: room,
+            cycle_id: Some(1),
+            context_window: Some(8192),
+            cause: "synthetic",
+            cause_root: None,
+            replay_of: None,
+        };
+        let request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "a private thought")],
+            ..Default::default()
+        };
+        let bytes = |dir: &std::path::Path| -> u64 {
+            std::fs::read_dir(dir).expect("dir").filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum()
+        };
+        // Opening the store may write its own index; the turn must add nothing beyond it.
+        let opened = bytes(dir.path());
+        let mind = crate::persona::mind_room::mind_room_id(persona);
+        let mut finished = CaptureLease::start(Arc::clone(&sink), &call(mind), &request);
+        assert_eq!(finished.finish(None, Some("done")), None, "an inert lease names no entry");
+        drop(CaptureLease::start(Arc::clone(&sink), &call(mind), &request));
+        assert_eq!(bytes(dir.path()), opened, "her mind room: nothing captured, even by Drop");
+        drop(CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4()), &request));
+        assert!(bytes(dir.path()) > opened, "an ordinary room still captures");
+    }
     #[test]
     fn concurrent_capture_wrappers_share_one_owner_and_keep_distinct_sessions() {
         let dir = tempfile::tempdir().expect("capture fixture directory");
