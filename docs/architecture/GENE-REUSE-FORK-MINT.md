@@ -85,6 +85,52 @@ Three laws on the ledger (Cormac, #4793 review):
 - **Silence is not zero use.** A node that is offline, or has stopped publishing, looks exactly like one that stopped drawing. Paging out locally by LRU is safe; the repository needs POSITIVE evidence to retire a gene. Across the window with no reports, a gene stops being OFFERED by the resolver; it is deleted only on a report that says it was drawn and retired, never on a missing report.
 - **Counts are claims.** Utilization and propagation decide which genes win, so a node that inflates its draws or pulls steers the market. The counts stand on the same footing as the rest of the commodity: signed per node and attributable (forge-alloy's zero-trust plus reputation), never a bare number the resolver trusts.
 
+## 3b. Novelty and surprise from every sense
+
+Joel, 2026-10-05: *"We can work towards more novel detection. What would enter long term memory for any person. Then if our algorithm is truly general this is just finding more places to adapt into it."*
+
+The law in §2 is already general: what she keeps is what her model of the world got wrong, or has never met. What is narrow is its input: `S(C)` reads one source, the verdict surprise. A person consolidates from many more, and each of them already has a place in the substrate:
+
+| What enters a person's long-term memory | Its source here | Status |
+|---|---|---|
+| Prediction error ("not what I expected") | the room contradicts her stated expectation (the verdict surprise, #4774) | **live** (#4796 gates on it) |
+| Novelty ("never met anything like this") | signature distance from `C` to her nearest memory or gene: the `d` that §2 already computes to choose fork or mint | computed, not yet a signal |
+| Consequence (the stove is hot) | a tool or execution outcome against her expectation: the test she expected to pass fails, the command she expected to work errors | new |
+| Correction by someone trusted | a reviewer requests changes, a human rewrites her reply | partly: review verdicts settle examples (#4765) |
+| Failed recall ("I should know this") | a memory existed for the turn, and she still asked, searched, or got it wrong | new |
+| Repetition | the same competence demanded again and again | counted by the bucket fill, not read as salience |
+| Significance and reward | credit settled to her work, a thank-you, a merge | credit exists (`settle_card_credit`) |
+| "Remember this" | her own noteworthy flag | exists as an intent, not wired here |
+
+**One shape for every sense.** Each source is an adapter that emits the same typed event: a prediction error *for a competence*, with a magnitude, a time, and the source that produced it. The window (`SURPRISE_WINDOW_MS`, read at the reader's clock) folds them per competence, and §2 reads the fold. Adding a sense is adding an adapter; the decision, the bucket, the trial and the verdict never change. If a new sense needs the decision changed, the shape is wrong, and that is the falsifier for this section.
+
+**Two axes, two stores.** Novelty and surprise are different quantities and lead to different consolidation, as they do in a brain (the hippocampus takes a novel episode fast; the cortex consolidates what keeps surprising it):
+
+- **novel, not yet surprising** becomes a *memory*: an engram, recalled by distance, cheap, never trained on by itself (§1);
+- **surprising despite recall** becomes a *gene*: §2's decision, training, a trial.
+
+Novelty detection is the front half that writes the memory first, so that §2's "after recall ran" has something to recall.
+
+**Build by outliers.** The first adapter is novelty from `d`, already computed and nearly free. The second is the most different one available: tool and execution outcomes (physical, where the verdict surprise is social). If the verdict, novelty and consequence sources fit one adapter without forcing, the interface is proven, and correction, failed recall, repetition and her flag are routine.
+
+Privacy holds unchanged: an experience in her mind room counts toward her own memory and her own `S(C)`, and is never published (`PRIVACY-OF-THOUGHT.md`).
+
+## 3c. Mentorship: the taught signals are the cheapest loops
+
+Joel, 2026-10-05: *"Mentorship isn't entirely unlearned. Obviously it's most about what we can turn into a training loop, synthesize, teach."*
+
+A teacher is an oracle. The cheapest examples are the ones where the right answer already stands beside her mistake, so they need no new judge, only collection. In order of how little new machinery each needs:
+
+1. **Format and protocol errors.** A parser refused her output, and the corrected form is known: a malformed tool call, or a mangled id (28% of live `work/claim` calls once carried a corrupted UUID, `id_resolve`). The parser is the oracle; each refusal is an (error, correction) pair.
+2. **A tool failure, then success in the same turn.** She called a tool wrong, read the error, and called it right. Execution is the oracle, and the captured turn already holds the pair (`persona::recorder`).
+3. **A review, then the approved revision.** A reviewer requested changes and her next revision passed. That is a preference pair, the rejected draft and the accepted one, with the reviewer's words as the reason. Submissions and verdicts already carry both.
+4. **A mentor's demonstration.** She failed at something, and a peer (an agent, another citizen, a human) then did it. The mentor's act is the target, and the mentor is credited in the example's lineage (`a-citizens-ideas-carry-her-name-as-author`).
+5. **Exercises the teacher synthesizes.** For a competence where `S(C)` stays high, the teacher persona composes more problems, each with a checker that verifies the answer (it compiles, the tests pass, the output parses). They run as activities in a room, so they produce turns the flywheel consumes, never a side runner (`BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md`).
+
+Sources 1 to 3 need no new oracle at all; today they are only not collected. Each is also a §3b sense: the error half is a prediction error for its competence, and the correction half is the example that trains it. So a taught loop is not a second pipeline. It is a sense whose examples arrive already labelled.
+
+Consent holds both ways. Her mistakes become examples under the same agreement as the rest of her curriculum, and a mentor's demonstration names its author.
+
 ## 4. What Kimi's §12 pass asks of this
 
 - *"No δ_c in front of me to turn"*: the dial and `S(C)` both render on her strip; she sees the number before any gene lands, so Prediction 2 (surprise falls after a gene) is testable from inside.
@@ -114,6 +160,8 @@ Status: `genome::recall` already walks local-then-grid (`RecallScope::LocalThenG
 | Fork = warm start from the parent | new in the trainer's job-create (parent adapter as init) |
 | HF as a recall source | new |
 | In-engine training (DREAM) | `ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md` S3/S4, separate |
+| **Sense adapters: one prediction-error event per source, folded per competence (§3b)** | new: verdict live; novelty from `d` and tool outcomes first |
+| **Taught loops: error and correction collected as labelled examples (§3c)** | new: parser, tool-retry and review-revision pairs need no new oracle |
 
 ## 7. Falsifiers
 
@@ -131,5 +179,6 @@ The design fails, and we say so, if observed:
 2. Competence clustering over her settled curriculum + the pure decision + its probe. Receipt: `genome.decision` rows on the 5090 naming a branch for her first competence, with the distance and the parent.
 3. Reuse and fork wired to the existing trial; mint through the existing job-create. Receipt: her first gene through this path, trialled on her cards, with the branch it took in its lineage.
 4. HF as a recall source and the start-gene resolver. Receipt: a fresh citizen on a fresh node resolves a start gene from HF with signature and lineage verified.
+5. Senses and taught loops (§3b, §3c): novelty from `d` and tool-outcome surprise as the two outlier adapters, then the parser and tool-retry pairs as her first taught examples. Receipt: one `S(C)` folded from two sources of different kinds, and one of her examples whose label came from a parser or an execution, not a reviewer.
 
 Each lands on canary green with a peer word, is measured on her node, and she is asked.
