@@ -7,4 +7,10 @@ import type { JobCreateResult } from "./JobCreateResult";
  * adapter rather than the coordinator). See the module docs for why expected
  * domain failures are data, not a transport `Err`.
  */
-export type JobCreateOutcome = { success: boolean, result?: JobCreateResult, error?: string, errorKind?: string, };
+export type JobCreateOutcome = { success: boolean, result?: JobCreateResult, error?: string, errorKind?: string, 
+/**
+ * `Decision::Join`: a job of hers already training this competence (its id); no
+ * job was created and `result` is `None`. The caller keeps the examples for the
+ * next fill, which decides against the gene that job produces.
+ */
+joined?: string, };

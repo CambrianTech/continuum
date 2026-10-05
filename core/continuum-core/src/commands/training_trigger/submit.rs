@@ -253,6 +253,7 @@ crate::action_command! {
                         SubmitOutcome::job_dispatched(examples as u32, provider, handle),
                     DispatchResult::Failed { kind, error } => SubmitOutcome::refused(kind, error),
                     DispatchResult::Empty => SubmitOutcome::batch_appended(0, min_examples),
+                    DispatchResult::Joined { examples, .. } => SubmitOutcome::batch_appended(examples as u32, min_examples),
                 }
             } else {
                 let (count, threshold) = state.buckets.get(&key)
@@ -630,6 +631,42 @@ mod tests {
     // rejected the second submit with InconsistentBucket and silently dropped its
     // data; base_model is now in the bucket key so the submits accumulate
     // independently.
+    // what this catches (the 5090, 2026-10-05 13:17Z: ten Mints for one competence from
+    // one card's credit, GENE-REUSE-FORK-MINT.md falsifier #2): while a job for this
+    // bucket's (persona, trait, base) is on the job board, a second fill to threshold is
+    // HELD with every example retained, never dispatched beside the job that is training
+    // the same competence; the fill after that job lands decides against its gene.
+    #[tokio::test]
+    async fn a_second_fill_while_a_job_trains_the_competence_is_held_not_minted() {
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+        let first = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                submit_params(persona, "test-trait", vec![ex("a", "b"), ex("c", "d"), ex("e", "f"), ex("g", "h"), ex("i", "j")], Some(5)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["outcome"], "JobDispatched", "{first}");
+        assert_eq!(trigger.state.test_job_board.snapshot().len(), 1, "one job on the board for this competence");
+
+        let second = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                submit_params(persona, "test-trait", vec![ex("k", "l"), ex("m", "n"), ex("o", "p"), ex("q", "r"), ex("s", "t")], Some(5)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second["success"], true, "{second}");
+        assert_ne!(second["outcome"], "JobDispatched", "a second job beside the first is the falsifier: {second}");
+        assert_eq!(
+            trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
+            Some(5),
+            "every example of the held fill is retained for the fill after the job lands"
+        );
+        assert_eq!(trigger.state.test_job_board.snapshot().len(), 1, "still one job");
+    }
+
     #[tokio::test]
     async fn different_base_models_create_separate_buckets() {
         let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
