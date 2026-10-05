@@ -148,6 +148,18 @@
       "command": "focus/mute"
     },
     {
+      "verb": "join",
+      "command": "room/join"
+    },
+    {
+      "verb": "leave",
+      "command": "room/leave"
+    },
+    {
+      "verb": "rooms",
+      "command": "room/list"
+    },
+    {
       "verb": "review",
       "command": "work/review"
     },
