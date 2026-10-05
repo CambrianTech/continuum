@@ -42,6 +42,21 @@ So the schema is two fields short of the machine, and the rest is already typed 
 - `until` is how a stage says what "done" means, so the gate executes whatever the recipe declares instead of a flag in code. The review policy (`{required, roles, self}`) is the first `until`; merge, a gene's publication and a consent are the next, with no new gate code.
 - `pipeline` stays as the degenerate case: a stage with `on: "spawn"` and no `until`.
 
+### 2.3 Steps name their components by URI; the scheme picks the adapter
+
+**Joel, 2026-10-05:** *"I love designs like that because often you can insert shell or code if necessary, and we allow it. If some adapter took it. Maybe there's a URI to the components they're using, like the commands already have."*
+
+A step's `command` today is a command name. It becomes a component URI, and the scheme chooses the adapter that runs it (the OpenCV-style registry CLAUDE.md asks for: one interface, N implementations, selected at runtime by name):
+
+| Scheme | Runs | Notes |
+|---|---|---|
+| `command:` (default, bare `work/review` still means this) | the command system | the extension surface stays the command system itself |
+| `shell:` | `code/shell` with the step's script | allowed, recorded as `shell` in the run receipt, and her hands policy applies exactly as it would to `code/shell` from her turn; CloudFormation's custom resource, GitHub's `run:` |
+| `recipe:<id>` | another recipe, as a nested activity | reusable workflows; `base` is inheritance, this is composition |
+| `gene:<id>`, `model:<id>` | later: page a gene in for the stage, or run a step on a named model | the same resolver genes use |
+
+The URI is validated at install against the adapters this core has (an unknown scheme is refused by name), and the run receipt records which adapter ran each step, so a recipe that reaches for `shell:` says so in its provenance rather than hiding it inside a command.
+
 ### 2.2 The round's lifecycle is a set of stages
 
 `ROUND-LIFECYCLE-AS-RECIPE-OWNED-STATE-MACHINE.md` wanted the round's states in the recipe. With `stages` they are: `on: "card_done"` → `until: {reviews.passed: N}`; `on: "all_cards_settled"` → `steps: [benchmark/close]`. `bench_round::review_gate` and the sibling-card code are then the benchmark recipe's stages, and the general executor runs them like any room's.
