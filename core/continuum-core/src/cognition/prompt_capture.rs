@@ -664,8 +664,15 @@ mod tests {
             messages: vec![ChatMessage::text("user", "a private thought")],
             ..Default::default()
         };
+        // `fs::metadata` on the path, never `DirEntry::metadata`: on Windows the listing
+        // reports a file's size as of open while the store's writer holds it, so a write
+        // would be invisible and the privacy assertion below could pass falsely (BigMama).
         let bytes = |dir: &std::path::Path| -> u64 {
-            std::fs::read_dir(dir).expect("dir").filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum()
+            std::fs::read_dir(dir)
+                .expect("dir")
+                .filter_map(|e| std::fs::metadata(e.ok()?.path()).ok())
+                .map(|m| m.len())
+                .sum()
         };
         // Opening the store may write its own index; the turn must add nothing beyond it.
         let opened = bytes(dir.path());
