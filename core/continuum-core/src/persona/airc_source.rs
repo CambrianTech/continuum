@@ -213,7 +213,28 @@ pub struct AircRagSource {
     /// persona's airc runtime log holds only events since ITS boot). `Some` in
     /// production (default); tests without a store see a loud-skip, not a panic.
     history: Option<Arc<dyn crate::persona::durable_history::DurableRoomHistory>>,
+    /// WHERE HER HISTORY STARTS, per room: the event the window's oldest kept line
+    /// belongs to. Kept across turns so the window's start holds still and jumps in
+    /// large steps ([`HISTORY_SLACK`]) instead of sliding one event per turn. Measured
+    /// on the 5090, 2026-10-05 (Cormac's trace): the newest-first fill dropped the
+    /// oldest line on every room event, so the FIRST history message changed every
+    /// turn; her hybrid base can only roll back to a saved checkpoint before the first
+    /// differing token, so each turn re-prefilled 39-59k tokens (20-75 s) and the
+    /// checkpoint cap then erased even the head's. One anchor per room, in memory.
+    anchors: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, HistoryAnchor>>,
 }
+
+/// The oldest kept line of a room's window, as the event it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HistoryAnchor {
+    pub event: uuid::Uuid,
+}
+
+/// The share of the window budget left free when the start jumps, so the next turns'
+/// new events fit without moving it again. A quarter: the start moves once per ~quarter
+/// window of new traffic, and every turn in between extends the cached prefix instead
+/// of replacing it. A larger slack buys fewer jumps at the cost of history shown.
+pub(crate) const HISTORY_SLACK: f32 = 0.25;
 
 impl AircRagSource {
     /// Production constructor — shares the process-global digest substrate so every
@@ -227,6 +248,7 @@ impl AircRagSource {
             grounding: DEFAULT_GROUNDING,
             fetch_limit: FETCH_LIMIT,
             history: Some(Arc::new(crate::persona::durable_history::ChatStoreHistory)),
+            anchors: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -312,7 +334,8 @@ impl AircRagSource {
         digest: &ChannelDigest,
         budget: u32,
         working: bool,
-    ) -> (Vec<RagItem>, u32, Option<Arc<ChannelElement>>) {
+        anchor: Option<HistoryAnchor>,
+    ) -> (Vec<RagItem>, u32, Option<Arc<ChannelElement>>, Option<HistoryAnchor>) {
         // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
         // tiny budgets still render a sentence and huge ones don't let one
         // essay crowd the window.
@@ -326,8 +349,10 @@ impl AircRagSource {
                 "transcript lines the speak gate would refuse were kept out of her burst — the contagion carrier (card 169eb543)"
             );
         }
-        let mut keep: Vec<(usize, Option<String>)> = Vec::new();
-        let mut tokens_used: u32 = 0;
+        // Cost every unit once, newest-first (the newest is exempt from the per-turn
+        // cap: it is what she is responding to). `costed` is oldest-first after the
+        // reverse, parallel to `units`, with None for a unit that has no text.
+        let mut costed: Vec<Option<(u32, Option<String>)>> = Vec::with_capacity(units.len());
         let mut newest_kept = true;
         for unit in units.iter().rev() {
             let idx = unit.last_idx;
@@ -335,7 +360,10 @@ impl AircRagSource {
                 Some(t) => t,
                 None => match digest.elements[idx].text() {
                     Some(t) => t,
-                    None => continue,
+                    None => {
+                        costed.push(None);
+                        continue;
+                    }
                 },
             };
             let full = estimate_tokens(text);
@@ -359,14 +387,63 @@ impl AircRagSource {
                     )),
                 )
             };
-            if tokens_used.saturating_add(cost) > budget {
-                break;
-            }
             newest_kept = false;
-            tokens_used += cost;
-            keep.push((idx, trimmed));
+            costed.push(Some((cost, trimmed)));
         }
-        keep.reverse();
+        costed.reverse();
+        // THE START HOLDS STILL. The window is the suffix of units from `start`; its
+        // cost is the sum from there to the newest. Where the fill would naturally
+        // begin (newest-first to the budget) is `natural`. The anchor from last turn
+        // is kept while the suffix from it still fits; when it no longer fits, the
+        // start jumps FORWARD past `natural` to leave HISTORY_SLACK of the budget
+        // free, so the next turns' new events fit without moving it again. Every
+        // turn in between then extends the prefix the engine already holds, instead
+        // of replacing its first message. The first fill in a room (no anchor yet)
+        // shows everything the budget holds; the room's second turn then pays one
+        // jump and holds from there. An anchored event that scrolled out of the
+        // digest is a jump too.
+        let suffix_cost = |start: usize| -> u32 {
+            costed[start..].iter().flatten().map(|(c, _)| *c).fold(0u32, |a, c| a.saturating_add(c))
+        };
+        let first_start_within = |limit: u32| -> usize {
+            // the smallest start whose suffix fits `limit`; units.len() = nothing fits
+            (0..=units.len()).find(|&start| suffix_cost(start) <= limit).unwrap_or(units.len()) // unwrap_or: the empty suffix always fits, so this is never reached
+        };
+        let natural = first_start_within(budget);
+        let anchored = anchor.and_then(|a| {
+            units.iter().position(|u| digest.elements[u.last_idx].event_id() == a.event)
+        });
+        let slack_limit = ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32;
+        let start = match (anchor, anchored) {
+            // the first fill in this room: everything the budget holds
+            (None, _) => natural,
+            // last turn's start still fits: hold it, even if more would fit now
+            (Some(_), Some(a)) if a >= natural => a,
+            // it no longer fits, or it scrolled out: jump forward with headroom; never
+            // past the newest unit, which is always shown
+            _ => first_start_within(slack_limit).min(units.len().saturating_sub(1)),
+        };
+        let mut keep: Vec<(usize, Option<String>)> = Vec::new();
+        let mut tokens_used: u32 = 0;
+        for (unit, c) in units[start..].iter().zip(&costed[start..]) {
+            if let Some((cost, trimmed)) = c {
+                tokens_used = tokens_used.saturating_add(*cost);
+                keep.push((unit.last_idx, trimmed.clone()));
+            }
+        }
+        let new_anchor = units.get(start).map(|u| HistoryAnchor { event: digest.elements[u.last_idx].event_id() });
+        if anchored.is_some_and(|a| a != start) || (anchored.is_none() && anchor.is_some()) {
+            crate::probe!(
+                class = "perception.history.anchor_moved",
+                room = %digest.room_id,
+                from_natural = natural as u64,
+                start = start as u64,
+                units = units.len() as u64,
+                tokens = tokens_used as u64,
+                budget = budget as u64,
+                "the start of her history in this room jumped: the prefix the engine held is replaced once, then holds again"
+            );
+        }
         // `keep` is oldest-first after the reverse, so its LAST entry is the newest
         // element that actually fit — how far she genuinely read this turn.
         let read_through = keep.last().map(|(idx, _)| digest.elements[*idx].clone());
@@ -376,7 +453,7 @@ impl AircRagSource {
                 Self::format_item(&digest.elements[idx], idx >= digest.unread_start, trimmed)
             })
             .collect();
-        (items, tokens_used, read_through)
+        (items, tokens_used, read_through, new_anchor)
     }
 
     /// COLLAPSE, DON'T CLIP — work receipts. A working citizen radiates one
@@ -728,7 +805,12 @@ impl RagSource for AircRagSource {
             }
         };
 
-        let (items, tokens_used, read_through) = Self::pack_digest(&digest, budget, crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some());
+        let anchor = self.anchors.lock().unwrap_or_else(|p| p.into_inner()).get(&room_id).copied(); // a poisoned map still answers, same policy as every lock in this crate
+        let (items, tokens_used, read_through, new_anchor) =
+            Self::pack_digest(&digest, budget, crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some(), anchor);
+        if let Some(a) = new_anchor {
+            self.anchors.lock().unwrap_or_else(|p| p.into_inner()).insert(room_id, a); // same
+        }
         // SHE HAS NOW READ THE ROOM — advance her per-room cursor, exactly as the
         // human's UI does on nav/mark-read and on navigating away from a room.
         //
@@ -928,6 +1010,7 @@ mod tests {
             // Isolated tests exercise the live window; hydration has its own test
             // (a stub DurableRoomHistory) and stays off here.
             history: None,
+            anchors: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         (source, buffer)
     }
@@ -1070,6 +1153,54 @@ mod tests {
         ev
     }
 
+    // what this catches (Cormac's 5090 trace, 2026-10-05: 20-75 s of re-prefill per
+    // turn): the window's START holds still across turns while the suffix from it
+    // fits, so the first history message is byte-identical turn to turn and the
+    // engine's prefix survives; when it no longer fits, the start jumps FORWARD with
+    // HISTORY_SLACK of headroom, once, then holds again. Newest-first filling moved
+    // it by one line on every room event.
+    #[test]
+    fn the_history_start_holds_still_and_jumps_in_blocks() {
+        let room = RoomId::new();
+        let (source, _) = isolated_source(Arc::new(StubReader::new(Vec::new())));
+        let line = |l: u64| event_in(room, Some(&format!("peer{l}: line number {l} of the room, said with enough words that each line costs a real share of the window")), l);
+        let mut events: Vec<TranscriptEvent> = (1..=120).map(line).collect();
+        let budget = 300; // ~ sixty of these lines: half the room
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
+        // The first fill in a room shows everything the budget holds.
+        let (items0, tokens0, _, a0) = AircRagSource::pack_digest(&digest, budget, false, None);
+        let a0 = a0.expect("an anchor");
+        assert!(tokens0 <= budget && tokens0 > ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32, "full: {tokens0} of {budget}");
+        // One more event: the suffix from that start no longer fits, so the start
+        // jumps ONCE, forward, with headroom.
+        events.push(line(121));
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
+        let (items1, tokens1, _, a1) = AircRagSource::pack_digest(&digest, budget, false, Some(a0));
+        let a1 = a1.expect("an anchor");
+        assert_ne!(a1, a0, "the start jumped");
+        assert!(tokens1 <= ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32, "the jump left headroom: {tokens1}");
+        let first1 = items1.first().unwrap().content.clone();
+        // Several more: the start HOLDS and the first message stays byte-identical;
+        // the new lines extend the window instead of replacing its head.
+        events.push(line(122));
+        events.push(line(123));
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
+        let (items2, tokens2, _, a2) = AircRagSource::pack_digest(&digest, budget, false, Some(a1));
+        assert_eq!(a2, Some(a1), "the start held");
+        assert_eq!(items2.first().unwrap().content, first1, "the first history message did not change");
+        assert!(tokens2 <= budget && items2.len() == items1.len() + 2, "{} → {}", items1.len(), items2.len());
+        // Enough traffic that it cannot hold: one more jump, headroom again, newest shown.
+        for l in 124..=200 {
+            events.push(line(l));
+        }
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
+        let (items3, tokens3, _, a3) = AircRagSource::pack_digest(&digest, budget, false, Some(a1));
+        let a3 = a3.expect("an anchor");
+        assert_ne!(a3, a1);
+        assert!(tokens3 <= ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32, "{tokens3}");
+        assert!(items3.last().unwrap().content.contains("line number 200"), "the newest line is always shown");
+    }
+
     // what this catches: THE LOOP WAS THE WINDOW (2026-09-03) — a run of one
     // author's work receipts collapses to ONE unit (her newest thought + an act
     // tally) instead of N verbatim "I've been going in circles" lines; a chat
@@ -1144,7 +1275,7 @@ mod tests {
         // and the conversational path (receipts collapsed per author).
         let digest = source.builder.build_from_events(persona(), room.as_uuid(), events, 0, 0);
         for working in [false, true] {
-            let (items, _, _) = AircRagSource::pack_digest(&digest, 4_000, working);
+            let (items, _, _, _) = AircRagSource::pack_digest(&digest, 4_000, working, None);
             let seen: Vec<&str> = items.iter().map(|i| i.content.as_str()).collect();
             assert_eq!(seen.len(), 2, "working={working}: only the two real lines survive: {seen:?}");
             assert!(seen[0].starts_with("Kira:"), "{seen:?}");
