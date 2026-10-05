@@ -546,8 +546,8 @@ async fn serve_persona_loop_inner(
                     perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
                     Wake::Idle
                 }
-                crate::persona::perception_region::Wake::Continuation => Wake::Mind { why: "continuation", room: None },
-                crate::persona::perception_region::Wake::Resume => Wake::Mind { why: "resume", room: None },
+                crate::persona::perception_region::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+                crate::persona::perception_region::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
             },
             _ = sleep_until_some(perceive_recheck.map(|(at, _)| at)) => {
                 let activity = perceive_recheck.take().map(|(_, a)| a);
@@ -576,8 +576,8 @@ async fn serve_persona_loop_inner(
                                 perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
                                 Wake::Idle
                             }
-                            Some(crate::persona::perception_region::Wake::Continuation) => Wake::Mind { why: "continuation", room: None },
-                            Some(crate::persona::perception_region::Wake::Resume) => Wake::Mind { why: "resume", room: None },
+                            Some(crate::persona::perception_region::Wake::Continuation) => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+                            Some(crate::persona::perception_region::Wake::Resume) => Wake::Mind { why: "resume", room: her_continuation_room(me) },
                             None => Wake::Idle,
                         }
                     }
@@ -1933,6 +1933,13 @@ async fn next_mind_wake(
         },
         None => std::future::pending().await,
     }
+}
+
+/// The activity her continuation names: a Continuation or Resume turn runs THERE (her
+/// choice of where to pick up, including her mind room for a private thought), never in
+/// a held-claim or home room the substrate would pick for her.
+fn her_continuation_room(me: uuid::Uuid) -> Option<uuid::Uuid> {
+    crate::persona::perception_feed::with_region(me, |r| r.continuation().map(|c| c.activity)).flatten()
 }
 
 /// Sleep until `at`, or forever when there is nothing to recheck.
