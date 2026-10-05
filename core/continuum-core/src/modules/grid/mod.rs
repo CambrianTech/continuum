@@ -550,10 +550,27 @@ impl ServiceModule for GridModule {
 /// Six hours without a beacon, a discovery or a frame = the node is treated as down.
 const FLEET_SILENT_AFTER_MS: u64 = 6 * 60 * 60 * 1000;
 
+/// This machine's short host name, read once: what an org-room line is signed with.
+static THIS_HOST: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(sysinfo::System::host_name);
+
+/// PURE: an org-room line signed with the node that says it. The org room is shared
+/// by every node's operator AND by citizens; "this node's 32 GB" from IntelMac read,
+/// to Kimi on the 5090, as her own node, and she spent turns on it (2026-10-04). The
+/// short name (before the first dot: `MacBookPro.lan` -> `MacBookPro`) leads the line.
+fn signed_by_this_node(host: Option<&str>, line: &str) -> String {
+    match host.and_then(|h| h.split('.').next()).filter(|h| !h.is_empty()) {
+        Some(short) => format!("[{short}] {line}"),
+        None => format!("[unnamed node] {line}"),
+    }
+}
+
 /// One line into the org room (the git-remote-derived base the operator peer
-/// subscribes at boot), as the operator. No operator online or no org room = the
-/// probe alone carries the transition; never a panic, never a retry loop.
+/// subscribes at boot), as the operator, signed with this node's name. No operator
+/// online or no org room = the probe alone carries the transition; never a panic,
+/// never a retry loop.
 pub(crate) async fn say_in_org_room(line: &str) {
+    let line = signed_by_this_node(THIS_HOST.as_deref(), line);
+    let line = line.as_str();
     // EVERY leg that can lose the line names itself (card 11b66313): this used to
     // return silently three ways, and the org room was derived from the core process's
     // cwd — a supervised core (launchd: ~/.continuum; the Windows S4U task) has no

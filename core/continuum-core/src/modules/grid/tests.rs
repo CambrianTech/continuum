@@ -387,6 +387,25 @@ mod registry_integration {
     use crate::modules::grid::node::*;
     use crate::modules::grid::registry::NodeRegistry;
 
+    // what this catches: an org-room line ([memory], [fleet]) that doesn't say whose
+    // node it is about. IntelMac's "this node's 32 GB" read to Kimi on the 5090 as her
+    // own node (2026-10-04). Every line leads with the speaking host's short name.
+    #[test]
+    fn an_org_room_line_names_the_node_that_says_it() {
+        let line = "[memory] rustc (pid 48264) holds 8 GB of this node's 32 GB";
+        assert_eq!(
+            crate::modules::grid::signed_by_this_node(Some("MacBookPro.lan"), line),
+            format!("[MacBookPro] {line}"),
+            "the short host name, without the domain, leads the line"
+        );
+        assert_eq!(crate::modules::grid::signed_by_this_node(Some("BIGMAMA"), line), format!("[BIGMAMA] {line}"));
+        assert_eq!(
+            crate::modules::grid::signed_by_this_node(None, line),
+            format!("[unnamed node] {line}"),
+            "a host with no name says so; it never reads as the listener's own node"
+        );
+    }
+
     #[test]
     fn test_persist_and_reload() {
         let dir = std::env::temp_dir().join("grid-test-reg-persist");
