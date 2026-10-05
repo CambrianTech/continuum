@@ -33,7 +33,7 @@ use uuid::Uuid;
 use super::attention::{AttentionDial, Continuation};
 use super::awareness::{self, ActivityLine, AwarenessSnapshot};
 use super::mind_state::{ActivityCursor, MindState, MindStateError};
-use super::salience::{self, ActivityDelta, BoardChange, Me, Salience, SalienceLevel, SpeechLine};
+use super::salience::{self, ActivityDelta, BoardChange, ExpectedVerdict, Me, ObservedVerdict, Salience, SalienceLevel, SpeechLine};
 use crate::cognition::channel_digest::ChannelDigest;
 
 /// Why she is being woken. The activity rides on the wake; no room is implied.
@@ -64,6 +64,10 @@ pub struct ActivityView {
     /// perceived this activity. The truth that there is MORE above her cursor than the
     /// view holds, kept as a count so the strip can say so; cleared by `perceived`.
     pub overflow: u64,
+    /// Her surprise in this activity, as a number she can read (GENE-REUSE-FORK-MINT.md
+    /// §3, step 1): of the expectations she stated here, how many the world contradicted.
+    /// Never cleared by `perceived`; it is a window over her record, not unread news.
+    pub surprise: SurpriseTally,
     /// Newest TIMED event above her cursor; untimed events do not set this.
     pub last_activity_ms: Option<u64>,
     pub salience: Salience,
@@ -92,6 +96,40 @@ fn bound<T>(items: &mut Vec<T>, overflow: &mut u64, activity: Uuid, what: &'stat
         overflow_since_perceived = *overflow,
         "an activity's unperceived view passed its bound and let its oldest go — she is far behind here"
     );
+}
+
+/// The verdict surprise: her stated expectations against what the room then did, in one
+/// activity, over a window. `S = contradicted / (confirmed + contradicted)`, and the two
+/// counts travel with it so "0.33" is never read without "1 of 3". Kimi's §12: "the moment
+/// one of my surprises has a score attached, this section should be re-run"; this is the
+/// first score, honestly the verdict surprise, not yet the fixed-model NLL of §7.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SurpriseTally {
+    pub confirmed: u32,
+    pub contradicted: u32,
+    /// When the window opened; a tally older than [`SURPRISE_WINDOW_MS`] starts again.
+    pub since_ms: u64,
+}
+
+/// One window per activity: long enough that a day's verdicts have a shape, short enough
+/// that a gene landing shows as the number FALLING rather than being averaged away.
+pub const SURPRISE_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
+
+impl SurpriseTally {
+    pub fn s(&self) -> Option<f32> {
+        let n = self.confirmed + self.contradicted;
+        (n > 0).then(|| self.contradicted as f32 / n as f32)
+    }
+    fn note(&mut self, contradicted: bool, now_ms: u64) {
+        if self.since_ms == 0 || now_ms.saturating_sub(self.since_ms) > SURPRISE_WINDOW_MS {
+            *self = SurpriseTally { since_ms: now_ms, ..Default::default() };
+        }
+        if contradicted {
+            self.contradicted += 1;
+        } else {
+            self.confirmed += 1;
+        }
+    }
 }
 
 impl std::fmt::Debug for ActivityView {
@@ -161,6 +199,7 @@ impl PerceptionRegion {
             speech: Vec::new(),
             board: Vec::new(),
             overflow: 0,
+            surprise: SurpriseTally::default(),
             last_activity_ms: None,
             salience: Salience::QUIET,
         });
@@ -205,6 +244,42 @@ impl PerceptionRegion {
     /// The activity's board changed above her cursor (bus-fed).
     pub fn observe_board(&mut self, activity: Uuid, changes: Vec<BoardChange>, now_ms: u64) -> Option<Wake> {
         let view = self.views.entry(activity).or_insert_with(|| blank(short8(activity)));
+        // THE TALLY: a verdict on a card she holds, against the verdict she said she
+        // expected here. Confirmed or contradicted, it is her surprise record for this
+        // activity; the salience below raises the contradiction as Urgent, this keeps the count.
+        let expected = self
+            .state
+            .continuation
+            .as_ref()
+            .filter(|c| c.activity == activity)
+            .and_then(|c| c.expectation.as_ref())
+            .and_then(|e| e.verdict);
+        if let Some(expected) = expected {
+            for change in &changes {
+                if let BoardChange::Reviewed { card_id, outcome, .. } = change {
+                    if !self.held_cards.contains(card_id) {
+                        continue;
+                    }
+                    let contradicted = match (expected, outcome) {
+                        (ExpectedVerdict::Passed, ObservedVerdict::Failed) | (ExpectedVerdict::Failed, ObservedVerdict::Passed) => true,
+                        (_, ObservedVerdict::Unknown) => continue,
+                        _ => false,
+                    };
+                    view.surprise.note(contradicted, now_ms);
+                    crate::probe!(
+                        class = "mind.surprise",
+                        persona = %self.me,
+                        activity = %short8(activity),
+                        card = %card_id,
+                        contradicted,
+                        confirmed = view.surprise.confirmed,
+                        contradicted_total = view.surprise.contradicted,
+                        s = view.surprise.s().unwrap_or(0.0), // unwrap_or: a tally with a note always has a value; 0.0 cannot occur here
+                        "her stated expectation met the room's verdict — the surprise number moved"
+                    );
+                }
+            }
+        }
         view.board.extend(changes);
         bound(&mut view.board, &mut view.overflow, activity, "board");
         view.last_activity_ms = Some(now_ms);
@@ -345,6 +420,7 @@ impl PerceptionRegion {
                 unread: v.unread() as u32,
                 salience: v.salience.clone(),
                 last_activity_ms: v.last_activity_ms.unwrap_or(0),
+                surprise: v.surprise,
                 waiting_on_me: v
                     .board
                     .iter()
@@ -377,7 +453,7 @@ fn short8(id: Uuid) -> String {
 }
 
 fn blank(name: String) -> ActivityView {
-    ActivityView { name, digest: None, speech: Vec::new(), board: Vec::new(), overflow: 0, last_activity_ms: None, salience: Salience::QUIET }
+    ActivityView { name, digest: None, speech: Vec::new(), board: Vec::new(), overflow: 0, surprise: SurpriseTally::default(), last_activity_ms: None, salience: Salience::QUIET }
 }
 
 #[cfg(test)]
@@ -573,6 +649,45 @@ mod tests {
         r.perceived(A, &ActivityCursor { chat_lamport: n, chat_event_id: None, views: Default::default() }, 9_000);
         let view = r.views.get(&A).expect("the view");
         assert!(view.speech.is_empty() && view.overflow == 0, "perceiving the activity clears the view and the count");
+    }
+
+
+    // what this catches (GENE-REUSE-FORK-MINT.md §3, step 1; Kimi §12: "no score attached
+    // to any of my surprises"): her stated expectation against the room's verdict on a
+    // card she holds moves a NUMBER she can read, contradicted and confirmed both; a
+    // verdict on a card she does not hold, or with no expectation stated, moves nothing;
+    // perceiving the activity never clears it; the strip renders it with its counts.
+    #[test]
+    fn her_surprise_is_a_number_with_its_counts_and_only_her_expectations_move_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut r, rx) = PerceptionRegion::boot(PeerId::from_uuid(ME), dir.path(), 1_000, 0);
+        r.join(A, "career-wrangler");
+        let mine = Uuid::from_u128(0x9);
+        let theirs = Uuid::from_u128(0x10);
+        r.set_identity_facts(vec![JOEL], vec![mine]);
+        // No expectation stated: a verdict is news, not a surprise count.
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER }], 5);
+        assert_eq!(r.views[&A].surprise.s(), None);
+        r.set_continuation(
+            Some(Continuation {
+                activity: A,
+                note: "submitted; expect a pass".into(),
+                expectation: Some(Expectation { text: "review passes".into(), by_ms: None, verdict: Some(ExpectedVerdict::Passed) }),
+                written_at_ms: 0,
+            }),
+            6,
+        );
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER }], 10);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: theirs, outcome: ObservedVerdict::Failed, reviewer: PEER }], 11);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer: PEER }], 12);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Unknown, reviewer: PEER }], 13);
+        let t = r.views[&A].surprise;
+        assert_eq!((t.contradicted, t.confirmed), (1, 1), "one contradicted, one confirmed; theirs and Unknown count nothing");
+        assert_eq!(t.s(), Some(0.5));
+        let strip = rx.borrow().render_lines().join("\n");
+        assert!(strip.contains("surprise 0.50 (1 of 2 expectations contradicted)"), "{strip}");
+        r.perceived(A, &ActivityCursor { chat_lamport: 99, chat_event_id: None, views: Default::default() }, 20);
+        assert_eq!(r.views[&A].surprise.s(), Some(0.5), "perceiving clears news, never her record");
     }
 
 }
