@@ -754,7 +754,7 @@ impl TrainingTriggerState {
         // waits for it; the fill after it lands decides against the gene it produced
         // (Fork, Reuse), never a second mint beside it (ten Mints for one competence on
         // the 5090, 2026-10-05). An active dispatch of this bucket still resumes.
-        if !self.active_dispatches.contains_key(key) && self.job_in_flight_for(key) {
+        if !self.active_dispatches.contains_key(key) && self.job_in_flight_for(key).is_some() {
             return false;
         }
         self.active_dispatches.contains_key(key)
@@ -764,13 +764,16 @@ impl TrainingTriggerState {
                 .is_some_and(|batch| batch.examples.len() >= batch.min_examples as usize)
     }
 
-    /// Is a training job for this bucket's `(persona, trait, base)` on the job board?
-    fn job_in_flight_for(&self, key: &BucketKey) -> bool {
+    /// The training job for this bucket's `(persona, trait, base)` on the job board, if
+    /// one is in flight: the job a held fill's examples wait for.
+    pub(crate) fn job_in_flight_for(&self, key: &BucketKey) -> Option<Uuid> {
         #[cfg(not(test))]
         let jobs = crate::genome::fine_tuning::TrainingJobBoard::global().snapshot();
         #[cfg(test)]
         let jobs = self.test_job_board.snapshot();
-        jobs.iter().any(|j| j.persona_id == key.persona_id && j.trait_kind == key.trait_kind && j.base_model == key.base_model)
+        jobs.iter()
+            .find(|j| j.persona_id == key.persona_id && j.trait_kind == key.trait_kind && j.base_model == key.base_model)
+            .map(|j| j.handle.local_id)
     }
 
     fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {

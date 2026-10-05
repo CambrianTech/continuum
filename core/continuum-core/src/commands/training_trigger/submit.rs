@@ -119,6 +119,11 @@ pub struct SubmitOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub job_handle: Option<JobHandle>,
+    /// BatchAppended after a fill that was HELD: the job of hers already training this
+    /// competence (its local id). The examples wait in the bucket for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub held_by: Option<Uuid>,
     /// Rejections: the diagnostic message.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -141,6 +146,7 @@ impl SubmitOutcome {
             examples_used: None,
             selected_provider: None,
             job_handle: None,
+            held_by: None,
             error: None,
             error_kind: None,
         }
@@ -153,6 +159,12 @@ impl SubmitOutcome {
             threshold: Some(threshold),
             ..Self::base(true)
         }
+    }
+
+    /// A fill that joined a job already training the competence: appended, and the
+    /// outcome names the job the examples wait for.
+    fn batch_held(current_count: u32, threshold: u32, job: Uuid) -> Self {
+        Self { held_by: Some(job), ..Self::batch_appended(current_count, threshold) }
     }
 
     fn job_dispatched(
@@ -253,7 +265,7 @@ crate::action_command! {
                         SubmitOutcome::job_dispatched(examples as u32, provider, handle),
                     DispatchResult::Failed { kind, error } => SubmitOutcome::refused(kind, error),
                     DispatchResult::Empty => SubmitOutcome::batch_appended(0, min_examples),
-                    DispatchResult::Joined { examples, .. } => SubmitOutcome::batch_appended(examples as u32, min_examples),
+                    DispatchResult::Joined { examples, job } => SubmitOutcome::batch_held(examples as u32, min_examples, job),
                 }
             } else {
                 let (count, threshold) = state.buckets.get(&key)
@@ -261,6 +273,10 @@ crate::action_command! {
                     .unwrap_or((0, min_examples)); // Acceptance holds the bucket gate; an absent bucket is an already-dispatched replay with no pending examples.
                 if acceptance.replayed && count == 0 {
                     SubmitOutcome { outcome: Some("AlreadyAccepted".into()), ..SubmitOutcome::base(true) }
+                } else if let Some(job) = state.job_in_flight_for(&key) {
+                    // Appended, and the bucket is held: the outcome names the job of hers
+                    // already training this competence that these examples wait for.
+                    SubmitOutcome::batch_held(count, threshold, job)
                 } else {
                     SubmitOutcome::batch_appended(count, threshold)
                 }
@@ -659,6 +675,7 @@ mod tests {
             .unwrap();
         assert_eq!(second["success"], true, "{second}");
         assert_ne!(second["outcome"], "JobDispatched", "a second job beside the first is the falsifier: {second}");
+        assert_eq!(second["heldBy"], first["jobHandle"]["localId"], "the outcome names the job the examples wait for: {second}");
         assert_eq!(
             trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
             Some(5),
