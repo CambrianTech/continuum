@@ -1986,6 +1986,46 @@ async fn clear_lived<T: Transport>(conn: &Connection<T>, persona_name: &str, row
     }
 }
 
+/// A review on a submission settles the card's staged credit: the room's judgment on
+/// real work, whoever the reviewer is (a peer, or the benchmark grader posting its
+/// verdict as a review since #4761). `Passed` settles as success, `Failed` as failure
+/// with the verdict kept; an `Unknown` outcome settles nothing, because a verdict that
+/// is not a verdict must never turn into credit. Spawned, like the instance path, so a
+/// room event never waits on a curriculum write. Pure classification is
+/// [`review_settlement`], tested.
+pub fn settle_on_review(event: &airc_core::TranscriptEvent) {
+    let Some((card, passed)) = review_settlement(event) else {
+        return;
+    };
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        crate::probe!(
+            class = "training.credit.settle_deferred",
+            card = %card,
+            "a review arrived outside the runtime — its card's staged credit settles on the next verdict"
+        );
+        return;
+    };
+    crate::probe!(
+        class = "training.credit.settle_on_review",
+        card = %card,
+        passed,
+        "the room reviewed a submission — its staged learning credit settles"
+    );
+    handle.spawn(settle_card_credit(card, passed));
+}
+
+/// `Some((card, passed))` when `event` is a review with a real outcome; `None` for every
+/// other event and for a review whose outcome is `Unknown`.
+pub(crate) fn review_settlement(event: &airc_core::TranscriptEvent) -> Option<(Uuid, bool)> {
+    use crate::airc::realtime_wire::{room_work_from_event, RoomWork};
+    use crate::persona::salience::ObservedVerdict;
+    match room_work_from_event(event) {
+        Ok(Some(RoomWork::Reviewed { card_id, outcome: ObservedVerdict::Passed, .. })) => Some((card_id, true)),
+        Ok(Some(RoomWork::Reviewed { card_id, outcome: ObservedVerdict::Failed, .. })) => Some((card_id, false)),
+        _ => None,
+    }
+}
+
 /// Every card an INSTANCE names (a round's cards for it) settles when its verdict
 /// is written — the hook `record_verdict` fires, spawned so a verdict never waits
 /// on a curriculum write.
@@ -2010,6 +2050,64 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    // what this catches (genome lane, 2026-10-05): the room's review on a submission is
+    // what settles a card's staged credit, passed or failed, whoever reviewed it; an
+    // Unknown outcome and any non-review event settle nothing. Before this, settlement
+    // fired only from a benchmark instance's verdict, so a project card could never settle.
+    mod a_review_settles_the_cards_credit {
+        use super::*;
+
+        fn event_with(work: airc_work::WorkEvent) -> airc_core::TranscriptEvent {
+            let (headers, body) = airc_work::encode_work_event(&work).expect("a work event encodes");
+            airc_core::TranscriptEvent {
+                event_id: airc_core::EventId::new(),
+                room_id: airc_core::RoomId::from_uuid(Uuid::new_v4()),
+                peer_id: crate::identity::PeerId::from_uuid(Uuid::new_v4()),
+                client_id: airc_core::ClientId::new(),
+                kind: airc_core::TranscriptKind::System,
+                occurred_at_ms: 5_000,
+                lamport: 7,
+                target: airc_core::MentionTarget::All,
+                headers,
+                body: Some(body),
+                attachment: None,
+                receipt: None,
+                metadata: serde_json::Value::Null,
+            }
+        }
+
+        fn media() -> airc_blobs::MediaRef {
+            serde_json::from_value(serde_json::json!({"hash": "b".repeat(64), "size_bytes": 12})).unwrap()
+        }
+
+        fn review(card: Uuid, outcome: airc_work::WorkReviewOutcome) -> airc_work::WorkEvent {
+            airc_work::WorkEvent::WorkSubmissionReviewed(airc_work::WorkSubmissionReview {
+                review_id: airc_work::WorkReviewId::new(),
+                card_id: airc_work::WorkCardId::from_uuid(card),
+                submission_id: airc_work::SubmissionId::new(),
+                artifact: media(),
+                review_card_id: airc_work::WorkCardId::new(),
+                review_claim_id: airc_work::ClaimId::new(),
+                reviewer: crate::identity::PeerId::from_uuid(Uuid::new_v4()),
+                outcome,
+                evidence: media(),
+                reviewed_at_ms: 6_000,
+            })
+        }
+
+        #[test]
+        fn passed_and_failed_settle_and_nothing_else_does() {
+            let card = Uuid::new_v4();
+            assert_eq!(review_settlement(&event_with(review(card, airc_work::WorkReviewOutcome::Passed))), Some((card, true)));
+            assert_eq!(review_settlement(&event_with(review(card, airc_work::WorkReviewOutcome::Failed))), Some((card, false)));
+            let mut plain = event_with(review(card, airc_work::WorkReviewOutcome::Passed));
+            plain.headers = Default::default();
+            plain.body = Some(airc_core::Body::text("how is it going?"));
+            plain.kind = airc_core::TranscriptKind::Message;
+            assert_eq!(review_settlement(&plain), None, "a chat line is not a verdict");
+        }
+    }
 
     /// Card f1771c83: the settle path's ONLY untraced exit.
     ///
