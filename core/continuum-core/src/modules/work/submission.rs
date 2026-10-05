@@ -957,16 +957,19 @@ impl ActionCommand for WorkReview {
             .work_board_in(&room)
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
-        let review_card = board
-            .card(WorkCardId::from_uuid(p.review_card_id))
-            .ok_or_else(|| {
-                CommandError::NotFound(format!(
-                    "review card {} is absent from the board of room {} — you asked for '{}'",
-                    p.review_card_id,
-                    room_label(&room.name, room.channel.as_uuid()),
-                    p.room
-                ))
-            })?;
+        // Absent here: name the room that does hold it, the way work/submit does. Kimi
+        // reviewed a peer's card at 07:19Z with room 'academy' while the review card sat
+        // on another board, and the refusal said only where it was not.
+        let Some(review_card) = board.card(WorkCardId::from_uuid(p.review_card_id)) else {
+            let absent = CommandError::NotFound(format!(
+                "review card {} is absent from the board of room {} — you asked for '{}'",
+                p.review_card_id,
+                room_label(&room.name, room.channel.as_uuid()),
+                p.room
+            ));
+            let hint = card_elsewhere(airc, &p.review_card_id.to_string(), room.channel.as_uuid()).await;
+            return Err(with_hint(absent, hint));
+        };
         let card_id = match p.card_id {
             Some(c) => WorkCardId::from_uuid(c),
             None => review_card.reviews.ok_or_else(|| {
