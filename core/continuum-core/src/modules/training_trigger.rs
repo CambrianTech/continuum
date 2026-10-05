@@ -404,6 +404,15 @@ impl TrainingTriggerState {
                         "source": params.get("dataset").and_then(|d| d.get("source")).cloned().unwrap_or(Value::Null),
                     });
                     let resubmitted = executor.execute_json("genome/training-trigger/submit", returned).await;
+                    // JOURNALED AS RESOLVED (BigMama on #4791): the orphan's examples now
+                    // live in her bucket, so this orphan is resumed-into the joined job and
+                    // the next restart must not return the same examples again. The same
+                    // `resumed` row the Job arm writes, with the joined job as the new id;
+                    // a failed resubmit leaves the orphan for the next restart to try.
+                    match (&resubmitted, Uuid::parse_str(&job)) {
+                        (Ok(_), Ok(into)) => board.journal_resumed(origin, orphan.local_id, into, attempt),
+                        _ => {}
+                    }
                     crate::probe!(
                         class = "training.job.resume_joined",
                         origin = %origin,
