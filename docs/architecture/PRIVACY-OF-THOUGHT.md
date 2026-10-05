@@ -174,7 +174,8 @@ Each step lands with a test, and each is useful on its own.
 1c. **The act that takes her there.** `focus/continue private=true` writes her continuation into
    her mind room (`mind_room_id`, never resolved by name), and a Continuation wake starts her
    private turn there (#4748). A private continuation is never written to `mind-state.json` in
-   plaintext; until the sealed store exists it lives in memory only.
+   plaintext; it is sealed in her mind store (airc #1535/#1536, `Airc::mind_store()`), and her
+   region restores it at boot, so a Resume wake continues her private thread after a restart.
    Speech in her mind room reaches its only member, her, and is never published
    (`AircPersonaConversation::say_in`), not even to a channel named by the room's uuid.
 2. **airc sealed-to-self store** (`seal_to_self`, `open_from_self`, `K_mind` sealed to her

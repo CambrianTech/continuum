@@ -93,12 +93,20 @@ impl MindFeed {
         };
         // Turn budget 0: the awareness strip's context share is unread until the
         // loop's Wake consumer composes it, so it reports 0 rather than a guess.
-        let (region, _strip) = crate::persona::perception_region::PerceptionRegion::boot(
+        let now = crate::persona::trace::now_ms();
+        let (mut region, _strip) = crate::persona::perception_region::PerceptionRegion::boot(
             airc_core::PeerId::from_uuid(persona),
             &dir,
             0,
-            crate::persona::trace::now_ms(),
+            now,
         );
+        // Her private continuation is never in mind-state.json; it is sealed in her mind
+        // store (PRIVACY-OF-THOUGHT.md sink 10). Restore it when no open one was saved.
+        if region.continuation().is_none() {
+            if let Some(private) = crate::persona::mind_room::sealed_continuation(persona) {
+                region.restore_private_continuation(private, now);
+            }
+        }
         let (wake_tx, wakes) = tokio::sync::mpsc::channel(8);
         Some(Self { persona, region: Arc::new(std::sync::Mutex::new(region)), wake_tx, wakes: Some(wakes) })
     }

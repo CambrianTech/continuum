@@ -142,11 +142,16 @@ impl ActionCommand for FocusContinue {
         let dir = crate::persona::perception_feed::mind_dir(persona)
             .ok_or_else(|| CommandError::Invalid("no persistent home to keep your mind state in".into()))?;
         let saved = crate::persona::perception_feed::with_region(persona, |region| {
-            region.set_continuation(continuation, now);
+            region.set_continuation(continuation.clone(), now);
             region.save(&dir, now)
         })
         .ok_or_else(|| CommandError::Invalid("your perception region is not running on this core".into()))?;
         saved.map_err(|e| CommandError::Internal(format!("your continuation was set but could not be saved: {e}")))?;
+        // A private continuation is sealed in her mind store (sink 10), never in
+        // mind-state.json; an open one, or a clear, removes any sealed one left behind.
+        let private = continuation.as_ref().filter(|c| crate::persona::mind_room::is_private_room(persona, c.activity));
+        crate::persona::mind_room::seal_continuation(persona, private)
+            .map_err(|e| CommandError::Internal(format!("your private continuation could not be sealed: {e}")))?;
 
         Ok(FocusContinueResult { held, wakes_at_ms })
     }
