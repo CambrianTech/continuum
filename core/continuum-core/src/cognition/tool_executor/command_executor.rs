@@ -682,13 +682,19 @@ impl ToolExecutor for CommandToolExecutor {
                     // not only her. Kimi's own ledger showed work/create ✗×6 on
                     // 2026-10-05 and nothing on our side could say why without opening
                     // her capture. The reason is the substrate's own text, not hers.
-                    crate::probe!(
-                        class = "persona.act.refused",
-                        persona = %ctx.persona_id,
-                        command = attempted,
-                        reason = %raw.chars().take(240).collect::<String>(),
-                        "a command refused her act"
-                    );
+                    // The reserved `tools/<…>` sentinels (no name given, think-only turn,
+                    // cut at the output limit) are not commands refusing her: they are the
+                    // substrate reporting a turn's shape, counted on their own path. Probed
+                    // here they read as walls (Kimi's 05:17Z think-only turn did).
+                    if !attempted.starts_with("tools/<") {
+                        crate::probe!(
+                            class = "persona.act.refused",
+                            persona = %ctx.persona_id,
+                            command = attempted,
+                            reason = %raw.chars().take(240).collect::<String>(),
+                            "a command refused her act"
+                        );
+                    }
                     // A transport failure IS a failure, and the typed carrier must
                     // say the same thing `is_error` does — a receipt that reads one
                     // field and a glyph that reads the other must never disagree.
