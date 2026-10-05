@@ -2054,6 +2054,18 @@ impl WorkspaceCycle {
     }
 
     /// The persona's currently paged-in genome (a snapshot).
+    /// Mirror `live`'s genome, decoding and model binding into THIS cycle's own handles, so
+    /// her mind cycle (`PersonaWorkspaceRegistry::mind_cycle`) thinks with the same genes on
+    /// the same served model as her live cycle. Values are copied, not the handles: the two
+    /// cycles keep separate working memories and never share a buffer.
+    pub(crate) fn mirror_mind_from(&self, live: &WorkspaceCycle) {
+        self.genome.store(live.genome.load_full());
+        self.decoding.store(live.decoding.load_full());
+        if let (Some(mine), Some(theirs)) = (&self.model_binding, &live.model_binding) {
+            mine.store(theirs.load_full());
+        }
+    }
+
     pub fn genome(&self) -> Vec<ActiveAdapterRequest> {
         self.genome.load().as_ref().clone()
     }

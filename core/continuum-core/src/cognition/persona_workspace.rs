@@ -269,12 +269,22 @@ impl GroundingSource {
 /// routes decisions through the Workspace — without them, that grounding (#1650 /
 /// #1651) silently falls out of the live path.
 pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
-    assemble_workspace_cycle(cfg, None).0
+    assemble_workspace_cycle(cfg, None, Capture::Recorded).0
+}
+
+/// Whether an assembled cycle's ticks and prompts are captured. Her MIND cycle is
+/// `Withheld` (PRIVACY-OF-THOUGHT.md §4): it runs only her mind room's turns, so it opens no
+/// prompt capture and no workspace trace at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Capture {
+    Recorded,
+    Withheld,
 }
 
 fn assemble_workspace_cycle(
     cfg: PersonaBrainConfig,
     restored: Option<PersistedVolatile>,
+    capture: Capture,
 ) -> (WorkspaceCycle, Arc<WorkingMemory>) {
     let mut faculties: Vec<Arc<dyn Faculty>> = Vec::with_capacity(2 + cfg.grounding_sources.len());
 
@@ -523,16 +533,18 @@ fn assemble_workspace_cycle(
     // Both capture owners receive the SAME construction session, so session +
     // persona + CycleId joins every request without a singular workspace call ID.
     let capture_session = Uuid::new_v4();
-    match super::prompt_capture::JsonlPromptCaptureSink::open_for_persona(cfg.persona_id) {
-        Ok(sink) => {
-            deliberation =
-                deliberation.with_prompt_capture(Arc::new(sink.with_session(capture_session)))
+    if capture == Capture::Recorded {
+        match super::prompt_capture::JsonlPromptCaptureSink::open_for_persona(cfg.persona_id) {
+            Ok(sink) => {
+                deliberation =
+                    deliberation.with_prompt_capture(Arc::new(sink.with_session(capture_session)))
+            }
+            Err(e) => tracing::warn!(
+                persona_id = %cfg.persona_id,
+                error = %e,
+                "prompt capture unavailable; deliberation runs without verbatim capture"
+            ),
         }
-        Err(e) => tracing::warn!(
-            persona_id = %cfg.persona_id,
-            error = %e,
-            "prompt capture unavailable; deliberation runs without verbatim capture"
-        ),
     }
 
     faculties.push(Arc::new(deliberation));
@@ -584,7 +596,9 @@ fn assemble_workspace_cycle(
     // path; THIS is what instruments the path that actually runs. Best-effort —
     // if the fixtures dir can't be opened we log and run with Noop capture; a
     // persona's mind never fails to assemble over an observability hiccup.
-    let cycle =
+    let cycle = if capture == Capture::Withheld {
+        cycle
+    } else {
         match super::workspace_capture::JsonlWorkspaceCaptureSink::open_for_persona(cfg.persona_id)
         {
             Ok(sink) => cycle.with_capture(Arc::new(sink.with_session(capture_session))),
@@ -596,7 +610,8 @@ fn assemble_workspace_cycle(
                 );
                 cycle
             }
-        };
+        }
+    };
     (cycle, working_memory)
 }
 
@@ -623,6 +638,13 @@ pub struct PersonaWorkspaceRegistry {
     /// handle. Lock order is always `cycles` THEN `templates`, never the reverse,
     /// so the two can't deadlock.
     templates: Mutex<HashMap<Uuid, PersonaBrainConfig>>,
+    /// Her MIND cycle, one per persona, built lazily from her template on her first turn in
+    /// her mind room (PRIVACY-OF-THOUGHT.md §4). It owns its own working memory, so nothing
+    /// crosses between her public and private turns except what she publishes. It is never in
+    /// `cycles`, so the volatile checkpoint never writes it to disk in plaintext (until her
+    /// sealed store exists, a restart forgets her private scratchpad, which is the honest cost).
+    /// Lock order: `cycles`, then `templates`, then `mind_cycles`.
+    mind_cycles: Mutex<HashMap<Uuid, Arc<WorkspaceCycle>>>,
 }
 
 struct ResidentWorkspace {
@@ -1297,6 +1319,48 @@ impl PersonaWorkspaceRegistry {
             .map(|entry| Arc::clone(&entry.cycle))
     }
 
+    /// The cycle a turn of `persona_id` in `room` runs on: her mind cycle in her mind room,
+    /// her live cycle everywhere else. THE selection the service loop asks (one rule, two
+    /// call sites: a message turn and a self/continuation turn).
+    pub fn cycle_for_room(&self, persona_id: &Uuid, room: Uuid) -> Option<Arc<WorkspaceCycle>> {
+        if crate::persona::mind_room::is_private_room(*persona_id, room) {
+            self.mind_cycle(persona_id)
+        } else {
+            self.get(persona_id)
+        }
+    }
+
+    /// Her mind cycle, built on first use from her template with its own working memory,
+    /// no captures, and synchronous recall (a deferred recall worker would fold dispatch
+    /// completions into it as well as her live memory). Before every use it mirrors her live
+    /// cycle's genome, decoding and model binding, so a page-in or a re-home reaches her
+    /// private turns at the next turn boundary. `None` when she has no live cycle or template.
+    pub fn mind_cycle(&self, persona_id: &Uuid) -> Option<Arc<WorkspaceCycle>> {
+        let live = self.get(persona_id)?;
+        let cached = self.mind_cycles.lock().get(persona_id).cloned();
+        let mind = match cached {
+            Some(mind) => mind,
+            None => {
+                let _assembly = self.assembly.lock();
+                // Bound to its own statement: a guard in an `if let` scrutinee would live into
+                // the `else` and deadlock on the insert below (non-reentrant lock).
+                let built_meanwhile = self.mind_cycles.lock().get(persona_id).cloned();
+                if let Some(mind) = built_meanwhile {
+                    mind
+                } else {
+                    let mut cfg = self.templates.lock().get(persona_id)?.clone();
+                    cfg.defer_recall = false;
+                    let (cycle, _working_memory) = assemble_workspace_cycle(cfg, None, Capture::Withheld);
+                    let cycle = Arc::new(cycle);
+                    self.mind_cycles.lock().insert(*persona_id, Arc::clone(&cycle));
+                    cycle
+                }
+            }
+        };
+        mind.mirror_mind_from(&live);
+        Some(mind)
+    }
+
     /// The personas that have a fork-template right now — i.e. the set
     /// `cognition/eval` can fork a measurement copy of. Keyed by the template map
     /// (populated by [`register_from_cfg`](Self::register_from_cfg) at spawn).
@@ -1392,7 +1456,7 @@ impl PersonaWorkspaceRegistry {
         let template = cfg.clone();
         // Assembly restores disk state; do it outside the lookup lock.
         let restored = load_volatile(persona_id)?;
-        let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored);
+        let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored, Capture::Recorded);
         let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
@@ -1422,7 +1486,7 @@ impl PersonaWorkspaceRegistry {
         }
         let template = cfg.clone();
         let restored = load_volatile(persona_id)?;
-        let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored);
+        let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored, Capture::Recorded);
         let cycle = Arc::new(cycle);
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
@@ -2413,6 +2477,30 @@ mod tests {
     // What this catches (#3918): replaced cycles and BOTH real eval fork paths
     // used to keep detached writers for the resident's UUID. They must neither
     // restore her scratchpad nor publish over her current action receipt.
+    // what this catches: a turn in her mind room running on her LIVE cycle, sharing its
+    // working memory with her public turns (PRIVACY-OF-THOUGHT.md §4, build step 2), or her
+    // mind cycle reaching the volatile checkpoint and so landing on disk in plaintext.
+    #[tokio::test]
+    async fn her_mind_room_runs_on_its_own_cycle_never_checkpointed() {
+        let home = tempfile::tempdir().unwrap();
+        let _native = crate::paths::NativeHomeOverride::install(home.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        let her = Uuid::new_v4();
+        let live = registry.register_from_cfg(cfg_for(her)).expect("live cycle");
+        let mind_room = crate::persona::mind_room::mind_room_id(her);
+        let mind = registry.cycle_for_room(&her, mind_room).expect("her mind cycle");
+        assert!(!Arc::ptr_eq(&live, &mind), "her mind room runs on its own cycle");
+        assert!(
+            Arc::ptr_eq(&mind, &registry.cycle_for_room(&her, mind_room).expect("again")),
+            "one mind cycle, reused"
+        );
+        assert!(
+            Arc::ptr_eq(&live, &registry.cycle_for_room(&her, Uuid::new_v4()).expect("public")),
+            "every other room runs on her live cycle"
+        );
+        assert_eq!(registry.checkpoint_volatile_all().len(), 1, "only her live cycle is checkpointed");
+    }
+
     #[tokio::test]
     async fn resident_checkpoint_excludes_replaced_cycles_and_eval_forks() {
         let home = tempfile::tempdir().unwrap();

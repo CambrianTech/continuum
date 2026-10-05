@@ -1283,8 +1283,9 @@ async fn serve_persona_loop_inner(
         // including turns that finish without speech. These receipts remain available
         // for the separate, genuinely unlinked speech producer below.
         let turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>;
+        // A turn in her mind room runs on her MIND cycle (PRIVACY-OF-THOUGHT.md §4).
         let response_text = match crate::cognition::persona_workspace::global()
-            .get(&ctx.identity.peer_id.as_uuid())
+            .cycle_for_room(&ctx.identity.peer_id.as_uuid(), turn_room)
         {
             Some(cycle) => {
                 // Run the mind over the metadata-rich burst built above
@@ -2870,8 +2871,10 @@ async fn run_self_cycle(
         // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
         crate::cognition::workspace::Cause::Ambient,
     );
-    let Some(cycle) =
-        crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
+    // A continuation naming her mind room lands here as `tick_room`: it runs on her MIND
+    // cycle, with its own working memory (PRIVACY-OF-THOUGHT.md §4).
+    let Some(cycle) = crate::cognition::persona_workspace::global()
+        .cycle_for_room(&ctx.identity.peer_id.as_uuid(), tick_room)
     else {
         return false; // no cycle registered (shouldn't happen) — nothing to run
     };

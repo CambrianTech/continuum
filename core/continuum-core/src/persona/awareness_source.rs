@@ -40,8 +40,8 @@ impl AwarenessRagSource {
 
     /// Lines for the turn: the offer first when it applies (her continuation leads the
     /// strip when she has one; the offer stands in its place when she has none).
-    async fn lines_for_turn(&self, snapshot: &crate::persona::awareness::AwarenessSnapshot) -> Vec<String> {
-        let mut lines = snapshot.render_lines();
+    async fn lines_for_turn(&self, snapshot: &crate::persona::awareness::AwarenessSnapshot, room: Option<uuid::Uuid>) -> Vec<String> {
+        let mut lines = snapshot.render_lines_in(self.persona_id, room);
         if snapshot.continuation.is_none() {
             if let Some(reader) = &self.claims {
                 match reader.active_claims().await {
@@ -117,7 +117,7 @@ impl RagSource for AwarenessRagSource {
         let Some(snapshot) = crate::persona::perception_feed::awareness_of(self.persona_id, ctx.now_ms) else {
             return empty(resolution);
         };
-        let lines = self.lines_for_turn(&snapshot).await;
+        let lines = self.lines_for_turn(&snapshot, ctx.airc_room.map(|r| r.as_uuid())).await;
         if lines.is_empty() {
             return empty(resolution);
         }
