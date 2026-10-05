@@ -460,14 +460,6 @@ impl AircPersonaConversation {
         }
     }
 
-    /// Her wakes from the one feed, for the loop's Wake consumer. `None` before her
-    /// region boots or once taken.
-    pub fn take_wakes(
-        &mut self,
-    ) -> Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> {
-        self.mind.as_mut().and_then(|m| m.wakes.take())
-    }
-
     /// Her events from the ONE feed for `rooms`. Boots her region on first use and
     /// re-registers with a fresh sender on every membership change (the pump that
     /// owned the previous receiver is replaced with it).
@@ -1038,6 +1030,12 @@ impl AircPersonaConversation {
 
 #[async_trait]
 impl PersonaConversation for AircPersonaConversation {
+    fn take_wakes(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> {
+        self.mind.as_mut().and_then(|m| m.wakes.take())
+    }
+
     /// Eagerly opens the airc subscribe stream. Idempotent — calling
     /// twice is a no-op after the first.
     ///

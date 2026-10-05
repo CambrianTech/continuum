@@ -185,6 +185,13 @@ pub trait PersonaConversation: Send + Sync {
     /// so the forwarder can hold it `'static`. `None` for scripted / stub
     /// conversations — they don't stream to a live room; the airc conversation
     /// returns its runtime handle.
+    /// Her wakes from the one feed (EVENT-MIND §1b), once her perception region has
+    /// booted; `None` before then, after they were taken, or for a conversation with no
+    /// region. The serve loop takes them once and consumes them beside her inbox.
+    fn take_wakes(&mut self) -> Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> {
+        None
+    }
+
     fn stream_citizen(
         &self,
     ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
@@ -501,7 +508,21 @@ async fn serve_persona_loop_inner(
     // (not through this loop), so a quiet loop never blocks it.
     // [[benchmark-is-a-governor-preemption-lease]]
     // [[first-class-citizens-even-during-benchmarks]]
+    // Her mind's wakes (EVENT-MIND §1b, phase 2): taken once her region boots; a timer
+    // at her continuation's deadline or the floor of her dial; Perceive wakes wait for
+    // their recheck so a line her inbox takes never also starts a self-turn.
+    let me = ctx.identity.peer_id.as_uuid();
+    let mut wakes: Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> = None;
+    let mut next_mind_check: Option<tokio::time::Instant> = None;
+    let mut perceive_recheck: Option<(tokio::time::Instant, uuid::Uuid)> = None;
     loop {
+        if wakes.is_none() {
+            wakes = conversation.take_wakes();
+            if wakes.is_some() {
+                // First look right away: a saved continuation resumes now (rule 8).
+                next_mind_check = Some(tokio::time::Instant::now());
+            }
+        }
         // HER turn boundary: idle whenever the loop is back at its wake select. The
         // matching `engaged` stamp is set where a serving lane is actually acquired
         // (the deliberation faculty) — a room wake alone is not wakefulness, or a
@@ -520,8 +541,66 @@ async fn serve_persona_loop_inner(
                 Some(m) => Wake::Msg(m),
                 None => Wake::Stop,
             },
+            w = next_mind_wake(&mut wakes) => match w {
+                crate::persona::perception_region::Wake::Perceive { activity, .. } => {
+                    perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
+                    Wake::Idle
+                }
+                crate::persona::perception_region::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+                crate::persona::perception_region::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+            },
+            _ = sleep_until_some(perceive_recheck.map(|(at, _)| at)) => {
+                let activity = perceive_recheck.take().map(|(_, a)| a);
+                match activity {
+                    Some(a) if crate::persona::perception_feed::with_region(me, |r| r.is_pending(a)).unwrap_or(false) => {
+                        Wake::Mind { why: "perceive", room: Some(a) }
+                    }
+                    _ => Wake::Idle,
+                }
+            },
+            _ = sleep_until_some(next_mind_check) => {
+                let now = (opts.now_ms)();
+                let looked = crate::persona::perception_feed::with_region(me, |r| {
+                    let wake = r.wake_for(now);
+                    let floor = tokio::time::Instant::now() + mind_check_floor(r.dial());
+                    let due = r.continuation_due_ms().filter(|due| *due > now).map(|due| {
+                        tokio::time::Instant::now() + std::time::Duration::from_millis(due - now)
+                    });
+                    (wake, due.map_or(floor, |d| d.min(floor)))
+                });
+                match looked {
+                    Some((wake, next)) => {
+                        next_mind_check = Some(next);
+                        match wake {
+                            Some(crate::persona::perception_region::Wake::Perceive { activity, .. }) => {
+                                perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
+                                Wake::Idle
+                            }
+                            Some(crate::persona::perception_region::Wake::Continuation) => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+                            Some(crate::persona::perception_region::Wake::Resume) => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+                            None => Wake::Idle,
+                        }
+                    }
+                    None => {
+                        next_mind_check = None;
+                        Wake::Idle
+                    }
+                }
+            },
             _ = tokio::time::sleep(next_beat) => Wake::Tick,
         };
+        if matches!(wake, Wake::Idle) {
+            continue;
+        }
+        if let Wake::Mind { why, room } = &wake {
+            crate::probe!(
+                class = "persona.turn.mind_wake",
+                persona = %ctx.identity.agent_name,
+                why = *why,
+                room = ?room,
+                "her own mind woke her: the turn starts from her perception, not the tick"
+            );
+        }
         // QUIESCE HONORS ITS OWN CONTRACT (Joel, 2026-08-30: "I could call
         // them up or dm — just want to make sure we're not into singular
         // activity mode again"). The lease's documented promise is "skips
@@ -540,7 +619,9 @@ async fn serve_persona_loop_inner(
             match &wake {
                 // A suppressed beat leaves the cadence untouched — when the
                 // lease drops she resumes at whatever rhythm she had earned.
-                Wake::Tick => continue,
+                // Her own wake under the lease is skipped like a beat; it is not lost:
+                // a due continuation or a loud room re-yields on her next mind check.
+                Wake::Tick | Wake::Mind { .. } | Wake::Idle => continue,
                 Wake::Msg(_) => crate::probe!(
                     class = "persona.quiesced.directed_served",
                     "quiesced citizen serving an inbound turn — leases suspend wandering, never reachability"
@@ -571,9 +652,14 @@ async fn serve_persona_loop_inner(
             );
             break;
         };
+        let wake_room = match &wake {
+            Wake::Mind { room, .. } => *room,
+            _ => None,
+        };
         let msg = match wake {
             Wake::Stop => break,
-            Wake::Tick => {
+            Wake::Idle => continue,
+            Wake::Tick | Wake::Mind { .. } => {
                 // With `biased;` the inbox was polled first: a tick winning means
                 // nothing admissible was queued, so any pending directed flag is
                 // stale (raised for a line that filtered at the door). Clear it,
@@ -627,7 +713,7 @@ async fn serve_persona_loop_inner(
                 // turn can afford (card 7496ed9d) — the message path below stays interactive.
                 let starved = crate::cognition::audience::with(
                     crate::inference::prefill_rate::Audience::Unattended,
-                    run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp),
+                    run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp, wake_room),
                 )
                 .await;
                 if starved {
@@ -914,6 +1000,15 @@ async fn serve_persona_loop_inner(
             peer_id = %msg.peer_id,
             text_len = msg.text.len(),
             "turn started"
+        );
+        // She takes in this room up to this line: her region's view of it drains, so the
+        // same line cannot also wake a Perceive turn (EVENT-MIND §1b).
+        crate::persona::perception_feed::mark_perceived(
+            ctx.identity.peer_id.as_uuid(),
+            turn_room,
+            msg.lamport,
+            Some(msg.event_id),
+            (opts.now_ms)(),
         );
 
         // ===========================================================
@@ -1800,7 +1895,59 @@ pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
 enum Wake {
     Msg(IncomingMessage),
     Tick,
+    /// Her own mind woke her (EVENT-MIND §1b): a room still unread and loud past her
+    /// dial, her continuation falling due, or resuming a saved one after a restart.
+    /// `room` is where she wakes (Perceive), else her continuation's activity.
+    Mind { why: &'static str, room: Option<uuid::Uuid> },
+    /// A wake that needs no turn (a Perceive whose line her inbox already took); the
+    /// loop goes back to its select.
+    Idle,
     Stop,
+}
+
+/// How long a Perceive wake waits before it may start a turn: the same line reaches her
+/// inbox through the pump, and a line the inbox takes marks its room perceived, so a
+/// recheck after this finds nothing pending and no second turn starts.
+const PERCEIVE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// The slow re-perceive floor, by HER dial (Fable, 2026-10-04: "her opening her eyes,
+/// not the tick choosing"): how long her mind may go without checking whether a
+/// continuation fell due or a room is loud and unread.
+fn mind_check_floor(dial: crate::persona::attention::AttentionDial) -> std::time::Duration {
+    use crate::persona::attention::Depth;
+    std::time::Duration::from_secs(match dial.depth {
+        Depth::Deep => 15 * 60,
+        Depth::Normal => 5 * 60,
+        Depth::Broad => 2 * 60,
+    })
+}
+
+/// The next wake from her region's channel; pending forever while she has none.
+async fn next_mind_wake(
+    wakes: &mut Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>>,
+) -> crate::persona::perception_region::Wake {
+    match wakes {
+        Some(rx) => match rx.recv().await {
+            Some(w) => w,
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// The activity her continuation names: a Continuation or Resume turn runs THERE (her
+/// choice of where to pick up, including her mind room for a private thought), never in
+/// a held-claim or home room the substrate would pick for her.
+fn her_continuation_room(me: uuid::Uuid) -> Option<uuid::Uuid> {
+    crate::persona::perception_feed::with_region(me, |r| r.continuation().map(|c| c.activity)).flatten()
+}
+
+/// Sleep until `at`, or forever when there is nothing to recheck.
+async fn sleep_until_some(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Build the consolidated workspace burst (WHO/WHEN/WHAT per inbox item, own posts
@@ -2545,6 +2692,9 @@ async fn run_self_cycle(
     conversation: &mut dyn PersonaConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
+    // The room her own mind woke her in (a Perceive wake): she works there this cycle,
+    // and that room counts as perceived. `None` = her held claim's room, else home.
+    wake_room: Option<uuid::Uuid>,
 ) -> bool {
     let now_ms = (opts.now_ms)();
     // A self-cycle IS cognition: the claim-renewal pump reads this pulse, and it
@@ -2556,7 +2706,10 @@ async fn run_self_cycle(
     // One explicit work choice drives both the room and the working checkout.
     // Ordinary project cards are on subscribed boards, not in the benchmark
     // registry. Lease renewal is liveness, not a new focus selection.
-    let focus_room = match conversation.stream_citizen() {
+    if let Some(room) = wake_room {
+        crate::persona::perception_feed::mark_perceived(ctx.identity.peer_id.as_uuid(), room, 0, None, now_ms);
+    }
+    let focus_room = if wake_room.is_some() { wake_room } else { match conversation.stream_citizen() {
         Some(citizen) => match super::work_focus::focus_room(citizen.as_ref()).await {
             Ok(room) => room,
             Err(error) => {
@@ -2570,7 +2723,7 @@ async fn run_self_cycle(
             }
         },
         None => None,
-    };
+    } };
     if let Some(room) = focus_room {
         if room != ctx.identity.default_room {
             crate::probe!(
