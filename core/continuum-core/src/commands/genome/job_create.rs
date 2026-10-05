@@ -248,8 +248,10 @@ crate::action_command! {
         //     launch), probed as `genome.decision`, and recorded on the job. The ACTION is
         //     still the mint below for every branch: these rows measure how often reuse
         //     or fork would have applied before the action changes (the next slice).
-        let decision = watched_signature.as_ref().map(|sig| {
-            use crate::genome::competence::{decide, nearest_in_store, Competence, Surprise};
+        let decision = match watched_signature.as_ref() {
+            None => None,
+            Some(sig) => {
+            use crate::genome::competence::{decide, nearest_in_store, Competence, Surprise, SIM_FORK};
             let competence = Competence {
                 centroid: sig.centroid.clone(),
                 members: (0..p.request.dataset.examples.len()).collect(),
@@ -267,7 +269,19 @@ crate::action_command! {
                         .collect()
                 })
                 .unwrap_or_default(); // unwrap_or_default: an unreadable manifest reads as nothing resident; a near gene then reads as reuse, never fork
-            let nearest = nearest_in_store(&competence, &store, &sig.embedder, &resident);
+            // ONE LOOKUP, THREE SOURCES (GENE-REUSE-FORK-MINT.md §5): her store first; the
+            // hub only when the store has nothing within fork distance, since a hub
+            // probe costs a network read per candidate and local knowledge, when it is
+            // near, is the answer. The mesh (peers' stores over airc) is the source
+            // between them, not yet wired. Only a Reuse decision ever pulls weights.
+            let local = nearest_in_store(&competence, &store, &sig.embedder, &resident);
+            let (nearest, source) = match local {
+                Some(n) if n.similarity >= SIM_FORK => (Some(n), "store"),
+                local => match crate::commands::genome_share::nearest_on_hub(&competence, &sig.embedder, &p.request.base_model, None, 20).await {
+                    Some(hub) if local.as_ref().is_none_or(|l| hub.similarity > l.similarity) => (Some(hub), "hub"),
+                    _ => (local, "store"),
+                },
+            };
             let decision = decide(&competence, Surprise::NotYetMeasured, nearest.as_ref());
             crate::probe!(
                 class = "genome.decision",
@@ -275,15 +289,17 @@ crate::action_command! {
                 trait_kind = %p.request.trait_kind,
                 examples = p.request.dataset.examples.len() as u64,
                 branch = ?decision,
-                nearest = nearest.as_ref().map(|n| n.gene.as_str()).unwrap_or(""), // "" = nothing in the store
-                similarity = nearest.as_ref().map(|n| n.similarity).unwrap_or(0.0), // 0.0 = nothing in the store
+                nearest = nearest.as_ref().map(|n| n.gene.as_str()).unwrap_or(""), // "" = nothing in any source
+                similarity = nearest.as_ref().map(|n| n.similarity).unwrap_or(0.0), // 0.0 = nothing in any source
                 nearest_resident = nearest.as_ref().is_some_and(|n| n.resident),
+                source,
                 surprise = "not_measured",
-                action = "mint", // until the next slice wires reuse to a trial and fork to a parent
-                "a full bucket decided: reuse, fork or mint, against her signature store"
+                action = "mint", // until card 17dc0a7b wires reuse to a trial and fork to a parent
+                "a full bucket decided: reuse, fork or mint, against her store and the hub"
             );
-            decision
-        });
+            Some(decision)
+            }
+        };
 
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
         //    slug callers branch on for retry-vs-surface.
