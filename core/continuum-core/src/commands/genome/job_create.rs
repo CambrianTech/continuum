@@ -83,6 +83,12 @@ pub struct JobCreateOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error_kind: Option<String>,
+    /// `Decision::Join`: a job of hers already training this competence (its id); no
+    /// job was created and `result` is `None`. The caller keeps the examples for the
+    /// next fill, which decides against the gene that job produces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub joined: Option<String>,
 }
 
 crate::action_command! {
@@ -122,6 +128,7 @@ crate::action_command! {
                             result: None,
                             error: Some(format!("datasetName {name:?}: no datasets root ({e})")),
                             error_kind: None,
+                            joined: None,
                         });
                     }
                 };
@@ -141,6 +148,7 @@ crate::action_command! {
                                  what exists."
                             )),
                             error_kind: None,
+                            joined: None,
                         });
                     }
                 };
@@ -155,6 +163,7 @@ crate::action_command! {
                             .into(),
                     ),
                     error_kind: None,
+                    joined: None,
                 });
             }
             (None, true) => {
@@ -167,6 +176,7 @@ crate::action_command! {
                             .into(),
                     ),
                     error_kind: None,
+                    joined: None,
                 });
             }
             (None, false) => {}
@@ -186,6 +196,7 @@ crate::action_command! {
                     result: None,
                     error: Some(e.to_string()),
                     error_kind: None,
+                    joined: None,
                 });
             }
         };
@@ -311,12 +322,28 @@ crate::action_command! {
                 source,
                 in_flight = in_flight.as_ref().map(|j| j.job.as_str()).unwrap_or(""), // "" = no job of hers training nearby
                 surprise = "not_measured",
-                action = "mint", // until card 17dc0a7b wires reuse to a trial and fork to a parent
+                action = if matches!(decision, crate::genome::competence::Decision::Join { .. }) { "join" } else { "mint" }, // reuse-as-trial and fork-as-parent: card 17dc0a7b
                 "a full bucket decided: reuse, fork or mint, against her store and the hub"
             );
             Some(decision)
             }
         };
+
+        // THE JOIN ACTION: a competence already training is never minted twice. No job is
+        // created; the caller (the trigger) keeps the examples in her bucket for the next
+        // fill, which decides against the gene that job produces (Fork, or Reuse).
+        if let Some(crate::genome::competence::Decision::Join { job, similarity }) = &decision {
+            crate::probe!(
+                class = "genome.joined",
+                persona = %p.request.persona_name,
+                trait_kind = %p.request.trait_kind,
+                examples = p.request.dataset.examples.len() as u64,
+                job = job.as_str(),
+                similarity = *similarity,
+                "a job of hers already trains this competence — these examples wait for it; no second job"
+            );
+            return Ok(JobCreateOutcome { success: true, result: None, error: None, error_kind: None, joined: Some(job.clone()) });
+        }
 
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
         //    slug callers branch on for retry-vs-surface.
@@ -356,6 +383,7 @@ crate::action_command! {
                     }),
                     error: None,
                     error_kind: None,
+                    joined: None,
                 })
             }
             Err(e) => Ok(JobCreateOutcome {
@@ -363,6 +391,7 @@ crate::action_command! {
                 result: None,
                 error: Some(e.to_string()),
                 error_kind: Some(fine_tuning_error_kind(&e).to_string()),
+                joined: None,
             }),
         }
     }

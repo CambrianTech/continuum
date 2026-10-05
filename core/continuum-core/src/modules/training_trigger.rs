@@ -385,8 +385,35 @@ impl TrainingTriggerState {
                 );
                 continue;
             };
-            match executor.execute_json("genome/job-create", params).await.map_err(|e| e.to_string()).and_then(|r| decode_job_create(r).map_err(|e| format!("{e:?}"))) {
-                Ok((handle, provider)) => {
+            match executor.execute_json("genome/job-create", params.clone()).await.map_err(|e| e.to_string()).and_then(|r| decode_job_create(r).map_err(|e| format!("{e:?}"))) {
+                // A competence already training: the orphan's examples go back to her
+                // bucket through the one submit verb (the bucket waits while that job is
+                // in flight), and nothing is re-created. The orphan is not resumed.
+                Ok(Created::Joined(job)) => {
+                    let examples = params
+                        .get("dataset")
+                        .and_then(|d| d.get("examples"))
+                        .cloned()
+                        .unwrap_or(Value::Array(Vec::new())); // unwrap_or: a request with no examples returns nothing, honestly
+                    let returned = serde_json::json!({
+                        "personaId": params.get("personaId").cloned().unwrap_or(Value::Null),
+                        "personaName": params.get("personaName").cloned().unwrap_or(Value::Null),
+                        "baseModel": params.get("baseModel").cloned().unwrap_or(Value::Null),
+                        "traitKind": params.get("traitKind").cloned().unwrap_or(Value::Null),
+                        "examples": examples,
+                        "source": params.get("dataset").and_then(|d| d.get("source")).cloned().unwrap_or(Value::Null),
+                    });
+                    let resubmitted = executor.execute_json("genome/training-trigger/submit", returned).await;
+                    crate::probe!(
+                        class = "training.job.resume_joined",
+                        origin = %origin,
+                        from = %orphan.local_id,
+                        joined = job.as_str(),
+                        examples_returned = resubmitted.is_ok(),
+                        "an orphan whose competence is already training was not re-created: its examples returned to her bucket"
+                    );
+                }
+                Ok(Created::Job(handle, provider)) => {
                     board.journal_resumed(origin, orphan.local_id, handle.local_id, attempt);
                     crate::probe!(
                         class = "training.job.resumed",
@@ -451,7 +478,7 @@ impl TrainingTriggerState {
         base_model: &str,
         batch: &PendingBatch,
         dispatch_id: Uuid,
-    ) -> Result<(JobHandle, String), DispatchFailure> {
+    ) -> Result<Created, DispatchFailure> {
         let executor = self
             .executor
             .require()
@@ -561,7 +588,15 @@ pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_
     Some(params)
 }
 
-fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFailure> {
+/// What `genome/job-create` did with a fill: created a job, or JOINED one of hers already
+/// training this competence (`JobCreateOutcome::joined`), creating nothing.
+#[derive(Debug, Clone)]
+pub(crate) enum Created {
+    Job(JobHandle, String),
+    Joined(String),
+}
+
+fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
     use crate::commands::genome::job_create::JobCreateOutcome;
     if response
         .get("errorKind")
@@ -575,6 +610,9 @@ fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFai
         DispatchFailure::Uncertain(format!("genome/job-create response parse: {error}"))
     })?;
     if response.success {
+        if let Some(job) = response.joined.filter(|j| !j.is_empty()) {
+            return Ok(Created::Joined(job));
+        }
         let result = response.result.ok_or_else(|| {
             DispatchFailure::Uncertain("genome/job-create returned success without result".into())
         })?;
@@ -587,7 +625,7 @@ fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFai
                 "genome/job-create has inconsistent handle/provider".into(),
             ));
         }
-        return Ok((result.handle, result.selected_provider));
+        return Ok(Created::Job(result.handle, result.selected_provider));
     }
     if response.result.is_some() || response.error.as_ref().is_none_or(|error| error.is_empty()) {
         return Err(DispatchFailure::Uncertain(

@@ -44,6 +44,9 @@ pub(crate) enum DispatchFailure {
 
 pub(crate) enum DispatchResult {
     Empty,
+    /// The fill joined a job already training this competence; its examples stay in
+    /// the bucket for the next fill.
+    Joined { examples: usize, job: String },
     Dispatched {
         examples: usize,
         handle: JobHandle,
@@ -87,6 +90,9 @@ pub enum DispatchPhase {
     Retryable { error: String },
     RecoveryRequired { error: String },
     Dispatched { handle: JobHandle, provider: String },
+    /// A job of hers was already training this competence: nothing was created, the
+    /// batch went back into the bucket, and this intent is finished.
+    Joined { job: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Entity)]
@@ -741,11 +747,27 @@ impl TrainingTriggerState {
     }
 
     pub(crate) fn ready_to_dispatch(&self, key: &BucketKey) -> bool {
+        // A JOB OF HERS ALREADY TRAINING THIS COMPETENCE: the bucket keeps filling and
+        // waits for it; the fill after it lands decides against the gene it produced
+        // (Fork, Reuse), never a second mint beside it (ten Mints for one competence on
+        // the 5090, 2026-10-05). An active dispatch of this bucket still resumes.
+        if !self.active_dispatches.contains_key(key) && self.job_in_flight_for(key) {
+            return false;
+        }
         self.active_dispatches.contains_key(key)
             || self
                 .buckets
                 .get(key)
                 .is_some_and(|batch| batch.examples.len() >= batch.min_examples as usize)
+    }
+
+    /// Is a training job for this bucket's `(persona, trait, base)` on the job board?
+    fn job_in_flight_for(&self, key: &BucketKey) -> bool {
+        #[cfg(not(test))]
+        let jobs = crate::genome::fine_tuning::TrainingJobBoard::global().snapshot();
+        #[cfg(test)]
+        let jobs = self.test_job_board.snapshot();
+        jobs.iter().any(|j| j.persona_id == key.persona_id && j.trait_kind == key.trait_kind && j.base_model == key.base_model)
     }
 
     fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {
@@ -827,6 +849,11 @@ impl TrainingTriggerState {
                 return self
                     .finish_dispatch(key, &active, handle.clone(), provider.clone())
                     .await;
+            }
+            // Finished at a restart: the batch was returned to the bucket when it joined.
+            DispatchPhase::Joined { .. } => {
+                self.active_dispatches.remove(key);
+                return Ok(DispatchResult::Empty);
             }
             DispatchPhase::Dispatching | DispatchPhase::RecoveryRequired { .. } => {
                 let cursor = active.journal_cursor;
@@ -920,7 +947,8 @@ impl TrainingTriggerState {
             )
             .await
         {
-            Ok((handle, provider)) => self.finish_dispatch(key, &active, handle, provider).await,
+            Ok(super::Created::Job(handle, provider)) => self.finish_dispatch(key, &active, handle, provider).await,
+            Ok(super::Created::Joined(job)) => self.finish_joined(key, &active, job).await,
             Err(failure) => {
                 let (phase, kind, error) = match failure {
                     DispatchFailure::Retryable(error) => (
@@ -959,6 +987,35 @@ impl TrainingTriggerState {
                 Ok(DispatchResult::Failed { kind, error })
             }
         }
+    }
+
+    /// The fill joined a job of hers already training this competence: the batch returns
+    /// to the bucket whole (every submission id, every example), the intent ends as
+    /// `Joined` and is persisted, and the bucket waits (`ready_to_dispatch` is false while
+    /// that job is in flight) for the fill that decides against the gene it produces.
+    async fn finish_joined(&self, key: &BucketKey, active: &ActiveDispatch, job: String) -> Result<DispatchResult, String> {
+        let examples = active.batch.examples.len();
+        let mut intent = active.intent.clone();
+        intent.phase = DispatchPhase::Joined { job: job.clone() };
+        intent.is_active = false;
+        self.durable
+            .require()?
+            .dispatches
+            .update(entity_id(&intent.base)?, &intent)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.active_dispatches.remove(key);
+        let returned = (*active.batch).clone();
+        self.buckets.insert(key.clone(), returned);
+        crate::probe!(
+            class = "training.trigger.joined",
+            persona = %key.persona_id,
+            trait_kind = %key.trait_kind,
+            job = job.as_str(),
+            examples = examples as u64,
+            "the fill joined a job already training this competence — its examples wait in the bucket"
+        );
+        Ok(DispatchResult::Joined { examples, job })
     }
 
     async fn finish_dispatch(
