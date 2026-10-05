@@ -23,6 +23,8 @@ pub struct ActivityLine {
     pub unread: u32,
     pub salience: Salience,
     pub last_activity_ms: u64,
+    /// Her surprise here, as a number with its counts (the verdict surprise, step 1).
+    pub surprise: super::perception_region::SurpriseTally,
     /// Peers whose work or question waits on her in this activity.
     pub waiting_on_me: Vec<Uuid>,
 }
@@ -111,6 +113,15 @@ impl AwarenessSnapshot {
             if let Some(r) = l.salience.reasons.first() {
                 line.push_str(&format!(" · {}", reason_word(r)));
             }
+            // The number she asked for (Kimi §12): shown whenever she has stated an
+            // expectation here and the room answered it, with its counts.
+            if let Some(s) = l.surprise.s() {
+                line.push_str(&format!(
+                    " · surprise {s:.2} ({} of {} expectations contradicted)",
+                    l.surprise.contradicted,
+                    l.surprise.confirmed + l.surprise.contradicted
+                ));
+            }
             out.push(line);
         }
         out
@@ -147,6 +158,7 @@ mod tests {
             unread,
             salience: Salience { level, reasons: vec![] },
             last_activity_ms: at,
+            surprise: Default::default(),
             waiting_on_me: vec![],
         }
     }
