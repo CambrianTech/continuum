@@ -515,7 +515,7 @@ pub struct GenomePullResult {
 
 /// Where pulled genes land: beside the local ones, namespaced by repo so two
 /// commons genes can never collide with each other or with local forges.
-fn pulled_dir(repo: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn pulled_dir(repo: &str) -> Result<std::path::PathBuf, String> {
     let safe = repo.replace('/', "__");
     Ok(crate::forge::adapter_manifest::manifest_path()?
         .with_file_name("pulled")
@@ -718,6 +718,7 @@ pub(crate) async fn nearest_on_hub(
     base_model: &str,
     org: Option<&str>,
     limit: usize,
+    retired: &[std::path::PathBuf],
 ) -> Option<crate::genome::competence::NearestGene> {
     let org = org.unwrap_or(COMMONS_ORG); // unwrap_or: the commons org is the documented default
     let base_segment = base_model.rsplit('/').next().unwrap_or(base_model); // unwrap_or: an id with no '/' IS its own segment
@@ -734,6 +735,11 @@ pub(crate) async fn nearest_on_hub(
     .ok()?;
     let mut nearest: Option<crate::genome::competence::NearestGene> = None;
     for hit in found.hits.into_iter().filter(|r| r.id.starts_with(&format!("{org}/"))).take(limit) {
+        // A gene her work already retired (it was pulled into its repo's own directory) is
+        // never offered back from the hub either (Cormac on #4794).
+        if repo_is_retired(&hit.id, retired) {
+            continue;
+        }
         let Some(sig) = hub_signature(&hit.id).await else {
             continue;
         };
@@ -745,6 +751,12 @@ pub(crate) async fn nearest_on_hub(
         }
     }
     nearest
+}
+
+/// Was a gene pulled from `repo` retired by her work? A pull lands under the repo's own
+/// directory, so a retired path under it names the repo.
+pub(crate) fn repo_is_retired(repo: &str, retired: &[std::path::PathBuf]) -> bool {
+    pulled_dir(repo).is_ok_and(|dir| retired.iter().any(|p| p.starts_with(&dir)))
 }
 
 /// One repo's `signature.json`, downloaded alone into a scratch dir under the pulled

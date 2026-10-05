@@ -110,8 +110,10 @@ Status: `genome::recall` already walks local-then-grid (`RecallScope::LocalThenG
 | Resolver score | doctrine (`GENOME-REPOSITORY-ON-HF.md` §2b), partly coded |
 | **Competence clustering of settled examples** | new: the same kernel, over the curriculum |
 | **`S(C)` and its window, on her strip** | new (`genome::surprise`) |
-| **The decision (§2) and its receipt** | new: one function, pure, tested; a probe `genome.decision {competence, branch, d, S, parent}` |
-| Fork = warm start from the parent | new in the trainer's job-create (parent adapter as init) |
+| **The decision (§2) and its receipt** | coded (`genome::competence::decide_with_pending`, probe `genome.decision`): join a job in flight, await a gene on trial, reuse, fork, mint; a retired gene is never offered back |
+| **Reuse = adopt for trial, no training** | coded: `gene_trial::Adoption` is the ONE seam (register dormant + open trial) the completion sentinel and a reuse share; a hub gene is pulled first (`genome/pull`); a trial open for the competence holds the bucket like a job in flight (`training_trigger` `Held`) |
+| Fork = lineage on the child | coded: `TrainingJobRequest.parent` → `GeneSignature.parent` at adoption |
+| Fork = warm start from the parent's weights | engine gap: the fork's `/train` has no `init_adapter` (#19 removed the init file); the engine adapter probes `genome.fork.cold_start` until it does |
 | HF as a recall source | new |
 | In-engine training (DREAM) | `ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md` S3/S4, separate |
 

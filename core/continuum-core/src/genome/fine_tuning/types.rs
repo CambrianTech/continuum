@@ -90,6 +90,12 @@ pub struct TrainingJobRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub resume_from: Option<PathBuf>,
+    /// The gene this job forks from (`Decision::Fork`): the child's lineage, stamped
+    /// into its signature at adoption. A trainer that can warm-start from it does; one
+    /// that cannot trains from the base and says so on its probe. Absent on a mint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent: Option<crate::genome::competence::GeneRef>,
 }
 
 // ─── Dataset ─────────────────────────────────────────────────────────

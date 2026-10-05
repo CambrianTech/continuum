@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::commands::genome::job_create::Took;
+
 use crate::genome::fine_tuning::types::{
     JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource,
 };
@@ -119,11 +121,12 @@ pub struct SubmitOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub job_handle: Option<JobHandle>,
-    /// BatchAppended after a fill that was HELD: the job of hers already training this
-    /// competence (its local id). The examples wait in the bucket for it.
+    /// BatchAppended after a fill that was HELD: what the examples wait for (a job of
+    /// hers already training this competence, a trial judging a gene for it, or the
+    /// gene this fill adopted for trial).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "string")]
-    pub held_by: Option<Uuid>,
+    #[ts(optional)]
+    pub held_by: Option<Took>,
     /// Rejections: the diagnostic message.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -161,10 +164,10 @@ impl SubmitOutcome {
         }
     }
 
-    /// A fill that joined a job already training the competence: appended, and the
-    /// outcome names the job the examples wait for.
-    fn batch_held(current_count: u32, threshold: u32, job: Uuid) -> Self {
-        Self { held_by: Some(job), ..Self::batch_appended(current_count, threshold) }
+    /// A fill held without a job of its own: appended, and the outcome names what the
+    /// examples wait for.
+    fn batch_held(current_count: u32, threshold: u32, took: Took) -> Self {
+        Self { held_by: Some(took), ..Self::batch_appended(current_count, threshold) }
     }
 
     fn job_dispatched(
@@ -253,6 +256,28 @@ crate::action_command! {
         };
         let submission_id = p.submission_id;
         state.run_owned(key, move |state, key| async move {
+            // A held bucket is bounded: past MAX_HELD_EXAMPLES a NEW submit is refused and
+            // the producer keeps its evidence for a later pass (never silently dropped). A
+            // replay of a submission the bucket already holds is recognised first: it is
+            // AlreadyAccepted, never refused as full (BigMama on #4794).
+            let replay = submission_id.is_some_and(|id| state.contains_submission(&key, id));
+            if let Some(held_by) = state.held_for(&key).filter(|_| !replay) {
+                let pending = state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0); // unwrap_or: no bucket yet = nothing pending
+                if pending >= crate::modules::training_trigger::MAX_HELD_EXAMPLES {
+                    crate::probe!(
+                        class = "training.trigger.held_full",
+                        persona = %key.persona_id,
+                        trait_kind = %key.trait_kind,
+                        pending = pending as u64,
+                        held_by = ?held_by,
+                        "a held bucket is at its bound: this submit is refused, its evidence stays staged with the producer"
+                    );
+                    return SubmitOutcome::refused(
+                        "BucketHeldFull",
+                        format!("the bucket for this competence holds {pending} examples waiting on {held_by:?}; at its bound, this submit is refused and retried after the hold lifts"),
+                    );
+                }
+            }
             let acceptance = match state.accept(&key, submission_id, batch).await {
                 Ok(receipt) => receipt,
                 Err((kind, error)) => return SubmitOutcome::refused(kind, error),
@@ -265,7 +290,7 @@ crate::action_command! {
                         SubmitOutcome::job_dispatched(examples as u32, provider, handle),
                     DispatchResult::Failed { kind, error } => SubmitOutcome::refused(kind, error),
                     DispatchResult::Empty => SubmitOutcome::batch_appended(0, min_examples),
-                    DispatchResult::Joined { examples, job } => SubmitOutcome::batch_held(examples as u32, min_examples, job),
+                    DispatchResult::Held { examples, took } => SubmitOutcome::batch_held(examples as u32, min_examples, took),
                 }
             } else {
                 let (count, threshold) = state.buckets.get(&key)
@@ -273,10 +298,11 @@ crate::action_command! {
                     .unwrap_or((0, min_examples)); // Acceptance holds the bucket gate; an absent bucket is an already-dispatched replay with no pending examples.
                 if acceptance.replayed && count == 0 {
                     SubmitOutcome { outcome: Some("AlreadyAccepted".into()), ..SubmitOutcome::base(true) }
-                } else if let Some(job) = state.job_in_flight_for(&key) {
+                } else if let Some(took) = state.held_for(&key) {
                     // Appended, and the bucket is held: the outcome names the job of hers
-                    // already training this competence that these examples wait for.
-                    SubmitOutcome::batch_held(count, threshold, job)
+                    // already training this competence, or the trial judging a gene for
+                    // it, that these examples wait for.
+                    SubmitOutcome::batch_held(count, threshold, took)
                 } else {
                     SubmitOutcome::batch_appended(count, threshold)
                 }
@@ -675,13 +701,58 @@ mod tests {
             .unwrap();
         assert_eq!(second["success"], true, "{second}");
         assert_ne!(second["outcome"], "JobDispatched", "a second job beside the first is the falsifier: {second}");
-        assert_eq!(second["heldBy"], first["jobHandle"]["localId"], "the outcome names the job the examples wait for: {second}");
+        assert_eq!(second["heldBy"]["job"], first["jobHandle"]["localId"], "the outcome names the job the examples wait for: {second}");
         assert_eq!(
             trigger.state.bucket_example_count(persona, "test-trait", "synthetic"),
             Some(5),
             "every example of the held fill is retained for the fill after the job lands"
         );
         assert_eq!(trigger.state.test_job_board.snapshot().len(), 1, "still one job");
+    }
+
+    // what this catches (card 17dc0a7b): a gene of hers ON TRIAL for this bucket's
+    // competence holds the bucket exactly as a job in flight does. Without it, the fill
+    // after a reuse (or after a trained gene opened its trial) reads the gene as resident
+    // and forks it while her cards are still judging it: a fork storm in place of the
+    // mint storm Join closed.
+    #[tokio::test]
+    async fn a_fill_while_a_gene_is_on_trial_for_the_competence_is_held_not_forked() {
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+        let gene = std::env::temp_dir().join(format!("on-trial-{persona}.gguf"));
+        let trial = trigger
+            .state
+            .test_trials
+            .open(persona, "test-trait", &gene, "synthetic", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64)
+            .expect("the trial file takes a trial");
+        assert_eq!(trial.state, crate::genome::gene_trial::TrialState::Trial);
+
+        let fill = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                submit_params(persona, "test-trait", vec![ex("a", "b"), ex("c", "d"), ex("e", "f"), ex("g", "h"), ex("i", "j")], Some(5)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fill["success"], true, "{fill}");
+        assert_ne!(fill["outcome"], "JobDispatched", "a job beside an open trial is the falsifier: {fill}");
+        assert_eq!(trigger.state.bucket_example_count(persona, "test-trait", "synthetic"), Some(5), "every example waits for her verdict");
+        assert!(trigger.state.test_job_board.snapshot().is_empty(), "no job while the trial is open");
+        assert_eq!(fill["heldBy"]["trial"], trial.id.to_string(), "the outcome names the trial the examples wait for: {fill}");
+
+        // Her work decides the trial: the file no longer holds the bucket. (The decided
+        // row is written by the gate; here it is retired by hand, which is the same row.)
+        let mut all = trigger.state.test_trials.load().unwrap();
+        all[0].state = crate::genome::gene_trial::TrialState::Retired;
+        trigger.state.test_trials.save_for_test(&all).unwrap();
+        let next = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                submit_params(persona, "test-trait", vec![ex("k", "l")], Some(5)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(next["outcome"], "JobDispatched", "a decided trial releases the bucket: {next}");
     }
 
     #[tokio::test]

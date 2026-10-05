@@ -344,6 +344,7 @@ mod tests {
             base_model: base_model.into(),
             trait_kind: "test-trait".into(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::OperatorCurated,

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::commands::genome::job_create::Took;
 #[cfg(not(test))]
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::genome::fine_tuning::{job_board::DispatchLookup, JobHandle};
@@ -44,9 +45,9 @@ pub(crate) enum DispatchFailure {
 
 pub(crate) enum DispatchResult {
     Empty,
-    /// The fill joined a job already training this competence; its examples stay in
-    /// the bucket for the next fill.
-    Joined { examples: usize, job: Uuid },
+    /// The fill was held without a job (joined a job, awaited a trial, or adopted an
+    /// existing gene for trial); its examples stay in the bucket for the next fill.
+    Held { examples: usize, took: Took },
     Dispatched {
         examples: usize,
         handle: JobHandle,
@@ -90,12 +91,10 @@ pub enum DispatchPhase {
     Retryable { error: String },
     RecoveryRequired { error: String },
     Dispatched { handle: JobHandle, provider: String },
-    /// A job of hers was already training this competence: nothing was created, the
-    /// batch went back into the bucket, and this intent is finished.
-    Joined {
-        #[ts(type = "string")]
-        job: Uuid,
-    },
+    /// The fill was held without a job (a job of hers already training this competence,
+    /// a trial judging it, or an existing gene adopted for trial): nothing was created,
+    /// the batch went back into the bucket, and this intent is finished.
+    Held { took: Took },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Entity)]
@@ -750,11 +749,13 @@ impl TrainingTriggerState {
     }
 
     pub(crate) fn ready_to_dispatch(&self, key: &BucketKey) -> bool {
-        // A JOB OF HERS ALREADY TRAINING THIS COMPETENCE: the bucket keeps filling and
-        // waits for it; the fill after it lands decides against the gene it produced
-        // (Fork, Reuse), never a second mint beside it (ten Mints for one competence on
-        // the 5090, 2026-10-05). An active dispatch of this bucket still resumes.
-        if !self.active_dispatches.contains_key(key) && self.job_in_flight_for(key).is_some() {
+        // A JOB OF HERS ALREADY TRAINING THIS COMPETENCE, or a gene of hers ON TRIAL for
+        // it: the bucket keeps filling and waits; the fill after the job lands or the
+        // trial decides judges against what came of it (Fork, Reuse, or a retired gene
+        // never offered again), never a second mint beside it (ten Mints for one
+        // competence on the 5090, 2026-10-05) and never a fork of a gene still being
+        // judged. An active dispatch of this bucket still resumes.
+        if !self.active_dispatches.contains_key(key) && self.held_for(key).is_some() {
             return false;
         }
         self.active_dispatches.contains_key(key)
@@ -776,7 +777,57 @@ impl TrainingTriggerState {
             .map(|j| j.handle.local_id)
     }
 
-    fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {
+    /// What holds this bucket without a dispatch of its own: a job of hers in flight for
+    /// the key, else a gene of hers on trial for it. `None` = nothing pending; the bucket
+    /// dispatches when full. ONE computation serves the gate and the submit receipt.
+    pub(crate) fn held_for(&self, key: &BucketKey) -> Option<Took> {
+        if let Some(job) = self.job_in_flight_for(key) {
+            return Some(Took::Joined { job });
+        }
+        match self.trial_open_for(key) {
+            Ok(Some(trial)) => Some(Took::Awaited { trial }),
+            Ok(None) => None,
+            Err(()) => Some(Took::TrialFileUnreadable),
+        }
+    }
+
+    /// The open trial of a gene of hers for this bucket's `(persona, trait, base)`, if
+    /// one is being judged in her work (its id). The trial file is one small JSON read,
+    /// bounded by the genes ever trialled. A trial past its window holds nothing
+    /// (`is_live`). An UNREADABLE file holds the bucket, loudly: nothing dispatches
+    /// beside a trial nobody can see (Cormac on #4794, point 5).
+    fn trial_open_for(&self, key: &BucketKey) -> Result<Option<Uuid>, ()> {
+        #[cfg(not(test))]
+        let trials = crate::genome::gene_trial::GeneTrials::default_store();
+        #[cfg(test)]
+        let trials = Some(crate::genome::gene_trial::GeneTrials::at(self.test_trials.path()));
+        let Some(trials) = trials else {
+            return Ok(None); // no home directory: no trial file can exist, nothing to hold
+        };
+        let all = match trials.load() {
+            Ok(all) => all,
+            Err(error) => {
+                crate::probe!(
+                    class = "training.trigger.trial_file_unreadable",
+                    persona = %key.persona_id,
+                    trait_kind = %key.trait_kind,
+                    error = %error,
+                    "her trial file could not be read: the bucket holds until it can, nothing dispatches beside a trial nobody can see"
+                );
+                return Err(());
+            }
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0); // pre-epoch clock: every open trial reads as live, the conservative side
+        Ok(all
+            .iter()
+            .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_live(now_ms))
+            .map(|t| t.id))
+    }
+
+    pub(crate) fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {
         self.buckets
             .get(key)
             .is_some_and(|b| b.submission_ids.contains(&id))
@@ -856,8 +907,8 @@ impl TrainingTriggerState {
                     .finish_dispatch(key, &active, handle.clone(), provider.clone())
                     .await;
             }
-            // Finished at a restart: the batch was returned to the bucket when it joined.
-            DispatchPhase::Joined { .. } => {
+            // Finished at a restart: the batch was returned to the bucket when it was held.
+            DispatchPhase::Held { .. } => {
                 self.active_dispatches.remove(key);
                 return Ok(DispatchResult::Empty);
             }
@@ -954,7 +1005,7 @@ impl TrainingTriggerState {
             .await
         {
             Ok(super::Created::Job(handle, provider)) => self.finish_dispatch(key, &active, handle, provider).await,
-            Ok(super::Created::Joined(job)) => self.finish_joined(key, &active, job).await,
+            Ok(super::Created::Held(took)) => self.finish_held(key, &active, took).await,
             Err(failure) => {
                 let (phase, kind, error) = match failure {
                     DispatchFailure::Retryable(error) => (
@@ -995,14 +1046,15 @@ impl TrainingTriggerState {
         }
     }
 
-    /// The fill joined a job of hers already training this competence: the batch returns
-    /// to the bucket whole (every submission id, every example), the intent ends as
-    /// `Joined` and is persisted, and the bucket waits (`ready_to_dispatch` is false while
-    /// that job is in flight) for the fill that decides against the gene it produces.
-    async fn finish_joined(&self, key: &BucketKey, active: &ActiveDispatch, job: Uuid) -> Result<DispatchResult, String> {
+    /// The fill was held without a job (joined a job of hers, awaited a trial, or adopted
+    /// an existing gene for trial): the batch returns to the bucket whole (every
+    /// submission id, every example), the intent ends as `Held` and is persisted, and the
+    /// bucket waits (`ready_to_dispatch` is false while that job or trial is pending) for
+    /// the fill that decides against what came of it.
+    async fn finish_held(&self, key: &BucketKey, active: &ActiveDispatch, took: Took) -> Result<DispatchResult, String> {
         let examples = active.batch.examples.len();
         let mut intent = active.intent.clone();
-        intent.phase = DispatchPhase::Joined { job };
+        intent.phase = DispatchPhase::Held { took: took.clone() };
         intent.is_active = false;
         self.durable
             .require()?
@@ -1014,14 +1066,14 @@ impl TrainingTriggerState {
         let returned = (*active.batch).clone();
         self.buckets.insert(key.clone(), returned);
         crate::probe!(
-            class = "training.trigger.joined",
+            class = "training.trigger.held",
             persona = %key.persona_id,
             trait_kind = %key.trait_kind,
-            job = %job,
+            took = ?took,
             examples = examples as u64,
-            "the fill joined a job already training this competence — its examples wait in the bucket"
+            "the fill was held without a job (a job, a trial, or an existing gene pending) — its examples wait in the bucket"
         );
-        Ok(DispatchResult::Joined { examples, job })
+        Ok(DispatchResult::Held { examples, took })
     }
 
     async fn finish_dispatch(

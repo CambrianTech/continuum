@@ -148,7 +148,7 @@ crate::action_command! {
                 DispatchResult::Empty => FlushOutcome::nothing_to_flush(),
                 // The fill joined a job already training this competence: nothing was
                 // dispatched and the examples are retained for the next fill.
-                DispatchResult::Joined { .. } => FlushOutcome::nothing_to_flush(),
+                DispatchResult::Held { .. } => FlushOutcome::nothing_to_flush(),
                 DispatchResult::Dispatched { examples, handle, provider } =>
                     FlushOutcome::job_dispatched(examples as u32, provider, handle),
                 DispatchResult::Failed { kind, error } => {

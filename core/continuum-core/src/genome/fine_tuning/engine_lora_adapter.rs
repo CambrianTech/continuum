@@ -1146,6 +1146,20 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
         let id = Uuid::new_v4();
         let out = format!("{id}.gguf");
+        if let Some(parent) = &request.parent {
+            // A fork trains from the base today: the engine's /train has no warm start from
+            // an existing adapter (the fork's init file went in #19). The lineage is still
+            // recorded on the child's signature; the weights are not inherited. The row
+            // that says so is this probe, until the engine takes `init_adapter`.
+            crate::probe!(
+                class = "genome.fork.cold_start",
+                persona = %request.persona_id,
+                trait_kind = %request.trait_kind,
+                parent = %parent,
+                job = %id,
+                "a fork trains from the base: the engine has no warm start from the parent yet; lineage recorded, weights not inherited"
+            );
+        }
         // LEARNING SEES WHAT SERVING SEES (Joel, 2026-09-28: "stupidly low token sizes are
         // idiotic ... the same as inference"; "you're not supposed to make learning so different
         // from reality"). The window is the per-slot window the matched lane was LAUNCHED with,
@@ -1510,6 +1524,7 @@ mod tests {
             schedule: Some(ScheduleParams { epochs: 2, batch_size: 1, sequence_length: 256, learning_rate: 1e-5 }),
             local_artifact_dir: None,
             resume_from: None,
+            parent: None,
         }
     }
 

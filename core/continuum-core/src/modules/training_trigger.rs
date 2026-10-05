@@ -85,6 +85,15 @@ pub use durable::{AcceptanceReceipt, DispatchPhase};
 pub(crate) use durable::{DispatchFailure, DispatchResult};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
+/// THE BOUND ON A HELD BUCKET. A bucket held by a job in flight, a trial open, or her
+/// surprise below the floor keeps filling, in memory and durably, until the hold lifts
+/// (Cormac on #4794: a trial with no verdict grew it without limit). Past this many
+/// pending examples a submit into a held bucket is refused as `BucketHeldFull`; the
+/// producer keeps its staged rows (a refused submit is "evidence retained") and settles
+/// them on a later pass, so nothing is lost, only deferred. Sixteen fills' worth at the
+/// default floor: more than the fill after the hold lifts can use at once.
+pub const MAX_HELD_EXAMPLES: usize = 16 * DEFAULT_MIN_EXAMPLES as usize;
+
 /// LoRA-training floor — large enough to give SGD signal,
 /// small enough that latency-to-first-layer stays minutes not hours
 /// on the substrate-native trainer. Override per-submit via
@@ -190,6 +199,10 @@ pub struct TrainingTriggerState {
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
     #[cfg(test)]
     pub(crate) test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+    /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
+    /// and watch the bucket hold.
+    #[cfg(test)]
+    pub(crate) test_trials: std::sync::Arc<crate::genome::gene_trial::GeneTrials>,
 }
 
 /// What the trigger does with one orphan, given what re-attach answered (step 3).
@@ -264,6 +277,10 @@ impl TrainingTriggerState {
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
             test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
+            #[cfg(test)]
+            test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::at(
+                std::env::temp_dir().join(format!("training-trigger-trials-{}.json", Uuid::new_v4())),
+            )),
         }
     }
 
@@ -386,10 +403,26 @@ impl TrainingTriggerState {
                 continue;
             };
             match executor.execute_json("genome/job-create", params.clone()).await.map_err(|e| e.to_string()).and_then(|r| decode_job_create(r).map_err(|e| format!("{e:?}"))) {
-                // A competence already training: the orphan's examples go back to her
-                // bucket through the one submit verb (the bucket waits while that job is
-                // in flight), and nothing is re-created. The orphan is not resumed.
-                Ok(Created::Joined(job)) => {
+                // A competence already training, on trial, or carried by an existing gene:
+                // the orphan's examples go back to her bucket through the one submit verb
+                // (the bucket waits while that job or trial is pending), and nothing is
+                // re-created. The orphan is not resumed.
+                Ok(Created::Held(took)) => {
+                    let into = match &took {
+                        Took::Joined { job } => *job,
+                        Took::Awaited { trial } | Took::Reused { trial, .. } => *trial,
+                        // Her trial file could not be read: nothing is returned or journaled
+                        // blind; the orphan stays for the next restart, which reads again.
+                        Took::TrialFileUnreadable => {
+                            crate::probe!(
+                                class = "training.job.resume_deferred",
+                                origin = %origin,
+                                from = %orphan.local_id,
+                                "an orphan's fate waits on her trial file, which could not be read; the next restart tries again"
+                            );
+                            continue;
+                        }
+                    };
                     let examples = params
                         .get("dataset")
                         .and_then(|d| d.get("examples"))
@@ -410,15 +443,16 @@ impl TrainingTriggerState {
                     // `resumed` row the Job arm writes, with the joined job as the new id;
                     // a failed resubmit leaves the orphan for the next restart to try.
                     if resubmitted.is_ok() {
-                        board.journal_resumed(origin, orphan.local_id, job, attempt);
+                        board.journal_resumed(origin, orphan.local_id, into, attempt);
                     }
                     crate::probe!(
                         class = "training.job.resume_joined",
                         origin = %origin,
                         from = %orphan.local_id,
-                        joined = %job,
+                        held_by = ?took,
+                        into = %into,
                         examples_returned = resubmitted.is_ok(),
-                        "an orphan whose competence is already training was not re-created: its examples returned to her bucket"
+                        "an orphan whose competence is already pending (a job, a trial, an existing gene) was not re-created: its examples returned to her bucket"
                     );
                 }
                 Ok(Created::Job(handle, provider)) => {
@@ -498,6 +532,7 @@ impl TrainingTriggerState {
             base_model: base_model.to_string(),
             trait_kind: trait_kind.to_string(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: batch.examples.clone(),
                 source: batch.source,
@@ -596,12 +631,15 @@ pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_
     Some(params)
 }
 
-/// What `genome/job-create` did with a fill: created a job, or JOINED one of hers already
-/// training this competence (`JobCreateOutcome::joined`), creating nothing.
+use crate::commands::genome::job_create::Took;
+
+/// What `genome/job-create` did with a fill: created a job, or HELD the fill without one
+/// (`JobCreateOutcome::took`: joined a job of hers, awaited a trial, or adopted an
+/// existing gene for trial). In every held case the examples belong back in her bucket.
 #[derive(Debug, Clone)]
 pub(crate) enum Created {
     Job(JobHandle, String),
-    Joined(Uuid),
+    Held(Took),
 }
 
 fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
@@ -618,8 +656,8 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         DispatchFailure::Uncertain(format!("genome/job-create response parse: {error}"))
     })?;
     if response.success {
-        if let Some(job) = response.joined {
-            return Ok(Created::Joined(job));
+        if let Some(took) = response.took {
+            return Ok(Created::Held(took));
         }
         let result = response.result.ok_or_else(|| {
             DispatchFailure::Uncertain("genome/job-create returned success without result".into())
@@ -644,9 +682,16 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         "genome/job-create rejected: {}",
         response.error.unwrap_or_default()
     );
+    use crate::commands::genome::job_create::{ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
     Err(match response.error_kind.as_deref() {
         // No kind is the command's pre-provider validation/selection refusal.
         None | Some("InvalidRequest" | "MissingCredentials" | "ProviderRejected") => {
+            DispatchFailure::Retryable(error)
+        }
+        // A decision that created nothing is certain, never recovery: a hub pull that
+        // failed, a gene not adopted, a trial file not read. The next fill retries
+        // (Cormac on #4794: Uncertain here wedged the bucket in RecoveryRequired).
+        Some(kind) if kind == ERROR_KIND_REUSE_PULL_FAILED || kind == ERROR_KIND_REUSE_ADOPT_FAILED || kind == ERROR_KIND_TRIAL_FILE_UNREADABLE => {
             DispatchFailure::Retryable(error)
         }
         Some(_) => DispatchFailure::Uncertain(error),
@@ -812,11 +857,17 @@ mod tests {
                 Err(DispatchFailure::Uncertain(_))
             ));
         }
+        // what this catches (Cormac on #4794): a refusal that created no job is retryable,
+        // never Uncertain; Uncertain froze the bucket in RecoveryRequired with no journal
+        // row to recover from.
         for kind in [
             None,
             Some("InvalidRequest"),
             Some("MissingCredentials"),
             Some("ProviderRejected"),
+            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_PULL_FAILED),
+            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_ADOPT_FAILED),
+            Some(crate::commands::genome::job_create::ERROR_KIND_TRIAL_FILE_UNREADABLE),
         ] {
             let mut response = json!({"success": false, "error": "explicit refusal"});
             if let Some(kind) = kind {
