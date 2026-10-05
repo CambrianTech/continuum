@@ -74,6 +74,11 @@ pub struct GeneSignature {
     pub corpus: CorpusRef,
     /// Unix-ms mint time (receipt-age axis for later fitness decay).
     pub minted_at_ms: u64,
+    /// Lineage: the gene this one was forked from (`Decision::Fork`), by where it lived
+    /// when the fork was decided. Absent on a mint. Propagation, half of fitness
+    /// (GENE-REUSE-FORK-MINT.md §3a), is counted from these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<crate::genome::competence::GeneRef>,
 }
 
 /// L2-normalize in place; a zero vector stays zero (and can never win a max).
@@ -160,6 +165,7 @@ impl GeneSignature {
             subspaces,
             corpus,
             minted_at_ms: now_ms,
+            parent: None,
         })
     }
 

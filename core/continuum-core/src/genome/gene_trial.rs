@@ -398,6 +398,81 @@ fn fitness_receipt(t: &GeneTrial, now_ms: u64) -> serde_json::Value {
     })
 }
 
+/// Why a gene could not be adopted for trial. Each arm names the thing the caller can
+/// act on; none is a string the caller has to grep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdoptRefusal {
+    /// The serving manifest would not take the gene: the engine never loads it.
+    NotRegistered(String),
+    /// No home directory: the trial file has no place.
+    NoHome,
+    /// The trial file would not take the row.
+    TrialFileRefused(String),
+}
+
+impl std::fmt::Display for AdoptRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdoptRefusal::NotRegistered(e) => write!(f, "the gene could not be registered for serving: {e}"),
+            AdoptRefusal::NoHome => f.write_str("no home directory: the gene trial file has no place"),
+            AdoptRefusal::TrialFileRefused(e) => write!(f, "the gene trial file did not take the trial: {e}"),
+        }
+    }
+}
+
+/// The ONE way a gene becomes live in her: registered in the serving manifest (the
+/// engine loads it in place, dormant, #4467) and a trial opened on it. The completion
+/// sentinel adopts a gene it just trained; a reuse decision adopts a gene that already
+/// exists (on this node, or pulled from the hub). Same seam, so a gene never serves
+/// without a trial and never trials without serving.
+pub struct Adoption {
+    manifest: PathBuf,
+    trials: GeneTrials,
+}
+
+impl Adoption {
+    pub fn at(manifest: impl Into<PathBuf>, trials: GeneTrials) -> Self {
+        Self { manifest: manifest.into(), trials }
+    }
+
+    /// The node's manifest and trial file; `Err` names which is unresolvable.
+    pub fn default_paths() -> Result<Self, AdoptRefusal> {
+        let manifest = crate::forge::adapter_manifest::manifest_path().map_err(AdoptRefusal::NotRegistered)?;
+        let trials = GeneTrials::default_store().ok_or(AdoptRefusal::NoHome)?;
+        Ok(Self { manifest, trials })
+    }
+
+    pub fn manifest(&self) -> &Path {
+        &self.manifest
+    }
+
+    pub fn trials(&self) -> &GeneTrials {
+        &self.trials
+    }
+
+    pub fn adopt(
+        &self,
+        persona_id: Uuid,
+        alias: &str,
+        path: &Path,
+        base_model_id: &str,
+        now_ms: u64,
+    ) -> Result<GeneTrial, AdoptRefusal> {
+        crate::forge::adapter_manifest::register_at(
+            &self.manifest,
+            crate::forge::adapter_manifest::TrainedAdapter {
+                alias: alias.to_string(),
+                path: path.to_path_buf(),
+                base_model_id: base_model_id.to_string(),
+            },
+        )
+        .map_err(AdoptRefusal::NotRegistered)?;
+        self.trials
+            .open(persona_id, alias, path, base_model_id, now_ms)
+            .map_err(AdoptRefusal::TrialFileRefused)
+    }
+}
+
 /// The trial file.
 pub struct GeneTrials {
     path: PathBuf,
@@ -426,6 +501,13 @@ impl GeneTrials {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(format!("gene trials {}: {e}", self.path.display())),
         }
+    }
+
+    /// Test-only: write rows as the gate would (a test that needs a decided trial writes
+    /// the same row the gate writes, through the same save).
+    #[cfg(test)]
+    pub fn save_for_test(&self, all: &[GeneTrial]) -> Result<(), String> {
+        self.save(all)
     }
 
     fn save(&self, all: &[GeneTrial]) -> Result<(), String> {

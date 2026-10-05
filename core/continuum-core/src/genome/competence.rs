@@ -10,7 +10,7 @@
 //! The same clustering kernel recall and gene signatures use
 //! (`modules::embedding::detect_clusters`), never a parallel space.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
@@ -22,10 +22,14 @@ use crate::modules::embedding::detect_clusters;
 /// or a REPO on the hub (what `genome/pull` takes). An enum, never a string that is
 /// sometimes a path and sometimes a repo: the variant says which, and the stores keep
 /// their own key types.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GeneRef.ts")]
 #[serde(tag = "at", rename_all = "snake_case")]
 pub enum GeneRef {
-    Local { path: PathBuf },
+    Local {
+        #[ts(type = "string")]
+        path: PathBuf,
+    },
     Hub { repo: String },
 }
 
@@ -103,15 +107,25 @@ pub struct NearestGene {
 }
 
 /// The nearest gene in a local signature store to `competence`, in the embedder's space;
-/// `resident` names the adapter paths currently loaded for her. `None` when the store
-/// holds nothing comparable (empty, or another embedder's signatures).
-pub fn nearest_in_store(competence: &Competence, store: &SignatureStore, embedder_id: &str, resident: &[String]) -> Option<NearestGene> {
+/// `resident` names the adapter paths currently loaded for her, `retired` the ones her
+/// own work already retired (a retired gene leaves the serving manifest but keeps its
+/// signature, and offering it back to her as a reuse would trial it forever). `None`
+/// when the store holds nothing comparable (empty, or another embedder's signatures).
+pub fn nearest_in_store(
+    competence: &Competence,
+    store: &SignatureStore,
+    embedder_id: &str,
+    resident: &[PathBuf],
+    retired: &[PathBuf],
+) -> Option<NearestGene> {
     store
         .by_path
         .iter()
+        .filter(|(path, _)| !retired.iter().any(|r| r.as_path() == Path::new(path)))
         .filter_map(|(path, sig)| {
             let similarity = sig.similarity_in(embedder_id, &competence.centroid)?;
-            Some(NearestGene { gene: GeneRef::Local { path: PathBuf::from(path) }, similarity, resident: resident.iter().any(|r| r == path) })
+            let resident = resident.iter().any(|r| r.as_path() == Path::new(path));
+            Some(NearestGene { gene: GeneRef::Local { path: PathBuf::from(path) }, similarity, resident })
         })
         .max_by(|a, b| a.similarity.total_cmp(&b.similarity))
 }
@@ -135,6 +149,11 @@ pub enum Decision {
     /// second mint for one competence is the design's falsifier #2 (four Mints for one
     /// card's credit on the 5090, 2026-10-05 13:17Z, before this branch existed).
     Join { job: Uuid, similarity: f32 },
+    /// A gene for this competence is already on trial in her work (reused or freshly
+    /// trained, now resident and drawn on a share of her cards). Her cards decide it;
+    /// these examples wait for the verdict. Without this, the fill after a reuse would
+    /// read the gene as resident-and-still-surprised and fork it while it is being judged.
+    Await { trial: Uuid, similarity: f32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -155,49 +174,55 @@ pub enum Surprise {
     NotYetMeasured,
 }
 
-/// A job of hers already training, as the job board holds it: its identity and the
-/// signature it was minted with. `None` signature = a job from before signatures.
+/// Something of hers already underway for a competence, by the signature it carries: a
+/// job in flight (the job board's local id) or a trial open in her work (the trial's
+/// id). One shape, because the decision treats both the same way: nothing is minted
+/// beside a gene that is being born or being judged.
 #[derive(Debug, Clone, PartialEq)]
-pub struct InFlightJob {
-    /// The job's local id: a u128 on the stack, as the job board keys it.
-    pub job: Uuid,
+pub struct Pending {
+    /// A u128 on the stack: the job's local id, or the trial's id.
+    pub id: Uuid,
     pub similarity: f32,
 }
 
-/// The nearest job in flight for her whose minted signature sits within the
-/// competence's space; the caller filters the board to her jobs and the same base.
-pub fn nearest_in_flight<'a>(
+/// The nearest pending thing whose signature sits within the competence's space; the
+/// caller hands in her jobs (or her open trials) for the same base, each with the
+/// signature its gene was minted with.
+pub fn nearest_pending<'a>(
     competence: &Competence,
     embedder_id: &str,
-    jobs: impl Iterator<Item = (Uuid, &'a crate::genome::signature::GeneSignature)>,
-) -> Option<InFlightJob> {
-    jobs.filter_map(|(job, sig)| {
-        let similarity = sig.similarity_in(embedder_id, &competence.centroid)?;
-        Some(InFlightJob { job, similarity })
-    })
-    .max_by(|a, b| a.similarity.total_cmp(&b.similarity))
+    candidates: impl Iterator<Item = (Uuid, &'a crate::genome::signature::GeneSignature)>,
+) -> Option<Pending> {
+    candidates
+        .filter_map(|(id, sig)| {
+            let similarity = sig.similarity_in(embedder_id, &competence.centroid)?;
+            Some(Pending { id, similarity })
+        })
+        .max_by(|a, b| a.similarity.total_cmp(&b.similarity))
 }
 
-/// The decision, in the order the design states. `in_flight` is checked before any
-/// branch that would train: a competence already being learned is joined, never minted
-/// twice.
+/// The decision, in the order the design states. A job in flight and a trial open are
+/// checked before any branch that would train or reuse: a competence already being
+/// learned is joined, one already being judged is awaited, never minted twice.
 pub fn decide(competence: &Competence, surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
-    decide_with_in_flight(competence, surprise, nearest, None)
+    decide_with_pending(competence, surprise, nearest, None, None)
 }
 
-pub fn decide_with_in_flight(
+pub fn decide_with_pending(
     competence: &Competence,
     surprise: Surprise,
     nearest: Option<&NearestGene>,
-    in_flight: Option<&InFlightJob>,
+    in_flight: Option<&Pending>,
+    on_trial: Option<&Pending>,
 ) -> Decision {
     if competence.members.len() < MIN_EXAMPLES {
         return Decision::Nothing { why: NothingBecause::TooFewExamples };
     }
-    if let Some(j) = in_flight {
-        if j.similarity >= SIM_REUSE {
-            return Decision::Join { job: j.job, similarity: j.similarity };
-        }
+    if let Some(j) = in_flight.filter(|j| j.similarity >= SIM_REUSE) {
+        return Decision::Join { job: j.id, similarity: j.similarity };
+    }
+    if let Some(t) = on_trial.filter(|t| t.similarity >= SIM_REUSE) {
+        return Decision::Await { trial: t.id, similarity: t.similarity };
     }
     if let Surprise::Measured { s } = surprise {
         if s < SURPRISE_FLOOR {
@@ -289,11 +314,19 @@ mod tests {
         // A job of hers already training this competence: join it, whatever the store says
         // (the four-Mints-for-one-card shape); a distant job in flight changes nothing.
         let flying_id = Uuid::from_u128(0xbcb7316f);
-        let flying = InFlightJob { job: flying_id, similarity: 0.97 };
-        assert_eq!(decide_with_in_flight(&c, s(0.5), None, Some(&flying)), Decision::Join { job: flying_id, similarity: 0.97 });
-        assert_eq!(decide_with_in_flight(&c, s(0.5), Some(&near(0.95, false)), Some(&flying)), Decision::Join { job: flying_id, similarity: 0.97 }, "join before reuse: the gene being born is hers");
-        let far = InFlightJob { job: Uuid::from_u128(0x0f), similarity: 0.3 };
-        assert_eq!(decide_with_in_flight(&c, s(0.5), None, Some(&far)), Decision::Mint);
+        let flying = Pending { id: flying_id, similarity: 0.97 };
+        assert_eq!(decide_with_pending(&c, s(0.5), None, Some(&flying), None), Decision::Join { job: flying_id, similarity: 0.97 });
+        assert_eq!(decide_with_pending(&c, s(0.5), Some(&near(0.95, false)), Some(&flying), None), Decision::Join { job: flying_id, similarity: 0.97 }, "join before reuse: the gene being born is hers");
+        let far = Pending { id: Uuid::from_u128(0x0f), similarity: 0.3 };
+        assert_eq!(decide_with_pending(&c, s(0.5), None, Some(&far), None), Decision::Mint);
+        // A gene on trial for this competence: await her verdict. The resident gene the
+        // trial is judging would otherwise read as resident-and-still-surprised and fork.
+        let trial_id = Uuid::from_u128(0x17dc0a7b);
+        let judged = Pending { id: trial_id, similarity: 0.96 };
+        assert_eq!(decide_with_pending(&c, s(0.5), Some(&near(0.96, true)), None, Some(&judged)), Decision::Await { trial: trial_id, similarity: 0.96 }, "await before fork: the gene is being judged");
+        assert_eq!(decide_with_pending(&c, s(0.5), Some(&near(0.96, true)), Some(&flying), Some(&judged)), Decision::Join { job: flying_id, similarity: 0.97 }, "a job in flight outranks a trial");
+        let cousin_trial = Pending { id: trial_id, similarity: 0.8 };
+        assert_eq!(decide_with_pending(&c, s(0.5), None, None, Some(&cousin_trial)), Decision::Mint, "a cousin's trial does not settle this competence");
     }
 
     // what this catches: the nearest gene is read from the signature store in the SAME
@@ -310,15 +343,21 @@ mod tests {
             subspaces: vec![],
             corpus: CorpusRef { name: "t".into(), content_hash: "sha256:0".into(), size_bytes: 0, source_url: None },
             minted_at_ms: 0,
+            parent: None,
         };
         let mut store = SignatureStore::default();
         store.by_path.insert("/g/far.gguf".into(), sig("e1", vec![0.0, 1.0]));
         store.by_path.insert("/g/near.gguf".into(), sig("e1", vec![0.96, 0.28]));
         store.by_path.insert("/g/other-space.gguf".into(), sig("e2", vec![1.0, 0.0]));
         let c = Competence { centroid: vec![1.0, 0.0], members: (0..MIN_EXAMPLES).collect(), cohesion: 0.9, representative: 0 };
-        let n = nearest_in_store(&c, &store, "e1", &["/g/near.gguf".to_string()]).expect("a nearest gene");
-        assert_eq!(n.gene, GeneRef::Local { path: PathBuf::from("/g/near.gguf") });
+        let near = PathBuf::from("/g/near.gguf");
+        let n = nearest_in_store(&c, &store, "e1", std::slice::from_ref(&near), &[]).expect("a nearest gene");
+        assert_eq!(n.gene, GeneRef::Local { path: near.clone() });
         assert!(n.similarity > 0.9 && n.resident, "{n:?}");
-        assert!(nearest_in_store(&c, &store, "e3", &[]).is_none(), "nothing comparable in another space");
+        assert!(nearest_in_store(&c, &store, "e3", &[], &[]).is_none(), "nothing comparable in another space");
+        // A gene her work retired keeps its signature but is never offered back: the
+        // next nearest wins (here the far one, below fork distance, so the caller mints).
+        let n = nearest_in_store(&c, &store, "e1", &[], std::slice::from_ref(&near)).expect("the far gene");
+        assert_eq!(n.gene, GeneRef::Local { path: PathBuf::from("/g/far.gguf") }, "a retired gene is not a candidate");
     }
 }

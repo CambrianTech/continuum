@@ -168,40 +168,25 @@ impl TrainingCompletionSentinel {
             // engine loads it in place, dormant (#4467), and a TRIAL opens: from now on each
             // card she works draws an arm, and the room's outcome for the card is what promotes
             // or retires it (genome/gene_trial.rs). No eval copy of her mind scores it beside
-            // her life.
-            if let Err(e) = crate::forge::adapter_manifest::register(crate::forge::adapter_manifest::TrainedAdapter {
-                alias: job.trait_kind.clone(),
-                path: std::path::PathBuf::from(&path_str),
-                base_model_id: job.base_model.clone(),
-            }) {
-                crate::probe!(
-                    class = "genome.trial.refused",
-                    persona = %job.persona_id,
-                    gene = job.trait_kind.as_str(),
-                    error = e.as_str(),
-                    "the trained gene could not be registered for serving: no trial opened"
-                );
-                return;
-            }
-            let Some(store) = crate::genome::gene_trial::GeneTrials::default_store() else {
-                tracing::error!(persona = %job.persona_id, "no home directory: the gene trial file has no place, no trial opened");
-                return;
-            };
-            let trial = match store.open(
-                job.persona_id,
-                &job.trait_kind,
-                std::path::Path::new(&path_str),
-                &job.base_model,
-                chrono::Utc::now().timestamp_millis().max(0) as u64,
-            ) {
+            // her life. The same seam a reuse decision adopts an existing gene through.
+            let adopted = crate::genome::gene_trial::Adoption::default_paths().and_then(|a| {
+                a.adopt(
+                    job.persona_id,
+                    &job.trait_kind,
+                    std::path::Path::new(&path_str),
+                    &job.base_model,
+                    chrono::Utc::now().timestamp_millis().max(0) as u64,
+                )
+            });
+            let trial = match adopted {
                 Ok(t) => t,
-                Err(e) => {
+                Err(refusal) => {
                     crate::probe!(
                         class = "genome.trial.refused",
                         persona = %job.persona_id,
                         gene = job.trait_kind.as_str(),
-                        error = e.as_str(),
-                        "the gene trial file did not take the trial: no trial opened"
+                        refusal = %refusal,
+                        "the trained gene was not adopted: no trial opened, her genome unchanged"
                     );
                     return;
                 }

@@ -546,6 +546,7 @@ mod tests {
             base_model: "Qwen/Qwen2.5-Coder-3B-Instruct".into(),
             trait_kind: "coder-test".into(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: examples
                     .into_iter()

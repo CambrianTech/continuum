@@ -190,6 +190,7 @@ pub(crate) mod test_support {
             base_model: base.into(),
             trait_kind: "test-trait".into(),
             resume_from: None,
+            parent: None,
             dataset: dataset(),
             eval_set: None,
             lora: None,

@@ -168,6 +168,7 @@ mod tests {
                 source_url: None,
             },
             minted_at_ms: 0,
+            parent: None,
         }
     }
     fn signals(fitness: f32) -> GeneSignals {

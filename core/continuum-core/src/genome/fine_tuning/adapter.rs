@@ -319,6 +319,7 @@ mod tests {
             base_model: "gpt-4o-mini".into(),
             trait_kind: "test-trait".into(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::TeacherSynthesized,

@@ -190,6 +190,10 @@ pub struct TrainingTriggerState {
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
     #[cfg(test)]
     pub(crate) test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+    /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
+    /// and watch the bucket hold.
+    #[cfg(test)]
+    pub(crate) test_trials: std::sync::Arc<crate::genome::gene_trial::GeneTrials>,
 }
 
 /// What the trigger does with one orphan, given what re-attach answered (step 3).
@@ -264,6 +268,10 @@ impl TrainingTriggerState {
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
             test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
+            #[cfg(test)]
+            test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::at(
+                std::env::temp_dir().join(format!("training-trigger-trials-{}.json", Uuid::new_v4())),
+            )),
         }
     }
 
@@ -386,10 +394,15 @@ impl TrainingTriggerState {
                 continue;
             };
             match executor.execute_json("genome/job-create", params.clone()).await.map_err(|e| e.to_string()).and_then(|r| decode_job_create(r).map_err(|e| format!("{e:?}"))) {
-                // A competence already training: the orphan's examples go back to her
-                // bucket through the one submit verb (the bucket waits while that job is
-                // in flight), and nothing is re-created. The orphan is not resumed.
-                Ok(Created::Joined(job)) => {
+                // A competence already training, on trial, or carried by an existing gene:
+                // the orphan's examples go back to her bucket through the one submit verb
+                // (the bucket waits while that job or trial is pending), and nothing is
+                // re-created. The orphan is not resumed.
+                Ok(Created::Held(took)) => {
+                    let into = match &took {
+                        Took::Joined { job } => *job,
+                        Took::Awaited { trial } | Took::Reused { trial, .. } => *trial,
+                    };
                     let examples = params
                         .get("dataset")
                         .and_then(|d| d.get("examples"))
@@ -410,15 +423,16 @@ impl TrainingTriggerState {
                     // `resumed` row the Job arm writes, with the joined job as the new id;
                     // a failed resubmit leaves the orphan for the next restart to try.
                     if resubmitted.is_ok() {
-                        board.journal_resumed(origin, orphan.local_id, job, attempt);
+                        board.journal_resumed(origin, orphan.local_id, into, attempt);
                     }
                     crate::probe!(
                         class = "training.job.resume_joined",
                         origin = %origin,
                         from = %orphan.local_id,
-                        joined = %job,
+                        held_by = ?took,
+                        into = %into,
                         examples_returned = resubmitted.is_ok(),
-                        "an orphan whose competence is already training was not re-created: its examples returned to her bucket"
+                        "an orphan whose competence is already pending (a job, a trial, an existing gene) was not re-created: its examples returned to her bucket"
                     );
                 }
                 Ok(Created::Job(handle, provider)) => {
@@ -498,6 +512,7 @@ impl TrainingTriggerState {
             base_model: base_model.to_string(),
             trait_kind: trait_kind.to_string(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: batch.examples.clone(),
                 source: batch.source,
@@ -596,12 +611,15 @@ pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_
     Some(params)
 }
 
-/// What `genome/job-create` did with a fill: created a job, or JOINED one of hers already
-/// training this competence (`JobCreateOutcome::joined`), creating nothing.
+use crate::commands::genome::job_create::Took;
+
+/// What `genome/job-create` did with a fill: created a job, or HELD the fill without one
+/// (`JobCreateOutcome::took`: joined a job of hers, awaited a trial, or adopted an
+/// existing gene for trial). In every held case the examples belong back in her bucket.
 #[derive(Debug, Clone)]
 pub(crate) enum Created {
     Job(JobHandle, String),
-    Joined(Uuid),
+    Held(Took),
 }
 
 fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
@@ -618,8 +636,8 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         DispatchFailure::Uncertain(format!("genome/job-create response parse: {error}"))
     })?;
     if response.success {
-        if let Some(job) = response.joined {
-            return Ok(Created::Joined(job));
+        if let Some(took) = response.took {
+            return Ok(Created::Held(took));
         }
         let result = response.result.ok_or_else(|| {
             DispatchFailure::Uncertain("genome/job-create returned success without result".into())
