@@ -95,6 +95,20 @@ pub struct BindingParseError {
 
 /// Project a room's already-fetched recipe-category wall posts into its binding.
 ///
+impl RoomRecipeBinding {
+    /// The repo this room declares (`params.repo`, project.json), or `None` when the
+    /// recipe has no such param or it was left at the blank default. A project IS a repo;
+    /// `work/create` reads this before refusing (Kimi, 2026-10-05: six refusals in a
+    /// project room whose binding had carried the field, blank, since spawn).
+    pub fn declared_repo(&self) -> Option<&str> {
+        self.params
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+    }
+}
+
 /// `posts` must come from a wall read filtered to [`RECIPE_WALL_CATEGORY`] — the
 /// wall projection has already applied the supersede chain, so the surviving post
 /// is the current declaration and the last one wins (a re-bound room adopts its
@@ -216,4 +230,21 @@ mod tests {
         let read = project_binding(&[post(&body)]).expect("decode").expect("bound");
         assert_eq!(read, written);
     }
+
+    // what this catches: the room's declared repo is read from its binding; a recipe with
+    // no repo param, or the blank default every project room was spawned with until
+    // 2026-10-05, declares none, so work/create refuses with the words that fix it.
+    #[test]
+    fn a_room_declares_its_repo_only_when_the_binding_carries_one() {
+        let bound = |params: serde_json::Value| RoomRecipeBinding {
+            recipe: "project".into(),
+            parent: None,
+            params: serde_json::from_value(params).expect("a params map"),
+        };
+        assert_eq!(bound(serde_json::json!({"repo": "CambrianTech/career-wrangler"})).declared_repo(), Some("CambrianTech/career-wrangler"));
+        assert_eq!(bound(serde_json::json!({"repo": "  "})).declared_repo(), None, "the blank default declares none");
+        assert_eq!(bound(serde_json::json!({})).declared_repo(), None, "a recipe without the param declares none");
+        assert_eq!(bound(serde_json::json!({"repo": 7})).declared_repo(), None, "a non-string is not a repo");
+    }
+
 }

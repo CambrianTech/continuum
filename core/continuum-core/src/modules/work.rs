@@ -1785,40 +1785,31 @@ async fn held_repo(airc: &Airc) -> Result<Option<RepoId>, CommandError> {
     Ok(crate::persona::work_focus::focus_actionable_card(held.iter()).map(|c| c.repo.clone()))
 }
 
+/// The repo the ROOM declares: a project activity's recipe binding carries `params.repo`
+/// (project.json), bound at `activity/spawn`. `Ok(None)` = the room is not a project or
+/// declares none (an org room like cambriantech has no binding at all, and that is right:
+/// an org is not one repo). A read failure is a read failure.
+async fn room_repo(airc: &Airc, room: &airc_lib::Room) -> Result<Option<RepoId>, CommandError> {
+    let posts = airc
+        .wall_posts_in(room, Some(crate::experience::binding::RECIPE_WALL_CATEGORY))
+        .await
+        .map_err(|e| CommandError::Internal(format!("work/create: could not read the room's recipe binding: {e}")))?;
+    let binding = crate::experience::binding::project_binding(&posts)
+        .map_err(|e| CommandError::Internal(format!("work/create: the room's recipe binding is unreadable: {e}")))?;
+    let Some(repo) = binding.as_ref().and_then(|b| b.declared_repo().map(str::to_string)) else {
+        return Ok(None);
+    };
+    RepoId::new(repo.clone())
+        .map(Some)
+        .map_err(|e| CommandError::Internal(format!("work/create: the room declares repo {repo:?}, which is not a repo key: {e:?}")))
+}
+
 impl WorkCreate {
     /// The card lands on the NAMED room's board under the caller's own airc identity.
     async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
-        // A named repo wins; otherwise the card she holds says what she is working on
-        // (Kimi, 2026-09-28: the doc's example named this repo, so her first
-        // career-wrangler slice card was filed against continuum).
-        // A blank repo is a mistake to name, not a request to infer (Codex on #4571).
-        let repo = match p.repo.as_deref().map(str::trim) {
-            Some("") => {
-                return Err(CommandError::Invalid(
-                    "work/create: repo is blank: name it (owner/name) or omit it to use the \
-                     card you hold"
-                        .into(),
-                ))
-            }
-            Some(named) => RepoId::new(named.to_string())
-                .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
-            None => held_repo(airc).await?.ok_or_else(|| {
-                CommandError::Invalid(
-                    "work/create: name the repo (owner/name); no actionable held card supplies it. \
-                     Cards awaiting review retain their claims but are not selected here. \
-                     Pass repo explicitly; you do not need to reclaim or resubmit reviewed work."
-                        .into(),
-                )
-            })?,
-        };
-        let mut req = CreateWorkCard::new(
-            repo,
-            p.title,
-            Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
-        );
-        req.body = p.body;
         // A blank room would reach resolve_room as "unnamed" and land in the current room,
-        // the very default this field exists to refuse (Codex on #4550).
+        // the very default this field exists to refuse (Codex on #4550). Resolved FIRST:
+        // the room is the second thing that can say which repo (below).
         if p.room.trim().is_empty() {
             return Err(CommandError::Invalid(
                 "work/create: room is required: name the activity room whose board gets the card"
@@ -1826,6 +1817,41 @@ impl WorkCreate {
             ));
         }
         let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
+        // A named repo wins; then the card she holds (Kimi, 2026-09-28: the doc's example
+        // named this repo, so her first career-wrangler slice card was filed against
+        // continuum); then THE ROOM (Kimi, 2026-10-05: six refusals filing cards in a
+        // project room, because a project IS a repo and the room already declared it on
+        // its binding, which nothing read). A blank repo is a mistake to name, not a
+        // request to infer (Codex on #4571).
+        let repo = match p.repo.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(CommandError::Invalid(
+                    "work/create: repo is blank: name it (owner/name) or omit it to use the \
+                     card you hold or the room's declared repo"
+                        .into(),
+                ))
+            }
+            Some(named) => RepoId::new(named.to_string())
+                .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
+            None => match held_repo(airc).await? {
+                Some(held) => held,
+                None => room_repo(airc, &room).await?.ok_or_else(|| {
+                    CommandError::Invalid(format!(
+                        "work/create: name the repo (owner/name). Neither an actionable held card nor the room \
+                         {:?} supplies it: a project room declares its repo at activity/spawn \
+                         (--params {{\"repo\":\"owner/name\"}}; re-spawning the same name rebinds it); an org room \
+                         never does. Cards awaiting review keep their claims but are not selected here.",
+                        p.room.trim()
+                    ))
+                })?,
+            },
+        };
+        let mut req = CreateWorkCard::new(
+            repo,
+            p.title,
+            Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
+        );
+        req.body = p.body;
         let card_id = airc
             .create_work_card_in(&room, req)
             .await
