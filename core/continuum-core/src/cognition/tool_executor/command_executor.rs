@@ -678,6 +678,17 @@ impl ToolExecutor for CommandToolExecutor {
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
                     let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
+                    // A refusal is a wall in her hands; it must reach the probe stream,
+                    // not only her. Kimi's own ledger showed work/create ✗×6 on
+                    // 2026-10-05 and nothing on our side could say why without opening
+                    // her capture. The reason is the substrate's own text, not hers.
+                    crate::probe!(
+                        class = "persona.act.refused",
+                        persona = %ctx.persona_id,
+                        command = attempted,
+                        reason = %raw.chars().take(240).collect::<String>(),
+                        "a command refused her act"
+                    );
                     // A transport failure IS a failure, and the typed carrier must
                     // say the same thing `is_error` does — a receipt that reads one
                     // field and a glyph that reads the other must never disagree.
