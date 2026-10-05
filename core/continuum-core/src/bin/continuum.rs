@@ -4128,28 +4128,32 @@ fn consumer_uses_service(os: &str) -> bool {
 }
 
 /// The consumer follows the REQUEST, not a tip it once read: while it waits on CI for one
-/// tip the tracker keeps writing newer requests beside it, and CI builds only the newest
-/// (a superseded run is cancelled). Waiting for an artifact that will never exist held the
-/// M5 at a stale core for two hours on 2026-10-04 while three built tips went by. A pass
-/// that finds its request superseded starts over on the new one; nothing else changes.
+/// tip the tracker keeps writing newer requests beside it, and on canary GitHub keeps the
+/// running build and only the newest QUEUED push (older queued pushes are dropped and show
+/// as `cancelled`; #4729 keeps cancel-in-progress PR-only). Waiting for an artifact that
+/// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
+/// built tips went by. A pass that finds its request superseded starts over on the new one.
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     let DeployConsumeOptions {} = options;
     loop {
-        match deploy_consume_pass().await {
-            Err(why) if why.starts_with(SUPERSEDED) => {
-                deploy_note(&format!("deploy-consume: {why}; starting over on it"));
+        match deploy_consume_pass().await? {
+            PassEnd::Superseded(new_tip) => {
+                deploy_note(&format!("deploy-consume: request superseded by {new_tip}; starting over on it"));
                 continue;
             }
-            other => return other,
+            PassEnd::Done => return Ok(()),
         }
     }
 }
 
-/// The marker a pass returns when its request moved under it (not a failure: no attempt
-/// is charged to the old tip, and the new tip starts at zero).
-const SUPERSEDED: &str = "request superseded by ";
+/// How a consume pass ended. Typed, so "start over" can never be forged by an error text
+/// (Cormac's condition on #4750): a superseded pass charges no attempt to the old tip.
+enum PassEnd {
+    Done,
+    Superseded(String),
+}
 
-async fn deploy_consume_pass() -> Result<(), String> {
+async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
         continuum_core::modules::persona_instance_manager::resolve_continuum_root()
@@ -4205,7 +4209,7 @@ async fn deploy_consume_pass() -> Result<(), String> {
         running.as_deref().unwrap_or("none") // unwrap_or: display only — no core answering prints as "none"
     ));
     match verdict {
-        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(()),
+        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(PassEnd::Done),
         ConsumeVerdict::GaveUp => Err(format!(
             "deploy-consume: tip {} failed {prior_failures} times on this box — not retrying; \
              the tracker's deploy.stranded is the receipt, and a NEW tip resets this",
@@ -4222,7 +4226,7 @@ async fn deploy_consume_pass() -> Result<(), String> {
             // spent the tip's attempts (card 677437fa). Judge it before the attempt: a stale
             // one is cleared with a receipt, a possibly-live one is named and waited on.
             if !settle_index_lock(&repo)? {
-                return Ok(());
+                return Ok(PassEnd::Done);
             }
             let attempt = async {
                 // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
@@ -4255,7 +4259,7 @@ async fn deploy_consume_pass() -> Result<(), String> {
                 let prebuilt = match ci_core_for(&repo, tip_build_key.as_deref().unwrap_or(&tip), &request_path, &tip).await {
                     CiCore::Built(core) => Some(core),
                     CiCore::CompileHere => None,
-                    CiCore::Superseded(new_tip) => return Err(format!("{SUPERSEDED}{new_tip}")),
+                    CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
                 if let Some(core) = &prebuilt {
                     install_ci_companions(&repo, core)?;
@@ -4271,15 +4275,16 @@ async fn deploy_consume_pass() -> Result<(), String> {
                 let stage_prebuilt = prebuilt.is_some();
                 // install_ci_companions above already put this core's CLI on PATH.
                 let cli_installed = prebuilt.is_some();
-                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await
+                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                Ok(PassEnd::Done)
             }
             .await;
             match &attempt {
-                Ok(()) => {
+                Ok(PassEnd::Done) => {
                     let _ = std::fs::remove_file(&attempts_path);
                     deploy_note(&format!("✓ deploy-consume: {tip} handed off"));
                 }
-                Err(why) if why.starts_with(SUPERSEDED) => {} // not this tip's failure; the outer loop follows the new request
+                Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
                     write_consume_failures(&attempts_path, &tip, prior_failures + 1);
                     deploy_note(&format!(
