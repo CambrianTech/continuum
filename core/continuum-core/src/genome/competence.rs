@@ -156,10 +156,11 @@ pub enum Decision {
     Await { trial: Uuid, similarity: f32 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(tag = "why", rename_all = "snake_case")]
 pub enum NothingBecause {
-    SurpriseLow,
+    /// Her measured surprise, below [`SURPRISE_FLOOR`]: memories suffice for now.
+    SurpriseLow { s: f32 },
 }
 
 /// Her surprise in a competence, as the decision receives it. `NotYetMeasured` is not
@@ -225,7 +226,7 @@ pub fn decide_with_pending(
     }
     if let Surprise::Measured { s } = surprise {
         if s < SURPRISE_FLOOR {
-            return Decision::Nothing { why: NothingBecause::SurpriseLow };
+            return Decision::Nothing { why: NothingBecause::SurpriseLow { s } };
         }
     }
     match nearest {
@@ -302,7 +303,7 @@ mod tests {
         // The size of a competence is settled by whoever made it (the clustering floor, or
         // the bucket's threshold): the decision takes no competence and never second-guesses it.
         assert_eq!(decide(s(0.9), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
-        assert_eq!(decide(s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
+        assert_eq!(decide(s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow { s: 0.1 } });
         assert_eq!(decide(Surprise::NotYetMeasured, None), Decision::Mint, "not yet measured is not low: distance decides, as before");
         assert_eq!(decide(s(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
         assert_eq!(decide(s(0.5), Some(&near(0.95, true))), Decision::Fork { parent: g.clone(), similarity: 0.95 }, "resident and still surprised: a child");

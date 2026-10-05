@@ -48,6 +48,43 @@ pub struct AwarenessSnapshot {
     pub at_ms: u64,
 }
 
+/// Her verdict surprise across every activity on the strip, folded by COUNTS (never an
+/// average of ratios: an activity with one judged expectation must not weigh as much as
+/// one with twenty). `None` until the room has judged at least [`MIN_JUDGED`] of her
+/// stated expectations inside the window: not yet measured, which is not low.
+///
+/// Persona-wide, for now: §3 of GENE-REUSE-FORK-MINT defines `S(C)` per competence, and
+/// until the tallies are kept per competence this one reading gates every bucket of hers
+/// (Cormac on #4796, point 3). Said here so nobody reads it as the design.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerdictSurprise {
+    /// contradicted / judged, in [0, 1].
+    pub s: f32,
+    pub contradicted: u32,
+    pub judged: u32,
+}
+
+/// The fewest judged expectations a reading stands on. One confirmation after a reset is
+/// not "surprise 0.0, hold everything" (Cormac on #4796, point 4); below this the
+/// reading is not yet measured, and she trains.
+pub const MIN_JUDGED: u32 = 3;
+
+impl AwarenessSnapshot {
+    /// Read at the snapshot's own clock (`at_ms`): a tally whose window closed contributes
+    /// nothing, so a room that stopped judging her leaves her NOT MEASURED, never held at
+    /// her last number (Cormac on #4796, point 1: the window was applied only when a new
+    /// verdict arrived, so a stale 0 of 2 held her indefinitely).
+    pub fn verdict_surprise(&self) -> Option<VerdictSurprise> {
+        use super::perception_region::SURPRISE_WINDOW_MS;
+        let (contradicted, judged) = self
+            .lines
+            .iter()
+            .filter(|l| l.surprise.since_ms > 0 && self.at_ms.saturating_sub(l.surprise.since_ms) <= SURPRISE_WINDOW_MS)
+            .fold((0u32, 0u32), |(c, n), l| (c + l.surprise.contradicted, n + l.surprise.confirmed + l.surprise.contradicted));
+        (judged >= MIN_JUDGED).then(|| VerdictSurprise { s: contradicted as f32 / judged as f32, contradicted, judged })
+    }
+}
+
 /// Fold the lines into a snapshot. Ordering: salience level desc, then recency
 /// desc; `load.context_share` is the MEASURED cost of the lines she would see at
 /// the dial's depth (the rendered text, at the crate's chars-per-token estimate)
@@ -179,6 +216,36 @@ mod tests {
             surprise: Default::default(),
             waiting_on_me: vec![],
         }
+    }
+
+    // what this catches (GENE-REUSE-FORK-MINT §3, S(C) = the verdict surprise until the
+    // model surprise exists): the fold is by COUNTS across activities, never a mean of
+    // ratios (one judged expectation must not weigh as twenty), and it is None until the
+    // room judged at least one of her expectations: not measured is not low.
+    #[test]
+    fn verdict_surprise_folds_by_counts_and_is_none_until_judged() {
+        use crate::persona::perception_region::SurpriseTally;
+        use crate::persona::perception_region::SURPRISE_WINDOW_MS;
+        let tally = |confirmed, contradicted, since_ms| SurpriseTally { confirmed, contradicted, since_ms };
+        let mut a = line("a", SalienceLevel::Quiet, 0, 1);
+        let mut b = line("b", SalienceLevel::Quiet, 0, 1);
+        let read = |lines: Vec<ActivityLine>, at| fold(lines, None, AttentionDial::broad(), 1_000, at).verdict_surprise();
+        assert_eq!(read(vec![a.clone(), b.clone()], 10), None);
+        a.surprise = tally(1, 0, 5); // 0 of 1
+        b.surprise = tally(0, 19, 5); // 19 of 19
+        let v = read(vec![a.clone(), b.clone()], 10).expect("judged");
+        assert_eq!((v.contradicted, v.judged), (19, 20));
+        assert!((v.s - 0.95).abs() < 1e-6, "by counts, 19/20, not the mean of 0 and 1: {v:?}");
+        // A tally whose window closed contributes nothing: the room stopped judging her,
+        // so she is NOT MEASURED, never held at her last number.
+        assert_eq!(read(vec![a.clone(), b.clone()], 5 + SURPRISE_WINDOW_MS + 1), None, "a stale tally is not a reading");
+        // Fewer than MIN_JUDGED expectations is not a reading either: one confirmation
+        // after a reset must not read as surprise 0.0.
+        a.surprise = tally(1, 0, 5);
+        b.surprise = tally(1, 0, 5);
+        assert_eq!(read(vec![a.clone(), b.clone()], 10), None, "2 judged < MIN_JUDGED");
+        b.surprise = tally(2, 0, 5);
+        assert_eq!(read(vec![a, b], 10).map(|v| v.s), Some(0.0), "3 judged, none contradicted: measured 0");
     }
 
     // what this catches: the strip's order and the dial's depth. Loudest first, then

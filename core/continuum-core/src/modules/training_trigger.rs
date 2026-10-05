@@ -408,21 +408,17 @@ impl TrainingTriggerState {
                 // (the bucket waits while that job or trial is pending), and nothing is
                 // re-created. The orphan is not resumed.
                 Ok(Created::Held(took)) => {
-                    let into = match &took {
-                        Took::Joined { job } => *job,
-                        Took::Awaited { trial } | Took::Reused { trial, .. } => *trial,
-                        // Her trial file could not be read: nothing is returned or journaled
-                        // blind; the orphan stays for the next restart, which reads again.
-                        Took::TrialFileUnreadable => {
-                            crate::probe!(
-                                class = "training.job.resume_deferred",
-                                origin = %origin,
-                                from = %orphan.local_id,
-                                "an orphan's fate waits on her trial file, which could not be read; the next restart tries again"
-                            );
-                            continue;
-                        }
-                    };
+                    // Her trial file could not be read: nothing is returned or journaled
+                    // blind; the orphan stays for the next restart, which reads again.
+                    if matches!(took, Took::TrialFileUnreadable) {
+                        crate::probe!(
+                            class = "training.job.resume_deferred",
+                            origin = %origin,
+                            from = %orphan.local_id,
+                            "an orphan's fate waits on her trial file, which could not be read; the next restart tries again"
+                        );
+                        continue;
+                    }
                     let examples = params
                         .get("dataset")
                         .and_then(|d| d.get("examples"))
@@ -443,16 +439,23 @@ impl TrainingTriggerState {
                     // `resumed` row the Job arm writes, with the joined job as the new id;
                     // a failed resubmit leaves the orphan for the next restart to try.
                     if resubmitted.is_ok() {
-                        board.journal_resumed(origin, orphan.local_id, into, attempt);
+                        match &took {
+                            // Its input continues in that job: lineage.
+                            Took::Joined { job } => board.journal_resumed(origin, orphan.local_id, *job, attempt),
+                            // Its input waits in her bucket; nothing continues it. Lineage ends.
+                            Took::Awaited { .. } | Took::Reused { .. } | Took::Unsurprised { .. } => {
+                                board.journal_returned(origin, orphan.local_id, serde_json::to_value(&took).unwrap_or(Value::Null), attempt) // unwrap_or: a Took always serializes; Null would only follow a serde bug
+                            }
+                            Took::TrialFileUnreadable => {} // guarded above: never reaches a resubmit
+                        }
                     }
                     crate::probe!(
                         class = "training.job.resume_joined",
                         origin = %origin,
                         from = %orphan.local_id,
                         held_by = ?took,
-                        into = %into,
                         examples_returned = resubmitted.is_ok(),
-                        "an orphan whose competence is already pending (a job, a trial, an existing gene) was not re-created: its examples returned to her bucket"
+                        "an orphan whose competence is already pending (a job, a trial, an existing gene, or no surprise) was not re-created: its examples returned to her bucket"
                     );
                 }
                 Ok(Created::Job(handle, provider)) => {

@@ -632,6 +632,21 @@ impl TrainingJobBoard {
             .count() as u32
     }
 
+    /// Journal an orphan whose input went back to her bucket instead of into a new job:
+    /// a trial was judging the competence, an existing gene carried it, or her surprise
+    /// was below the floor. Its lineage ends here; the bucket's next fill is a fresh
+    /// decision, not a resume.
+    pub fn journal_returned(&self, origin: Uuid, from: Uuid, held_by: serde_json::Value, attempt: u32) {
+        self.journal(&serde_json::json!({
+            "event": "returned",
+            "origin_local_id": origin.to_string(),
+            "from_local_id": from.to_string(),
+            "held_by": held_by,
+            "attempt": attempt,
+            "at_ms": now_ms(),
+        }));
+    }
+
     /// Journal a resume: `from` died with a core, `to` carries its input on.
     pub fn journal_resumed(&self, origin: Uuid, from: Uuid, to: Uuid, attempt: u32) {
         self.journal(&serde_json::json!({
