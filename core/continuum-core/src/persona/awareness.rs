@@ -48,6 +48,27 @@ pub struct AwarenessSnapshot {
     pub at_ms: u64,
 }
 
+/// Her verdict surprise across every activity on the strip, folded by COUNTS (never an
+/// average of ratios: an activity with one judged expectation must not weigh as much as
+/// one with twenty). `None` until the room has judged at least one of her stated
+/// expectations in the window: not yet measured, which is not low.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerdictSurprise {
+    /// contradicted / judged, in [0, 1].
+    pub s: f32,
+    pub contradicted: u32,
+    pub judged: u32,
+}
+
+impl AwarenessSnapshot {
+    pub fn verdict_surprise(&self) -> Option<VerdictSurprise> {
+        let (contradicted, judged) = self.lines.iter().fold((0u32, 0u32), |(c, n), l| {
+            (c + l.surprise.contradicted, n + l.surprise.confirmed + l.surprise.contradicted)
+        });
+        (judged > 0).then(|| VerdictSurprise { s: contradicted as f32 / judged as f32, contradicted, judged })
+    }
+}
+
 /// Fold the lines into a snapshot. Ordering: salience level desc, then recency
 /// desc; `load.context_share` is the MEASURED cost of the lines she would see at
 /// the dial's depth (the rendered text, at the crate's chars-per-token estimate)
@@ -179,6 +200,24 @@ mod tests {
             surprise: Default::default(),
             waiting_on_me: vec![],
         }
+    }
+
+    // what this catches (GENE-REUSE-FORK-MINT §3, S(C) = the verdict surprise until the
+    // model surprise exists): the fold is by COUNTS across activities, never a mean of
+    // ratios (one judged expectation must not weigh as twenty), and it is None until the
+    // room judged at least one of her expectations: not measured is not low.
+    #[test]
+    fn verdict_surprise_folds_by_counts_and_is_none_until_judged() {
+        use crate::persona::perception_region::SurpriseTally;
+        let tally = |confirmed, contradicted| SurpriseTally { confirmed, contradicted, since_ms: 1 };
+        let mut a = line("a", SalienceLevel::Quiet, 0, 1);
+        let mut b = line("b", SalienceLevel::Quiet, 0, 1);
+        assert_eq!(fold(vec![a.clone(), b.clone()], None, AttentionDial::broad(), 1_000, 1).verdict_surprise(), None);
+        a.surprise = tally(1, 0); // 0 of 1
+        b.surprise = tally(0, 19); // 19 of 19
+        let v = fold(vec![a, b], None, AttentionDial::broad(), 1_000, 1).verdict_surprise().expect("judged");
+        assert_eq!((v.contradicted, v.judged), (19, 20));
+        assert!((v.s - 0.95).abs() < 1e-6, "by counts, 19/20, not the mean of 0 and 1: {v:?}");
     }
 
     // what this catches: the strip's order and the dial's depth. Loudest first, then

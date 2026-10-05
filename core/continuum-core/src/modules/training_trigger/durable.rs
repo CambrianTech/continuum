@@ -375,6 +375,23 @@ fn append_batch(
     Ok(())
 }
 
+/// Her measured verdict surprise when it is BELOW the floor: the room confirms her
+/// expectations, memories suffice, and the bucket holds (`Took::Unsurprised`). `None`
+/// when she is surprised enough, or not yet judged at all (unknown never halts
+/// training), or no mind of hers is resident on this core. One in-memory read of her
+/// strip; the same number job-create decides on, read here so a fill that would only
+/// come back unsurprised is never dispatched.
+fn unsurprised(persona: Uuid) -> Option<f32> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0); // pre-epoch clock: every tally reads outside its window = not measured
+    crate::persona::perception_feed::awareness_of(persona, now_ms)
+        .and_then(|a| a.verdict_surprise())
+        .map(|v| v.s)
+        .filter(|s| *s < crate::genome::competence::SURPRISE_FLOOR)
+}
+
 impl TrainingTriggerState {
     /// Admit before spawning: contending callers retain their own wait/payload,
     /// not a second queue of background tasks. Once admitted, the finite owner
@@ -786,7 +803,7 @@ impl TrainingTriggerState {
         }
         match self.trial_open_for(key) {
             Ok(Some(trial)) => Some(Took::Awaited { trial }),
-            Ok(None) => None,
+            Ok(None) => unsurprised(key.persona_id).map(|s| Took::Unsurprised { s }),
             Err(()) => Some(Took::TrialFileUnreadable),
         }
     }

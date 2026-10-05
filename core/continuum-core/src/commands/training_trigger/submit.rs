@@ -710,6 +710,67 @@ mod tests {
         assert_eq!(trigger.state.test_job_board.snapshot().len(), 1, "still one job");
     }
 
+    // what this catches (GENE-REUSE-FORK-MINT §2, Joel: a gene is minted only when recall
+    // alone leaves her surprised): while the room confirms her stated expectations (her
+    // verdict surprise below the floor) a full bucket is HELD, not minted, and the
+    // outcome says so with the number; one contradicted expectation lifts her surprise
+    // over the floor and the next fill dispatches. A mind never judged is not held.
+    #[tokio::test]
+    async fn a_fill_while_her_expectations_hold_is_held_and_a_contradiction_releases_it() {
+        use crate::persona::attention::{AttentionDial, Continuation};
+        use crate::persona::perception_region::PerceptionRegion;
+        use crate::persona::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
+        use std::sync::{Arc, Mutex};
+        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+        let activity = Uuid::new_v4();
+        let mine = Uuid::new_v4();
+        let reviewer = Uuid::new_v4();
+        let mind = tempfile::tempdir().unwrap();
+        let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(persona), mind.path(), 1_000, 0);
+        region.join(activity, "career-wrangler");
+        region.set_identity_facts(vec![], vec![mine]);
+        region.set_dial(AttentionDial::broad(), 0);
+        region.set_continuation(
+            Some(Continuation {
+                activity,
+                note: "submitted; expect a pass".into(),
+                expectation: Some(Expectation { text: "review passes".into(), by_ms: None, verdict: Some(ExpectedVerdict::Passed) }),
+                written_at_ms: 1,
+            }),
+            1,
+        );
+        // Two reviews that confirm her: surprise 0 of 2.
+        for at in [2, 3] {
+            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer }], at);
+        }
+        let region = Arc::new(Mutex::new(region));
+        let (wake_tx, _wake_rx) = tokio::sync::mpsc::channel(4);
+        crate::persona::perception_feed::register(persona, airc_core::PeerId::from_uuid(persona), "Kimi", region.clone(), wake_tx, None);
+
+        let fill = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                submit_params(persona, "test-trait", vec![ex("a", "b"), ex("c", "d"), ex("e", "f"), ex("g", "h"), ex("i", "j")], Some(5)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fill["success"], true, "{fill}");
+        assert_ne!(fill["outcome"], "JobDispatched", "a mint while her expectations hold is the falsifier: {fill}");
+        assert_eq!(fill["heldBy"]["kind"], "unsurprised", "{fill}");
+        assert_eq!(fill["heldBy"]["s"], 0.0, "{fill}");
+        assert!(trigger.state.test_job_board.snapshot().is_empty(), "no job while she is unsurprised");
+
+        // The room contradicts her once: 1 of 3, over the floor. The next fill decides.
+        region.lock().unwrap().observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer }], 4);
+        let next = executor
+            .execute_json("genome/training-trigger/submit", submit_params(persona, "test-trait", vec![ex("k", "l")], Some(5)))
+            .await
+            .unwrap();
+        assert_eq!(next["outcome"], "JobDispatched", "her surprise rose: the bucket decides: {next}");
+        crate::persona::perception_feed::unregister(persona);
+    }
+
     // what this catches (card 17dc0a7b): a gene of hers ON TRIAL for this bucket's
     // competence holds the bucket exactly as a job in flight does. Without it, the fill
     // after a reuse (or after a trained gene opened its trial) reads the gene as resident
