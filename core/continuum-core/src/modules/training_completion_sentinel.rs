@@ -123,10 +123,16 @@ impl TrainingCompletionSentinel {
                 trait_kind = %job.trait_kind,
                 "training-completion-sentinel: executor not installed — cannot convert the completed job; no trial opened"
             );
+            // no chain, no hold: the competence is not pending on anything
+            TrainingJobBoard::global().adoption_done(job.handle.local_id);
             return;
         };
 
         tokio::spawn(async move {
+            // The competence stays PENDING on the board until this chain ends, adopted or
+            // refused, on every path out of it: a fill in the meantime joins the job
+            // instead of minting beside it (card cb14cc13). Dropped = released.
+            let _pending = AdoptionHold { job: job.handle.local_id };
             // Dispatch AS the persona (LocalPersona → Trusted, which may run the
             // Privileged convert) over the wired executor — the same
             // persona-is-a-client path the L2 producer uses ([[persona-is-a-client]]).
@@ -163,6 +169,28 @@ impl TrainingCompletionSentinel {
                 );
                 return;
             }
+
+            // STAMP the signature into the sidecar BEFORE the gene becomes live (Cormac on
+            // #4794, point 6): from the moment the trial opens, a fill must find this gene
+            // in the store, by distance, so it awaits the trial rather than minting beside
+            // it. Best-effort: a failed stamp warns; the gene serves either way and routes
+            // by fallback until the next adoption re-stamps.
+            if let Some(sig) = job.signature.clone() {
+                match crate::genome::signature::signature_store_path() {
+                    Ok(store) => {
+                        if let Err(e) = crate::genome::signature::SignatureStore::stamp_at(
+                            &store, &path_str, sig,
+                        ) {
+                            tracing::warn!(gene = %path_str, error = %e,
+                                "adopted gene's signature failed to stamp — routes by fallback");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "signature store path unresolvable — signature not stamped");
+                    }
+                }
+            }
+
 
             // INTEGRATED, NOT PARALLEL (Joel, 2026-09-27). The gene is registered, so the serving
             // engine loads it in place, dormant (#4467), and a TRIAL opens: from now on each
@@ -203,28 +231,19 @@ impl TrainingCompletionSentinel {
                 "a trained gene opened a trial: it now works a share of her cards, and her work's outcomes decide it"
             );
 
-            // STAMP the signature into the sidecar at the same moment the gene
-            // becomes live — adoption is the one event where the gene's path,
-            // its minted signature, and its measured worth are all in hand.
-            // Best-effort: a failed stamp warns; the gene serves either way and
-            // routes by fallback until the next adoption re-stamps.
-            if let Some(sig) = job.signature.clone() {
-                match crate::genome::signature::signature_store_path() {
-                    Ok(store) => {
-                        if let Err(e) = crate::genome::signature::SignatureStore::stamp_at(
-                            &store, &path_str, sig,
-                        ) {
-                            tracing::warn!(gene = %path_str, error = %e,
-                                "adopted gene's signature failed to stamp — routes by fallback");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "signature store path unresolvable — signature not stamped");
-                    }
-                }
-            }
-
         });
+    }
+}
+
+/// Holds a completed job's competence as pending on the board for the life of its
+/// adoption chain; dropping it (any path out of the chain) releases it.
+struct AdoptionHold {
+    job: uuid::Uuid,
+}
+
+impl Drop for AdoptionHold {
+    fn drop(&mut self) {
+        crate::genome::fine_tuning::TrainingJobBoard::global().adoption_done(self.job);
     }
 }
 

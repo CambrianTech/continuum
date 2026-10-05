@@ -793,9 +793,9 @@ impl TrainingTriggerState {
     /// one is in flight: the job a held fill's examples wait for.
     pub(crate) fn job_in_flight_for(&self, key: &BucketKey) -> Option<Uuid> {
         #[cfg(not(test))]
-        let jobs = crate::genome::fine_tuning::TrainingJobBoard::global().snapshot();
+        let jobs = crate::genome::fine_tuning::TrainingJobBoard::global().pending();
         #[cfg(test)]
-        let jobs = self.test_job_board.snapshot();
+        let jobs = self.test_job_board.pending();
         jobs.iter()
             .find(|j| j.persona_id == key.persona_id && j.trait_kind == key.trait_kind && j.base_model == key.base_model)
             .map(|j| j.handle.local_id)
