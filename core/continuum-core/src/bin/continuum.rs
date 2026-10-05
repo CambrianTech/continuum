@@ -1631,24 +1631,7 @@ impl PreparedCoreService {
             }
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
-                    let prev = to.with_extension("prev.exe");
-                    // `.prev.exe` is a SINGLE parking space, so staging cannot proceed
-                    // while something still holds that exact name. This used to fail
-                    // silently (`let _ = remove_file`) and the rename below then reported
-                    // its error against `to` — naming the CURRENT file for a refusal that
-                    // happened on a DIFFERENT one, which cost an hour of reading on
-                    // 2026-09-22. Report the path that actually refused and the OS's own
-                    // words for why; the cause is not inferable from here.
-                    if let Err(e) = std::fs::remove_file(&prev) {
-                        if prev.exists() {
-                            return Err(format!(
-                                "the previous artifact at {} could not be removed ({e}) and \
-                                 is still present; staging cannot move the current artifact \
-                                 aside onto an occupied name",
-                                prev.display()
-                            ));
-                        }
-                    }
+                    let prev = park_previous_artifact(to)?;
                     std::fs::rename(to, &prev)
                         .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
                 }
@@ -6774,8 +6757,91 @@ fn usage() -> String {
         .to_string()
 }
 
+/// Free `.prev.exe`, the single parking space beside a slot artifact, and return it.
+///
+/// The stop that precedes staging frees the space only for the CORE. A media process the
+/// stop leaves running (livekit-bridge) can still execute from its `.prev.exe`, and Windows
+/// will not delete a running image. Measured 2026-10-05 on the 5090: livekit-bridge pid
+/// 25696 ran from its `.prev`, staging refused AFTER the core had stopped, and the node sat
+/// with no core for twenty minutes until the file was renamed by hand (a second
+/// `orphan-27732` from the same failure was already beside it). A running image CAN be
+/// renamed, so an occupied `.prev` is parked under a unique `.orphan-<ms>.exe` name, and
+/// orphans whose process has since exited are deleted here, so they never accumulate.
+/// The error still names the path that refused and the OS's words when even the rename
+/// fails (2026-09-22: a refusal reported against the wrong file cost an hour).
+#[cfg(any(windows, test))] // staged only by the Windows slot handoff; tested everywhere
+fn park_previous_artifact(to: &Path) -> Result<PathBuf, String> {
+    let prev = to.with_extension("prev.exe");
+    let stem = to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let orphan_prefix = format!("{stem}.orphan-");
+    if let Some(dir) = to.parent() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(&orphan_prefix) && name.ends_with(".exe") {
+                    // An orphan still executing refuses; it is deleted on a later stage.
+                    let _ = std::fs::remove_file(entry.path()); // a held orphan is expected, not an error
+                }
+            }
+        }
+    }
+    let Err(removal) = std::fs::remove_file(&prev) else {
+        return Ok(prev);
+    };
+    if !prev.exists() {
+        return Ok(prev);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let orphan = to.with_extension(format!("orphan-{stamp}.exe"));
+    std::fs::rename(&prev, &orphan).map_err(|e| {
+        format!(
+            "the previous artifact at {} could not be removed ({removal}) nor parked as {} ({e}); \
+             staging cannot move the current artifact aside onto an occupied name",
+            prev.display(),
+            orphan.display()
+        )
+    })?;
+    Ok(prev)
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-10-05, the 5090): staging refusing AFTER the core stopped
+    // because a still-running livekit-bridge held `.prev.exe`, the single parking space,
+    // so the node sat with no core. A `.prev` that cannot be deleted is parked as an
+    // orphan, the space is free, and an orphan whose process has exited is swept on the
+    // next stage. A directory stands in for a running image: it refuses `remove_file` on
+    // every platform and still renames.
+    #[test]
+    fn an_occupied_prev_is_parked_as_an_orphan_and_swept_once_free() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let current = dir.path().join("livekit-bridge.exe");
+        std::fs::write(&current, b"current").expect("test: current");
+        let prev = dir.path().join("livekit-bridge.prev.exe");
+        std::fs::create_dir(&prev).expect("test: an undeletable prev");
+        let stale = dir.path().join("livekit-bridge.orphan-1.exe");
+        std::fs::write(&stale, b"exited").expect("test: a free orphan");
+        let other = dir.path().join("continuum.orphan-1.exe");
+        std::fs::write(&other, b"not ours").expect("test: another artifact's orphan");
+
+        let parked = super::park_previous_artifact(&current).expect("the space is freed");
+        assert_eq!(parked, prev);
+        assert!(!prev.exists(), "the parking space is empty");
+        assert!(!stale.exists(), "an orphan whose process exited is swept");
+        assert!(other.exists(), "another artifact's orphans are not this one's to sweep");
+        let orphans: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("test: read")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("livekit-bridge.orphan-"))
+            .collect();
+        assert_eq!(orphans.len(), 1, "the occupied prev now lives as one orphan: {orphans:?}");
+        std::fs::rename(&current, &parked).expect("the current artifact moves aside");
+    }
+
     // what this catches (M5, 2026-09-26): the start/reboot receipt promised "the web build
     // lands in the background" on eight consecutive supervised deploys while no dist was
     // configured and none was being built. An unconfigured desktop must be NAMED, with the
