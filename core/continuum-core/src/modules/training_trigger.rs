@@ -522,7 +522,16 @@ pub(crate) fn default_job_dir(persona_name: &str, trait_kind: &str, local_id: Uu
 /// `None` when there is nothing on disk to resume from.
 pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_id: Uuid) -> Option<Value> {
     let text = std::fs::read_to_string(dir.join("request.json")).ok()?;
-    let mut request: TrainingJobRequest = serde_json::from_str(&text).ok()?;
+    let spec: Value = serde_json::from_str(&text).ok()?;
+    let mut request: TrainingJobRequest = serde_json::from_value(spec.clone()).ok()?;
+    // The spec on disk is the PLANNER's: the adapter replaced `baseModel` with the
+    // trainable HF base (hf_source) and kept the registry id in `canonicalBase`.
+    // job-create takes the registry id, so the resume must too. Measured on the 5090
+    // 2026-10-05: all five killed-by-reboot jobs failed to resume with "cannot resolve
+    // hf_source for 'Qwen/Qwen3.8-27B'": the HF id fed back where a registry id belongs.
+    if let Some(canonical) = spec.get("canonicalBase").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        request.base_model = canonical.to_string();
+    }
     // The dead job's latest checkpoint, when it got that far: the re-created job
     // continues from it instead of from zero (Fable's readiness ask: a resume loses
     // minutes, not the run). `checkpoints/LATEST` names the directory the trainer
@@ -828,7 +837,10 @@ mod tests {
         let spec = serde_json::json!({
             "personaId": Uuid::from_u128(7).to_string(),
             "personaName": "Kimi",
-            "baseModel": "ggml-org/Qwen3.8-27B-GGUF",
+            // What the adapter really writes: the TRAINABLE base here, the registry id
+            // in canonicalBase. The fixture once wrote the same id in both, so it could
+            // not see a resume that fed the HF id back to job-create.
+            "baseModel": "Qwen/Qwen3.8-27B",
             "traitKind": "code",
             "dataset": {"examples": [{"prompt": "p", "completion": "c"}], "source": "teacher_synthesized", "validationSplit": 0.1},
             "canonicalBase": "ggml-org/Qwen3.8-27B-GGUF",
@@ -842,6 +854,11 @@ mod tests {
         assert_eq!(params["triggerDispatchId"], serde_json::json!(dispatch.to_string()));
         assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"));
         assert_eq!(params["personaName"], serde_json::json!("Kimi"));
+        assert_eq!(
+            params["baseModel"],
+            serde_json::json!("ggml-org/Qwen3.8-27B-GGUF"),
+            "a resume re-creates the job against the registry id, never the HF base"
+        );
         assert_eq!(params["dataset"]["examples"].as_array().map(|e| e.len()), Some(1));
         assert!(params.get("memoryBytes").is_none(), "admission fields are the adapter's, not the request's");
         assert!(params.get("resumeFrom").is_none(), "no checkpoint, no resume point");
