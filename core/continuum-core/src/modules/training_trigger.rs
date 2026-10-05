@@ -474,7 +474,7 @@ impl TrainingTriggerState {
                             Took::Joined { job } => board.journal_resumed(origin, orphan.local_id, *job, attempt),
                             // Its input waits in her bucket; nothing continues it. Lineage ends.
                             Took::Awaited { .. } | Took::Reused { .. } | Took::Unsurprised { .. } => {
-                                board.journal_returned(origin, orphan.local_id, serde_json::to_value(&took).unwrap_or(Value::Null), attempt) // unwrap_or: a Took always serializes; Null would only follow a serde bug
+                                board.journal_returned(origin, orphan.local_id, &took, attempt)
                             }
                             Took::TrialFileUnreadable => {} // guarded above: never reaches a resubmit
                         }

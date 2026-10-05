@@ -677,7 +677,11 @@ impl TrainingJobBoard {
     /// a trial was judging the competence, an existing gene carried it, or her surprise
     /// was below the floor. Its lineage ends here; the bucket's next fill is a fresh
     /// decision, not a resume.
-    pub fn journal_returned(&self, origin: Uuid, from: Uuid, held_by: serde_json::Value, attempt: u32) {
+    pub fn journal_returned<H: serde::Serialize>(&self, origin: Uuid, from: Uuid, held_by: &H, attempt: u32) {
+        // Serialized here, once: a typed value in the journal, and a value that cannot
+        // serialize (there is none today) is written as the failure it is, never as null.
+        let held_by = serde_json::to_value(held_by)
+            .unwrap_or_else(|e| serde_json::json!({ "unserializable": e.to_string() })); // unwrap_or_else: the row still says WHY the reason is missing
         self.journal(&serde_json::json!({
             "event": "returned",
             "origin_local_id": origin.to_string(),
