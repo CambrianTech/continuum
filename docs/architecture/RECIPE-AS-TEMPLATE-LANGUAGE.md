@@ -39,6 +39,7 @@ So the schema is two fields short of the machine, and the rest is already typed 
 
 - `on` is a typed event kind, never a string the executor pattern-matches: the same `RoomWork` decode the perception feed and the curriculum use (#4731, #4765). One decode, N consumers; the executor is one more.
 - `by` is the permission: roles from `citizens[].role`, resolved against the room's membership (a membership fact, the follow-up named on fa4aaaaa). `self` is a policy word, not a role.
+- **A stage runs AS the member who satisfies `by`, never as the substrate** (Cormac, #4768 review). Its steps execute with that member's identity, hands and access level, through the same path her own act would take, so a `shell:` step in a recipe that arrived from the mesh or the hub is that member running a shell command under her policy, never node-level code execution by the core. A stage nobody present can satisfy does not run, and says so.
 - `until` is how a stage says what "done" means, so the gate executes whatever the recipe declares instead of a flag in code. The review policy (`{required, roles, self}`) is the first `until`; merge, a gene's publication and a consent are the next, with no new gate code.
 - `pipeline` stays as the degenerate case: a stage with `on: "spawn"` and no `until`.
 
