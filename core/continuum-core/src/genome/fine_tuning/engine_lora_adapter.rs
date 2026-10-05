@@ -423,6 +423,16 @@ struct TrainStatus {
     paused: bool,
     #[serde(default)]
     waiting_for_serving: bool,
+    /// the share the run took of the lane (fork #32): windows run, windows taken while a
+    /// serving slot was busy, and the time yielded to serving; absent on an engine before it
+    #[serde(default)]
+    yielded_ms: Option<u64>,
+    #[serde(default)]
+    windows: Option<u64>,
+    #[serde(default)]
+    windows_while_busy: Option<u64>,
+    #[serde(default)]
+    share_ppm: Option<u64>,
     /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
     /// that predates `top_layers`, which adapts every block
     #[serde(default)]
@@ -884,7 +894,22 @@ impl EngineRun {
                         was_paused = now_paused;
                     }
                 }
-                TrainState::Done => return InPlaceEnd::Finished,
+                TrainState::Done => {
+                    // THE SHARE, as the engine itself counted it (Cormac on #4798): auditable on
+                    // every node from the run's own receipt, no second run.
+                    if let (Some(windows), Some(busy), Some(yielded)) = (s.windows, s.windows_while_busy, s.yielded_ms) {
+                        crate::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            windows,
+                            windows_while_busy = busy,
+                            yielded_ms = yielded,
+                            share_ppm = s.share_ppm.unwrap_or(0), // 0 = an engine that took the share but did not report the policy; the counts above are the receipt
+                            "the in-engine run finished: how many windows it took beside busy serving, and how long it yielded"
+                        );
+                    }
+                    return InPlaceEnd::Finished;
+                }
                 TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
                 TrainState::Error => {
                     let why = s.error.as_deref().unwrap_or("no error text"); // unwrap_or: the state alone is the failure
