@@ -95,7 +95,52 @@ pub struct BindingParseError {
 
 /// Project a room's already-fetched recipe-category wall posts into its binding.
 ///
+/// A room's REVIEW POLICY (Joel, 2026-10-05, card fa4aaaaa): review is the room's one
+/// verdict action, whoever gives it (a peer, the benchmark grader in its room, the author
+/// herself where the room allows it). Like GitHub, a room can require several, by role.
+/// Declared as the `review` recipe param and set per room by `activity/spawn --params`,
+/// read from the binding exactly like `repo`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewPolicy {
+    /// Passing reviews, from distinct reviewers, a card needs before it finishes.
+    #[serde(default = "ReviewPolicy::one")]
+    pub required: u32,
+    /// Roles a reviewer must hold; empty = any member. Declared now, enforced when
+    /// membership carries roles (the recipe's `citizens[].role`, a named follow-up).
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// Whether the card's own author may review it (Kimi, on her own work, where her
+    /// room allows it).
+    #[serde(default, rename = "self")]
+    pub self_review: bool,
+}
+
+impl ReviewPolicy {
+    fn one() -> u32 {
+        1
+    }
+}
+
+impl Default for ReviewPolicy {
+    fn default() -> Self {
+        Self { required: 1, roles: Vec::new(), self_review: false }
+    }
+}
+
 impl RoomRecipeBinding {
+    /// The review policy this room declares (`params.review`), `Ok(None)` when it declares
+    /// none: a room bound before the param existed keeps today's behaviour rather than
+    /// suddenly gating every card. A value that is present but not a policy is an error,
+    /// never a guess.
+    pub fn declared_review(&self) -> Result<Option<ReviewPolicy>, String> {
+        match self.params.get("review") {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(v) => serde_json::from_value(v.clone())
+                .map(Some)
+                .map_err(|e| format!("the room's review policy is not {{required, roles, self}}: {e}")),
+        }
+    }
+
     /// The repo this room declares (`params.repo`, project.json), or `None` when the
     /// recipe has no such param or it was left at the blank default. A project IS a repo;
     /// `work/create` reads this before refusing (Kimi, 2026-10-05: six refusals in a
@@ -137,6 +182,29 @@ pub fn project_binding(
 
 #[cfg(test)]
 mod tests {
+    // what this catches: the review policy read from the room (card fa4aaaaa). A full
+    // policy parses with `self` mapped; an absent one is None (today's behaviour kept);
+    // defaults fill omitted fields; a malformed value is an error, never a guess.
+    #[test]
+    fn a_room_declares_its_review_policy() {
+        let with = |v: serde_json::Value| {
+            let mut b: RoomRecipeBinding = serde_json::from_value(serde_json::json!({"recipe": "project"}))
+                .expect("a minimal binding");
+            b.params.insert("review".into(), v);
+            b
+        };
+        let full = with(serde_json::json!({"required": 2, "roles": ["reviewer"], "self": true}));
+        assert_eq!(
+            full.declared_review().unwrap(),
+            Some(ReviewPolicy { required: 2, roles: vec!["reviewer".into()], self_review: true })
+        );
+        assert_eq!(with(serde_json::json!({"self": true})).declared_review().unwrap(),
+            Some(ReviewPolicy { required: 1, roles: vec![], self_review: true }), "omitted fields default");
+        let none: RoomRecipeBinding = serde_json::from_value(serde_json::json!({"recipe": "project"})).unwrap();
+        assert_eq!(none.declared_review().unwrap(), None, "no policy declared = no gate");
+        assert!(with(serde_json::json!("two please")).declared_review().is_err());
+    }
+
     use super::*;
     use airc_core::doctrine::WallPostPublished;
     use airc_core::{PeerId, RoomId};
