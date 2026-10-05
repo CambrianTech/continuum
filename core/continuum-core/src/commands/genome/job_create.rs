@@ -147,6 +147,7 @@ fn refused_decision(error_kind: &str, request: &TrainingJobRequest, error: &str)
         "a full bucket could not decide: no job, the bucket keeps its examples, the next fill retries"
     );
     Ok(JobCreateOutcome { success: false, result: None, error: Some(error.to_string()), error_kind: Some(error_kind.to_string()), took: None })
+}
 
 /// The one clock a decision reads: the signature's mint time, a trial's liveness, the
 /// adoption's opening, her surprise window. Unix ms; 0 on a pre-epoch clock, which
@@ -583,10 +584,7 @@ crate::action_command! {
                 );
                 return without_job(Took::Unsurprised { s: *s });
             }
-            // A full bucket IS a competence by the room's own threshold (the trigger's
-            // min_examples); the clustering floor applies to competences found within her
-            // curriculum, the follow-on, never to a bucket the room already sized.
-            Some(Decision::Mint) | Some(Decision::Nothing { why: crate::genome::competence::NothingBecause::TooFewExamples }) | None => {}
+            Some(Decision::Mint) | None => {}
         }
 
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
@@ -684,7 +682,7 @@ mod tests {
             test_job_board: board.clone(),
             test_artifacts: artifacts.clone(),
         };
-        let persona = uuid::Uuid::from_u128(0x17dc0a7b);
+        let persona = uuid::Uuid::new_v4(); // unique: a resident region registered for one world must not be seen by another's fill
         let mut request = request_for(RECORDING_BASE_PREFIX);
         request.persona_id = persona;
         let texts: Vec<String> = request.dataset.examples.iter().map(|ex| format!("{}\n{}", ex.prompt, ex.completion)).collect();
@@ -796,6 +794,50 @@ mod tests {
         let refused = adoption.adopt(w.persona, &w.request.trait_kind, &w.gene_path, &w.request.base_model, 2);
         assert_eq!(refused, Err(crate::genome::gene_trial::AdoptRefusal::AlreadyDecided(crate::genome::gene_trial::TrialState::Retired)));
         assert!(!w.manifest().exists(), "a refused adoption never registered the gene");
+    }
+
+    // what this catches (Cormac on #4796, point 2: the e2e never reached this arm): the
+    // DECISION itself, not the trigger's gate, returns Unsurprised when her resident strip
+    // reads a measured surprise below the floor, before any reuse is considered; and the
+    // same world with no region (never judged) reuses, since not measured is not low.
+    #[tokio::test]
+    async fn the_decision_itself_holds_an_unsurprised_mind_and_trains_a_never_judged_one() {
+        use crate::persona::attention::{AttentionDial, Continuation};
+        use crate::persona::perception_region::PerceptionRegion;
+        use crate::persona::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
+        use std::sync::{Arc as StdArc, Mutex};
+        let w = decision_world().await;
+        let activity = uuid::Uuid::new_v4();
+        let mine = uuid::Uuid::new_v4();
+        let now = now_ms_for_decision();
+        let mind = tempfile::tempdir().unwrap();
+        let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(w.persona), mind.path(), 1_000, now);
+        region.join(activity, "career-wrangler");
+        region.set_identity_facts(vec![], vec![mine]);
+        region.set_dial(AttentionDial::broad(), now);
+        region.set_continuation(
+            Some(Continuation {
+                activity,
+                note: "submitted; expect a pass".into(),
+                expectation: Some(Expectation { text: "review passes".into(), by_ms: None, verdict: Some(ExpectedVerdict::Passed) }),
+                written_at_ms: now,
+            }),
+            now,
+        );
+        for i in 1..=3u64 {
+            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer: uuid::Uuid::new_v4() }], now + i);
+        }
+        let region = StdArc::new(Mutex::new(region));
+        let (wake_tx, _wake_rx) = tokio::sync::mpsc::channel(4);
+        crate::persona::perception_feed::register(w.persona, airc_core::PeerId::from_uuid(w.persona), "Kimi", region, wake_tx, None);
+        let out = w.fill().await;
+        crate::persona::perception_feed::unregister(w.persona);
+        assert_eq!(out.took, Some(Took::Unsurprised { s: 0.0 }), "3 confirmed, 0 contradicted: held before any reuse: {out:?}");
+        assert_eq!(w.adapter.captured_job_count(), 0);
+        assert!(w.trials().load().unwrap().is_empty(), "no reuse was adopted while she is unsurprised");
+        // Never judged: the same near gene is reused.
+        let out = w.fill().await;
+        assert!(matches!(out.took, Some(Took::Reused { .. })), "not measured is not low: {out:?}");
     }
 
     // what this catches (Cormac on #4794, point 5): a trial file that cannot be read

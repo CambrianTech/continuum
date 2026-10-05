@@ -726,23 +726,25 @@ mod tests {
         let activity = Uuid::new_v4();
         let mine = Uuid::new_v4();
         let reviewer = Uuid::new_v4();
+        // The real clock: a tally is read inside its window, at the snapshot's own time.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
         let mind = tempfile::tempdir().unwrap();
-        let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(persona), mind.path(), 1_000, 0);
+        let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(persona), mind.path(), 1_000, now);
         region.join(activity, "career-wrangler");
         region.set_identity_facts(vec![], vec![mine]);
-        region.set_dial(AttentionDial::broad(), 0);
+        region.set_dial(AttentionDial::broad(), now);
         region.set_continuation(
             Some(Continuation {
                 activity,
                 note: "submitted; expect a pass".into(),
                 expectation: Some(Expectation { text: "review passes".into(), by_ms: None, verdict: Some(ExpectedVerdict::Passed) }),
-                written_at_ms: 1,
+                written_at_ms: now,
             }),
-            1,
+            now,
         );
-        // Two reviews that confirm her: surprise 0 of 2.
-        for at in [2, 3] {
-            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer }], at);
+        // Three reviews that confirm her (MIN_JUDGED): surprise 0 of 3.
+        for at in 1..=3u64 {
+            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer }], now + at);
         }
         let region = Arc::new(Mutex::new(region));
         let (wake_tx, _wake_rx) = tokio::sync::mpsc::channel(4);
@@ -761,8 +763,8 @@ mod tests {
         assert_eq!(fill["heldBy"]["s"], 0.0, "{fill}");
         assert!(trigger.state.test_job_board.snapshot().is_empty(), "no job while she is unsurprised");
 
-        // The room contradicts her once: 1 of 3, over the floor. The next fill decides.
-        region.lock().unwrap().observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer }], 4);
+        // The room contradicts her once: 1 of 4, at the floor. The next fill decides.
+        region.lock().unwrap().observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer }], now + 4);
         let next = executor
             .execute_json("genome/training-trigger/submit", submit_params(persona, "test-trait", vec![ex("k", "l")], Some(5)))
             .await
