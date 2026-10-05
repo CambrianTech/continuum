@@ -53,19 +53,16 @@ impl RoomReview {
     }
 }
 
-/// The review state of `card` in the room whose board holds it, or `None` when that room
-/// declares no review policy (the caller keeps its round fallback until every room's
-/// recipe declares one). An unreadable binding is a probe and `None`, never a guessed gate.
-pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId) -> Option<RoomReview> {
-    let (room, card) = super::card_in_subscribed_rooms(airc, card_id).await?;
+/// The review policy `room` declares, or `None` when it declares none (or its binding is
+/// unreadable, which is a probe, never a guessed gate). The one place a policy is read.
+pub(crate) async fn room_policy(airc: &Airc, room: &airc_lib::Room) -> Option<ReviewPolicy> {
     let posts = airc
-        .wall_posts_in(&room, Some(crate::experience::binding::RECIPE_WALL_CATEGORY))
+        .wall_posts_in(room, Some(crate::experience::binding::RECIPE_WALL_CATEGORY))
         .await
         .ok()?;
-    let policy = match crate::experience::binding::project_binding(&posts) {
+    match crate::experience::binding::project_binding(&posts) {
         Ok(Some(binding)) => match binding.declared_review() {
-            Ok(Some(policy)) => policy,
-            Ok(None) => return None,
+            Ok(policy) => policy,
             Err(why) => {
                 crate::probe!(
                     class = "work.review.policy_unreadable",
@@ -73,11 +70,19 @@ pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId
                     why = %why,
                     "the room declares a review policy this build cannot read — no gate is guessed"
                 );
-                return None;
+                None
             }
         },
-        Ok(None) | Err(_) => return None,
-    };
+        Ok(None) | Err(_) => None,
+    }
+}
+
+/// The review state of `card` in the room whose board holds it, or `None` when that room
+/// declares no review policy (the caller keeps its round fallback until every room's
+/// recipe declares one). An unreadable binding is a probe and `None`, never a guessed gate.
+pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId) -> Option<RoomReview> {
+    let (room, card) = super::card_in_subscribed_rooms(airc, card_id).await?;
+    let policy = room_policy(airc, &room).await?;
     let board = airc.work_board_in(&room).await.ok()?;
     let latest = card.submissions.first();
     let author = latest.map(|s| s.publisher.as_uuid()).or(card.owner.map(|o| o.as_uuid()));
