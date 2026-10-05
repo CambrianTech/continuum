@@ -319,7 +319,11 @@ impl PerceptionRegion {
         self.state.save(peer_dir, now_ms)
     }
 
-    fn publish(&self, now_ms: u64) {
+    /// Her awareness as it stands now: every activity, loudest first, her continuation,
+    /// her dial, the load. The same fold `publish` sends on the watch; read directly by
+    /// the turn's `awareness` grounding source, so the strip reaches her prompt without
+    /// anyone holding the receiver.
+    pub fn snapshot(&self, now_ms: u64) -> AwarenessSnapshot {
         let lines = self
             .views
             .iter()
@@ -339,7 +343,11 @@ impl PerceptionRegion {
                     .collect(),
             })
             .collect();
-        let snapshot = awareness::fold(lines, self.state.continuation.clone(), self.state.dial, self.turn_budget_tokens, now_ms);
+        awareness::fold(lines, self.state.continuation.clone(), self.state.dial, self.turn_budget_tokens, now_ms)
+    }
+
+    fn publish(&self, now_ms: u64) {
+        let snapshot = self.snapshot(now_ms);
         crate::probe!(
             class = "mind.load",
             persona = %self.me,

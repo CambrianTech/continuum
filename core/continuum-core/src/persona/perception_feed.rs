@@ -93,6 +93,15 @@ fn attach_her_rooms(region: &Arc<Mutex<PerceptionRegion>>) {
     }
 }
 
+/// Her awareness strip right now, for the turn's grounding source. `None` = no
+/// region resident here (a mind not yet serving on this core).
+pub fn awareness_of(persona: Uuid, now_ms: u64) -> Option<super::awareness::AwarenessSnapshot> {
+    let reg = registry().lock().unwrap_or_else(|e| e.into_inner()); // a poisoned registry still answers; same policy as every lock in this crate
+    let resident = reg.get(&persona)?;
+    let region = resident.region.lock().unwrap_or_else(|e| e.into_inner());
+    Some(region.snapshot(now_ms))
+}
+
 pub fn unregister(persona: Uuid) {
     registry().lock().unwrap_or_else(|p| p.into_inner()).remove(&persona);
 }

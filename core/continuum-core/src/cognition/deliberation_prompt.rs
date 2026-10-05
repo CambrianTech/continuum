@@ -162,6 +162,9 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
         | active_work_source::SOURCE_ID => PromptChurn::Board,
         room_board_source::SOURCE_ID => PromptChurn::Claims,
         engram_source::SOURCE_ID | airc_source::SOURCE_ID | WM_FACULTY_ID => PromptChurn::Turn,
+        // The strip changes with every event in any of her rooms: turn churn, after the
+        // standing and board blocks, so her awareness never displaces the cached prefix.
+        crate::persona::awareness_source::SOURCE_ID => PromptChurn::Turn,
         _ if faculty == FacultyId::Recall.as_str() => PromptChurn::Turn,
         _ => PromptChurn::Unknown,
     }

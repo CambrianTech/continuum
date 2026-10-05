@@ -783,6 +783,17 @@ pub async fn materialize_adapters(
             >::per_room(crate::ipc::global_room_substrates()));
         cognition.set_bench_source(bench_source);
 
+        // Her awareness across ALL her activities (EVENT-MIND §6, the strip): one block,
+        // loudest first, with her continuation and her dial, read from her perception
+        // region by persona. The region boots when her conversation attaches; until then
+        // the source delivers nothing, which is the truth.
+        let awareness_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::awareness_source::AwarenessRagSource::new(
+                identity.peer_id.as_uuid(),
+                Some(runtime.clone()),
+            ));
+        cognition.set_awareness_source(awareness_source);
+
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
         // — the airc-published operating contract. Slice 2.

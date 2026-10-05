@@ -177,7 +177,7 @@ pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
 ///
 /// A shared helper rather than a per-source guess — the divergent hand-rolled
 /// estimates are exactly how sources ended up asking for 12-80x their real size.
-fn estimate_tokens(text: &str) -> u32 {
+pub(crate) fn estimate_tokens(text: &str) -> u32 {
     // ~3.5 chars/token is conservative for English prose with punctuation; the
     // ceil keeps a one-word unit from estimating as free.
     ((text.len() as f32 / 3.5).ceil() as u32).max(1)
