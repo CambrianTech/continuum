@@ -4127,8 +4127,33 @@ fn consumer_uses_service(os: &str) -> bool {
     os == "windows"
 }
 
+/// The consumer follows the REQUEST, not a tip it once read: while it waits on CI for one
+/// tip the tracker keeps writing newer requests beside it, and on canary GitHub keeps the
+/// running build and only the newest QUEUED push (older queued pushes are dropped and show
+/// as `cancelled`; #4729 keeps cancel-in-progress PR-only). Waiting for an artifact that
+/// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
+/// built tips went by. A pass that finds its request superseded starts over on the new one.
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     let DeployConsumeOptions {} = options;
+    loop {
+        match deploy_consume_pass().await? {
+            PassEnd::Superseded(new_tip) => {
+                deploy_note(&format!("deploy-consume: request superseded by {new_tip}; starting over on it"));
+                continue;
+            }
+            PassEnd::Done => return Ok(()),
+        }
+    }
+}
+
+/// How a consume pass ended. Typed, so "start over" can never be forged by an error text
+/// (Cormac's condition on #4750): a superseded pass charges no attempt to the old tip.
+enum PassEnd {
+    Done,
+    Superseded(String),
+}
+
+async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
         continuum_core::modules::persona_instance_manager::resolve_continuum_root()
@@ -4184,7 +4209,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         running.as_deref().unwrap_or("none") // unwrap_or: display only — no core answering prints as "none"
     ));
     match verdict {
-        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(()),
+        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(PassEnd::Done),
         ConsumeVerdict::GaveUp => Err(format!(
             "deploy-consume: tip {} failed {prior_failures} times on this box — not retrying; \
              the tracker's deploy.stranded is the receipt, and a NEW tip resets this",
@@ -4201,7 +4226,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
             // spent the tip's attempts (card 677437fa). Judge it before the attempt: a stale
             // one is cleared with a receipt, a possibly-live one is named and waited on.
             if !settle_index_lock(&repo)? {
-                return Ok(());
+                return Ok(PassEnd::Done);
             }
             let attempt = async {
                 // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
@@ -4231,7 +4256,11 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 // and the reboot's warm build compiles as before.
                 // CI publishes a core for the commit that last touched a build input; a
                 // docs-only tip is served by that commit's core (card 9080ffb0).
-                let prebuilt = ci_core_for(&repo, tip_build_key.as_deref().unwrap_or(&tip)).await;
+                let prebuilt = match ci_core_for(&repo, tip_build_key.as_deref().unwrap_or(&tip), &request_path, &tip).await {
+                    CiCore::Built(core) => Some(core),
+                    CiCore::CompileHere => None,
+                    CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
+                };
                 if let Some(core) = &prebuilt {
                     install_ci_companions(&repo, core)?;
                 }
@@ -4246,14 +4275,16 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 let stage_prebuilt = prebuilt.is_some();
                 // install_ci_companions above already put this core's CLI on PATH.
                 let cli_installed = prebuilt.is_some();
-                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await
+                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                Ok(PassEnd::Done)
             }
             .await;
             match &attempt {
-                Ok(()) => {
+                Ok(PassEnd::Done) => {
                     let _ = std::fs::remove_file(&attempts_path);
                     deploy_note(&format!("✓ deploy-consume: {tip} handed off"));
                 }
+                Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
                     write_consume_failures(&attempts_path, &tip, prior_failures + 1);
                     deploy_note(&format!(
@@ -4271,17 +4302,26 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
 /// (card 50ca737e). While CI is still inside its budget this WAITS, in this detached
 /// consumer, rather than returning: the actuator re-launches a consumer only after the
 /// request is stranded (1.5x the last deploy time), so a "come back later" would idle the
-/// node for hours and spend an actuation. `None` = compile here; the reason is logged.
-async fn ci_core_for(repo: &Path, tip: &str) -> Option<PathBuf> {
+/// node for hours and spend an actuation. `CompileHere` = CI cannot deliver for this node;
+/// the reason is logged. `Superseded` = the request (`request_path`) no longer names
+/// `requested_tip`: CI will never publish a superseded tip (its run is cancelled), so the
+/// wait ends and the caller starts over on the new request.
+async fn ci_core_for(repo: &Path, tip: &str, request_path: &Path, requested_tip: &str) -> CiCore {
     use continuum_cli_lifecycle::prebuilt_artifact::{platform_key, when_artifact_missing, MissingArtifact};
     let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     loop {
         tick.tick().await;
+        if let Some(new_tip) = continuum_cli_lifecycle::prebuilt_artifact::request_superseded(
+            requested_tip,
+            read_deploy_request_tip(request_path).as_deref(),
+        ) {
+            return CiCore::Superseded(new_tip);
+        }
         let missing = match platform {
             None => when_artifact_missing(None, 0),
             Some(p) => match fetch_ci_core(repo, tip, p).await {
-                Ok(Some(core)) => return Some(core),
+                Ok(Some(core)) => return CiCore::Built(core),
                 Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, tip)),
                 Err(why) => MissingArtifact::BuildFromSource(format!(
                     "the CI build for {tip} was refused: {why}; compiling here"
@@ -4300,10 +4340,17 @@ async fn ci_core_for(repo: &Path, tip: &str) -> Option<PathBuf> {
             }
             MissingArtifact::BuildFromSource(why) => {
                 deploy_note(&format!("deploy-consume: {why}"));
-                return None;
+                return CiCore::CompileHere;
             }
         }
     }
+}
+
+/// What the CI wait resolved to.
+enum CiCore {
+    Built(PathBuf),
+    CompileHere,
+    Superseded(String),
 }
 
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it

@@ -180,9 +180,32 @@ pub fn when_artifact_missing(platform: Option<&str>, tip_age_secs: u64) -> Missi
     }
 }
 
+/// Is the request the consumer is waiting on still the request? CI builds only the newest
+/// tip (a superseded run is cancelled), so a wait on a tip the tracker has moved past waits
+/// for an artifact that will never exist. `now_requested` is the request file's tip as of
+/// this tick; `None` (no request) keeps the wait, since nothing newer was asked for.
+pub fn request_superseded(waiting_on: &str, now_requested: Option<&str>) -> Option<String> {
+    match now_requested {
+        Some(now) if !sha_matches(now, waiting_on) => Some(now.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (M5, 2026-10-04 22:32-00:20Z): a consumer waiting on b85287366,
+    // whose CI run was cancelled as superseded, while 3d81d1b09 was built and ready. A moved
+    // request ends the wait; the same tip (short or long) and no request do not.
+    #[test]
+    fn a_moved_request_ends_the_wait_and_the_same_tip_does_not() {
+        let waiting = "b852873662ecbeff1004f13b4fe929b9012ac2d6";
+        assert_eq!(request_superseded(waiting, Some("3d81d1b09abc")), Some("3d81d1b09abc".into()));
+        assert_eq!(request_superseded(waiting, Some("b85287366")), None, "the same tip, short");
+        assert_eq!(request_superseded(waiting, Some(waiting)), None, "the same tip, long");
+        assert_eq!(request_superseded(waiting, None), None, "no request = nothing newer asked for");
+    }
 
     const TIP: &str = "54cbe937f0123456789abcdef0123456789abcde";
 

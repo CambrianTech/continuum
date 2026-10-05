@@ -118,8 +118,13 @@ pub enum DeployVerdict {
     CoreNotAnswering,
     /// A hold is active; carries the reason and whether it is stale (warn).
     Held { reason: String, stale: bool },
-    /// A build/reboot is already in flight (a deploy claim blocks).
-    BuildInFlight,
+    /// A build/reboot is already in flight (a deploy claim blocks). `deployable_tip` is the
+    /// tip that would deploy right now if nothing were in flight (green, clean tree): the
+    /// REQUEST stays current on it while the actuation waits, so a consumer waiting on CI
+    /// for a superseded tip can see the request move. (Without this the M5 waited two hours
+    /// on a cancelled build while three green tips went by, 2026-10-04.) `None` = the tip is
+    /// not yet deployable, so nothing to request.
+    BuildInFlight { deployable_tip: Option<String> },
     /// The tip's checks are not green yet.
     ChecksPending,
     /// The tip is red — a red tip is never deployed.
@@ -179,7 +184,10 @@ pub fn decide(inp: &TickInputs) -> DeployVerdict {
         }
     }
     if inp.build_in_flight {
-        return DeployVerdict::BuildInFlight;
+        let deployable = matches!(inp.checks, Checks::Green) && !inp.tree_dirty;
+        return DeployVerdict::BuildInFlight {
+            deployable_tip: deployable.then(|| tip.to_string()),
+        };
     }
     match inp.checks {
         Checks::Pending => return DeployVerdict::ChecksPending,
@@ -450,10 +458,17 @@ mod tests {
         let mut i = base();
         i.checks = Checks::Unknown;
         assert_eq!(decide(&i), DeployVerdict::ChecksUnknown);
-        // A build in flight blocks (before checks).
+        // A build in flight blocks (before checks), and names the tip that would deploy
+        // otherwise so the request can follow it; a pending or dirty tip names nothing.
         let mut i = base();
         i.build_in_flight = true;
-        assert_eq!(decide(&i), DeployVerdict::BuildInFlight);
+        assert_eq!(decide(&i), DeployVerdict::BuildInFlight { deployable_tip: Some(base().tip_sha.expect("base has a tip")) });
+        i.checks = Checks::Pending;
+        assert_eq!(decide(&i), DeployVerdict::BuildInFlight { deployable_tip: None });
+        let mut i = base();
+        i.build_in_flight = true;
+        i.tree_dirty = true;
+        assert_eq!(decide(&i), DeployVerdict::BuildInFlight { deployable_tip: None });
         // Green but dirty tree → refuse (the deploy tree is the deploy tree).
         let mut i = base();
         i.tree_dirty = true;
