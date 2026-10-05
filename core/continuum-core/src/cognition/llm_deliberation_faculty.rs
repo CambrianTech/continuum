@@ -786,8 +786,12 @@ impl LlmDeliberationFaculty {
                     true
                 } else {
                     // The discovery pair always rides: a withheld verb stays one
-                    // `commands/list` away (the #206 cliff guard, unchanged).
-                    name.starts_with("commands/")
+                    // `commands/list` away (the #206 cliff guard, unchanged). So do her own
+                    // mind's verbs (focus/continue, focus/nudge, focus/mute): a room's
+                    // recipe is the rules of that room, never rules of her mind (HER-LOOP).
+                    // Kimi, 2026-10-05, in a recipe room on the build that put focus/ in
+                    // her hands: "help works; nothing to invoke against."
+                    name.starts_with("commands/") || name.starts_with("focus/")
                 }
             })
             .map(|(_, spec)| spec.clone())
@@ -5595,7 +5599,7 @@ mod tests {
             .filter(|(_, spec)| offered.iter().any(|o| o.name == spec.name))
             .map(|(raw, _)| raw.as_str())
             .collect();
-        for must in ["web/fetch", "web/search", "commands/list", "commands/help"] {
+        for must in ["web/fetch", "web/search", "commands/list", "commands/help", "focus/continue"] {
             assert!(
                 names.contains(&must),
                 "room-selected surface must carry {must}: {names:?}"
