@@ -256,9 +256,12 @@ crate::action_command! {
         };
         let submission_id = p.submission_id;
         state.run_owned(key, move |state, key| async move {
-            // A held bucket is bounded: past MAX_HELD_EXAMPLES a new submit is refused and
-            // the producer keeps its evidence for a later pass (never silently dropped).
-            if let Some(held_by) = state.held_for(&key) {
+            // A held bucket is bounded: past MAX_HELD_EXAMPLES a NEW submit is refused and
+            // the producer keeps its evidence for a later pass (never silently dropped). A
+            // replay of a submission the bucket already holds is recognised first: it is
+            // AlreadyAccepted, never refused as full (BigMama on #4794).
+            let replay = submission_id.is_some_and(|id| state.contains_submission(&key, id));
+            if let Some(held_by) = state.held_for(&key).filter(|_| !replay) {
                 let pending = state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0); // unwrap_or: no bucket yet = nothing pending
                 if pending >= crate::modules::training_trigger::MAX_HELD_EXAMPLES {
                     crate::probe!(

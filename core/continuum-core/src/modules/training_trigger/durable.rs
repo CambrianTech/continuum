@@ -827,7 +827,7 @@ impl TrainingTriggerState {
             .map(|t| t.id))
     }
 
-    fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {
+    pub(crate) fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {
         self.buckets
             .get(key)
             .is_some_and(|b| b.submission_ids.contains(&id))
