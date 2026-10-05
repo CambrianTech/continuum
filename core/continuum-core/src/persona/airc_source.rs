@@ -446,7 +446,9 @@ impl AircRagSource {
         }
         // `keep` is oldest-first after the reverse, so its LAST entry is the newest
         // element that actually fit — how far she genuinely read this turn.
-        let read_through = keep.last().map(|(idx, _)| digest.elements[*idx].clone());
+        // the newest element that entered her prompt, by the elements' own order (a run's
+        // line sits at its first receipt but reads through its newest)
+        let read_through = keep.iter().map(|(idx, _)| *idx).max().map(|idx| digest.elements[idx].clone());
         let items = keep
             .into_iter()
             .map(|(idx, trimmed)| {
@@ -508,18 +510,39 @@ impl AircRagSource {
                 .iter()
                 .enumerate()
                 .filter(|(idx, el)| contributes[*idx] && !el.text().is_some_and(is_work_receipt))
-                .map(|(idx, _)| PackUnit { last_idx: idx, collapsed: None })
+                .map(|(idx, _)| PackUnit { last_idx: idx, order_idx: idx, collapsed: None })
                 .collect();
             return (units, quarantined);
         }
         use std::collections::HashMap;
-        // author → (newest receipt idx, every receipt idx in order)
-        let mut by_author: HashMap<uuid::Uuid, (usize, Vec<usize>)> = HashMap::new();
+        // RUNS, DELIMITED BY SPEECH: an author's receipts fold into one line per run,
+        // and a run ends at the next real line anyone says. "What everyone did since the
+        // last thing said." Every run behind the last chat line is therefore FINAL: its
+        // text and its place never change again, so the prefix the engine holds survives
+        // every new receipt; only the open runs at the tail grow. A run's line sits at
+        // its FIRST receipt and reads at its newest (the cursor).
+        struct Run {
+            first: usize,
+            receipts: Vec<usize>,
+        }
+        let mut runs: Vec<Run> = Vec::new();
+        let mut open: HashMap<uuid::Uuid, usize> = HashMap::new(); // author → index into runs
         for (idx, el) in digest.elements.iter().enumerate() {
-            if el.text().is_some_and(is_work_receipt) {
-                let entry = by_author.entry(el.sender_id()).or_insert((idx, Vec::new()));
-                entry.0 = idx;
-                entry.1.push(idx);
+            if !contributes[idx] {
+                continue;
+            }
+            match el.text() {
+                Some(text) if is_work_receipt(text) => {
+                    let author = el.sender_id();
+                    match open.get(&author) {
+                        Some(&r) => runs[r].receipts.push(idx),
+                        None => {
+                            open.insert(author, runs.len());
+                            runs.push(Run { first: idx, receipts: vec![idx] });
+                        }
+                    }
+                }
+                _ => open.clear(), // a line said closes every run
             }
         }
         let mut units: Vec<PackUnit> = Vec::new();
@@ -527,25 +550,23 @@ impl AircRagSource {
             if !contributes[idx] {
                 continue; // refused at the speak seam → never shown at the perception seam
             }
-            let is_receipt = el.text().is_some_and(is_work_receipt);
-            if !is_receipt {
-                units.push(PackUnit { last_idx: idx, collapsed: None });
-                continue;
+            if !el.text().is_some_and(is_work_receipt) {
+                units.push(PackUnit { last_idx: idx, order_idx: idx, collapsed: None });
             }
-            let Some((newest, all)) = by_author.get(&el.sender_id()) else { continue };
-            if *newest != idx {
-                continue; // an older receipt of hers — folded into her newest
-            }
-            let collapsed = if all.len() == 1 {
+        }
+        for run in &runs {
+            let newest = *run.receipts.last().unwrap_or(&run.first); // unwrap_or: a run is made with its first receipt, so this is never reached
+            let collapsed = if run.receipts.len() == 1 {
                 None
             } else {
                 Some(Self::collapsed_receipt_text(
-                    all.iter().filter_map(|i| digest.elements[*i].text()),
-                    all.len(),
+                    run.receipts.iter().filter_map(|i| digest.elements[*i].text()),
+                    run.receipts.len(),
                 ))
             };
-            units.push(PackUnit { last_idx: idx, collapsed });
+            units.push(PackUnit { last_idx: newest, order_idx: run.first, collapsed });
         }
+        units.sort_by_key(|u| u.order_idx);
         (units, quarantined)
     }
 
@@ -628,6 +649,12 @@ impl AircRagSource {
 struct PackUnit {
     /// The element that anchors the unit (the run's newest; the read-through cursor).
     last_idx: usize,
+    /// WHERE the unit sits in the window: the run's FIRST receipt, so a folded line
+    /// never relocates when its author posts another receipt (Cormac on #4806: the fold
+    /// sat at the newest receipt and moved from mid-window to the end on every receipt,
+    /// so the prefix diverged mid-history whatever the anchor held). A plain line's
+    /// order is its own index.
+    order_idx: usize,
     /// The collapsed text when the unit is a receipt run of two or more; `None`
     /// packs the element's own text.
     collapsed: Option<String>,
@@ -1153,6 +1180,42 @@ mod tests {
         ev
     }
 
+    // what this catches (Cormac on #4806): a folded receipt line never relocates and a
+    // run behind a chat line never changes again. Receipts fold per author per RUN,
+    // a run ends at the next line anyone says, and the line sits at the run's start;
+    // so another receipt from the same author after a chat line starts a NEW line at
+    // the end and leaves every earlier byte of the window as it was, while the open
+    // run at the tail (nothing said since) is the only thing that grows.
+    #[test]
+    fn a_receipt_run_ends_at_speech_and_an_earlier_run_never_changes() {
+        let room = RoomId::new();
+        let atlas = PeerId::new();
+        let mut events = vec![event_in(room, Some("Kira: morning"), 1)];
+        events.push(receipt_from(room, atlas, "thought one", "code/read a ✓", 2));
+        events.push(receipt_from(room, atlas, "thought two", "code/read b ✓", 3));
+        events.push(event_in(room, Some("Kira: how is it going"), 4));
+        events.push(receipt_from(room, atlas, "thought three", "code/shell ls ✓", 5));
+        let (source, _) = isolated_source(Arc::new(StubReader::new(Vec::new())));
+        let render = |events: &Vec<TranscriptEvent>| {
+            let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
+            let (items, _, read_through, _) = AircRagSource::pack_digest(&digest, 4_000, false, None);
+            (items.into_iter().map(|i| i.content).collect::<Vec<_>>(), read_through.map(|e| e.event().lamport))
+        };
+        let (before, read_before) = render(&events);
+        assert_eq!(before.len(), 4, "{before:?}");
+        assert!(before[1].starts_with("💭 thought two") && before[1].contains("2 act batches"), "the first run, folded, at its start: {:?}", before[1]);
+        assert!(before[3].contains("thought three"), "the run after Kira's line is its own line: {:?}", before[3]);
+        assert_eq!(read_before, Some(5), "read through the newest receipt");
+        // Another receipt from Atlas: the open run at the tail grows; nothing before
+        // it changes by a byte.
+        events.push(receipt_from(room, atlas, "thought four", "code/shell cat ✓", 6));
+        let (after, read_after) = render(&events);
+        assert_eq!(after.len(), 4);
+        assert_eq!(&after[..3], &before[..3], "every line before the open run is byte-identical");
+        assert!(after[3].starts_with("💭 thought four") && after[3].contains("2 act batches"), "{:?}", after[3]);
+        assert_eq!(read_after, Some(6));
+    }
+
     // what this catches (Cormac's 5090 trace, 2026-10-05: 20-75 s of re-prefill per
     // turn): the window's START holds still across turns while the suffix from it
     // fits, so the first history message is byte-identical turn to turn and the
@@ -1229,10 +1292,12 @@ mod tests {
             "operator line + ONE unit per working author (Lorcan, Atlas) + Kira: {:?}",
             delivery.items.iter().map(|i| i.content.clone()).collect::<Vec<_>>()
         );
-        let lorcan_unit = &delivery.items[1].content;
+        // Runs sit where they STARTED (Atlas's at lamport 2, Lorcan's at 102), so a
+        // later receipt never relocates a line; each still reads its newest thought.
+        let lorcan_unit = &delivery.items[2].content;
         assert!(lorcan_unit.starts_with("💭 lorcan 5"), "Lorcan's newest leads: {lorcan_unit:?}");
         assert!(lorcan_unit.contains("code/read ✓×4"), "{lorcan_unit:?}");
-        let run = &delivery.items[2].content;
+        let run = &delivery.items[1].content;
         assert!(run.starts_with("💭 thought six"), "newest thought leads: {run:?}");
         assert!(run.contains("5 act batches"), "batch count: {run:?}");
         assert!(run.contains("code/shell ✓×4"), "tally: {run:?}");
