@@ -53,10 +53,165 @@ const MIN_PREFIX_HEX: usize = 4;
 /// of a wall of ids.
 const MAX_LISTED_CANDIDATES: usize = 16;
 
-/// The board's displayed short form of a canonical id — the leading [`SHORT_ID_LEN`]
-/// hex chars, exactly what every surface shows and what a persona should quote back.
-fn short_form(id: &Uuid) -> String {
-    id.simple().to_string().chars().take(SHORT_ID_LEN).collect()
+/// The SHORT form of an id: the leading 4 to [`SHORT_ID_LEN`] hex digits of a UUID, the
+/// form every board shows and a citizen quotes back. A value, not a string: the digits as
+/// a `u32` plus how many were given, so a prefix test is a shift and a compare.
+///
+/// THE one place an id is shortened or a short id is read (Joel, 2026-10-05: "Make the
+/// short uuid a type … use the great facilities of rust for validation and efficient
+/// conversion … in ONE PLACE"). Build one from a [`Uuid`] with `From`, parse one with
+/// `FromStr`, show one with `Display`. Before this, 99 sites sliced `simple()[..8]` by
+/// hand, and `work/review` demanded a full UUID that no board showed, so Kimi supplied an
+/// invented one (`9a488f84-9683-…`, 2026-10-05 14:52Z) that matched nothing anywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShortId {
+    /// The given digits, right-aligned (`0a5b` is 0x0a5b, not 0x0a5b0000).
+    digits: u32,
+    /// How many hex digits were given: MIN_PREFIX_HEX..=SHORT_ID_LEN.
+    len: u8,
+}
+
+impl ShortId {
+    /// Does `id` begin with these digits?
+    pub fn prefixes(&self, id: &Uuid) -> bool {
+        let head = u32::from_be_bytes(head_bytes(id));
+        head >> (4 * (SHORT_ID_LEN as u32 - u32::from(self.len))) == self.digits
+    }
+}
+
+/// The first four bytes of a UUID: the 8 hex digits its short form shows.
+fn head_bytes(id: &Uuid) -> [u8; 4] {
+    let b = id.as_bytes();
+    [b[0], b[1], b[2], b[3]]
+}
+
+impl From<&Uuid> for ShortId {
+    fn from(id: &Uuid) -> Self {
+        Self { digits: u32::from_be_bytes(head_bytes(id)), len: SHORT_ID_LEN as u8 }
+    }
+}
+
+impl std::str::FromStr for ShortId {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let t = s.trim();
+        if !(MIN_PREFIX_HEX..=SHORT_ID_LEN).contains(&t.len()) {
+            return Err(format!(
+                "'{s}' is not a short id: {MIN_PREFIX_HEX} to {SHORT_ID_LEN} hex digits, the form a board shows"
+            ));
+        }
+        let digits = u32::from_str_radix(t, 16)
+            .map_err(|_| format!("'{s}' is not a short id: only hex digits (0-9, a-f)"))?;
+        // the range check above bounds the length to 4..=8, which fits a u8
+        Ok(Self { digits, len: t.len() as u8 })
+    }
+}
+
+impl std::fmt::Display for ShortId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:0width$x}", self.digits, width = usize::from(self.len))
+    }
+}
+
+/// A reference to something that already exists, as a citizen can write it: the short
+/// form a board shows, or the full UUID. The parameter type of every verb that names an
+/// existing card, claim or submission; validated when params are decoded, resolved against
+/// the scoped candidates by [`IdRef::resolve`]. Ids a caller MINTS stay plain [`Uuid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdRef {
+    Full(Uuid),
+    Short(ShortId),
+}
+
+impl IdRef {
+    /// The one candidate this names. A full id that is not among non-empty candidates is
+    /// tried by its short form (a model that pads a shown short id with an invented tail,
+    /// or corrupts the middle, still meant its head); a miss lists what IS there.
+    pub fn resolve(&self, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+        match self {
+            Self::Full(id) if candidates.is_empty() || candidates.contains(id) => Ok(*id),
+            Self::Full(id) => resolve_short(&ShortId::from(id), candidates, label).map_err(|miss| {
+                format!("{label} {id} is not here, and neither is its short form: {miss}")
+            }),
+            Self::Short(short) => resolve_short(short, candidates, label),
+        }
+    }
+}
+
+impl From<Uuid> for IdRef {
+    fn from(id: Uuid) -> Self {
+        Self::Full(id)
+    }
+}
+
+impl std::str::FromStr for IdRef {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let t = s.trim();
+        if let Ok(id) = Uuid::parse_str(t) {
+            return Ok(Self::Full(id));
+        }
+        // Strict: only hex digits and dashes are an id. `normalize` strips every other
+        // character, which turned the WORD "placeholder" into the short id "acede".
+        if t.is_empty() || !t.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            return Err(format!(
+                "'{s}' is not an id: give the short form a board shows (like 0a5b96b8) or the full UUID"
+            ));
+        }
+        let hex: String = t.chars().filter(char::is_ascii_hexdigit).collect();
+        if hex.len() == 32 {
+            if let Ok(id) = Uuid::parse_str(&hex) {
+                return Ok(Self::Full(id));
+            }
+        }
+        // a short form as shown, or a mistyped UUID whose intact head is its short form
+        let head: String = hex.chars().take(SHORT_ID_LEN).collect();
+        head.parse().map(Self::Short)
+    }
+}
+
+impl std::fmt::Display for IdRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full(id) => write!(f, "{id}"),
+            Self::Short(short) => write!(f, "{short}"),
+        }
+    }
+}
+
+impl serde::Serialize for IdRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for IdRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for IdRef {
+    fn schema_name() -> String {
+        "IdRef".into()
+    }
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some("An id as a board shows it (its short form, like 0a5b96b8) or the full UUID.".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
+/// The unique candidate a short id names, or a refusal that lists what is there.
+fn resolve_short(short: &ShortId, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+    resolve_matching(&short.to_string(), candidates, label, |id| short.prefixes(id))
 }
 
 /// Classify a raw id string — the PURE, registry-free decision (unit-testable
@@ -123,12 +278,23 @@ pub fn resolve_handle(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid,
 }
 
 fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+    resolve_matching(needle, candidates, label, |id| id.simple().to_string().starts_with(needle))
+}
+
+/// One candidate set, one match test, one set of refusals: the zero / one / many decision
+/// every resolver shares, whatever decides a match.
+fn resolve_matching(
+    needle: &str,
+    candidates: &[Uuid],
+    label: &str,
+    is_match: impl Fn(&Uuid) -> bool,
+) -> Result<Uuid, String> {
     // Candidates are a SET: the same id folded from two boards (a card visible
     // from two subscribed rooms, 2026-09-05, #3722 review) is one card, never an
     // ambiguity between two.
     let mut matches: Vec<&Uuid> = candidates
         .iter()
-        .filter(|id| id.simple().to_string().starts_with(needle))
+        .filter(|id| is_match(id))
         .collect();
     matches.sort();
     matches.dedup();
@@ -143,7 +309,7 @@ fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid
             0 => format!("no {label}s exist to match id prefix '{needle}' — there are none to choose from right now"),
             n if n <= MAX_LISTED_CANDIDATES => format!(
                 "no {label} matches id prefix '{needle}' — available {label} ids: {}",
-                candidates.iter().map(short_form).collect::<Vec<_>>().join(", ")
+                candidates.iter().map(|id| ShortId::from(id).to_string()).collect::<Vec<_>>().join(", ")
             ),
             n => format!(
                 "no {label} matches id prefix '{needle}' among {n} {label}s — check the id you were shown"
@@ -159,6 +325,36 @@ fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Kimi, 2026-10-05 14:52Z): an id she could only have invented,
+    // because the board showed 8 digits and the verb demanded 36. A short id round-trips
+    // and tests by value; an invented tail on a real head resolves to the real card; a
+    // full id on no board names what IS there; junk fails at decode, not later.
+    #[test]
+    fn a_short_id_is_a_value_and_an_invented_tail_still_names_the_card() {
+        let card = u("0a5b96b8-545c-48d9-a0a6-11efdfd8a0be");
+        let other = u("9bb24964-0000-4000-8000-000000000001");
+        let shown = ShortId::from(&card);
+        assert_eq!(shown.to_string(), "0a5b96b8");
+        assert_eq!("0a5b96b8".parse::<ShortId>(), Ok(shown));
+        assert!("0a5b".parse::<ShortId>().is_ok_and(|s| s.prefixes(&card) && !s.prefixes(&other)));
+        assert_eq!("0A5B".parse::<ShortId>().map(|s| s.to_string()), Ok("0a5b".into()));
+        assert!("0a5".parse::<ShortId>().is_err() && "0a5b96b8f".parse::<ShortId>().is_err());
+        assert!("zzzz".parse::<ShortId>().is_err());
+
+        let candidates = [card, other];
+        assert_eq!("0a5b96b8".parse::<IdRef>().and_then(|r| r.resolve(&candidates, "card")), Ok(card));
+        let padded: IdRef = "0a5b96b8-1111-4222-8333-444455556666".parse().expect("test: well-formed");
+        assert_eq!(padded.resolve(&candidates, "card"), Ok(card), "an invented tail on a shown head");
+        let invented: IdRef = "9a488f84-9683-4cec-923d-9530e4c6c5c5".parse().expect("test: well-formed");
+        let miss = invented.resolve(&candidates, "card").expect_err("test: on no board");
+        assert!(miss.contains("0a5b96b8") && miss.contains("9bb24964"), "lists what is there: {miss}");
+
+        let decoded: Result<IdRef, _> = serde_json::from_value(serde_json::json!("placeholder"));
+        assert!(decoded.is_err(), "a word is not an id, though 'acede' hides in it");
+        assert_eq!("d7cfe47e0-8e39-41f5-bb2a-4e5d36e558e1".parse::<IdRef>().map(|r| r.to_string()), Ok("d7cfe47e".into()), "a mistyped UUID keeps its head");
+        assert_eq!(serde_json::to_value(IdRef::Short(shown)).ok(), Some(serde_json::json!("0a5b96b8")));
+    }
 
     // what this catches: an eight-digit collision must be resolvable by giving
     // more digits, and a cancellation handle must never repair malformed input.
