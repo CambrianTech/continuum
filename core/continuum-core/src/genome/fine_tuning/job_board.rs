@@ -121,6 +121,10 @@ pub struct WatchedJob {
     /// signature sidecar at adoption. `None` = mint failed or predates the
     /// field; the gene still adopts, it just routes by the fallback path.
     pub signature: Option<crate::genome::signature::GeneSignature>,
+    /// What the decision said about this job's competence at job-create (reuse, fork or
+    /// mint, with the numbers), so the gene's lineage can say which branch bore it.
+    /// `None` = no signature was minted, so nothing could be compared.
+    pub decision: Option<crate::genome::competence::Decision>,
 }
 
 /// Process-global registry of in-flight training jobs. DashMap-backed so the L2
@@ -675,6 +679,7 @@ mod tests {
             trait_kind: "code".to_string(),
             eval_set: Some("docs/genome/coder-eval.jsonl".to_string()),
             signature: None,
+            decision: None,
         }
     }
 

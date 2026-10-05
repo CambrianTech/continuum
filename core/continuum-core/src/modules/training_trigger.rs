@@ -223,6 +223,7 @@ fn orphan_step(
             // the gene's signature was minted in the dead core and is not journaled; the gene
             // still adopts, routed by the fallback path
             signature: None,
+                decision: None,
         })),
         Ok(outcome) if outcome.permits_resume() => OrphanStep::Resume,
         Ok(_) | Err(_) => OrphanStep::Hold,

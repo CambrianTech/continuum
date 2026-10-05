@@ -10,8 +10,7 @@
 //! The same clustering kernel recall and gene signatures use
 //! (`modules::embedding::detect_clusters`), never a parallel space.
 
-use uuid::Uuid;
-
+use crate::genome::signature::SignatureStore;
 use crate::modules::embedding::detect_clusters;
 
 /// Fewer settled examples than this is not a competence; it is memories. Measured
@@ -68,13 +67,30 @@ pub fn competences(embeddings: &[Vec<f32>]) -> Vec<Competence> {
         .collect()
 }
 
-/// The nearest existing gene to a competence, as recall returned it: resident, hers,
-/// a peer's, or the repository's; `similarity` is the signature's `similarity_in`.
+/// The nearest existing gene to a competence: from her signature store today, the mesh
+/// and the HF repository as later sources of the same lookup. `gene` is the adapter path
+/// the signature store keys by (a gene's identity on this node, as the manifest and the
+/// serving daemon spell it); `similarity` is the signature's `similarity_in` (max over
+/// its centroid and subspaces).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NearestGene {
-    pub gene: Uuid,
+    pub gene: String,
     pub similarity: f32,
     pub resident: bool,
+}
+
+/// The nearest gene in a local signature store to `competence`, in the embedder's space;
+/// `resident` names the adapter paths currently loaded for her. `None` when the store
+/// holds nothing comparable (empty, or another embedder's signatures).
+pub fn nearest_in_store(competence: &Competence, store: &SignatureStore, embedder_id: &str, resident: &[String]) -> Option<NearestGene> {
+    store
+        .by_path
+        .iter()
+        .filter_map(|(path, sig)| {
+            let similarity = sig.similarity_in(embedder_id, &competence.centroid)?;
+            Some(NearestGene { gene: path.clone(), similarity, resident: resident.iter().any(|r| r == path) })
+        })
+        .max_by(|a, b| a.similarity.total_cmp(&b.similarity))
 }
 
 /// What to do about a competence. Every variant is a receipt: the probe carries it with
@@ -85,10 +101,10 @@ pub enum Decision {
     /// Memories suffice, or the cluster is too small to be a competence.
     Nothing { why: NothingBecause },
     /// Page the nearest gene in and trial it on her cards; no training.
-    Reuse { gene: Uuid, similarity: f32 },
+    Reuse { gene: String, similarity: f32 },
     /// The nearest gene is already resident and she is still surprised: it is not
     /// enough; train a child of it on her examples (warm start, lineage parent).
-    Fork { parent: Uuid, similarity: f32 },
+    Fork { parent: String, similarity: f32 },
     /// Nothing near: train a new gene on her examples from the base.
     Mint,
 }
@@ -100,23 +116,33 @@ pub enum NothingBecause {
     SurpriseLow,
 }
 
-/// The decision, in the order the design states. `surprise` is `S` for this competence
-/// (`None` = no judged expectation yet, which is not "low": it is unknown, and unknown
-/// never mints).
-pub fn decide(competence: &Competence, surprise: Option<f32>, nearest: Option<&NearestGene>) -> Decision {
+/// Her surprise in a competence, as the decision receives it. `NotYetMeasured` is not
+/// "low": the floor applies only to a measured number. Until surprise is folded per
+/// competence (step 1 measures it per activity, #4774), a full bucket decides on
+/// distance alone, as the trigger did before this, and the probe says `not_measured`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(tag = "surprise", rename_all = "snake_case")]
+pub enum Surprise {
+    Measured { s: f32 },
+    NotYetMeasured,
+}
+
+/// The decision, in the order the design states.
+pub fn decide(competence: &Competence, surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
     if competence.members.len() < MIN_EXAMPLES {
         return Decision::Nothing { why: NothingBecause::TooFewExamples };
     }
-    match surprise {
-        Some(s) if s >= SURPRISE_FLOOR => {}
-        _ => return Decision::Nothing { why: NothingBecause::SurpriseLow },
+    if let Surprise::Measured { s } = surprise {
+        if s < SURPRISE_FLOOR {
+            return Decision::Nothing { why: NothingBecause::SurpriseLow };
+        }
     }
     match nearest {
         // Near enough to BE this competence's gene, and not yet in her: reuse.
-        Some(n) if n.similarity >= SIM_REUSE && !n.resident => Decision::Reuse { gene: n.gene, similarity: n.similarity },
+        Some(n) if n.similarity >= SIM_REUSE && !n.resident => Decision::Reuse { gene: n.gene.clone(), similarity: n.similarity },
         // Near, but either already resident (and she is still surprised) or a cousin:
         // a child of it, with lineage.
-        Some(n) if n.similarity >= SIM_FORK => Decision::Fork { parent: n.gene, similarity: n.similarity },
+        Some(n) if n.similarity >= SIM_FORK => Decision::Fork { parent: n.gene.clone(), similarity: n.similarity },
         _ => Decision::Mint,
     }
 }
@@ -181,16 +207,43 @@ mod tests {
     fn the_decision_reuses_before_forking_and_forks_before_minting() {
         let c = Competence { centroid: vec![1.0, 0.0], members: (0..MIN_EXAMPLES).collect(), cohesion: 0.9, representative: 0 };
         let small = Competence { members: vec![0, 1], ..c.clone() };
-        let g = Uuid::new_v4();
-        let near = |similarity, resident| NearestGene { gene: g, similarity, resident };
-        assert_eq!(decide(&small, Some(0.9), None), Decision::Nothing { why: NothingBecause::TooFewExamples });
-        assert_eq!(decide(&c, None, None), Decision::Nothing { why: NothingBecause::SurpriseLow }, "unknown never mints");
-        assert_eq!(decide(&c, Some(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g, similarity: 0.95 });
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.95, true))), Decision::Fork { parent: g, similarity: 0.95 }, "resident and still surprised: a child");
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.80, false))), Decision::Fork { parent: g, similarity: 0.80 }, "a cousin: a child with lineage");
-        assert_eq!(decide(&c, Some(0.5), Some(&near(0.40, false))), Decision::Mint);
-        assert_eq!(decide(&c, Some(0.5), None), Decision::Mint);
+        let g = "/genes/rust-tests.gguf".to_string();
+        let near = |similarity, resident| NearestGene { gene: g.clone(), similarity, resident };
+        let s = |x| Surprise::Measured { s: x };
+        assert_eq!(decide(&small, s(0.9), None), Decision::Nothing { why: NothingBecause::TooFewExamples });
+        assert_eq!(decide(&c, s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
+        assert_eq!(decide(&c, Surprise::NotYetMeasured, None), Decision::Mint, "not yet measured is not low: distance decides, as before");
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.95, true))), Decision::Fork { parent: g.clone(), similarity: 0.95 }, "resident and still surprised: a child");
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.80, false))), Decision::Fork { parent: g.clone(), similarity: 0.80 }, "a cousin: a child with lineage");
+        assert_eq!(decide(&c, s(0.5), Some(&near(0.40, false))), Decision::Mint);
+        assert_eq!(decide(&c, s(0.5), None), Decision::Mint);
         assert!(SIM_FORK < SIM_REUSE, "the thresholds order the branches");
+    }
+
+    // what this catches: the nearest gene is read from the signature store in the SAME
+    // space (another embedder's signature is not comparable and is skipped, never
+    // mis-scored), the max over the store wins, and residency is read from the loaded set.
+    #[test]
+    fn the_nearest_gene_comes_from_the_store_in_the_same_space() {
+        use crate::genome::signature::GeneSignature;
+        use crate::forge::recipe::CorpusRef;
+        let sig = |embedder: &str, centroid: Vec<f32>| GeneSignature {
+            embedder: embedder.into(),
+            dim: centroid.len(),
+            centroid,
+            subspaces: vec![],
+            corpus: CorpusRef { name: "t".into(), content_hash: "sha256:0".into(), size_bytes: 0, source_url: None },
+            minted_at_ms: 0,
+        };
+        let mut store = SignatureStore::default();
+        store.by_path.insert("/g/far.gguf".into(), sig("e1", vec![0.0, 1.0]));
+        store.by_path.insert("/g/near.gguf".into(), sig("e1", vec![0.96, 0.28]));
+        store.by_path.insert("/g/other-space.gguf".into(), sig("e2", vec![1.0, 0.0]));
+        let c = Competence { centroid: vec![1.0, 0.0], members: (0..MIN_EXAMPLES).collect(), cohesion: 0.9, representative: 0 };
+        let n = nearest_in_store(&c, &store, "e1", &["/g/near.gguf".to_string()]).expect("a nearest gene");
+        assert_eq!(n.gene, "/g/near.gguf");
+        assert!(n.similarity > 0.9 && n.resident, "{n:?}");
+        assert!(nearest_in_store(&c, &store, "e3", &[]).is_none(), "nothing comparable in another space");
     }
 }
