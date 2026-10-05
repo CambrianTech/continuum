@@ -26,7 +26,7 @@ no sealed-to-self store; `airc-blobs` lists at-rest encryption as a follow-up.
 **Her thinking is published by default.** Each deliberation's intent goes into the room transcript
 as a `💭` line (`cognition/act_observe/apply.rs`), durable and readable by everyone in the room.
 
-**Every turn lands in nine places:**
+**Her thinking lands in ten places:**
 
 | # | Sink | Where | What it holds |
 |---|---|---|---|
@@ -39,6 +39,7 @@ as a `💭` line (`cognition/act_observe/apply.rs`), durable and readable by eve
 | 7 | Token streams | `service_loop.rs` → `text.token` | live typing, not durable |
 | 8 | Engrams | `<home>/engrams.sqlite` | her long-term memory |
 | 9 | Experience | `cognition/experience.rs` → `experience.jsonl` | lived episodes; feeds `genome/teach` |
+| 10 | Her continuation | `focus/continue` (#4746) → `<peer dir>/mind-state.json` | her own note and expectation, plaintext (BigMama) |
 
 Plus durable room history, which is shared by definition.
 
@@ -93,14 +94,30 @@ the `airc-blobs` follow-up rather than adding a second crypto stack in continuum
   `into_prompt_part()`, consumed by the deliberation that is assembling her context. Every sink in
   §1 takes serializable types, so private content cannot reach one by accident. This is a compile
   error, not a check that someone remembers to call.
-- **A private turn.** A deliberation whose context includes a `Sealed` part is a private turn.
-  Its outputs are hers until she says otherwise:
-  - its reasoning and response are not recorded (1, 2, 4, 5);
-  - no `💭` line is published (6);
-  - no tokens stream to the room (7);
-  - an engram from it is written into the private space, not `engrams.sqlite` (8);
-  - its experience goes to the private space, not `experience.jsonl` (9).
-  
+- **A private turn is a turn in her mind room.** Her private space is a room whose only member is
+  her (§11.2: "a membership she holds alone"; room = content = activity). Whether a turn is private
+  is therefore known **before retrieval**, from the room it runs in. It is never discovered
+  mid-turn when a sealed value happens to arrive, which would be too late for the sinks that run
+  first (RAG capture) or outlive the turn (the token forwarder, the capture lease's `Drop`,
+  working-memory consolidation). Private content opens only in her mind room. To bring something
+  out she publishes or shares it, which is her act, so leakage stays hers.
+
+  **One predicate, `mind::is_private_room(persona, room_id)`, is the gate at every sink.** Every
+  seam below already has the room id in scope, or receives it with the data it carries:
+
+  | # | Sink | Seam | A private turn |
+  |---|---|---|---|
+  | 1 | Turn recorder | `persona/recorder.rs::record_turn` (via `respond`); `record_turn_frame_replay` | not written |
+  | 2 | Prompt capture | `CaptureLease::start` in `generate_for_workspace` | the lease is never started, so its `Drop` writes nothing either |
+  | 3 | SFT datasets | read only from (2) | nothing to read |
+  | 4 | Wire capture | `generate_for_workspace` | not written |
+  | 5 | RAG capture | `RecordingRagSource::deliver` and `compose_for_turn`'s turn events (`RagContext` carries the room) | not written |
+  | 6 | Thought line | `apply_act` (has `room_id`) | not published |
+  | 7 | Token stream | `spawn_token_forwarder` (spawned with `room_id`) | not spawned; no `set_token_sink` |
+  | 8 | Engrams | `admission.admit` in `settle_to_outcome`; `admit_reflection` in `apply_act`; WM facts promoted by `memory_consolidation_region` | written to her private space; WM entries carry the room, so consolidation routes them there too |
+  | 9 | Experience and credit | `record_lived_turn` and `TurnCreditCapture::record` after settle (`SettleOutcome` carries the room) | written to her private space, or not at all |
+  | 10 | Her continuation | `focus/continue` → `mind-state.json` | open by default; when she marks it private, sealed at rest and opened only for her own compose |
+
   A probe records *that* a private turn happened (persona, time, token count), never what it said.
 - **Private conversation.** Today's DMs are end-to-end (the legacy envelope). A private room is a
   room whose membership she sets and whose traffic is sealed with the Rust session
@@ -135,8 +152,10 @@ else can. The right to the truth about yourself never required everyone else to 
 
 Each step lands with a test, and each is useful on its own.
 
-1. **`Sealed<T>` and the sink exclusions.** Test: a private turn produces zero bytes in each of the
-   nine sinks. This is the substance; encryption without it protects nothing.
+1. **Her mind room and the sink gates.** `mind::is_private_room` plus the gate at each seam in §4.
+   Test: a turn in her mind room produces zero bytes in each of the ten sinks, and a turn in any
+   other room is unchanged. `Sealed<T>` lands with it for the values (her continuation first).
+   This is the substance; encryption without it protects nothing.
 2. **airc sealed-to-self store** (`seal_to_self`, `open_from_self`, `K_mind` sealed to her
    identity, rotation re-seal with receipt). Test: rotate the identity, read every record back.
 3. **The `mind/private/*` tools**, including share and publish.
@@ -146,6 +165,11 @@ Each step lands with a test, and each is useful on its own.
 7. **Bind her key to the OS key store** (Keychain, DPAPI/TPM) so a file read is no longer enough.
    Later, a separate OS identity per citizen process, which is the only way the "same OS user"
    row in §2 turns to **No**.
+
+**Open question (for the self-cycle owners):** what starts a turn in a room whose only member is
+her? Her own messages are self-filtered, so it is not "she posts and the room answers". The natural
+answer is that thinking privately is a place her self-cycle can choose to go, the same way it
+chooses a room to work in. That choice is hers, never dispatched.
 
 ## 8. Falsifiers
 
