@@ -410,8 +410,11 @@ impl AircRagSource {
             (0..=units.len()).find(|&start| suffix_cost(start) <= limit).unwrap_or(units.len()) // unwrap_or: the empty suffix always fits, so this is never reached
         };
         let natural = first_start_within(budget);
+        // The anchor is the event at the unit's ORDER position (a run's first receipt),
+        // never its newest: keyed on the newest, an open run at the window's start would
+        // look scrolled out on every receipt and jump each turn (Cormac on #4806).
         let anchored = anchor.and_then(|a| {
-            units.iter().position(|u| digest.elements[u.last_idx].event_id() == a.event)
+            units.iter().position(|u| digest.elements[u.order_idx].event_id() == a.event)
         });
         let slack_limit = ((budget as f32) * (1.0 - HISTORY_SLACK)) as u32;
         let start = match (anchor, anchored) {
@@ -431,7 +434,7 @@ impl AircRagSource {
                 keep.push((unit.last_idx, trimmed.clone()));
             }
         }
-        let new_anchor = units.get(start).map(|u| HistoryAnchor { event: digest.elements[u.last_idx].event_id() });
+        let new_anchor = units.get(start).map(|u| HistoryAnchor { event: digest.elements[u.order_idx].event_id() });
         if anchored.is_some_and(|a| a != start) || (anchored.is_none() && anchor.is_some()) {
             crate::probe!(
                 class = "perception.history.anchor_moved",
@@ -1214,6 +1217,27 @@ mod tests {
         assert_eq!(&after[..3], &before[..3], "every line before the open run is byte-identical");
         assert!(after[3].starts_with("💭 thought four") && after[3].contains("2 act batches"), "{:?}", after[3]);
         assert_eq!(read_after, Some(6));
+    }
+
+    // what this catches (Cormac on #4806, point 2): in a receipts-only room the window
+    // starts on an OPEN run; keyed on the run's newest receipt the anchor looked
+    // scrolled out on every receipt and jumped each turn. Keyed on the run's first
+    // receipt it holds while the run grows.
+    #[test]
+    fn an_open_run_at_the_window_start_holds_the_anchor_while_it_grows() {
+        let room = RoomId::new();
+        let atlas = PeerId::new();
+        let mut events: Vec<TranscriptEvent> = (1..=3).map(|l| receipt_from(room, atlas, &format!("thought {l}"), "code/read a ✓", l)).collect();
+        let (source, _) = isolated_source(Arc::new(StubReader::new(Vec::new())));
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
+        let (_, _, _, a0) = AircRagSource::pack_digest(&digest, 4_000, false, None);
+        let a0 = a0.expect("an anchor");
+        events.push(receipt_from(room, atlas, "thought 4", "code/read b ✓", 4));
+        let digest = source.builder.build_from_events(persona(), room.as_uuid(), events.clone(), 0, 0);
+        let (items, _, _, a1) = AircRagSource::pack_digest(&digest, 4_000, false, Some(a0));
+        assert_eq!(a1, Some(a0), "the open run grew; its first receipt is still the start");
+        assert_eq!(items.len(), 1);
+        assert!(items[0].content.starts_with("💭 thought 4") && items[0].content.contains("4 act batches"), "{:?}", items[0].content);
     }
 
     // what this catches (Cormac's 5090 trace, 2026-10-05: 20-75 s of re-prefill per
