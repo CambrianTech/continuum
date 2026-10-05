@@ -49,6 +49,22 @@ use crate::code::types::{
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
 
+/// A file-engine error in the class the caller can act on. Every code verb used to send
+/// these through `CommandError::Internal`, so a sandbox boundary, a missing file and a
+/// failed edit all reached Kimi as "[internal]", a substrate fault, when each one is a
+/// "fix your call" (2026-10-05: a write to Temp outside her workspace, a read of a path
+/// that does not exist). Only a real I/O failure is the substrate's.
+fn engine_err(e: crate::code::file_engine::FileEngineError) -> CommandError {
+    use crate::code::file_engine::FileEngineError as E;
+    let said = e.to_string();
+    match e {
+        E::Security(_) => CommandError::Denied(said),
+        E::NotFound(_) => CommandError::NotFound(said),
+        E::EditFailed(_) => CommandError::Invalid(said),
+        E::Io(_) => CommandError::Internal(said),
+    }
+}
+
 /// The persona/owner this tool call acts AS — the authenticated caller identity
 /// (an airc `peer_id`), never a params field. `None` caller is the
 /// substrate-local owner. This is the single point that maps the gated identity
@@ -597,7 +613,7 @@ impl ActionCommand for CodeRead {
         let engine = engine!(self, ctx);
         engine
             .read(&p.file_path, p.start_line, p.end_line)
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(engine_err)
     }
 }
 
@@ -646,7 +662,7 @@ impl ActionCommand for CodeWrite {
             .map(|m| m.len());
         let out = engine
             .write(&p.file_path, &p.content, p.description.as_deref())
-            .map_err(|e| CommandError::Internal(e.to_string()));
+            .map_err(engine_err);
         crate::probe!(
             class = "code.write.landed",
             path = %p.file_path,
@@ -853,7 +869,7 @@ impl ActionCommand for CodeEdit {
         let mode = normalize_edit_mode(&p)?;
         engine
             .edit(&p.file_path, &mode, p.description.as_deref())
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(engine_err)
     }
 }
 
@@ -899,7 +915,7 @@ impl ActionCommand for CodeList {
         if looks_like_file_glob(requested) {
             let glob = engine
                 .glob_match(requested, None)
-                .map_err(|e| CommandError::Internal(e.to_string()))?;
+                .map_err(engine_err)?;
             let mut result = list_result_from_glob(requested, glob);
             // A zero-match glob is the OTHER "empty workspace" confabulation source
             // (glass-boxed 2026-07-14: a persona ran `code/list(path=**/)` — `**/`
@@ -1024,7 +1040,7 @@ impl ActionCommand for CodeExists {
         let engine = engine!(self, ctx);
         engine
             .exists(&p.file_path)
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(engine_err)
     }
 }
 
@@ -1057,7 +1073,7 @@ impl ActionCommand for CodeGlob {
         let engine = engine!(self, ctx);
         engine
             .glob_match(&p.pattern, p.root.as_deref())
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(engine_err)
     }
 }
 
@@ -1167,7 +1183,7 @@ impl ActionCommand for CodeSearch {
         if p.file_glob.is_none() && looks_like_file_glob(&p.pattern) {
             let g = engine
                 .glob_match(&p.pattern, None)
-                .map_err(|e| CommandError::Internal(e.to_string()))?;
+                .map_err(engine_err)?;
             let matches: Vec<SearchMatch> = g
                 .matches
                 .iter()
@@ -1563,7 +1579,7 @@ impl ActionCommand for CodeDelete {
         let engine = engine!(self, ctx);
         engine
             .delete(&p.file_path, p.description.as_deref())
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(engine_err)
     }
 }
 
@@ -1598,7 +1614,7 @@ impl ActionCommand for CodeDiff {
         let engine = engine!(self, ctx);
         engine
             .preview_diff(&p.file_path, &p.edit_mode)
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(engine_err)
     }
 }
 
@@ -1643,7 +1659,7 @@ impl ActionCommand for CodeUndo {
                     .map_err(|e| CommandError::Invalid(format!("invalid change_id: {e}")))?;
                 let reverted = engine
                     .undo(&change_uuid)
-                    .map_err(|e| CommandError::Internal(e.to_string()))?;
+                    .map_err(engine_err)?;
                 Ok(crate::code::types::UndoResult {
                     success: true,
                     changes_undone: vec![reverted],
@@ -1652,7 +1668,7 @@ impl ActionCommand for CodeUndo {
             }
             None => engine
                 .undo_last(p.count.unwrap_or(1) as usize)
-                .map_err(|e| CommandError::Internal(e.to_string())),
+                .map_err(engine_err),
         }
     }
 }
@@ -1980,6 +1996,23 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Kimi, 2026-10-05): a write outside her workspace, a missing file
+    // and a failed edit each refused as "[internal]", which reads as the substrate breaking
+    // rather than her call needing a change. Each class is the one she can act on; only
+    // I/O stays internal.
+    #[test]
+    fn a_file_engine_refusal_names_the_class_the_caller_can_act_on() {
+        use crate::code::file_engine::FileEngineError as E;
+        let escape = crate::code::path_security::PathSecurityError::TraversalBlocked {
+            path: "C:/Temp/repro.py".into(),
+            workspace: "C:/ws".into(),
+        };
+        assert!(matches!(engine_err(E::Security(escape)), CommandError::Denied(m) if m.contains("escapes workspace")));
+        assert!(matches!(engine_err(E::NotFound("swe/x.py".into())), CommandError::NotFound(_)));
+        assert!(matches!(engine_err(E::EditFailed("no match".into())), CommandError::Invalid(_)));
+        assert!(matches!(engine_err(E::Io(std::io::Error::other("disk"))), CommandError::Internal(_)));
+    }
     use crate::sdk_codegen::{AccessLevel, Ctx};
     use dashmap::DashMap;
 
