@@ -58,7 +58,7 @@
 //! it is already gone. A terminal event leaves the board exactly once.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use dashmap::DashMap;
@@ -134,6 +134,12 @@ pub struct WatchedJob {
 /// orphans at boot — see the module doc.
 #[derive(Debug, Default)]
 pub struct TrainingJobBoard {
+    /// The exclusive lock on `<ledger>.owner`, held for this board's lifetime when this board
+    /// OWNS the ledger. Only one board on a node can hold it, so the holder knows every open
+    /// entry it did not register belongs to a board that has died (the OS releases a lock with
+    /// its holder: pid reuse cannot fool it). `None`: another board owns the ledger (a test
+    /// process, a second binary), and this one never reconciles it (Cormac's design).
+    owner: Option<std::fs::File>,
     jobs: DashMap<Uuid, WatchedJob>,
     /// Append-only journal path; `None` disables journaling.
     ledger: Option<PathBuf>,
@@ -169,9 +175,55 @@ const DISPATCH_JOURNAL_PAGE_BYTES: u64 = 64 * 1024;
 
 /// `~/.continuum/genome/jobs-ledger.jsonl` — sibling of the job artifact dirs
 /// (the MLX adapter's `job_dir_for` uses the same `~/.continuum/genome` root).
-fn default_ledger_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".continuum/genome/jobs-ledger.jsonl")
+/// The node's job ledger. A test process gets its own and never opens the home ledger: a
+/// `cargo test` that reached it replayed the LIVE core's open jobs as a dead core's and
+/// journaled them killed-by-reboot (2026-10-05, the 5090: 18 of Kimi's jobs, at the two
+/// instants a test ran). No home means no ledger, said, never a ledger in the cwd.
+#[cfg(not(test))]
+fn default_ledger_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".continuum/genome/jobs-ledger.jsonl"))
+}
+
+#[cfg(test)]
+fn default_ledger_path() -> Option<PathBuf> {
+    Some(std::env::temp_dir().join(format!("continuum-test-jobs-ledger-{}.jsonl", std::process::id())))
+}
+
+/// Take the ledger's owner lock if no live board holds it. `None` when another board owns
+/// it (a probe says so) or the lock file cannot be opened (logged: this board then never
+/// reconciles, which leaves jobs open rather than killing a live core's).
+fn take_ledger_ownership(ledger: &Path) -> Option<std::fs::File> {
+    let mut name = ledger.file_name()?.to_os_string();
+    name.push(".owner");
+    let lock_path = ledger.with_file_name(name);
+    if let Some(dir) = lock_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            tracing::error!(%error, dir = %dir.display(), "the job ledger's directory cannot be created; this board will not reconcile");
+            return None;
+        }
+    }
+    let file = match std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path) {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::error!(%error, lock = %lock_path.display(), "the job ledger's owner lock cannot be opened; this board will not reconcile");
+            return None;
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            crate::probe!(
+                class = "training.job.ledger_owned_elsewhere",
+                lock = %lock_path.display(),
+                "another live board owns this job ledger; this one reads it and never reconciles it"
+            );
+            None
+        }
+        Err(std::fs::TryLockError::Error(error)) => {
+            tracing::error!(%error, lock = %lock_path.display(), "the job ledger's owner lock cannot be taken; this board will not reconcile");
+            None
+        }
+    }
 }
 
 fn now_ms() -> u128 {
@@ -400,12 +452,19 @@ impl TrainingJobBoard {
     /// visible instead of silent.
     pub fn global() -> &'static TrainingJobBoard {
         GLOBAL.get_or_init(|| {
-            let board = TrainingJobBoard::with_ledger(Some(default_ledger_path()));
+            let ledger = default_ledger_path();
+            if ledger.is_none() {
+                tracing::error!(
+                    "no home directory: the training job ledger is off, so a job this core starts \
+                     is not accounted for across a restart"
+                );
+            }
+            let board = TrainingJobBoard::with_ledger(ledger.clone());
             let orphaned = board.reconcile_orphans().len();
-            if orphaned > 0 {
+            if let (true, Some(ledger)) = (orphaned > 0, ledger) {
                 tracing::warn!(
                     orphaned,
-                    ledger = %default_ledger_path().display(),
+                    ledger = %ledger.display(),
                     "training jobs from a previous core died with it (killed-by-reboot) — \
                      spawned trainers and their watchers do not survive a restart; the L3 \
                      eval→page-in chain never ran for them"
@@ -419,6 +478,7 @@ impl TrainingJobBoard {
     /// Tests point this at a temp file.
     pub fn with_ledger(ledger: Option<PathBuf>) -> Self {
         TrainingJobBoard {
+            owner: ledger.as_deref().and_then(take_ledger_ownership),
             jobs: DashMap::new(),
             quarantined: DashMap::new(),
             orphans: std::sync::Mutex::new(Vec::new()),
@@ -470,6 +530,11 @@ impl TrainingJobBoard {
     /// the ids for the next replay. A missing ledger is a first boot, not an error.
     pub fn reconcile_orphans(&self) -> Vec<OrphanedJob> {
         let Some(path) = &self.ledger else { return Vec::new() };
+        // Only the ledger's owner reconciles it: an open entry is a dead board's ONLY to the
+        // board that holds the lock no live board could hold beside it.
+        if self.owner.is_none() {
+            return Vec::new();
+        }
         let Ok(text) = std::fs::read_to_string(path) else {
             return Vec::new();
         };
@@ -664,6 +729,30 @@ impl TrainingJobBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the 5090, 2026-10-05): a second process reading a RUNNING core's
+    // ledger journaled its open jobs killed-by-reboot. `cargo test` reached the home ledger
+    // at 13:32Z and 16:31Z, and 18 of Kimi's jobs died with no reboot. A board that does not
+    // own the ledger reconciles nothing; once the owner dies, the next owner reconciles.
+    #[test]
+    fn only_the_ledgers_owner_reconciles_and_a_dead_owners_jobs_become_orphans() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let ledger = dir.path().join("jobs-ledger.jsonl");
+        let core = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        let open = Uuid::new_v4();
+        core.register(watched(open, "engine-local"));
+
+        let reader = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        assert!(reader.reconcile_orphans().is_empty(), "a live core's open job is not an orphan to a reader");
+        drop(reader);
+        let text = std::fs::read_to_string(&ledger).expect("test: ledger");
+        assert!(!text.contains("killed-by-reboot"), "nothing was journaled dead while the core lived");
+
+        drop(core); // the core dies; the OS releases its lock
+        let next = TrainingJobBoard::with_ledger(Some(ledger));
+        let orphaned: Vec<Uuid> = next.reconcile_orphans().iter().map(|o| o.local_id).collect();
+        assert_eq!(orphaned, vec![open], "the next owner reconciles the dead core's open job");
+    }
 
     fn watched(local_id: Uuid, provider: &str) -> WatchedJob {
         WatchedJob {
@@ -1027,6 +1116,7 @@ mod tests {
             "persona_id": Uuid::from_u128(7).to_string(), "persona_name": "Kimi",
             "base_model": "ggml-org/Qwen3.8-27B-GGUF", "trait_kind": "code", "at_ms": 1
         }));
+        drop(board); // the core that registered it dies; only then is it an orphan
         let replay = TrainingJobBoard::with_ledger(Some(ledger.clone()));
         let orphans = replay.reconcile_orphans();
         assert_eq!(orphans.len(), 1);
@@ -1041,7 +1131,9 @@ mod tests {
         assert_eq!(replay.resume_origin(r2), dead);
         assert_eq!(replay.resume_attempts(dead), 2);
         assert_eq!(replay.resume_origin(Uuid::from_u128(0x99)), Uuid::from_u128(0x99), "a job with no lineage is its own origin");
-        // The dead one is journaled dead too: a second replay finds no open registration.
+        // The dead one is journaled dead too: the NEXT owner finds no open registration
+        // (dropping `replay` first, or the check would pass only because it is not the owner).
+        drop(replay);
         assert!(TrainingJobBoard::with_ledger(Some(ledger)).reconcile_orphans().is_empty());
     }
 }
