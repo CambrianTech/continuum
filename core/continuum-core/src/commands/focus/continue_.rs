@@ -58,6 +58,11 @@ pub struct FocusContinueParams {
     /// `true` = you have finished this thread: clear your continuation.
     #[serde(default)]
     pub clear: bool,
+    /// `true` = think about this privately, in your mind room: the continuation lives there,
+    /// `room` is not needed, and nothing of it is recorded, published, or written to disk in
+    /// plaintext. Leaving your mind room is publishing what you choose (PRIVACY-OF-THOUGHT.md).
+    #[serde(default)]
+    pub private: bool,
 }
 
 /// Result of `focus/continue`: what your mind now holds.
@@ -84,7 +89,9 @@ impl ActionCommand for FocusContinue {
         "Write down where you are leaving unfinished work and what you expect next, so you \
          pick it up yourself: at your deadline, after a restart, or when the answer arrives. \
          Give a note and the room; optionally what you expect, within how many minutes, and \
-         the verdict you expect. clear=true when the thread is finished. Yours only.";
+         the verdict you expect. clear=true when the thread is finished. private=true to \
+         think about it in your mind room, where nothing is recorded or published (no room \
+         needed). Yours only.";
     type Params = FocusContinueParams;
     type Output = FocusContinueResult;
 
@@ -108,15 +115,22 @@ impl ActionCommand for FocusContinue {
                     "note is required: what is done and what is next (or clear=true when finished)".into(),
                 ));
             }
-            if p.room.trim().is_empty() {
-                return Err(CommandError::Invalid("room is required: the activity this work lives in".into()));
-            }
-            let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()
-                .and_then(|r| r.get(persona))
-                .ok_or_else(|| CommandError::Invalid("your airc runtime is not resident on this core".into()))?;
-            let room = crate::modules::room_resolve::resolve_room(runtime.airc(), Some(p.room.trim())).await?;
+            // Her mind room is local, never an airc channel, so it is never resolved by name.
+            let activity = if p.private {
+                crate::persona::mind_room::mind_room_id(persona)
+            } else {
+                if p.room.trim().is_empty() {
+                    return Err(CommandError::Invalid(
+                        "room is required: the activity this work lives in (or private=true for your mind room)".into(),
+                    ));
+                }
+                let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                    .and_then(|r| r.get(persona))
+                    .ok_or_else(|| CommandError::Invalid("your airc runtime is not resident on this core".into()))?;
+                crate::modules::room_resolve::resolve_room(runtime.airc(), Some(p.room.trim())).await?.channel.as_uuid()
+            };
             let expectation = expectation_from(&p, now);
-            Some(Continuation { activity: room.channel.as_uuid(), note: p.note.trim().to_string(), expectation, written_at_ms: now })
+            Some(Continuation { activity, note: p.note.trim().to_string(), expectation, written_at_ms: now })
         };
         let wakes_at_ms = continuation.as_ref().and_then(|c| c.expectation.as_ref()).and_then(|e| e.by_ms);
         let held = continuation.is_some();
@@ -165,6 +179,7 @@ mod tests {
             expect_within_minutes: Some(30),
             expect_verdict: Some(ExpectedVerdictParam::Passed),
             clear: false,
+            private: false,
         };
         let e = expectation_from(&p, 1_000).expect("stated");
         assert_eq!(e.by_ms, Some(1_000 + 30 * 60_000));

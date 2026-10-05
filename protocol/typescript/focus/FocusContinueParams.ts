@@ -31,4 +31,10 @@ expectVerdict?: ExpectedVerdictParam,
 /**
  * `true` = you have finished this thread: clear your continuation.
  */
-clear: boolean, };
+clear: boolean, 
+/**
+ * `true` = think about this privately, in your mind room: the continuation lives there,
+ * `room` is not needed, and nothing of it is recorded, published, or written to disk in
+ * plaintext. Leaving your mind room is publishing what you choose (PRIVACY-OF-THOUGHT.md).
+ */
+private: boolean, };

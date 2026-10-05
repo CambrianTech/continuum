@@ -171,6 +171,12 @@ Each step lands with a test, and each is useful on its own.
    on its own `WorkspaceCycle` (`PersonaWorkspaceRegistry::cycle_for_room`). That cycle has its
    own working memory and no captures, mirrors her live genome and model each turn, and is never
    checkpointed. Her strip shows a private continuation's note only in her mind room.
+1c. **The act that takes her there.** `focus/continue private=true` writes her continuation into
+   her mind room (`mind_room_id`, never resolved by name), and a Continuation wake starts her
+   private turn there (#4748). A private continuation is never written to `mind-state.json` in
+   plaintext; until the sealed store exists it lives in memory only.
+   Speech in her mind room reaches its only member, her, and is never published
+   (`AircPersonaConversation::say_in`), not even to a channel named by the room's uuid.
 2. **airc sealed-to-self store** (`seal_to_self`, `open_from_self`, `K_mind` sealed to her
    identity, rotation re-seal with receipt). Test: rotate the identity, read every record back.
 3. **The `mind/private/*` tools**, including share and publish.
