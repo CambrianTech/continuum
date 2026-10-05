@@ -787,7 +787,12 @@ pub async fn materialize_adapters(
         // loudest first, with her continuation and her dial, read from her perception
         // region by persona. The region boots when her conversation attaches; until then
         // the source delivers nothing, which is the truth.
-        cognition.set_awareness_source(crate::persona::awareness_source::boxed(identity.peer_id.as_uuid()));
+        let awareness_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::awareness_source::AwarenessRagSource::new(
+                identity.peer_id.as_uuid(),
+                Some(runtime.clone()),
+            ));
+        cognition.set_awareness_source(awareness_source);
 
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature

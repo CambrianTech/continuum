@@ -50,6 +50,7 @@ const ROSTER_WINDOW_FRACTION: u32 = 64;
 const DOCTRINE_WINDOW_FRACTION: u32 = 16;
 /// The strip: one line per activity, a few words each, plus her note. A 32k window
 /// gives it ~680 tokens, a 4k window ~85 (two or three activities), fitted loudest first.
+// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
 const AWARENESS_WINDOW_FRACTION: u32 = 48;
 
 /// What a heavyweight grounding source gets when there IS room — its comfortable
