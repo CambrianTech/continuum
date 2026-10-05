@@ -412,7 +412,7 @@ crate::action_command! {
                     similarity: store.by_path.get(&t.path.display().to_string()).and_then(|s| s.similarity_in(&sig.embedder, &competence.centroid)).unwrap_or(1.0), // 1.0 = the key already says it is this competence; the number is a measurement when the signature exists
                 })
                 .max_by(|a, b| a.similarity.total_cmp(&b.similarity));
-            let decision = decide_with_pending(&competence, Surprise::NotYetMeasured, nearest.as_ref(), in_flight.as_ref(), on_trial.as_ref());
+            let decision = decide_with_pending(Surprise::NotYetMeasured, nearest.as_ref(), in_flight.as_ref(), on_trial.as_ref());
             crate::probe!(
                 class = "genome.decision",
                 persona = %p.request.persona_name,

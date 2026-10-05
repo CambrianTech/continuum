@@ -207,12 +207,11 @@ pub fn nearest_pending<'a>(
 /// her curriculum, and a full bucket is one by the room's own threshold; the decision
 /// never second-guesses its size (a smaller bucket skipped Join and Await on the way to
 /// a mint, 2026-10-05).
-pub fn decide(competence: &Competence, surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
-    decide_with_pending(competence, surprise, nearest, None, None)
+pub fn decide(surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
+    decide_with_pending(surprise, nearest, None, None)
 }
 
 pub fn decide_with_pending(
-    competence: &Competence,
     surprise: Surprise,
     nearest: Option<&NearestGene>,
     in_flight: Option<&Pending>,
@@ -304,31 +303,31 @@ mod tests {
         let s = |x| Surprise::Measured { s: x };
         // The size of a competence is settled by whoever made it (the clustering floor, or
         // the bucket's threshold): a two-member one still joins, awaits, reuses or mints.
-        assert_eq!(decide(&small, s(0.9), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
-        assert_eq!(decide(&c, s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
-        assert_eq!(decide(&c, Surprise::NotYetMeasured, None), Decision::Mint, "not yet measured is not low: distance decides, as before");
-        assert_eq!(decide(&c, s(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
-        assert_eq!(decide(&c, s(0.5), Some(&near(0.95, true))), Decision::Fork { parent: g.clone(), similarity: 0.95 }, "resident and still surprised: a child");
-        assert_eq!(decide(&c, s(0.5), Some(&near(0.80, false))), Decision::Fork { parent: g.clone(), similarity: 0.80 }, "a cousin: a child with lineage");
-        assert_eq!(decide(&c, s(0.5), Some(&near(0.40, false))), Decision::Mint);
-        assert_eq!(decide(&c, s(0.5), None), Decision::Mint);
+        assert_eq!(decide(s(0.9), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
+        assert_eq!(decide(s(0.1), None), Decision::Nothing { why: NothingBecause::SurpriseLow });
+        assert_eq!(decide(Surprise::NotYetMeasured, None), Decision::Mint, "not yet measured is not low: distance decides, as before");
+        assert_eq!(decide(s(0.5), Some(&near(0.95, false))), Decision::Reuse { gene: g.clone(), similarity: 0.95 });
+        assert_eq!(decide(s(0.5), Some(&near(0.95, true))), Decision::Fork { parent: g.clone(), similarity: 0.95 }, "resident and still surprised: a child");
+        assert_eq!(decide(s(0.5), Some(&near(0.80, false))), Decision::Fork { parent: g.clone(), similarity: 0.80 }, "a cousin: a child with lineage");
+        assert_eq!(decide(s(0.5), Some(&near(0.40, false))), Decision::Mint);
+        assert_eq!(decide(s(0.5), None), Decision::Mint);
         assert!(SIM_FORK < SIM_REUSE, "the thresholds order the branches");
         // A job of hers already training this competence: join it, whatever the store says
         // (the four-Mints-for-one-card shape); a distant job in flight changes nothing.
         let flying_id = Uuid::from_u128(0xbcb7316f);
         let flying = Pending { id: flying_id, similarity: 0.97 };
-        assert_eq!(decide_with_pending(&c, s(0.5), None, Some(&flying), None), Decision::Join { job: flying_id, similarity: 0.97 });
-        assert_eq!(decide_with_pending(&c, s(0.5), Some(&near(0.95, false)), Some(&flying), None), Decision::Join { job: flying_id, similarity: 0.97 }, "join before reuse: the gene being born is hers");
+        assert_eq!(decide_with_pending(s(0.5), None, Some(&flying), None), Decision::Join { job: flying_id, similarity: 0.97 });
+        assert_eq!(decide_with_pending(s(0.5), Some(&near(0.95, false)), Some(&flying), None), Decision::Join { job: flying_id, similarity: 0.97 }, "join before reuse: the gene being born is hers");
         let far = Pending { id: Uuid::from_u128(0x0f), similarity: 0.3 };
-        assert_eq!(decide_with_pending(&c, s(0.5), None, Some(&far), None), Decision::Mint);
+        assert_eq!(decide_with_pending(s(0.5), None, Some(&far), None), Decision::Mint);
         // A gene on trial for this competence: await her verdict. The resident gene the
         // trial is judging would otherwise read as resident-and-still-surprised and fork.
         let trial_id = Uuid::from_u128(0x17dc0a7b);
         let judged = Pending { id: trial_id, similarity: 0.96 };
-        assert_eq!(decide_with_pending(&c, s(0.5), Some(&near(0.96, true)), None, Some(&judged)), Decision::Await { trial: trial_id, similarity: 0.96 }, "await before fork: the gene is being judged");
-        assert_eq!(decide_with_pending(&c, s(0.5), Some(&near(0.96, true)), Some(&flying), Some(&judged)), Decision::Join { job: flying_id, similarity: 0.97 }, "a job in flight outranks a trial");
+        assert_eq!(decide_with_pending(s(0.5), Some(&near(0.96, true)), None, Some(&judged)), Decision::Await { trial: trial_id, similarity: 0.96 }, "await before fork: the gene is being judged");
+        assert_eq!(decide_with_pending(s(0.5), Some(&near(0.96, true)), Some(&flying), Some(&judged)), Decision::Join { job: flying_id, similarity: 0.97 }, "a job in flight outranks a trial");
         let cousin_trial = Pending { id: trial_id, similarity: 0.8 };
-        assert_eq!(decide_with_pending(&c, s(0.5), None, None, Some(&cousin_trial)), Decision::Mint, "a cousin's trial does not settle this competence");
+        assert_eq!(decide_with_pending(s(0.5), None, None, Some(&cousin_trial)), Decision::Mint, "a cousin's trial does not settle this competence");
     }
 
     // what this catches: the nearest gene is read from the signature store in the SAME
