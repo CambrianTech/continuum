@@ -382,6 +382,16 @@ impl PerceptionRegion {
         self.publish(now_ms);
     }
 
+    /// Boot: her private continuation, read back sealed from her mind store
+    /// (`mind_room::sealed_continuation`). Restored exactly like a saved open one: her
+    /// first wake is `Wake::Resume`, so her private thread continues after a restart.
+    pub fn restore_private_continuation(&mut self, continuation: Continuation, now_ms: u64) {
+        crate::probe!(class = "mind.resume", persona = %self.me, private = true, "a sealed private continuation: her first wake continues it");
+        self.state.continuation = Some(continuation);
+        self.resumed = false;
+        self.publish(now_ms);
+    }
+
     /// Her act: how wide the door is.
     pub fn set_dial(&mut self, dial: AttentionDial, now_ms: u64) {
         crate::probe!(class = "mind.dial.set", persona = %self.me, depth = ?dial.depth, pass = ?dial.pass, "set by her act");
@@ -502,6 +512,23 @@ mod tests {
 
     fn region() -> (PerceptionRegion, watch::Receiver<AwarenessSnapshot>) {
         region_with_saved(None)
+    }
+
+    // what this catches: a private continuation sealed before a restart that does not
+    // continue after it (sink 10's point: it survives, but only through her mind store).
+    // Restored at boot, her first wake is Resume, exactly as for an open one.
+    #[test]
+    fn a_restored_private_continuation_resumes_her_first_wake() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, _rx) = PerceptionRegion::boot(PeerId::from_uuid(ME), dir.path(), 1_000, 0);
+        assert_ne!(r.wake_for(1), Some(Wake::Resume), "nothing saved, nothing to resume");
+        let mind = crate::persona::mind_room::mind_room_id(ME);
+        r.restore_private_continuation(
+            Continuation { activity: mind, note: "a private plan".into(), expectation: None, written_at_ms: 1 },
+            2,
+        );
+        assert_eq!(r.continuation().map(|c| c.activity), Some(mind));
+        assert_eq!(r.wake_for(3), Some(Wake::Resume), "her private thread continues after a restart");
     }
 
     // what this catches: a private continuation (her note, in her mind room) written to
