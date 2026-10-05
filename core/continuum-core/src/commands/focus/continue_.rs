@@ -79,6 +79,7 @@ pub struct FocusContinue;
 #[async_trait]
 impl ActionCommand for FocusContinue {
     const NAME: &'static str = "focus/continue";
+    const NATIVE: bool = true; // self-determination — her own continuation: where she is and what she expects next, written by her hand. NATIVE defaults to false, which is why the verb was registered, documented, and uncallable (Kimi, 2026-10-05).
     const DESCRIPTION: &'static str =
         "Write down where you are leaving unfinished work and what you expect next, so you \
          pick it up yourself: at your deadline, after a restart, or when the answer arrives. \
