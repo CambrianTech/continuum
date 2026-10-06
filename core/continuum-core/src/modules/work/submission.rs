@@ -211,7 +211,7 @@ async fn room_of_card(
                 Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
                 None if !horizon.unreadable.is_empty() => Err(horizon.not_found("card", raw_card)),
                 None => Err(CommandError::Invalid(format!(
-                    "{verb}: card '{raw_card}' is on no board of a room you are in, so it cannot say its room: \
+                    "{verb}: the card you named is on no board of a room you are in, so it cannot say its room: \
                      join the card's room (room/join) or name it with room=..."
                 ))),
             }
