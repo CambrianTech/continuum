@@ -2376,13 +2376,13 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
          blocked` — the card returns to {owner} in progress.\n\
          Report gaps, not style."
     );
-    // The card lands in the airc handle's CURRENT room — make that the parent's room
-    // (the same focus move the claim path makes when a card sits elsewhere).
-    airc.join(&room.name).await.map_err(|e| e.to_string())?;
+    // The review lands on the PARENT's board, named, never through the shared current-room
+    // pointer: parallel dones on two boards would otherwise race one join against the other
+    // (IntelMac on #4838; the race #4838 removes from work/state).
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
     let review = airc
-        .create_work_card(req)
+        .create_work_card_in(&room, req)
         .await
         .map_err(|e| e.to_string())?;
     crate::cognition::bench_round::register_review_card(parent.as_uuid(), review.as_uuid())
@@ -2413,10 +2413,10 @@ async fn open_room_review_card(
         "Review {owner}'s work on card {p8} (\"{}\"). Read the latest submission          (work/submission) and the change it carries, judge it against the card, then give          your verdict with work/review (passed or failed, with evidence). This room's review          policy decides how many passing reviews finish the card and whether the author may          review her own work.",
         card.title
     );
-    airc.join(&room.name).await.map_err(|e| e.to_string())?;
+    // on the parent's board, named: never through the shared current-room pointer (#4838)
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
-    airc.create_work_card(req).await.map_err(|e| e.to_string())
+    airc.create_work_card_in(room, req).await.map_err(|e| e.to_string())
 }
 
 /// The card a review card reviews, by airc's native link (`reviews`), for review cards no
