@@ -335,14 +335,21 @@ fn entity_id(base: &BaseEntity) -> Result<Uuid, String> {
 }
 
 impl PendingBatch {
+    /// THE fields a bucket pins at first arrival and every later batch must agree on.
+    pub(crate) fn policy(&self) -> super::BucketPolicy {
+        super::BucketPolicy {
+            source: self.source.clone(),
+            lora: self.lora.clone(),
+            schedule: self.schedule.clone(),
+            validation_split: self.validation_split,
+            local_artifact_dir: self.local_artifact_dir.clone(),
+            preferred_provider: self.preferred_provider.clone(),
+            eval_set: self.eval_set.clone(),
+        }
+    }
+
     pub(crate) fn same_policy(&self, other: &Self) -> bool {
-        self.source == other.source
-            && self.lora == other.lora
-            && self.schedule == other.schedule
-            && self.validation_split == other.validation_split
-            && self.local_artifact_dir == other.local_artifact_dir
-            && self.preferred_provider == other.preferred_provider
-            && self.eval_set == other.eval_set
+        self.policy() == other.policy()
     }
 
     fn same_submission(&self, other: &Self) -> bool {

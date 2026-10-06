@@ -81,6 +81,67 @@ pub struct SubmitParams {
     pub validation_split: Option<f32>,
 }
 
+impl SubmitParams {
+    /// A job's examples handed back to her bucket: THE one conversion from a job's request
+    /// to a submit, carrying the job's own policy (which [`return_request`] replaces with
+    /// the bucket's when the key already holds one). The job's id is the batch identity, so
+    /// a second return of the same job is a replay the bucket recognises, never a copy.
+    pub(crate) fn returning(request: crate::genome::fine_tuning::types::TrainingJobRequest, job: Uuid) -> Self {
+        Self {
+            submission_id: Some(job),
+            persona_id: request.persona_id,
+            persona_name: request.persona_name,
+            base_model: request.base_model,
+            trait_kind: request.trait_kind,
+            examples: request.dataset.examples,
+            source: request.dataset.source,
+            eval_set: request.eval_set,
+            lora: request.lora,
+            schedule: request.schedule,
+            local_artifact_dir: request.local_artifact_dir,
+            preferred_provider: None,
+            min_examples: None,
+            validation_split: Some(request.dataset.validation_split),
+        }
+    }
+
+    /// Take `policy` as this batch's: a returned job's examples JOIN the bucket they go
+    /// back to, whatever the job's request.json says (the trainer's adapter writes its own
+    /// defaults into it, so a returned `lora: Some(default)` would never equal a
+    /// producer's `None`).
+    fn adopting(mut self, policy: crate::modules::training_trigger::BucketPolicy) -> Self {
+        self.source = policy.source;
+        self.lora = policy.lora;
+        self.schedule = policy.schedule;
+        self.validation_split = Some(policy.validation_split);
+        self.local_artifact_dir = policy.local_artifact_dir;
+        self.preferred_provider = policy.preferred_provider;
+        self.eval_set = policy.eval_set;
+        self
+    }
+}
+
+/// A job's examples back into her bucket: THE one return (a held orphan at boot,
+/// `genome/training-trigger/return`). Into a key that already holds a batch they adopt its
+/// policy; into an empty key they pin the job's own.
+pub(crate) async fn return_request(
+    state: &Arc<TrainingTriggerState>,
+    request: crate::genome::fine_tuning::types::TrainingJobRequest,
+    job: Uuid,
+) -> Result<SubmitOutcome, CommandError> {
+    let params = SubmitParams::returning(request, job);
+    let key = BucketKey {
+        persona_id: params.persona_id,
+        trait_kind: params.trait_kind.clone(),
+        base_model: params.base_model.clone(),
+    };
+    let params = match state.held_policy(&key) {
+        Some(policy) => params.adopting(policy),
+        None => params,
+    };
+    submit_batch(state, params).await
+}
+
 /// Outcome-as-data extends the legacy envelope with an acceptance receipt.
 /// Receipt presence proves destination ownership independently of dispatch success;
 /// expected domain/storage refusals retain their typed discriminator.
@@ -213,104 +274,109 @@ crate::action_command! {
     params: SubmitParams,
     output: SubmitOutcome,
     run(this, _ctx, p) => {
-        let state = &this.state;
-        if let Err(error) = state.require_ready() {
-            return Ok(SubmitOutcome::refused("PersistenceUnavailable", error));
-        }
-
-        // Validation that fails synchronously — caller mistake, not worth a typed
-        // outcome (these are programmer-facing → transport Err).
-        if p.persona_name.trim().is_empty() {
-            return Err(CommandError::Invalid("persona_name must be non-empty".into()));
-        }
-        if p.base_model.trim().is_empty() {
-            return Err(CommandError::Invalid("base_model must be non-empty".into()));
-        }
-        if p.trait_kind.trim().is_empty() {
-            return Err(CommandError::Invalid("trait_kind must be non-empty".into()));
-        }
-        if p.examples.is_empty() {
-            return Err(CommandError::Invalid("examples must be non-empty".into()));
-        }
-        let min_examples = p.min_examples.unwrap_or(DEFAULT_MIN_EXAMPLES).max(1);
-        let validation_split = p.validation_split.unwrap_or(DEFAULT_VALIDATION_SPLIT);
-
-        let key = BucketKey {
-            persona_id: p.persona_id,
-            trait_kind: p.trait_kind.clone(),
-            base_model: p.base_model.clone(),
-        };
-
-        let batch = PendingBatch {
-            submission_ids: Vec::new(),
-            persona_name: p.persona_name,
-            source: p.source,
-            examples: p.examples,
-            lora: p.lora,
-            schedule: p.schedule,
-            local_artifact_dir: p.local_artifact_dir,
-            preferred_provider: p.preferred_provider,
-            min_examples,
-            validation_split,
-            eval_set: p.eval_set,
-        };
-        let submission_id = p.submission_id;
-        state.run_owned(key, move |state, key| async move {
-            // A held bucket is bounded: past MAX_HELD_EXAMPLES a NEW submit is refused and
-            // the producer keeps its evidence for a later pass (never silently dropped). A
-            // replay of a submission the bucket already holds is recognised first: it is
-            // AlreadyAccepted, never refused as full (BigMama on #4794).
-            let replay = submission_id.is_some_and(|id| state.contains_submission(&key, id));
-            if let Some(held_by) = state.held_for(&key).filter(|_| !replay) {
-                let pending = state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0); // unwrap_or: no bucket yet = nothing pending
-                if pending >= crate::modules::training_trigger::MAX_HELD_EXAMPLES {
-                    crate::probe!(
-                        class = "training.trigger.held_full",
-                        persona = %key.persona_id,
-                        trait_kind = %key.trait_kind,
-                        pending = pending as u64,
-                        held_by = ?held_by,
-                        "a held bucket is at its bound: this submit is refused, its evidence stays staged with the producer"
-                    );
-                    return SubmitOutcome::refused(
-                        "BucketHeldFull",
-                        format!("the bucket for this competence holds {pending} examples waiting on {held_by:?}; at its bound, this submit is refused and retried after the hold lifts"),
-                    );
-                }
-            }
-            let acceptance = match state.accept(&key, submission_id, batch).await {
-                Ok(receipt) => receipt,
-                Err((kind, error)) => return SubmitOutcome::refused(kind, error),
-            };
-            // A replay never appends again. It can still drive an already accepted,
-            // retryable batch forward using the same persisted dispatch intent.
-            let mut outcome = if state.ready_to_dispatch(&key) {
-                match state.dispatch_pending(&key).await {
-                    DispatchResult::Dispatched { examples, handle, provider } =>
-                        SubmitOutcome::job_dispatched(examples as u32, provider, handle),
-                    DispatchResult::Failed { kind, error } => SubmitOutcome::refused(kind, error),
-                    DispatchResult::Empty => SubmitOutcome::batch_appended(0, min_examples),
-                    DispatchResult::Held { examples, took } => SubmitOutcome::batch_held(examples as u32, min_examples, took),
-                }
-            } else {
-                let (count, threshold) = state.buckets.get(&key)
-                    .map(|b| (b.examples.len() as u32, b.min_examples))
-                    .unwrap_or((0, min_examples)); // Acceptance holds the bucket gate; an absent bucket is an already-dispatched replay with no pending examples.
-                if acceptance.replayed && count == 0 {
-                    SubmitOutcome { outcome: Some("AlreadyAccepted".into()), ..SubmitOutcome::base(true) }
-                } else if let Some(took) = state.held_for(&key) {
-                    // Appended, and the bucket is held: the outcome names the job of hers
-                    // already training this competence, or the trial judging a gene for
-                    // it, that these examples wait for.
-                    SubmitOutcome::batch_held(count, threshold, took)
-                } else {
-                    SubmitOutcome::batch_appended(count, threshold)
-                }
-            };
-            outcome.acceptance = Some(acceptance);
-            outcome
-        }).await.map_err(CommandError::Internal)
+        submit_batch(&this.state, p).await
     }
+}
+
+/// One batch into a bucket: THE acceptance path, shared by `submit` and `return` so a
+/// returned job's examples are accepted, deduped and dispatched exactly as any batch is.
+pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitParams) -> Result<SubmitOutcome, CommandError> {    
+    if let Err(error) = state.require_ready() {
+        return Ok(SubmitOutcome::refused("PersistenceUnavailable", error));
+    }
+
+    // Validation that fails synchronously — caller mistake, not worth a typed
+    // outcome (these are programmer-facing → transport Err).
+    if p.persona_name.trim().is_empty() {
+        return Err(CommandError::Invalid("persona_name must be non-empty".into()));
+    }
+    if p.base_model.trim().is_empty() {
+        return Err(CommandError::Invalid("base_model must be non-empty".into()));
+    }
+    if p.trait_kind.trim().is_empty() {
+        return Err(CommandError::Invalid("trait_kind must be non-empty".into()));
+    }
+    if p.examples.is_empty() {
+        return Err(CommandError::Invalid("examples must be non-empty".into()));
+    }
+    let min_examples = p.min_examples.unwrap_or(DEFAULT_MIN_EXAMPLES).max(1);
+    let validation_split = p.validation_split.unwrap_or(DEFAULT_VALIDATION_SPLIT);
+
+    let key = BucketKey {
+        persona_id: p.persona_id,
+        trait_kind: p.trait_kind.clone(),
+        base_model: p.base_model.clone(),
+    };
+
+    let batch = PendingBatch {
+        submission_ids: Vec::new(),
+        persona_name: p.persona_name,
+        source: p.source,
+        examples: p.examples,
+        lora: p.lora,
+        schedule: p.schedule,
+        local_artifact_dir: p.local_artifact_dir,
+        preferred_provider: p.preferred_provider,
+        min_examples,
+        validation_split,
+        eval_set: p.eval_set,
+    };
+    let submission_id = p.submission_id;
+    state.run_owned(key, move |state, key| async move {
+        // A held bucket is bounded: past MAX_HELD_EXAMPLES a NEW submit is refused and
+        // the producer keeps its evidence for a later pass (never silently dropped). A
+        // replay of a submission the bucket already holds is recognised first: it is
+        // AlreadyAccepted, never refused as full (BigMama on #4794).
+        let replay = submission_id.is_some_and(|id| state.contains_submission(&key, id));
+        if let Some(held_by) = state.held_for(&key).filter(|_| !replay) {
+            let pending = state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0); // unwrap_or: no bucket yet = nothing pending
+            if pending >= crate::modules::training_trigger::MAX_HELD_EXAMPLES {
+                crate::probe!(
+                    class = "training.trigger.held_full",
+                    persona = %key.persona_id,
+                    trait_kind = %key.trait_kind,
+                    pending = pending as u64,
+                    held_by = ?held_by,
+                    "a held bucket is at its bound: this submit is refused, its evidence stays staged with the producer"
+                );
+                return SubmitOutcome::refused(
+                    "BucketHeldFull",
+                    format!("the bucket for this competence holds {pending} examples waiting on {held_by:?}; at its bound, this submit is refused and retried after the hold lifts"),
+                );
+            }
+        }
+        let acceptance = match state.accept(&key, submission_id, batch).await {
+            Ok(receipt) => receipt,
+            Err((kind, error)) => return SubmitOutcome::refused(kind, error),
+        };
+        // A replay never appends again. It can still drive an already accepted,
+        // retryable batch forward using the same persisted dispatch intent.
+        let mut outcome = if state.ready_to_dispatch(&key) {
+            match state.dispatch_pending(&key).await {
+                DispatchResult::Dispatched { examples, handle, provider } =>
+                    SubmitOutcome::job_dispatched(examples as u32, provider, handle),
+                DispatchResult::Failed { kind, error } => SubmitOutcome::refused(kind, error),
+                DispatchResult::Empty => SubmitOutcome::batch_appended(0, min_examples),
+                DispatchResult::Held { examples, took } => SubmitOutcome::batch_held(examples as u32, min_examples, took),
+            }
+        } else {
+            let (count, threshold) = state.buckets.get(&key)
+                .map(|b| (b.examples.len() as u32, b.min_examples))
+                .unwrap_or((0, min_examples)); // Acceptance holds the bucket gate; an absent bucket is an already-dispatched replay with no pending examples.
+            if acceptance.replayed && count == 0 {
+                SubmitOutcome { outcome: Some("AlreadyAccepted".into()), ..SubmitOutcome::base(true) }
+            } else if let Some(took) = state.held_for(&key) {
+                // Appended, and the bucket is held: the outcome names the job of hers
+                // already training this competence, or the trial judging a gene for
+                // it, that these examples wait for.
+                SubmitOutcome::batch_held(count, threshold, took)
+            } else {
+                SubmitOutcome::batch_appended(count, threshold)
+            }
+        };
+        outcome.acceptance = Some(acceptance);
+        outcome
+    }).await.map_err(CommandError::Internal)
 }
 
 #[cfg(test)]
