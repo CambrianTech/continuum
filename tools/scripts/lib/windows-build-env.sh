@@ -272,11 +272,21 @@ if [ "$_mf_os" = windows ] && ! command -v cl.exe >/dev/null 2>&1; then
     # `cuda-env` first and took the first linkable hit, so CUDA_PATH named a CUDA 12 tree while
     # PATH (globbed, unordered) handed the linker CUDA 13. One selection, one answer: if these
     # two ever disagree again it is a bug in the chooser, not a race between two searches.
-    if [ -z "$CUDA_PATH" ]; then
-      for _cand in ${_wbe_cuda_tree:+"$_wbe_cuda_tree"}; do
+    # The import-lib step runs whoever set CUDA_PATH. It used to sit inside `if [ -z
+    # "$CUDA_PATH" ]`, so a CUDA_PATH set before this file (NVIDIA's installer sets one
+    # system-wide; an operator or a deploy may export one) skipped the RUSTFLAGS -L below,
+    # and a conda-layout tree (libs in Library/lib/x64, where cudarc's own search does not
+    # look) failed the link with LNK1181 cuda.lib (measured on the 5090, 2026-10-06). A
+    # preset CUDA_PATH is honoured as the tree; only an unset one is filled from THE tree.
+    if [ -n "$CUDA_PATH" ]; then
+      _wbe_cuda_libroot="$(cygpath -u "$CUDA_PATH" 2>/dev/null || echo "$CUDA_PATH")"
+    else
+      _wbe_cuda_libroot="$_wbe_cuda_tree"
+    fi
+      for _cand in ${_wbe_cuda_libroot:+"$_wbe_cuda_libroot"}; do
         for _sub in Library/lib/x64 lib/x64; do
           if [ -f "$_cand/$_sub/curand.lib" ] && [ -f "$_cand/$_sub/cuda.lib" ]; then
-            export CUDA_PATH="$(cygpath -w "$_cand" 2>/dev/null || echo "$_cand")"
+            [ -n "$CUDA_PATH" ] || export CUDA_PATH="$(cygpath -w "$_cand" 2>/dev/null || echo "$_cand")"
             _culibw="$(cygpath -w "$_cand/$_sub" 2>/dev/null || echo "$_cand/$_sub")"
             # pocket-tts links cuda.lib but (unlike cudarc) emits no rustc-link-search, relying on the
             # linker's own search. rustc links with the newest VS's linker + ITS OWN LIB (not ours), so
@@ -294,7 +304,6 @@ if [ "$_mf_os" = windows ] && ! command -v cl.exe >/dev/null 2>&1; then
       if [ -z "$CUDA_PATH" ] && command -v nvcc >/dev/null 2>&1; then
         echo "⚠ nvcc present but no complete CUDA import-lib dir found (cuda-*/**/{cuda,curand}.lib) — the CUDA core link WILL fail. Provisioning gap (#6)." >&2
       fi
-    fi
     # CONSISTENCY ASSERTION, replacing the warning this used to print.
     #
     # The old block DETECTED that several majors were provisioned and told the operator to go
