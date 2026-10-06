@@ -810,7 +810,7 @@ mod tests {
         );
         // Three reviews that confirm her (MIN_JUDGED): surprise 0 of 3.
         for at in 1..=3u64 {
-            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer }], now + at);
+            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer, review: Uuid::new_v4() }], now + at);
         }
         let region = Arc::new(Mutex::new(region));
         let (wake_tx, _wake_rx) = tokio::sync::mpsc::channel(4);
@@ -830,7 +830,7 @@ mod tests {
         assert!(trigger.state.test_job_board.snapshot().is_empty(), "no job while she is unsurprised");
 
         // The room contradicts her once: 1 of 4, at the floor. The next fill decides.
-        region.lock().unwrap().observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer }], now + 4);
+        region.lock().unwrap().observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer, review: Uuid::new_v4() }], now + 4);
         let next = executor
             .execute_json("genome/training-trigger/submit", submit_params(persona, "test-trait", vec![ex("k", "l")], Some(5)))
             .await

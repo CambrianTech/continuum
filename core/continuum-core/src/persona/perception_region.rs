@@ -68,6 +68,11 @@ pub struct ActivityView {
     /// §3, step 1): of the expectations she stated here, how many the world contradicted.
     /// Never cleared by `perceived`; it is a window over her record, not unread news.
     pub surprise: SurpriseTally,
+    /// The reviews already counted into `surprise`, newest last, bounded by
+    /// [`UNPERCEIVED_CAP`]. A review delivered twice (a replayed gap, a re-sent event)
+    /// is counted once: her surprise number gates whether she trains, so a duplicate
+    /// delivery must never move it.
+    pub counted_reviews: Vec<Uuid>,
     /// Newest TIMED event above her cursor; untimed events do not set this.
     pub last_activity_ms: Option<u64>,
     pub salience: Salience,
@@ -200,6 +205,7 @@ impl PerceptionRegion {
             board: Vec::new(),
             overflow: 0,
             surprise: SurpriseTally::default(),
+            counted_reviews: Vec::new(),
             last_activity_ms: None,
             salience: Salience::QUIET,
         });
@@ -256,8 +262,18 @@ impl PerceptionRegion {
             .and_then(|e| e.verdict);
         if let Some(expected) = expected {
             for change in &changes {
-                if let BoardChange::Reviewed { card_id, outcome, .. } = change {
+                if let BoardChange::Reviewed { card_id, outcome, review, .. } = change {
                     if !self.held_cards.contains(card_id) {
+                        continue;
+                    }
+                    if view.counted_reviews.contains(review) {
+                        crate::probe!(
+                            class = "mind.surprise.duplicate",
+                            persona = %self.me,
+                            activity = %short8(activity),
+                            review = %review,
+                            "a review already counted arrived again: her surprise number did not move"
+                        );
                         continue;
                     }
                     let contradicted = match (expected, outcome) {
@@ -266,6 +282,10 @@ impl PerceptionRegion {
                         _ => false,
                     };
                     view.surprise.note(contradicted, now_ms);
+                    view.counted_reviews.push(*review);
+                    if view.counted_reviews.len() > UNPERCEIVED_CAP {
+                        view.counted_reviews.remove(0);
+                    }
                     crate::probe!(
                         class = "mind.surprise",
                         persona = %self.me,
@@ -474,7 +494,7 @@ fn short8(id: Uuid) -> String {
 }
 
 fn blank(name: String) -> ActivityView {
-    ActivityView { name, digest: None, speech: Vec::new(), board: Vec::new(), overflow: 0, surprise: SurpriseTally::default(), last_activity_ms: None, salience: Salience::QUIET }
+    ActivityView { name, digest: None, speech: Vec::new(), board: Vec::new(), overflow: 0, surprise: SurpriseTally::default(), counted_reviews: Vec::new(), last_activity_ms: None, salience: Salience::QUIET }
 }
 
 #[cfg(test)]
@@ -653,7 +673,7 @@ mod tests {
         assert_eq!(r.wake_for(2), None, "a fresh boot has nothing to resume; nothing yet, not due");
         assert_eq!(r.wake_for(1_001), Some(Wake::Continuation), "her deadline passed with nothing new");
 
-        let wake = r.observe_board(A, vec![BoardChange::Reviewed { card_id: card, outcome: ObservedVerdict::Failed, reviewer: PEER }], 1_002);
+        let wake = r.observe_board(A, vec![BoardChange::Reviewed { card_id: card, outcome: ObservedVerdict::Failed, reviewer: PEER, review: Uuid::new_v4() }], 1_002);
         match wake {
             Some(Wake::Perceive { activity, salience }) => {
                 assert_eq!(activity, A);
@@ -732,7 +752,7 @@ mod tests {
         let theirs = Uuid::from_u128(0x10);
         r.set_identity_facts(vec![JOEL], vec![mine]);
         // No expectation stated: a verdict is news, not a surprise count.
-        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER }], 5);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER, review: Uuid::new_v4() }], 5);
         assert_eq!(r.views[&A].surprise.s(), None);
         r.set_continuation(
             Some(Continuation {
@@ -743,10 +763,10 @@ mod tests {
             }),
             6,
         );
-        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER }], 10);
-        r.observe_board(A, vec![BoardChange::Reviewed { card_id: theirs, outcome: ObservedVerdict::Failed, reviewer: PEER }], 11);
-        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer: PEER }], 12);
-        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Unknown, reviewer: PEER }], 13);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER, review: Uuid::new_v4() }], 10);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: theirs, outcome: ObservedVerdict::Failed, reviewer: PEER, review: Uuid::new_v4() }], 11);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer: PEER, review: Uuid::new_v4() }], 12);
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Unknown, reviewer: PEER, review: Uuid::new_v4() }], 13);
         let t = r.views[&A].surprise;
         assert_eq!((t.contradicted, t.confirmed), (1, 1), "one contradicted, one confirmed; theirs and Unknown count nothing");
         assert_eq!(t.s(), Some(0.5));
@@ -754,6 +774,17 @@ mod tests {
         assert!(strip.contains("surprise 0.50 (1 of 2 expectations contradicted)"), "{strip}");
         r.perceived(A, &ActivityCursor { chat_lamport: 99, chat_event_id: None, views: Default::default() }, 20);
         assert_eq!(r.views[&A].surprise.s(), Some(0.5), "perceiving clears news, never her record");
+        // what this catches (2026-10-06, Joel's no-replay rule): the same review delivered
+        // again (a replayed gap, a re-sent event) does not move her number, which gates
+        // whether she trains; a NEW review of the same card does.
+        let review = Uuid::from_u128(0xabc);
+        let again = || vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER, review }];
+        r.observe_board(A, again(), 30);
+        let once = r.views[&A].surprise;
+        r.observe_board(A, again(), 31);
+        assert_eq!(r.views[&A].surprise, once, "a duplicate delivery is counted once");
+        r.observe_board(A, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer: PEER, review: Uuid::from_u128(0xabd) }], 32);
+        assert_eq!(r.views[&A].surprise.contradicted, once.contradicted + 1, "a new review counts");
     }
 
 }

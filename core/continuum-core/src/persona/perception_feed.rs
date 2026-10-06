@@ -146,8 +146,8 @@ pub enum Fed {
 /// line, else not perception. Pure.
 pub fn classify(event: &TranscriptEvent) -> Fed {
     match room_work_from_event(event) {
-        Ok(Some(RoomWork::Reviewed { card_id, outcome, reviewer })) => {
-            Fed::Board(BoardChange::Reviewed { card_id, outcome, reviewer })
+        Ok(Some(RoomWork::Reviewed { card_id, outcome, reviewer, review })) => {
+            Fed::Board(BoardChange::Reviewed { card_id, outcome, reviewer, review })
         }
         Ok(Some(RoomWork::StateChanged { card_id, by, .. })) => Fed::Board(BoardChange::Moved { card_id, by }),
         Ok(Some(RoomWork::Claimed { card_id, owner })) => Fed::Board(BoardChange::Moved { card_id, by: owner }),
@@ -320,7 +320,10 @@ mod tests {
         }
 
         let reviewer = Uuid::from_u128(0x2);
-        assert_eq!(classify(&reviewed(ROOM_A, reviewer)), Fed::Board(BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Passed, reviewer }));
+        assert!(matches!(
+            classify(&reviewed(ROOM_A, reviewer)),
+            Fed::Board(BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Passed, reviewer: r, .. }) if r == reviewer
+        ));
         assert_eq!(feed(&Arc::new(reviewed(ROOM_A, reviewer)), 12), 1);
         match rx.try_recv() {
             Ok(Wake::Perceive { activity, salience }) => {
