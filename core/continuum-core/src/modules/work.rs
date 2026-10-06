@@ -2434,9 +2434,23 @@ async fn raw_advance(
     state: CardState,
     via: &'static str,
 ) -> Result<(), String> {
-    let mut attempt = airc
-        .change_work_card_state(ChangeWorkCardState { card_id, state })
-        .await;
+    // THE CARD NAMES ITS ROOM. A board she can see holds the card: mutate it THERE, without
+    // reading or moving the scope's one current-room pointer. Kimi on the 5090 (2026-10-06
+    // 22:5xZ) closed 8 duplicate cards in ONE turn, in parallel, across #continuum and
+    // #cambriantech: every call that refused in the current room "followed" its card by
+    // switching that shared pointer, and the parallel follows flipped it under each other, so
+    // 7 retries landed in the wrong room again and refused. Only a card on no visible board
+    // (a bench round's run room) still takes the current room + follow path below.
+    let mut attempt = match room_holding_card(airc, card_id).await {
+        Some(room) => {
+            airc.change_work_card_state_in(&room, ChangeWorkCardState { card_id, state })
+                .await
+        }
+        None => {
+            airc.change_work_card_state(ChangeWorkCardState { card_id, state })
+                .await
+        }
+    };
     if matches!(
         attempt,
         Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
@@ -4248,6 +4262,55 @@ mod tests {
             assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
     }
+    /// what this catches (Kimi on the 5090, 2026-10-06 22:5xZ): parallel `work/state` closes
+    /// of cards on DIFFERENT boards, issued from a third room. Each used to refuse in the
+    /// current room and "follow" its card by moving the scope's one current-room pointer, so
+    /// parallel follows flipped it under each other and 7 of her 8 closes refused. A card on a
+    /// visible board is mutated on that board, and the pointer never moves.
+    #[tokio::test]
+    async fn parallel_closes_across_boards_land_without_moving_the_current_room() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let mut ids = Vec::new();
+        for room in ["continuum", "cambriantech"] {
+            airc.join(room).await.expect("join a board's room");
+            let made = WorkCreate::create(
+                &airc,
+                WorkCreateParams {
+                    room: room.to_string(),
+                    repo: Some("github.com/CambrianTech/continuum".to_string()),
+                    title: format!("a duplicate review card on {room}"),
+                    body: None,
+                    priority: None,
+                },
+            )
+            .await
+            .expect("card created");
+            ids.push(WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid")));
+        }
+        let lobby = airc.join("general").await.expect("focus moves to a third room");
+
+        let (a, b) = tokio::join!(
+            raw_advance(&airc, ids[0], CardState::Closed, "test"),
+            raw_advance(&airc, ids[1], CardState::Closed, "test"),
+        );
+        assert!(a.is_ok(), "the #continuum card closes: {a:?}");
+        assert!(b.is_ok(), "the #cambriantech card closes: {b:?}");
+        for id in &ids {
+            let (_, card) = card_in_subscribed_rooms(&airc, *id).await.expect("the card is on a visible board");
+            assert_eq!(card.state, CardState::Closed);
+        }
+        assert_eq!(
+            airc.current_room().await.expect("current room").channel,
+            lobby.channel,
+            "closing a card on another board never moves her current room"
+        );
+    }
+
     /// what this catches: a citizen's card landing somewhere other than the room she
     /// named (the old "current room" default put project cards in #general), or under
     /// an identity that is not hers — work/create is how an activity's participants
