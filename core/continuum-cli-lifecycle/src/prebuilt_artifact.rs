@@ -70,6 +70,9 @@ pub fn platform_key(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
         ("macos", "aarch64") => Some("macos-arm64"),
         ("macos", "x86_64") => Some("macos-x86_64"),
+        // CI's Windows + NVIDIA core (core-binaries.yml, built with `$WINDOWS_NVIDIA_FEATURES`).
+        // The feature check in manifest_verdict still keeps a non-NVIDIA Windows node off it.
+        ("windows", "x86_64") => Some("windows-x86_64"),
         _ => None,
     }
 }
@@ -95,6 +98,88 @@ pub struct ArtifactManifest {
     pub archive: String,
     pub sha256: String,
     pub bins: Vec<String>,
+    /// A CUDA build's toolkit, `major.minor` as nvcc reported it. Its runtime ships in
+    /// [`Self::runtime_libs`]; the driver must support that major ([`gpu_verdict`]).
+    #[serde(default)]
+    pub cuda_version: Option<String>,
+    /// The compute-capability floor its kernels were built for, as in `80`: a node whose
+    /// lowest GPU is below it cannot run them.
+    #[serde(default)]
+    pub cuda_compute_cap: Option<u32>,
+    /// The runtime DLLs bundled beside the exe, which staging must copy with the core so
+    /// launch never depends on which CUDA tree is on PATH.
+    #[serde(default)]
+    pub runtime_libs: Vec<String>,
+}
+
+/// What this node's NVIDIA driver and GPUs can run, read from `nvidia-smi`. `None` fields
+/// mean the fact could not be read, which refuses any CUDA artifact (never a guess).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeGpu {
+    /// The CUDA major the driver supports ("CUDA Version: 13.0" -> 13).
+    pub driver_cuda_major: Option<u32>,
+    /// The lowest compute capability among its GPUs ("12.0" -> 120, "8.6" -> 86).
+    pub lowest_compute_cap: Option<u32>,
+}
+
+/// PURE: the driver's CUDA major from `nvidia-smi`'s banner ("... CUDA Version: 13.0 |").
+pub fn driver_cuda_major(nvidia_smi_banner: &str) -> Option<u32> {
+    let after = nvidia_smi_banner.split("CUDA Version:").nth(1)?;
+    after.trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// PURE: the lowest compute capability from `nvidia-smi --query-gpu=compute_cap
+/// --format=csv,noheader` (one "major.minor" per GPU), as major*10+minor.
+pub fn lowest_compute_cap(csv: &str) -> Option<u32> {
+    csv.lines()
+        .filter_map(|line| {
+            let (major, minor) = line.trim().split_once('.')?;
+            Some(major.parse::<u32>().ok()? * 10 + minor.parse::<u32>().ok()?)
+        })
+        .min()
+}
+
+/// Can this node's driver and GPUs run `manifest`'s CUDA build? A build with no
+/// `cuda_version` needs nothing (macOS, CPU). A CUDA build needs a driver that supports its
+/// toolkit major and GPUs at or above its compute floor, each refused by name when not.
+pub fn gpu_verdict(manifest: &ArtifactManifest, node: &NodeGpu) -> Result<(), String> {
+    let Some(version) = manifest.cuda_version.as_deref() else {
+        return Ok(());
+    };
+    let needed: u32 = version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse().ok())
+        .ok_or_else(|| format!("artifact names CUDA `{version}`, which has no major version"))?;
+    match node.driver_cuda_major {
+        None => {
+            return Err(format!(
+                "artifact bundles CUDA {version}, and this node's driver CUDA version could not be read (nvidia-smi)"
+            ))
+        }
+        Some(have) if have < needed => {
+            return Err(format!(
+                "artifact bundles CUDA {version}, and this node's driver supports CUDA {have}: update the NVIDIA driver"
+            ))
+        }
+        Some(_) => {}
+    }
+    if let Some(floor) = manifest.cuda_compute_cap {
+        match node.lowest_compute_cap {
+            None => {
+                return Err(format!(
+                    "artifact needs compute capability {floor}, and this node's GPUs could not be read (nvidia-smi)"
+                ))
+            }
+            Some(lowest) if lowest < floor => {
+                return Err(format!(
+                    "artifact needs compute capability {floor}, and this node has a GPU at {lowest}"
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Is this manifest THE build for `tip` on this node? A node with a different feature set
@@ -251,7 +336,37 @@ mod tests {
             archive: "continuum-core-macos-x86_64.tar.gz".into(),
             sha256: "9e08699366264e94d11b6f51c545a5fa0a9a0d3254224cd1afc18c7d11898cea".into(),
             bins: REQUIRED_BINS.iter().map(|b| b.to_string()).collect(),
+            cuda_version: None,
+            cuda_compute_cap: None,
+            runtime_libs: Vec::new(),
         }
+    }
+
+    // what this catches (the 5090, 2026-10-06): a CUDA core staged onto a node whose driver
+    // cannot load its runtime, or whose GPU is below its kernels' floor, dies at launch.
+    // A build without CUDA needs nothing; the driver's major and the lowest GPU decide.
+    #[test]
+    fn a_cuda_build_runs_only_where_the_driver_and_gpus_can() {
+        let banner = "| NVIDIA-SMI 580.97  Driver Version: 580.97  CUDA Version: 13.0 |";
+        assert_eq!(driver_cuda_major(banner), Some(13));
+        assert_eq!(driver_cuda_major("no gpu here"), None);
+        assert_eq!(lowest_compute_cap("12.0\n8.6\n"), Some(86));
+        assert_eq!(lowest_compute_cap(""), None);
+
+        let cpu = manifest();
+        assert!(gpu_verdict(&cpu, &NodeGpu::default()).is_ok(), "no CUDA, nothing to check");
+
+        let mut cuda = manifest();
+        cuda.cuda_version = Some("12.9".into());
+        cuda.cuda_compute_cap = Some(80);
+        let the_5090 = NodeGpu { driver_cuda_major: Some(13), lowest_compute_cap: Some(120) };
+        assert!(gpu_verdict(&cuda, &the_5090).is_ok());
+        let old_driver = NodeGpu { driver_cuda_major: Some(11), ..the_5090.clone() };
+        assert!(gpu_verdict(&cuda, &old_driver).unwrap_err().contains("update the NVIDIA driver"));
+        let old_gpu = NodeGpu { lowest_compute_cap: Some(75), ..the_5090.clone() };
+        assert!(gpu_verdict(&cuda, &old_gpu).unwrap_err().contains("a GPU at 75"));
+        assert!(gpu_verdict(&cuda, &NodeGpu::default()).is_err(), "unreadable is refused");
+        assert_eq!(platform_key("windows", "x86_64"), Some("windows-x86_64"));
     }
 
     // what this catches: a node taking a build that is not the program it would compile —
