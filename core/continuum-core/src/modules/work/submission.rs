@@ -98,8 +98,10 @@ pub struct WorkSubmit {
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
 )]
 pub struct WorkSubmitParams {
-    /// Card room (ID/name).
-    pub room: String,
+    /// Optional; the card's board decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
     // The card you hold. Everything below is DERIVED from it and your checkout when
     // omitted — the citizen's world has no verb that mints an artifact hash, and
     // before 2026-09-17 every submit she wrote by hand carried zeros and was refused
@@ -155,6 +157,73 @@ async fn card_elsewhere(airc: &std::sync::Arc<airc_lib::Airc>, raw: &str, asked:
                 r.name
             )
         })
+}
+
+/// The room a card verb acts in: the board that holds the card. A card sits on exactly ONE
+/// board, so the card names its room, and a room she names is consulted only when the card is
+/// on no board she can see. Kimi on the 5090 (2026-10-06) was refused three times in an hour
+/// for guessing a room ('swe-bench', 'default') while the card id in her hand already said
+/// where it was: a refusal that asks her for what the card knows costs her a turn for nothing
+/// (accept-or-redirect, the rule `follow_card_room` states for claim/state/release).
+async fn room_of_card(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    named: Option<&str>,
+    raw_card: &str,
+    verb: &'static str,
+) -> Result<airc_lib::Room, CommandError> {
+    let named = named.map(str::trim).filter(|s| !s.is_empty());
+    let horizon = super::board_horizon(airc)
+        .await
+        .map_err(|e| CommandError::Internal(format!("{verb}: the rooms you are in could not be listed: {e}")))?;
+    match super::resolve_card_id_in_boards(&horizon, raw_card) {
+        Ok(id) => {
+            let mut holders = horizon.boards.iter().filter(|(_, b)| b.card(id).is_some()).map(|(room, _)| room);
+            if let Some(room) = holders.next() {
+                if let Some(other) = holders.next() {
+                    // a card is on exactly one board; two is a fault worth seeing, not a choice
+                    crate::probe!(
+                        class = "work.room.card_on_two_boards",
+                        verb,
+                        card_id = %short8(id.as_uuid()),
+                        first = %room.name,
+                        second = %other.name,
+                        "a card id found on two readable boards: acting in the first"
+                    );
+                }
+                if let Some(asked) = named {
+                    let wanted = asked.trim_start_matches('#');
+                    if wanted != room.name && wanted != room.channel.as_uuid().to_string() {
+                        crate::probe!(
+                            class = "work.room.from_card",
+                            verb,
+                            card_id = %short8(id.as_uuid()),
+                            asked = %asked,
+                            used = %room.name,
+                            "a card verb named a room that does not hold the card: it acts in the card's room"
+                        );
+                    }
+                }
+                return Ok(room.clone());
+            }
+            // the id is whole but on no READABLE board: named, that room answers for itself;
+            // unnamed, an unreadable board is a read failure (horizon's own story), never "absent"
+            match named {
+                Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+                None if !horizon.unreadable.is_empty() => Err(horizon.not_found("card", raw_card)),
+                None => Err(CommandError::Invalid(format!(
+                    "{verb}: the card you named is on no board of a room you are in, so it cannot say its room: \
+                     join the card's room (room/join) or name it with room=..."
+                ))),
+            }
+        }
+        // the handle did not resolve across her boards (a prefix on two cards, a malformed id,
+        // or no board to search): a named room disambiguates, and its own resolution reports
+        // its own truth; unnamed, the resolver's refusal IS the answer, never a guessed absence
+        Err(refusal) => match named {
+            Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+            None => Err(refusal),
+        },
+    }
 }
 
 /// PURE: where a submission handle comes from, said with the handles themselves. A
@@ -573,14 +642,9 @@ impl ActionCommand for WorkSubmit {
     type Output = WorkSubmitResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkSubmitParams) -> Result<WorkSubmitResult, CommandError> {
-        if p.room.trim().is_empty() {
-            return Err(CommandError::Invalid(
-                "an explicit activity room is required".into(),
-            ));
-        }
         let runtime = persona_runtime(&self.registry, ctx, "work/submit")?;
         let airc = runtime.airc();
-        let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
+        let room = room_of_card(airc, p.room.as_deref(), &p.card_id, "work/submit").await?;
         // Validate before allocating a durable binding. The SDK validates again
         // against its own latest projection immediately before publication.
         let board = airc
@@ -607,7 +671,7 @@ impl ActionCommand for WorkSubmit {
                 "card {} is absent from the board of room {}: you asked for '{}'",
                 card_uuid,
                 room_label(&room.name, room.channel.as_uuid()),
-                p.room
+                p.room.as_deref().unwrap_or("none, the card's own") // unwrap_or: no room named is a fact to state, never an error
             ));
             let hint = card_elsewhere(airc, &p.card_id, room.channel.as_uuid()).await;
             return Err(with_hint(absent, hint));
@@ -883,15 +947,17 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
 )]
 pub struct WorkReviewParams {
-    /// Review room (ID/name).
-    pub room: String,
+    /// Optional; the card's board decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
     // The REVIEW card she holds. The parent card, its latest submission and artifact,
     // and her claim on the review card are read off the board from it when the fields
     // below are omitted — a reviewer never had a way to know a submission id or an
     // artifact hash by hand (5204f4b5 sent all-zero ids, 2026-09-16).
-    /// Full UUID of your linked review card, not the task you authored.
+    /// Your linked review card (board handle or full UUID), not the task you authored.
     #[ts(type = "string")]
-    pub review_card_id: Uuid,
+    pub review_card_id: String,
     /// Your verdict.
     pub outcome: ReviewOutcome,
     /// What you ran and saw; the review's evidence.
@@ -902,10 +968,10 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub review_id: Option<Uuid>,
-    /// Parent card; defaults to review parent.
+    /// Parent card (handle or UUID); defaults to review parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
-    pub card_id: Option<Uuid>,
+    pub card_id: Option<String>,
     /// Submission; defaults to latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
@@ -960,14 +1026,9 @@ impl ActionCommand for WorkReview {
     type Output = WorkReviewResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkReviewParams) -> Result<Self::Output, CommandError> {
-        if p.room.trim().is_empty() {
-            return Err(CommandError::Invalid(
-                "an explicit activity room is required".into(),
-            ));
-        }
         let runtime = persona_runtime(&self.registry, ctx, "work/review")?;
         let airc = runtime.airc();
-        let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
+        let room = room_of_card(airc, p.room.as_deref(), &p.review_card_id, "work/review").await?;
         // Everything a reviewer cannot know by hand is read off the board from the
         // review card she holds: the parent, her claim, the parent's latest submission
         // and its artifact. Typed values are honoured; placeholders were already
@@ -976,43 +1037,53 @@ impl ActionCommand for WorkReview {
             .work_board_in(&room)
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
+        // Her handles resolve against THIS room's cards, the board she was shown, the way
+        // work/submit's do: the board shows short ids, and a Uuid field refused them in serde
+        // before any resolver ran (Kimi's verdict on #4825, 2026-10-06: "expected length 32
+        // ... found 8").
+        let snapshot = board.snapshot();
+        let shown: Vec<Uuid> = snapshot.cards.iter().map(|c| c.card_id.as_uuid()).collect();
+        let review_uuid = match resolve_shown(&p.review_card_id, &shown, "card") {
+            Ok(id) => id,
+            Err(e) => {
+                let hint = card_elsewhere(airc, &p.review_card_id, room.channel.as_uuid()).await;
+                return Err(with_hint(e, hint));
+            }
+        };
         // Absent here: name the room that does hold it, the way work/submit does. Kimi
         // reviewed a peer's card at 07:19Z with room 'academy' while the review card sat
         // on another board, and the refusal said only where it was not.
-        let Some(review_card) = board.card(WorkCardId::from_uuid(p.review_card_id)) else {
+        let Some(review_card) = board.card(WorkCardId::from_uuid(review_uuid)) else {
             let absent = CommandError::NotFound(format!(
-                "review card {} is absent from the board of room {} — you asked for '{}'",
-                p.review_card_id,
+                "the review card you named is absent from the board of room {} — you asked for '{}'",
                 room_label(&room.name, room.channel.as_uuid()),
-                p.room
+                p.room.as_deref().unwrap_or("none, the card's own") // unwrap_or: no room named is a fact to state, never an error
             ));
-            let hint = card_elsewhere(airc, &p.review_card_id.to_string(), room.channel.as_uuid()).await;
+            let hint = card_elsewhere(airc, &p.review_card_id, room.channel.as_uuid()).await;
             return Err(with_hint(absent, hint));
         };
-        let card_id = match p.card_id {
-            Some(c) => WorkCardId::from_uuid(c),
+        let card_id = match p.card_id.as_deref() {
+            Some(c) => WorkCardId::from_uuid(resolve_shown(c, &shown, "card")?),
             None => review_card.reviews.ok_or_else(|| {
-                CommandError::Invalid(format!(
-                    "card {} is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band",
-                    p.review_card_id
-                ))
+                CommandError::Invalid(
+                    "the card you named is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band"
+                        .to_string(),
+                )
             })?,
         };
         let review_claim_id = match p.review_claim_id {
             Some(c) => ClaimId::from_uuid(c),
             None => match (review_card.owner, review_card.claim_id) {
                 (Some(owner), Some(claim)) if owner == airc.peer_id() => claim,
-                (Some(owner), _) => {
-                    return Err(CommandError::Invalid(format!(
-                        "review card {} is held by {owner}, not by you — only its holder reviews",
-                        p.review_card_id
-                    )))
+                (Some(_), _) => {
+                    return Err(CommandError::Invalid(
+                        "the review card you named is held by another peer, not by you — only its holder reviews".to_string(),
+                    ))
                 }
                 _ => {
-                    return Err(CommandError::Invalid(format!(
-                        "review card {} is not claimed — claim it (work/claim) before reviewing",
-                        p.review_card_id
-                    )))
+                    return Err(CommandError::Invalid(
+                        "the review card you named is not claimed — claim it (work/claim) before reviewing".to_string(),
+                    ))
                 }
             },
         };
@@ -1022,7 +1093,7 @@ impl ActionCommand for WorkReview {
                 CommandError::NotFound(format!(
                     "card {card_id} is absent from the board of room {} — you asked for '{}'",
                     room_label(&room.name, room.channel.as_uuid()),
-                    p.room
+                    p.room.as_deref().unwrap_or("none, the card's own") // unwrap_or: no room named is a fact to state, never an error
                 ))
             })?;
         let submission = match p.submission_id {
@@ -1070,7 +1141,7 @@ impl ActionCommand for WorkReview {
         let review_id = p.review_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
         crate::probe!(
             class = "work.review.shaped",
-            review_card = %p.review_card_id,
+            review_card = %short8(review_uuid),
             card = %card_id,
             submission = %submission.submission_id,
             derived = p.submission_id.is_none() || p.artifact.is_none() || p.review_claim_id.is_none() || p.card_id.is_none(),
@@ -1084,7 +1155,7 @@ impl ActionCommand for WorkReview {
                     card_id,
                     submission_id: submission.submission_id,
                     artifact,
-                    review_card_id: WorkCardId::from_uuid(p.review_card_id),
+                    review_card_id: WorkCardId::from_uuid(review_uuid),
                     review_claim_id,
                     outcome: p.outcome.into(),
                     evidence,
@@ -1150,8 +1221,10 @@ pub struct WorkSubmission {
     export_to = "../../../protocol/typescript/work/WorkSubmissionParams.ts"
 )]
 pub struct WorkSubmissionParams {
-    /// Submission's activity room.
-    pub room: String,
+    /// Optional; the card's board decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// Parent card — board handle or full UUID.
     #[ts(type = "string")]
     pub card_id: String,
@@ -1191,14 +1264,8 @@ impl ActionCommand for WorkSubmission {
     type Output = WorkSubmissionResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkSubmissionParams) -> Result<Self::Output, CommandError> {
-        if p.room.trim().is_empty() {
-            return Err(CommandError::Invalid(
-                "an explicit activity room is required".into(),
-            ));
-        }
         let runtime = persona_runtime(&self.registry, ctx, "work/submission")?;
-        let room =
-            crate::modules::room_resolve::resolve_room(runtime.airc(), Some(&p.room)).await?;
+        let room = room_of_card(runtime.airc(), p.room.as_deref(), &p.card_id, "work/submission").await?;
         let board = runtime
             .airc()
             .work_board_in(&room)
@@ -1412,6 +1479,63 @@ mod tests {
         use crate::sdk_codegen::CommandError;
         let e = super::with_hint(CommandError::Invalid("no card".into()), Some(hint));
         assert!(matches!(e, CommandError::Invalid(ref m) if m.contains("'cambriantech'")), "{e:?}");
+    }
+
+    // what this catches (Kimi on the 5090, 2026-10-06: three refusals in an hour for guessed
+    // rooms 'swe-bench' and 'default' with the card id in hand): a card verb acts in the room
+    // whose board holds the card, whatever room she named or none; a room she names is used
+    // only for a card on no board she can see, and with neither the refusal says how to fix it.
+    #[tokio::test]
+    async fn a_card_verb_acts_in_the_cards_own_room_whatever_room_she_named() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = std::sync::Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        airc.join("bench-swe-bench-verified-1789170698").await.expect("join the card's room");
+        let repo = airc_lib::RepoId::new("github.com/CambrianTech/career-wrangler").expect("repo");
+        let card = airc
+            .create_work_card(airc_lib::CreateWorkCard::new(repo, "a task", airc_lib::Priority::P1))
+            .await
+            .expect("card");
+        airc.join("academy").await.expect("her pointer stands elsewhere");
+        let short = card.as_uuid().simple().to_string()[..8].to_string();
+        for named in [None, Some("swe-bench"), Some("default"), Some("academy"), Some("")] {
+            let room = super::room_of_card(&airc, named, &short, "work/submit").await.expect("the card says its room");
+            assert_eq!(room.name, "bench-swe-bench-verified-1789170698", "named {named:?}");
+        }
+        let elsewhere = super::room_of_card(&airc, Some("academy"), "0000dead", "work/submit")
+            .await
+            .expect("a card on no board she can see: the room she named");
+        assert_eq!(elsewhere.name, "academy");
+        // what this catches (Cormac on #4822): a handle that does not resolve, with no room named,
+        // is answered by the resolver's own refusal, never a confident "on no board" it cannot know
+        let e = super::room_of_card(&airc, None, "0000dead", "work/submit")
+            .await
+            .expect_err("a prefix matching no card and no room: the resolver's refusal");
+        assert!(e.to_string().contains("0000dead") && !e.to_string().contains("room/join"), "{e}");
+        let whole = uuid::Uuid::new_v4().to_string();
+        let e = super::room_of_card(&airc, None, &whole, "work/submit")
+            .await
+            .expect_err("a whole id on no readable board and no room: nothing to act in");
+        assert!(e.to_string().contains("room/join") && e.to_string().contains("room="), "{e}");
+    }
+
+    // what this catches (Kimi's verdict on #4825, 2026-10-06): work/review's card fields were
+    // Uuid, so the 8-char handle the board shows her died in serde ("expected length 32 ...
+    // found 8") before any resolver ran. Handles parse; resolution happens on the board.
+    #[test]
+    fn a_review_takes_the_board_handles_she_was_shown() {
+        let p: super::WorkReviewParams = serde_json::from_value(serde_json::json!({
+            "review_card_id": "3f2a91c0",
+            "card_id": "0c4317e1",
+            "outcome": "passed"
+        }))
+        .expect("short handles parse");
+        assert_eq!(p.review_card_id, "3f2a91c0");
+        assert_eq!(p.card_id.as_deref(), Some("0c4317e1"));
+        assert!(p.room.is_none(), "the card decides the room");
     }
 
     // what this catches (Kimi, 2026-09-28): a citizen with a pushed commit in hand passes its

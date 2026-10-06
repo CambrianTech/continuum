@@ -3,9 +3,9 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkSubmitParams = { 
 /**
- * Card room (ID/name).
+ * Optional; the card's board decides.
  */
-room: string, 
+room?: string, 
 /**
  * The card you hold — board handle or full UUID.
  */
