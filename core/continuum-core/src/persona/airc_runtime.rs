@@ -1783,6 +1783,7 @@ pub(crate) async fn scoped_board_owned_by(
         .all()
         .map(|sub| sub.as_room())
         .collect();
+    let walked_rooms: Vec<uuid::Uuid> = rooms.iter().map(|room| room.channel.as_uuid()).collect();
     let mut held = Vec::new();
     for room in rooms {
         // ONE unreadable room must not erase every hold: this fold feeds the renewal loop,
@@ -1812,7 +1813,51 @@ pub(crate) async fn scoped_board_owned_by(
                 .map(|card| (room.clone(), card)),
         );
     }
+    // THE FOLLOWED CLAIMS, here too (card ed2c9417). A claim that followed its card to a
+    // room she does not subscribe to is renewed through that room (the followed path of the
+    // renewal loop), so it is hers; a walk over her subscriptions alone never saw it. Kimi
+    // held 017843bb on #cambriantech with its lease renewed while the work gate read
+    // no_held_work, and she created a new review card every turn for one verdict
+    // (2026-10-06). One owned set feeds the gate and the renewal, so they cannot disagree.
+    let walked_cards: Vec<uuid::Uuid> = held.iter().map(|(_, card)| card.card_id.as_uuid()).collect();
+    let recorded = crate::persona::held_claims::held(me.as_uuid());
+    for followed in followed_beyond_rooms(&walked_rooms, &walked_cards, &recorded) {
+        match airc.work_board_in(&followed.room).await {
+            Ok(board) => {
+                if let Some(card) = board
+                    .card(airc_lib::WorkCardId::from_uuid(followed.card_id))
+                    .filter(|card| card.owner == Some(me))
+                {
+                    held.push((followed.room.clone(), card.clone()));
+                }
+            }
+            Err(error) => {
+                crate::probe!(
+                    class = "persona.claim.board_room_unreadable",
+                    room = %followed.room.channel,
+                    error = %error,
+                    "a followed claim's room did not read; her other holds still count"
+                );
+            }
+        }
+    }
     Ok(held)
+}
+
+/// PURE: the recorded claims a subscription walk could not have seen. Their room is not one
+/// she walked, and the walk did not already find the card. Those are the ones
+/// [`scoped_board_owned_by`] reads on their own room's board.
+fn followed_beyond_rooms(
+    walked_rooms: &[uuid::Uuid],
+    walked_cards: &[uuid::Uuid],
+    recorded: &[crate::persona::held_claims::HeldClaim],
+) -> Vec<crate::persona::held_claims::HeldClaim> {
+    recorded
+        .iter()
+        .filter(|h| !walked_rooms.contains(&h.room.channel.as_uuid()))
+        .filter(|h| !walked_cards.contains(&h.card_id))
+        .cloned()
+        .collect()
 }
 
 impl Drop for PersonaAircRuntime {
@@ -1851,6 +1896,33 @@ impl Drop for PersonaAircRuntime {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // what this catches (card ed2c9417, Kimi 2026-10-06): a claim she holds on a room she
+    // does not subscribe to, renewed by the followed path but invisible to the work gate,
+    // so she read no_held_work and made a new review card every turn. Only a record whose
+    // room she did NOT walk, and whose card the walk did not find, is read on its own board.
+    #[test]
+    fn a_followed_claim_outside_her_rooms_joins_the_owned_walk_once() {
+        let home = TempDir::new().expect("tempdir");
+        let room = |name: &str| airc_lib::Room::from_name(home.path(), name).expect("a room");
+        let claim = |room_name: &str, card: u128| crate::persona::held_claims::HeldClaim {
+            room: room(room_name),
+            card_id: uuid::Uuid::from_u128(card),
+            claim_id: uuid::Uuid::from_u128(card + 0x1000),
+            recorded_at_ms: 1,
+            refusals: 0,
+        };
+        let walked_rooms = vec![room("academy").channel.as_uuid()];
+        let recorded = vec![
+            claim("cambriantech", 1), // her review card's room, not walked: read it
+            claim("academy", 2),      // a walked room: the walk already saw it
+            claim("cambriantech", 3), // not walked, but the walk found the card: no second read
+        ];
+        let walked_cards = vec![uuid::Uuid::from_u128(3)];
+        let beyond = followed_beyond_rooms(&walked_rooms, &walked_cards, &recorded);
+        assert_eq!(beyond.len(), 1, "{beyond:?}");
+        assert_eq!(beyond[0].card_id, uuid::Uuid::from_u128(1));
+    }
 
     #[tokio::test]
     async fn bootstrap_resolves_home_under_personas_directory() {
