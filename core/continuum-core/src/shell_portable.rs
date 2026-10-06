@@ -3,7 +3,7 @@
 //! ONE definition of "which bash do we exec", because this bug has now been
 //! found twice in two call sites that could not see each other.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Find a native executable without spawning a shell or interpreting PATH by hand.
 pub fn locate_executable(name: &str) -> Option<PathBuf> {
@@ -123,9 +123,63 @@ fn is_wsl_shim_dir(dir: &std::path::Path) -> bool {
     dir.to_string_lossy().to_lowercase().contains("system32")
 }
 
+/// `tar` aimed at `archive`: it runs FROM the archive's own directory and names the
+/// archive by its bare file name, so no `-f` operand ever carries a drive letter.
+///
+/// Git for Windows ships GNU tar in `usr/bin`, and GNU tar reads `HOST:PATH` as a
+/// remote archive: `D:\a\_temp\x.tar.gz` became host `D` and died with "Cannot
+/// connect to D: resolve failed" (Fable, the Windows CI leg of #4834, 2026-10-06).
+/// Which tar a node resolves depends on its PATH order (System32's bsdtar or Git's
+/// GNU tar), so the only spelling both read the same way is a relative name.
+/// `--force-local` would fix GNU tar alone; bsdtar rejects it.
+///
+/// `mode` is the operation with `f` last (`-xzf`, `-czf`, `-tzf`). A caller adds
+/// `-C`, `-T` and member operands after it; those are directories and lists, which
+/// no tar parses as a host.
+pub fn tar_on(archive: &Path, mode: &str) -> Result<std::process::Command, String> {
+    let (Some(dir), Some(name)) = (archive.parent(), archive.file_name()) else {
+        return Err(format!(
+            "{} names no archive file in a directory",
+            archive.display()
+        ));
+    };
+    let mut tar = std::process::Command::new("tar");
+    tar.current_dir(dir).arg(mode).arg(name);
+    Ok(tar)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// what this catches: a tar whose `-f` operand carries a directory. Git for
+    /// Windows' GNU tar reads `C:\...` as a remote host, so CI's Windows leg died
+    /// in tar and a node with that tar first on PATH could not take CI's core. The
+    /// archive must be named bare, from its own directory, and still round-trip.
+    #[test]
+    fn tar_names_its_archive_bare_and_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("core.txt"), b"the core").unwrap();
+        let out = root.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let archive = out.join("core.tar.gz");
+
+        let mut pack = tar_on(&archive, "-czf").unwrap();
+        assert_eq!(pack.get_current_dir(), Some(out.as_path()));
+        let operands: Vec<_> = pack.get_args().collect();
+        assert_eq!(
+            operands,
+            [std::ffi::OsStr::new("-czf"), std::ffi::OsStr::new("core.tar.gz")],
+            "the archive operand carries no directory"
+        );
+        assert!(pack.arg("-C").arg(&src).arg("core.txt").status().unwrap().success());
+
+        std::fs::remove_dir_all(&src).unwrap();
+        assert!(tar_on(&archive, "-xzf").unwrap().status().unwrap().success());
+        assert_eq!(std::fs::read(out.join("core.txt")).unwrap(), b"the core");
+    }
 
     // what this catches: Windows drive letters, PATH separators and uv.exe must
     // not make the SWE grader report an installed native prerequisite missing.
