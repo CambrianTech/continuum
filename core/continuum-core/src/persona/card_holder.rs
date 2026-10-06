@@ -253,10 +253,10 @@ pub fn in_flight_by(cards: &[WorkCard], holders: &std::collections::HashSet<airc
         .count()
 }
 
-/// The 8-char short id every surface in the system uses to name a uuid.
 /// How a holder with no published name is said in a sentence (see [`CardHolder::display`]).
 pub(crate) const UNNAMED_HOLDER: &str = "an unnamed peer";
 
+/// The 8-char short id every surface in the system uses to name a uuid.
 pub(crate) fn short8(id: &uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
 }
