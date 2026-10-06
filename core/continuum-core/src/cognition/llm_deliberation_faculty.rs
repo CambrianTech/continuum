@@ -5250,6 +5250,28 @@ impl LlmDeliberationFaculty {
             // a real Speak or an explicit PASS is a commitment in the answer channel
             // and private deliberation must never override it.
             if resp.text.trim().is_empty() {
+                // A thought CUT at the output limit chose nothing: the last call in its tail
+                // is what she was weighing when the cap landed, never a commitment. Lift
+                // nothing; tell her it was cut and let her decide (BigMama's 5090 receipt,
+                // 2026-10-06: a half-formed code/run lifted from a cut 8,504-token think).
+                if matches!(resp.finish_reason, FinishReason::Length)
+                    && !self.tools.is_empty()
+                    && resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty())
+                {
+                    crate::probe!(
+                        class = "persona.act.thought_cut",
+                        persona = %self.persona_name,
+                        reasoning_len = resp.reasoning.as_deref().map_or(0, str::len),
+                        "the generation reached the output limit mid-thought: nothing lifted, the decision is hers"
+                    );
+                    let call = crate::ai::types::ToolCall {
+                        id: "tool-attempt-thought-cut".to_string(),
+                        name: crate::cognition::tool_executor::command_executor::THOUGHT_CUT_SENTINEL
+                            .to_string(),
+                        input: serde_json::json!({}),
+                    };
+                    return Some(self.act_verdict(vec![call], &resp));
+                }
                 if let Some(reasoning) = resp.reasoning.as_deref() {
                     if let Some(mut call) =
                         crate::ai::json_in_prompt_tools::parse_tool_calls(reasoning)
@@ -11026,6 +11048,42 @@ mod tests {
             match c.decision {
                 Some(Decision::Speak { .. }) => {}
                 other => panic!("expected the spoken answer to stand, got {other:?}"),
+            }
+        }
+
+        // what this catches (BigMama's 5090 receipt, 2026-10-06): a thought CUT at the
+        // output limit had the last call in its tail lifted and run (a half-formed code/run
+        // that failed). The same reasoning as the lift test above, but ended by Length:
+        // nothing is lifted; the thought-cut sentinel routes, so she decides.
+        #[tokio::test]
+        async fn a_thought_cut_at_the_limit_lifts_nothing_and_hands_her_the_decision() {
+            let persona = Uuid::new_v4();
+            let reasoning = format!(
+                "I could list the directory first: {}\nActually the task names the file, so I'll just read it: {}",
+                json!({ "tool_call": { "name": "code/list", "arguments": { "path": "." } } }),
+                json!({ "tool_call": { "name": "code/read", "arguments": { "path": "src/main.rs" } } }),
+            );
+            let mut resp = make_response(FinishReason::Length, "", None);
+            resp.reasoning = Some(reasoning);
+            let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![read_tool()])
+                .with_context_window(32_768);
+
+            let c = faculty
+                .contribute(&Workspace::new("what does main.rs contain?"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Act { calls, .. }) => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(
+                        calls[0].name,
+                        crate::cognition::tool_executor::command_executor::THOUGHT_CUT_SENTINEL,
+                        "a cut thought is reported, never lifted into code/read"
+                    );
+                }
+                other => panic!("expected the thought-cut sentinel Act, got {other:?}"),
             }
         }
 

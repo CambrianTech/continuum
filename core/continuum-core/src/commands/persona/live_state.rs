@@ -280,9 +280,12 @@ pub(crate) fn project(rows: &[ProbeRow], turns_wanted: u32) -> (Option<PersonaTu
                     acts.wrote += 1;
                 }
                 // The producer records `tools` as the batch size and `verbs`
-                // as command names. Counts are not tool identities.
+                // as command names joined by ',' (act_observe). Counts are not tool
+                // identities. Split on the producer's separator only: a reserved
+                // sentinel name carries spaces ('tools/<cut at the output limit>')
+                // and splitting on whitespace made verbs of 'at', 'the', 'limit>'.
                 if let Some(t) = text(row.fields.get("verbs")) {
-                    for tool in t.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|s| !s.is_empty()) {
+                    for tool in t.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                         *tools.entry(tool.to_string()).or_insert(0) += 1;
                     }
                 }
@@ -440,6 +443,9 @@ mod tests {
             row(7, "persona.turn.start", json!({"persona": "Kimi", "lamport": "12", "room_id": "5dee0000-0000-4000-8000-000000000001"})),
             row(8, "persona.act.observed", json!({"persona": "Kimi", "tools": 1, "verbs": "code/shell", "wrote": true})),
             row(9, "persona.act.observed", json!({"persona": "Kimi", "tools": "4", "wrote": false})),
+            // what this catches (BigMama, 2026-10-06): a sentinel name with spaces split into
+            // fake verbs ('at', 'the', 'limit>'); it is one verb
+            row(10, "persona.act.observed", json!({"persona": "Kimi", "tools": 1, "verbs": "tools/<cut at the output limit>", "wrote": false})),
         ];
         let (current, recent, perceived, acts) = project(&rows, 10);
         assert_eq!(current.as_ref().map(|t| t.lamport.as_str()), Some("12"), "the turn in flight");
@@ -454,10 +460,12 @@ mod tests {
         );
         let ask_room = RoomId::from_uuid(uuid::Uuid::parse_str("cb2e21a1-999a-5a03-a184-df06e4ee7097").expect("room uuid"));
         assert_eq!(perceived, vec![PersonaPerceivedRoom { room_id: Some(ask_room), count: 1, last_ms: 1 }], "the ask's room, perceived");
-        assert_eq!(acts.count, 3);
+        assert_eq!(acts.count, 4);
+        assert!(acts.tools.iter().any(|(t, n)| t == "tools/<cut at the output limit>" && *n == 1), "{:?}", acts.tools);
+        assert!(!acts.tools.iter().any(|(t, _)| t == "the" || t == "at"), "no fake verbs: {:?}", acts.tools);
         assert_eq!(acts.wrote, 1);
         assert_eq!(acts.tools.first(), Some(&("code/shell".to_string(), 2)));
-        assert_eq!(acts.tools.len(), 2, "missing verbs must not fabricate numeric tool names");
+        assert_eq!(acts.tools.len(), 3, "missing verbs must not fabricate numeric tool names; a sentinel is one verb");
         let wire = serde_json::to_string(&(current, recent)).expect("serialize");
         assert!(!wire.contains("private reasoning"), "her own words never leave: {wire}");
     }

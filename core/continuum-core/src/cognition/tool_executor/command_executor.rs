@@ -279,6 +279,14 @@ pub(crate) const THINK_ONLY_SENTINEL: &str = "tools/<think-only turn>";
 /// (Kimi, 2026-09-25: "every Length cut is a micro-deploy with no wake-up record").
 pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>";
 
+/// Reserved pseudo-name for "the generation ended AT the output limit while she was still
+/// THINKING": content empty, the reasoning cut mid-way. Nothing is lifted out of a cut
+/// thought: the last call she was weighing is not a call she chose (BigMama and Cormac,
+/// 2026-10-06: an 8,504-token think cut at the cap, then a half-formed code/run lifted from
+/// its tail, which failed). Same uncallable namespace and contract as its siblings: REPORTED,
+/// never executed; her thinking is already in working memory, and she decides.
+pub(crate) const THOUGHT_CUT_SENTINEL: &str = "tools/<thought cut at the output limit>";
+
 fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
@@ -311,6 +319,19 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     // notes on a closed card, cut mid-envelope twice). Name the fact, point at the
     // record, and name the two ways out: commit the call first, and keep the payload
     // small enough to land.
+    // The THOUGHT-CUT case: the generation reached the output limit while she was still
+    // thinking, before she had committed anything. Whatever call she was weighing at the
+    // cut was NOT run on her behalf: it was a thought, not a choice. Say so, and hand the
+    // decision back.
+    if attempted == THOUGHT_CUT_SENTINEL {
+        return "Your thinking reached the output limit before you decided anything, so \
+                nothing ran and nothing changed. Any tool call you were weighing when it \
+                was cut was NOT run for you. Your thinking so far is saved in your working \
+                memory. Decide from where you got to: call a tool, state your conclusion \
+                as plain text, or PASS."
+            .to_string();
+    }
+
     if attempted == CUT_AT_LIMIT_SENTINEL {
         return "Your last generation reached the output limit before a tool call was \
                 committed, so NOTHING ran and nothing changed — the act did not land. \
@@ -927,6 +948,20 @@ mod tests {
         assert!(out.contains("NOTHING ran"), "{out}");
         assert!(out.contains("working memory"), "{out}");
         assert!(out.contains("smaller payload"), "{out}");
+        assert!(!out.contains("not a tool you can call"), "{out}");
+    }
+
+    // what this catches (2026-10-06): a thought cut at the limit is told that what she was
+    // weighing was NOT run for her, where her thinking is, and that the decision is hers;
+    // never the cut-act advice about payload size (she was not composing a payload).
+    #[test]
+    fn thought_cut_sentinel_says_nothing_was_run_for_her_and_the_decision_is_hers() {
+        let raw = "no Rust module handles command: 'tools/<thought cut at the output limit>'".to_string();
+        let out = persona_tool_error(THOUGHT_CUT_SENTINEL, raw);
+        assert!(out.contains("NOT run for you"), "{out}");
+        assert!(out.contains("working"), "{out}");
+        assert!(out.contains("PASS"), "{out}");
+        assert!(!out.contains("payload"), "{out}");
         assert!(!out.contains("not a tool you can call"), "{out}");
     }
 
