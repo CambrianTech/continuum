@@ -5350,8 +5350,7 @@ fn build_env_cuda(repo: &Path) -> Result<BuildEnvCuda, String> {
     })?;
     Ok(BuildEnvCuda {
         cuda_path: cuda_path.to_string(),
-        // an older toolkit needs no prepend flags, and the build env then exports none
-        nvcc_prepend_flags: lines.next().map(str::trim).unwrap_or_default().to_string(),
+        nvcc_prepend_flags: lines.next().map(str::trim).unwrap_or_default().to_string(), // unwrap_or_default: printf always emits this line; an older toolkit exports no prepend flags, so it is empty
     })
 }
 
