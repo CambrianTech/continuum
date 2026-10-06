@@ -137,7 +137,8 @@ fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
 
 /// The entry closest to `want`, when one is close ENOUGH to name confidently. Character-level
 /// edit distance, capped: 1-2 typos in a real filename, never a coincidental prefix match.
-fn nearest_name(want: &str, names: &[String]) -> Option<String> {
+/// Also the room resolver's typo rule (`modules::room_resolve`): one "near enough" for names.
+pub(crate) fn nearest_name(want: &str, names: &[String]) -> Option<String> {
     let budget = match want.len() {
         0..=3 => 0, // too short to disambiguate — a listing is more honest
         4..=8 => 1,
