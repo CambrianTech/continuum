@@ -312,6 +312,12 @@ impl Footprints {
     }
 }
 
+/// The share of a lane's time training takes while serving is busy: one in four windows'
+/// worth. The lane's lease is where this belongs once the lease registry carries a time
+/// share beside its memory bound (INFERENCE-LANES-REALISTIC.md); until then ONE value here,
+/// sent explicitly so the engine's own default is never load-bearing. Not an env var.
+pub const TRAINING_SHARE_PPM: u32 = 250_000;
+
 /// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
 /// ONCE here instead of assembled field by field at the call site.
 #[derive(Debug, Clone, Serialize)]
@@ -335,6 +341,12 @@ struct TrainRequest {
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_budget_mib: Option<u64>,
+    /// The trainer's share of the lane's time, parts per million (fork card 36c3c00a): after a
+    /// window that took d ms the engine yields to busy slots for d·(1−s)/s, then takes the
+    /// next window whether or not serving is busy. Before this the engine yielded while ANY
+    /// slot was busy, which on a lane with residents was starvation (the M5, 2026-10-05: 12
+    /// minutes at batch 0). An engine before the card ignores the key and yields as before.
+    share_ppm: u32,
     /// "middle" (fork #29): at the served window a lived example trains whole; only a
     /// conversation longer than serving's own window drops its OLDEST history exchanges, and
     /// always keeps the system and tool head and her reply, the context serving always has
@@ -411,6 +423,16 @@ struct TrainStatus {
     paused: bool,
     #[serde(default)]
     waiting_for_serving: bool,
+    /// the share the run took of the lane (fork #32): windows run, windows taken while a
+    /// serving slot was busy, and the time yielded to serving; absent on an engine before it
+    #[serde(default)]
+    yielded_ms: Option<u64>,
+    #[serde(default)]
+    windows: Option<u64>,
+    #[serde(default)]
+    windows_while_busy: Option<u64>,
+    #[serde(default)]
+    share_ppm: Option<u64>,
     /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
     /// that predates `top_layers`, which adapts every block
     #[serde(default)]
@@ -872,7 +894,32 @@ impl EngineRun {
                         was_paused = now_paused;
                     }
                 }
-                TrainState::Done => return InPlaceEnd::Finished,
+                TrainState::Done => {
+                    // THE SHARE, as the engine itself counted it (Cormac on #4798): auditable on
+                    // every node from the run's own receipt, no second run. An engine before
+                    // fork #32 reports no counts: the probe says so, so "not reported" is
+                    // never read as a zero share, and an old engine is told apart from a probe
+                    // that never fired.
+                    match (s.windows, s.windows_while_busy, s.yielded_ms) {
+                        (Some(windows), Some(busy), Some(yielded)) => crate::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            reported = true,
+                            windows,
+                            windows_while_busy = busy,
+                            yielded_ms = yielded,
+                            share_ppm = s.share_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = counts reported, policy not (an engine between the counts and the policy); never a 0 that reads as a zero share
+                            "the in-engine run finished: how many windows it took beside busy serving, and how long it yielded"
+                        ),
+                        _ => crate::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            reported = false,
+                            "the in-engine run finished on an engine that does not report its share (before fork #32): the counts are not known"
+                        ),
+                    }
+                    return InPlaceEnd::Finished;
+                }
                 TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
                 TrainState::Error => {
                     let why = s.error.as_deref().unwrap_or("no error text"); // unwrap_or: the state alone is the failure
@@ -1189,7 +1236,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             requested = schedule.sequence_length as u64,
             served = u64::from(served_window),
             sent = window as u64,
-            "the training window: the matched lane's served per-slot window, rounded to the engine's 256 granularity; the request's length never decides it"
+            share_ppm = u64::from(TRAINING_SHARE_PPM),
+            "the training window: the matched lane's served per-slot window as the CEILING (the engine sizes the context to the longest example, fork #30), rounded to the engine's 256 granularity; the request's length never decides it; and the share of the lane's time training takes while serving is busy"
         );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
@@ -1214,6 +1262,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             seed: 42,
             top_layers: depth,
             memory_budget_mib: None,
+            share_ppm: TRAINING_SHARE_PPM,
             fit: "middle",
         };
         let measured = self.footprints.get(&shape);
