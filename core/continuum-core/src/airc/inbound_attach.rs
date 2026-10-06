@@ -133,15 +133,27 @@ pub fn spawn_daemon_attach(
 /// the gap instead of replaying the room's entire history into the UI and
 /// every persona's perception (glass-boxed three times on 2026-07-30 — each
 /// reboot re-fed days of transcript as fresh inbox to every mind).
-fn cursor_path(channel: &RoomId) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".continuum/state")
-        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid()))
+///
+/// Under the canonical continuum home, never a cwd-relative `.`: on the 5090
+/// (2026-10-06) the Windows service had no `HOME`, the old `unwrap_or(".")`
+/// resolved `.\.continuum\state` against an unwritable working directory, and
+/// 592 persists failed "Access is denied", so every core restart re-fed the
+/// room into the desktop, the human views and every persona as if it were new.
+fn cursor_path(channel: &RoomId) -> Result<PathBuf, String> {
+    Ok(crate::paths::continuum_home()?
+        .join("state")
+        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid())))
 }
 
 fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
-    let raw = std::fs::read_to_string(cursor_path(channel)).ok()?;
+    let path = match cursor_path(channel) {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("airc attach cursor has no home ({error}): this attach starts as a first attach");
+            return None;
+        }
+    };
+    let raw = std::fs::read_to_string(path).ok()?;
     // A corrupt watermark degrades to first-attach semantics (one full seed) —
     // annoying, never wrong. It is presentation-adjacent state, not truth: the
     // durable transcript is the storage of record either way.
@@ -149,7 +161,13 @@ fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
 }
 
 fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
-    let path = cursor_path(channel);
+    let path = match cursor_path(channel) {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("failed to persist airc attach cursor: no continuum home ({error})");
+            return;
+        }
+    };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -170,8 +188,10 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
 /// "When you join a Discord channel do you read the whole history from 10
 /// years back? No — one page"). The daemon streams the newest
 /// `FIRST_ATTACH_PAGE` backlog events at the catch-up seam and coalesces
-/// everything older into the watermark summary (airc PR #1312).
-const FIRST_ATTACH_PAGE: u32 = 32;
+/// everything older into the watermark summary (airc PR #1312). Ten, not a
+/// screenful (Joel, 2026-10-06: "no bookmark should also default to like last N
+/// being like 10"); with the bookmark persisting, a first attach is rare.
+const FIRST_ATTACH_PAGE: u32 = 10;
 
 /// Build the attach request for this consumer's cursor state (#295).
 ///
