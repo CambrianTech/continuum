@@ -96,6 +96,24 @@ pub const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// lane's tighter fail-loud budget is untouched.
 const EPHEMERAL_READY_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// The bring-up budget in force on this poll. A server answering 503 is UP and loading
+/// (llama-server serves `/health` 503 "Loading model" from the moment it listens), and a
+/// child of ours that is still running is not dead, so that pair earns the cold-load
+/// ceiling ([`EPHEMERAL_READY_TIMEOUT`], the measured co-resident cold-load bound); any
+/// other state (no answer, a connection error, a 200 whose decode probe fails, an
+/// adopted process we cannot see) keeps the caller's tight budget, so a wedge still
+/// fails fast. Measured on the 5090 2026-10-06: a verified new engine's FIRST load
+/// listened at 92s (about 1 GB of fresh CUDA libraries off disk plus the driver's kernel
+/// cache), the 90s live budget called it failed, and the slot rollback put the lanes
+/// back on the old engine; ordinary loads on that node run 80 to 92s.
+fn ready_budget(base: Duration, loading_and_alive: bool) -> Duration {
+    if loading_and_alive {
+        base.max(EPHEMERAL_READY_TIMEOUT)
+    } else {
+        base
+    }
+}
+
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 const READY_POLL: Duration = Duration::from_millis(500);
 
@@ -4207,6 +4225,12 @@ impl LlamaServerProcess {
     /// it has, `None` while it runs (or when we own no child — the adopt path).
     /// Lets [`wait_ready`] fail LOUD the instant a bring-up dies instead of polling
     /// a dead port for the whole budget.
+    /// Whether this handle spawned the process it waits on (an adopted lane has no child,
+    /// so its liveness is unknown here and it never earns the loading allowance).
+    fn owns_child(&self) -> bool {
+        self.child.lock().unwrap().is_some() // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
+    }
+
     fn child_exit_status(&self) -> Option<std::process::ExitStatus> {
         let mut child = self.child.lock().unwrap(); // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
         child.as_mut().and_then(|owned| {
@@ -4260,9 +4284,12 @@ impl LlamaServerProcess {
             EPHEMERAL_READY_TIMEOUT
         };
         let health = format!("{}/health", self.root);
-        let deadline = Instant::now() + budget;
+        let started = Instant::now();
         // Assigned by every arm below before the deadline check reads it.
         let mut last: String;
+        // Sticky: once the server has said it is loading, the finish of that load (the 200
+        // and the decode probe's first graph) belongs to the same allowance.
+        let mut seen_loading = false;
         loop {
             match self.client.get(&health).timeout(PROBE_TIMEOUT).send().await {
                 Ok(resp) if resp.status().is_success() => {
@@ -4274,7 +4301,10 @@ impl LlamaServerProcess {
                     }
                     last = String::from("/health 200 but decode smoke-probe failed");
                 }
-                Ok(resp) => last = format!("status {}", resp.status()),
+                Ok(resp) => {
+                    seen_loading |= resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE;
+                    last = format!("status {}", resp.status());
+                }
                 Err(e) => last = e.to_string(),
             }
             // #205 unmask: the instant our OWN child exits, fail LOUD with its exit
@@ -4290,7 +4320,8 @@ impl LlamaServerProcess {
                     self.stderr_log_tail()
                 )));
             }
-            if Instant::now() >= deadline {
+            let budget = ready_budget(budget, seen_loading && self.owns_child());
+            if started.elapsed() >= budget {
                 // Even a non-exiting HANG now surfaces the stderr state: an empty log
                 // fingerprints "child emitted nothing before it stopped" — the diagnostic
                 // that was missing when this masked as a bare 240s /health timeout. The
@@ -8096,6 +8127,22 @@ mod tests {
     // failure mode) while a non-empty log yields its last lines in order. Mutation
     // checks: dropping the empty-branch fails the OOM/jetsam assert; a non-reversed tail
     // fails the ordering assert.
+    // what this catches (the 5090, 2026-10-06): a verified new engine whose first load
+    // listened at 92s was declared failed at the 90s live budget, and the slot rollback put
+    // the lanes back on the old engine. A server of ours saying "loading" earns the cold-load
+    // ceiling; every other state keeps the tight budget, so a wedge still fails fast.
+    #[test]
+    fn a_loading_engine_of_ours_is_not_a_failed_one() {
+        assert_eq!(ready_budget(READY_TIMEOUT, true), EPHEMERAL_READY_TIMEOUT);
+        assert!(ready_budget(READY_TIMEOUT, true) > Duration::from_secs(92), "the measured first load fits");
+        assert_eq!(ready_budget(READY_TIMEOUT, false), READY_TIMEOUT, "silence or an adopted process keeps the tight budget");
+        assert_eq!(
+            ready_budget(EPHEMERAL_READY_TIMEOUT, true),
+            EPHEMERAL_READY_TIMEOUT,
+            "never shorter than the caller's own budget"
+        );
+    }
+
     #[test]
     fn tail_or_hang_marker_fingerprints_empty_and_tails_nonempty() {
         assert!(
