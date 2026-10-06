@@ -66,6 +66,8 @@ Selection pressure is "surprise fell". The quantity: negative log-likelihood of 
 
 Both already arrive as typed events at the inbound seam (#4731, #4765). The reading the decision takes today (#4796) is PERSONA-WIDE: every activity's tally folded by counts, inside a 24 h window applied on read, and only once at least three expectations were judged; per competence is the design, this is the interim, and the probe says `surprise=verdict`. Two numbers now carry the word "surprise", and the decision must name which it reads (Cormac, #4766 review): the **verdict surprise** (#4774: of her stated expectations, the share the room contradicted; cheap, hers to read on the strip today) and the **model surprise** (this section's fixed-model negative log-likelihood; the §7 quantity). `S(C)` in §2 is the verdict surprise until the model surprise is measured per competence, and the probe says which (`surprise=verdict|model|not_measured`). The two are expected to agree in direction; where they do not, the model surprise wins for selection and the disagreement is itself a finding. What is missing is the number and its per-competence window: `genome::surprise` (new, small): fold settled examples into `S(C)` by the same clustering, keep the window, expose it on her strip as a number she can read (Kimi, §12: "the moment one of my surprises has a fixed-model score attached, this section should be re-run").
 
+The counter is **read-only from inside** (Fable, #4803 review): `S(C)` is written by the substrate at the seam and only ever read on her strip. A mind that could bump its own surprise would steer selection pressure with the hand it is judged by — §3a's counts law applied to the one quantity a citizen can see.
+
 ## 3a. Fitness is utilization × propagation
 
 Joel, 2026-10-05: "fitness function is simple. it's the usage of the genes for what all the users in this system are up to. the successful genes are merely market forces" and "Fitness = utilization and propagation like it is in biology."
@@ -104,7 +106,13 @@ The law in §2 is already general: what she keeps is what her model of the world
 
 **One shape for every sense.** Each source is an adapter that emits the same typed event: a prediction error *for a competence*, with a magnitude, a time, and the source that produced it. The window (read at the reader's clock) folds them per competence, and §2 reads the fold.
 
+**Priming is named past** (Fable, #4803 review). A probe that reports memories offered by a turn says they prime as *past, not necessarily present*: an engram in the window is a precedent from when it was true, never a claim about now. A fold that read priming as present would weigh history stated as fact.
+
 **One unit, or the loudest sense wins** (Fable, #4803 review). The magnitude every adapter emits is a surprisal, `-log p` of what happened under her expectation, calibrated per adapter so that a typical event of each sense lands on the same scale. A raw count, a share and a distance never sum. Each sense also carries its own `MIN_JUDGED` and its own window: a tool runs many times a turn and a review lands once a day, and one floor or one window for both would let the frequent sense drown the rare one. Adding a sense is adding an adapter; the decision, the bucket, the trial and the verdict never change. If a new sense needs the decision changed, the shape is wrong, and that is the falsifier for this section.
+
+**One tool error is noise** (Fable, #4803 review). The consequence sense fires only when an outcome *repeats or blocks* her work; a one-off failure is written to memory as an episode and never folded into `S(C)`. Calibration sets the scale of each event that counts; this gate decides which events count at all.
+
+**Corrections weigh by proximity** (Fable, #4803 review). A correction about her own situation — her state, her claim, her checkout, what she stands on — outweighs one about form or style: it changes what she believes about where she is. The fold orders them that way before the window reads them.
 
 **Two axes, two stores.** Novelty and surprise are different quantities and lead to different consolidation, as they do in a brain (the hippocampus takes a novel episode fast; the cortex consolidates what keeps surprising it):
 
@@ -113,9 +121,11 @@ The law in §2 is already general: what she keeps is what her model of the world
 
 Novelty detection is the front half that writes the memory first, so that §2's "after recall ran" has something to recall.
 
+**Relationships stay lived** (Fable, #4803 review). A surprise about a peer — trust shifted, a relationship moved — changes how she reads the room, not what skill her work demands; no card trials it, so §2 never sees it. It consolidates as memory and stays there.
+
 **Build by outliers.** The first adapter is novelty from recall's engram distance, already computed on every turn and nearly free. The second is the most different one available: tool and execution outcomes (physical, where the verdict surprise is social). If the verdict, novelty and consequence sources fit one adapter without forcing, the interface is proven, and correction, failed recall, repetition and her flag are routine.
 
-Privacy holds unchanged: an experience in her mind room counts toward her own memory and her own `S(C)`, and is never published (`PRIVACY-OF-THOUGHT.md`).
+Privacy holds, sharpened to a **diary rule** (Fable, #4803 review): an experience in her mind room becomes *memory* — hers, recallable by distance — but it is folded into no `S(C)` and trains no gene. The diary never enters selection pressure or weights, and nothing of it is published (`PRIVACY-OF-THOUGHT.md`).
 
 ## 3c. Mentorship: the taught signals are the cheapest loops
 
