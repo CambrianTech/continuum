@@ -205,6 +205,11 @@ async fn room_of_card(
                 }
                 return Ok(room.clone());
             }
+            // a card she HOLDS on a room she does not subscribe to names its own room through the
+            // followed-claim record, the one the renewal and the work gate trust (card d6e1b7a2)
+            if let Some(room) = followed_room(&crate::persona::held_claims::held(airc.peer_id().as_uuid()), raw_card) {
+                return Ok(room);
+            }
             // the id is whole but on no READABLE board: named, that room answers for itself;
             // unnamed, an unreadable board is a read failure (horizon's own story), never "absent"
             match named {
@@ -219,11 +224,29 @@ async fn room_of_card(
         // the handle did not resolve across her boards (a prefix on two cards, a malformed id,
         // or no board to search): a named room disambiguates, and its own resolution reports
         // its own truth; unnamed, the resolver's refusal IS the answer, never a guessed absence
-        Err(refusal) => match named {
-            Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
-            None => Err(refusal),
-        },
+        Err(refusal) => {
+            // the handle she was shown may be a card she HOLDS on a room she does not
+            // subscribe to: her own followed-claim record answers before any refusal
+            if let Some(room) = followed_room(&crate::persona::held_claims::held(airc.peer_id().as_uuid()), raw_card) {
+                return Ok(room);
+            }
+            match named {
+                Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+                None => Err(refusal),
+            }
+        }
     }
+}
+
+/// PURE: the room of a card she HOLDS, from her followed-claim records, when the handle she
+/// typed (full id or a shown prefix, resolved exactly as the boards resolve it) names one of
+/// them. Kimi held 017843bb on #cambriantech, a room she does not subscribe to: after #4836
+/// her gate saw it, but `work/review 017843bb` still read "on no board of a room you are in"
+/// (BigMama on #4836). See and act now read one record.
+fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim], raw_card: &str) -> Option<airc_lib::Room> {
+    let ids: Vec<Uuid> = recorded.iter().map(|h| h.card_id).collect();
+    let id = crate::id_resolve::resolve(raw_card, &ids, "card").ok()?;
+    recorded.iter().find(|h| h.card_id == id).map(|h| h.room.clone())
 }
 
 /// PURE: where a submission handle comes from, said with the handles themselves. A
@@ -1403,6 +1426,28 @@ crate::register_command!(WorkSubmission);
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (card d6e1b7a2, BigMama on #4836): a card she HOLDS on a room she is
+    // not subscribed to, seen by her gate but unreachable by work/review, by full id or by the
+    // short handle the board showed her. Her followed-claim record names its room; a handle
+    // that matches none of her records names nothing (the caller's own refusal stands).
+    #[test]
+    fn a_card_she_holds_on_an_unsubscribed_room_names_its_room() {
+        let home = tempfile::tempdir().expect("test: tempdir");
+        let room = airc_lib::Room::from_name(home.path(), "cambriantech").expect("test: a room");
+        let card = uuid::Uuid::parse_str("017843bb-d898-4a83-9712-668535b188c6").expect("test: uuid");
+        let recorded = vec![crate::persona::held_claims::HeldClaim {
+            room: room.clone(),
+            card_id: card,
+            claim_id: uuid::Uuid::from_u128(1),
+            recorded_at_ms: 1,
+            refusals: 0,
+        }];
+        assert_eq!(super::followed_room(&recorded, "017843bb").map(|r| r.channel), Some(room.channel));
+        assert_eq!(super::followed_room(&recorded, &card.to_string()).map(|r| r.channel), Some(room.channel));
+        assert!(super::followed_room(&recorded, "deadbeef").is_none(), "not hers: no room");
+        assert!(super::followed_room(&[], "017843bb").is_none());
+    }
 
     // what this catches (Kimi, 2026-10-05 12:01Z): a refused submission handle that
     // names only its shape. The refusal lists the card's submissions as prefixes the
