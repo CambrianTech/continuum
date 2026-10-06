@@ -86,7 +86,7 @@ pub(crate) async fn return_job(
     let request = read_job_request(&dir).map_err(CommandError::NotFound)?;
     let outcome = return_request(state, request, job_id).await?;
     if outcome.success {
-        board.journal_returned(job_id, job_id, serde_json::json!("genome/training-trigger/return"), 0); // not held by a Took: an operator returned it, named by the verb
+        board.journal_returned(job_id, job_id, &serde_json::json!("genome/training-trigger/return"), 0); // not held by a Took: an operator returned it, named by the verb
     }
     Ok(outcome)
 }
