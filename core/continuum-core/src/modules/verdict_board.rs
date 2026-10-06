@@ -34,8 +34,19 @@ pub enum BoardMove {
 
 /// The line the room hears. Pure so it is tested, not restated.
 pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>, moved: &BoardMove) -> String {
+    // A voided test is named, never silently dropped from the count: the reader sees what
+    // the grader set aside and why, and can check it.
+    let voided = if verdict.env_void_p2p.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " ({} set aside as environment faults: they fail on the unpatched tree here too — {})",
+            verdict.env_void_p2p.len(),
+            verdict.env_void_p2p.join(", ")
+        )
+    };
     let score = format!(
-        "FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}",
+        "FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}{voided}",
         verdict.f2p_passed, verdict.f2p_total, verdict.p2p_passed, verdict.p2p_total
     );
     let card = match moved {
@@ -53,10 +64,16 @@ pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>, moved: &Boa
         return format!("✅ {} RESOLVED — {score}. {card}", verdict.instance_id);
     }
     let at = holder_name.map(|n| format!("@{n} ")).unwrap_or_default(); // unwrap_or: no live holder → an undirected room line, never a bare "@"
-    let failing = if verdict.failed_tests.is_empty() {
+    let charged: Vec<&str> = verdict
+        .failed_tests
+        .iter()
+        .filter(|t| !verdict.env_void_p2p.contains(t))
+        .map(String::as_str)
+        .collect();
+    let failing = if charged.is_empty() {
         String::new()
     } else {
-        format!(" — still failing: {}", verdict.failed_tests.join(", "))
+        format!(" — still failing: {}", charged.join(", "))
     };
     format!(
         "❌ {at}{} graded: not resolved — {score}{failing}. {card}",
