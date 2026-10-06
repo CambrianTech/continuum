@@ -103,7 +103,8 @@ impl Salience {
 /// here; the kanban `PerceivedView` produces it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardChange {
-    Reviewed { card_id: Uuid, outcome: ObservedVerdict, reviewer: Uuid },
+    /// `review` is the review's own id: the identity a duplicate delivery is recognised by.
+    Reviewed { card_id: Uuid, outcome: ObservedVerdict, reviewer: Uuid, review: Uuid },
     /// A card changed column (claimed, review, done...). Notable; Addressed on her own card.
     Moved { card_id: Uuid, by: Uuid },
     Blocked { card_id: Uuid, what: String },
@@ -304,7 +305,7 @@ mod tests {
     // lifter key on. A verdict on someone else's card is only Notable.
     #[test]
     fn a_verdict_against_her_expectation_is_a_surprise() {
-        let reviewed = [BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Failed, reviewer: PEER }];
+        let reviewed = [BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Failed, reviewer: PEER, review: Uuid::from_u128(0x5e) }];
         let held = [CARD];
         let s = salience(&ActivityDelta { speech: &[], board: &reviewed }, &me(&[], &held), None, 0);
         assert_eq!(s.level, SalienceLevel::Addressed);

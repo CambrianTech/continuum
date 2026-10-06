@@ -825,7 +825,7 @@ mod tests {
             now,
         );
         for i in 1..=3u64 {
-            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer: uuid::Uuid::new_v4() }], now + i);
+            region.observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Passed, reviewer: uuid::Uuid::new_v4(), review: uuid::Uuid::new_v4() }], now + i);
         }
         let region = StdArc::new(Mutex::new(region));
         let (wake_tx, _wake_rx) = tokio::sync::mpsc::channel(4);

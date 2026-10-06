@@ -187,7 +187,7 @@ pub struct RoomTurn {
 /// board's typed events beside speech; `persona::salience` judges them.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RoomWork {
-    Reviewed { card_id: uuid::Uuid, outcome: crate::persona::salience::ObservedVerdict, reviewer: uuid::Uuid },
+    Reviewed { card_id: uuid::Uuid, outcome: crate::persona::salience::ObservedVerdict, reviewer: uuid::Uuid, review: uuid::Uuid },
     StateChanged { card_id: uuid::Uuid, state: airc_work::CardState, by: uuid::Uuid },
     Submitted { card_id: uuid::Uuid, publisher: uuid::Uuid },
     Claimed { card_id: uuid::Uuid, owner: uuid::Uuid },
@@ -209,6 +209,7 @@ pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>,
     Ok(Some(match &work {
         W::WorkSubmissionReviewed(r) => RoomWork::Reviewed {
             card_id: r.card_id.as_uuid(),
+            review: r.review_id.as_uuid(),
             outcome: match r.outcome {
                 airc_work::WorkReviewOutcome::Passed => crate::persona::salience::ObservedVerdict::Passed,
                 airc_work::WorkReviewOutcome::Failed => crate::persona::salience::ObservedVerdict::Failed,
@@ -250,7 +251,7 @@ pub(crate) fn render_room_content(text: &str, media: &[crate::persona::channel_i
 pub fn render_room_work(work: &RoomWork, actor: uuid::Uuid) -> String {
     let short = |id: uuid::Uuid| id.to_string()[..8].to_string();
     match work {
-        RoomWork::Reviewed { card_id, outcome, reviewer } => format!(
+        RoomWork::Reviewed { card_id, outcome, reviewer, .. } => format!(
             "[board fact] review on card {}: {:?} (reviewer {})",
             short(*card_id), outcome, short(*reviewer)
         ),
