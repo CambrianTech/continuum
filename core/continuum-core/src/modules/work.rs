@@ -2897,10 +2897,16 @@ pub struct WorkListCard {
     /// field-order note above: `"claimed"` read first defeats `claimable: true` read
     /// fifth, and a lapsed claim IS takeable regardless of this column.
     pub state: String,
-    /// Short id of the claiming peer, when claimed. Says WHO to reach out to — never
-    /// "someone" ([[card-holder]]) — but read AFTER whether she can take it, because
-    /// an owner on a lapsed lease is history, not an obstacle.
+    /// Who holds it, when claimed: a published name, `YOU`, or "an unnamed peer". Says
+    /// WHO, never "someone" ([[card-holder]]), and never an id inside the words (Joel,
+    /// 2026-10-06) — read AFTER whether she can take it, because an owner on a lapsed
+    /// lease is history, not an obstacle.
     pub owner: Option<String>,
+    /// The holder's peer id, for reaching them (airc DM) when no name is known: the id in
+    /// its own typed field, never spelled into `owner`. Absent for her own cards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub owner_id: Option<Uuid>,
     /// The card's declared priority (`p0`..`p3`). The model always carried it; the
     /// list did not render it, so a 118-card board read as unordered (2026-09-16).
     pub priority: String,
@@ -3016,9 +3022,10 @@ impl ActionCommand for WorkList {
                         id: short8(c.card_id.as_uuid()),
                         title: c.title.clone(),
                         state: state_str(&c.state).to_string(),
-                        // The person, not the hex: a published name when known, the
-                        // short id (still addressable) otherwise, `YOU` when it is hers.
+                        // The person, not the hex: a published name when known, "an
+                        // unnamed peer" otherwise (its handle in owner_id), `YOU` when hers.
                         owner: holder.owner.map(|_| holder.display.clone()),
+                        owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
                         claimable: holder.claimable(c.state),
                         lease: holder.lease_word().map(str::to_string),
                         priority: priority_str(c.priority).to_string(),
@@ -4142,6 +4149,7 @@ mod tests {
                 title: "x".repeat(200), // realistic titles — this is what blows the cap
                 state: "claimed".to_string(),
                 owner: Some("Benchy".to_string()),
+                owner_id: None,
                 claimable: true,
                 lease: Some("expired".to_string()),
                 priority: "p2".to_string(),

@@ -97,8 +97,9 @@ pub struct CardHolder {
     /// 2026-07-11: cards she held rendered as a hex prefix she cannot recognize
     /// as herself, so claimed work carried zero self-relevance.
     pub is_self: bool,
-    /// How to name the holder to a reader: `YOU`, a published name, or the
-    /// short id. Never empty, never "someone".
+    /// How to name the holder in a sentence: `YOU`, a published name, or
+    /// [`UNNAMED_HOLDER`]. Never an id: an id is never part of a string (Joel,
+    /// 2026-10-06). The holder stays reachable through [`CardHolder::owner`], typed.
     pub display: String,
     /// How long the holder has been silent on this card (since her last heartbeat or
     /// claim), when there is a holder. An AGE, never a timestamp: a reader judges "take
@@ -252,6 +253,9 @@ pub fn in_flight_by(cards: &[WorkCard], holders: &std::collections::HashSet<airc
         .count()
 }
 
+/// How a holder with no published name is said in a sentence (see [`CardHolder::display`]).
+pub(crate) const UNNAMED_HOLDER: &str = "an unnamed peer";
+
 /// The 8-char short id every surface in the system uses to name a uuid.
 pub(crate) fn short8(id: &uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
@@ -270,11 +274,11 @@ pub fn holder(
     let display = match owner {
         None => "nobody".to_string(),
         Some(_) if is_self => "YOU".to_string(),
-        // A published name when we have one; the short id when we don't. The
-        // short id is addressable (it is what work/claim and airc DM take), so
-        // an unnamed peer is still someone a citizen can reach — unlike
-        // "someone", which is a dead end.
-        Some(o) => names.name_of(&o).unwrap_or_else(|| short8(&o.as_uuid())),
+        // A published name when we have one. An unnamed peer is said as one: the
+        // sentence never carries an id (Joel, 2026-10-06: "uuid should never be inside
+        // or part of a string in any way"). She can still reach the holder: the typed
+        // `owner` rides beside this, rendered as a handle only in its own field.
+        Some(o) => names.name_of(&o).unwrap_or_else(|| UNNAMED_HOLDER.to_string()),
     };
     let quiet_for_ms = owner
         .and(card.last_heartbeat_at_ms)
@@ -326,8 +330,8 @@ impl CardHolder {
             Hold::Unclaimed => "unclaimed".to_string(),
             Hold::Held if self.is_self => "owner YOU".to_string(),
             Hold::Held => format!(
-                "owner {}{quiet} — you can take it over (work/claim; {} sees the release)",
-                self.display, self.display
+                "owner {}{quiet} — you can take it over (work/claim; the holder sees the release)",
+                self.display
             ),
             Hold::Lapsed if self.is_self => {
                 "claim lapsed (was YOURS) — claimable, resume it".to_string()
@@ -543,18 +547,19 @@ mod tests {
     }
 
     #[test]
-    fn an_unnamed_peer_falls_back_to_an_addressable_short_id_never_to_someone() {
-        // what this catches: the honest-degradation contract. When nothing is
-        // published for a peer we must still hand the reader something she can
-        // ACT on (work/claim + airc DM both take the short id) — never an
-        // anonymous placeholder.
+    fn an_unnamed_peer_is_said_as_one_and_stays_reachable_by_its_typed_id() {
+        // what this catches (Joel, 2026-10-06: an id is never part of a string): a holder
+        // with no published name rendered as 'owner 3f2a91c0' inside the sentence. The
+        // sentence says an unnamed peer; the holder stays reachable, typed, in `owner`.
         let ghost = PeerId::new();
         let me = uuid::Uuid::new_v4();
         let c = card(Some(ghost), true, Some(u64::MAX));
         let h = holder(&c, me, 1_000, &NoNames);
         let short = short8(&ghost.as_uuid());
-        assert!(h.render().starts_with(&format!("owner {short}")), "{}", h.render());
-        assert!(!h.display.is_empty());
+        assert!(h.render().starts_with(&format!("owner {UNNAMED_HOLDER}")), "{}", h.render());
+        assert!(!h.render().contains(&short), "no id inside the sentence: {}", h.render());
+        assert!(!h.render().contains("someone"), "{}", h.render());
+        assert_eq!(h.owner, Some(ghost), "the holder is still reachable, typed");
     }
 
     #[test]
