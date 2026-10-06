@@ -756,7 +756,12 @@ pub async fn apply_act(
         matches!(a.status, crate::cognition::act_observe::ActStatus::Executed)
             && (n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit"))
     });
-    let wrote = wrote_by_verb || disk == super::disk_change::DiskChange::Changed;
+    // and the board: a submission, a review verdict, a ledger note or a card she put up is
+    // written work that reaches no disk, and counted as reading until now
+    let published = acts.iter().any(|a| {
+        matches!(a.status, crate::cognition::act_observe::ActStatus::Executed) && a.output.verb.publishes()
+    });
+    let wrote = wrote_by_verb || published || disk == super::disk_change::DiskChange::Changed;
     crate::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
@@ -765,6 +770,7 @@ pub async fn apply_act(
         verbs = %verbs.join(","),
         wrote,
         disk = disk.as_str(),
+        published,
         chars = observation.len(),
         "acted and observed the result"
     );
