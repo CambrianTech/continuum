@@ -299,6 +299,10 @@ struct OutputAllowance {
 /// cap), and the time and need terms are reported beside it as what the turn is expected
 /// to use. A latency budget enforced by truncation buys no latency: the cut turn is
 /// re-run from scratch.
+/// A pass is bounded at this multiple of her measured p90 turn (never below the act's
+/// cap). A runaway bound, not a budget: it binds only on a loop.
+const PASS_RUNAWAY_MULTIPLE: u32 = 2;
+
 fn output_allowance(
     kind: TurnKind,
     tps: Option<f64>,
@@ -311,7 +315,14 @@ fn output_allowance(
     let need_term = need.map(|n| n.total());
     let bound = match kind {
         TurnKind::Act => reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
-        TurnKind::Pass => reserve,
+        // A pass's RUNAWAY bound (Cormac on #4815): a loop must not hold the lane for the
+        // whole reserve (25k tokens is minutes at her rate). Twice her measured p90 turn
+        // sits far above the one-in-ten tail a p90 lets through, and never below the
+        // act's cap, so no real turn is cut by it; unmeasured, the reserve as before.
+        TurnKind::Pass => match need_term {
+            Some(n) => reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP.max(n.saturating_mul(PASS_RUNAWAY_MULTIPLE))),
+            None => reserve,
+        },
     };
     let allowance = bound.max(1);
     OutputAllowance {
@@ -6789,7 +6800,11 @@ mod tests {
             assert_eq!(pass.allowance, reserve, "a pass gets the room the prompt left");
             let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32 };
             assert_eq!(output_allowance(TurnKind::Act, None, Some(kimi), 12_464).allowance, 12_288, "an act gets the runaway cap, not her p90");
-            assert_eq!(output_allowance(TurnKind::Pass, None, Some(kimi), 25_024).allowance, 25_024);
+            // A pass is bounded against a loop: twice her p90 turn (2 × 10,177 = 20,354),
+            // never below the act's cap, never past the reserve.
+            assert_eq!(output_allowance(TurnKind::Pass, None, Some(kimi), 25_024).allowance, 20_354);
+            assert_eq!(output_allowance(TurnKind::Pass, None, Some(need), 25_024).allowance, LlmDeliberationFaculty::ACT_OUTPUT_CAP, "a small need still gets the act's cap");
+            assert_eq!(output_allowance(TurnKind::Pass, None, Some(kimi), 15_436).allowance, 15_436, "the reserve still binds");
             // A fast lane's time term is reported, never a ceiling.
             let fast = output_allowance(TurnKind::Act, Some(40.0), Some(need), reserve);
             assert_eq!((fast.allowance, fast.time_term), (reserve, Some(6_000)));
