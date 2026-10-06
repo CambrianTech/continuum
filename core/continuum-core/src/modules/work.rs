@@ -2961,14 +2961,13 @@ impl ActionCommand for WorkList {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the work board's cards (read-only): short id, title, state, owner, and whether it is \
-         CLAIMABLE right now. `claimable: true` means you can take it — either it is open, or its \
-         holder's lease expired (`lease: expired`) and they have stopped working it. A card marked \
-         `lease: held` is genuinely someone else's. Use the short id with work/get for a card's \
-         full requirements, or work/claim to take it. TO FIND WORK YOU CAN TAKE, pass \
-         `claimable: true` — most takeable cards sit in the `claimed` column with a lapsed lease, \
-         so filtering `state: \"open\"` (the COLUMN) will miss them and can come back empty on a \
-         full board. The result always reports `total_on_board` and `claimable_now` so an empty \
-         list is never mistaken for an empty board. Boards are per room (`room`).";
+         CLAIMABLE right now: work/claim takes any card not in review/merged/closed, even one \
+         someone holds (a takeover; they see it). Each line says who holds a card and how long \
+         they have been silent; taking it over is your call. Use the short id with work/get for \
+         full requirements. To find takeable work pass `claimable: true`: filtering \
+         `state: \"open\"` (the column) misses held and lapsed cards. The result always reports \
+         `total_on_board` and `claimable_now` so an empty list is never mistaken for an empty \
+         board. Boards are per room (`room`).";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
@@ -4465,7 +4464,9 @@ mod tests {
         claimed.claim_expires_at_ms = Some(100);
         claimed.last_heartbeat_at_ms = Some(50);
         let held = WorkGet::receipt(room, &claimed, None, 99, Uuid::nil());
-        assert!(!held.claimable);
+        // Joel, 2026-10-06: a live hold is takeable by anyone; `lease: held` is the fact she
+        // judges a takeover by, `claimable` is only what work/claim will accept.
+        assert!(held.claimable);
         // regression for card 5d447195: the lease reaches her as time left, not only as
         // an epoch she converts by hand; a lapsed or absent claim has none.
         assert_eq!(held.lease_remaining_secs, Some(0), "1 ms left rounds down, still held");
