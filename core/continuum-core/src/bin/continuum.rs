@@ -1345,6 +1345,15 @@ struct CoreServiceTask {
     state: String,
 }
 
+/// A path the ContinuumCore descriptor names, absolute and resolved, or why not.
+#[cfg(any(windows, test))]
+fn resolve_service_path(path: &str) -> Result<PathBuf, String> {
+    if !Path::new(path).is_absolute() {
+        return Err(format!("ContinuumCore path must be absolute: {path}"));
+    }
+    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
+}
+
 #[cfg(any(windows, test))]
 impl CoreServiceTask {
     fn validate_description_sha(&self, expected: &str) -> Result<(), String> {
@@ -1359,18 +1368,30 @@ impl CoreServiceTask {
         Ok(())
     }
 
-    fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
+    /// What a restart needs from the registered release that staging does not write: a
+    /// parseable descriptor whose engine is an installed file and whose log directory
+    /// exists. The reboot checks this BEFORE it stops the running core, and `validate`
+    /// re-checks it after staging. Measured on the 5090 2026-10-06: the descriptor named an
+    /// engine slot that had been moved aside, `validate` first looked after the stop, and the
+    /// node sat with no core until a hand restored the slot. A deploy that cannot start the
+    /// next core must refuse while the old one still serves.
+    fn runtime_paths_resolve(&self) -> Result<CoreServiceDescription, String> {
         let description: CoreServiceDescription =
             serde_json::from_str(&self.description).map_err(|e| {
                 format!("ContinuumCore has no valid installer artifact descriptor: {e}")
             })?;
-        let resolve = |path: &str| {
-            if !Path::new(path).is_absolute() {
-                return Err(format!("ContinuumCore path must be absolute: {path}"));
-            }
-            std::fs::canonicalize(path)
-                .map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
-        };
+        if !resolve_service_path(&description.log_directory)?.is_dir() {
+            return Err("ContinuumCore logDirectory is not a directory".to_string());
+        }
+        if !resolve_service_path(&description.engine)?.is_file() {
+            return Err("ContinuumCore engine is not an installed file".to_string());
+        }
+        Ok(description)
+    }
+
+    fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
+        let description = self.runtime_paths_resolve()?;
+        let resolve = resolve_service_path;
         if !self.enabled
             || resolve(&description.artifact)? != candidate.path
             || description.socket != socket
@@ -1388,12 +1409,6 @@ impl CoreServiceTask {
                         .to_string(),
                 );
             }
-        }
-        if !resolve(&description.log_directory)?.is_dir() {
-            return Err("ContinuumCore logDirectory is not a directory".to_string());
-        }
-        if !resolve(&description.engine)?.is_file() {
-            return Err("ContinuumCore engine is not an installed file".to_string());
         }
         if Path::new(&description.cli).file_name() != Some(std::ffi::OsStr::new("continuum.exe"))
             || Path::new(&description.launcher).file_name()
@@ -2372,6 +2387,16 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             let candidate = prebuilt.as_ref().ok_or("release migration requires a verified core")?;
             service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
         }
+    }
+    // The staged hand-off re-validates the release only after the stop; what staging does
+    // not write (the engine and log paths the release names) must be checked while the
+    // running core can still keep serving.
+    #[cfg(windows)]
+    if options.service && service.is_none() && prebuilt.is_some() {
+        PreparedCoreService::query()
+            .await?
+            .runtime_paths_resolve()
+            .map_err(|e| format!("{e}; the running core was left serving"))?;
     }
     let _ = stop_with_authority(true, options.operator_present).await?;
     // NOW the slot is free. Staging writes the artifact the supervisor is bound to and
@@ -7373,6 +7398,14 @@ mod tests {
             build_sha: "123456789".to_string(),
         };
         task.validate(&candidate, &socket, &shell).unwrap();
+        // regression for the 5090 2026-10-06 outage: an engine slot the release names, moved
+        // aside, must fail the PRE-stop check (which needs no staged artifact), not only the
+        // post-stop `validate`.
+        task.runtime_paths_resolve().unwrap();
+        let moved = engine_directory.with_file_name("engine-slot.moved");
+        std::fs::rename(&engine_directory, &moved).unwrap();
+        assert!(task.runtime_paths_resolve().is_err(), "a missing engine refuses before the stop");
+        std::fs::rename(&moved, &engine_directory).unwrap();
         // A worker root is part of the registered release, not the scheduler's
         // cwd. Legacy releases omit it; new releases must pass it in the action.
         let mut with_eye = description.clone();
