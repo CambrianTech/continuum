@@ -70,9 +70,6 @@ pub fn platform_key(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
         ("macos", "aarch64") => Some("macos-arm64"),
         ("macos", "x86_64") => Some("macos-x86_64"),
-        // CI's Windows + NVIDIA core (core-binaries.yml, built with `$WINDOWS_NVIDIA_FEATURES`).
-        // The feature check in manifest_verdict still keeps a non-NVIDIA Windows node off it.
-        ("windows", "x86_64") => Some("windows-x86_64"),
         _ => None,
     }
 }
@@ -116,16 +113,29 @@ pub struct ArtifactManifest {
 /// mean the fact could not be read, which refuses any CUDA artifact (never a guess).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeGpu {
-    /// The CUDA major the driver supports ("CUDA Version: 13.0" -> 13).
-    pub driver_cuda_major: Option<u32>,
+    /// The CUDA version the driver supports, (major, minor) ("CUDA Version: 12.4" -> (12, 4)).
+    /// The minor matters: the build's kernels are PTX, JIT-compiled on load, and a driver
+    /// refuses PTX newer than its own CUDA version (CUDA_ERROR_UNSUPPORTED_PTX_VERSION).
+    pub driver_cuda: Option<(u32, u32)>,
     /// The lowest compute capability among its GPUs ("12.0" -> 120, "8.6" -> 86).
     pub lowest_compute_cap: Option<u32>,
 }
 
-/// PURE: the driver's CUDA major from `nvidia-smi`'s banner ("... CUDA Version: 13.0 |").
-pub fn driver_cuda_major(nvidia_smi_banner: &str) -> Option<u32> {
+/// PURE: a `major.minor` version as (major, minor) ("12.9" -> (12, 9); "13" -> (13, 0)).
+pub fn cuda_major_minor(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = match parts.next() {
+        Some(minor) => minor.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?,
+        None => 0,
+    };
+    Some((major, minor))
+}
+
+/// PURE: the driver's CUDA version from `nvidia-smi`'s banner ("... CUDA Version: 12.4 |").
+pub fn driver_cuda(nvidia_smi_banner: &str) -> Option<(u32, u32)> {
     let after = nvidia_smi_banner.split("CUDA Version:").nth(1)?;
-    after.trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    cuda_major_minor(after.trim_start().split_whitespace().next()?)
 }
 
 /// PURE: the lowest compute capability from `nvidia-smi --query-gpu=compute_cap
@@ -140,18 +150,16 @@ pub fn lowest_compute_cap(csv: &str) -> Option<u32> {
 }
 
 /// Can this node's driver and GPUs run `manifest`'s CUDA build? A build with no
-/// `cuda_version` needs nothing (macOS, CPU). A CUDA build needs a driver that supports its
-/// toolkit major and GPUs at or above its compute floor, each refused by name when not.
+/// `cuda_version` needs nothing (macOS, CPU). A CUDA build needs a driver whose CUDA version
+/// is at least its toolkit's, MINOR included (its kernels are PTX; Fable on #4835), and GPUs
+/// at or above its compute floor, each refused by name when not.
 pub fn gpu_verdict(manifest: &ArtifactManifest, node: &NodeGpu) -> Result<(), String> {
     let Some(version) = manifest.cuda_version.as_deref() else {
         return Ok(());
     };
-    let needed: u32 = version
-        .split('.')
-        .next()
-        .and_then(|major| major.parse().ok())
-        .ok_or_else(|| format!("artifact names CUDA `{version}`, which has no major version"))?;
-    match node.driver_cuda_major {
+    let needed = cuda_major_minor(version)
+        .ok_or_else(|| format!("artifact names CUDA `{version}`, which is not a major.minor version"))?;
+    match node.driver_cuda {
         None => {
             return Err(format!(
                 "artifact bundles CUDA {version}, and this node's driver CUDA version could not be read (nvidia-smi)"
@@ -159,7 +167,8 @@ pub fn gpu_verdict(manifest: &ArtifactManifest, node: &NodeGpu) -> Result<(), St
         }
         Some(have) if have < needed => {
             return Err(format!(
-                "artifact bundles CUDA {version}, and this node's driver supports CUDA {have}: update the NVIDIA driver"
+                "artifact bundles CUDA {version}, and this node's driver supports CUDA {}.{}: update the NVIDIA driver",
+                have.0, have.1
             ))
         }
         Some(_) => {}
@@ -348,8 +357,8 @@ mod tests {
     #[test]
     fn a_cuda_build_runs_only_where_the_driver_and_gpus_can() {
         let banner = "| NVIDIA-SMI 580.97  Driver Version: 580.97  CUDA Version: 13.0 |";
-        assert_eq!(driver_cuda_major(banner), Some(13));
-        assert_eq!(driver_cuda_major("no gpu here"), None);
+        assert_eq!(driver_cuda(banner), Some((13, 0)));
+        assert_eq!(driver_cuda("no gpu here"), None);
         assert_eq!(lowest_compute_cap("12.0\n8.6\n"), Some(86));
         assert_eq!(lowest_compute_cap(""), None);
 
@@ -359,14 +368,18 @@ mod tests {
         let mut cuda = manifest();
         cuda.cuda_version = Some("12.9".into());
         cuda.cuda_compute_cap = Some(80);
-        let the_5090 = NodeGpu { driver_cuda_major: Some(13), lowest_compute_cap: Some(120) };
+        let the_5090 = NodeGpu { driver_cuda: Some((13, 0)), lowest_compute_cap: Some(120) };
         assert!(gpu_verdict(&cuda, &the_5090).is_ok());
-        let old_driver = NodeGpu { driver_cuda_major: Some(11), ..the_5090.clone() };
+        let old_driver = NodeGpu { driver_cuda: Some((11, 8)), ..the_5090.clone() };
         assert!(gpu_verdict(&cuda, &old_driver).unwrap_err().contains("update the NVIDIA driver"));
+        // the same major is not enough: PTX from nvcc 12.9 does not JIT on a 12.4 driver
+        let older_minor = NodeGpu { driver_cuda: Some((12, 4)), ..the_5090.clone() };
+        assert!(gpu_verdict(&cuda, &older_minor).unwrap_err().contains("supports CUDA 12.4"));
+        let same = NodeGpu { driver_cuda: Some((12, 9)), ..the_5090.clone() };
+        assert!(gpu_verdict(&cuda, &same).is_ok());
         let old_gpu = NodeGpu { lowest_compute_cap: Some(75), ..the_5090.clone() };
         assert!(gpu_verdict(&cuda, &old_gpu).unwrap_err().contains("a GPU at 75"));
         assert!(gpu_verdict(&cuda, &NodeGpu::default()).is_err(), "unreadable is refused");
-        assert_eq!(platform_key("windows", "x86_64"), Some("windows-x86_64"));
     }
 
     // what this catches: a node taking a build that is not the program it would compile —

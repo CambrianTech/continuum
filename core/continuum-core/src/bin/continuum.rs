@@ -1670,6 +1670,7 @@ impl PreparedCoreService {
                     if !source.is_file() {
                         return Err(format!("runtime library {} is missing beside the CI core", source.display()));
                     }
+                    // parked as `<name>.prev.exe` by park_previous_artifact: a DLL, despite the name
                     move_aside_and_copy(&source, &slot_core.with_file_name(name))?;
                 }
             }
@@ -4466,15 +4467,13 @@ enum CiCore {
     Superseded(String),
 }
 
-/// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
-/// published is not THE build for this node, or does not match its checksum.
 /// Beside a CI core: the names of the runtime libraries its manifest bundles, one per line.
 const RUNTIME_LIBS_FILE: &str = "runtime-libs.txt";
 
 /// What this node's NVIDIA driver and GPUs can run, from `nvidia-smi`. A missing tool or an
 /// unreadable answer leaves the field `None`, which refuses a CUDA artifact by name.
 async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
-    use continuum_cli_lifecycle::prebuilt_artifact::{driver_cuda_major, lowest_compute_cap, NodeGpu};
+    use continuum_cli_lifecycle::prebuilt_artifact::{driver_cuda, lowest_compute_cap, NodeGpu};
     let run = |args: &'static [&'static str]| async move {
         let out = tokio::time::timeout(
             Duration::from_secs(20),
@@ -4486,7 +4485,7 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
     };
     NodeGpu {
-        driver_cuda_major: run(&[]).await.as_deref().and_then(driver_cuda_major),
+        driver_cuda: run(&[]).await.as_deref().and_then(driver_cuda),
         lowest_compute_cap: run(&["--query-gpu=compute_cap", "--format=csv,noheader"])
             .await
             .as_deref()
@@ -4494,6 +4493,8 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
     }
 }
 
+/// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
+/// published is not THE build for this node, or does not match its checksum.
 async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
     use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
