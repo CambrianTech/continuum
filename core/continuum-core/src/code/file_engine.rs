@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::change_graph::ChangeGraph;
 use super::diff_engine::compute_bidirectional_diff;
-use super::path_security::{clean_path_arg, CleanedPathArg, PathSecurity, PathSecurityError};
+use super::path_security::{clean_path_arg, CleanedPathArg, PathSecurity, PathSecurityError, ReadScope};
 use super::types::*;
 
 /// Per-persona file engine with workspace scoping and change tracking.
@@ -215,16 +215,27 @@ impl FileEngine {
         self.write_policy
     }
 
-    /// Read a file, optionally a range of lines (1-indexed, inclusive).
+    /// Read a file, optionally a range of lines (1-indexed, inclusive), inside the sandbox.
     pub fn read(
         &self,
         relative_path: &str,
         start_line: Option<u32>,
         end_line: Option<u32>,
     ) -> Result<ReadResult, FileEngineError> {
+        self.read_in(relative_path, start_line, end_line, ReadScope::Sandbox)
+    }
+
+    /// [`Self::read`] with the reach `scope` grants (see [`ReadScope`]).
+    pub fn read_in(
+        &self,
+        relative_path: &str,
+        start_line: Option<u32>,
+        end_line: Option<u32>,
+        scope: ReadScope,
+    ) -> Result<ReadResult, FileEngineError> {
         let cleaned = self.path_arg(relative_path)?;
         let relative_path = cleaned.path.as_str();
-        let abs_path = self.security.validate_read(relative_path)?;
+        let abs_path = self.security.validate_read_in(relative_path, scope)?;
 
         if !abs_path.exists() {
             return Err(self.not_found(relative_path));
