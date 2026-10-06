@@ -3631,7 +3631,7 @@ pub(crate) mod tests {
             WorkReviewParams {
                 room: params.room.clone(),
                 review_id: Some(Uuid::new_v4()),
-                card_id: Some(card.as_uuid()),
+                card_id: Some(card.as_uuid().to_string()),
                 submission_id: Some(
                     params
                         .submission_id
@@ -3643,7 +3643,7 @@ pub(crate) mod tests {
                         .clone()
                         .expect("the fixture names its artifact"),
                 ),
-                review_card_id: review_card.as_uuid(),
+                review_card_id: review_card.as_uuid().to_string(),
                 review_claim_id: Some(review_claim.as_uuid()),
                 outcome: ReviewOutcome::Passed,
                 evidence_text: None,

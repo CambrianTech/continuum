@@ -8,7 +8,7 @@ export type WorkReviewParams = {
  */
 room?: string, 
 /**
- * Full UUID of your linked review card, not the task you authored.
+ * Your linked review card (board handle or full UUID), not the task you authored.
  */
 review_card_id: string, 
 /**
@@ -24,7 +24,7 @@ evidence_text?: string,
  */
 review_id?: string, 
 /**
- * Parent card; defaults to review parent.
+ * Parent card (handle or UUID); defaults to review parent.
  */
 card_id?: string, 
 /**
