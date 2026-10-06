@@ -111,11 +111,22 @@ jobs:
 
       # The installer's own CUDA module, from install-manifest.toml's pinned NVIDIA redist, so
       # the published build links the CUDA major a user's install provides at launch.
+      # The toolkit is a pure function of the pinned redist in the manifest projection, so it is
+      # cached on that file: assembling it from NVIDIA's archives took 24 min on the first run.
+      - name: Cache the CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/.continuum/cuda-toolkit
+          key: cuda-toolkit-${{ hashFiles('tools/scripts/generated/manifest.windows.ps1') }}
+
       - name: Provision the CUDA toolkit (Windows)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          # Windows PowerShell's progress bar throttles Invoke-WebRequest to a crawl.
+          $ProgressPreference = 'SilentlyContinue'
           . ./tools/scripts/lib/install-common.ps1
           . ./tools/scripts/lib/win-modules.ps1
           Mod-CUDA -BuildHost
@@ -132,8 +143,9 @@ jobs:
           set -euo pipefail
           if [ "$RUNNER_OS" = Windows ]; then
             # The node's own build environment (MSVC, the CUDA tree, +crt-static), so CI
-            # compiles what start-server.sh would.
-            source tools/scripts/lib/windows-build-env.sh
+            # compiles what start-server.sh would. The lib is written for start-server.sh's
+            # shell, which has no nounset, and reads optional variables bare.
+            set +u; source tools/scripts/lib/windows-build-env.sh; set -u
           fi
           source tools/scripts/lib/core-features.sh
           select_core_features "${{ matrix.uname }}"
@@ -189,7 +201,7 @@ jobs:
           done
           runtime_libs=""
           if [ "$RUNNER_OS" = Windows ]; then
-            source tools/scripts/lib/windows-build-env.sh   # dumpbin and CUDA_PATH
+            set +u; source tools/scripts/lib/windows-build-env.sh; set -u   # dumpbin and CUDA_PATH (no nounset, as in the Build step)
             cp "$target_dir/release/livekit-bridge.exe" tools/scripts/start-livekit-windows.ps1 "$stage/"
             if [ -n "$CUDA_VERSION" ]; then
               # The CUDA runtime ships INSIDE the archive, beside the exe, where Windows looks
