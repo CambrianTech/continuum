@@ -312,11 +312,14 @@ impl Footprints {
     }
 }
 
-/// The share of a lane's time training takes while serving is busy: one in four windows'
-/// worth. The lane's lease is where this belongs once the lease registry carries a time
-/// share beside its memory bound (INFERENCE-LANES-REALISTIC.md); until then ONE value here,
-/// sent explicitly so the engine's own default is never load-bearing. Not an env var.
-pub const TRAINING_SHARE_PPM: u32 = 250_000;
+/// How much slower her decoding may run while training runs on her lane, parts per million.
+/// The bound the substrate means (Joel: "negligible impact on inference latency ... a slowdown
+/// if clever can be unnoticed"); a time share only said how often a window ran, and a 25%
+/// share took Kimi from 52 to 23 tok/s. The engine (fork #36) measures her decode rate with and
+/// without a window running and sizes each yield to hold this. The lane's lease is where it
+/// belongs once the lease registry carries it (INFERENCE-LANES-REALISTIC.md); until then ONE
+/// value here, sent explicitly so the engine's own default is never load-bearing. Not an env var.
+pub const TRAINING_MAX_SLOWDOWN_PPM: u32 = 100_000;
 
 /// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
 /// ONCE here instead of assembled field by field at the call site.
@@ -341,12 +344,10 @@ struct TrainRequest {
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_budget_mib: Option<u64>,
-    /// The trainer's share of the lane's time, parts per million (fork card 36c3c00a): after a
-    /// window that took d ms the engine yields to busy slots for d·(1−s)/s, then takes the
-    /// next window whether or not serving is busy. Before this the engine yielded while ANY
-    /// slot was busy, which on a lane with residents was starvation (the M5, 2026-10-05: 12
-    /// minutes at batch 0). An engine before the card ignores the key and yields as before.
-    share_ppm: u32,
+    /// The bound on her decode slowdown while training runs, parts per million (fork #36).
+    /// Sent INSTEAD of the time share (the engine refuses both). An engine before #36 ignores
+    /// the key and paces by its own default share, which is what this core sent before.
+    max_slowdown_ppm: u32,
     /// "middle" (fork #29): at the served window a lived example trains whole; only a
     /// conversation longer than serving's own window drops its OLDEST history exchanges, and
     /// always keeps the system and tool head and her reply, the context serving always has
@@ -433,6 +434,16 @@ struct TrainStatus {
     windows_while_busy: Option<u64>,
     #[serde(default)]
     share_ppm: Option<u64>,
+    /// the slowdown bound and her measured rates (fork #36): tokens/s with no window running
+    /// and while one ran, over the run, and the slowdown they realized; absent before #36
+    #[serde(default)]
+    max_slowdown_ppm: Option<u64>,
+    #[serde(default)]
+    decode_tps_no_window: Option<f64>,
+    #[serde(default)]
+    decode_tps_in_window: Option<f64>,
+    #[serde(default)]
+    slowdown_ppm_realized: Option<u64>,
     /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
     /// that predates `top_layers`, which adapts every block
     #[serde(default)]
@@ -909,7 +920,11 @@ impl EngineRun {
                             windows_while_busy = busy,
                             yielded_ms = yielded,
                             share_ppm = s.share_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = counts reported, policy not (an engine between the counts and the policy); never a 0 that reads as a zero share
-                            "the in-engine run finished: how many windows it took beside busy serving, and how long it yielded"
+                            max_slowdown_ppm = s.max_slowdown_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = an engine before the bound (fork #36): it paced by the share
+                            slowdown_ppm_realized = s.slowdown_ppm_realized.map(|v| v as i64).unwrap_or(-1), // -1 = not measured: no busy stretch both with and without a window, or an engine before #36
+                            decode_tps_no_window = s.decode_tps_no_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
+                            decode_tps_in_window = s.decode_tps_in_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
+                            "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, and what it cost her decoding against the bound"
                         ),
                         _ => crate::probe!(
                             class = "training.run.share",
@@ -1236,8 +1251,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             requested = schedule.sequence_length as u64,
             served = u64::from(served_window),
             sent = window as u64,
-            share_ppm = u64::from(TRAINING_SHARE_PPM),
-            "the training window: the matched lane's served per-slot window as the CEILING (the engine sizes the context to the longest example, fork #30), rounded to the engine's 256 granularity; the request's length never decides it; and the share of the lane's time training takes while serving is busy"
+            max_slowdown_ppm = u64::from(TRAINING_MAX_SLOWDOWN_PPM),
+            "the training window: the matched lane's served per-slot window as the CEILING (the engine sizes the context to the longest example, fork #30), rounded to the engine's 256 granularity; the request's length never decides it; and the bound on her decode slowdown while training runs"
         );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
@@ -1262,7 +1277,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             seed: 42,
             top_layers: depth,
             memory_budget_mib: None,
-            share_ppm: TRAINING_SHARE_PPM,
+            max_slowdown_ppm: TRAINING_MAX_SLOWDOWN_PPM,
             fit: "middle",
         };
         let measured = self.footprints.get(&shape);
@@ -1873,6 +1888,10 @@ mod tests {
         // window refused the whole run; the engine is asked to keep each example's tail
         assert_eq!(body["fit"], "middle", "a conversation longer than the served window drops its oldest history, never its head");
         assert!(body.get("text").is_none(), "examples, never a text corpus (the engine masks the prompts)");
+        // what this catches (fork #36): the bound on her slowdown goes out INSTEAD of the time
+        // share; the engine refuses a body carrying both, so sending both fails every run
+        assert_eq!(body["max_slowdown_ppm"].as_u64(), Some(u64::from(TRAINING_MAX_SLOWDOWN_PPM)));
+        assert!(body.get("share_ppm").is_none(), "the share and the slowdown bound pace the same windows: one is sent");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
         assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
