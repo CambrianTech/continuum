@@ -4269,8 +4269,25 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // and the reboot's warm build compiles as before.
                 // CI publishes a core for the commit that last touched a build input; a
                 // docs-only tip is served by that commit's core (card 9080ffb0).
-                let prebuilt = match ci_core_for(&repo, tip_build_key.as_deref().unwrap_or(&tip), &request_path, &tip).await {
-                    CiCore::Built(core) => Some(core),
+                // Not only the tip's core: the newest one CI has PUBLISHED since the running
+                // core (card d1db1a83). On a busy canary the tip's build has not started
+                // while an older one is out, and waiting only on the tip never deployed.
+                let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
+                let candidates = deploy_candidates(&repo, running.as_deref(), &tip, &newest_key);
+                let prebuilt = match ci_core_for(&repo, &candidates, &request_path, &tip).await {
+                    CiCore::Built { core, key } => {
+                        if key != newest_key {
+                            // An older published core: stand the checkout on ITS commit, so
+                            // the reboot's build-sha check and deploy-verify compare like with
+                            // like. The next pass moves on toward the tip.
+                            git_in(&repo, &["checkout", "--quiet", "--detach", &key])?;
+                            git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
+                            deploy_note(&format!(
+                                "deploy-consume: {key} is the newest core CI has published (the request is {tip}); deploying it now"
+                            ));
+                        }
+                        Some(core)
+                    }
                     CiCore::CompileHere => None,
                     CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
@@ -4311,17 +4328,19 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     }
 }
 
-/// The core CI built for `tip`, downloaded, verified and extracted, for `reboot --prebuilt`
-/// (card 50ca737e). While CI is still inside its budget this WAITS, in this detached
-/// consumer, rather than returning: the actuator re-launches a consumer only after the
-/// request is stranded (1.5x the last deploy time), so a "come back later" would idle the
-/// node for hours and spend an actuation. `CompileHere` = CI cannot deliver for this node;
-/// the reason is logged. `Superseded` = the request (`request_path`) no longer names
-/// `requested_tip`: CI will never publish a superseded tip (its run is cancelled), so the
-/// wait ends and the caller starts over on the new request.
-async fn ci_core_for(repo: &Path, tip: &str, request_path: &Path, requested_tip: &str) -> CiCore {
-    use continuum_cli_lifecycle::prebuilt_artifact::{platform_key, when_artifact_missing, MissingArtifact};
+/// The core to deploy, downloaded, verified and extracted, for `reboot --prebuilt` (card
+/// 50ca737e): the newest of `candidates` (build keys newer than the running core, newest
+/// first, the tip's key at their head) that CI has PUBLISHED (card d1db1a83). While none
+/// is, this WAITS, in this detached consumer, rather than returning: the actuator
+/// re-launches a consumer only after the request is stranded (1.5x the last deploy time),
+/// so a "come back later" would idle the node for hours and spend an actuation. The CI
+/// budget is the tip's. `CompileHere` = CI cannot deliver for this node; the reason is
+/// logged. `Superseded` = the request (`request_path`) no longer names `requested_tip`:
+/// the caller lists candidates again against the new tip.
+async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
+    use continuum_cli_lifecycle::prebuilt_artifact::{newest_published, platform_key, when_artifact_missing, MissingArtifact};
     let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
+    let newest = &candidates[0]; // deploy_candidates always puts the tip's key first
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     loop {
         tick.tick().await;
@@ -4333,13 +4352,34 @@ async fn ci_core_for(repo: &Path, tip: &str, request_path: &Path, requested_tip:
         }
         let missing = match platform {
             None => when_artifact_missing(None, 0),
-            Some(p) => match fetch_ci_core(repo, tip, p).await {
-                Ok(Some(core)) => return CiCore::Built(core),
-                Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, tip)),
-                Err(why) => MissingArtifact::BuildFromSource(format!(
-                    "the CI build for {tip} was refused: {why}; compiling here"
-                )),
-            },
+            Some(p) => {
+                let mut published = Vec::with_capacity(candidates.len());
+                for key in candidates {
+                    published.push(match ci_core_published(key, p).await {
+                        Ok(out) => out,
+                        Err(why) => {
+                            deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}"));
+                            false
+                        }
+                    });
+                }
+                match newest_published(candidates, &published) {
+                    None => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
+                    Some(key) => match fetch_ci_core(repo, key, p).await {
+                        Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
+                        // published a moment ago and gone now: the next tick asks again
+                        Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
+                        Err(why) if key == newest.as_str() => MissingArtifact::BuildFromSource(format!(
+                            "the CI build for {key} was refused: {why}; compiling here"
+                        )),
+                        // an older core refused: keep waiting for the tip's, within its budget
+                        Err(why) => {
+                            deploy_note(&format!("deploy-consume: the CI build for {key} was refused: {why}"));
+                            when_artifact_missing(Some(p), tip_age_secs(repo, newest))
+                        }
+                    },
+                }
+            }
         };
         match missing {
             MissingArtifact::Wait(why) => {
@@ -4359,9 +4399,54 @@ async fn ci_core_for(repo: &Path, tip: &str, request_path: &Path, requested_tip:
     }
 }
 
+/// The build keys this node could move to, newest first: those after the running core up
+/// to the tip (bounded by `DEPLOY_CANDIDATE_LIMIT`), with the tip's own key always first.
+/// With no running core, or a history git cannot walk, it is the tip's key alone, said in
+/// the log.
+fn deploy_candidates(repo: &Path, running: Option<&str>, tip: &str, newest_key: &str) -> Vec<String> {
+    let mut keys: Vec<String> = match running {
+        None => Vec::new(),
+        Some(running) => {
+            let args = continuum_cli_lifecycle::prebuilt_artifact::candidate_keys_log_args(running, tip);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            match git_in(repo, &args) {
+                Ok(out) => out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+                Err(why) => {
+                    deploy_note(&format!("deploy-consume: cannot list builds since {running}: {why}; waiting on the tip's core only"));
+                    Vec::new()
+                }
+            }
+        }
+    };
+    keys.retain(|key| key != newest_key);
+    keys.insert(0, newest_key.to_string());
+    keys
+}
+
+/// Has CI published `key`'s core for `platform`? One small request for the manifest: the
+/// archive is fetched only for the key chosen.
+async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
+    let url = continuum_cli_lifecycle::prebuilt_artifact::manifest_url(key, platform)
+        .ok_or_else(|| format!("{key} is not a full commit sha"))?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    // GET, not HEAD: a release asset redirects to storage signed for GET, which can refuse
+    // a HEAD; the manifest is a few hundred bytes.
+    let resp = client.get(&url).send().await.map_err(|e| format!("asking {url}: {e}"))?;
+    match resp.status() {
+        reqwest::StatusCode::NOT_FOUND => Ok(false),
+        status if status.is_success() => Ok(true),
+        status => Err(format!("asking {url}: {status}")),
+    }
+}
+
 /// What the CI wait resolved to.
 enum CiCore {
-    Built(PathBuf),
+    /// The extracted core, and the build key it is (the tip's, or an older published one).
+    Built { core: PathBuf, key: String },
     CompileHere,
     Superseded(String),
 }
