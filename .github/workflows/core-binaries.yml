@@ -257,7 +257,9 @@ jobs:
             *"sha ${GITHUB_SHA:0:9}"*) ;;
             *) echo "::error::continuum --version does not report ${GITHUB_SHA:0:9}"; exit 1 ;;
           esac
-          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/$name.tar.gz" "$name"
+          # Relative names from inside the dir: GNU tar (Git for Windows) reads `D:\...` as a
+          # remote host `D` and fails "Cannot connect to D: resolve failed".
+          (cd "$RUNNER_TEMP" && tar -czf "$name.tar.gz" "$name")
           (cd "$RUNNER_TEMP" && { command -v sha256sum >/dev/null && sha256sum "$name.tar.gz" || shasum -a 256 "$name.tar.gz"; } > "$name.tar.gz.sha256")
           # Values reach Python as argv, never inside its string literals: a Windows path
           # (D:\a\_temp) in a literal would read `\a` as an escape.
