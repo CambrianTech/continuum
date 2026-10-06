@@ -396,9 +396,9 @@ crate::action_command! {
             // signature each was minted with. Four Mints for one card's credit (the 5090,
             // 2026-10-05) is the falsifier this closes.
             #[cfg(not(test))]
-            let board_jobs = crate::genome::fine_tuning::TrainingJobBoard::global().snapshot();
+            let board_jobs = crate::genome::fine_tuning::TrainingJobBoard::global().pending();
             #[cfg(test)]
-            let board_jobs = this.test_job_board.as_ref().snapshot();
+            let board_jobs = this.test_job_board.as_ref().pending();
             let in_flight = nearest_pending(
                 &competence,
                 &sig.embedder,
@@ -838,6 +838,37 @@ mod tests {
         // Never judged: the same near gene is reused.
         let out = w.fill().await;
         assert!(matches!(out.took, Some(Took::Reused { .. })), "not measured is not low: {out:?}");
+    }
+
+    // what this catches (card cb14cc13, Cormac on #4794 point 6): a job claimed off the
+    // board at Completed is still PENDING while its gene is adopted (convert, register,
+    // trial, stamp); a fill in that window joins it, never mints beside it; once the
+    // adoption ends the competence decides again.
+    #[tokio::test]
+    async fn a_completed_job_being_adopted_still_holds_its_competence() {
+        use crate::genome::fine_tuning::adapter::FineTuningAdapter;
+        let w = decision_world().await;
+        let first = w.fill().await;
+        // the world's near gene is reused by the first fill; take it off the table so the
+        // next fill is about the job alone
+        assert!(matches!(first.took, Some(Took::Reused { .. })), "{first:?}");
+        let mut all = w.trials().load().unwrap();
+        all[0].state = crate::genome::gene_trial::TrialState::Retired;
+        w.trials().save_for_test(&all).unwrap();
+        let minted = w.fill().await;
+        let handle = minted.result.expect("a mint after the reuse was retired").handle;
+        // the sentinel sees Completed and claims the job: it leaves the in-flight set and
+        // enters adoption
+        let status = w.adapter.poll(&handle).await.unwrap();
+        assert!(w.board.claim(handle.local_id, &status).is_some());
+        assert!(w.board.snapshot().is_empty(), "no longer in flight");
+        assert_eq!(w.board.pending().len(), 1, "still pending: being adopted");
+        let during = w.fill().await;
+        assert_eq!(during.took, Some(Took::Joined { job: handle.local_id }), "a fill during adoption joins: {during:?}");
+        w.board.adoption_done(handle.local_id);
+        assert!(w.board.pending().is_empty());
+        let after = w.fill().await;
+        assert!(after.result.is_some(), "the adoption ended (no trial opened in this world): the competence decides again: {after:?}");
     }
 
     // what this catches (Cormac on #4794, point 5): a trial file that cannot be read

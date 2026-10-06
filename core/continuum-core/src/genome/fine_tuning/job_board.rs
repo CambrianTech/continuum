@@ -141,6 +141,13 @@ pub struct TrainingJobBoard {
     /// process, a second binary), and this one never reconciles it (Cormac's design).
     owner: Option<std::fs::File>,
     jobs: DashMap<Uuid, WatchedJob>,
+    /// Completed jobs whose gene is being adopted (convert, register, trial, stamp):
+    /// claimed off `jobs` so no tick re-handles them, kept HERE so a full bucket still
+    /// sees the competence as pending and joins it. Without this the minutes of an MLX
+    /// convert were a window in which a second gene minted for the same competence
+    /// (Cormac on #4794, point 6). In memory only: a core that dies mid-adoption loses
+    /// the adoption, as before, and the ledger's terminal row already stands.
+    adopting: DashMap<Uuid, WatchedJob>,
     /// Append-only journal path; `None` disables journaling.
     ledger: Option<PathBuf>,
     /// Corrupt offsets already reported by this board; rows stay untouched on disk.
@@ -498,6 +505,7 @@ impl TrainingJobBoard {
         TrainingJobBoard {
             owner: ledger.as_deref().and_then(take_ledger_ownership),
             jobs: DashMap::new(),
+            adopting: DashMap::new(),
             quarantined: DashMap::new(),
             orphans: std::sync::Mutex::new(Vec::new()),
             ledger,
@@ -669,7 +677,11 @@ impl TrainingJobBoard {
     /// a trial was judging the competence, an existing gene carried it, or her surprise
     /// was below the floor. Its lineage ends here; the bucket's next fill is a fresh
     /// decision, not a resume.
-    pub fn journal_returned(&self, origin: Uuid, from: Uuid, held_by: serde_json::Value, attempt: u32) {
+    pub fn journal_returned<H: serde::Serialize>(&self, origin: Uuid, from: Uuid, held_by: &H, attempt: u32) {
+        // Serialized here, once: a typed value in the journal, and a value that cannot
+        // serialize (there is none today) is written as the failure it is, never as null.
+        let held_by = serde_json::to_value(held_by)
+            .unwrap_or_else(|e| serde_json::json!({ "unserializable": e.to_string() })); // unwrap_or_else: the row still says WHY the reason is missing
         self.journal(&serde_json::json!({
             "event": "returned",
             "origin_local_id": origin.to_string(),
@@ -734,6 +746,19 @@ impl TrainingJobBoard {
         self.jobs.iter().map(|e| e.value().clone()).collect()
     }
 
+    /// Every job whose competence is still PENDING for a bucket: in flight, or completed
+    /// and being adopted. The gates read this (a fill joins, never mints beside it); the
+    /// sentinel polls [`snapshot`](Self::snapshot), the in-flight ones alone.
+    pub fn pending(&self) -> Vec<WatchedJob> {
+        self.jobs.iter().chain(self.adopting.iter()).map(|e| e.value().clone()).collect()
+    }
+
+    /// The adoption of a completed job ended (adopted, or refused): its competence is no
+    /// longer pending. Idempotent.
+    pub fn adoption_done(&self, local_id: Uuid) {
+        self.adopting.remove(&local_id);
+    }
+
     /// Atomically remove and return a job — the sentinel's "claim" the instant it
     /// observes a terminal status, BEFORE spawning the eval chain, so no later tick
     /// re-handles it. `None` if already claimed or not terminal. Journals the
@@ -750,6 +775,9 @@ impl TrainingJobBoard {
         }
         let job = self.jobs.remove(&local_id).map(|(_, job)| job);
         if let Some(job) = &job {
+            if matches!(status, TrainingStatus::Completed { .. }) {
+                self.adopting.insert(local_id, job.clone());
+            }
             self.journal(&serde_json::json!({
                 "event": "terminal",
                 "reason": "claimed",
