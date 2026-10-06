@@ -7,6 +7,7 @@
 # Usage: source tools/scripts/lib/core-features.sh
 #        select_core_features            # this machine
 #        select_core_features "Darwin x86_64"   # a named platform, as `uname -sm` prints it
+#        select_core_features "Windows-NVIDIA x86_64"   # CI's Windows build (no GPU to detect)
 # Sets CONTINUUM_FEATURES (core-server, continuum-mcp, forge-custodian) and
 # CONTINUUM_CLI_FEATURES (the `continuum` CLI).
 
@@ -60,6 +61,9 @@ select_core_features() {
       # Source the existing detector for Linux/Windows.
       source "$_core_features_dir/../shared/cargo-features.sh"
       CONTINUUM_FEATURES="$CARGO_GPU_FEATURES"
+      # CI publishes the Windows + NVIDIA build from a runner with no GPU and no device to
+      # probe, so it names the flavor; the node's detector reaches the same constant.
+      [ "$platform" = "Windows-NVIDIA x86_64" ] && CONTINUUM_FEATURES="$WINDOWS_NVIDIA_FEATURES"
       # ONE library compile per deploy here too (card 9174fc83). The CLI carries its
       # own GPU-free set ONLY where the core's set links a GPU runtime the loader must
       # find before main() — cuda (cublas/cudart), rocm, vulkan (libvulkan): the

@@ -33,13 +33,19 @@ pub const REQUIRED_BINS: [&str; 4] = [
 /// running build is not a deploy: the node keeps its core, and CI built nothing for it.
 /// `core-binaries.yml`'s push `paths` must cover every entry (pinned by a test below), or a
 /// change here would ship with no artifact behind it.
-pub const BUILD_INPUTS: [&str; 6] = [
+pub const BUILD_INPUTS: [&str; 10] = [
     "core/",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
     "tools/scripts/lib/core-features.sh",
     "tools/scripts/shared/cargo-features.sh",
+    // The Windows build's environment, GPU floor, packaged sidecar script, and pinned CUDA
+    // version (Mod-CUDA reads the projection).
+    "tools/scripts/lib/windows-build-env.sh",
+    "tools/scripts/lib/cuda-targets.sh",
+    "tools/scripts/start-livekit-windows.ps1",
+    "tools/scripts/generated/manifest.windows.ps1",
 ];
 
 /// `git log` arguments naming `tip`'s BUILD KEY: the newest commit at or before `tip` that

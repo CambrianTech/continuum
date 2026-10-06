@@ -537,9 +537,11 @@ function Mod-LLVM {
 }
 
 function Mod-CUDA {
-    param([switch]$ExistingOnly)
+    # -BuildHost: a machine that compiles the NVIDIA build for others (CI's published Windows
+    # core) needs the toolkit without having the GPU; everything else is the same install.
+    param([switch]$ExistingOnly, [switch]$BuildHost)
     # NVIDIA-only. Non-NVIDIA hosts build DirectML (no CUDA toolkit needed).
-    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
+    if (-not $BuildHost -and -not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
         Module-Skip 'CUDA' 'no NVIDIA GPU -- native build will use DirectML'
         return
     }
