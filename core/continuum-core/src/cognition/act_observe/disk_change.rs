@@ -26,14 +26,25 @@ pub(crate) fn fingerprint(head: &str, porcelain: &str, stats: &[(String, u64, u1
     h.finish()
 }
 
-/// The paths a `git status --porcelain=v1 -z` listing names (renames carry two; both
-/// are taken, which only makes the fingerprint more sensitive, never less).
+/// The paths a `git status --porcelain=v1 -z` listing names. Each entry is two status
+/// bytes, a space, then the path; a rename or copy (`R`/`C` in the index column) is followed
+/// by one more token, the ORIGINAL path, with no status prefix (Cormac on #4833: slicing that
+/// token at 3 cut its path, and could split a non-ASCII character). Both paths are taken.
 fn porcelain_paths(porcelain: &str) -> Vec<String> {
-    porcelain
-        .split('\0')
-        .filter(|e| !e.is_empty())
-        .map(|e| if e.len() > 3 { e[3..].to_string() } else { e.to_string() })
-        .collect()
+    let mut paths = Vec::new();
+    let mut tokens = porcelain.split('\0').filter(|t| !t.is_empty());
+    while let Some(entry) = tokens.next() {
+        let renamed = matches!(entry.as_bytes().first(), Some(b'R') | Some(b'C'));
+        if let Some(path) = entry.get(3..) {
+            paths.push(path.to_string());
+        }
+        if renamed {
+            if let Some(original) = tokens.next() {
+                paths.push(original.to_string());
+            }
+        }
+    }
+    paths
 }
 
 /// The checkout's fingerprint, or `None` when it could not be read (no checkout, git
@@ -43,7 +54,9 @@ pub(crate) fn checkout_fingerprint(root: &Path) -> Option<u64> {
     let root_s = root.to_string_lossy().to_string();
     let head = probe("git", &["-C", &root_s, "rev-parse", "HEAD"], READ_BOUND);
     let head = head.stdout_if_ok()?.to_string();
-    let status = probe("git", &["-C", &root_s, "status", "--porcelain=v1", "-z", "-uall"], READ_BOUND);
+    // -unormal: an untracked directory is listed once and its own mtime stands for what is
+    // added or removed in it, so a read-only act never stats every file below it (Cormac)
+    let status = probe("git", &["-C", &root_s, "status", "--porcelain=v1", "-z", "-unormal"], READ_BOUND);
     let porcelain = status.stdout_if_ok()?.to_string();
     let stats: Vec<(String, u64, u128)> = porcelain_paths(&porcelain)
         .into_iter()
@@ -69,7 +82,13 @@ pub(crate) fn checkout_fingerprint(root: &Path) -> Option<u64> {
 /// must not read as a write because two different checkouts differ.
 pub(crate) async fn fingerprint_at(root: Option<std::path::PathBuf>) -> Option<u64> {
     let root = root?;
-    tokio::task::spawn_blocking(move || checkout_fingerprint(&root)).await.ok().flatten()
+    // timed: two bounded git reads per side, on every act batch; the cost is a probe, not a guess
+    crate::time_probe!(
+        "act.disk_fingerprint",
+        tokio::task::spawn_blocking(move || checkout_fingerprint(&root))
+    )
+    .ok()
+    .flatten()
 }
 
 /// What the batch did to her checkout, as a typed fact (never a guess either way).
@@ -157,6 +176,20 @@ mod tests {
             DiskChange::Changed,
             "a new file is a write"
         );
+    }
+
+    // what this catches (Cormac on #4833): under -z a rename's original path has no status
+    // prefix, so slicing it at 3 cut the path and could split a non-ASCII character. Both
+    // paths are taken whole; a short or odd entry never panics.
+    #[test]
+    fn a_rename_keeps_both_paths_whole_and_odd_entries_never_panic() {
+        let listing = " M src/a.rs\0R  src/né.rs\0src/ancien.rs\0?? notes/\0";
+        assert_eq!(
+            porcelain_paths(listing),
+            vec!["src/a.rs", "src/né.rs", "src/ancien.rs", "notes/"],
+        );
+        // entries too short to carry a path (one multibyte char; a bare status) give none
+        assert!(porcelain_paths("é\0R\0").is_empty());
     }
 
     // what this catches: an unreadable side (no checkout, git refused) counted either way;
