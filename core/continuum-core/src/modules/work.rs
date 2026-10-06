@@ -2961,15 +2961,13 @@ impl ActionCommand for WorkList {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the work board's cards (read-only): short id, title, state, owner, and whether it is \
-         CLAIMABLE right now. `claimable: true` means work/claim will take it: any card not in \
-         review, merged or closed — open, lapsed, or held by someone else. Taking a held card is a \
-         takeover: the holder's claim is released in your name and they see it. Each line says who \
-         holds a card and how long they have been silent on it; whether to take it over is your \
-         call. Use the short id with work/get for a card's full requirements, or work/claim to take \
-         it. TO FIND WORK YOU CAN TAKE, pass `claimable: true` — many takeable cards sit in the \
-         `claimed` column, so filtering `state: \"open\"` (the COLUMN) will miss them and can come \
-         back empty on a full board. The result always reports `total_on_board` and `claimable_now` so an empty \
-         list is never mistaken for an empty board. Boards are per room (`room`).";
+         CLAIMABLE right now: work/claim takes any card not in review/merged/closed, even one \
+         someone holds (a takeover; they see it). Each line says who holds a card and how long \
+         they have been silent; taking it over is your call. Use the short id with work/get for \
+         full requirements. To find takeable work pass `claimable: true`: filtering \
+         `state: \"open\"` (the column) misses held and lapsed cards. The result always reports \
+         `total_on_board` and `claimable_now` so an empty list is never mistaken for an empty \
+         board. Boards are per room (`room`).";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
