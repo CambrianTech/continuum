@@ -113,9 +113,10 @@ jobs:
       # the published build links the CUDA major a user's install provides at launch.
       # The toolkit is a pure function of the pinned redist in the manifest projection, so it is
       # cached on that file: assembling it from NVIDIA's archives took 24 min on the first run.
-      - name: Cache the CUDA toolkit (Windows)
+      - name: Restore the CUDA toolkit (Windows)
+        id: cuda-cache
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.continuum/cuda-toolkit
           key: cuda-toolkit-${{ hashFiles('tools/scripts/generated/manifest.windows.ps1') }}
@@ -130,6 +131,15 @@ jobs:
           . ./tools/scripts/lib/install-common.ps1
           . ./tools/scripts/lib/win-modules.ps1
           Mod-CUDA -BuildHost
+
+      # Saved as soon as it is assembled, not at job end, so a later failing step does not
+      # send the next run back to NVIDIA's archives.
+      - name: Save the CUDA toolkit (Windows)
+        if: runner.os == 'Windows' && steps.cuda-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.continuum/cuda-toolkit
+          key: cuda-toolkit-${{ hashFiles('tools/scripts/generated/manifest.windows.ps1') }}
 
       - name: Cache cargo state
         uses: Swatinem/rust-cache@v2
