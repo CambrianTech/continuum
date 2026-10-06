@@ -153,6 +153,38 @@ pub fn touches_build_inputs<'a>(changed: impl IntoIterator<Item = &'a str>) -> b
     })
 }
 
+/// How many build keys behind the requested tip the consumer looks for a published core.
+/// Canary moves faster than CI publishes a slow platform (IntelMac, 2026-10-06: a tip about
+/// every 45 min against about 50 min of build plus up to 55 min queued), so the newest
+/// PUBLISHED key is usually one or two behind the tip.
+pub const DEPLOY_CANDIDATE_LIMIT: usize = 8;
+
+/// `git log` arguments listing the build keys after `running` up to `tip`, newest first,
+/// at most [`DEPLOY_CANDIDATE_LIMIT`]: every core this node could move to that is newer
+/// than the one it runs.
+pub fn candidate_keys_log_args(running: &str, tip: &str) -> Vec<String> {
+    let mut args = vec![
+        "log".to_string(),
+        "--format=%H".to_string(),
+        format!("-{DEPLOY_CANDIDATE_LIMIT}"),
+        format!("{running}..{tip}"),
+        "--".to_string(),
+    ];
+    args.extend(BUILD_INPUTS.iter().map(|input| input.to_string()));
+    args
+}
+
+/// The build to deploy, given the candidates newest first and whether CI published each:
+/// the newest PUBLISHED one. `None` = nothing newer than the running core is out yet, so
+/// the consumer waits on the newest candidate.
+pub fn newest_published<'a>(candidates: &'a [String], published: &[bool]) -> Option<&'a str> {
+    candidates
+        .iter()
+        .zip(published)
+        .find(|(_, &out)| out)
+        .map(|(key, _)| key.as_str())
+}
+
 /// What the consumer does when its tip has no artifact yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MissingArtifact {
@@ -180,9 +212,11 @@ pub fn when_artifact_missing(platform: Option<&str>, tip_age_secs: u64) -> Missi
     }
 }
 
-/// Is the request the consumer is waiting on still the request? CI builds only the newest
-/// tip (a superseded run is cancelled), so a wait on a tip the tracker has moved past waits
-/// for an artifact that will never exist. `now_requested` is the request file's tip as of
+/// Is the request the consumer is waiting on still the request? A moved request ends the
+/// wait so the consumer re-lists its candidates against the new tip. It does NOT mean the
+/// old tip's build will never exist: on push, core-binaries.yml cancels only a QUEUED run,
+/// and a running one finishes and publishes (8de501e35, 2026-10-06), which is why the
+/// candidates include every key since the running core, not only the tip's. `now_requested` is the request file's tip as of
 /// this tick; `None` (no request) keeps the wait, since nothing newer was asked for.
 pub fn request_superseded(waiting_on: &str, now_requested: Option<&str>) -> Option<String> {
     match now_requested {
@@ -339,5 +373,34 @@ mod tests {
         let sep = args.iter().position(|a| a == "--").expect("a -- separator");
         assert_eq!(&args[..sep], ["log", "-1", "--format=%H", "4e3bc6477"]);
         assert_eq!(&args[sep + 1..], BUILD_INPUTS.map(String::from));
+    }
+
+    // what this catches (IntelMac, 2026-10-06): a node that waits forever on the newest tip
+    // while an older build is published. Core 5b496e307 ran from 12:30Z while 8de501e35's
+    // core had been out since 15:18Z: 5dbfadbca was building and e428cbd50 queued, and the
+    // consumer only ever waited on the tip. The newest PUBLISHED candidate is the deploy.
+    #[test]
+    fn the_newest_published_build_is_deployed_not_only_the_tip() {
+        let candidates: Vec<String> =
+            ["e428cbd50", "5dbfadbca", "8de501e35"].map(String::from).to_vec();
+        assert_eq!(newest_published(&candidates, &[false, false, true]), Some("8de501e35"));
+        assert_eq!(
+            newest_published(&candidates, &[false, true, true]),
+            Some("5dbfadbca"),
+            "the newest out wins"
+        );
+        assert_eq!(
+            newest_published(&candidates, &[true, false, true]),
+            Some("e428cbd50"),
+            "the tip, when it is out"
+        );
+        assert_eq!(newest_published(&candidates, &[false, false, false]), None, "none out: wait");
+        let args = candidate_keys_log_args("5b496e307", "e428cbd50");
+        assert!(args.contains(&"5b496e307..e428cbd50".to_string()), "newer than the running core only");
+        assert!(args.contains(&format!("-{DEPLOY_CANDIDATE_LIMIT}")));
+        assert!(
+            args.iter().skip_while(|a| *a != "--").any(|a| a == "core/"),
+            "build inputs only"
+        );
     }
 }
