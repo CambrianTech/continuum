@@ -114,6 +114,8 @@ The law in §2 is already general: what she keeps is what her model of the world
 
 **Corrections weigh by proximity** (Fable, #4803 review). A correction about her own situation — her state, her claim, her checkout, what she stands on — outweighs one about form or style: it changes what she believes about where she is. The fold orders them that way before the window reads them.
 
+**Count the choosing, not the dealing** (Kimi, #4803 follow-up). An instance that arrives on her — dealt by a round or a queue, never picked — is the world's test of her prediction; whether she holds it through its artifacts is hers alone, and only that choice enters `S(C)`. A dealt card tests what she expected of the room; a held one tests when she decided to stop expecting.
+
 **Two axes, two stores.** Novelty and surprise are different quantities and lead to different consolidation, as they do in a brain (the hippocampus takes a novel episode fast; the cortex consolidates what keeps surprising it):
 
 - **novel, not yet surprising** becomes a *memory*: an engram, recalled by distance, cheap, never trained on by itself (§1);
