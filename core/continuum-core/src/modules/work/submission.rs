@@ -98,7 +98,7 @@ pub struct WorkSubmit {
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
 )]
 pub struct WorkSubmitParams {
-    /// Optional: the card's own board decides the room; named only for a card on no board you are in.
+    /// Optional; the card's board decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub room: Option<String>,
@@ -947,7 +947,7 @@ impl From<ReviewOutcome> for airc_work::WorkReviewOutcome {
     export_to = "../../../protocol/typescript/work/WorkReviewParams.ts"
 )]
 pub struct WorkReviewParams {
-    /// Optional: the card's own board decides the room; named only for a card on no board you are in.
+    /// Optional; the card's board decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub room: Option<String>,
@@ -1211,7 +1211,7 @@ pub struct WorkSubmission {
     export_to = "../../../protocol/typescript/work/WorkSubmissionParams.ts"
 )]
 pub struct WorkSubmissionParams {
-    /// Optional: the card's own board decides the room; named only for a card on no board you are in.
+    /// Optional; the card's board decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub room: Option<String>,

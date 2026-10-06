@@ -2,7 +2,7 @@
 
 export type WorkSubmissionParams = { 
 /**
- * Optional: the card's own board decides the room; named only for a card on no board you are in.
+ * Optional; the card's board decides.
  */
 room?: string, 
 /**
