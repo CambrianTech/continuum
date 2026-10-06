@@ -288,6 +288,17 @@ struct OutputAllowance {
 /// the allowance is the reserve (what the code before #4194 did), never a constant; with
 /// no rate the time term is skipped. Never past the reserve: the prompt was sized to
 /// leave exactly that room, and past it `prompt + completion` reaches `n_ctx`.
+///
+/// THE MEASUREMENTS ARE EXPECTATIONS, NEVER THE CEILING (the 5090, 2026-10-06): the
+/// allowance was `min(max(time, need), bound)`, and the need is a p90 with headroom, so
+/// by construction about one turn in ten ran past it. A cut tool call commits nothing:
+/// Kimi's `tools/<cut at the output limit> ✗` lost the whole turn (allowance 10,177 =
+/// need, against a reserve of 12,464; 12,333 against 25,024). `max_tokens` does not make
+/// a turn shorter, it only decides whether a long one lands; a model stops when it is
+/// done. So the allowance IS the bound (the reserve the prompt left, and an act's runaway
+/// cap), and the time and need terms are reported beside it as what the turn is expected
+/// to use. A latency budget enforced by truncation buys no latency: the cut turn is
+/// re-run from scratch.
 fn output_allowance(
     kind: TurnKind,
     tps: Option<f64>,
@@ -298,17 +309,11 @@ fn output_allowance(
         .filter(|t| t.is_finite() && *t > 0.0)
         .map(|t| (kind.latency_budget_secs() * t).round() as u32);
     let need_term = need.map(|n| n.total());
-    let wanted = match (time_term, need_term) {
-        // Unknown is not zero: an unmeasured need takes the reserve, as before #4194.
-        (_, None) => reserve,
-        (Some(t), Some(n)) => t.max(n),
-        (None, Some(n)) => n,
-    };
     let bound = match kind {
         TurnKind::Act => reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
         TurnKind::Pass => reserve,
     };
-    let allowance = wanted.min(bound).max(1);
+    let allowance = bound.max(1);
     OutputAllowance {
         time_term,
         need_term,
@@ -1557,7 +1562,7 @@ impl LlmDeliberationFaculty {
             need_clipped = derived.need_clipped,
             allowance = max_tokens,
             reserve = reserve,
-            "the turn's output allowance — max(time × her rate, her measured think + answer), under the reserve"
+            "the turn's output allowance — the room the prompt left (an act also under its runaway cap); time × her rate and her measured think + answer are what she is expected to use"
         );
         TextGenerationRequest {
             messages,
@@ -6774,16 +6779,20 @@ mod tests {
             let need = OutputNeed { reasoning: 900, answer: 300, turns: 5 };
             let pass = output_allowance(TurnKind::Pass, Some(12.0), Some(need), reserve);
             assert_eq!(pass.need_term, Some(1_200));
-            assert!(
-                pass.allowance >= need.reasoning + need.answer,
-                "a pass never gets less than her measured think + answer: {}",
-                pass.allowance
-            );
-            assert!(pass.time_term.is_some_and(|t| t < pass.allowance), "the need dominates a small time term");
+            assert!(pass.allowance >= need.reasoning + need.answer, "never less than her measured think + answer: {}", pass.allowance);
             assert!(pass.allowance > 768, "never #4194's floor");
             assert!(!pass.need_clipped);
-            // A fast lane earns more than its need: the time term wins on the 5090 at 40 tok/s.
-            assert_eq!(output_allowance(TurnKind::Act, Some(40.0), Some(need), reserve).allowance, 6_000);
+            // what this catches (the 5090, 2026-10-06: Kimi's tool call cut at 10,177 =
+            // her p90 need, with 12,464 of room left): the measurements are expectations,
+            // never the ceiling. With a measured need and a rate, the allowance is still
+            // the room the prompt left; a turn longer than usual lands instead of being cut.
+            assert_eq!(pass.allowance, reserve, "a pass gets the room the prompt left");
+            let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32 };
+            assert_eq!(output_allowance(TurnKind::Act, None, Some(kimi), 12_464).allowance, 12_288, "an act gets the runaway cap, not her p90");
+            assert_eq!(output_allowance(TurnKind::Pass, None, Some(kimi), 25_024).allowance, 25_024);
+            // A fast lane's time term is reported, never a ceiling.
+            let fast = output_allowance(TurnKind::Act, Some(40.0), Some(need), reserve);
+            assert_eq!((fast.allowance, fast.time_term), (reserve, Some(6_000)));
             // Never past the reserve the prompt left; a need past it is said, not hidden.
             assert_eq!(output_allowance(TurnKind::Pass, Some(40.0), Some(need), 1_000).allowance, 1_000);
             let clipped = output_allowance(
