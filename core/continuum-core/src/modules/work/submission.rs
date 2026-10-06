@@ -172,9 +172,24 @@ async fn room_of_card(
     verb: &'static str,
 ) -> Result<airc_lib::Room, CommandError> {
     let named = named.map(str::trim).filter(|s| !s.is_empty());
-    if let Ok(horizon) = super::board_horizon(airc).await {
-        if let Ok(id) = super::resolve_card_id_in_boards(&horizon, raw_card) {
-            if let Some((room, _)) = horizon.boards.iter().find(|(_, b)| b.card(id).is_some()) {
+    let horizon = super::board_horizon(airc)
+        .await
+        .map_err(|e| CommandError::Internal(format!("{verb}: the rooms you are in could not be listed: {e}")))?;
+    match super::resolve_card_id_in_boards(&horizon, raw_card) {
+        Ok(id) => {
+            let mut holders = horizon.boards.iter().filter(|(_, b)| b.card(id).is_some()).map(|(room, _)| room);
+            if let Some(room) = holders.next() {
+                if let Some(other) = holders.next() {
+                    // a card is on exactly one board; two is a fault worth seeing, not a choice
+                    crate::probe!(
+                        class = "work.room.card_on_two_boards",
+                        verb,
+                        card_id = %short8(id.as_uuid()),
+                        first = %room.name,
+                        second = %other.name,
+                        "a card id found on two readable boards: acting in the first"
+                    );
+                }
                 if let Some(asked) = named {
                     let wanted = asked.trim_start_matches('#');
                     if wanted != room.name && wanted != room.channel.as_uuid().to_string() {
@@ -190,14 +205,24 @@ async fn room_of_card(
                 }
                 return Ok(room.clone());
             }
+            // the id is whole but on no READABLE board: named, that room answers for itself;
+            // unnamed, an unreadable board is a read failure (horizon's own story), never "absent"
+            match named {
+                Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+                None if !horizon.unreadable.is_empty() => Err(horizon.not_found("card", raw_card)),
+                None => Err(CommandError::Invalid(format!(
+                    "{verb}: card '{raw_card}' is on no board of a room you are in, so it cannot say its room: \
+                     join the card's room (room/join) or name it with room=..."
+                ))),
+            }
         }
-    }
-    match named {
-        Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
-        None => Err(CommandError::Invalid(format!(
-            "{verb}: card '{raw_card}' is on no board of a room you are in, so it cannot say its room: \
-             join the card's room (room/join) or name it with room=..."
-        ))),
+        // the handle did not resolve across her boards (a prefix on two cards, a malformed id,
+        // or no board to search): a named room disambiguates, and its own resolution reports
+        // its own truth; unnamed, the resolver's refusal IS the answer, never a guessed absence
+        Err(refusal) => match named {
+            Some(asked) => crate::modules::room_resolve::resolve_room(airc, Some(asked)).await,
+            None => Err(refusal),
+        },
     }
 }
 
@@ -1474,9 +1499,16 @@ mod tests {
             .await
             .expect("a card on no board she can see: the room she named");
         assert_eq!(elsewhere.name, "academy");
+        // what this catches (Cormac on #4822): a handle that does not resolve, with no room named,
+        // is answered by the resolver's own refusal, never a confident "on no board" it cannot know
         let e = super::room_of_card(&airc, None, "0000dead", "work/submit")
             .await
-            .expect_err("no card and no room: nothing to act in");
+            .expect_err("a prefix matching no card and no room: the resolver's refusal");
+        assert!(e.to_string().contains("0000dead") && !e.to_string().contains("room/join"), "{e}");
+        let whole = uuid::Uuid::new_v4().to_string();
+        let e = super::room_of_card(&airc, None, &whole, "work/submit")
+            .await
+            .expect_err("a whole id on no readable board and no room: nothing to act in");
         assert!(e.to_string().contains("room/join") && e.to_string().contains("room="), "{e}");
     }
 
