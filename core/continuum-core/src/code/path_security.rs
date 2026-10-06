@@ -24,6 +24,16 @@ pub struct PathSecurity {
     read_roots: Vec<PathBuf>,
 }
 
+/// How far a read may reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadScope {
+    /// The workspace and its read-only roots — every caller.
+    Sandbox,
+    /// Also any absolute path the OS user can read — only for a caller whose trust already
+    /// admits arbitrary execution (`code/shell`). Writes never widen.
+    Host,
+}
+
 /// Errors that can occur during path validation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathSecurityError {
@@ -392,6 +402,23 @@ impl PathSecurity {
         Err(ws_err)
     }
 
+    /// [`Self::validate_read`], widened by `scope`. Under [`ReadScope::Host`] an absolute
+    /// path outside every sandbox root resolves too, as long as it exists: the caller is one
+    /// already allowed arbitrary execution, whom a read sandbox cannot contain (Kimi,
+    /// 2026-10-06: code/read refused a diff she had just written with code/shell). The
+    /// sandbox's verdict stands for every relative path and for every `Sandbox` caller.
+    pub fn validate_read_in(&self, path: &str, scope: ReadScope) -> Result<PathBuf, PathSecurityError> {
+        let sandboxed = self.validate_read(path);
+        if sandboxed.is_ok() || scope == ReadScope::Sandbox {
+            return sandboxed;
+        }
+        let host = Path::new(path);
+        match host.is_absolute().then(|| host.canonicalize()) {
+            Some(Ok(canonical)) => Ok(canonical),
+            _ => sandboxed,
+        }
+    }
+
     /// Validate and resolve a path for write operations.
     ///
     /// The ONLY write boundary is the workspace sandbox: the path must resolve inside the
@@ -744,6 +771,22 @@ mod tests {
         let (_dir, security) = setup_workspace();
         let result = security.validate_read("src/main.ts");
         assert!(result.is_ok());
+    }
+
+    // what this catches (Kimi, 2026-10-06): a shell-trusted caller refused a read of a file
+    // outside her workspace that she could `cat`. Host scope reads an existing absolute path
+    // outside every root; Sandbox still refuses it; neither widens a relative traversal.
+    #[test]
+    fn host_scope_reads_outside_the_sandbox_and_only_absolute_paths() {
+        let (_dir, security) = setup_workspace();
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("pr.diff");
+        fs::write(&file, "diff").unwrap();
+        let abs = file.to_string_lossy().to_string();
+        assert!(security.validate_read_in(&abs, ReadScope::Sandbox).is_err());
+        assert_eq!(security.validate_read_in(&abs, ReadScope::Host).unwrap(), file.canonicalize().unwrap());
+        assert!(security.validate_read_in("../../etc/passwd", ReadScope::Host).is_err());
+        assert!(security.validate_write(&abs).is_err(), "writes never widen");
     }
 
     #[test]

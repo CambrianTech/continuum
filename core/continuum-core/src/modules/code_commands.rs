@@ -69,6 +69,19 @@ fn engine_err(e: crate::code::file_engine::FileEngineError) -> CommandError {
 /// (an airc `peer_id`), never a params field. `None` caller is the
 /// substrate-local owner. This is the single point that maps the gated identity
 /// to the per-caller workspace; nothing trusts caller-supplied identity.
+/// How far THIS caller's reads may reach: the host, when her trust already admits
+/// `code/shell` (a read sandbox cannot contain a caller who may run `cat`, so it only cost
+/// her turns: Kimi, 2026-10-06); the sandbox for everyone else. Asked through the gate's
+/// own resolvers, so the read scope can never be wider than the shell grant.
+fn read_scope_of(ctx: &Ctx) -> crate::code::path_security::ReadScope {
+    let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
+    if crate::modules::grid::acl::is_command_authorized("code/shell", trust) {
+        crate::code::path_security::ReadScope::Host
+    } else {
+        crate::code::path_security::ReadScope::Sandbox
+    }
+}
+
 pub(crate) fn caller_id(ctx: &Ctx) -> String {
     // ONE resolver (`operator_peer::acting_peer_id`): the same peer the work verbs
     // claim as. `LOCAL_OWNER` survives only for the boot window before the
@@ -612,7 +625,7 @@ impl ActionCommand for CodeRead {
     async fn run(&self, ctx: &Ctx, p: CodeReadParams) -> Result<ReadResult, CommandError> {
         let engine = engine!(self, ctx);
         engine
-            .read(&p.file_path, p.start_line, p.end_line)
+            .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(ctx))
             .map_err(engine_err)
     }
 }
