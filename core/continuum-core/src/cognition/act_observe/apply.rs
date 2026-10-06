@@ -186,6 +186,9 @@ pub async fn apply_act(
     // dispatch listener when it lands. Requires the core executor (a live persona's hands
     // expose it; harnesses don't → everything runs synchronously). No long-running calls —
     // the overwhelmingly common case — means `fg_calls == calls` and this is inert.
+    // Her checkout before the batch: `wrote` is what the batch DID to it, by any verb.
+    let acting_root = crate::cognition::persona_workspace::acting_root_of(body.persona_id);
+    let disk_before = super::disk_change::fingerprint_at(acting_root.clone()).await;
     let mut bg_notes: Vec<String> = Vec::new();
     // The long-running calls that were dispatched (not run synchronously) — retained so a
     // pure-background batch (no foreground calls) can still emit a typed act, keeping
@@ -738,13 +741,27 @@ pub async fn apply_act(
     // `wrote` is the question we actually keep asking, precomputed so it is a filter and
     // not a substring guess at query time: did anything in this batch reach DISK?
     let verbs: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-    // Honest: a mutating verb that ERRORED reached no disk. Freya (2026-09-05)
-    // had a correct `code/edit` answer "File not found" and still read as a write.
-    let wrote = acts.iter().any(|a| {
+    // MEASURED, by any verb: her checkout's fingerprint after the batch against before it.
+    // A write through code/shell (sed -i, a heredoc, git apply, git commit) used to count
+    // as reading, because `wrote` read the verb NAME (Joel, 2026-10-06: "0 writes always a
+    // serious plumbing bug"). An executed mutating verb still counts on its own, for a
+    // write that lands outside the checkout. A mutating verb that ERRORED reached no disk
+    // (Freya, 2026-09-05: a `code/edit` answering "File not found" read as a write).
+    let disk = super::disk_change::DiskChange::between(
+        disk_before,
+        super::disk_change::fingerprint_at(acting_root).await,
+    );
+    let wrote_by_verb = acts.iter().any(|a| {
         let n = a.call.name.replace('_', "/");
         matches!(a.status, crate::cognition::act_observe::ActStatus::Executed)
             && (n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit"))
     });
+    // and the board: a submission, a review verdict, a ledger note or a card she put up is
+    // written work that reaches no disk, and counted as reading until now
+    let published = acts.iter().any(|a| {
+        matches!(a.status, crate::cognition::act_observe::ActStatus::Executed) && a.output.verb.publishes()
+    });
+    let wrote = wrote_by_verb || published || disk == super::disk_change::DiskChange::Changed;
     crate::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
@@ -752,6 +769,8 @@ pub async fn apply_act(
         tools = calls.len(),
         verbs = %verbs.join(","),
         wrote,
+        disk = disk.as_str(),
+        published,
         chars = observation.len(),
         "acted and observed the result"
     );

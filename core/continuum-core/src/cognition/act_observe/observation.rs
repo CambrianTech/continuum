@@ -52,6 +52,9 @@ pub enum ToolVerb {
     Help,
     Tree,
     Search, // orient
+    /// Put her output on the board (a submission, a review verdict, a ledger note, a card):
+    /// work that reaches no disk and was counted as reading (Joel, 2026-10-06).
+    Publish,
     Other,
 }
 
@@ -81,6 +84,7 @@ impl ToolVerb {
             "code/run" => ToolVerb::Run,
             "code/shell" => ToolVerb::Shell,
             "code/read" => ToolVerb::Read,
+            "work/submit" | "work/review" | "work/note" | "work/create" => ToolVerb::Publish,
             "interface/screenshot" | "interface/capture" | "perception/observe"
             | "perception/look" | "vision/look" => ToolVerb::Screenshot,
             _ => ToolVerb::Other,
@@ -93,6 +97,11 @@ impl ToolVerb {
             self,
             ToolVerb::Write | ToolVerb::Edit | ToolVerb::Apply | ToolVerb::Commit
         )
+    }
+
+    /// Put output on the board — a write that reaches no disk.
+    pub fn publishes(&self) -> bool {
+        matches!(self, ToolVerb::Publish)
     }
 
     /// Looked at the world — replaces the observation-verb class scan in
@@ -328,6 +337,20 @@ pub(super) fn clip_intent(intent: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (Joel, 2026-10-06: "0 writes always a serious plumbing bug"): her
+    // submissions, review verdicts, ledger notes and new cards reach no disk, so `wrote`
+    // counted them as reading. They publish; looking at the board does not.
+    #[test]
+    fn board_output_publishes_and_reading_the_board_does_not() {
+        for verb in ["work/submit", "work/review", "work/note", "work/create", "work_submit"] {
+            assert!(ToolVerb::classify(verb).publishes(), "{verb}");
+            assert!(!ToolVerb::classify(verb).mutates(), "{verb}: the board is not her disk");
+        }
+        for verb in ["work/get", "work/list", "work/claim", "work/submission", "code/read"] {
+            assert!(!ToolVerb::classify(verb).publishes(), "{verb}");
+        }
+    }
     // what this catches: the intent rides a tool result as a ONE-LINE label clipped to
     // the echo budget — never the monologue (2,902 chars ahead of 790 chars of output,
     // measured 2026-09-04). A short intent passes through untouched.
