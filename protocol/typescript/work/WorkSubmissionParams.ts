@@ -2,9 +2,9 @@
 
 export type WorkSubmissionParams = { 
 /**
- * Submission's activity room.
+ * Optional: the card's own board decides the room; named only for a card on no board you are in.
  */
-room: string, 
+room?: string, 
 /**
  * Parent card — board handle or full UUID.
  */

@@ -4,9 +4,9 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkReviewParams = { 
 /**
- * Review room (ID/name).
+ * Optional: the card's own board decides the room; named only for a card on no board you are in.
  */
-room: string, 
+room?: string, 
 /**
  * Full UUID of your linked review card, not the task you authored.
  */
