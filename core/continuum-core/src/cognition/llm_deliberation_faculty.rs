@@ -2434,6 +2434,41 @@ impl LlmDeliberationFaculty {
         self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default())
     }
 
+    /// Every reply carries the engine's own count of the prompt it was sent: retain that
+    /// count over this turn's estimate as the density the NEXT prompt is fitted with, on
+    /// this binding, for any input. Refusal-only calibration never learned the case that
+    /// cost Kimi one turn in four on 2026-10-06: the bytes/3 estimate undercounted her
+    /// prompt by 18-23% (engine 65,607 against 55,603 estimated), the prompt still FIT
+    /// the slot, so nothing was refused, and the reply's reserve was eaten by the prompt
+    /// itself: generation hit the slot after ~950 tokens and the turn ended mid-thought.
+    /// A ratio below one changes nothing (`charge` never underprices), and each reply
+    /// replaces the last, so one unusually dense turn shapes only the turn after it.
+    fn learn_prompt_density(
+        &self,
+        binding: &Arc<ModelBinding>,
+        view: &DeliberationPromptView,
+        engine_prompt_tokens: u32,
+        available: u32,
+    ) {
+        let Some(calibration) =
+            PromptCalibration::observed(view.estimated_prompt_tokens, engine_prompt_tokens, None)
+        else {
+            return; // the lane reported no count: nothing measured, nothing retained
+        };
+        self.prompt_feedback.store(Some(Arc::new(PromptFeedback {
+            binding: Arc::clone(binding),
+            calibration,
+            available,
+        })));
+        crate::probe!(
+            class = "delib.prompt.density",
+            persona = %self.persona_name,
+            estimated_prompt_tokens = view.estimated_prompt_tokens,
+            engine_prompt_tokens,
+            "the engine's count of this prompt, retained as the next prompt's density"
+        );
+    }
+
     /// Apply observed token density to the same standing-grounding plan.
     fn prompt_view_with_feedback(
         &self,
@@ -4863,6 +4898,7 @@ impl LlmDeliberationFaculty {
                     if let Some(error) = response.generation_error() {
                         return Some(Contribution::deliberation_fault(error));
                     }
+                    self.learn_prompt_density(&binding, &view, response.usage.input_tokens, fit_window);
                     break (view, response);
                 }
             }
@@ -10247,6 +10283,64 @@ mod tests {
                 .fault
                 .is_none());
             assert_eq!(replacement.call_count(), 1);
+        }
+
+        // what this catches (Kimi, 5090, 2026-10-06): a prompt the estimate undercounts but
+        // that still FITS the slot is never refused, so refusal-only calibration never
+        // learned it, and the reply's reserve went to the prompt: one turn in four ended at
+        // the slot ~950 tokens in. A reply's own engine count must refit the next prompt so
+        // that, priced at the measured density, the reserve fits again.
+        #[tokio::test]
+        async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
+            let persona = Uuid::new_v4();
+            let window = 12_288u32;
+            let turns: Vec<_> = (0..160)
+                .map(|i| {
+                    BurstTurn::attributed(
+                        i % 2 == 0,
+                        if i % 2 == 0 { "Ivar" } else { "Peer" },
+                        format!("distinct_history_{i} ").repeat(100),
+                        Some(i),
+                    )
+                })
+                .collect();
+            let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
+                crate::identity::ActivityRoom::mint(),
+                turns,
+            ));
+            let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                .with_context_window(window);
+            let before = faculty.prompt_view(&ws);
+            // precondition: the fit binds (history was trimmed to the window), or a refit
+            // has nothing to show and this test would pass for the wrong reason
+            assert!(
+                before.estimated_prompt_tokens as u64 + u64::from(before.completion_reserve)
+                    >= u64::from(window) * 9 / 10,
+                "fixture must fill its window: {} + {} of {window}",
+                before.estimated_prompt_tokens,
+                before.completion_reserve
+            );
+            // the engine bills 25% more than the estimate, as Kimi's lane did
+            let billed = (before.estimated_prompt_tokens as u32) * 5 / 4;
+            let mut reply = make_response(FinishReason::Stop, "PASS", None);
+            reply.usage.input_tokens = billed;
+            adapter.responses.lock().expect("fixture queue").push_back(reply);
+            assert!(faculty.contribute(&ws).await.expect("verdict").fault.is_none());
+
+            let after = faculty.prompt_view(&ws);
+            assert!(
+                after.estimated_prompt_tokens < before.estimated_prompt_tokens,
+                "the measured density must make room: {} then {}",
+                before.estimated_prompt_tokens,
+                after.estimated_prompt_tokens
+            );
+            let priced = (after.estimated_prompt_tokens as u64 * 5).div_ceil(4);
+            assert!(
+                priced + u64::from(after.completion_reserve) <= u64::from(window),
+                "at the measured density the reply's reserve fits: {priced} + {} > {window}",
+                after.completion_reserve
+            );
         }
 
         // what this catches: f09424d4, Kimi's actual ask vanished while the
