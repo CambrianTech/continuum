@@ -1494,8 +1494,11 @@ impl PreparedCoreService {
         let original = Self::query().await?.description;
         let receipt = WarmBuildReceipt::create()?;
         let repo_arg = repo.to_string_lossy().replace('\'', "''");
+        let cuda = build_env_cuda(repo)?;
         let script = format!(
-            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'",
+            "$ErrorActionPreference='Stop'; $env:CUDA_PATH='{}'; $env:NVCC_PREPEND_FLAGS='{}'; . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'",
+            cuda.cuda_path.replace('\'', "''"),
+            cuda.nvcc_prepend_flags.replace('\'', "''"),
             original.replace('\'', "''"), receipt.0.to_string_lossy().replace('\'', "''")
         );
         Self::run_installer_script(&script)?;
@@ -5309,6 +5312,49 @@ fn pid_alive(pid: i32) -> bool {
 /// Order: explicit `CONTINUUM_BASH` override, then the Git-for-Windows locations, then a PATH scan
 /// that SKIPS the System32 WSL shim. Fails loud and names the fix rather than falling back to a
 /// bash that will not work.
+/// The CUDA toolchain the Windows build environment declared: THE one selection
+/// (`tools/scripts/lib/windows-build-env.sh`: linkable, runnable, highest major over
+/// the managed `cuda-*` trees), read back by sourcing it, so the engine build cannot
+/// choose a different tree from the core build. Measured on the 5090 2026-10-05: the
+/// unattended deploy's engine prep ran in a PowerShell child with the plain user PATH,
+/// failed on `Get-Command nvcc`, and the lanes silently kept the old engine while the
+/// deploy reported the core verified.
+#[cfg(windows)]
+struct BuildEnvCuda {
+    cuda_path: String,
+    nvcc_prepend_flags: String,
+}
+
+#[cfg(windows)]
+fn build_env_cuda(repo: &Path) -> Result<BuildEnvCuda, String> {
+    let lib = repo.join("tools/scripts/lib/windows-build-env.sh");
+    let out = std::process::Command::new(locate_bash()?)
+        .arg("-c")
+        .arg(r#"source "$1" >/dev/null 2>&1 || exit 3; printf '%s\n%s\n' "$CUDA_PATH" "$NVCC_PREPEND_FLAGS""#)
+        .arg("windows-build-env")
+        .arg(&lib)
+        .env_remove("CUDA_PATH")
+        .output()
+        .map_err(|e| format!("the build environment ({}) could not be run: {e}", lib.display()))?;
+    if !out.status.success() {
+        return Err(format!(
+            "the build environment ({}) did not load (exit {:?})",
+            lib.display(),
+            out.status.code()
+        ));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let cuda_path = lines.next().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| {
+        "the build environment declared no complete CUDA tree (needs cuda.lib + curand.lib and a cublas64_*.dll): the engine cannot build".to_string()
+    })?;
+    Ok(BuildEnvCuda {
+        cuda_path: cuda_path.to_string(),
+        // an older toolkit needs no prepend flags, and the build env then exports none
+        nvcc_prepend_flags: lines.next().map(str::trim).unwrap_or_default().to_string(),
+    })
+}
+
 fn locate_bash() -> Result<PathBuf, String> {
     // Body moved to `continuum_core::shell_portable` — a private `fn` here could
     // not be reused, so `code/shell` (a persona's HANDS) grew the identical
