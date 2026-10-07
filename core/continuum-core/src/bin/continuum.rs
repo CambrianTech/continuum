@@ -4257,6 +4257,11 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
             if !settle_index_lock(&repo)? {
                 return Ok(PassEnd::Done);
             }
+            // The build this pass deploys: the tip's, or the newest CI has published when the
+            // tip's is not out yet. The log names THIS, never the request in its place: on
+            // 2026-10-07 the pass deployed 69a2c2b96 for request d2cf23221 and logged
+            // "d2cf23221 handed off", a build that was not running (card 4752fea6).
+            let mut deployed = tip.clone();
             let attempt = async {
                 // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
                 // The CI wait below can run for hours, and without a claim nothing marks
@@ -4302,6 +4307,9 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                                 "deploy-consume: {key} is the newest core CI has published (the request is {tip}); deploying it now"
                             ));
                         }
+                        // CI's core for this pass: an older published one, or the build-key
+                        // commit's core serving a docs-only tip (card 9080ffb0).
+                        deployed = key.clone();
                         Some(core)
                     }
                     CiCore::CompileHere => None,
@@ -4311,7 +4319,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     install_ci_companions(&repo, core)?;
                 }
                 deploy_note(&format!(
-                    "▶ deploy-consume: {} at {tip} — reboot{}{}",
+                    "▶ deploy-consume: {} — reboot into {deployed}{}{}",
                     repo.display(),
                     if service { " --service" } else { "" },
                     if prebuilt.is_some() { " --prebuilt (the CI build)" } else { "" }
@@ -4328,7 +4336,8 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
             match &attempt {
                 Ok(PassEnd::Done) => {
                     let _ = std::fs::remove_file(&attempts_path);
-                    deploy_note(&format!("✓ deploy-consume: {tip} handed off"));
+                    let request = if deployed == tip { String::new() } else { format!(" (request {tip})") };
+                    deploy_note(&format!("✓ deploy-consume: {deployed} handed off{request}"));
                 }
                 Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
