@@ -2872,8 +2872,10 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
     };
     let claim = deploy_claim::read(&root);
     let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
-    match deploy_claim::decide(claim.as_ref(), alive, now_ms()) {
-        DeployGate::Clear => Ok(()),
+    let now = now_ms();
+    match deploy_claim::with_wait(deploy_claim::decide(claim.as_ref(), alive, now), deploy_claim::read_waiting(&root).as_ref(), now) {
+        // A deploy waiting on CI has swapped nothing: the installed core is the running build.
+        DeployGate::Clear | DeployGate::Waiting { .. } => Ok(()),
         DeployGate::Abandoned { pid, age_ms, why } => {
             eprintln!(
                 "⚠ sweeping an abandoned deploy claim (pid {pid}, {}s old, {why:?}) — \
@@ -3020,6 +3022,7 @@ impl Drop for DeployClaimGuard {
         if let Some(renewer) = self.renewer.take() {
             let _ = renewer.join();
         }
+        let _ = continuum_core::runtime::deploy_claim::clear_waiting(&self.root, self.pid);
         let _ = continuum_core::runtime::deploy_claim::clear(&self.root, self.pid);
     }
 }
@@ -4295,7 +4298,15 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // while an older one is out, and waiting only on the tip never deployed.
                 let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                 let candidates = deploy_candidates(&repo, running.as_deref(), &tip, &newest_key);
-                let prebuilt = match ci_core_for(&repo, &candidates, &request_path, &tip).await {
+                let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
+                // The wait is over, whatever it found: from here the deploy promotes the
+                // engine and swaps the core, which the claim must block. A marker that cannot
+                // be removed ends this attempt rather than let a swap read as a wait.
+                if let Ok(root) = continuum_root() {
+                    continuum_core::runtime::deploy_claim::clear_waiting(&root, std::process::id() as i32)
+                        .map_err(|e| format!("deploy-consume: cannot clear the wait marker: {e}"))?;
+                }
+                let prebuilt = match ci_core {
                     CiCore::Built { core, key } => {
                         if key != newest_key {
                             // An older published core: stand the checkout on ITS commit, so
@@ -4412,8 +4423,18 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                 // Waiting on CI is this deploy's progress. The claim's renewer judges progress
                 // by CPU, and a wait has none, so without this the claim would read Stalled
                 // after an hour; still excluding, but naming a healthy wait as a hang.
+                // The wait marker says it is only a wait: nothing builds beside the core and
+                // nothing is swapped, so launches and decode samples go on (the caller clears
+                // it before the install).
                 if let Ok(root) = continuum_root() {
-                    let _ = continuum_core::runtime::deploy_claim::renew(&root, std::process::id() as i32, now_ms(), true);
+                    let pid = std::process::id() as i32;
+                    let now = now_ms();
+                    let _ = continuum_core::runtime::deploy_claim::renew(&root, pid, now, true);
+                    if let Err(e) = continuum_core::runtime::deploy_claim::mark_waiting(&root, pid, now) {
+                        deploy_note(&format!(
+                            "deploy-consume: could not mark the wait ({e}); the claim keeps blocking as a build would"
+                        ));
+                    }
                 }
             }
             MissingArtifact::BuildFromSource(why) => {
