@@ -18,6 +18,10 @@ set -o pipefail  # a failing command in a pipeline must not read as success (car
 #                                    (#998 — no CPU fallback per architecture)
 
 CARGO_GPU_FEATURES=""
+# Windows-native + NVIDIA, named once: the detector below picks it on a node, and CI's
+# published Windows build (core-features.sh, "Windows-NVIDIA x86_64") names it directly
+# because a runner has no GPU to detect. One string, or the node refuses CI's build.
+WINDOWS_NVIDIA_FEATURES="--features cuda,directml"
 
 case "$(uname -s)" in
   Darwin)
@@ -67,7 +71,7 @@ case "$(uname -s)" in
     # compilation, so it stays as the universal Windows GPU EP and the build
     # degrades gracefully instead of hard-failing. [[windows-build-env-drift]]
     if command -v nvidia-smi &>/dev/null && command -v cl.exe &>/dev/null; then
-      CARGO_GPU_FEATURES="--features cuda,directml"
+      CARGO_GPU_FEATURES="$WINDOWS_NVIDIA_FEATURES"
     fi
     ;;
 esac
