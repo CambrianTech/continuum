@@ -32,6 +32,10 @@ _core_features_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # socket client wants.
 select_core_features() {
   local platform="${1:-$(uname -sm)}"
+  # CONTINUUM_HARDWARE_FEATURES: the core set this machine's HARDWARE runs, which a
+  # published (prebuilt) core is judged against. Equal to CONTINUUM_FEATURES except on a
+  # Windows NVIDIA box without MSVC on PATH: it cannot compile CUDA, but runs CI's CUDA
+  # core (cargo-features.sh, CARGO_GPU_HARDWARE_FEATURES). The Mac arms set it below.
   case "$platform" in
     "Darwin x86_64")
       # `--no-default-features` also drops `avatar-3d` (the Bevy 3D renderer): a CPU-only
@@ -47,6 +51,7 @@ select_core_features() {
       # smaller CLI set (a box without a CUDA runtime) does not apply to a Mac; the CLI is
       # still CPU-only through `llama/mac-cpu-only`, the same as the core here.
       CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
+      CONTINUUM_HARDWARE_FEATURES="$CONTINUUM_FEATURES"
       ;;
     "Darwin arm64")
       CONTINUUM_FEATURES="--features metal,accelerate"
@@ -56,6 +61,7 @@ select_core_features() {
       # build links Metal, which every Mac has — the GPU-free reason (a box without a CUDA
       # runtime) does not apply here. Same features → the CLI shares the core's lib.
       CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
+      CONTINUUM_HARDWARE_FEATURES="$CONTINUUM_FEATURES"
       ;;
     *)
       # Source the existing detector for Linux/Windows.
@@ -73,6 +79,8 @@ select_core_features() {
       # same set as the core, so the CLI shares the core's one library build. Before
       # this every Linux/Windows deploy paid a second full lib compile for a CLI whose
       # only difference was dropping `livekit-webrtc` — no launchability gained.
+      CONTINUUM_HARDWARE_FEATURES="$CARGO_GPU_HARDWARE_FEATURES"
+      [ "$platform" = "Windows-NVIDIA x86_64" ] && CONTINUUM_HARDWARE_FEATURES="$WINDOWS_NVIDIA_FEATURES"
       case " $CONTINUUM_FEATURES " in
         # (`--no-default-features` also keeps `avatar-3d`/bevy out of the socket-client
         # CLI — ~24% of its binary, never used by it.)

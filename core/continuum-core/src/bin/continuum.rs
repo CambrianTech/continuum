@@ -4612,10 +4612,13 @@ fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// This node's core feature set, from the ONE mapping CI also builds with.
+/// The core feature set this node's HARDWARE runs, from the ONE mapping CI also builds
+/// with: what a published core is judged against. Not the set this node could compile
+/// right now — a Windows NVIDIA box without MSVC on PATH builds DirectML only, yet runs
+/// CI's CUDA core, and judging by the build set refused it as a mismatch (card e391d449).
 fn local_core_features(repo: &Path) -> Result<String, String> {
     let out = std::process::Command::new(locate_bash()?)
-        .args(["-c", "source tools/scripts/lib/core-features.sh && select_core_features && printf %s \"$CONTINUUM_FEATURES\""])
+        .args(["-c", "source tools/scripts/lib/core-features.sh && select_core_features && printf %s \"$CONTINUUM_HARDWARE_FEATURES\""])
         .current_dir(repo)
         .output()
         .map_err(|e| format!("core-features.sh: {e}"))?;
