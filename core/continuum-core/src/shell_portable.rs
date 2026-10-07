@@ -145,7 +145,7 @@ pub fn tar_on(archive: &Path, mode: &str) -> Result<std::process::Command, Strin
     let dir = archive
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or(Path::new(".")); // unwrap_or: a bare name is relative to the caller's cwd
     let mut tar = std::process::Command::new("tar");
     tar.current_dir(dir).arg(mode).arg(name);
     Ok(tar)
