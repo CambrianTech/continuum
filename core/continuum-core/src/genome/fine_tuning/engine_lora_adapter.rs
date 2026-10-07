@@ -330,12 +330,23 @@ pub const TRAINING_MAX_SLOWDOWN_PPM: u32 = 100_000;
 /// alone does not. ONE value here, sent explicitly. Not an env var.
 pub const TRAINING_HOST_SHARE: (u64, u64) = (1, 2);
 
-/// The host budget the exact walk is sent, MiB: `TRAINING_HOST_SHARE` of what is free now. None
-/// when the monitor has not read the host yet: the engine then keeps whatever the window needs,
-/// as before the bound existed.
+/// The exact walk's host budget, MiB: `TRAINING_HOST_SHARE` of what is free now, never below one
+/// MiB (the engine's floor, which it refuses by name when the window needs more). `None` when the
+/// monitor has not read the host yet: then the job does not ask for the exact walk at all (the
+/// plain walk is chunk-bounded), because an unknown budget must never mean an unbounded one: the
+/// tighter memory is, the more the walk must be bounded, never the less (Fable on #4841).
 fn exact_walk_host_budget_mib(available_bytes: Option<u64>) -> Option<u64> {
     let (num, den) = TRAINING_HOST_SHARE;
-    available_bytes.map(|b| (b / den * num) >> 20).filter(|&mib| mib > 0)
+    available_bytes.map(|b| ((b / den * num) >> 20).max(1))
+}
+
+/// What the job asks the engine for, from the monitor's reading: the exact walk with its host
+/// budget when the host is read, the plain walk (no budget) when it is not.
+fn walk_request(available_bytes: Option<u64>) -> (bool, Option<u64>) {
+    match exact_walk_host_budget_mib(available_bytes) {
+        Some(mib) => (true, Some(mib)),
+        None => (false, None),
+    }
 }
 
 /// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
@@ -1306,9 +1317,18 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             memory_budget_mib: None,
             max_slowdown_ppm: TRAINING_MAX_SLOWDOWN_PPM,
             fit: "middle",
-            exact: true,
-            walk_host_budget_mib: exact_walk_host_budget_mib(crate::system_resources::memory_pressure::current_available_bytes()),
+            exact: false,
+            walk_host_budget_mib: None,
         };
+        // THE EXACT WALK ONLY WITH A KNOWN BUDGET: unread memory trains the plain walk
+        (body.exact, body.walk_host_budget_mib) =
+            walk_request(crate::system_resources::memory_pressure::current_available_bytes());
+        if !body.exact {
+            crate::probe!(
+                class = "training.job.exact_walk_skipped",
+                "the host memory monitor has not read the host: the job trains the plain (chunk-bounded) walk rather than an exact walk with no budget"
+            );
+        }
         let measured = self.footprints.get(&shape);
         let footprints_path = self.footprints.path.clone();
         let http = self.http.clone();
@@ -1921,9 +1941,10 @@ mod tests {
         // share; the engine refuses a body carrying both, so sending both fails every run
         assert_eq!(body["max_slowdown_ppm"].as_u64(), Some(u64::from(TRAINING_MAX_SLOWDOWN_PPM)));
         assert!(body.get("share_ppm").is_none(), "the share and the slowdown bound pace the same windows: one is sent");
-        // what this catches (fork #47): the job trains the exact walk; an engine that predates it
-        // ignores the key, so sending it costs an old engine nothing
-        assert_eq!(body["exact"], true, "one step per window on the window's whole gradient");
+        // what this catches (fork #47, Fable on #4841): the walk the job asks for follows the
+        // monitor; here no monitor runs, so the plain walk, with no unbounded exact walk
+        assert_eq!(body["exact"], false, "an unread host trains the plain walk");
+        assert!(body.get("walk_host_budget_mib").is_none(), "and sends no budget");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
         assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
@@ -1939,8 +1960,13 @@ mod tests {
     #[test]
     fn the_exact_walk_keeps_half_the_free_host_memory() {
         assert_eq!(super::exact_walk_host_budget_mib(Some(36 << 30)), Some(18 << 10));
-        assert_eq!(super::exact_walk_host_budget_mib(None), None);
-        assert_eq!(super::exact_walk_host_budget_mib(Some(1 << 20)), None, "under a MiB to spare is no budget, never a zero cap");
+        // regression for Fable on #4841: tighter memory must bound the walk MORE, never unbound it
+        assert_eq!(super::exact_walk_host_budget_mib(Some(1 << 20)), Some(1), "the floor, which the engine refuses by name");
+        assert_eq!(super::exact_walk_host_budget_mib(Some(0)), Some(1));
+        assert_eq!(super::exact_walk_host_budget_mib(None), None, "unread: no exact walk (the caller sends exact: false)");
+        // both arms of the request the job sends
+        assert_eq!(super::walk_request(Some(36 << 30)), (true, Some(18 << 10)), "a read host: the exact walk, bounded");
+        assert_eq!(super::walk_request(None), (false, None), "an unread host: the plain walk");
     }
 
     // what this catches (SHARED-RESIDENT-LIFECYCLE.md step 3, Codex and Cormac on the plan):
