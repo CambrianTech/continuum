@@ -3355,7 +3355,13 @@ impl ServingDaemonModule {
                     }
                     0
                 };
-                let starved = streak >= REHOME_SUSTAINED_TICKS && cooling == 0;
+                // Fire only on a tick whose plan IS the streak's high (BigMama on #4851): the
+                // relaunch takes this tick's plan, so firing on a low tick of an alternating
+                // plan would land the lane at the low value (33k under Kimi's 52k) and re-home
+                // again; launching the remembered high instead would use a budget this tick
+                // did not plan. The high tick is both: the best the streak saw, planned now.
+                let at_high = plan_space >= self.rehome_plan_high.load(Ordering::Relaxed);
+                let starved = streak >= REHOME_SUSTAINED_TICKS && cooling == 0 && at_high;
                 // NOTE: the guards are re-armed at the FIRE point below, not here —
                 // `starved` only means the evidence qualifies. A later suppression
                 // (an eval holding the lane steady) still returns without relaunching,
@@ -10371,9 +10377,12 @@ pub(crate) mod tests {
         }
         let fired_at = fired_at.expect("a lane far below both values of an alternating plan must re-home");
         assert!(
-            fired_at <= REHOME_SUSTAINED_TICKS + 2,
+            fired_at <= REHOME_SUSTAINED_TICKS + 3,
             "re-homed only at tick {fired_at}: the alternation still resets the streak"
         );
+        // and it lands at the HIGH value (the relaunch takes the fire tick's plan): a re-home
+        // on a low tick would bring her back under her need and owe a second relaunch
+        assert_eq!(fired_at % 2, 1, "fired on a low tick (half the plan), not the high one");
     }
 
     // what this catches: the boot staircase (2026-09-02) the streak's plan-high rule
