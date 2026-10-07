@@ -321,6 +321,23 @@ impl Footprints {
 /// value here, sent explicitly so the engine's own default is never load-bearing. Not an env var.
 pub const TRAINING_MAX_SLOWDOWN_PPM: u32 = 100_000;
 
+/// The share of the host memory free at admission that the exact walk may keep per training
+/// window (its K/V gradient and a recurrent model's state checkpoints, fork #47), as a fraction
+/// of `memory_pressure::current_available_bytes()`. The other half stays free for the serving
+/// engine's file cache and everyone else: on BigMama (2026-10-06) a compile that evicted the
+/// served model's pages from the cache put the engine in a page-fault loop for an hour. The
+/// engine checkpoints the state more sparsely to fit, and refuses by name when the K/V gradient
+/// alone does not. ONE value here, sent explicitly. Not an env var.
+pub const TRAINING_HOST_SHARE: (u64, u64) = (1, 2);
+
+/// The host budget the exact walk is sent, MiB: `TRAINING_HOST_SHARE` of what is free now. None
+/// when the monitor has not read the host yet: the engine then keeps whatever the window needs,
+/// as before the bound existed.
+fn exact_walk_host_budget_mib(available_bytes: Option<u64>) -> Option<u64> {
+    let (num, den) = TRAINING_HOST_SHARE;
+    available_bytes.map(|b| (b / den * num) >> 20).filter(|&mib| mib > 0)
+}
+
 /// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
 /// ONCE here instead of assembled field by field at the call site.
 #[derive(Debug, Clone, Serialize)]
@@ -353,6 +370,16 @@ struct TrainRequest {
     /// always keeps the system and tool head and her reply, the context serving always has
     /// (Cormac on #29). An engine before #29 ignores it.
     fit: &'static str,
+    /// The exact walk (fork #47): ONE optimizer step per window, on the gradient of the window's
+    /// whole loss carried back through every chunk's cached K/V and a hybrid's recurrent state,
+    /// instead of a step per chunk with the gradient stopped at each chunk boundary (the plain
+    /// walk's step agreed with the true one at cosine 0.81; the exact walk's at 0.998). The engine
+    /// shrinks its gradient horizon to fit the device and reports it. An engine before #47
+    /// ignores the key and trains the plain walk, as this core asked before.
+    exact: bool,
+    /// The exact walk's host memory per window (see `TRAINING_HOST_SHARE`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    walk_host_budget_mib: Option<u64>,
 }
 
 /// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
@@ -1279,6 +1306,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             memory_budget_mib: None,
             max_slowdown_ppm: TRAINING_MAX_SLOWDOWN_PPM,
             fit: "middle",
+            exact: true,
+            walk_host_budget_mib: exact_walk_host_budget_mib(crate::system_resources::memory_pressure::current_available_bytes()),
         };
         let measured = self.footprints.get(&shape);
         let footprints_path = self.footprints.path.clone();
@@ -1892,6 +1921,9 @@ mod tests {
         // share; the engine refuses a body carrying both, so sending both fails every run
         assert_eq!(body["max_slowdown_ppm"].as_u64(), Some(u64::from(TRAINING_MAX_SLOWDOWN_PPM)));
         assert!(body.get("share_ppm").is_none(), "the share and the slowdown bound pace the same windows: one is sent");
+        // what this catches (fork #47): the job trains the exact walk; an engine that predates it
+        // ignores the key, so sending it costs an old engine nothing
+        assert_eq!(body["exact"], true, "one step per window on the window's whole gradient");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
         assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
@@ -1899,6 +1931,16 @@ mod tests {
         assert_eq!(artifact.metrics.final_loss, Some(2.1));
         assert_eq!(artifact.metrics.trained_tokens, 80);
         server.abort();
+    }
+
+    // what this catches: the exact walk's host budget reading the monitor as anything but
+    // "half of what is free" (the other half is the serving engine's file cache), and an unread
+    // monitor (0 / None) inventing a budget instead of sending none
+    #[test]
+    fn the_exact_walk_keeps_half_the_free_host_memory() {
+        assert_eq!(super::exact_walk_host_budget_mib(Some(36 << 30)), Some(18 << 10));
+        assert_eq!(super::exact_walk_host_budget_mib(None), None);
+        assert_eq!(super::exact_walk_host_budget_mib(Some(1 << 20)), None, "under a MiB to spare is no budget, never a zero cap");
     }
 
     // what this catches (SHARED-RESIDENT-LIFECYCLE.md step 3, Codex and Cormac on the plan):
