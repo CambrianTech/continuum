@@ -154,6 +154,16 @@ pub(crate) struct WithheldVerb {
     pub instead: &'static str,
 }
 
+/// The withheld verbs a REVIEW card's holder needs on her work turn: reading the
+/// submission under review and filing her verdict are the whole of that card. They are
+/// withheld from every other holder (`withheld_from_hands`), and a native-tool model
+/// can call only what it was offered, so without this the reviewer lost the one verb
+/// her card exists for (Kimi on review card deec4ac2, 2026-10-06: "work/review is not
+/// in this prompt").
+pub(crate) fn reviewer_hand(name: &str) -> bool {
+    matches!(name.replace('_', "/").as_str(), "work/review" | "work/submission")
+}
+
 pub(crate) fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
     match name.replace('_', "/").as_str() {
         "work/review" => Some(WithheldVerb {
