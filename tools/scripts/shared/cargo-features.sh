@@ -21,7 +21,7 @@ CARGO_GPU_FEATURES=""
 # What this machine's HARDWARE runs, which can differ from what it can COMPILE right now:
 # a Windows NVIDIA box without MSVC on PATH cannot build the CUDA flavor, but runs CI's
 # prebuilt CUDA core fine (no compiler at run time). The deploy consumer judges a published
-# core by this (core-features.sh, select_hardware_core_features); every build reads
+# core by this (core-features.sh: CONTINUUM_HARDWARE_FEATURES, set by select_core_features); every build reads
 # CARGO_GPU_FEATURES. Equal everywhere except that Windows case.
 CARGO_GPU_HARDWARE_FEATURES=""
 # Windows-native + NVIDIA, named once: the detector below picks it on a node, and CI's
