@@ -950,6 +950,11 @@ pub struct TurnFraming {
     /// zero-deliverable Speak one re-perception instead of settling on it. See
     /// that seam for why.
     pub workspace_deliverable: bool,
+    /// The held card is a REVIEW of someone else's work (`card.reviews` is set).
+    /// Structural like the facts above: it describes the card, never a read of her
+    /// output. It widens a work turn's hands by the reviewer verbs; see
+    /// [`Workspace::reviewing`].
+    pub reviewing: bool,
 }
 
 impl TurnFraming {
@@ -995,6 +1000,13 @@ impl TurnFraming {
     /// [`Self::workspace_deliverable`].
     pub fn on_workspace(mut self) -> Self {
         self.workspace_deliverable = true;
+        self
+    }
+
+    /// Declare that the held card under work is a review card. See
+    /// [`Self::reviewing`].
+    pub fn reviewing(mut self, reviewing: bool) -> Self {
+        self.reviewing = reviewing;
         self
     }
 }
@@ -1079,6 +1091,10 @@ pub struct Workspace {
     /// such a turn: 37 tool schemas were 8.5k of a ~22k-token prefill per act
     /// with zero KV reuse (measured 2026-09-05), and a work turn needs a dozen.
     pub workspace_deliverable: bool,
+    /// The held card on this work turn is a REVIEW card. Her hands then carry the
+    /// reviewer verbs (`work/review`, `work/submission`) that every other holder's
+    /// hands withhold; see `tool_dialect::reviewer_hand`.
+    pub reviewing: bool,
     /// The verbs this turn's ROOM authorizes, by command name, as its recipe declares
     /// them (`affordances[].command`). Stamped by the cycle from the node's experience
     /// source on every tick (S1). Empty = the recipe declares none, and the
@@ -1142,6 +1158,7 @@ impl Workspace {
             receipts: Vec::new(),
             self_initiated: false,
             workspace_deliverable: false,
+            reviewing: false,
             room_affordances: Vec::new(),
             now_ms: burst_now,
             token_sink: None,
@@ -1200,6 +1217,11 @@ impl Workspace {
 
     pub fn workspace_deliverable(mut self, workspace_deliverable: bool) -> Self {
         self.workspace_deliverable = workspace_deliverable;
+        self
+    }
+
+    pub fn reviewing(mut self, reviewing: bool) -> Self {
+        self.reviewing = reviewing;
         self
     }
 
@@ -2295,6 +2317,7 @@ impl WorkspaceCycle {
             .with_attention(framing.attention)
             .self_initiated(framing.self_initiated)
             .workspace_deliverable(framing.workspace_deliverable)
+            .reviewing(framing.reviewing)
             .room_affordances(room_affordances)
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.

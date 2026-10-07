@@ -428,6 +428,9 @@ pub struct LlmDeliberationFaculty {
     /// filtering the wire names by `code/` prefixes matched nothing and every
     /// work turn went out with ZERO tools (2026-09-04, 13 turns, all passed).
     hands_specs: Vec<NativeToolSpec>,
+    /// `hands_specs` plus the reviewer verbs (`tool_dialect::reviewer_hand`): the hands
+    /// of a work turn on a REVIEW card. Built beside `hands_specs` at rebuild.
+    review_hands_specs: Vec<NativeToolSpec>,
     /// The RAW command name of each entry in `native_specs`, same order. The specs
     /// are cached in the model's wire dialect (`edit_file`), so any selection keyed
     /// on canonical names (`code/edit`) — the room's affordances — must key here.
@@ -446,6 +449,8 @@ pub struct LlmDeliberationFaculty {
     /// from the message budget, so over-pricing trims conversation to fit room
     /// that was never occupied. Card dec1a7ff.
     hands_surface_tokens: usize,
+    /// Token cost of `review_hands_specs`, memoized like `hands_surface_tokens`.
+    review_hands_surface_tokens: usize,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -510,9 +515,11 @@ impl LlmDeliberationFaculty {
             tools: Vec::new(),
             native_specs: Vec::new(),
             hands_specs: Vec::new(),
+            review_hands_specs: Vec::new(),
             native_command_names: Vec::new(),
             tool_surface_tokens: 0,
             hands_surface_tokens: 0,
+            review_hands_surface_tokens: 0,
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
@@ -621,9 +628,11 @@ impl LlmDeliberationFaculty {
         if self.tools.is_empty() {
             self.native_specs.clear();
             self.hands_specs.clear();
+            self.review_hands_specs.clear();
             self.native_command_names.clear();
             self.tool_surface_tokens = 0;
             self.hands_surface_tokens = 0;
+            self.review_hands_surface_tokens = 0;
             return;
         }
         // Offer the working set in the WIRE DIALECT, charset-legal per the OpenAI
@@ -673,12 +682,20 @@ impl LlmDeliberationFaculty {
         } else {
             to_wire(core_hands(&raw))
         };
+        self.review_hands_specs = self.hands_specs.clone();
+        self.review_hands_specs.extend(to_wire(
+            raw.iter()
+                .filter(|s| crate::cognition::tool_dialect::reviewer_hand(&s.name))
+                .cloned()
+                .collect(),
+        ));
         self.native_specs = raw
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
             .collect();
         self.tool_surface_tokens = Self::tool_surface_tokens_of(&self.native_specs);
         self.hands_surface_tokens = Self::tool_surface_tokens_of(&self.hands_specs);
+        self.review_hands_surface_tokens = Self::tool_surface_tokens_of(&self.review_hands_specs);
     }
 
     /// Is this turn an ACT on a deliverable, rather than a message turn?
@@ -762,6 +779,13 @@ impl LlmDeliberationFaculty {
             SurfaceReason::Full => SelectedSurface {
                 specs: Some(std::borrow::Cow::Borrowed(&self.native_specs)),
                 tokens: self.tool_surface_tokens,
+                reason,
+            },
+            // A REVIEW card's work turn: her hands plus the reviewer verbs, because
+            // filing the verdict is the card (Kimi, review card deec4ac2, 2026-10-06).
+            SurfaceReason::HandsForWork if ws.reviewing => SelectedSurface {
+                specs: Some(std::borrow::Cow::Borrowed(&self.review_hands_specs)),
+                tokens: self.review_hands_surface_tokens,
                 reason,
             },
             // The fallback is hands, NEVER nothing: `hands_surface` keeps the
@@ -5698,6 +5722,51 @@ mod tests {
         assert_eq!(
             selected.tokens,
             LlmDeliberationFaculty::tool_surface_tokens_of(offered),
+            "the price is the price of what was sent"
+        );
+    }
+
+    // what this catches: a REVIEW card's holder offered hands without the verbs her card
+    // exists for. Kimi, holding review card deec4ac2 (2026-10-06): "work/review is not in
+    // this prompt", and a native-tool model can call only what it was offered. An ordinary
+    // holder's hands still withhold both verbs (the 9/19 "review the spec" misfires).
+    #[test]
+    fn a_review_cards_work_turn_carries_the_reviewer_verbs_and_an_ordinary_one_does_not() {
+        let faculty = LlmDeliberationFaculty::new(
+            Uuid::new_v4(),
+            "Kimi",
+            "You are Kimi.",
+            Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        )
+        .with_context_window(65_536)
+        .with_tools(persona_tools::native_tool_specs());
+        let reviewer_specs: Vec<&NativeToolSpec> = faculty
+            .native_command_names
+            .iter()
+            .zip(faculty.native_specs.iter())
+            .filter(|(name, _)| crate::cognition::tool_dialect::reviewer_hand(name))
+            .map(|(_, spec)| spec)
+            .collect();
+        assert_eq!(reviewer_specs.len(), 2, "work/review and work/submission are her native verbs");
+
+        let mut holder = Workspace::new("fix the failing test");
+        holder.workspace_deliverable = true;
+        let mut reviewer = holder.clone();
+        reviewer.reviewing = true;
+
+        let held = faculty.select_tool_surface(&holder, 65_536);
+        let reviewing = faculty.select_tool_surface(&reviewer, 65_536);
+        assert_eq!(reviewing.reason, SurfaceReason::HandsForWork);
+        let offered = |s: &SelectedSurface<'_>, spec: &NativeToolSpec| {
+            s.specs.as_deref().is_some_and(|specs| specs.contains(spec))
+        };
+        for spec in &reviewer_specs {
+            assert!(offered(&reviewing, spec), "the reviewer is offered {}", spec.name);
+            assert!(!offered(&held, spec), "an ordinary holder is not offered {}", spec.name);
+        }
+        assert_eq!(
+            reviewing.tokens,
+            LlmDeliberationFaculty::tool_surface_tokens_of(reviewing.specs.as_deref().expect("specs")),
             "the price is the price of what was sent"
         );
     }
