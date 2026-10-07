@@ -54,6 +54,7 @@ pub mod channel_substrate;
 pub mod check_redundancy;
 pub mod competitor;
 pub mod context_budget;
+pub mod coursework;
 pub mod deferred_faculty;
 pub mod deliberation_budget;
 pub mod deliberation_parse;

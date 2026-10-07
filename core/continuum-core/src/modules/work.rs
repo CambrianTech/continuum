@@ -3708,6 +3708,9 @@ impl ServiceModule for WorkModule {
             Arc::new(crate::commands::benchmark_import::BenchmarkImport),
             Arc::new(crate::commands::benchmark_import::BenchmarkRoundOpen),
             Arc::new(crate::commands::benchmark_import::BenchmarkRoundTrack),
+            // coursework/import: the coursework/round recipe's card source (ONE-RESIDENT §10.4),
+            // the same family as benchmark/import and routed from the same module.
+            Arc::new(crate::commands::benchmark_import::CourseworkImport),
             // persona/roster reads the SAME live registry benchmark/dispatch resolves its
             // assignees against — constructed here for the same dep-ownership reason (#396
             // live-roster verb; the observability side of "dispatch targets the live roster").

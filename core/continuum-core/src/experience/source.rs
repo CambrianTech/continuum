@@ -158,9 +158,13 @@ pub mod shipped {
     /// data. Pinned like every shipped recipe so the id survives a purpose rename.
     pub const BENCHMARK_ROUND: RecipeId =
         RecipeId::from_u128(0xc0a1554f_f2c1_4942_8de5_de9c13ce6783);
+    /// The coursework round (ONE-RESIDENT §10.4): the authored round over a content-addressed
+    /// lesson set (`coursework/round`) — `7c0e5a3b-2f4d-4e61-9b8a-3d5c1e7f9a24`.
+    pub const COURSEWORK_ROUND: RecipeId =
+        RecipeId::from_u128(0x7c0e5a3b_2f4d_4e61_9b8a_3d5c1e7f9a24);
 
     /// Every shipped id, for tests and for enumerating the prod-critical floor.
-    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, BENCHMARK_ROUND, CHAT, PROFILE, VIDEO_CHAT];
+    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, BENCHMARK_ROUND, COURSEWORK_ROUND, CHAT, PROFILE, VIDEO_CHAT];
 }
 
 /// An [`ExperienceSource`] backed entirely by recipe DATA: a `purpose → recipe`
@@ -351,6 +355,7 @@ impl RecipeExperienceSource {
         [
             include_str!("recipes/benchmark.json"),
             include_str!("recipes/benchmark-round.json"),
+            include_str!("recipes/coursework-round.json"),
             include_str!("recipes/chat.json"),
             include_str!("recipes/video-chat.json"),
             include_str!("recipes/profile.json"),
@@ -477,12 +482,13 @@ mod tests {
         // The verbs an authored benchmark round is allowed to be made of. A new step
         // means a new verb, added here on purpose — never a Rust call the recipe cannot
         // make. (S4a: the round is authored; dispatch remains the Rust door beside it.)
+        // coursework/round is the same round with its own card source (ONE-RESIDENT §10.4).
         const ROUND_VERBS: &[&str] = &[
-            "benchmark/import", "benchmark/round-open", "work/create",
+            "benchmark/import", "coursework/import", "benchmark/round-open", "work/create",
             "benchmark/round-track", "activity/invite", "chat/send",
         ];
         for recipe in RecipeExperienceSource::embedded() {
-            if recipe.purpose == "benchmark/round" {
+            if recipe.purpose == "benchmark/round" || recipe.purpose == "coursework/round" {
                 assert!(!recipe.pipeline.is_empty(), "the authored round declares its steps");
                 for step in &recipe.pipeline {
                     assert!(
@@ -517,7 +523,7 @@ mod tests {
                 "shipped::{id} has no recipe — constant and authored JSON id have drifted"
             );
         }
-        assert_eq!(shipped::ALL.len(), 5, "every named shipped recipe is listed");
+        assert_eq!(shipped::ALL.len(), 6, "every named shipped recipe is listed");
     }
 
     /// what this catches (#274): ids must be UNIQUE. Two recipes sharing an id would

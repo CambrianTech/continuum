@@ -295,6 +295,12 @@ Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learn
 ### 10.4 Build order
 
 1. The `coursework/round` recipe plus the grader-backed card source (test = verdict).
+   **Built (card 0b0db81d, 2026-10-07):** `experience/recipes/coursework-round.json` is the benchmark-round pipeline with `coursework/import` as its card source. The teach selector's TESTED lessons (`commands::genome::teach::lesson_tasks`: her own graded failures via `from_experience`, a teach set, or the default) are written as a content-addressed set, `coursework-<sha12>`, under `~/.continuum/benchmarks/coursework/`. The name is the set's task identity, the key §10.2's judge invariant reads. One resolver, `commands::benchmark::eval_set_reference`, serves import, the grader and the sweep's artifact check, so a lesson card is graded from its title like any gym card. Three rules hold from step 1:
+   - **An invitation, never an assignment.** The recipe invites only the citizens it names, and says in the room that `room/leave` declines at no cost. Nothing re-seats a citizen into a round she left, and the pull offers cards only from rooms she stands in (`coursework_is_offered_only_to_who_stays_and_never_ahead_of_real_work`).
+   - **Real work first.** The pull orders real rounds ahead of coursework, whatever their deck sizes.
+   - **Lessons are named in data.** Each staged turn records `coursework_set` from the round tracker. `settle_card_credit` trains on a lesson's passing turns but never credits a gene trial with a lesson verdict (probe `training.credit.coursework_no_trial`).
+
+   Not yet: the doctor (step 2), the containment of a scenario workspace (step 4; gym cards still write into her workspace), and a training depth the M5 can run (Fable: the 27B refuses all 64 layers; `top_layers` 8 runs).
 2. The doctor seated as a persona on the same base (S2 slot affinity), with the demonstration turn.
 3. The credit path (the patient's passing turns and the doctor's lessons as arrivals with provenance), feeding §9's session.
 4. The containment test: a round runs, and the diff of her real workspace, memory and rooms shows only the declared learning arrivals.

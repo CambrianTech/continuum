@@ -305,8 +305,10 @@ async fn grade_card(
     // and the board sat at 0-resolved while kickoffs promised a grade (2026-08-15).
     let spec = known_benchmarks().iter().find(|b| b.name == bench);
     let Some(dataset) = spec.and_then(|s| s.swe_dataset()) else {
-        if let Some(spec) = spec.filter(|s| s.eval_set.is_some()) {
-            return grade_gym_card(&airc, spec, &instance, owner, &bench, room_id).await;
+        // A gym suite, registered or a coursework lesson set: the ONE resolver turns the
+        // title's suite name into the eval set the oracle is read from.
+        if let Some(reference) = crate::commands::benchmark::eval_set_reference(&bench) {
+            return grade_gym_card(&airc, &reference, &instance, owner, &bench, room_id).await;
         }
         return Ok(()); // catalogued-but-not-runnable, or a bench name we don't know
     };
@@ -507,7 +509,7 @@ fn gym_verdict(
 /// same honesty rule as the SWE arm's infra line.
 async fn grade_gym_card(
     airc: &std::sync::Arc<airc_lib::Airc>,
-    spec: &crate::commands::benchmark::BenchmarkSpec,
+    reference: &str,
     task_id: &str,
     owner: Option<impl std::fmt::Display>,
     bench: &str,
@@ -516,9 +518,6 @@ async fn grade_gym_card(
     let owner = owner
         .ok_or_else(|| format!("bench card {task_id} has no owner — nobody worked it"))?
         .to_string();
-    let reference = spec
-        .eval_set
-        .ok_or_else(|| format!("gym benchmark '{bench}' has no eval_set"))?;
     let task = normalized_gym_task(reference, task_id)?;
     let Some(test) = task.test.clone() else {
         return Ok(()); // expect-graded knowledge task — nothing file-shaped to grade
@@ -696,9 +695,7 @@ fn sweep_verdict(
 /// workspace root; SWE: the staged checkout exists AND the tree is dirty (an untouched
 /// clone graded would burn a fake capability-zero for a dead session, the #384 class).
 fn bench_artifact_present(bench: &str, instance: &str, owner: &str) -> bool {
-    let Some(spec) = known_benchmarks().iter().find(|b| b.name == bench) else {
-        return false;
-    };
+    let spec = known_benchmarks().iter().find(|b| b.name == bench);
     let Ok(home) = crate::commands::benchmark::continuum_home() else {
         return false;
     };
@@ -707,7 +704,7 @@ fn bench_artifact_present(bench: &str, instance: &str, owner: &str) -> bool {
         .join("peers")
         .join(owner)
         .join("workspace");
-    if spec.swe_dataset().is_some() {
+    if spec.is_some_and(|s| s.swe_dataset().is_some()) {
         let tree = workspace.join("swe").join(instance);
         if !tree.is_dir() {
             return false;
@@ -720,10 +717,11 @@ fn bench_artifact_present(bench: &str, instance: &str, owner: &str) -> bool {
             .map(|o| o.status.success() && !o.stdout.is_empty())
             .unwrap_or(false);
     }
-    let Some(reference) = spec.eval_set else {
+    // The same resolver the grader reads: a registered gym or a coursework lesson set.
+    let Some(reference) = crate::commands::benchmark::eval_set_reference(bench) else {
         return false;
     };
-    let Ok(task) = normalized_gym_task(reference, instance) else {
+    let Ok(task) = normalized_gym_task(&reference, instance) else {
         return false;
     };
     if task.test.is_none() {

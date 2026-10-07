@@ -452,6 +452,15 @@ pub struct StagedCredit {
     /// When this turn was staged (epoch ms). Not a settlement clock — a staged row
     /// whose card never settles is never submitted, and that is correct, not a leak.
     pub staged_at_ms: u64,
+
+    /// The coursework lesson set this turn worked (`coursework-<sha12>`, the set's task
+    /// identity), when the card was a lesson; `None` for real work. Read from the round
+    /// tracker when the turn stages, so a lesson turn is told from real work by DATA: the
+    /// settle path keeps lesson verdicts out of gene-trial credit (ONE-RESIDENT §10.2: the
+    /// promotion gate judges real work only), and the containment diff and lift checks read
+    /// the same field. `default` reads a row staged before this field as real work.
+    #[serde(default)]
+    pub coursework_set: Option<String>,
 }
 
 /// A scored, gated, classified training example ready to submit. The pure product
@@ -1324,6 +1333,7 @@ async fn stage_credit<T: Transport>(
         // PRIVATE helper in three other modules and none is importable — copying it
         // a fourth time would be the duplication the compression principle forbids.
         staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+        coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
     };
 
     let mut operations = Vec::new();
@@ -1647,12 +1657,26 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             continue;
         }
         // The room judged this card, so her open gene trials hear it: the card is credited
-        // to the genome that worked it, named by its receipts (genome/gene_trial.rs).
-        let turns: Vec<crate::genome::gene_trial::CardTurn> = rows
-            .iter()
-            .map(|r| crate::genome::gene_trial::CardTurn::from_receipts(r.staged_at_ms, &r.receipts))
-            .collect();
-        crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
+        // to the genome that worked it, named by its receipts (genome/gene_trial.rs). A
+        // COURSEWORK lesson is the exception (ONE-RESIDENT §10.2): its verdict says what she
+        // was taught, not whether it transfers, and lessons repeat by design, so a gene trained
+        // on a lesson would be judged on that same lesson. The promotion gate judges real work
+        // only; the lesson's passing turns still train below.
+        if let Some(set) = rows.iter().find_map(|r| r.coursework_set.as_deref()) {
+            crate::probe!(
+                class = "training.credit.coursework_no_trial",
+                card = %card_id,
+                set = %set,
+                passed,
+                "a coursework lesson settled: its turns train, its verdict never credits a gene trial"
+            );
+        } else {
+            let turns: Vec<crate::genome::gene_trial::CardTurn> = rows
+                .iter()
+                .map(|r| crate::genome::gene_trial::CardTurn::from_receipts(r.staged_at_ms, &r.receipts))
+                .collect();
+            crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
+        }
         let mut submitted = 0usize;
         let mut rows = rows;
         rows.sort_by_key(|r| r.staged_at_ms);
@@ -2232,6 +2256,7 @@ pub(crate) mod tests {
                 completion: "c".into(),
                 lived: None,
                 staged_at_ms: 1,
+                coursework_set: None,
             }
         }
 
@@ -3236,6 +3261,7 @@ pub(crate) mod tests {
             completion: "c".into(),
             lived,
             staged_at_ms: at,
+            coursework_set: None,
         };
         let read = || call(Some(("code/read", json!({"path": "xarray/core/merge.py"}))));
         let edit = || call(Some(("code/edit", json!({"path": "xarray/core/merge.py"}))));

@@ -174,6 +174,11 @@ pub struct BenchRound {
     /// (`roster_hold::active`), so a round staffs itself; an old round file reads empty.
     #[serde(default)]
     team_names: Vec<String>,
+    /// The coursework lesson set this round teaches, parsed ONCE when the round opens; `None` is
+    /// real work. Every reader (the pull order, `coursework_set_of`, so the staged row and the
+    /// settle decision) reads this typed value. `default`: an older round file is real work.
+    #[serde(default)]
+    coursework: Option<crate::cognition::coursework::CourseworkSet>,
     /// Card uuid → the citizen it was staged FOR, recorded at dispatch staging
     /// (before any solve fires) so the follow-on driver ([`next_unworked_after`])
     /// and the boot resume know WHO works a card that has never run.
@@ -262,6 +267,7 @@ impl BenchRound {
             reviews_passed: Default::default(),
             team: Vec::new(),
             team_names: Vec::new(),
+            coursework: crate::cognition::coursework::CourseworkSet::parse(benchmark),
         }
     }
 
@@ -1104,7 +1110,15 @@ pub fn pullable_cards(
         .values()
         .filter(|r| r.stage == RoundStage::Working && r.driver == WorkDriver::Citizen)
         .collect();
-    ordered.sort_by(|a, b| b.remaining().cmp(&a.remaining()).then(a.round_id.cmp(&b.round_id)));
+    // REAL WORK BEFORE LESSONS (ONE-RESIDENT §10.2): a coursework round never outranks a real
+    // round for her next card, whatever their deck sizes — lessons fill time real work leaves.
+    ordered.sort_by(|a, b| {
+        let lesson = |r: &BenchRound| r.coursework.is_some();
+        lesson(a)
+            .cmp(&lesson(b))
+            .then(b.remaining().cmp(&a.remaining()))
+            .then(a.round_id.cmp(&b.round_id))
+    });
     ordered
         .into_iter()
         // ELIGIBILITY IS RESIDENCY. She may pull from any run room she is standing in
@@ -1135,6 +1149,18 @@ pub fn pullable_cards(
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// The coursework lesson set a card belongs to (`coursework-<sha12>`), when its round is a
+/// coursework round; `None` for real work and for a card no round tracks. A round's review cards
+/// belong to its set too. Read when a turn stages, so the staged row carries the set as data
+/// (ONE-RESIDENT §10.2: lesson turns are told from real work by data, never by inference).
+pub fn coursework_set_of(card: Uuid) -> Option<crate::cognition::coursework::CourseworkSet> {
+    let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
+    rounds
+        .values()
+        .find(|r| r.cards.contains_key(&card) || r.review_cards.contains_key(&card))
+        .and_then(|r| r.coursework.clone())
 }
 
 pub fn total_unworked_cards() -> usize {
@@ -1999,6 +2025,65 @@ mod tests {
     // card requires review until a review card registered for it settles as PASSED;
     // a rejected review leaves it required; review cards appear on the pull deck
     // ahead of Open cards and never count toward the round's remaining.
+    /// what this catches (ONE-RESIDENT §10.2; Fable's agency ask on coursework step 1): a
+    /// coursework round is an invitation, never an assignment, and never outranks real work.
+    /// A citizen standing in both rounds is offered the real card first even though the lesson
+    /// deck is fuller (the fullest-deck-first order would have put lessons ahead); a citizen who
+    /// left the lesson room (declined) is offered none of its cards.
+    #[test]
+    fn coursework_is_offered_only_to_who_stays_and_never_ahead_of_real_work() {
+        let real = Uuid::new_v4();
+        let lessons = Uuid::new_v4();
+        let real_card = Uuid::new_v4();
+        let lesson_cards = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        open_round(real, "swe-bench-verified", WorkDriver::Citizen);
+        add_card(real, real_card);
+        open_round(lessons, "coursework-0123456789ab", WorkDriver::Citizen);
+        for card in lesson_cards {
+            add_card(lessons, card);
+        }
+        let peer = Uuid::new_v4();
+
+        let in_both: std::collections::HashSet<Uuid> = [real, lessons].into_iter().collect();
+        let deck = pullable_cards(peer, &in_both);
+        assert_eq!(deck[0].card, real_card, "real work leads a fuller lesson deck");
+        assert_eq!(deck.len(), 4, "the lessons are still offered, after it");
+
+        let declined: std::collections::HashSet<Uuid> = [real].into_iter().collect();
+        assert!(
+            pullable_cards(peer, &declined).iter().all(|c| !lesson_cards.contains(&c.card)),
+            "a citizen who left the lesson room is offered none of its cards"
+        );
+        let mut rounds = ROUNDS.lock().unwrap(); // test: cleanup of the rounds opened above
+        rounds.remove(&real);
+        rounds.remove(&lessons);
+    }
+
+    /// what this catches (ONE-RESIDENT §10.2; Fable's provenance ask on coursework step 1): a
+    /// lesson turn told from real work by data. The staged row reads its set from here, and
+    /// the settle path keeps lesson verdicts out of gene-trial credit on that field alone, so a
+    /// lesson card (and its review card) must name its set and a real card must name none.
+    #[test]
+    fn a_lesson_card_names_its_set_and_real_work_names_none() {
+        let real = Uuid::new_v4();
+        let lessons = Uuid::new_v4();
+        let (real_card, lesson_card, lesson_review) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        open_round(real, "swe-bench-verified", WorkDriver::Citizen);
+        add_card(real, real_card);
+        open_round(lessons, "coursework-00112233aabb", WorkDriver::Citizen);
+        add_card(lessons, lesson_card);
+        assert_eq!(register_review_card(lesson_card, lesson_review), Some(lessons));
+
+        let set = |card| coursework_set_of(card).map(|s| s.as_str().to_string());
+        assert_eq!(set(lesson_card).as_deref(), Some("coursework-00112233aabb"));
+        assert_eq!(set(lesson_review).as_deref(), Some("coursework-00112233aabb"));
+        assert_eq!(coursework_set_of(real_card), None, "real work carries no set");
+        assert_eq!(coursework_set_of(Uuid::new_v4()), None, "an untracked card is not a lesson");
+        let mut rounds = ROUNDS.lock().unwrap(); // test: cleanup of the rounds opened above
+        rounds.remove(&real);
+        rounds.remove(&lessons);
+    }
+
     #[test]
     fn a_gated_card_requires_review_until_its_review_card_passes() {
         let round_id = Uuid::new_v4();
@@ -2202,6 +2287,7 @@ mod tests {
             reviews_passed: Default::default(),
                 team: Vec::new(),
             team_names: Vec::new(),
+            coursework: None,
             }
         }
         let live = std::collections::HashSet::new();
