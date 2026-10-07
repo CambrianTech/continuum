@@ -2295,6 +2295,28 @@ pub(crate) async fn advance_card_state_effective(
                     }
                 }
             }
+            // A PASS ON A CARD WITH AN OPEN PR LEAVES IT MERGEABLE. The card finishes through
+            // its merge, as Merged; closing it here made `airc work merge` refuse it ("state
+            // is Closed, but merge requires Review"). Kimi passed #4825's submission on
+            // 2026-10-06 and the card closed with its PR open, so the merge took a hand move
+            // back to Review. A card with no PR (a bench round's) still closes on the pass.
+            if passed {
+                if let Some((_, parent_card)) = card_in_subscribed_rooms(airc, parent_id).await {
+                    if parent_card.pull_request.is_some() && parent_card.state != CardState::Merged {
+                        if parent_card.state != CardState::Review {
+                            raw_advance(airc, parent_id, CardState::Review, via).await?;
+                        }
+                        crate::probe!(
+                            class = "work.review.passed_awaiting_merge",
+                            review = %short8(card_id.as_uuid()),
+                            parent = %short8(parent),
+                            "reviewer's pass on a card with an open PR — it stays in Review for \
+                             its merge, which moves it to Merged"
+                        );
+                        return Ok(CardState::Review);
+                    }
+                }
+            }
             let next = if passed {
                 CardState::Closed
             } else {
@@ -4368,6 +4390,67 @@ mod tests {
             .expect("the new card is on a board");
         assert_eq!(filed.repo.to_string(), card.repo.to_string(), "the held card's repo, not another project's");
     }
+    /// what this catches (Kimi on #4825, 2026-10-06): a reviewer's pass on a card whose PR
+    /// is still open closed the card, and `airc work merge` refuses a Closed card, so the
+    /// merge needed a hand move back to Review. A pass leaves a PR-linked card in Review
+    /// for its merge, and a card with no PR still closes on the pass.
+    #[tokio::test]
+    async fn a_pass_leaves_a_card_with_an_open_pr_mergeable_and_closes_one_without() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let room = airc.join("continuum").await.expect("join the project room");
+        let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
+        let mut outcomes = Vec::new();
+        for with_pr in [true, false] {
+            let parent = airc
+                .create_work_card_in(&room, CreateWorkCard::new(repo.clone(), "a fix", Priority::P1))
+                .await
+                .expect("parent card created");
+            if with_pr {
+                airc.link_card_pull_request_in(
+                    &room,
+                    airc_lib::LinkCardPullRequest {
+                        card_id: parent,
+                        pull_request: airc_work::model::PullRequestRef {
+                            repo: repo.clone(),
+                            number: 4825,
+                            head: airc_lib::BranchName::new("fix/a-fix").expect("branch"),
+                            base: airc_lib::BranchName::new("canary").expect("branch"),
+                        },
+                    },
+                )
+                .await
+                .expect("the PR links and the card moves to Review");
+            } else {
+                raw_advance(&airc, parent, CardState::Review, "test").await.expect("to review");
+            }
+            let review = airc
+                .create_work_card_in(
+                    &room,
+                    CreateWorkCard::new(repo.clone(), "review: a fix", Priority::P1).reviewing(parent),
+                )
+                .await
+                .expect("review card created");
+            let landed = advance_card_state_effective(&airc, review, CardState::Closed, "test", None)
+                .await
+                .expect("the reviewer's pass lands");
+            let (_, card) = card_in_subscribed_rooms(&airc, parent).await.expect("parent on the board");
+            outcomes.push((with_pr, landed, card.state));
+        }
+        assert_eq!(
+            outcomes,
+            [
+                (true, CardState::Review, CardState::Review),
+                (false, CardState::Closed, CardState::Closed),
+            ],
+            "a PR-linked card waits for its merge; a card without one closes on the pass"
+        );
+    }
+
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
     /// Exercise the actual read path after subscribing without moving focus, and
