@@ -955,10 +955,14 @@ pub struct ServingDaemonModule {
     /// its reset rule belongs to the domain, and here the domain resets it exactly
     /// when we wanted it to count.
     decline_log_ticks: Arc<std::sync::atomic::AtomicU32>,
-    /// The previous tick's plan window — "sustained" requires the PLAN itself
-    /// to have stopped moving (see the streak computation for the 16-relaunch
-    /// boot staircase this kills).
-    rehome_last_plan: Arc<std::sync::atomic::AtomicU64>,
+    /// The highest plan window seen in the current re-home streak (0 = none yet).
+    /// "Sustained" requires the plan to have stopped CLIMBING: a new high resets
+    /// the streak, so the boot staircase coalesces into one relaunch at its top.
+    /// A plan that only alternates below a high it already reached is settled
+    /// enough: both values want the bigger lane (2026-10-07: a lane at 2,304 under
+    /// a plan alternating 33k/70k never re-homed for an hour, because every rise
+    /// reset the streak).
+    rehome_plan_high: Arc<std::sync::atomic::AtomicU64>,
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
     /// persona to different weights, so it earns the same sustained-streak bar as
@@ -1193,7 +1197,7 @@ impl ServingDaemonModule {
             rehome_held_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             last_swap_used: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = no reading yet: unknown is never "rising"
             decline_log_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            rehome_last_plan: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = first observation reads FLAT: unknown is not growth
+            rehome_plan_high: Arc::new(std::sync::atomic::AtomicU64::new(0)), // 0 = no plan seen in this streak yet
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -2953,6 +2957,19 @@ impl ServingDaemonModule {
         }
     }
 
+    /// A re-home streak starts over: the count and the plan high it was measured
+
+    /// against together, so a stale high can never make a later climb read as flat.
+
+    fn reset_rehome_streak(&self) {
+
+        self.rehome_streak.store(0, Ordering::Relaxed);
+
+        self.rehome_plan_high.store(0, Ordering::Relaxed);
+
+    }
+
+
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
         let operation = match ServingOperation::acquire(
             self.reconciling.clone(),
@@ -3051,7 +3068,7 @@ impl ServingDaemonModule {
                 );
             } else {
                 self.model_change_streak.store(0, Ordering::Relaxed);
-                self.rehome_streak.store(0, Ordering::Relaxed);
+                self.reset_rehome_streak();
                 self.downshift_streak.store(0, Ordering::Relaxed);
                 *self.pending_model_change.lock().unwrap_or_else(|p| p.into_inner()) = None; // unwrap_or_else: a poisoned streak cell is still cleared
                 static LAST_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -3227,7 +3244,7 @@ impl ServingDaemonModule {
                     self.settled_ready_at_ms
                         .store(live.ready_verified_at_ms.unwrap_or(0), Ordering::Relaxed); // JUSTIFIED unwrap_or: `ready_edge` is true only for Some
                     self.rehome_cooldown.store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
-                    self.rehome_streak.store(0, Ordering::Relaxed);
+                    self.reset_rehome_streak();
                     crate::probe!(
                         class = "serving.reconcile.window",
                         decision = "ready-settling",
@@ -3244,7 +3261,7 @@ impl ServingDaemonModule {
                     // the instant the cooldown lapses we relaunch on evidence gathered
                     // a minute and a half ago. Re-proving costs 3 ticks and keeps
                     // "sustained" meaning sustained-NOW.
-                    self.rehome_streak.store(0, Ordering::Relaxed);
+                    self.reset_rehome_streak();
                 }
                 // The geometry a cold boot plans first is the last SETTLED one — the lane
                 // that outlived its own spawn cooldown without a re-home — never the last
@@ -3286,7 +3303,7 @@ impl ServingDaemonModule {
                 let swap_now = self.system.snapshot().memory.swap_used_bytes;
                 let swap_prev = self.last_swap_used.swap(swap_now, Ordering::Relaxed);
                 if grow_refused_while_paging(live_space, plan_space, swap_prev, swap_now) {
-                    self.rehome_streak.store(0, Ordering::Relaxed);
+                    self.reset_rehome_streak();
                     crate::probe!(
                         class = "serving.reconcile.window",
                         decision = "refused_while_paging",
@@ -3314,8 +3331,14 @@ impl ServingDaemonModule {
                 // moving: growth resets the streak, so a monotone climb
                 // coalesces into ONE relaunch at its top. Steady state is
                 // unchanged — a stable plan is flat by definition.
-                let prev_plan = self.rehome_last_plan.swap(plan_space, Ordering::Relaxed);
-                let plan_flat = plan_space <= prev_plan;
+                // Flat = not a NEW HIGH for this streak: the first observation sets the
+                // high, a climb past it resets the streak (the boot staircase), and a
+                // plan moving below it (alternating, settling) keeps counting.
+                let high = self.rehome_plan_high.load(Ordering::Relaxed);
+                let plan_flat = high == 0 || plan_space <= high;
+                if plan_space > high {
+                    self.rehome_plan_high.store(plan_space, Ordering::Relaxed);
+                }
                 let streak = if worth_it && cooling == 0 && plan_flat {
                     self.rehome_streak
                         .fetch_add(1, Ordering::Relaxed)
@@ -3324,8 +3347,12 @@ impl ServingDaemonModule {
                     // Not merely "don't count" — RESET. One tick that does not want
                     // the bigger window is enough to prove the demand was not
                     // sustained, and a streak that survives dips is a streak that
-                    // eventually fires on noise.
+                    // eventually fires on noise. A new high starts the next streak from
+                    // itself; any other reason starts it from nothing.
                     self.rehome_streak.store(0, Ordering::Relaxed);
+                    if plan_flat {
+                        self.rehome_plan_high.store(0, Ordering::Relaxed);
+                    }
                     0
                 };
                 let starved = streak >= REHOME_SUSTAINED_TICKS && cooling == 0;
@@ -3486,7 +3513,7 @@ impl ServingDaemonModule {
                 );
                 // Both guards re-armed at the moment we actually commit: the next
                 // re-home must earn a fresh streak AND outlast a fresh cooldown.
-                self.rehome_streak.store(0, Ordering::Relaxed);
+                self.reset_rehome_streak();
                 self.rehome_cooldown
                     .store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
             }
@@ -10313,6 +10340,72 @@ pub(crate) mod tests {
             serves.load(Ordering::SeqCst),
             0,
             "jitter must NEVER re-home, however long it goes on — one dip resets the streak"
+        );
+    }
+
+    // what this catches (2026-10-07, the 5090): a lane serving 2,304 under a plan that
+    // alternated 33k <-> 70k never re-homed for an hour. Every rise reset the streak,
+    // although BOTH plan values wanted a far bigger lane, so Kimi, needing 52k, could
+    // not fit while the lane read ready. A plan moving below a high it already reached
+    // is settled enough: the streak counts and the lane re-homes within a few ticks.
+    #[tokio::test]
+    async fn a_lane_far_below_an_alternating_plan_re_homes() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let (daemon, full) = lane_under_plan(serves.clone(), 65_536, 4);
+        let live_window = daemon.serving_tx.borrow().served_context_window;
+        assert!(live_window * 4 < full / 2, "fixture: the lane must sit far below both plan values");
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
+        let half = vec![footprint_from_parts("coder-14b", 9 * GB, full / 2, true, None).unwrap()];
+        let whole = vec![footprint_from_parts("coder-14b", 9 * GB, full, true, None).unwrap()];
+        let mut fired_at = None;
+        for tick in 0..(REHOME_SUSTAINED_TICKS * 4) {
+            let plan = if tick % 2 == 0 { &half } else { &whole };
+            daemon.publish_plan(budget, plan, plan);
+            if daemon.reconcile_to_plan().is_some() {
+                fired_at = Some(tick);
+                break;
+            }
+        }
+        let fired_at = fired_at.expect("a lane far below both values of an alternating plan must re-home");
+        assert!(
+            fired_at <= REHOME_SUSTAINED_TICKS + 2,
+            "re-homed only at tick {fired_at}: the alternation still resets the streak"
+        );
+    }
+
+    // what this catches: the boot staircase (2026-09-02) the streak's plan-high rule
+    // exists for. Personas register serially at boot, so the plan climbs in stairs;
+    // a re-home per stair was sixteen model loads in one lane's log. While every tick
+    // is a new high, nothing fires; once the climb stops, exactly one re-home at the top.
+    #[tokio::test]
+    async fn a_climbing_plan_coalesces_into_one_re_home_at_its_top() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let (daemon, top) = lane_under_plan(serves.clone(), 65_536, 4);
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
+        let at = |w: u32| vec![footprint_from_parts("coder-14b", 9 * GB, w, true, None).unwrap()];
+        for (stair, w) in [top / 4, top * 3 / 8, top / 2, top * 5 / 8, top * 3 / 4, top * 7 / 8, top]
+            .into_iter()
+            .enumerate()
+        {
+            let plan = at(w);
+            daemon.publish_plan(budget, &plan, &plan);
+            assert!(daemon.reconcile_to_plan().is_none(), "stair {stair}: a climbing plan must not re-home");
+        }
+        let plan = at(top);
+        for tick in 1..REHOME_SUSTAINED_TICKS {
+            daemon.publish_plan(budget, &plan, &plan);
+            assert!(daemon.reconcile_to_plan().is_none(), "settled tick {tick}: still proving the plan stopped");
+        }
+        daemon.publish_plan(budget, &plan, &plan);
+        assert!(
+            daemon.reconcile_to_plan().is_some(),
+            "the climb stopped: one re-home, at its top (no stair above re-homed)"
         );
     }
 
