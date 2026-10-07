@@ -76,6 +76,10 @@ pub fn platform_key(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
         ("macos", "aarch64") => Some("macos-arm64"),
         ("macos", "x86_64") => Some("macos-x86_64"),
+        // CI's Windows leg (#4834) builds the NVIDIA flavor; a non-NVIDIA Windows node is
+        // kept off it by manifest_verdict's feature check, and gpu_verdict refuses a driver
+        // or GPU the build cannot run on.
+        ("windows", "x86_64") => Some("windows-x86_64"),
         _ => None,
     }
 }
@@ -489,6 +493,7 @@ mod tests {
             MissingArtifact::BuildFromSource(_)
         ));
         assert_eq!(platform_key("macos", "x86_64"), Some("macos-x86_64"));
+        assert_eq!(platform_key("windows", "x86_64"), Some("windows-x86_64"));
         assert_eq!(platform_key("linux", "x86_64"), None);
         assert_eq!(release_tag(TIP).as_deref(), Some("canary-54cbe937f012"));
         assert_eq!(
