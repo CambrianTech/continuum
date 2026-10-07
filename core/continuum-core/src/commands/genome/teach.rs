@@ -56,9 +56,13 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 mod bridge;
 pub use bridge::{TeachTrainingAction, TeachTrainingResult};
 
-/// Default write→fix→pass task set (one `EvalTask` JSONL row each — needs `test`).
-/// Authoring a harder battery = add lines, no recompile.
-const DEFAULT_TEACH_SET: &str = "docs/genome/coder-write-eval.jsonl";
+/// Default write→fix→pass task set (one `EvalTask` JSONL row each — needs `test`), by its
+/// gym name: it resolves through `cognition::gym::resolve_gym`, which reads a file on disk
+/// first (authoring a harder battery = add lines and pass its path, no recompile), then the
+/// fetched cache, then the copy embedded in the binary. It was a repo-relative path, which a
+/// running core (whose cwd is not the repo) could not read: the coursework smoke on IntelMac,
+/// 2026-10-07, failed at its first step with "No such file or directory".
+const DEFAULT_TEACH_SET: &str = "coder-write-eval.jsonl";
 
 /// Default dataset name (subdirectory under the datasets root).
 const DEFAULT_DATASET_NAME: &str = "coder-reflex-teacher";
@@ -1101,11 +1105,11 @@ pub(crate) fn lesson_tasks(
         teach
     } else {
         let path = teach_set.unwrap_or(DEFAULT_TEACH_SET); // unwrap_or: no teach set named = the committed default set, the selector's documented last source
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
-        })?;
+        // The ONE gym resolver: a file on disk, the fetched cache, or the embedded copy.
+        let (origin, text) = crate::cognition::gym::resolve_gym(path)
+            .map_err(|e| CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}")))?;
         if strict {
-            crate::cognition::gym::parse_tasks(&text, path).map_err(CommandError::Invalid)?
+            crate::cognition::gym::parse_tasks(&text, &origin).map_err(CommandError::Invalid)?
         } else {
             text.lines()
                 .map(str::trim)
@@ -1220,6 +1224,18 @@ crate::register_stateless_command!(GenomeTeachStatus);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// what this catches (the coursework smoke on IntelMac, 2026-10-07): a default lesson set
+    /// that only resolves when the process happens to stand in the repo root. A running core's
+    /// cwd is not the repo, and neither is a test's (the crate dir), so the old repo-relative
+    /// default failed in both. With no source named, the selector must still return tested
+    /// lessons, from the copy embedded in the binary.
+    #[test]
+    fn the_default_lesson_set_resolves_wherever_the_process_stands() {
+        let tasks = lesson_tasks(None, None, None, true).expect("the default set resolves");
+        assert!(!tasks.is_empty(), "the default set has lessons");
+        assert!(tasks.iter().all(|t| t.test.is_some()), "every default lesson carries its test");
+    }
 
     // what this catches: a refused teacher lane must fail the real synthesis path,
     // not fall through to registry inference and return an empty/failed-item corpus.
