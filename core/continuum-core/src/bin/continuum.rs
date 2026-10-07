@@ -4556,11 +4556,9 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     if digest != manifest.sha256.to_ascii_lowercase() {
         return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256));
     }
-    let status = std::process::Command::new("tar")
-        .args(["-xzf"])
-        .arg(&archive)
-        .arg("-C")
-        .arg(&dir)
+    // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
+    // GNU tar never reads the drive letter as a host (Fable on #4834).
+    let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
     if !status.success() {
