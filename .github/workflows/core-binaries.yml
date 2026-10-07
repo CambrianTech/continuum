@@ -311,6 +311,10 @@ jobs:
           # manifest at 07:09:54Z and its fetch 404'd at 07:10:02Z (BigMama, 2026-10-07). For the
           # tip's own core a refused fetch reads as "compile here": an hour of local build over
           # seconds of upload order.
+          # A rerun replaces an archive a previous run already published: withdraw that run's
+          # manifest FIRST, or a consumer reads it while the tarball is being re-uploaded and
+          # fetches a half-replaced archive (Cormac on #4855). Absent on a first run.
+          gh release delete-asset "$tag" "$name.json" --yes 2>/dev/null || true
           gh release upload "$tag" --clobber \
             "$RUNNER_TEMP/$name.tar.gz" "$RUNNER_TEMP/$name.tar.gz.sha256"
           gh release upload "$tag" --clobber "$RUNNER_TEMP/$name.json"
