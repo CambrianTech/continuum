@@ -163,6 +163,15 @@ pub enum DeployGate {
     /// Clear by every caller — but named so the caller can SAY it swept a stale claim
     /// rather than pretending the file was never there.
     Abandoned { pid: i32, age_ms: u64, why: AbandonReason },
+    /// A live deploy that is WAITING for CI to publish its core (see [`WaitMarker`]). Nothing
+    /// is building beside the core and nothing is swapped, so it does not block: a launch now
+    /// launches the build that is installed and running, and a decode measured now measures
+    /// the lane. It still excludes another deploy, which would check a tree out under it.
+    Waiting {
+        pid: i32,
+        age_ms: u64,
+        target_sha: String,
+    },
 }
 
 /// Why an existing claim stopped binding. Kept as data so the message names the cause.
@@ -199,7 +208,47 @@ impl DeployGate {
     /// cannot prove it, since the pid may be recycled (Cormac on #4524), so it releases, or a
     /// recycled pid would exclude deploys forever.
     pub fn excludes_deploy(&self) -> bool {
-        matches!(self, DeployGate::InProgress { .. } | DeployGate::Abandoned { why: AbandonReason::Stalled, .. })
+        matches!(
+            self,
+            DeployGate::InProgress { .. } | DeployGate::Waiting { .. } | DeployGate::Abandoned { why: AbandonReason::Stalled, .. }
+        )
+    }
+}
+
+/// A deploy's note that it is only WAITING for CI (the consumer's `ci_core_for`), beside the
+/// claim in its own file. A field on the claim could not carry it: the guard's renewer
+/// read-modify-writes the whole claim every [`CLAIM_RENEW_EVERY_MS`], so a cleared flag could
+/// be written back after the wait ended, into the engine promote that must block. Only the
+/// waiting thread writes this file, stamping it each wait tick and removing it before the
+/// install, so it cannot outlive the wait.
+///
+/// WHY (2026-10-07, the 5090): since the consumer waits for CI's core instead of compiling
+/// (#4844), it held the claim through waits of up to three hours. Every reader took that for
+/// a build beside the core. The decode knee skipped every sample as `deploy_in_flight` (two
+/// hours of Kimi's decodes unrecorded, so `decode_tps` read None to the grid allocator), and a
+/// core that died mid-wait could not have been relaunched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitMarker {
+    /// The deploy that is waiting: it must be the claim's own pid to count.
+    pub pid: i32,
+    /// Epoch-ms of the last wait tick.
+    pub stamped_ms: u64,
+}
+
+/// How long a wait tick's stamp vouches for the wait: three of the consumer's 60 s ticks. A
+/// marker left by a consumer killed mid-wait goes stale here even if its pid is recycled.
+pub const WAIT_MARKER_FRESH_MS: u64 = 3 * 60 * 1000;
+
+/// PURE: the gate once the wait marker is read. A live deploy whose own fresh marker says it
+/// is waiting on CI is [`DeployGate::Waiting`]; every other gate is unchanged.
+pub fn with_wait(gate: DeployGate, marker: Option<&WaitMarker>, now_ms: u64) -> DeployGate {
+    match gate {
+        DeployGate::InProgress { pid, age_ms, target_sha }
+            if marker.is_some_and(|m| m.pid == pid && now_ms.saturating_sub(m.stamped_ms) < WAIT_MARKER_FRESH_MS) =>
+        {
+            DeployGate::Waiting { pid, age_ms, target_sha }
+        }
+        gate => gate,
     }
 }
 
@@ -264,6 +313,43 @@ pub fn write(root: &Path, claim: &DeployClaim) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("claim.tmp.{}", claim.pid));
     std::fs::write(&tmp, body)?;
     std::fs::rename(&tmp, &path)
+}
+
+/// Where the wait marker lives, beside the claim.
+pub fn wait_marker_path(root: &Path) -> PathBuf {
+    root.join("run").join("deploy.claim.waiting")
+}
+
+/// Stamp the wait marker for `pid` (each wait tick). Write-then-rename, like the claim.
+pub fn mark_waiting(root: &Path, pid: i32, now_ms: u64) -> std::io::Result<()> {
+    let path = wait_marker_path(root);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let body = serde_json::to_string(&WaitMarker { pid, stamped_ms: now_ms })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension(format!("waiting.tmp.{pid}"));
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Read the wait marker. A malformed one reads as None, which leaves a live claim blocking.
+pub fn read_waiting(root: &Path) -> Option<WaitMarker> {
+    let body = std::fs::read_to_string(wait_marker_path(root)).ok()?;
+    serde_json::from_str(&body).ok()
+}
+
+/// End the wait: remove the marker if it is `pid`'s. Idempotent, like [`clear`], and
+/// owner-scoped for the same reason.
+pub fn clear_waiting(root: &Path, pid: i32) -> std::io::Result<()> {
+    match read_waiting(root) {
+        Some(marker) if marker.pid == pid => match std::fs::remove_file(wait_marker_path(root)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        },
+        _ => Ok(()),
+    }
 }
 
 /// The owner's renewal: stamp `renewed_ms` on the claim, and `progress_ms` too when its
@@ -335,12 +421,13 @@ pub fn owner_alive(pid: i32) -> bool {
 
 /// The deploy in flight on this host, as the core sees it: `InProgress` while a live
 /// `continuum reboot` holds the claim (its warm build compiles beside the serving core —
-/// `rustc -j<cores>` for ten minutes), `Clear` otherwise. Abandoned claims read `Clear`
-/// here; sweeping them is the CLI's job.
+/// `rustc -j<cores>` for ten minutes), `Waiting` while that deploy only waits for CI's core
+/// (see [`WaitMarker`]), `Clear` otherwise. Abandoned claims read `Clear` here; sweeping
+/// them is the CLI's job.
 pub fn in_flight(root: &Path, now_ms: u64) -> DeployGate {
     let claim = read(root);
     let alive = claim.as_ref().is_some_and(|c| owner_alive(c.pid));
-    decide(claim.as_ref(), alive, now_ms)
+    with_wait(decide(claim.as_ref(), alive, now_ms), read_waiting(root).as_ref(), now_ms)
 }
 
 /// Drop the claim, but only if it is still `pid`'s. Idempotent: a missing file, or a claim
@@ -599,6 +686,51 @@ mod tests {
         // A pid no process holds (pid_max is 99998 on macOS, 4194304 on Linux; i32::MAX is neither).
         write(&dir, &claim(i32::MAX, now - 1_000)).expect("write");
         assert!(!in_flight(&dir, now).blocks(), "a dead owner's claim never blocks");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches (the 5090, 2026-10-07): a deploy WAITING on CI read as a build beside
+    // the core. The knee skipped two hours of decodes as `deploy_in_flight` and the grid saw
+    // decode_tps None. A wait must not block, yet must still exclude a second deploy; and only
+    // the claim's own fresh marker makes it a wait, so a stale or foreign marker never lifts
+    // a real swap's block.
+    #[test]
+    fn a_deploy_waiting_on_ci_excludes_another_deploy_but_blocks_nothing() {
+        let now = 10_000_000u64;
+        let live = decide(Some(&claim(4242, 1_000)), true, now);
+        let mark = |pid, stamped_ms| WaitMarker { pid, stamped_ms };
+        let waiting = with_wait(live.clone(), Some(&mark(4242, now - 60_000)), now);
+        assert!(matches!(waiting, DeployGate::Waiting { pid: 4242, .. }), "{waiting:?}");
+        assert!(!waiting.blocks(), "a wait is not a swap: launches and decode samples go on");
+        assert!(waiting.excludes_deploy(), "a second deploy would check out a tree under the wait");
+        // Not a wait: no marker, another deploy's marker, or a marker past its freshness.
+        assert_eq!(with_wait(live.clone(), None, now), live);
+        assert_eq!(with_wait(live.clone(), Some(&mark(7, now)), now), live);
+        assert_eq!(with_wait(live.clone(), Some(&mark(4242, now - WAIT_MARKER_FRESH_MS)), now), live);
+        // A marker never makes a claim out of nothing, nor revives an abandoned one.
+        assert_eq!(with_wait(DeployGate::Clear, Some(&mark(4242, now)), now), DeployGate::Clear);
+        let dead = decide(Some(&claim(4242, 1_000)), false, now);
+        assert_eq!(with_wait(dead.clone(), Some(&mark(4242, now)), now), dead);
+    }
+
+    // what this catches: the marker's life on disk, as the core reads it. While its own deploy
+    // waits, the core reads Waiting; once the wait clears it (before the engine promote) the
+    // same claim blocks again; and a clear by another pid removes nothing.
+    #[test]
+    fn the_core_reads_its_deploys_wait_and_the_block_returns_when_the_wait_ends() {
+        let dir = std::env::temp_dir().join(format!("deploy-claim-waiting-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pid = std::process::id() as i32;
+        let now = 1_700_000_000_000u64;
+        write(&dir, &claim(pid, now - 1_000)).expect("write");
+        mark_waiting(&dir, pid, now).expect("mark");
+        let gate = in_flight(&dir, now);
+        assert!(!gate.blocks() && gate.excludes_deploy(), "{gate:?}");
+        clear_waiting(&dir, pid + 1).expect("a foreign clear is a no-op");
+        assert!(!in_flight(&dir, now).blocks(), "another pid cannot end this deploy's wait");
+        clear_waiting(&dir, pid).expect("clear");
+        assert!(in_flight(&dir, now).blocks(), "the wait ended: the claim blocks the swap again");
+        clear_waiting(&dir, pid).expect("clearing twice is fine");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
