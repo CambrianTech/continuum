@@ -174,6 +174,11 @@ pub struct BenchRound {
     /// (`roster_hold::active`), so a round staffs itself; an old round file reads empty.
     #[serde(default)]
     team_names: Vec<String>,
+    /// The coursework lesson set this round teaches, parsed ONCE when the round opens; `None` is
+    /// real work. Every reader (the pull order, `coursework_set_of`, so the staged row and the
+    /// settle decision) reads this typed value. `default`: an older round file is real work.
+    #[serde(default)]
+    coursework: Option<crate::cognition::coursework::CourseworkSet>,
     /// Card uuid → the citizen it was staged FOR, recorded at dispatch staging
     /// (before any solve fires) so the follow-on driver ([`next_unworked_after`])
     /// and the boot resume know WHO works a card that has never run.
@@ -262,6 +267,7 @@ impl BenchRound {
             reviews_passed: Default::default(),
             team: Vec::new(),
             team_names: Vec::new(),
+            coursework: crate::cognition::coursework::CourseworkSet::parse(benchmark),
         }
     }
 
@@ -1107,7 +1113,7 @@ pub fn pullable_cards(
     // REAL WORK BEFORE LESSONS (ONE-RESIDENT §10.2): a coursework round never outranks a real
     // round for her next card, whatever their deck sizes — lessons fill time real work leaves.
     ordered.sort_by(|a, b| {
-        let lesson = |r: &BenchRound| crate::cognition::coursework::is_coursework(&r.benchmark);
+        let lesson = |r: &BenchRound| r.coursework.is_some();
         lesson(a)
             .cmp(&lesson(b))
             .then(b.remaining().cmp(&a.remaining()))
@@ -1149,13 +1155,12 @@ pub fn pullable_cards(
 /// coursework round; `None` for real work and for a card no round tracks. A round's review cards
 /// belong to its set too. Read when a turn stages, so the staged row carries the set as data
 /// (ONE-RESIDENT §10.2: lesson turns are told from real work by data, never by inference).
-pub fn coursework_set_of(card: Uuid) -> Option<String> {
+pub fn coursework_set_of(card: Uuid) -> Option<crate::cognition::coursework::CourseworkSet> {
     let rounds = ROUNDS.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every ROUNDS lock
     rounds
         .values()
         .find(|r| r.cards.contains_key(&card) || r.review_cards.contains_key(&card))
-        .map(|r| r.benchmark.clone())
-        .filter(|b| crate::cognition::coursework::is_coursework(b))
+        .and_then(|r| r.coursework.clone())
 }
 
 pub fn total_unworked_cards() -> usize {
@@ -2069,8 +2074,9 @@ mod tests {
         add_card(lessons, lesson_card);
         assert_eq!(register_review_card(lesson_card, lesson_review), Some(lessons));
 
-        assert_eq!(coursework_set_of(lesson_card).as_deref(), Some("coursework-00112233aabb"));
-        assert_eq!(coursework_set_of(lesson_review).as_deref(), Some("coursework-00112233aabb"));
+        let set = |card| coursework_set_of(card).map(|s| s.as_str().to_string());
+        assert_eq!(set(lesson_card).as_deref(), Some("coursework-00112233aabb"));
+        assert_eq!(set(lesson_review).as_deref(), Some("coursework-00112233aabb"));
         assert_eq!(coursework_set_of(real_card), None, "real work carries no set");
         assert_eq!(coursework_set_of(Uuid::new_v4()), None, "an untracked card is not a lesson");
         let mut rounds = ROUNDS.lock().unwrap(); // test: cleanup of the rounds opened above
@@ -2281,6 +2287,7 @@ mod tests {
             reviews_passed: Default::default(),
                 team: Vec::new(),
             team_names: Vec::new(),
+            coursework: None,
             }
         }
         let live = std::collections::HashSet::new();

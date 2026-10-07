@@ -16,9 +16,10 @@ fromExperience?: string,
  */
 teachSet?: string, 
 /**
- * The board key the cards land under (owner/name), as `benchmark/import`'s `repo`.
+ * The board key the cards land under (owner/name), as `benchmark/import`'s `repo`. The
+ * recipe always passes it (`$args.repo`).
  */
-repo?: string, 
+repo: string, 
 /**
  * Cap on cards offered; 0 or empty = every tested lesson.
  */

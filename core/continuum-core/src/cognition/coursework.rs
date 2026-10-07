@@ -35,6 +35,38 @@ pub fn is_coursework(suite: &str) -> bool {
         .is_some_and(|sha| sha.len() == SHA_HEX_LEN && sha.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
+/// A lesson set's name, parsed ONCE where a round opens and carried typed from there (Fable on
+/// #4848): a round, the pull and the settle decision read this value, never re-derive it from a
+/// suite string, so a renamed or malformed suite can never silently turn a lesson into real work.
+/// Serialized as its name, so a round file reads and writes the same string it always would.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CourseworkSet(String);
+
+impl CourseworkSet {
+    /// The set a suite name names, or `None` when the name is not a coursework set.
+    pub fn parse(suite: &str) -> Option<Self> {
+        is_coursework(suite).then(|| Self(suite.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CourseworkSet {
+    type Error = String;
+    fn try_from(name: String) -> Result<Self, String> {
+        Self::parse(&name).ok_or_else(|| format!("{name:?} is not a coursework set name"))
+    }
+}
+
+impl From<CourseworkSet> for String {
+    fn from(set: CourseworkSet) -> String {
+        set.0
+    }
+}
+
 /// The directory sets live in: under `~/.continuum/benchmarks`, which the disk reporter
 /// already tracks and the eviction story already covers.
 pub fn sets_dir(continuum_home: &Path) -> PathBuf {
@@ -57,7 +89,7 @@ pub fn canonical_set(tasks: &[EvalTask]) -> Result<(String, String), String> {
     tested.sort_by(|a, b| a.id.cmp(&b.id));
     let mut text = String::new();
     for t in tested {
-        text.push_str(&serde_json::to_string(t).map_err(|e| format!("lesson {}: {e}", t.id))?);
+        text.push_str(&serde_json::to_string(t).map_err(|e| format!("lesson {}: {e}", t.id))?); // boundary: a lesson set is a JSONL file on disk, the gym's own format, read back by resolve_gym
         text.push('\n');
     }
     let sha = format!("{:x}", Sha256::digest(text.as_bytes()));
@@ -118,6 +150,19 @@ mod tests {
         assert!(canonical_set(&[untested]).is_err(), "no tested lesson, no set");
         assert!(!is_coursework("coursework-../../etc"), "a lookalike is not a set");
         assert!(set_path(Path::new("/h"), "hard-rs").is_none(), "a gym suite is not a coursework path");
+    }
+
+    /// what this catches: a round file that turns a lesson into real work, or the reverse. A
+    /// set round-trips through serde as its name, and a malformed name is refused at the
+    /// boundary instead of loading as a set.
+    #[test]
+    fn a_set_round_trips_as_its_name_and_a_malformed_one_is_refused() {
+        let set = CourseworkSet::parse("coursework-0123456789ab").expect("a set");
+        let wire = serde_json::to_string(&set).expect("serializes");
+        assert_eq!(wire, "\"coursework-0123456789ab\"");
+        assert_eq!(serde_json::from_str::<CourseworkSet>(&wire).expect("reads back"), set);
+        assert!(serde_json::from_str::<CourseworkSet>("\"hard-rs\"").is_err());
+        assert!(CourseworkSet::parse("coursework-xyz").is_none());
     }
 
     /// what this catches: a set written twice, or read half-written. The same lessons land at

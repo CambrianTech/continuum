@@ -1333,7 +1333,7 @@ async fn stage_credit<T: Transport>(
         // PRIVATE helper in three other modules and none is importable — copying it
         // a fourth time would be the duplication the compression principle forbids.
         staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
-        coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id),
+        coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
     };
 
     let mut operations = Vec::new();

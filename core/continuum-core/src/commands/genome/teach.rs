@@ -1100,7 +1100,7 @@ pub(crate) fn lesson_tasks(
         }
         teach
     } else {
-        let path = teach_set.unwrap_or(DEFAULT_TEACH_SET);
+        let path = teach_set.unwrap_or(DEFAULT_TEACH_SET); // unwrap_or: no teach set named = the committed default set, the selector's documented last source
         let text = std::fs::read_to_string(path).map_err(|e| {
             CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
         })?;

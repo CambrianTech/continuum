@@ -374,10 +374,9 @@ pub struct CourseworkImportParams {
     #[serde(default)]
     #[ts(optional)]
     pub teach_set: Option<String>,
-    /// The board key the cards land under (owner/name), as `benchmark/import`'s `repo`.
-    #[serde(default)]
-    #[ts(optional)]
-    pub repo: Option<String>,
+    /// The board key the cards land under (owner/name), as `benchmark/import`'s `repo`. The
+    /// recipe always passes it (`$args.repo`).
+    pub repo: String,
     /// Cap on cards offered; 0 or empty = every tested lesson.
     #[serde(default)]
     #[ts(optional)]
@@ -422,7 +421,7 @@ impl ActionCommand for CourseworkImport {
         let cards = prepared
             .iter()
             .take(limit)
-            .map(|pc| imported_from(pc, p.repo.as_deref().unwrap_or("")))
+            .map(|pc| imported_from(pc, &p.repo))
             .collect::<Result<Vec<_>, _>>()?;
         crate::probe!(
             class = "coursework.set_imported",
