@@ -121,6 +121,88 @@ pub type FootprintFn = Arc<dyn Fn(&str, u32, u32, u32) -> u64 + Send + Sync>;
 /// `model_id → physical bytes the serving process holds right now`, when measured.
 pub type MeasuredFn = Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>;
 
+/// What the serving ENGINE says it holds on a discrete accelerator: its weights there plus
+/// its KV and compute buffers (`/props`: `model_weight_buffers` + `memory_breakdown`).
+/// The serving daemon records it on its footprint tick; this consumer credits it.
+///
+/// WHY (card 741f5eec, the 5090 on 2026-10-07): the physical credit read the lane
+/// process's host memory (`anon_footprint_of` + `model_file_bytes_of`). On a discrete card
+/// that is the wrong quantity, since the engine's real holding is VRAM and no RSS contains
+/// it. On Windows both reads return `None`, so the board credited Kimi's 31 GB engine with
+/// zero and filed all of it as EXTERNAL. Serving's replace-myself budget was then just free
+/// VRAM, and a dead process's allocations releasing in steps swung it between two exact
+/// values, flapping her window between 33k and 69k. The engine's own accounting is the
+/// attribution-correct figure: a device delta would also credit a game started after spawn.
+#[derive(Default)]
+pub struct EngineDeviceCredit {
+    state: std::sync::Mutex<DeviceCreditState>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum DeviceCreditState {
+    /// No discrete-GPU lane observed: the host-process read is the right quantity.
+    #[default]
+    NotDiscrete,
+    /// A discrete-GPU lane: `bytes` is what the engine at `pid` reported, `None` unread.
+    Discrete { pid: Option<u32>, bytes: Option<u64> },
+}
+
+/// How serving's credit is to be read for the live lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceAnswer {
+    /// Not a discrete-GPU lane: read the host process (unified memory, CPU placement).
+    NotDiscrete,
+    /// A discrete-GPU lane: this is the credit, `None` = nothing to credit (the gap between
+    /// engines, a stale reading from a previous engine, or an unreadable `/props`). Never
+    /// the host read in its place: that would credit the wrong memory.
+    Discrete(Option<u64>),
+}
+
+impl EngineDeviceCredit {
+    /// Record a discrete-GPU reading for the live lane `pid` (`None` = no live lane).
+    /// Returns whether the reading changed, so the caller can probe on change only.
+    pub fn record_discrete(&self, pid: Option<u32>, bytes: Option<u64>) -> bool {
+        let next = DeviceCreditState::Discrete { pid, bytes };
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = a reading is still a reading; the next tick overwrites it
+        let changed = *state != next;
+        *state = next;
+        changed
+    }
+
+    /// The lane is no longer on a discrete GPU (it moved to the CPU): the host read applies.
+    pub fn record_not_discrete(&self) {
+        *self.state.lock().unwrap_or_else(|p| p.into_inner()) = DeviceCreditState::NotDiscrete; // poisoned lock = a reading is still a reading; the next tick overwrites it
+    }
+
+    fn answer(&self, live_pid: Option<u32>) -> DeviceAnswer {
+        device_answer(*self.state.lock().unwrap_or_else(|p| p.into_inner()), live_pid) // poisoned lock = read the last reading, the next tick overwrites it
+    }
+}
+
+/// The credit decision, pure: a recorded reading counts only for the engine it was read
+/// from, so a reading taken before a relaunch is never credited to the successor.
+fn device_answer(state: DeviceCreditState, live_pid: Option<u32>) -> DeviceAnswer {
+    match state {
+        DeviceCreditState::NotDiscrete => DeviceAnswer::NotDiscrete,
+        DeviceCreditState::Discrete { pid, bytes } => DeviceAnswer::Discrete(match (pid, live_pid) {
+            (Some(read), Some(live)) if read == live => bytes.filter(|b| *b > 0),
+            _ => None,
+        }),
+    }
+}
+
+/// The physical credit for serving's live lane: the engine's device holding on a discrete
+/// GPU, the host process's residency otherwise, and 0 in the gap either way.
+fn physical_measure(device: Arc<EngineDeviceCredit>) -> MeasuredFn {
+    Arc::new(move |_model: &str| {
+        let lane = crate::inference::lane_registry::live_lane();
+        match device.answer(lane.as_ref().map(|l| l.pid)) {
+            DeviceAnswer::Discrete(bytes) => bytes,
+            DeviceAnswer::NotDiscrete => lane.and_then(|l| live_lane_resident(l.pid)),
+        }
+    })
+}
+
 /// The `consumer_id` serving's leases carry. Matches the id the acquire-on-load
 /// half will mint leases under, so the authority's asks route back here.
 pub const SERVING_CONSUMER_ID: &str = "serving";
@@ -210,15 +292,20 @@ impl ServingConsumer {
             held_high_water: std::sync::atomic::AtomicU64::new(0),
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
-            measured_of: Arc::new(|_model: &str| {
-                crate::inference::lane_registry::live_lane().and_then(|lane| live_lane_resident(lane.pid))
-            }),
+            measured_of: physical_measure(Arc::new(EngineDeviceCredit::default())),
             measures_physically: true,
             pool_kind,
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             tier_down,
             pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Share the daemon's engine-device reading (see [`EngineDeviceCredit`]): the daemon
+    /// records it on its footprint tick, and this consumer's physical credit reads it.
+    pub fn with_engine_device_credit(mut self, device: Arc<EngineDeviceCredit>) -> Self {
+        self.measured_of = physical_measure(device);
+        self
     }
 
     /// A process-measuring backend under test: the credit becomes exactly what `f`
@@ -593,6 +680,22 @@ impl ResourceConsumer for ServingConsumer {
 
 #[cfg(test)]
 mod tests {
+    /// what this catches (card 741f5eec, the 5090 on 2026-10-07): serving's own engine filed
+    /// as EXTERNAL on a discrete GPU, and a reading credited to the wrong engine. On a
+    /// discrete card the credit is what the engine reported, only for the engine it was read
+    /// from (a pre-relaunch reading is never the successor's), nothing when unread, and
+    /// never the host-process read in its place. Off a discrete card the host read applies.
+    #[test]
+    fn a_discrete_engine_is_credited_its_own_device_holding_and_nothing_else() {
+        use super::{device_answer, DeviceAnswer, DeviceCreditState};
+        let read = |pid, bytes| DeviceCreditState::Discrete { pid: Some(pid), bytes };
+        assert_eq!(device_answer(read(7, Some(31_000_000_000)), Some(7)), DeviceAnswer::Discrete(Some(31_000_000_000)));
+        assert_eq!(device_answer(read(7, Some(31_000_000_000)), Some(8)), DeviceAnswer::Discrete(None), "a previous engine's reading");
+        assert_eq!(device_answer(read(7, Some(31_000_000_000)), None), DeviceAnswer::Discrete(None), "the gap between engines");
+        assert_eq!(device_answer(read(7, None), Some(7)), DeviceAnswer::Discrete(None), "unread /props is no credit, not the host read");
+        assert_eq!(device_answer(DeviceCreditState::NotDiscrete, Some(7)), DeviceAnswer::NotDiscrete);
+    }
+
     use super::*;
     use crate::modules::serving_tier_down::{DeclineTierDown, TierDown};
 
