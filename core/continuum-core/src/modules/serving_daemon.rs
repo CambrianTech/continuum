@@ -853,6 +853,10 @@ pub struct ServingDaemonModule {
     /// baseline. `MAX` = armed but never lowered; 0 = no spawn observed (an adopted
     /// lane); both make the arm say could-not-look rather than charge the desktop.
     spawn_baseline_vram: Arc<AtomicU64>,
+    /// What the serving engine reports it holds on a discrete GPU, recorded on the footprint
+    /// tick and credited to serving on the memory board (card 741f5eec). Shared with the
+    /// `ServingConsumer` this daemon registers.
+    engine_device_credit: Arc<crate::modules::serving_consumer::EngineDeviceCredit>,
     last_healthy_lanes: Arc<AtomicU32>,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
     /// command surface mutates. The daemon plans off this snapshot, NOT the
@@ -1184,6 +1188,7 @@ impl ServingDaemonModule {
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
             spawn_baseline_vram: Arc::new(AtomicU64::new(0)),
+            engine_device_credit: Arc::new(crate::modules::serving_consumer::EngineDeviceCredit::default()),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
             catalog,
             pin_store,
@@ -1776,7 +1781,10 @@ impl ServingDaemonModule {
             // The autonomic plan grows back up when pressure clears. Falls through to a
             // full unload only when no smaller model frees enough.
             Arc::new(crate::modules::serving_tier_down::CatalogTierDownPolicy::new(candidates)),
-        );
+        )
+        // On a discrete GPU the board credits serving with what its ENGINE holds on the
+        // device, recorded by this daemon's footprint tick (card 741f5eec).
+        .with_engine_device_credit(self.engine_device_credit.clone());
         self.resource_daemon.add_consumer(Arc::new(consumer));
 
         // THE VISION HOLDER declares itself (#106/#395/#56). Measured on the live board
@@ -2348,7 +2356,46 @@ impl ServingDaemonModule {
         }
     }
 
+    /// Record what the serving engine holds on a discrete GPU, for the board's credit to
+    /// serving (`EngineDeviceCredit`, card 741f5eec). Off a discrete GPU the host-process read
+    /// is the right quantity, so the reading says so. No live lane, or an unreadable `/props`,
+    /// records no credit: the gap between engines is 0, never a guess.
+    async fn refresh_engine_device_credit(&self) {
+        let discrete_gpu = matches!(
+            (crate::inference::llama_server::main_lane_placement(), self.system.gpu_memory_mode()),
+            (
+                crate::inference::llama_server::LanePlacement::Gpu,
+                Some(crate::gpu::monitor::MemoryMode::Discrete)
+            )
+        );
+        if !discrete_gpu {
+            self.engine_device_credit.record_not_discrete();
+            return;
+        }
+        let pid = crate::inference::lane_pidfile::read();
+        let bytes = match pid {
+            Some(_) => engine_device_bytes().await,
+            None => None,
+        };
+        if !self.engine_device_credit.record_discrete(pid, bytes) {
+            return; // a steady engine: same reading, no probe (it allocates its buffers at launch)
+        }
+        crate::probe!(
+            class = "serving.credit.engine_device",
+            pid = pid.map_or(0, u64::from),
+            device_bytes = bytes.unwrap_or(0), // unwrap_or: probe label; `read` says whether a reading exists
+            read = bytes.is_some(),
+            "serving's board credit on a discrete GPU changed: what its engine reports holding on the device"
+        );
+    }
+
     async fn sample_lane_footprint(&self) {
+        // The board's credit first, every tick and unconditionally. The per-token reading
+        // below is taken once a minute and withheld while other work lives in the engine,
+        // but the engine's device holding is serving's own the whole time. A once-a-minute
+        // credit would read a freshly relaunched engine as nobody's for up to a minute, which
+        // is exactly when a relaunch is sized. `/props` is one local call per tick.
+        self.refresh_engine_device_credit().await;
         let now = crate::persona::trace::now_ms();
         if !crate::inference::lane_footprint::sample_due(now) {
             return;
@@ -5637,6 +5684,25 @@ fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
 /// The lane's bytes beyond its weights on the device, as the engine reports its own allocation.
 /// Bounded: a localhost read of cached meta, taken only on the sampler's interval; `None` when the
 /// lane does not answer in time or its engine predates `memory_breakdown`.
+/// What the serving engine holds on the accelerator, by its own account (`/props`): its
+/// weights there plus its KV and compute buffers. `None` when the engine does not answer or
+/// predates either field.
+async fn engine_device_bytes() -> Option<u64> {
+    let url = format!("{}/props", crate::inference::llama_server::serving_root());
+    let body = reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_millis(500))
+        .send()
+        .await
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    let weights = crate::inference::weight_residency::WeightResidency::from_props(&body)?.accelerator_bytes();
+    let buffers = crate::inference::weight_residency::EngineMemory::from_props(&body)?.accelerator_beyond_weights();
+    Some(weights.saturating_add(buffers))
+}
+
 async fn engine_beyond_weights() -> Option<u64> {
     let url = format!("{}/props", crate::inference::llama_server::serving_root());
     let body = reqwest::Client::new()
