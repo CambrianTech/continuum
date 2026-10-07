@@ -68,7 +68,7 @@ const SHAPES: &[&str] = &[
 /// **This number may only ever go DOWN.** A single total, not a per-file map,
 /// for the same reason as the unwrap ratchet: pressure on the whole surface.
 #[cfg(test)]
-const BASELINE_UNJUSTIFIED: usize = 242;
+const BASELINE_UNJUSTIFIED: usize = 241;
 
 pub struct BoundarySerialization;
 

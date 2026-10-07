@@ -307,7 +307,7 @@ pub fn write(root: &Path, claim: &DeployClaim) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let body = serde_json::to_string_pretty(claim)
+    let body = serde_json::to_string_pretty(claim) // disk format: the claim file every launcher and the core read
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // Write-then-rename so a reader never observes a half-written claim.
     let tmp = path.with_extension(format!("claim.tmp.{}", claim.pid));
@@ -326,7 +326,7 @@ pub fn mark_waiting(root: &Path, pid: i32, now_ms: u64) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let body = serde_json::to_string(&WaitMarker { pid, stamped_ms: now_ms })
+    let body = serde_json::to_string(&WaitMarker { pid, stamped_ms: now_ms }) // disk format: the wait marker file beside the claim
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension(format!("waiting.tmp.{pid}"));
     std::fs::write(&tmp, body)?;
