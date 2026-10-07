@@ -137,12 +137,15 @@ fn is_wsl_shim_dir(dir: &std::path::Path) -> bool {
 /// `-C`, `-T` and member operands after it; those are directories and lists, which
 /// no tar parses as a host.
 pub fn tar_on(archive: &Path, mode: &str) -> Result<std::process::Command, String> {
-    let (Some(dir), Some(name)) = (archive.parent(), archive.file_name()) else {
-        return Err(format!(
-            "{} names no archive file in a directory",
-            archive.display()
-        ));
+    let Some(name) = archive.file_name() else {
+        return Err(format!("{} names no archive file", archive.display()));
     };
+    // A bare name ("x.tar.gz") has an empty parent, which `current_dir` cannot enter:
+    // it lives in the caller's own directory (BigMama on #4839).
+    let dir = archive
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let mut tar = std::process::Command::new("tar");
     tar.current_dir(dir).arg(mode).arg(name);
     Ok(tar)
@@ -179,6 +182,9 @@ mod tests {
         std::fs::remove_dir_all(&src).unwrap();
         assert!(tar_on(&archive, "-xzf").unwrap().status().unwrap().success());
         assert_eq!(std::fs::read(out.join("core.txt")).unwrap(), b"the core");
+        // A bare archive name runs from the caller's own directory, never from "".
+        let bare = tar_on(Path::new("core.tar.gz"), "-tzf").unwrap();
+        assert_eq!(bare.get_current_dir(), Some(Path::new(".")));
     }
 
     // what this catches: Windows drive letters, PATH separators and uv.exe must
