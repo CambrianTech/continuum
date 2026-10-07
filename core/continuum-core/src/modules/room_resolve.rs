@@ -35,12 +35,34 @@ pub(crate) async fn resolve_room(airc: &Airc, named: Option<&str>) -> Result<air
         if room.name == wanted || by_id == Some(room.channel.as_uuid()) {
             return Ok(room);
         }
-        names.push(format!("#{}", room.name));
+        names.push(room.name);
     }
-    Err(CommandError::Invalid(format!(
-        "room {named:?} is not among the rooms this caller is in ({}) — join it first          (room/join), or name one of these",
-        names.join(", ")
-    )))
+    Err(CommandError::Invalid(not_in_reach(named, wanted, &names)))
+}
+
+/// PURE: the refusal for a room the caller is not in, leading with the room she most likely
+/// meant. Kimi sent `swe-bench` for `#bench-swe-bench-verified-1789170698` three times in an
+/// hour (2026-10-06, QA 598de62b): the list held the answer, but nothing pointed at it.
+fn not_in_reach(named: &str, wanted: &str, names: &[String]) -> String {
+    let listed = names.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+    let lower = wanted.to_lowercase();
+    let containing: Vec<&String> = if lower.len() >= 3 {
+        names.iter().filter(|n| n.to_lowercase().contains(&lower)).collect()
+    } else {
+        Vec::new() // two letters are inside half the room names: a listing is more honest
+    };
+    let meant = match containing.as_slice() {
+        [one] => Some(format!("did you mean #{one}? ")),
+        [] => crate::code::path_security::nearest_name(wanted, names).map(|n| format!("did you mean #{n}? ")),
+        many => Some(format!(
+            "rooms with {wanted:?} in their name: {}. ",
+            many.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ")
+        )),
+    };
+    format!(
+        "room {named:?} is not among the rooms this caller is in: {}name one of these ({listed}), or join it first (room/join)",
+        meant.unwrap_or_default()
+    )
 }
 
 #[cfg(test)]
@@ -92,5 +114,32 @@ mod tests {
             text.contains("#academy") && text.contains("#widgets"),
             "names the rooms that ARE in reach: {text}"
         );
+    }
+
+    // what this catches: the refusal listing the right room without pointing at it
+    // (Kimi's `swe-bench` for the bench room, QA 598de62b). A name she typed that is
+    // INSIDE exactly one room's name, or a typo or two off one, is named first; several
+    // containing rooms are named together; nothing close names nothing.
+    #[test]
+    fn a_refused_room_leads_with_the_one_she_meant() {
+        let names: Vec<String> =
+            ["general", "bench-swe-bench-verified-1789170698", "bench-humaneval-1789170001", "academy"]
+                .map(String::from)
+                .to_vec();
+        let lead = |want: &str| not_in_reach(want, want.trim_start_matches('#'), &names);
+
+        let contained = lead("swe-bench");
+        assert!(contained.contains("did you mean #bench-swe-bench-verified-1789170698?"), "{contained}");
+        assert!(contained.contains("#general"), "still lists every room in reach: {contained}");
+
+        let several = lead("bench");
+        assert!(
+            several.contains("rooms with \"bench\" in their name: #bench-swe-bench-verified-1789170698, #bench-humaneval-1789170001"),
+            "{several}"
+        );
+
+        assert!(lead("#acadmy").contains("did you mean #academy?"), "a typo resolves by edit distance");
+        assert!(!lead("default").contains("did you mean"), "nothing close: no guess");
+        assert!(!lead("ge").contains("did you mean"), "too short to contain-match");
     }
 }
