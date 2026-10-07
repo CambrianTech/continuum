@@ -100,6 +100,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             // Apple's MLX path — the coordinator routes here only on a
             // host whose probed HardwareProfile reports a Metal device.
             requires: TrainerHardware::Metal,
+            trains_on_resident_weights: false,
         }
     }
 
@@ -545,6 +546,7 @@ mod tests {
             base_model: "Qwen/Qwen2.5-Coder-3B-Instruct".into(),
             trait_kind: "coder-test".into(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: examples
                     .into_iter()

@@ -198,20 +198,32 @@ members = [
 # AIRC #1433 adds accepted signed reviews of exact work submissions, used by
 # the ordinary reviewed-credit consumer. All crates share that public revision.
 # The same revision across all AIRC crates preserves one shared wire contract.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+# 2026-10-04 bump 7499136 -> e572f3e (airc canary tip). The claim gate is airc-lib,
+# compiled INTO this core, so personas only get airc-lib fixes through this pin; Kimi
+# kept hitting 'settled work is not claimable' on her own card with the 5090's daemon
+# already at #1532. Adopts #1528 (right-sized payloads), #1529 (per-channel ring byte
+# bound, channel_count + ring_bytes_total in status), #1530 (verbs are never room
+# names), #1531 (the owner resumes her own card after her lease lapses), #1532
+# (ownership durable, the lease is presence; from 2026-10-04T16:00Z), #1533 (test),
+# #1534 (work claim/update/link --room). Card 86c5eb48.
+# 2026-10-05 bump e572f3e -> 8d80961: #1535 her sealed mind store (airc-identity::mind,
+# airc-protocol::mind_seal), #1536 Airc::mind_store() + put_at/remove, #1537
+# submission_reviews_for_card, #1538 `airc work submission-review`. Privacy of thought
+# step 2 reads and writes her mind store through Airc::mind_store(), never her key.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "7499136ce754463d6e99ff12ad786f72e5d305a0" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

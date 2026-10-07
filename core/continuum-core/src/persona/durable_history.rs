@@ -29,6 +29,11 @@ use crate::runtime::late_bound::LateBound;
 pub struct HydratedLine {
     pub message_id: String,
     pub sender_id: String,
+    /// When it was said, from the store's own row. A history line without it rendered
+    /// "[occurrence time unknown]" in her prompt: 110 of 126 room lines in Kimi's turn on
+    /// 2026-10-04, though every row in the store carries its time. An event mind cannot
+    /// weigh "silent past when I expected" on events it cannot place in time.
+    pub occurred_at_ms: u64,
     pub text: String,
     pub media: Vec<super::channel_items::MediaItemRequest>,
 }
@@ -118,7 +123,7 @@ impl DurableRoomHistory for ChatStoreHistory {
     async fn room_tail(&self, room: Uuid, limit: usize) -> Result<Vec<HydratedLine>, String> {
         Ok(room_rows(room, limit).await?.into_iter().map(|row| HydratedLine {
             message_id: row.id.to_string(), sender_id: row.sender.to_string(),
-            text: row.text, media: row.media,
+            occurred_at_ms: row.occurred_at_ms, text: row.text, media: row.media,
         }).collect())
     }
 }

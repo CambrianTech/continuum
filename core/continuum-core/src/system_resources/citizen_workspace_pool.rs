@@ -798,9 +798,8 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
         std::fs::write(&list, rels.join("\n"))
             .map_err(|e| PreserveFailed::Archive(format!("write loose list: {e}")))?;
         let tar = dropped_dir.join("loose.tar.gz");
-        let out = std::process::Command::new("tar")
-            .arg("-czf")
-            .arg(&tar)
+        let out = crate::shell_portable::tar_on(&tar, "-czf")
+            .map_err(PreserveFailed::Archive)?
             .arg("-C")
             .arg(workspace)
             .arg("-T")
@@ -814,7 +813,9 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
-        let verify = std::process::Command::new("tar").args(["-tzf"]).arg(&tar).output()
+        let verify = crate::shell_portable::tar_on(&tar, "-tzf")
+            .map_err(PreserveFailed::Archive)?
+            .output()
             .map_err(|e| PreserveFailed::Archive(format!("verify loose tar: {e}")))?;
         if !verify.status.success() {
             return Err(PreserveFailed::Archive(format!(
@@ -835,9 +836,8 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
         let list = dropped_dir.join(format!("{name}.files"));
         std::fs::write(&list, paths.join("\n"))
             .map_err(|e| PreserveFailed::Archive(format!("write file list: {e}")))?;
-        let out = std::process::Command::new("tar")
-            .arg("-czf")
-            .arg(&tar)
+        let out = crate::shell_portable::tar_on(&tar, "-czf")
+            .map_err(PreserveFailed::Archive)?
             .arg("-C")
             .arg(&repo)
             .arg("-T")
@@ -853,9 +853,8 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
             )));
         }
         // READ IT BACK. An archive nobody has opened is a promise, not a preservation.
-        let verify = std::process::Command::new("tar")
-            .args(["-tzf"])
-            .arg(&tar)
+        let verify = crate::shell_portable::tar_on(&tar, "-tzf")
+            .map_err(PreserveFailed::Archive)?
             .output()
             .map_err(|e| PreserveFailed::Archive(format!("verify tar: {e}")))?;
         if !verify.status.success() {
@@ -1078,7 +1077,7 @@ mod tests {
         let tar = dropped.join("swe_django__django-1.uncommitted.tar.gz");
         assert!(tar.exists(), "the archive exists");
         assert!(dropped.join("swe_django__django-1.base").exists(), "the base commit is recorded");
-        let listed = std::process::Command::new("tar").args(["-tzf"]).arg(&tar).output().expect("tar -t");
+        let listed = crate::shell_portable::tar_on(&tar, "-tzf").expect("archive path").output().expect("tar -t");
         let names = String::from_utf8_lossy(&listed.stdout);
         for want in ["tracked.py", "new_test.py", "fixture.bin"] {
             assert!(names.contains(want), "{want} is in the archive: {names}");
@@ -1138,7 +1137,7 @@ mod tests {
         let archived = preserve_workspace(&workspace, &dropped).expect("preserve loose work");
         assert_eq!(archived, 1, "one loose archive");
         let tar = dropped.join("loose.tar.gz");
-        let listed = std::process::Command::new("tar").args(["-tzf"]).arg(&tar).output().expect("tar -t");
+        let listed = crate::shell_portable::tar_on(&tar, "-tzf").expect("archive path").output().expect("tar -t");
         let names = String::from_utf8_lossy(&listed.stdout);
         assert!(names.contains("NOTES.md"), "her note is preserved: {names}");
         assert!(names.contains("scratch/repro.py"), "her scratch script is preserved: {names}");

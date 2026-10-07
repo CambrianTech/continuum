@@ -5,7 +5,8 @@
 //!
 //! Today: `focus/mute` (per-lane hush + snooze, already honored live by the wake floor)
 //! and `focus/nudge` (relative lean on the focus *scalar* β, honored by the focus kernel
-//! `FocusState::allocate`). These ARE her agency seam — any mind drives focus through the
+//! `FocusState::allocate`), and `focus/continue` (her continuation: where she leaves
+//! unfinished work and what she expects next, read by her perception region's wakes). These ARE her agency seam — any mind drives focus through the
 //! command surface, no bolt-on ML policy adapter
 //! ([[commands-are-agency-algs-are-pathways]]). The sticky-cursor verb (`focus/attend`)
 //! and the scalar's perceptual consumer (lane-level RAG breadth) land with multi-lane
@@ -14,5 +15,6 @@
 //! All stateless (they resolve the global registry, hold no module state), so each is
 //! a self-registering `action_command!` with zero wiring beyond its `pub mod` here.
 
+pub mod continue_;
 pub mod mute;
 pub mod nudge;

@@ -154,6 +154,16 @@ pub(crate) struct WithheldVerb {
     pub instead: &'static str,
 }
 
+/// The withheld verbs a REVIEW card's holder needs on her work turn: reading the
+/// submission under review and filing her verdict are the whole of that card. They are
+/// withheld from every other holder (`withheld_from_hands`), and a native-tool model
+/// can call only what it was offered, so without this the reviewer lost the one verb
+/// her card exists for (Kimi on review card deec4ac2, 2026-10-06: "work/review is not
+/// in this prompt").
+pub(crate) fn reviewer_hand(name: &str) -> bool {
+    matches!(name.replace('_', "/").as_str(), "work/review" | "work/submission")
+}
+
 pub(crate) fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
     match name.replace('_', "/").as_str() {
         "work/review" => Some(WithheldVerb {
@@ -271,6 +281,16 @@ fn classify(wire: &str) -> (String, Outcome) {
     }
     if command_names().contains(wire) {
         return (wire.to_string(), Outcome::Canonical);
+    }
+    // A namespace the model writes in front of a real command: `tools/code/run`.
+    // Measured 2026-10-04 on peer b6dcfc8e: every act all afternoon was dispatched as
+    // the URI `tools/code/run`, the ACL correctly refused it ("no policy grants access
+    // to URI"), and she concluded she would "rather not create or execute files" — a
+    // verb she can see but cannot use. The remainder is the command she meant.
+    if let Some(rest) = wire.strip_prefix("tools/") {
+        if command_names().contains(rest) {
+            return (rest.to_string(), Outcome::Alias);
+        }
     }
     // Our charset-legal name (`code_read` → `code/read`) — the underscore form of a
     // real command. Resolving it HERE (not just in the executor's naive replace)
@@ -408,6 +428,17 @@ mod tests {
         // `work/list(state=open)` classified as a MISS, passed through untouched, and was
         // dispatched as a URI — "forbidden: no policy grants access to URI:
         // work/list(state=open)". Two citizens read that as "no open tasks".
+        // what this catches: a `tools/` namespace in front of a real command reaching
+        // the ACL as a literal URI (peer b6dcfc8e, 2026-10-04: refused on every act).
+        // It resolves to the command; an unknown remainder stays a miss.
+        #[test]
+        fn a_tools_namespace_prefix_resolves_to_the_command() {
+            let mut c = call("tools/work/list", serde_json::json!({"state": "open"}));
+            assert_eq!(normalize_call(&mut c), None, "a clean name with a prefix needs no repair note");
+            assert_eq!(c.name, "work/list");
+            assert_eq!(resolve_wire_name("tools/not/a/command"), "tools/not/a/command");
+        }
+
         #[test]
         fn a_name_carrying_its_arguments_resolves_and_keeps_the_arguments() {
             let mut c = call("work/list(state=open)", serde_json::json!({}));

@@ -134,7 +134,10 @@ pub fn spawn_owned_logged(
     let jobs = [job.as_raw_handle()];
     let mut reader = ptr::null_mut();
     let mut writer = ptr::null_mut();
-    if unsafe { windows_sys::Win32::System::Pipes::CreatePipe(&mut reader, &mut writer, ptr::null(), 0) } == 0 {
+    if unsafe {
+        windows_sys::Win32::System::Pipes::CreatePipe(&mut reader, &mut writer, ptr::null(), 0)
+    } == 0
+    {
         return Err(io::Error::last_os_error());
     }
     // Originals are not inheritable; only the explicit stdin duplicate crosses
@@ -142,7 +145,11 @@ pub fn spawn_owned_logged(
     let input = unsafe { File::from_raw_handle(reader) };
     let stop_input = unsafe { File::from_raw_handle(writer) };
     let child = spawn_logged_in_jobs(command, stdout, stderr, flags, &jobs, Some(&input))?;
-    Ok(OwnedProcessTree { child, _job: job, stop_input: Some(stop_input) })
+    Ok(OwnedProcessTree {
+        child,
+        _job: job,
+        stop_input: Some(stop_input),
+    })
 }
 
 /// Spawn this CLI's already-configured core/script command. Its executable is
@@ -190,7 +197,10 @@ fn spawn_logged_in_jobs(
     let null_input;
     let input = match stdin {
         Some(input) => input,
-        None => { null_input = File::open("NUL")?; &null_input }
+        None => {
+            null_input = File::open("NUL")?;
+            &null_input
+        }
     };
     let handles = [
         inheritable_duplicate(input.as_raw_handle())?,
@@ -614,7 +624,10 @@ mod tests {
         let mut graceful = spawn_owned_logged(&command, &log, &log, CREATE_NO_WINDOW).unwrap();
         graceful.request_stop();
         let status = runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(5), graceful.wait()).await.unwrap().unwrap()
+            tokio::time::timeout(Duration::from_secs(5), graceful.wait())
+                .await
+                .unwrap()
+                .unwrap()
         });
         assert!(status.success());
     }

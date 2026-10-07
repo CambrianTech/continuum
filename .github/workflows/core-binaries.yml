@@ -16,10 +16,11 @@
 # tools/scripts/lib/core-features.sh, the same function the on-node build calls, so a
 # downloaded binary is the program the node would have compiled.
 #
-# PLATFORMS: the two Mac outliers first (Metal on arm64; CPU-only on x86_64, where Metal
-# hangs the hardware). Linux and Windows legs follow; their GPU flavor (cuda/vulkan/
-# directml) must be named per leg, because cargo-features.sh probes the machine it runs on
-# and a CI runner has no GPU.
+# PLATFORMS: the two Mac outliers (Metal on arm64; CPU-only on x86_64, where Metal hangs the
+# hardware) and Windows + NVIDIA (cuda,directml), so a Windows node never compiles its own core
+# (BigMama measured 16-50 min for the core plus 19 min for the CLI per deploy, 2026-10-06). A
+# GPU flavor is named per leg ("Windows-NVIDIA x86_64"), because cargo-features.sh probes the
+# machine it runs on and a CI runner has no GPU. A Linux leg follows the same way.
 #
 # NEWEST TIP WINS: a node deploys canary's tip, so a run for a superseded commit is
 # cancelled rather than finished. Old canary releases are pruned to the newest 20.
@@ -32,6 +33,9 @@ on:
   pull_request:
     paths:
       - 'tools/scripts/lib/core-features.sh'
+      - 'tools/scripts/shared/cargo-features.sh'
+      - 'tools/scripts/lib/windows-build-env.sh'
+      - 'tools/scripts/lib/cuda-targets.sh'
       - '.github/workflows/core-binaries.yml'
   push:
     branches: [canary]
@@ -44,12 +48,22 @@ on:
       - 'rust-toolchain.toml'
       - 'tools/scripts/lib/core-features.sh'
       - 'tools/scripts/shared/cargo-features.sh'
+      - 'tools/scripts/lib/windows-build-env.sh'
+      - 'tools/scripts/lib/cuda-targets.sh'
+      - 'tools/scripts/start-livekit-windows.ps1'
+      - 'tools/scripts/generated/manifest.windows.ps1'
       - '.github/workflows/core-binaries.yml'
   workflow_dispatch:
 
+# A canary push must never cancel the canary build in progress. Each canary tip's core is what
+# the deploy consumers download (card 50ca737e); the build takes 45-73 min and canary merges land
+# every 15-30 min, so cancel-in-progress cancelled EVERY build after b6ddc0d0e on 2026-10-04 and
+# no node could download anything. Without cancellation GitHub keeps one run going and only the
+# NEWEST push queued behind it (older queued pushes are dropped), so a build always finishes and
+# the queue cannot grow. Pull requests still cancel their own superseded runs.
 concurrency:
   group: core-binaries-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
@@ -70,6 +84,10 @@ jobs:
           - platform: macos-x86_64
             runner: macos-15-intel
             uname: Darwin x86_64
+          # VS2022 (14.4x) is nvcc 12.x's host compiler; windows-build-env.sh selects it.
+          - platform: windows-x86_64
+            runner: windows-2022
+            uname: Windows-NVIDIA x86_64
     env:
       # The canary profile: no LTO, for a fast link (#4687). main keeps LTO.
       CARGO_PROFILE_RELEASE_LTO: 'false'
@@ -91,6 +109,38 @@ jobs:
           rustc --version
           cmake --version
 
+      # The installer's own CUDA module, from install-manifest.toml's pinned NVIDIA redist, so
+      # the published build links the CUDA major a user's install provides at launch.
+      # The toolkit is a pure function of the pinned redist in the manifest projection, so it is
+      # cached on that file: assembling it from NVIDIA's archives took 24 min on the first run.
+      - name: Restore the CUDA toolkit (Windows)
+        id: cuda-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.continuum/cuda-toolkit
+          key: cuda-toolkit-${{ hashFiles('tools/scripts/generated/manifest.windows.ps1') }}
+
+      - name: Provision the CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Windows PowerShell's progress bar throttles Invoke-WebRequest to a crawl.
+          $ProgressPreference = 'SilentlyContinue'
+          . ./tools/scripts/lib/install-common.ps1
+          . ./tools/scripts/lib/win-modules.ps1
+          Mod-CUDA -BuildHost
+
+      # Saved as soon as it is assembled, not at job end, so a later failing step does not
+      # send the next run back to NVIDIA's archives.
+      - name: Save the CUDA toolkit (Windows)
+        if: runner.os == 'Windows' && steps.cuda-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.continuum/cuda-toolkit
+          key: cuda-toolkit-${{ hashFiles('tools/scripts/generated/manifest.windows.ps1') }}
+
       - name: Cache cargo state
         uses: Swatinem/rust-cache@v2
         with:
@@ -101,66 +151,141 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then
+            # The node's own build environment (MSVC, the CUDA tree, +crt-static), so CI
+            # compiles what start-server.sh would. The lib is written for start-server.sh's
+            # shell, which has no nounset, and reads optional variables bare.
+            set +u; source tools/scripts/lib/windows-build-env.sh; set -u
+          fi
           source tools/scripts/lib/core-features.sh
           select_core_features "${{ matrix.uname }}"
-          # One cargo call builds all four bins only when the CLI shares the core's
-          # features, which is true on both Macs. A leg where they differ must build the
-          # CLI separately, like start-server.sh does; fail here rather than ship a CLI
-          # built with the wrong set.
-          if [ "$CONTINUUM_CLI_FEATURES" != "$CONTINUUM_FEATURES" ]; then
-            echo "::error::CLI features differ from the core's on ${{ matrix.platform }}; this leg needs a separate CLI build"
-            exit 1
-          fi
-          echo "features: $CONTINUUM_FEATURES"
+          echo "features: core '$CONTINUUM_FEATURES', CLI '$CONTINUUM_CLI_FEATURES'"
           echo "CONTINUUM_FEATURES=$CONTINUUM_FEATURES" >> "$GITHUB_ENV"
-          # shellcheck disable=SC2086  # the feature string is split on purpose
-          cargo build --manifest-path core/continuum-core/Cargo.toml --release \
-            --bin continuum-core-server --bin continuum --bin continuum-mcp --bin forge-custodian \
-            $CONTINUUM_FEATURES
+          cuda_version=""
+          if [[ "$CONTINUUM_FEATURES" == *cuda* ]]; then
+            source tools/scripts/lib/cuda-targets.sh
+            configure_published_cuda_targets
+            cuda_version="$(nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+            [ -n "$cuda_version" ] || { echo "::error::nvcc reported no release"; exit 1; }
+            echo "CUDA_COMPUTE_CAP=$CUDA_COMPUTE_CAP" >> "$GITHUB_ENV"
+          fi
+          echo "CUDA_VERSION=$cuda_version" >> "$GITHUB_ENV"
+          manifest=core/continuum-core/Cargo.toml
+          if [ "$CONTINUUM_CLI_FEATURES" = "$CONTINUUM_FEATURES" ]; then
+            # One cargo call, one library compile, all four bins (both Macs).
+            # shellcheck disable=SC2086  # the feature string is split on purpose
+            cargo build --manifest-path "$manifest" --release \
+              --bin continuum-core-server --bin continuum --bin continuum-mcp --bin forge-custodian \
+              $CONTINUUM_FEATURES
+          else
+            # The CLI is a socket client and must never link a GPU runtime (core-features.sh),
+            # so it builds separately with its own set, as start-server.sh does.
+            # shellcheck disable=SC2086
+            cargo build --manifest-path "$manifest" --release \
+              --bin continuum-core-server --bin continuum-mcp --bin forge-custodian \
+              $CONTINUUM_FEATURES
+            # shellcheck disable=SC2086
+            cargo build --manifest-path "$manifest" --release --bin continuum $CONTINUUM_CLI_FEATURES
+          fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            # The Windows handoff stages the voice sidecar beside the core and refuses a core
+            # without it (continuum.rs, PreparedCoreService::stage), as start-server.sh's warm
+            # build provides it.
+            cargo build --manifest-path core/livekit-bridge/Cargo.toml --bin livekit-bridge --release
+          fi
 
       - name: Package
         id: package
         shell: bash
         run: |
           set -euo pipefail
-          target_dir="$(cargo metadata --manifest-path core/continuum-core/Cargo.toml --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+          # Windows runners name it `python`; the Macs, `python3`.
+          py="$(command -v python3 || command -v python)"
+          exe=""; [ "$RUNNER_OS" = Windows ] && exe=".exe"
+          target_dir="$(cargo metadata --manifest-path core/continuum-core/Cargo.toml --format-version 1 --no-deps | "$py" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
           name="continuum-core-${{ matrix.platform }}"
           stage="$RUNNER_TEMP/$name"
           mkdir -p "$stage"
           for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
-            cp "$target_dir/release/$bin" "$stage/"
+            cp "$target_dir/release/$bin$exe" "$stage/"
           done
-          # A downloaded binary must launch on a Mac that has nothing but macOS: every linked
-          # library is the system's. Homebrew openssl (/usr/local or /opt/homebrew) was linked
-          # until the cloud TTS crate left (card ab567967); this keeps anything like it out.
-          for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
-            foreign="$(otool -L "$stage/$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)' || true)"
-            if [ -n "$foreign" ]; then
-              echo "::error::$bin links libraries a plain Mac does not have:"; echo "$foreign"; exit 1
+          runtime_libs=""
+          if [ "$RUNNER_OS" = Windows ]; then
+            set +u; source tools/scripts/lib/windows-build-env.sh; set -u   # dumpbin and CUDA_PATH (no nounset, as in the Build step)
+            cp "$target_dir/release/livekit-bridge.exe" tools/scripts/start-livekit-windows.ps1 "$stage/"
+            if [ -n "$CUDA_VERSION" ]; then
+              # The CUDA runtime ships INSIDE the archive, beside the exe, where Windows looks
+              # first: a node's launch PATH admits one CUDA tree (windows-build-env.sh), and the
+              # 5090's is 13.x, so a 12.x core relying on PATH died "cublas64_12.dll was not
+              # found" (BigMama, 2026-10-06). The set is the import-table closure of the bins,
+              # so it is exactly what they load.
+              cuda_bin="$(cygpath -u "$CUDA_PATH")/bin"
+              queue=("$stage/continuum-core-server.exe" "$stage/continuum-mcp.exe" "$stage/forge-custodian.exe")
+              while [ ${#queue[@]} -gt 0 ]; do
+                file="${queue[0]}"; queue=("${queue[@]:1}")
+                for dll in $(dumpbin //dependents "$(cygpath -w "$file")" | tr -d '\r' | awk '$1 ~ /\.dll$/ {print $1}'); do
+                  [ -f "$cuda_bin/$dll" ] && [ ! -f "$stage/$dll" ] || continue
+                  cp "$cuda_bin/$dll" "$stage/"; runtime_libs="$runtime_libs $dll"; queue+=("$stage/$dll")
+                done
+              done
+              # nvrtc opens its builtins by name at run time, so no import table names them.
+              case " $runtime_libs " in *" nvrtc64_"*)
+                for builtins in "$cuda_bin"/nvrtc-builtins64_*.dll; do
+                  cp "$builtins" "$stage/"; runtime_libs="$runtime_libs $(basename "$builtins")"
+                done ;;
+              esac
+              [ -n "$runtime_libs" ] || { echo "::error::a CUDA build imports no CUDA runtime DLL from $cuda_bin"; exit 1; }
+              echo "bundled CUDA runtime:$runtime_libs"
             fi
-          done
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            # A downloaded binary must launch on a Mac that has nothing but macOS: every linked
+            # library is the system's. Homebrew openssl (/usr/local or /opt/homebrew) was linked
+            # until the cloud TTS crate left (card ab567967); this keeps anything like it out.
+            for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
+              foreign="$(otool -L "$stage/$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)' || true)"
+              if [ -n "$foreign" ]; then
+                echo "::error::$bin links libraries a plain Mac does not have:"; echo "$foreign"; exit 1
+              fi
+            done
+          fi
           # The binary must report the commit it was built from: the deploy verifies the
           # running core's sha, and an artifact stamped with the wrong one would be refused.
-          version="$("$stage/continuum" --version)"
+          version="$("$stage/continuum$exe" --version)"
           echo "$version"
           case "$version" in
             *"sha ${GITHUB_SHA:0:9}"*) ;;
             *) echo "::error::continuum --version does not report ${GITHUB_SHA:0:9}"; exit 1 ;;
           esac
-          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/$name.tar.gz" "$name"
-          (cd "$RUNNER_TEMP" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
-          python3 - "$RUNNER_TEMP/$name.json" <<EOF
+          # Relative names from inside the dir: GNU tar (Git for Windows) reads `D:\...` as a
+          # remote host `D` and fails "Cannot connect to D: resolve failed".
+          (cd "$RUNNER_TEMP" && tar -czf "$name.tar.gz" "$name")
+          (cd "$RUNNER_TEMP" && { command -v sha256sum >/dev/null && sha256sum "$name.tar.gz" || shasum -a 256 "$name.tar.gz"; } > "$name.tar.gz.sha256")
+          # Values reach Python as argv, never inside its string literals: a Windows path
+          # (D:\a\_temp) in a literal would read `\a` as an escape.
+          "$py" - "$RUNNER_TEMP/$name.json" "$RUNNER_TEMP/$name.tar.gz.sha256" "${{ matrix.platform }}" \
+            "${{ matrix.uname }}" "$GITHUB_SHA" "$CONTINUUM_FEATURES" "$name.tar.gz" \
+            "$CUDA_VERSION" "${CUDA_COMPUTE_CAP:-}" "$runtime_libs" <<'EOF'
           import json, sys
-          json.dump({
-              "platform": "${{ matrix.platform }}",
-              "uname": "${{ matrix.uname }}",
-              "git_sha": "$GITHUB_SHA",
-              "features": "$CONTINUUM_FEATURES",
+          out, sums, platform, uname, sha, features, archive, cuda_version, cuda_cap, libs = sys.argv[1:]
+          manifest = {
+              "platform": platform,
+              "uname": uname,
+              "git_sha": sha,
+              "features": features,
               "profile": "release, lto=false (canary)",
-              "archive": "$name.tar.gz",
-              "sha256": open("$RUNNER_TEMP/$name.tar.gz.sha256").read().split()[0],
+              "archive": archive,
+              "sha256": open(sums).read().split()[0],
               "bins": ["continuum-core-server", "continuum", "continuum-mcp", "forge-custodian"],
-          }, open(sys.argv[1], "w"), indent=2)
+          }
+          # A CUDA build carries its runtime (runtime_libs, beside the exe; staging copies them
+          # with the core), needs a driver that runs this CUDA version, and a GPU at least at
+          # this compute capability (the PTX floor).
+          if cuda_version:
+              manifest["cuda_version"] = cuda_version
+              manifest["cuda_compute_cap"] = int(cuda_cap)
+              manifest["runtime_libs"] = libs.split()
+          json.dump(manifest, open(out, "w"), indent=2)
           EOF
           ls -la "$RUNNER_TEMP/$name".*
           echo "name=$name" >> "$GITHUB_OUTPUT"

@@ -97,9 +97,15 @@ pub struct CardHolder {
     /// 2026-07-11: cards she held rendered as a hex prefix she cannot recognize
     /// as herself, so claimed work carried zero self-relevance.
     pub is_self: bool,
-    /// How to name the holder to a reader: `YOU`, a published name, or the
-    /// short id. Never empty, never "someone".
+    /// How to name the holder in a sentence: `YOU`, a published name, or
+    /// [`UNNAMED_HOLDER`]. Never an id: an id is never part of a string (Joel,
+    /// 2026-10-06). The holder stays reachable through [`CardHolder::owner`], typed.
     pub display: String,
+    /// How long the holder has been silent on this card (since her last heartbeat or
+    /// claim), when there is a holder. An AGE, never a timestamp: a reader judges "take
+    /// it over?" from "silent 23h", and a date read against a model's own sense of now
+    /// is off by years (Joel, 2026-10-06: "just say how old").
+    pub quiet_for_ms: Option<u64>,
 }
 
 /// The lease truth, mirroring airc-lib's `is_active_claim` (work_roster.rs).
@@ -247,6 +253,9 @@ pub fn in_flight_by(cards: &[WorkCard], holders: &std::collections::HashSet<airc
         .count()
 }
 
+/// How a holder with no published name is said in a sentence (see [`CardHolder::display`]).
+pub(crate) const UNNAMED_HOLDER: &str = "an unnamed peer";
+
 /// The 8-char short id every surface in the system uses to name a uuid.
 pub(crate) fn short8(id: &uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
@@ -265,24 +274,30 @@ pub fn holder(
     let display = match owner {
         None => "nobody".to_string(),
         Some(_) if is_self => "YOU".to_string(),
-        // A published name when we have one; the short id when we don't. The
-        // short id is addressable (it is what work/claim and airc DM take), so
-        // an unnamed peer is still someone a citizen can reach — unlike
-        // "someone", which is a dead end.
-        Some(o) => names.name_of(&o).unwrap_or_else(|| short8(&o.as_uuid())),
+        // A published name when we have one. An unnamed peer is said as one: the
+        // sentence never carries an id (Joel, 2026-10-06: "uuid should never be inside
+        // or part of a string in any way"). She can still reach the holder: the typed
+        // `owner` rides beside this, rendered as a handle only in its own field.
+        Some(o) => names.name_of(&o).unwrap_or_else(|| UNNAMED_HOLDER.to_string()),
     };
+    let quiet_for_ms = owner
+        .and(card.last_heartbeat_at_ms)
+        .map(|at| now_ms.saturating_sub(at));
     CardHolder {
         hold,
         owner,
         is_self,
         display,
+        quiet_for_ms,
     }
 }
 
 impl CardHolder {
-    /// Can the reader take this card right now? A lapsed hold is takeable —
-    /// including (especially) her own. The card's column decides the rest:
-    /// an `Open` card is claimable even with no claim ever made.
+    /// Can the reader take this card with `work/claim` right now? ANY card that is not
+    /// settled — open, lapsed, or held live by someone else (Joel, 2026-10-06: "allow
+    /// anyone to take it at any time … give the ais more power then only pull it back
+    /// when its really a problem"). Taking a held card is a takeover: airc releases the
+    /// holder's claim, attributed to the taker, then claims, so the holder sees it.
     ///
     /// Mirrors the WRITE side exactly. `work/claim` refuses `Review | Merged |
     /// Closed` outright (`airc-lib` `work.rs` → `WorkCardNotClaimable`), so a
@@ -291,24 +306,39 @@ impl CardHolder {
     /// cards offered as claimable were `Review`** — a citizen who picked one
     /// could only fail, and had no way to tell that from her own incapacity.
     /// Read and write must answer "can I take this" the same way, or the board
-    /// is lying about what is available ([[the-compression-principle]]).
+    /// is lying about what is available ([[the-compression-principle]]): on
+    /// 2026-10-06 work/get said `claimable: true` for a dormant peer's lapsed card
+    /// while the gate refused it, and Kimi sat idle behind it for a day.
+    ///
+    /// The automatic PULL is a different question (which card should a scheduler hand
+    /// her) and stays on [`claimable_by`]: it never takes a live hold from anyone.
     pub fn claimable(&self, state: airc_work::model::CardState) -> bool {
-        claimable_hold(self.hold, state)
+        !refused_by_claim(state)
     }
 
     /// The holder phrase a citizen reads on a board line. Says WHO in every
     /// branch, and says plainly when the work is takeable.
     pub fn render(&self) -> String {
+        // The facts a peer judges a takeover from — who, and how long silent — and the
+        // judgement left to her (Joel, 2026-10-06: "let ais make smart judgement calls
+        // like any engineer, always"). No advice about whether to take it.
+        let quiet = self
+            .quiet_for_ms
+            .map(|ms| format!(", silent {}", crate::utils::age::humanize_span(ms)))
+            .unwrap_or_default();
         match self.hold {
             Hold::Unclaimed => "unclaimed".to_string(),
             Hold::Held if self.is_self => "owner YOU".to_string(),
-            Hold::Held => format!("owner {}", self.display),
+            Hold::Held => format!(
+                "owner {}{quiet} — you can take it over (work/claim; the holder sees the release)",
+                self.display
+            ),
             Hold::Lapsed if self.is_self => {
                 "claim lapsed (was YOURS) — claimable, resume it".to_string()
             }
             Hold::Lapsed => format!(
-                "claim lapsed (was {}) — claimable; reach out to {} before taking it",
-                self.display, self.display
+                "claim lapsed (was {}{quiet}) — claimable",
+                self.display
             ),
         }
     }
@@ -512,23 +542,24 @@ mod tests {
         let me = uuid::Uuid::new_v4();
         let c = card(Some(asha), true, Some(u64::MAX));
         let h = holder(&c, me, 1_000, &named(asha, "Asha"));
-        assert_eq!(h.render(), "owner Asha");
+        assert!(h.render().starts_with("owner Asha"), "{}", h.render());
         assert!(!h.render().contains("someone"));
     }
 
     #[test]
-    fn an_unnamed_peer_falls_back_to_an_addressable_short_id_never_to_someone() {
-        // what this catches: the honest-degradation contract. When nothing is
-        // published for a peer we must still hand the reader something she can
-        // ACT on (work/claim + airc DM both take the short id) — never an
-        // anonymous placeholder.
+    fn an_unnamed_peer_is_said_as_one_and_stays_reachable_by_its_typed_id() {
+        // what this catches (Joel, 2026-10-06: an id is never part of a string): a holder
+        // with no published name rendered as 'owner 3f2a91c0' inside the sentence. The
+        // sentence says an unnamed peer; the holder stays reachable, typed, in `owner`.
         let ghost = PeerId::new();
         let me = uuid::Uuid::new_v4();
         let c = card(Some(ghost), true, Some(u64::MAX));
         let h = holder(&c, me, 1_000, &NoNames);
         let short = short8(&ghost.as_uuid());
-        assert_eq!(h.render(), format!("owner {short}"));
-        assert!(!h.display.is_empty());
+        assert!(h.render().starts_with(&format!("owner {UNNAMED_HOLDER}")), "{}", h.render());
+        assert!(!h.render().contains(&short), "no id inside the sentence: {}", h.render());
+        assert!(!h.render().contains("someone"), "{}", h.render());
+        assert_eq!(h.owner, Some(ghost), "the holder is still reachable, typed");
     }
 
     #[test]
@@ -565,15 +596,19 @@ mod tests {
     }
 
     #[test]
-    fn a_live_claim_is_not_claimable_and_an_open_card_always_is() {
-        // what this catches: the guard against over-correcting. Fixing the
-        // stale-lease blindness must NOT make live claims look takeable —
-        // that would turn the stall into claim-stealing (#157).
+    fn a_live_claim_is_takeable_and_says_so_and_an_open_card_always_is() {
+        // what this catches (Joel, 2026-10-06): a live hold read as off-limits. Anyone
+        // may take any card that is not settled; the board must say so, name who holds
+        // it, and say they will see the release — while the pull still never offers a
+        // live hold (claimable_by), so no scheduler yanks a turn in flight.
         let peer = PeerId::new();
         let me = uuid::Uuid::new_v4();
-        let live = holder(&card(Some(peer), true, Some(u64::MAX)), me, 1_000, &NoNames);
+        let c = card(Some(peer), true, Some(u64::MAX));
+        let live = holder(&c, me, 1_000, &NoNames);
         assert_eq!(live.hold, Hold::Held);
-        assert!(!live.claimable(CardState::Claimed));
+        assert!(live.claimable(CardState::Claimed));
+        assert!(live.render().contains("take it over"), "{}", live.render());
+        assert!(!claimable_by(&c, 1_000, PeerId::new(), false), "the pull never takes a live hold");
 
         let open = holder(&card(None, false, None), me, 1_000, &NoNames);
         assert_eq!(open.hold, Hold::Unclaimed);

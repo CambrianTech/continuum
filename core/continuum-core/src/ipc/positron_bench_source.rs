@@ -170,16 +170,18 @@ fn round_row_of(s: RoundSnapshot) -> BenchRoundRow {
 
 /// Spawn the bench-board emitter: scan → fold → publish `kind="bench"`.
 ///
-/// Dual render targets from ONE fold (#426): `substrate` is the websocket
-/// store human eyes read; `mind_substrate` is `global_bench_substrate()`,
-/// the store a citizen's `ViewStateRagSource::<BenchViewState>` reads. The
-/// SAME `builder.session(view)` revision lands in both, so a mind and a
-/// screen can never disagree about the board — the roster repair's
-/// one-definition-two-targets contract applied to the bench outlier.
+/// Two render targets from ONE fold (#426), scoped differently since 2026-10-04
+/// (HER-LOOP-IS-HER-OWN.md rule 5): `substrate` is the websocket store human
+/// eyes read, and it gets the node-wide fold; `rooms` is the per-room registry
+/// a citizen's `ViewStateRagSource::<BenchViewState>::per_room` reads, and each
+/// room in it gets ONLY its own view (`BenchViewState::per_room`): a round room
+/// its round and runs, a solve room its runs and parent round. The rows are the
+/// same rows, so a mind and a screen never disagree about a run; the mind just
+/// sees the board of the activity she is standing in, like the roster.
 pub fn spawn_bench_emitter(
     rt: &tokio::runtime::Handle,
     substrate: Substrate,
-    mind_substrate: Substrate,
+    rooms: std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>,
 ) {
     rt.spawn(async move {
         // Sole writer of the "bench" kind → its own standalone Revisions well.
@@ -240,6 +242,7 @@ pub fn spawn_bench_emitter(
                     .collect(),
                 rounds: rounds.into_iter().map(round_row_of).collect(),
                 sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,
+                room_id: None,
             };
             // age_secs / last_act_secs / idle_secs tick every scan, which
             // would defeat store-on-change; compare with ages zeroed so only
@@ -272,16 +275,24 @@ pub fn spawn_bench_emitter(
                     })
                     .collect(),
                 sample_interval_ms: v.sample_interval_ms,
+                room_id: v.room_id.clone(),
             };
             if last.as_ref().map(&comparable) == Some(comparable(&view)) {
                 continue;
             }
+            // Each room's view is published into THAT room's substrate, the one
+            // its citizens' per-room source reads. Store-on-change is decided
+            // once above on the whole fold: a room view can only change when the
+            // fold did. Rows naming no room (verdict/artifact rows, the live
+            // exam) are on the human rail only.
+            for room_view in view.per_room() {
+                let Some(room) = room_view.room_id.as_deref().and_then(|id| uuid::Uuid::parse_str(id).ok()) else {
+                    continue;
+                };
+                rooms.for_room(room).store(builder.session(room_view));
+            }
             last = Some(view.clone());
-            let envelope = std::sync::Arc::new(builder.session(view));
-            // One allocation, two sinks (2026-08-23 audit): the by-value clone
-            // deep-copied the whole board per publish for the second target.
-            substrate.store_shared(std::sync::Arc::clone(&envelope));
-            mind_substrate.store_shared(envelope);
+            substrate.store(builder.session(view));
         }
     });
 }

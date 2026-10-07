@@ -136,6 +136,30 @@
       "command": "work/submit"
     },
     {
+      "verb": "continue",
+      "command": "focus/continue"
+    },
+    {
+      "verb": "nudge",
+      "command": "focus/nudge"
+    },
+    {
+      "verb": "mute",
+      "command": "focus/mute"
+    },
+    {
+      "verb": "join",
+      "command": "room/join"
+    },
+    {
+      "verb": "leave",
+      "command": "room/leave"
+    },
+    {
+      "verb": "rooms",
+      "command": "room/list"
+    },
+    {
       "verb": "review",
       "command": "work/review"
     },
@@ -188,7 +212,7 @@
     },
     "team": {
       "default": [],
-      "doc": "citizen names to invite into the run room; empty = the resume pass seats the live roster"
+      "doc": "citizen names to invite into the run room; empty = nobody is seated (nothing seats a citizen into a round she did not join, HER-LOOP row C)"
     },
     "driver": {
       "default": "citizen",

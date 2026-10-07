@@ -146,6 +146,9 @@ crate::action_command! {
         state.run_owned(key, |state, key| async move {
             match state.dispatch_pending(&key).await {
                 DispatchResult::Empty => FlushOutcome::nothing_to_flush(),
+                // The fill joined a job already training this competence: nothing was
+                // dispatched and the examples are retained for the next fill.
+                DispatchResult::Held { .. } => FlushOutcome::nothing_to_flush(),
                 DispatchResult::Dispatched { examples, handle, provider } =>
                     FlushOutcome::job_dispatched(examples as u32, provider, handle),
                 DispatchResult::Failed { kind, error } => {

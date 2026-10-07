@@ -71,7 +71,8 @@ impl StopOptions {
         }
         // The three go together or none do: a child without its digest could act on any
         // file in %TEMP%, and a digest without a child is a flag with nothing to bind.
-        if options.elevated != options.plan.is_some() || options.elevated != options.plan_sha.is_some()
+        if options.elevated != options.plan.is_some()
+            || options.elevated != options.plan_sha.is_some()
         {
             return Err(
                 "stop: --elevated, --plan and --plan-sha go together (the consented child ends \
@@ -154,7 +155,9 @@ pub fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(
             _ => None,
         }
     });
-    let in_other_slot = other_slot.as_deref().is_some_and(|slot| image_dir == Some(slot));
+    let in_other_slot = other_slot
+        .as_deref()
+        .is_some_and(|slot| image_dir == Some(slot));
     if image_dir != Some(root.as_str()) && !in_other_slot {
         return Err(format!(
             "pid {} is running {observed_image}, which is not under the installation \
@@ -275,8 +278,9 @@ mod tests {
         let stray = parse(&["--plan-sha", "abc"])
             .expect_err("a digest with no child is a flag bound to nothing");
         assert!(stray.contains("go together"), "{stray}");
-        let unknown = parse(&["--escalate"])
-            .expect_err("there is no operator-facing escalate verb — `continuum install` is the one command");
+        let unknown = parse(&["--escalate"]).expect_err(
+            "there is no operator-facing escalate verb — `continuum install` is the one command",
+        );
         assert!(unknown.contains("unknown option"), "{unknown}");
 
         let child = parse(&["--elevated", "--plan", "p.json", "--plan-sha", "abc"])
@@ -353,8 +357,14 @@ mod tests {
         let elsewhere = "C:\\Windows\\System32\\notepad.exe";
         let refused = target_is_our_core(&p, elsewhere)
             .expect_err("a process outside the installation must be refused");
-        assert!(refused.contains("recycled"), "the reason must name reuse: {refused}");
-        assert!(refused.contains(elsewhere), "the refusal names what is there: {refused}");
+        assert!(
+            refused.contains("recycled"),
+            "the reason must name reuse: {refused}"
+        );
+        assert!(
+            refused.contains(elsewhere),
+            "the refusal names what is there: {refused}"
+        );
 
         let neighbour = "C:\\Users\\a\\.continuum\\bin\\llama-server.exe";
         let sibling = target_is_our_core(&p, neighbour)
@@ -448,7 +458,10 @@ mod tests {
             &p,
             move |_pid| {
                 taken.borrow_mut().push("take");
-                Ok(Recorder { log: taken.clone(), image: ours.clone() })
+                Ok(Recorder {
+                    log: taken.clone(),
+                    image: ours.clone(),
+                })
             },
             || {
                 l.borrow_mut().push("drain");
@@ -531,7 +544,10 @@ mod tests {
             &p,
             move |_pid| {
                 taken.borrow_mut().push("take");
-                Ok(Recorder { log: taken.clone(), image: ours.clone() })
+                Ok(Recorder {
+                    log: taken.clone(),
+                    image: ours.clone(),
+                })
             },
             || {
                 l.borrow_mut().push("drain");
@@ -590,10 +606,16 @@ mod tests {
             "only a DECLINED consent may claim the target is untouched: {silent}"
         );
 
-        let with_receipt =
-            elevation_outcome(25040, Err("exit code 1".to_string()), "elevated teardown failed: X")
-                .expect_err("still an error");
-        assert!(with_receipt.contains("elevated teardown failed: X"), "{with_receipt}");
+        let with_receipt = elevation_outcome(
+            25040,
+            Err("exit code 1".to_string()),
+            "elevated teardown failed: X",
+        )
+        .expect_err("still an error");
+        assert!(
+            with_receipt.contains("elevated teardown failed: X"),
+            "{with_receipt}"
+        );
     }
 
     // what this catches: path spelling read as a different file. The scheduler echoes

@@ -1448,8 +1448,10 @@ mod tests {
                  that is the thing to reconsider.",
                 callers.len()
             );
+            // Compare path COMPONENTS: a display string carries `\` on Windows, so a
+            // string `ends_with` with `/` failed there with the one right caller.
             assert!(
-                callers[0].ends_with("cognition/act_observe/settle.rs"),
+                std::path::Path::new(&callers[0]).ends_with("cognition/act_observe/settle.rs"),
                 "the one caller must be the settle driver — the only place a \
                  SettleOutcome is born; found {}",
                 callers[0]

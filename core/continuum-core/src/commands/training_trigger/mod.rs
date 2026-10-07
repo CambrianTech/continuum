@@ -34,10 +34,12 @@ use crate::modules::training_trigger::TrainingTriggerState;
 use crate::sdk_codegen::DynCommand;
 
 pub mod flush;
+pub mod return_;
 pub mod status;
 pub mod submit;
 
 use flush::TrainingTriggerFlush;
+use return_::TrainingTriggerReturn;
 use status::TrainingTriggerStatus;
 use submit::TrainingTriggerSubmit;
 
@@ -51,6 +53,9 @@ pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynComma
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerFlush {
+            state: state.clone(),
+        }),
+        Arc::new(TrainingTriggerReturn {
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerStatus { state }),

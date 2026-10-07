@@ -108,6 +108,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-1.95-workspace-v2
+          # PR runs restore canary's cache and never save their own: the repo's 10 GB cache
+          # quota is nearly filled by canary's caches, and one PR save evicted core-binaries.
+          save-if: ${{ github.event_name != 'pull_request' }}
           cache-workspace-crates: true
           cache-on-failure: true
 
@@ -256,6 +259,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: continuum-rust-windows-1.95-workspace-v2
+          # PR runs restore canary's cache and never save their own: the repo's 10 GB cache
+          # quota is nearly filled by canary's caches, and one PR save evicted core-binaries.
+          save-if: ${{ github.event_name != 'pull_request' }}
           cache-workspace-crates: true
           cache-on-failure: true
       - name: cargo check (lib + test harness, incl. test-fixtures targets; headless, no avatar-3d)

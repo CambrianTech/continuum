@@ -239,6 +239,9 @@ impl AircEventTransport for DaemonAircEventTransport {
                 // filter here. Perception's message-only page lives in
                 // persona/airc_source.rs (#297).
                 kinds: None,
+                // a forward page from the cursor (the store read on demand, never a
+                // stream replay); paging BACK is `before`, not used here
+                before: None,
             })
             .await
             .map_err(|error| error.to_string())?;

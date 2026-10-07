@@ -145,6 +145,7 @@ mod tests {
 
     fn line(peer: u8, lamport: u64, text: &str) -> IncomingMessage {
         IncomingMessage {
+            work: None,
             media: Vec::new(),
             event_id: Uuid::new_v4(),
             lamport,

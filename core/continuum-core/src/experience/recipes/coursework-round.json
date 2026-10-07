@@ -1,0 +1,319 @@
+{
+  "$schema": "../../../../../protocol/schema/experience-recipe.schema.json",
+  "id": "7c0e5a3b-2f4d-4e61-9b8a-3d5c1e7f9a24",
+  "version": 1,
+  "purpose": "coursework/round",
+  "base": "academy",
+  "regions": [
+    {
+      "name": "scoreboard",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "context",
+      "live": true
+    },
+    {
+      "name": "central",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "content",
+      "live": true
+    },
+    {
+      "name": "feed",
+      "kind": "benchmark",
+      "scope": "activity",
+      "role": "peripheral",
+      "slot": "content",
+      "live": true
+    }
+  ],
+  "affordances": [
+    {
+      "verb": "list",
+      "command": "commands/list"
+    },
+    {
+      "verb": "help",
+      "command": "commands/help"
+    },
+    {
+      "verb": "search",
+      "command": "code/search"
+    },
+    {
+      "verb": "tree",
+      "command": "code/tree"
+    },
+    {
+      "verb": "list-files",
+      "command": "code/list"
+    },
+    {
+      "verb": "read",
+      "command": "code/read"
+    },
+    {
+      "verb": "edit",
+      "command": "code/edit"
+    },
+    {
+      "verb": "write",
+      "command": "code/write"
+    },
+    {
+      "verb": "run",
+      "command": "code/run"
+    },
+    {
+      "verb": "shell",
+      "command": "code/shell"
+    },
+    {
+      "verb": "git-status",
+      "command": "code/git/status"
+    },
+    {
+      "verb": "git-diff",
+      "command": "code/git/diff"
+    },
+    {
+      "verb": "git-commit",
+      "command": "code/git/commit"
+    },
+    {
+      "verb": "shell-poll",
+      "command": "code/shell-poll"
+    },
+    {
+      "verb": "git-add",
+      "command": "code/git/add"
+    },
+    {
+      "verb": "git-push",
+      "command": "code/git/push"
+    },
+    {
+      "verb": "pr-create",
+      "command": "code/github/pr-create"
+    },
+    {
+      "verb": "pr-comment",
+      "command": "code/github/pr-comment"
+    },
+    {
+      "verb": "claim",
+      "command": "work/claim"
+    },
+    {
+      "verb": "create",
+      "command": "work/create"
+    },
+    {
+      "verb": "state",
+      "command": "work/state"
+    },
+    {
+      "verb": "release",
+      "command": "work/release"
+    },
+    {
+      "verb": "get",
+      "command": "work/get"
+    },
+    {
+      "verb": "list-work",
+      "command": "work/list"
+    },
+    {
+      "verb": "heartbeat",
+      "command": "work/heartbeat"
+    },
+    {
+      "verb": "submit",
+      "command": "work/submit"
+    },
+    {
+      "verb": "continue",
+      "command": "focus/continue"
+    },
+    {
+      "verb": "nudge",
+      "command": "focus/nudge"
+    },
+    {
+      "verb": "mute",
+      "command": "focus/mute"
+    },
+    {
+      "verb": "join",
+      "command": "room/join"
+    },
+    {
+      "verb": "leave",
+      "command": "room/leave"
+    },
+    {
+      "verb": "rooms",
+      "command": "room/list"
+    },
+    {
+      "verb": "review",
+      "command": "work/review"
+    },
+    {
+      "verb": "submission",
+      "command": "work/submission"
+    },
+    {
+      "verb": "note",
+      "command": "work/note"
+    },
+    {
+      "verb": "fetch",
+      "command": "web/fetch"
+    },
+    {
+      "verb": "web-search",
+      "command": "web/search"
+    },
+    {
+      "verb": "members",
+      "command": "room/members"
+    },
+    {
+      "verb": "observe",
+      "command": "cognition/observe"
+    }
+  ],
+  "citizens": [],
+  "params": {
+    "from_experience": {
+      "default": "",
+      "doc": "a citizen whose own objectively graded failures are the lessons (her experience stream); empty = not from experience"
+    },
+    "teach_set": {
+      "default": "",
+      "doc": "a lesson JSONL of EvalTask rows; empty (with no from_experience) = the committed default teach set. Only lessons that carry a test become cards: the test is the card's verdict"
+    },
+    "repo": {
+      "default": "",
+      "doc": "the board key the cards land under (owner/name), as benchmark/round's repo"
+    },
+    "limit": {
+      "default": 0,
+      "doc": "cap on cards offered; 0 = every tested lesson"
+    },
+    "review_gate": {
+      "default": false,
+      "doc": "an owner's done becomes review + a sibling review card a non-owner pulls"
+    },
+    "invite": {
+      "default": [],
+      "doc": "citizen names to INVITE into the round's room. An invitation, never an assignment: a citizen who leaves the room is offered none of its cards, nothing re-seats her, and leaving costs her nothing. Empty = nobody is invited"
+    },
+    "about": {
+      "default": "This is a coursework round: lessons, each graded by its own test. You were invited, not assigned. If you would rather not take it, room/leave declines it at no cost, and nothing seats you back.",
+      "doc": "posted into the room after the cards, so an invited citizen knows what it is and that she may decline; empty = say nothing"
+    }
+  },
+  "pipeline": [
+    {
+      "command": "coursework/import",
+      "params": {
+        "fromExperience": "$args.from_experience",
+        "teachSet": "$args.teach_set",
+        "repo": "$args.repo",
+        "limit": "$args.limit"
+      },
+      "outputTo": "imported",
+      "saves": [
+        "imported"
+      ]
+    },
+    {
+      "command": "benchmark/round-open",
+      "params": {
+        "roomId": "$room.id",
+        "roomName": "$room.name",
+        "suite": "$imported.suite",
+        "driver": "citizen",
+        "reviewGate": "$args.review_gate"
+      }
+    },
+    {
+      "command": "work/create",
+      "each": "$imported.cards",
+      "params": {
+        "repo": "$item.repo",
+        "room": "$room.id",
+        "title": "$item.title",
+        "body": "$item.body"
+      },
+      "outputTo": "cards",
+      "saves": [
+        "cards"
+      ]
+    },
+    {
+      "command": "benchmark/round-track",
+      "params": {
+        "roomId": "$room.id",
+        "cards": "$cards",
+        "tasks": "$imported.cards"
+      }
+    },
+    {
+      "command": "activity/invite",
+      "params": {
+        "room": "$room.name",
+        "members": "$args.invite"
+      },
+      "condition": "$args.invite"
+    },
+    {
+      "command": "chat/send",
+      "params": {
+        "roomId": "$room.id",
+        "text": "$args.about"
+      },
+      "condition": "$args.about != \"\""
+    }
+  ],
+  "layout": {
+    "container": "row",
+    "children": [
+      {
+        "node": {
+          "container": "col",
+          "children": [
+            {
+              "node": {
+                "container": "region",
+                "name": "central"
+              },
+              "weight": 2.0
+            },
+            {
+              "node": {
+                "container": "region",
+                "name": "feed"
+              },
+              "weight": 3.0
+            }
+          ]
+        },
+        "weight": 3.0
+      },
+      {
+        "node": {
+          "container": "region",
+          "name": "scoreboard"
+        },
+        "weight": 1.0
+      }
+    ]
+  }
+}

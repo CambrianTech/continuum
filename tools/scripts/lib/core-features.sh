@@ -7,6 +7,7 @@
 # Usage: source tools/scripts/lib/core-features.sh
 #        select_core_features            # this machine
 #        select_core_features "Darwin x86_64"   # a named platform, as `uname -sm` prints it
+#        select_core_features "Windows-NVIDIA x86_64"   # CI's Windows build (no GPU to detect)
 # Sets CONTINUUM_FEATURES (core-server, continuum-mcp, forge-custodian) and
 # CONTINUUM_CLI_FEATURES (the `continuum` CLI).
 
@@ -31,6 +32,10 @@ _core_features_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # socket client wants.
 select_core_features() {
   local platform="${1:-$(uname -sm)}"
+  # CONTINUUM_HARDWARE_FEATURES: the core set this machine's HARDWARE runs, which a
+  # published (prebuilt) core is judged against. Equal to CONTINUUM_FEATURES except on a
+  # Windows NVIDIA box without MSVC on PATH: it cannot compile CUDA, but runs CI's CUDA
+  # core (cargo-features.sh, CARGO_GPU_HARDWARE_FEATURES). The Mac arms set it below.
   case "$platform" in
     "Darwin x86_64")
       # `--no-default-features` also drops `avatar-3d` (the Bevy 3D renderer): a CPU-only
@@ -46,6 +51,7 @@ select_core_features() {
       # smaller CLI set (a box without a CUDA runtime) does not apply to a Mac; the CLI is
       # still CPU-only through `llama/mac-cpu-only`, the same as the core here.
       CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
+      CONTINUUM_HARDWARE_FEATURES="$CONTINUUM_FEATURES"
       ;;
     "Darwin arm64")
       CONTINUUM_FEATURES="--features metal,accelerate"
@@ -55,11 +61,15 @@ select_core_features() {
       # build links Metal, which every Mac has — the GPU-free reason (a box without a CUDA
       # runtime) does not apply here. Same features → the CLI shares the core's lib.
       CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
+      CONTINUUM_HARDWARE_FEATURES="$CONTINUUM_FEATURES"
       ;;
     *)
       # Source the existing detector for Linux/Windows.
       source "$_core_features_dir/../shared/cargo-features.sh"
       CONTINUUM_FEATURES="$CARGO_GPU_FEATURES"
+      # CI publishes the Windows + NVIDIA build from a runner with no GPU and no device to
+      # probe, so it names the flavor; the node's detector reaches the same constant.
+      [ "$platform" = "Windows-NVIDIA x86_64" ] && CONTINUUM_FEATURES="$WINDOWS_NVIDIA_FEATURES"
       # ONE library compile per deploy here too (card 9174fc83). The CLI carries its
       # own GPU-free set ONLY where the core's set links a GPU runtime the loader must
       # find before main() — cuda (cublas/cudart), rocm, vulkan (libvulkan): the
@@ -69,6 +79,8 @@ select_core_features() {
       # same set as the core, so the CLI shares the core's one library build. Before
       # this every Linux/Windows deploy paid a second full lib compile for a CLI whose
       # only difference was dropping `livekit-webrtc` — no launchability gained.
+      CONTINUUM_HARDWARE_FEATURES="$CARGO_GPU_HARDWARE_FEATURES"
+      [ "$platform" = "Windows-NVIDIA x86_64" ] && CONTINUUM_HARDWARE_FEATURES="$WINDOWS_NVIDIA_FEATURES"
       case " $CONTINUUM_FEATURES " in
         # (`--no-default-features` also keeps `avatar-3d`/bevy out of the socket-client
         # CLI — ~24% of its binary, never used by it.)

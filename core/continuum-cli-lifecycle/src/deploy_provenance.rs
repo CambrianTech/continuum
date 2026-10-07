@@ -114,7 +114,11 @@ pub fn cli_staleness_note(
              ({expected_source}). Built outside a git tree, so CLI freshness cannot be proven \
              (#422).",
             if cli_sha.is_empty() { "none" } else { cli_sha },
-            if expected.is_empty() { "none" } else { expected },
+            if expected.is_empty() {
+                "none"
+            } else {
+                expected
+            },
         ));
     }
     if sha_matches(cli_sha, expected) {
@@ -136,6 +140,19 @@ pub fn cli_staleness_note(
          it; on Windows the PATH copies follow the supervisor's slot and only \
          `continuum install` refreshes them. Do that before trusting CLI-side behaviour."
     ))
+}
+
+/// Did THIS deploy put a new `continuum` on PATH? Either the caller installed the CLI
+/// that ships with a prebuilt core, or a source build ran the build script on a
+/// platform that self-builds. The running process predates either by construction, so
+/// a "yes" makes the provenance note a handoff line instead of "⚠ STALE CLI".
+pub fn cli_replaced_this_run(
+    cli_installed: bool,
+    requested_source_build: bool,
+    start_script_found: bool,
+    platform_self_builds: bool,
+) -> bool {
+    cli_installed || (requested_source_build && start_script_found && platform_self_builds)
 }
 
 /// Whether this deploy may rebuild the `continuum` CLI in place — see [`cli_self_build`].
@@ -274,7 +291,13 @@ mod tests {
             running,
         )
         .expect_err("mismatch must fail");
-        for needle in ["dead111", "beef222", running, "/usr/local/bin/x", "MISMATCH"] {
+        for needle in [
+            "dead111",
+            "beef222",
+            running,
+            "/usr/local/bin/x",
+            "MISMATCH",
+        ] {
             assert!(err.contains(needle), "error names {needle}: {err}");
         }
 
@@ -324,7 +347,10 @@ mod tests {
             !handoff.contains("STALE CLI"),
             "a reboot that reinstalls the CLI must not cry stale at itself: {handoff}"
         );
-        assert!(handoff.contains("new5678"), "it names what the NEXT run gets: {handoff}");
+        assert!(
+            handoff.contains("new5678"),
+            "it names what the NEXT run gets: {handoff}"
+        );
 
         let stale = cli_staleness_note("old1234", "new5678", "git HEAD of this checkout", false)
             .expect("a diverged CLI nobody replaced is the real warning");
@@ -344,7 +370,11 @@ mod tests {
     // exists to be — and it must still never assert staleness it cannot prove.
     #[test]
     fn unverifiable_cli_provenance_is_stated_not_swallowed() {
-        for (cli, expected) in [("unknown", "beef222"), ("dead111", "unknown"), ("", "beef222")] {
+        for (cli, expected) in [
+            ("unknown", "beef222"),
+            ("dead111", "unknown"),
+            ("", "beef222"),
+        ] {
             let note = cli_staleness_note(cli, expected, "src", false)
                 .unwrap_or_else(|| panic!("cli={cli} expected={expected} must report"));
             assert!(note.contains("unverifiable"), "got {note}");
@@ -377,7 +407,10 @@ mod tests {
             panic!("windows locks a running image — building over it kills the CORE build too");
         };
         for needle in ["Windows", "CORE is still rebuilt", "NOT deployed", "#422"] {
-            assert!(reason.contains(needle), "skip reason names {needle}: {reason}");
+            assert!(
+                reason.contains(needle),
+                "skip reason names {needle}: {reason}"
+            );
         }
     }
 
@@ -392,11 +425,27 @@ mod tests {
             ("", ""),
             ("unknown", "unknown"),
             ("abc123f", ""),
-            ("abc123", "abc123"),       // too short to be credible
-            ("zzzzzzz", "zzzzzzz"),     // not hex
+            ("abc123", "abc123"),   // too short to be credible
+            ("zzzzzzz", "zzzzzzz"), // not hex
             ("abc123f", "def456a"),
         ] {
             assert!(!sha_matches(a, b), "{a:?} vs {b:?} must not match");
         }
+    }
+
+    // what this catches: card cca11352. A download deploy installs the CI CLI before the
+    // reboot; reporting that as "STALE CLI, run reboot" sent a slow node into a
+    // multi-hour compile to fix nothing. And a prebuilt reboot that did NOT install a
+    // CLI must still report a stale one.
+    #[test]
+    fn a_prebuilt_deploy_that_installed_the_cli_is_a_handoff_not_stale() {
+        // Download deploy: CLI installed by the caller, no source build.
+        assert!(cli_replaced_this_run(true, false, false, false));
+        // Bare prebuilt reboot: nothing installed the CLI.
+        assert!(!cli_replaced_this_run(false, false, true, true));
+        // Source build on a self-building platform with a checkout: replaced.
+        assert!(cli_replaced_this_run(false, true, true, true));
+        // Source build where the platform skips the self-build (Windows): not replaced.
+        assert!(!cli_replaced_this_run(false, true, true, false));
     }
 }

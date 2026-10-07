@@ -58,7 +58,7 @@
 //! it is already gone. A terminal event leaves the board exactly once.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use dashmap::DashMap;
@@ -121,6 +121,10 @@ pub struct WatchedJob {
     /// signature sidecar at adoption. `None` = mint failed or predates the
     /// field; the gene still adopts, it just routes by the fallback path.
     pub signature: Option<crate::genome::signature::GeneSignature>,
+    /// What the decision said about this job's competence at job-create (reuse, fork or
+    /// mint, with the numbers), so the gene's lineage can say which branch bore it.
+    /// `None` = no signature was minted, so nothing could be compared.
+    pub decision: Option<crate::genome::competence::Decision>,
 }
 
 /// Process-global registry of in-flight training jobs. DashMap-backed so the L2
@@ -130,7 +134,20 @@ pub struct WatchedJob {
 /// orphans at boot — see the module doc.
 #[derive(Debug, Default)]
 pub struct TrainingJobBoard {
+    /// The exclusive lock on `<ledger>.owner`, held for this board's lifetime when this board
+    /// OWNS the ledger. Only one board on a node can hold it, so the holder knows every open
+    /// entry it did not register belongs to a board that has died (the OS releases a lock with
+    /// its holder: pid reuse cannot fool it). `None`: another board owns the ledger (a test
+    /// process, a second binary), and this one never reconciles it (Cormac's design).
+    owner: Option<std::fs::File>,
     jobs: DashMap<Uuid, WatchedJob>,
+    /// Completed jobs whose gene is being adopted (convert, register, trial, stamp):
+    /// claimed off `jobs` so no tick re-handles them, kept HERE so a full bucket still
+    /// sees the competence as pending and joins it. Without this the minutes of an MLX
+    /// convert were a window in which a second gene minted for the same competence
+    /// (Cormac on #4794, point 6). In memory only: a core that dies mid-adoption loses
+    /// the adoption, as before, and the ledger's terminal row already stands.
+    adopting: DashMap<Uuid, WatchedJob>,
     /// Append-only journal path; `None` disables journaling.
     ledger: Option<PathBuf>,
     /// Corrupt offsets already reported by this board; rows stay untouched on disk.
@@ -165,9 +182,73 @@ const DISPATCH_JOURNAL_PAGE_BYTES: u64 = 64 * 1024;
 
 /// `~/.continuum/genome/jobs-ledger.jsonl` — sibling of the job artifact dirs
 /// (the MLX adapter's `job_dir_for` uses the same `~/.continuum/genome` root).
-fn default_ledger_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".continuum/genome/jobs-ledger.jsonl")
+/// The node's job ledger. A test process gets its own and never opens the home ledger: a
+/// `cargo test` that reached it replayed the LIVE core's open jobs as a dead core's and
+/// journaled them killed-by-reboot (2026-10-05, the 5090: 18 of Kimi's jobs, at the two
+/// instants a test ran). No home means no ledger, said, never a ledger in the cwd.
+#[cfg(not(test))]
+fn default_ledger_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".continuum/genome/jobs-ledger.jsonl"))
+}
+
+#[cfg(test)]
+fn default_ledger_path() -> Option<PathBuf> {
+    Some(std::env::temp_dir().join(format!("continuum-test-jobs-ledger-{}.jsonl", std::process::id())))
+}
+
+/// Take the ledger's owner lock if no live board holds it. `None` when another board owns
+/// it (a probe says so) or the lock file cannot be opened (logged: this board then never
+/// reconciles, which leaves jobs open rather than killing a live core's).
+fn take_ledger_ownership(ledger: &Path) -> Option<std::fs::File> {
+    let mut name = ledger.file_name()?.to_os_string();
+    name.push(".owner");
+    let lock_path = ledger.with_file_name(name);
+    if let Some(dir) = lock_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            tracing::error!(%error, dir = %dir.display(), "the job ledger's directory cannot be created; this board will not reconcile");
+            return None;
+        }
+    }
+    let file = match std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path) {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::error!(%error, lock = %lock_path.display(), "the job ledger's owner lock cannot be opened; this board will not reconcile");
+            return None;
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            crate::probe!(
+                class = "training.job.ledger_owned_elsewhere",
+                lock = %lock_path.display(),
+                "another live board owns this job ledger; this one reads it and never reconciles it"
+            );
+            None
+        }
+        Err(std::fs::TryLockError::Error(error)) => {
+            tracing::error!(%error, lock = %lock_path.display(), "the job ledger's owner lock cannot be taken; this board will not reconcile");
+            None
+        }
+    }
+}
+
+/// A registration row as the job it describes: THE one reading of a registration
+/// (orphan reconciliation, `registration`). `None` when its ids do not parse.
+fn orphan_of(id: &str, reg: &serde_json::Value) -> Option<OrphanedJob> {
+    let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let local_id = Uuid::parse_str(id).ok()?;
+    let persona_id = field("persona_id").and_then(|p| Uuid::parse_str(&p).ok())?;
+    Some(OrphanedJob {
+        local_id,
+        trigger_dispatch_id: field("trigger_dispatch_id").and_then(|d| Uuid::parse_str(&d).ok()),
+        provider_id: field("provider_id").unwrap_or_default(), // unwrap_or_default: an unknown provider lets job-create choose
+        persona_id,
+        persona_name: field("persona_name").unwrap_or_default(), // unwrap_or_default: the job dir lookup then fails loud as not-resumable
+        base_model: field("base_model").unwrap_or_default(), // unwrap_or_default: same — the request.json carries the truth
+        trait_kind: field("trait_kind").unwrap_or_default(), // unwrap_or_default: same
+        eval_set: field("eval_set"),
+    })
 }
 
 fn now_ms() -> u128 {
@@ -396,12 +477,19 @@ impl TrainingJobBoard {
     /// visible instead of silent.
     pub fn global() -> &'static TrainingJobBoard {
         GLOBAL.get_or_init(|| {
-            let board = TrainingJobBoard::with_ledger(Some(default_ledger_path()));
+            let ledger = default_ledger_path();
+            if ledger.is_none() {
+                tracing::error!(
+                    "no home directory: the training job ledger is off, so a job this core starts \
+                     is not accounted for across a restart"
+                );
+            }
+            let board = TrainingJobBoard::with_ledger(ledger.clone());
             let orphaned = board.reconcile_orphans().len();
-            if orphaned > 0 {
+            if let (true, Some(ledger)) = (orphaned > 0, ledger) {
                 tracing::warn!(
                     orphaned,
-                    ledger = %default_ledger_path().display(),
+                    ledger = %ledger.display(),
                     "training jobs from a previous core died with it (killed-by-reboot) — \
                      spawned trainers and their watchers do not survive a restart; the L3 \
                      eval→page-in chain never ran for them"
@@ -415,7 +503,9 @@ impl TrainingJobBoard {
     /// Tests point this at a temp file.
     pub fn with_ledger(ledger: Option<PathBuf>) -> Self {
         TrainingJobBoard {
+            owner: ledger.as_deref().and_then(take_ledger_ownership),
             jobs: DashMap::new(),
+            adopting: DashMap::new(),
             quarantined: DashMap::new(),
             orphans: std::sync::Mutex::new(Vec::new()),
             ledger,
@@ -464,8 +554,41 @@ impl TrainingJobBoard {
     /// survive a restart). Journal each as `terminal/killed-by-reboot`, log loud,
     /// and return the count. Idempotent — the terminal lines written here close
     /// the ids for the next replay. A missing ledger is a first boot, not an error.
+    /// The ledger's latest registration of `local_id`, as the job it describes.
+    pub fn registration(&self, local_id: Uuid) -> Option<OrphanedJob> {
+        let id = local_id.to_string();
+        self.ledger_rows()
+            .filter(|row| row.get("event").and_then(|e| e.as_str()) == Some("registered"))
+            .filter(|row| row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str()))
+            .last()
+            .and_then(|row| orphan_of(&id, &row))
+    }
+
+    /// Has `local_id` reached a terminal row on the ledger?
+    pub fn is_terminal(&self, local_id: Uuid) -> bool {
+        let id = local_id.to_string();
+        self.ledger_rows().any(|row| {
+            row.get("event").and_then(|e| e.as_str()) == Some("terminal")
+                && row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str())
+        })
+    }
+
+    /// Every parseable row of the ledger, oldest first (none when there is no ledger).
+    fn ledger_rows(&self) -> impl Iterator<Item = serde_json::Value> {
+        let text = self.ledger.as_ref().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default(); // unwrap_or_default: no ledger file yet = no rows
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
     pub fn reconcile_orphans(&self) -> Vec<OrphanedJob> {
         let Some(path) = &self.ledger else { return Vec::new() };
+        // Only the ledger's owner reconciles it: an open entry is a dead board's ONLY to the
+        // board that holds the lock no live board could hold beside it.
+        if self.owner.is_none() {
+            return Vec::new();
+        }
         let Ok(text) = std::fs::read_to_string(path) else {
             return Vec::new();
         };
@@ -507,23 +630,10 @@ impl TrainingJobBoard {
                 "local_id": id,
                 "at_ms": now_ms(),
             }));
-            let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_string);
-            let (Ok(local_id), Some(persona_id)) = (
-                Uuid::parse_str(id),
-                field("persona_id").and_then(|p| Uuid::parse_str(&p).ok()),
-            ) else {
-                continue; // a registration without parseable ids cannot be resumed, only reported
-            };
-            orphans.push(OrphanedJob {
-                local_id,
-                trigger_dispatch_id: field("trigger_dispatch_id").and_then(|d| Uuid::parse_str(&d).ok()),
-                provider_id: field("provider_id").unwrap_or_default(), // unwrap_or_default: an unknown provider lets job-create choose
-                persona_id,
-                persona_name: field("persona_name").unwrap_or_default(), // unwrap_or_default: the job dir lookup then fails loud as not-resumable
-                base_model: field("base_model").unwrap_or_default(), // unwrap_or_default: same — the request.json carries the truth
-                trait_kind: field("trait_kind").unwrap_or_default(), // unwrap_or_default: same
-                eval_set: field("eval_set"),
-            });
+            // a registration without parseable ids cannot be resumed, only reported
+            if let Some(orphan) = orphan_of(id, reg) {
+                orphans.push(orphan);
+            }
         }
         if let Ok(mut held) = self.orphans.lock() {
             held.extend(orphans.iter().cloned());
@@ -561,6 +671,25 @@ impl TrainingJobBoard {
                     && row.get("origin_local_id").and_then(|v| v.as_str()) == Some(origin.as_str())
             })
             .count() as u32
+    }
+
+    /// Journal an orphan whose input went back to her bucket instead of into a new job:
+    /// a trial was judging the competence, an existing gene carried it, or her surprise
+    /// was below the floor. Its lineage ends here; the bucket's next fill is a fresh
+    /// decision, not a resume.
+    pub fn journal_returned<H: serde::Serialize>(&self, origin: Uuid, from: Uuid, held_by: &H, attempt: u32) {
+        // Serialized here, once: a typed value in the journal, and a value that cannot
+        // serialize (there is none today) is written as the failure it is, never as null.
+        let held_by = serde_json::to_value(held_by)
+            .unwrap_or_else(|e| serde_json::json!({ "unserializable": e.to_string() })); // unwrap_or_else: the row still says WHY the reason is missing
+        self.journal(&serde_json::json!({
+            "event": "returned",
+            "origin_local_id": origin.to_string(),
+            "from_local_id": from.to_string(),
+            "held_by": held_by,
+            "attempt": attempt,
+            "at_ms": now_ms(),
+        }));
     }
 
     /// Journal a resume: `from` died with a core, `to` carries its input on.
@@ -617,6 +746,19 @@ impl TrainingJobBoard {
         self.jobs.iter().map(|e| e.value().clone()).collect()
     }
 
+    /// Every job whose competence is still PENDING for a bucket: in flight, or completed
+    /// and being adopted. The gates read this (a fill joins, never mints beside it); the
+    /// sentinel polls [`snapshot`](Self::snapshot), the in-flight ones alone.
+    pub fn pending(&self) -> Vec<WatchedJob> {
+        self.jobs.iter().chain(self.adopting.iter()).map(|e| e.value().clone()).collect()
+    }
+
+    /// The adoption of a completed job ended (adopted, or refused): its competence is no
+    /// longer pending. Idempotent.
+    pub fn adoption_done(&self, local_id: Uuid) {
+        self.adopting.remove(&local_id);
+    }
+
     /// Atomically remove and return a job — the sentinel's "claim" the instant it
     /// observes a terminal status, BEFORE spawning the eval chain, so no later tick
     /// re-handles it. `None` if already claimed or not terminal. Journals the
@@ -633,6 +775,9 @@ impl TrainingJobBoard {
         }
         let job = self.jobs.remove(&local_id).map(|(_, job)| job);
         if let Some(job) = &job {
+            if matches!(status, TrainingStatus::Completed { .. }) {
+                self.adopting.insert(local_id, job.clone());
+            }
             self.journal(&serde_json::json!({
                 "event": "terminal",
                 "reason": "claimed",
@@ -661,6 +806,30 @@ impl TrainingJobBoard {
 mod tests {
     use super::*;
 
+    // what this catches (the 5090, 2026-10-05): a second process reading a RUNNING core's
+    // ledger journaled its open jobs killed-by-reboot. `cargo test` reached the home ledger
+    // at 13:32Z and 16:31Z, and 18 of Kimi's jobs died with no reboot. A board that does not
+    // own the ledger reconciles nothing; once the owner dies, the next owner reconciles.
+    #[test]
+    fn only_the_ledgers_owner_reconciles_and_a_dead_owners_jobs_become_orphans() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let ledger = dir.path().join("jobs-ledger.jsonl");
+        let core = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        let open = Uuid::new_v4();
+        core.register(watched(open, "engine-local"));
+
+        let reader = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        assert!(reader.reconcile_orphans().is_empty(), "a live core's open job is not an orphan to a reader");
+        drop(reader);
+        let text = std::fs::read_to_string(&ledger).expect("test: ledger");
+        assert!(!text.contains("killed-by-reboot"), "nothing was journaled dead while the core lived");
+
+        drop(core); // the core dies; the OS releases its lock
+        let next = TrainingJobBoard::with_ledger(Some(ledger));
+        let orphaned: Vec<Uuid> = next.reconcile_orphans().iter().map(|o| o.local_id).collect();
+        assert_eq!(orphaned, vec![open], "the next owner reconciles the dead core's open job");
+    }
+
     fn watched(local_id: Uuid, provider: &str) -> WatchedJob {
         WatchedJob {
             trigger_dispatch_id: None,
@@ -675,6 +844,7 @@ mod tests {
             trait_kind: "code".to_string(),
             eval_set: Some("docs/genome/coder-eval.jsonl".to_string()),
             signature: None,
+            decision: None,
         }
     }
 
@@ -1022,6 +1192,7 @@ mod tests {
             "persona_id": Uuid::from_u128(7).to_string(), "persona_name": "Kimi",
             "base_model": "ggml-org/Qwen3.8-27B-GGUF", "trait_kind": "code", "at_ms": 1
         }));
+        drop(board); // the core that registered it dies; only then is it an orphan
         let replay = TrainingJobBoard::with_ledger(Some(ledger.clone()));
         let orphans = replay.reconcile_orphans();
         assert_eq!(orphans.len(), 1);
@@ -1036,7 +1207,9 @@ mod tests {
         assert_eq!(replay.resume_origin(r2), dead);
         assert_eq!(replay.resume_attempts(dead), 2);
         assert_eq!(replay.resume_origin(Uuid::from_u128(0x99)), Uuid::from_u128(0x99), "a job with no lineage is its own origin");
-        // The dead one is journaled dead too: a second replay finds no open registration.
+        // The dead one is journaled dead too: the NEXT owner finds no open registration
+        // (dropping `replay` first, or the check would pass only because it is not the owner).
+        drop(replay);
         assert!(TrainingJobBoard::with_ledger(Some(ledger)).reconcile_orphans().is_empty());
     }
 }

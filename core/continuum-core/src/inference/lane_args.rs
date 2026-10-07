@@ -166,6 +166,25 @@ impl LaneInvocation {
 /// measurement"), never the sizing decision itself.
 pub const CACHE_RAM_MIB: u32 = 4096;
 
+// context-budget-exempt: a COUNT of saved recurrent-state checkpoints (each a fixed
+// slice of host memory), not a context or prompt size; the token spacing that does scale
+// with the served window is derived from it in `checkpoint_min_step`.
+/// Context checkpoints each slot keeps (llama.cpp `--ctx-checkpoints`). Their count
+/// is their memory: the spacing, not the count, is what scales with the window.
+pub const CTX_CHECKPOINTS: u32 = 32;
+
+/// The finest checkpoint spacing: within a kilotoken below any divergence on a
+/// window short enough for CTX_CHECKPOINTS to cover at that spacing.
+pub const MIN_CHECKPOINT_STEP: u32 = 1024;
+
+/// Checkpoint spacing for a slot whose window is `per_slot_ctx` tokens: as fine as
+/// MIN_CHECKPOINT_STEP, and never so fine that CTX_CHECKPOINTS stop short of the
+/// window's end. Past the last one llama.cpp erases the OLDEST checkpoint, which is
+/// the one a turn's shared prefix needs, so a long prompt would re-prefill from 0.
+pub fn checkpoint_min_step(per_slot_ctx: u32) -> u32 {
+    per_slot_ctx.div_ceil(CTX_CHECKPOINTS).max(MIN_CHECKPOINT_STEP)
+}
+
 /// The absolute floor in MiB — not a sizing decision, just a refusal to pass
 /// llama-server a zero. The REAL floor is one conversation's worth, derived per
 /// model in [`host_prompt_cache_mib`]; hardcoding a byte count here would be the
@@ -317,12 +336,16 @@ pub fn base_invocation(
             // (~5k tokens, the results ledger) and diverge where working memory is
             // re-rendered; with the first checkpoint at ~350 tokens and the next
             // only after 8192, the rollback landed at the head → cache_n 0 on every
-            // pinned turn. 1024 puts a checkpoint within a kilotoken below any
-            // divergence; 32 per slot covers a 32k prompt at that spacing.
+            // pinned turn. The spacing is derived so the slot's CTX_CHECKPOINTS
+            // cover its WHOLE window (`checkpoint_min_step`): a fixed 1024 x 32
+            // covered 32k, and on a 55k prompt llama.cpp erased its oldest
+            // checkpoint, the one at the end of the stable head, so the next turn
+            // re-prefilled from 0 (the 5090, 2026-10-05: cached 15064 or 0 on
+            // every turn of Kimi's).
             arg("--ctx-checkpoints"),
-            arg("32"),
+            CTX_CHECKPOINTS.to_string(),
             arg("--checkpoint-min-step"),
-            arg("1024"),
+            checkpoint_min_step(total_ctx / lanes.max(1)).to_string(),
             // The governed host-RAM prompt cache — see [`CACHE_RAM_MIB`]. Explicit
             // so llama.cpp's 8 GiB default can never run un-owned again (§4).
             arg("--cache-ram"),
@@ -779,7 +802,24 @@ mod tests {
     fn context_checkpoints_are_dense_enough_for_a_hybrid_cache() {
         let i = inv(5, 5 * 138_240);
         assert_eq!(i.value_of("--ctx-checkpoints"), Some("32"));
-        assert_eq!(i.value_of("--checkpoint-min-step"), Some("1024"));
+        assert_eq!(i.value_of("--checkpoint-min-step"), Some("4320"));
+    }
+
+    // regression for the 5090, 2026-10-05 (cached 15064 or 0 on Kimi's 55k turns):
+    // 32 checkpoints at a fixed 1024 covered 32k, so a longer prompt erased the
+    // oldest one, the stable head's, and the next turn re-prefilled from 0.
+    // what this catches: a slot whose checkpoints stop short of its window, and a
+    // short window losing the 1024 granularity.
+    #[test]
+    fn checkpoints_cover_the_whole_slot_window_at_the_finest_spacing_that_does() {
+        for per_slot in [8_192u32, 32_768, 73_216, 138_240, 262_144] {
+            let step = checkpoint_min_step(per_slot);
+            assert!(step * CTX_CHECKPOINTS >= per_slot, "{per_slot}: {step} x {CTX_CHECKPOINTS} stops short");
+            assert!(step >= MIN_CHECKPOINT_STEP);
+        }
+        assert_eq!(checkpoint_min_step(8_192), MIN_CHECKPOINT_STEP, "a short window keeps the kilotoken spacing");
+        assert_eq!(checkpoint_min_step(73_216), 2_288);
+        assert_eq!(inv(2, 2 * 73_216).value_of("--checkpoint-min-step"), Some("2288"));
     }
 
     #[test]

@@ -187,12 +187,71 @@ pub struct BenchViewState {
     /// Emitter cadence in ms so renderers label freshness from data.
     #[ts(type = "number")]
     pub sample_interval_ms: u64,
+    /// The ONE room this view describes, when it is a room's view: a round's
+    /// room (its round row + the runs under it) or a solve room (its runs + the
+    /// parent round). `None` is the node-wide fold the human rail renders.
+    ///
+    /// A citizen reads the board of the activity she is standing in and nothing
+    /// else, like the roster (HER-LOOP-IS-HER-OWN.md rule 5): the node-wide
+    /// fold is never pushed into a mind. `Option` + `default` so the wire the
+    /// rail already reads is unchanged.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
 }
 
 impl BenchViewState {
     /// The on-wire `kind` this view is published under (open
     /// self-registration, not a central enum).
     pub const KIND: &'static str = "bench";
+
+    /// Split the node-wide fold into one view per room it describes, keyed by
+    /// the room's id: each round's room gets that round and the runs whose
+    /// `round_id` is it; each solve room gets its runs and their parent round.
+    /// Rows that name no room (verdict and artifact rows, the live exam row)
+    /// belong to no room's view: a citizen in a room sees that room's work.
+    pub fn per_room(&self) -> Vec<BenchViewState> {
+        let mut by_room: std::collections::BTreeMap<String, BenchViewState> =
+            std::collections::BTreeMap::new();
+        let blank = |room: &str| BenchViewState {
+            runs: Vec::new(),
+            rounds: Vec::new(),
+            sample_interval_ms: self.sample_interval_ms,
+            room_id: Some(room.to_string()),
+        };
+        for round in &self.rounds {
+            by_room
+                .entry(round.round_id.clone())
+                .or_insert_with(|| blank(&round.round_id))
+                .rounds
+                .push(round.clone());
+        }
+        for run in &self.runs {
+            if let Some(round_room) = run.round_id.as_deref() {
+                by_room
+                    .entry(round_room.to_string())
+                    .or_insert_with(|| blank(round_room))
+                    .runs
+                    .push(run.clone());
+            }
+            if let Some(solve_room) = run.solve_room.as_deref() {
+                let view = by_room
+                    .entry(solve_room.to_string())
+                    .or_insert_with(|| blank(solve_room));
+                view.runs.push(run.clone());
+                let parent = run
+                    .round_id
+                    .as_deref()
+                    .and_then(|r| self.rounds.iter().find(|round| round.round_id == r));
+                if let Some(parent) = parent {
+                    if !view.rounds.iter().any(|r| r.round_id == parent.round_id) {
+                        view.rounds.push(parent.clone());
+                    }
+                }
+            }
+        }
+        by_room.into_values().collect()
+    }
 }
 
 impl positron_core::ViewState for BenchViewState {
@@ -211,7 +270,7 @@ mod tests {
     #[test]
     fn kind_is_stable_and_empty_view_is_honest() {
         use positron_core::ViewState;
-        let view = BenchViewState { runs: vec![], rounds: vec![], sample_interval_ms: 5000 };
+        let view = BenchViewState { room_id: None, runs: vec![], rounds: vec![], sample_interval_ms: 5000 };
         assert_eq!(view.kind(), "bench");
         assert_eq!(BenchViewState::KIND, "bench");
         assert!(view.runs.is_empty());
@@ -238,5 +297,60 @@ mod tests {
         };
         let wire = serde_json::to_value(&row).expect("serialize");
         assert!(wire.get("instance").is_none(), "absent facts elide, never null-fabricate");
+    }
+
+    fn run(id: &str, round: Option<&str>, solve: Option<&str>) -> BenchRunRow {
+        BenchRunRow {
+            run_id: id.into(), instance: None, solver: None, phase: "solving".into(), stalled: false,
+            attempt: None, max_attempts: None, age_secs: 0, acts: None, patch_bytes: None,
+            resolved: None, fail_to_pass: None, pass_to_pass: None, failed_tests: vec![],
+            infra_error: None, round_id: round.map(str::to_string),
+            solve_room: solve.map(str::to_string), solve_room_name: None,
+        }
+    }
+
+    fn round(id: &str) -> BenchRoundRow {
+        BenchRoundRow {
+            run_room: format!("room-{id}"), round_id: id.into(), benchmark: "swe".into(),
+            stage: "working".into(), dispatched: 2, settled: 0, remaining: 2, driver: "citizen".into(),
+            cards: vec![], verdict: "grinding".into(), idle_secs: None,
+        }
+    }
+
+    // what this catches: HER-LOOP-IS-HER-OWN.md rule 5. The node-wide fold is never
+    // what a mind is handed; a room's view holds ONLY that room's rows: a round room
+    // its round and its runs, a solve room its runs and the parent round, and a row
+    // that names no room (a verdict/artifact row, the live exam) lands in no room.
+    // If the split ever leaks another round's runs into a room, a citizen in one
+    // activity is back to carrying every run on the node, and only this fails.
+    #[test]
+    fn per_room_views_hold_only_their_own_rooms_rows() {
+        let fold = BenchViewState {
+            room_id: None,
+            sample_interval_ms: 5000,
+            rounds: vec![round("r1"), round("r2")],
+            runs: vec![
+                run("a", Some("r1"), Some("solve-a")),
+                run("b", Some("r1"), None),
+                run("c", Some("r2"), None),
+                run("exam", None, None),
+            ],
+        };
+        let views = fold.per_room();
+        let by_room = |id: &str| views.iter().find(|v| v.room_id.as_deref() == Some(id)).expect(id);
+        let ids = |v: &BenchViewState| v.runs.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>();
+
+        let r1 = by_room("r1");
+        assert_eq!(ids(r1), vec!["a", "b"], "a round room holds its own runs only");
+        assert_eq!(r1.rounds.iter().map(|r| r.round_id.as_str()).collect::<Vec<_>>(), vec!["r1"]);
+        assert_eq!(ids(by_room("r2")), vec!["c"]);
+
+        let solve = by_room("solve-a");
+        assert_eq!(ids(solve), vec!["a"], "a solve room holds its own run");
+        assert_eq!(solve.rounds.len(), 1, "and the parent round, once");
+        assert_eq!(solve.rounds[0].round_id, "r1");
+
+        assert_eq!(views.len(), 3, "a run naming no room is in no room's view: {views:?}");
+        assert!(views.iter().all(|v| v.room_id.is_some() && v.sample_interval_ms == 5000));
     }
 }

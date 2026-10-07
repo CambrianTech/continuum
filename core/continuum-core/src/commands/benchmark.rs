@@ -1425,43 +1425,63 @@ pub(crate) async fn prepare_cards(
                 spec.name
             ))
         })?;
-        // Same fail-loud task loading as cognition/eval: the committed gym resolves
-        // from the embedded registry, a malformed line names itself.
-        let (origin, text) =
-            crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
-        text.lines()
-            .enumerate()
-            .map(|(i, l)| (i + 1, l.trim()))
-            .filter(|(_, l)| !l.is_empty())
-            .map(|(n, l)| {
-                let mut t: crate::cognition::eval::EvalTask = serde_json::from_str(l).map_err(|e| {
-                    CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
-                })?;
-                // Title gist comes from the AUTHORED prompt: require_hands_for_code
-                // prepends the same write-and-verify preamble to every code task, and a
-                // board of 12 cards all titled "Implement the following, and VERIFY…"
-                // is unscannable for the citizen AND breaks dispatch_card_key parsing.
-                let headline = t.prompt.clone();
-                // THE artifact rule — the same normalization cognition/eval applies at
-                // load. Before this, the card body named NO file (the gym rows carry no
-                // solution_file) while the grade read the derived one: the citizen was
-                // graded against a path she was never told. One derivation, both readers.
-                t.require_hands_for_code();
-                let solution_file = t
-                    .solution_file
-                    .clone()
-                    .unwrap_or_else(|| format!("{}.rs", t.id));
-                Ok(PreparedCard {
-                    title: dispatch_card_title(spec.name, &t.id, &headline),
-                    body: dispatch_card_body(spec.name, &t),
-                    needs_setup: t.setup_shell.is_some(),
-                    setup_shell: t.setup_shell.clone(),
-                    work: CardWork::Gym { solution_file },
-                })
-            })
-            .collect::<Result<_, CommandError>>()?
+        prepare_gym_cards(spec.name, reference)?
     };
     Ok(prepared)
+}
+
+/// The eval set a gym suite's cards resolve their oracle from, by the suite name a card title
+/// carries: a registered suite's `eval_set`, or a coursework set's content-addressed file
+/// (`cognition::coursework`). The ONE resolver import, preparation and the grader share, so a
+/// coursework card is graded from its title exactly like a registered gym card. `None` = not a
+/// gym suite this node can resolve.
+pub(crate) fn eval_set_reference(suite: &str) -> Option<String> {
+    if let Some(spec) = known_benchmarks().iter().find(|b| b.name == suite) {
+        return spec.eval_set.map(str::to_string);
+    }
+    let home = continuum_home().ok()?;
+    crate::cognition::coursework::set_path(&home, suite).map(|p| p.display().to_string())
+}
+
+/// One gym card per task of the eval set at `reference`, titled under `suite`: the gym arm of
+/// [`prepare_cards`], shared with coursework so a lesson card is written by the same writer the
+/// grader's parser reads.
+pub(crate) fn prepare_gym_cards(suite: &str, reference: &str) -> Result<Vec<PreparedCard>, CommandError> {
+    // Same fail-loud task loading as cognition/eval: the committed gym resolves
+    // from the embedded registry, a malformed line names itself.
+    let (origin, text) =
+        crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
+    text.lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, l.trim()))
+        .filter(|(_, l)| !l.is_empty())
+        .map(|(n, l)| {
+            let mut t: crate::cognition::eval::EvalTask = serde_json::from_str(l).map_err(|e| {
+                CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
+            })?;
+            // Title gist comes from the AUTHORED prompt: require_hands_for_code
+            // prepends the same write-and-verify preamble to every code task, and a
+            // board of 12 cards all titled "Implement the following, and VERIFY…"
+            // is unscannable for the citizen AND breaks dispatch_card_key parsing.
+            let headline = t.prompt.clone();
+            // THE artifact rule — the same normalization cognition/eval applies at
+            // load. Before this, the card body named NO file (the gym rows carry no
+            // solution_file) while the grade read the derived one: the citizen was
+            // graded against a path she was never told. One derivation, both readers.
+            t.require_hands_for_code();
+            let solution_file = t
+                .solution_file
+                .clone()
+                .unwrap_or_else(|| format!("{}.rs", t.id));
+            Ok(PreparedCard {
+                title: dispatch_card_title(suite, &t.id, &headline),
+                body: dispatch_card_body(suite, &t),
+                needs_setup: t.setup_shell.is_some(),
+                setup_shell: t.setup_shell.clone(),
+                work: CardWork::Gym { solution_file },
+            })
+        })
+        .collect::<Result<_, CommandError>>()
 }
 
 /// Warm the SWE envs a dispatch is about to hand out — dispatch's side effect, kept

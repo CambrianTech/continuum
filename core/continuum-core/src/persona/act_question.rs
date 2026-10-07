@@ -222,7 +222,7 @@ pub(crate) async fn ask_the_act_question(
                             crate::persona::work_burst::acts_since_last_write_since(
                                 rows,
                                 ctx.identity.peer_id.as_uuid(),
-                                crate::persona::work_pull::last_pull_ms(
+                                crate::persona::work_burst::last_hold_boundary_ms(
                                     ctx.identity.peer_id.as_uuid(),
                                 ),
                             )
@@ -262,8 +262,10 @@ pub(crate) async fn ask_the_act_question(
                             .expect("turn_room is the service loop's non-nil turn room"), // service loop guarantees a non-nil turn room; witness re-checks
                         burst_text,
                     );
-                    let work_framing =
-                        crate::cognition::workspace::TurnFraming::self_thread(false).on_workspace();
+                    // A REVIEW card's work turn carries the reviewer verbs in her hands.
+                    let work_framing = crate::cognition::workspace::TurnFraming::self_thread(false)
+                        .on_workspace()
+                        .reviewing(held.first().is_some_and(|card| card.reviews.is_some()));
                     // HANDS FOLLOW THE CARD (#456). Her held card may be a
                     // staged benchmark checkout — a real git repo under
                     // `workspace/swe/<instance>`. Without rooting her hands

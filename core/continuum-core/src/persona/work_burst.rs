@@ -431,6 +431,32 @@ pub(crate) fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDel
     }
 }
 
+
+/// When each citizen last crossed a HOLD BOUNDARY (ms): a claim or a release, by her own
+/// verb. The write-or-release count reads acts from here. A card claimed inside a turn
+/// (Mathis, 2026-09-13 13:50Z) used to keep the window at an older boundary, and forty
+/// old acts released a four-minute-old claim.
+static HOLD_BOUNDARY_MS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Stamp a hold boundary for `peer`: she claimed or released a card.
+pub(crate) fn note_hold_boundary(peer: uuid::Uuid) {
+    HOLD_BOUNDARY_MS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .insert(peer, crate::modules::chat::now_ms());
+}
+
+/// Her last hold boundary (ms), 0 if none this boot (every row counts).
+pub(crate) fn last_hold_boundary_ms(peer: uuid::Uuid) -> u64 {
+    HOLD_BOUNDARY_MS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned clock still answers — the boundary must exist
+        .get(&peer)
+        .copied()
+        .unwrap_or(0) // unwrap_or: no boundary this boot = 0 (every row counts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

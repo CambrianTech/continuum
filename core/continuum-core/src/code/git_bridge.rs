@@ -444,9 +444,16 @@ fn resolve_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, String> 
 /// that shells to git — `persona::workspace_transfer` carries a card's branch between
 /// nodes through it — rather than each seam re-deriving the hygiene below.
 pub(crate) fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
+    run_git_with_env(workspace_root, args, &[])
+}
+
+/// [`run_git`] with extra environment for this one invocation (e.g. `GIT_AUTHOR_*` so a
+/// citizen's act commit is authored by her). Same hygiene; the env is applied last.
+pub(crate) fn run_git_with_env(workspace_root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(workspace_root)
+        .envs(env.iter().copied())
         // Strip git-context env vars that would otherwise pin git to
         // the parent repo regardless of cwd. Without this, when
         // run_git is invoked from a process that itself was launched

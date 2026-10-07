@@ -85,6 +85,15 @@ pub use durable::{AcceptanceReceipt, DispatchPhase};
 pub(crate) use durable::{DispatchFailure, DispatchResult};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
+/// THE BOUND ON A HELD BUCKET. A bucket held by a job in flight, a trial open, or her
+/// surprise below the floor keeps filling, in memory and durably, until the hold lifts
+/// (Cormac on #4794: a trial with no verdict grew it without limit). Past this many
+/// pending examples a submit into a held bucket is refused as `BucketHeldFull`; the
+/// producer keeps its staged rows (a refused submit is "evidence retained") and settles
+/// them on a later pass, so nothing is lost, only deferred. Sixteen fills' worth at the
+/// default floor: more than the fill after the hold lifts can use at once.
+pub const MAX_HELD_EXAMPLES: usize = 16 * DEFAULT_MIN_EXAMPLES as usize;
+
 /// LoRA-training floor — large enough to give SGD signal,
 /// small enough that latency-to-first-layer stays minutes not hours
 /// on the substrate-native trainer. Override per-submit via
@@ -114,6 +123,19 @@ pub(crate) struct BucketKey {
     pub(crate) persona_id: Uuid,
     pub(crate) trait_kind: String,
     pub(crate) base_model: String,
+}
+
+/// What a bucket pins at its first arrival ([`PendingBatch::policy`]); a later batch
+/// that disagrees is refused `InconsistentBucket`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BucketPolicy {
+    pub(crate) source: TrainingSource,
+    pub(crate) lora: Option<LoRAHyperparams>,
+    pub(crate) schedule: Option<ScheduleParams>,
+    pub(crate) validation_split: f32,
+    pub(crate) local_artifact_dir: Option<PathBuf>,
+    pub(crate) preferred_provider: Option<String>,
+    pub(crate) eval_set: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +212,10 @@ pub struct TrainingTriggerState {
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
     #[cfg(test)]
     pub(crate) test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+    /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
+    /// and watch the bucket hold.
+    #[cfg(test)]
+    pub(crate) test_trials: std::sync::Arc<crate::genome::gene_trial::GeneTrials>,
 }
 
 /// What the trigger does with one orphan, given what re-attach answered (step 3).
@@ -223,6 +249,7 @@ fn orphan_step(
             // the gene's signature was minted in the dead core and is not journaled; the gene
             // still adopts, routed by the fallback path
             signature: None,
+                decision: None,
         })),
         Ok(outcome) if outcome.permits_resume() => OrphanStep::Resume,
         Ok(_) | Err(_) => OrphanStep::Hold,
@@ -263,6 +290,10 @@ impl TrainingTriggerState {
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
             test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
+            #[cfg(test)]
+            test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::at(
+                std::env::temp_dir().join(format!("training-trigger-trials-{}.json", Uuid::new_v4())),
+            )),
         }
     }
 
@@ -318,7 +349,16 @@ impl TrainingTriggerState {
     /// Every later tick re-asks the HELD orphans (re-attach uncertain or unanswered) once their
     /// wait is up, so an engine that answers later is re-attached or released then; a held
     /// orphan is never resumed (step 3, Cormac on #4537).
-    pub(crate) async fn resume_orphans_once(&self) {
+    /// The policy a batch for `key` must agree with right now: the pending bucket's, else
+    /// the active dispatch's. `None` when the key holds nothing and a batch pins its own.
+    pub(crate) fn held_policy(&self, key: &BucketKey) -> Option<BucketPolicy> {
+        self.buckets
+            .get(key)
+            .map(|pending| pending.policy())
+            .or_else(|| self.active_dispatches.get(key).map(|active| active.batch.policy()))
+    }
+
+    pub(crate) async fn resume_orphans_once(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
         if self.resumed_orphans.load(Ordering::Acquire)
             && self.held_orphans.lock().map_or(true, |held| held.is_empty())
@@ -373,19 +413,82 @@ impl TrainingTriggerState {
                 );
                 continue;
             }
-            let dir = default_job_dir(&orphan.persona_name, &orphan.trait_kind, orphan.local_id);
-            let dispatch_id = Uuid::new_v4();
-            let Some(params) = resumable_request(&dir, &orphan.provider_id, dispatch_id) else {
+            let Some(dir) = default_job_dir(&orphan.persona_name, &orphan.trait_kind, orphan.local_id) else {
                 crate::probe!(
                     class = "training.job.not_resumable",
                     local_id = %orphan.local_id,
-                    dir = %dir.display(),
-                    "the job directory holds no request.json — nothing to resume from"
+                    error = "no home directory: the job directory cannot be found",
+                    "the job's request cannot be read back, so there is nothing to resume from"
                 );
                 continue;
             };
-            match executor.execute_json("genome/job-create", params).await.map_err(|e| e.to_string()).and_then(|r| decode_job_create(r).map_err(|e| format!("{e:?}"))) {
-                Ok((handle, provider)) => {
+            let dispatch_id = Uuid::new_v4();
+            let params = match resumable_request(&dir, &orphan.provider_id, dispatch_id) {
+                Ok(params) => params,
+                Err(error) => {
+                    crate::probe!(
+                        class = "training.job.not_resumable",
+                        local_id = %orphan.local_id,
+                        dir = %dir.display(),
+                        error = %error,
+                        "the job's request cannot be read back, so there is nothing to resume from"
+                    );
+                    continue;
+                }
+            };
+            match executor.execute_json("genome/job-create", params.clone()).await.map_err(|e| e.to_string()).and_then(|r| decode_job_create(r).map_err(|e| format!("{e:?}"))) {
+                // A competence already training, on trial, or carried by an existing gene:
+                // the orphan's examples go back to her bucket through the one submit verb
+                // (the bucket waits while that job or trial is pending), and nothing is
+                // re-created. The orphan is not resumed.
+                Ok(Created::Held(took)) => {
+                    // Her trial file could not be read: nothing is returned or journaled
+                    // blind; the orphan stays for the next restart, which reads again.
+                    if matches!(took, Took::TrialFileUnreadable) {
+                        crate::probe!(
+                            class = "training.job.resume_deferred",
+                            origin = %origin,
+                            from = %orphan.local_id,
+                            "an orphan's fate waits on her trial file, which could not be read; the next restart tries again"
+                        );
+                        continue;
+                    }
+                    let resubmitted = match read_job_request(&dir) {
+                        // The call returning is not the batch being taken: a refused submit
+                        // (InconsistentBucket, …) comes back success=false.
+                        Ok(request) => match crate::commands::training_trigger::submit::return_request(self, request, orphan.local_id).await {
+                            Ok(outcome) if outcome.success => Ok(()),
+                            Ok(outcome) => Err(format!("{:?}: {:?}", outcome.error_kind, outcome.error)),
+                            Err(error) => Err(error.to_string()),
+                        },
+                        Err(error) => Err(error),
+                    };
+                    // JOURNALED AS RESOLVED (BigMama on #4791): the orphan's examples now
+                    // live in her bucket, so this orphan is resumed-into the joined job and
+                    // the next restart must not return the same examples again. The same
+                    // `resumed` row the Job arm writes, with the joined job as the new id;
+                    // a failed resubmit leaves the orphan for the next restart to try.
+                    if resubmitted.is_ok() {
+                        match &took {
+                            // Its input continues in that job: lineage.
+                            Took::Joined { job } => board.journal_resumed(origin, orphan.local_id, *job, attempt),
+                            // Its input waits in her bucket; nothing continues it. Lineage ends.
+                            Took::Awaited { .. } | Took::Reused { .. } | Took::Unsurprised { .. } => {
+                                board.journal_returned(origin, orphan.local_id, &took, attempt)
+                            }
+                            Took::TrialFileUnreadable => {} // guarded above: never reaches a resubmit
+                        }
+                    }
+                    crate::probe!(
+                        class = "training.job.resume_joined",
+                        origin = %origin,
+                        from = %orphan.local_id,
+                        held_by = ?took,
+                        examples_returned = resubmitted.is_ok(),
+                        "an orphan whose competence is already pending (a job, a trial, an existing gene, or no surprise) was not re-created: its examples returned to her bucket"
+                    );
+                }
+                Ok(Created::Job(handle, provider)) => {
                     board.journal_resumed(origin, orphan.local_id, handle.local_id, attempt);
                     crate::probe!(
                         class = "training.job.resumed",
@@ -450,7 +553,7 @@ impl TrainingTriggerState {
         base_model: &str,
         batch: &PendingBatch,
         dispatch_id: Uuid,
-    ) -> Result<(JobHandle, String), DispatchFailure> {
+    ) -> Result<Created, DispatchFailure> {
         let executor = self
             .executor
             .require()
@@ -462,6 +565,7 @@ impl TrainingTriggerState {
             base_model: base_model.to_string(),
             trait_kind: trait_kind.to_string(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: batch.examples.clone(),
                 source: batch.source,
@@ -507,9 +611,18 @@ impl TrainingTriggerState {
 /// evidence that retry is safe; malformed/transport responses may follow creation.
 /// Where a native job's directory lives when the request named no `local_artifact_dir`
 /// — the same rule as `native_jobs::job_dir_for`, from the ledger's fields.
-pub(crate) fn default_job_dir(persona_name: &str, trait_kind: &str, local_id: Uuid) -> std::path::PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")); // unwrap_or_else: mirrors job_dir_for — no home resolves the same relative root
-    home.join(".continuum/genome")
+pub(crate) fn default_job_dir(persona_name: &str, trait_kind: &str, local_id: Uuid) -> Option<std::path::PathBuf> {
+    Some(job_dir_under(&genome_root()?, persona_name, trait_kind, local_id))
+}
+
+/// Where this node keeps its persona genomes (and their job directories).
+pub(crate) fn genome_root() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".continuum/genome"))
+}
+
+/// A job's directory under a genome root: THE one layout of persona/trait/job.
+pub(crate) fn job_dir_under(root: &std::path::Path, persona_name: &str, trait_kind: &str, local_id: Uuid) -> std::path::PathBuf {
+    root
         .join(persona_name.replace(['/', ' '], "_"))
         .join(trait_kind.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>())
         .join(local_id.to_string())
@@ -519,9 +632,27 @@ pub(crate) fn default_job_dir(persona_name: &str, trait_kind: &str, local_id: Uu
 /// its own `request.json` (the flattened `TrainingJobRequest` the trainer was handed,
 /// with the adapter's admission fields alongside, which the request type ignores).
 /// `None` when there is nothing on disk to resume from.
-pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_id: Uuid) -> Option<Value> {
-    let text = std::fs::read_to_string(dir.join("request.json")).ok()?;
-    let mut request: TrainingJobRequest = serde_json::from_str(&text).ok()?;
+/// A job's own request, read from its directory as the trigger first sent it. THE one
+/// reader of a job's `request.json` (the resume and `genome/training-trigger/return`).
+pub(crate) fn read_job_request(dir: &std::path::Path) -> Result<TrainingJobRequest, String> {
+    let path = dir.join("request.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let spec: Value = serde_json::from_str(&text).map_err(|e| format!("{}: not JSON: {e}", path.display()))?;
+    let mut request: TrainingJobRequest =
+        serde_json::from_value(spec.clone()).map_err(|e| format!("{}: not a training request: {e}", path.display()))?;
+    // The spec on disk is the PLANNER's: the adapter replaced `baseModel` with the
+    // trainable HF base (hf_source) and kept the registry id in `canonicalBase`.
+    // job-create takes the registry id, so the resume must too. Measured on the 5090
+    // 2026-10-05: all five killed-by-reboot jobs failed to resume with "cannot resolve
+    // hf_source for 'Qwen/Qwen3.8-27B'": the HF id fed back where a registry id belongs.
+    if let Some(canonical) = spec.get("canonicalBase").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        request.base_model = canonical.to_string();
+    }
+    Ok(request)
+}
+
+pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_id: Uuid) -> Result<Value, String> {
+    let mut request = read_job_request(dir)?;
     // The dead job's latest checkpoint, when it got that far: the re-created job
     // continues from it instead of from zero (Fable's readiness ask: a resume loses
     // minutes, not the run). `checkpoints/LATEST` names the directory the trainer
@@ -537,15 +668,32 @@ pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_
             request.resume_from = Some(checkpoint);
         }
     }
-    let mut params = serde_json::to_value(&request).ok()?;
+    // The dead job's trainer is pinned ONLY when it left a checkpoint: a checkpoint is that
+    // trainer's format (a PEFT directory cannot continue in-engine). With none, the job never
+    // trained, and the coordinator chooses again. Measured on the 5090 2026-10-05: eight of
+    // Kimi's jobs sat on cuda-local waiting for a second 29.9 GB copy beside the lane that
+    // could have trained them in place; a pinned resume would have parked them there again.
+    let pin = request.resume_from.is_some() && !provider.is_empty();
+    let mut params = serde_json::to_value(&request).map_err(|e| format!("the request does not serialize: {e}"))?;
     params["triggerDispatchId"] = Value::String(dispatch_id.to_string());
-    if !provider.is_empty() {
+    if pin {
         params["preferredProvider"] = Value::String(provider.to_string());
     }
-    Some(params)
+    Ok(params)
 }
 
-fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFailure> {
+use crate::commands::genome::job_create::Took;
+
+/// What `genome/job-create` did with a fill: created a job, or HELD the fill without one
+/// (`JobCreateOutcome::took`: joined a job of hers, awaited a trial, or adopted an
+/// existing gene for trial). In every held case the examples belong back in her bucket.
+#[derive(Debug, Clone)]
+pub(crate) enum Created {
+    Job(JobHandle, String),
+    Held(Took),
+}
+
+fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
     use crate::commands::genome::job_create::JobCreateOutcome;
     if response
         .get("errorKind")
@@ -559,6 +707,9 @@ fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFai
         DispatchFailure::Uncertain(format!("genome/job-create response parse: {error}"))
     })?;
     if response.success {
+        if let Some(took) = response.took {
+            return Ok(Created::Held(took));
+        }
         let result = response.result.ok_or_else(|| {
             DispatchFailure::Uncertain("genome/job-create returned success without result".into())
         })?;
@@ -571,7 +722,7 @@ fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFai
                 "genome/job-create has inconsistent handle/provider".into(),
             ));
         }
-        return Ok((result.handle, result.selected_provider));
+        return Ok(Created::Job(result.handle, result.selected_provider));
     }
     if response.result.is_some() || response.error.as_ref().is_none_or(|error| error.is_empty()) {
         return Err(DispatchFailure::Uncertain(
@@ -582,9 +733,16 @@ fn decode_job_create(response: Value) -> Result<(JobHandle, String), DispatchFai
         "genome/job-create rejected: {}",
         response.error.unwrap_or_default()
     );
+    use crate::commands::genome::job_create::{ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
     Err(match response.error_kind.as_deref() {
         // No kind is the command's pre-provider validation/selection refusal.
         None | Some("InvalidRequest" | "MissingCredentials" | "ProviderRejected") => {
+            DispatchFailure::Retryable(error)
+        }
+        // A decision that created nothing is certain, never recovery: a hub pull that
+        // failed, a gene not adopted, a trial file not read. The next fill retries
+        // (Cormac on #4794: Uncertain here wedged the bucket in RecoveryRequired).
+        Some(kind) if kind == ERROR_KIND_REUSE_PULL_FAILED || kind == ERROR_KIND_REUSE_ADOPT_FAILED || kind == ERROR_KIND_TRIAL_FILE_UNREADABLE => {
             DispatchFailure::Retryable(error)
         }
         Some(_) => DispatchFailure::Uncertain(error),
@@ -750,11 +908,17 @@ mod tests {
                 Err(DispatchFailure::Uncertain(_))
             ));
         }
+        // what this catches (Cormac on #4794): a refusal that created no job is retryable,
+        // never Uncertain; Uncertain froze the bucket in RecoveryRequired with no journal
+        // row to recover from.
         for kind in [
             None,
             Some("InvalidRequest"),
             Some("MissingCredentials"),
             Some("ProviderRejected"),
+            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_PULL_FAILED),
+            Some(crate::commands::genome::job_create::ERROR_KIND_REUSE_ADOPT_FAILED),
+            Some(crate::commands::genome::job_create::ERROR_KIND_TRIAL_FILE_UNREADABLE),
         ] {
             let mut response = json!({"success": false, "error": "explicit refusal"});
             if let Some(kind) = kind {
@@ -822,12 +986,15 @@ mod tests {
     fn a_dead_jobs_request_json_is_its_resume_and_an_empty_directory_is_none() {
         let dir = tempfile::tempdir().expect("test: tempdir");
         let dispatch = Uuid::new_v4();
-        assert_eq!(resumable_request(dir.path(), "cuda-local", dispatch), None, "nothing on disk");
+        assert!(resumable_request(dir.path(), "cuda-local", dispatch).is_err(), "nothing on disk");
         // What the CUDA adapter writes: the flattened request plus its admission fields.
         let spec = serde_json::json!({
             "personaId": Uuid::from_u128(7).to_string(),
             "personaName": "Kimi",
-            "baseModel": "ggml-org/Qwen3.8-27B-GGUF",
+            // What the adapter really writes: the TRAINABLE base here, the registry id
+            // in canonicalBase. The fixture once wrote the same id in both, so it could
+            // not see a resume that fed the HF id back to job-create.
+            "baseModel": "Qwen/Qwen3.8-27B",
             "traitKind": "code",
             "dataset": {"examples": [{"prompt": "p", "completion": "c"}], "source": "teacher_synthesized", "validationSplit": 0.1},
             "canonicalBase": "ggml-org/Qwen3.8-27B-GGUF",
@@ -839,8 +1006,16 @@ mod tests {
         std::fs::write(dir.path().join("request.json"), spec.to_string()).expect("test: write");
         let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
         assert_eq!(params["triggerDispatchId"], serde_json::json!(dispatch.to_string()));
-        assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"));
+        assert!(
+            params.get("preferredProvider").is_none(),
+            "a job that never checkpointed is re-chosen, not pinned to the trainer that never ran it"
+        );
         assert_eq!(params["personaName"], serde_json::json!("Kimi"));
+        assert_eq!(
+            params["baseModel"],
+            serde_json::json!("ggml-org/Qwen3.8-27B-GGUF"),
+            "a resume re-creates the job against the registry id, never the HF base"
+        );
         assert_eq!(params["dataset"]["examples"].as_array().map(|e| e.len()), Some(1));
         assert!(params.get("memoryBytes").is_none(), "admission fields are the adapter's, not the request's");
         assert!(params.get("resumeFrom").is_none(), "no checkpoint, no resume point");
@@ -851,7 +1026,8 @@ mod tests {
         std::fs::write(dir.path().join("checkpoints").join("LATEST"), "step-8\n").expect("test: pointer");
         let params = resumable_request(dir.path(), "cuda-local", dispatch).expect("test: resumable");
         assert_eq!(params["resumeFrom"], serde_json::json!(ck.to_string_lossy()), "continues from the latest checkpoint");
-        let d = default_job_dir("Kimi", "code/owner", Uuid::from_u128(9));
+        assert_eq!(params["preferredProvider"], serde_json::json!("cuda-local"), "a checkpoint is its trainer's format: pinned");
+        let d = default_job_dir("Kimi", "code/owner", Uuid::from_u128(9)).expect("test: a home directory");
         assert!(d.ends_with(std::path::Path::new("Kimi").join("code_owner").join(Uuid::from_u128(9).to_string())), "{d:?}");
     }
 }

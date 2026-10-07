@@ -202,6 +202,11 @@ pub struct SweVerdict {
     /// pass (django-13346's `test_key_iregex` on this box) is a parity note, not a void.
     #[serde(default)]
     pub pristine_green: Vec<String>,
+    /// PASS_TO_PASS tests that failed after the patch AND on the pristine tree in this same
+    /// environment, so they are excluded from the score: an env fault named, not a
+    /// regression charged. `resolved` is decided on the rest.
+    #[serde(default)]
+    pub env_void_p2p: Vec<String>,
     /// Set when the run could not produce a verdict at all (clone, patch, or env failure).
     /// A verdict with `error` set is NOT a zero — it is an absence, and must never be
     /// tallied as a failed attempt.
@@ -4251,7 +4256,15 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
     // the PRISTINE tree, paid only when the suspicious all-fail shape appears: pristine
     // ALSO passes zero → the env is broken, void the tree; pristine passes any → the
     // candidate patch genuinely broke the suite and the graded numbers stand.
-    if verdict.p2p_total > 0 && verdict.p2p_passed == 0 {
+    //
+    // THE SAME QUESTION, PER TEST (Kimi, django-11749, 2026-10-06): one PASS_TO_PASS test
+    // failed after her patch, and she showed it fails on the unpatched base under this env's
+    // interpreter too. A test that fails BEFORE any fix is by definition not "pass to pass"
+    // here; charging it to the candidate made her verdict wait on someone else's ruling.
+    // So the pristine run is paid whenever ANY p2p test fails, and each one that fails on
+    // the pristine tree as well is voided BY NAME: excluded from the score and carried in
+    // `env_void_p2p`, so the verdict decides itself and still says what it set aside.
+    if verdict.p2p_total > 0 && verdict.p2p_passed < verdict.p2p_total {
         reset_worktree(repo_dir).await;
         if let Err(e) = apply_patch(repo_dir, &instance.test_patch, "p2p-gate").await {
             verdict.error = Some(e);
@@ -4259,6 +4272,7 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         }
         let (pristine_p2p, pristine_report) =
             run_harness(repo_dir, &harness, &p2p, &test_files).await;
+        verdict.env_void_p2p = env_void_p2p(&p2p_res, &pristine_p2p);
         if pristine_p2p.values().filter(|ok| **ok).count() == 0 {
             verdict.gate_ok = false;
             // CARRY THE REPORT. This verdict is the ONLY artifact of the pristine run, and
@@ -4301,7 +4315,7 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
     verdict.failed_tests.sort();
     let mut p2p_broken: Vec<String> = p2p_res
         .iter()
-        .filter(|(_, ok)| !**ok)
+        .filter(|(id, ok)| !**ok && !verdict.env_void_p2p.contains(*id))
         .map(|(id, _)| id.clone())
         .collect();
     p2p_broken.sort();
@@ -4326,13 +4340,48 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         ),
     };
     verdict.resolved = verdict.f2p_passed == verdict.f2p_total
-        && verdict.p2p_passed == verdict.p2p_total
+        && p2p_broken.is_empty()
         && verdict.f2p_total > 0;
     verdict
 }
 
+/// PASS_TO_PASS tests that failed with the candidate AND on the pristine tree in the same
+/// environment: env faults, not regressions. A test the pristine run did not report at all
+/// is NOT voided — absence of evidence keeps it charged, so a harness that skips the
+/// pristine run can never launder a real break into a void.
+fn env_void_p2p(
+    candidate: &std::collections::HashMap<String, bool>,
+    pristine: &std::collections::HashMap<String, bool>,
+) -> Vec<String> {
+    let mut void: Vec<String> = candidate
+        .iter()
+        .filter(|(id, ok)| !**ok && pristine.get(*id) == Some(&false))
+        .map(|(id, _)| id.clone())
+        .collect();
+    void.sort();
+    void
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches (Kimi, django-11749, 2026-10-06): a PASS_TO_PASS test that fails on
+    // the unpatched tree in this env was charged to her patch, and her verdict waited on a
+    // ruling. Voided: failed both with the candidate and on pristine. Charged: failed only
+    // with the candidate, OR the pristine run did not report it (no evidence, no void).
+    #[test]
+    fn a_p2p_test_failing_before_the_patch_is_voided_and_only_that() {
+        use std::collections::HashMap;
+        let candidate: HashMap<String, bool> = [("env", false), ("broke", false), ("unseen", false), ("ok", true)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let pristine: HashMap<String, bool> = [("env", false), ("broke", true), ("ok", true)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        assert_eq!(super::env_void_p2p(&candidate, &pristine), vec!["env".to_string()]);
+    }
+
     // what this catches (2026-09-28, Sahar's scikit-learn-25747): an in-flight staging
     // tree read as a staged checkout because it already carries .git. The predicate must
     // recognize exactly the name staging_path_for mints, and never a real instance name.

@@ -140,6 +140,7 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
             // Test fixture — no real accelerator needed; selectable on
             // any host.
             requires: TrainerHardware::Any,
+            trains_on_resident_weights: false,
         }
     }
 
@@ -192,6 +193,7 @@ mod tests {
             base_model: "recording-test".into(),
             trait_kind: "t".into(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: vec![ex(prompt, "c")],
                 source: TrainingSource::OperatorCurated,

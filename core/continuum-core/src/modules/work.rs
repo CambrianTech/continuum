@@ -40,6 +40,7 @@ use crate::runtime::{
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
+pub mod review_gate;
 pub mod submission;
 
 /// The bus event published the moment a card transitions — by [`bridge_wire_work_event`]
@@ -986,7 +987,7 @@ impl ActionCommand for WorkClaim {
             }
         }
         // A claim is a hold boundary for the governor, whichever path took it.
-        crate::persona::work_pull::note_hold_boundary(airc.peer_id().as_uuid());
+        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid());
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
@@ -1785,40 +1786,59 @@ async fn held_repo(airc: &Airc) -> Result<Option<RepoId>, CommandError> {
     Ok(crate::persona::work_focus::focus_actionable_card(held.iter()).map(|c| c.repo.clone()))
 }
 
+/// The repo the ROOM declares: a project activity's recipe binding carries `params.repo`
+/// (project.json), bound at `activity/spawn`. `Ok(None)` = the room is not a project or
+/// declares none (an org room like cambriantech has no binding at all, and that is right:
+/// an org is not one repo). A read failure is a read failure.
+async fn room_repo(airc: &Airc, room: &airc_lib::Room) -> Result<Option<RepoId>, CommandError> {
+    let posts = airc
+        .wall_posts_in(room, Some(crate::experience::binding::RECIPE_WALL_CATEGORY))
+        .await
+        .map_err(|e| CommandError::Internal(format!("work/create: could not read the room's recipe binding: {e}")))?;
+    let binding = crate::experience::binding::project_binding(&posts)
+        .map_err(|e| CommandError::Internal(format!("work/create: the room's recipe binding is unreadable: {e}")))?;
+    let Some(repo) = binding.as_ref().and_then(|b| b.declared_repo().map(str::to_string)) else {
+        return Ok(None);
+    };
+    RepoId::new(repo.clone())
+        .map(Some)
+        .map_err(|e| CommandError::Internal(format!("work/create: the room declares repo {repo:?}, which is not a repo key: {e:?}")))
+}
+
+/// The distinct repos of every card she holds, in any state, for the refusal's hint.
+/// Best-effort: an unreadable board names no repos; the refusal still stands.
+async fn repos_she_holds(airc: &Airc) -> Vec<String> {
+    let Ok(held) = crate::persona::airc_runtime::board_held_by(airc).await else {
+        return Vec::new();
+    };
+    let mut repos: Vec<String> = held.iter().map(|c| c.repo.to_string()).collect();
+    repos.sort();
+    repos.dedup();
+    repos
+}
+
+/// The words when nothing supplies a repo: her one argument first, with an example
+/// she can copy; the room's option second; the org-room fact last.
+pub(crate) fn repo_refusal(room: &str, repos_she_holds: &[String]) -> String {
+    let example = repos_she_holds.first().map(String::as_str).unwrap_or("owner/name");
+    let seen = if repos_she_holds.is_empty() {
+        String::new()
+    } else {
+        format!(" Repos of cards you hold: {}.", repos_she_holds.join(", "))
+    };
+    format!(
+        "work/create: add repo to this call, e.g. repo=\"{example}\".{seen} Room {room:?} declares no repo \
+         (a project room can, at activity/spawn --params {{\"repo\":\"owner/name\"}}; an org room never does), \
+         and no card you hold is actionable here."
+    )
+}
+
 impl WorkCreate {
     /// The card lands on the NAMED room's board under the caller's own airc identity.
     async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
-        // A named repo wins; otherwise the card she holds says what she is working on
-        // (Kimi, 2026-09-28: the doc's example named this repo, so her first
-        // career-wrangler slice card was filed against continuum).
-        // A blank repo is a mistake to name, not a request to infer (Codex on #4571).
-        let repo = match p.repo.as_deref().map(str::trim) {
-            Some("") => {
-                return Err(CommandError::Invalid(
-                    "work/create: repo is blank: name it (owner/name) or omit it to use the \
-                     card you hold"
-                        .into(),
-                ))
-            }
-            Some(named) => RepoId::new(named.to_string())
-                .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
-            None => held_repo(airc).await?.ok_or_else(|| {
-                CommandError::Invalid(
-                    "work/create: name the repo (owner/name); no actionable held card supplies it. \
-                     Cards awaiting review retain their claims but are not selected here. \
-                     Pass repo explicitly; you do not need to reclaim or resubmit reviewed work."
-                        .into(),
-                )
-            })?,
-        };
-        let mut req = CreateWorkCard::new(
-            repo,
-            p.title,
-            Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
-        );
-        req.body = p.body;
         // A blank room would reach resolve_room as "unnamed" and land in the current room,
-        // the very default this field exists to refuse (Codex on #4550).
+        // the very default this field exists to refuse (Codex on #4550). Resolved FIRST:
+        // the room is the second thing that can say which repo (below).
         if p.room.trim().is_empty() {
             return Err(CommandError::Invalid(
                 "work/create: room is required: name the activity room whose board gets the card"
@@ -1826,6 +1846,44 @@ impl WorkCreate {
             ));
         }
         let room = crate::modules::room_resolve::resolve_room(airc, Some(&p.room)).await?;
+        // A named repo wins; then the card she holds (Kimi, 2026-09-28: the doc's example
+        // named this repo, so her first career-wrangler slice card was filed against
+        // continuum); then THE ROOM (Kimi, 2026-10-05: six refusals filing cards in a
+        // project room, because a project IS a repo and the room already declared it on
+        // its binding, which nothing read). A blank repo is a mistake to name, not a
+        // request to infer (Codex on #4571).
+        let repo = match p.repo.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(CommandError::Invalid(
+                    "work/create: repo is blank: name it (owner/name) or omit it to use the \
+                     card you hold or the room's declared repo"
+                        .into(),
+                ))
+            }
+            Some(named) => RepoId::new(named.to_string())
+                .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?,
+            None => match held_repo(airc).await? {
+                Some(held) => held,
+                None => match room_repo(airc, &room).await? {
+                    Some(declared) => declared,
+                    // HER action leads (BigMama, from persona.act.refused: three refusals in the
+                    // org room after #4762, whose text led with the OPERATOR's fix). Hers is one
+                    // argument; the repos she can see are named so she need not guess one.
+                    None => {
+                        return Err(CommandError::Invalid(repo_refusal(
+                            p.room.trim(),
+                            &repos_she_holds(airc).await,
+                        )))
+                    }
+                },
+            },
+        };
+        let mut req = CreateWorkCard::new(
+            repo,
+            p.title,
+            Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
+        );
+        req.body = p.body;
         let card_id = airc
             .create_work_card_in(&room, req)
             .await
@@ -1923,7 +1981,7 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
-        crate::persona::work_pull::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
+        crate::persona::work_burst::note_hold_boundary(airc.peer_id().as_uuid()); // a release is a hold boundary too
         crate::persona::held_claims::forget(airc.peer_id().as_uuid(), airc.home(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }
@@ -2158,13 +2216,25 @@ pub(crate) async fn advance_card_state_effective(
 ) -> Result<CardState, String> {
     use crate::cognition::bench_round as round;
     let finishing = matches!(state, CardState::Closed | CardState::Merged);
+    // THE GATE READS THE ROOM (card fa4aaaaa): a room that declares a review policy
+    // decides; one that declares none keeps the round's gate (bench rooms, until their
+    // recipes declare the policy). Read only on transitions that can finish.
+    let room_gate = if finishing || matches!(state, CardState::Review | CardState::Blocked) {
+        self::review_gate::room_review(airc, card_id).await
+    } else {
+        None
+    };
+    let gated = match &room_gate {
+        Some(r) => r.outstanding(),
+        None => round::review_required(card_id.as_uuid()),
+    };
     // Card 381ccf3a: a citizen's `done` (or `review`) on a GATED card must carry a
     // write. Measured 2026-09-06/07: cards moved to REVIEW with zero edits as a
     // release valve — the reviewer then reviewed nothing and the grade ran on the
     // base commit. Her acting root is the checkout the card staged for her; no
     // change there since staging = nothing to review.
     if (finishing || state == CardState::Review)
-        && round::review_required(card_id.as_uuid())
+        && gated
         && round::review_parent(card_id.as_uuid()).is_none()
     {
         if let Some(root) = actor.and_then(crate::cognition::persona_workspace::acting_root_of) {
@@ -2197,12 +2267,56 @@ pub(crate) async fn advance_card_state_effective(
             }
         }
     }
-    if let Some(parent) = round::review_parent(card_id.as_uuid()) {
+    let review_parent = match round::review_parent(card_id.as_uuid()) {
+        Some(p) => Some(p),
+        None if finishing || state == CardState::Blocked => native_review_parent(airc, card_id).await,
+        None => None,
+    };
+    if let Some(parent) = review_parent {
         if finishing || state == CardState::Blocked {
             let passed = finishing;
             round::settle_review_card(card_id.as_uuid(), passed);
             raw_advance(airc, card_id, CardState::Closed, via).await?;
             let parent_id = WorkCardId::from_uuid(parent);
+            // A room with a policy counts PASSING REVIEWS by distinct reviewers on the
+            // parent's submission: one review card closing is not enough when it asks
+            // for more, and the parent waits in Review (card fa4aaaaa).
+            if passed {
+                if let Some(parent_gate) = self::review_gate::room_review(airc, parent_id).await {
+                    if parent_gate.outstanding() {
+                        crate::probe!(
+                            class = "work.review.awaiting_more",
+                            parent = %short8(parent),
+                            passed = parent_gate.passed as u64,
+                            required = parent_gate.policy.required,
+                            "a review closed, but the room's policy asks for more passing reviews — the parent waits"
+                        );
+                        return Ok(CardState::Review);
+                    }
+                }
+            }
+            // A PASS ON A CARD WITH AN OPEN PR LEAVES IT MERGEABLE. The card finishes through
+            // its merge, as Merged; closing it here made `airc work merge` refuse it ("state
+            // is Closed, but merge requires Review"). Kimi passed #4825's submission on
+            // 2026-10-06 and the card closed with its PR open, so the merge took a hand move
+            // back to Review. A card with no PR (a bench round's) still closes on the pass.
+            if passed {
+                if let Some((_, parent_card)) = card_in_subscribed_rooms(airc, parent_id).await {
+                    if parent_card.pull_request.is_some() && parent_card.state != CardState::Merged {
+                        if parent_card.state != CardState::Review {
+                            raw_advance(airc, parent_id, CardState::Review, via).await?;
+                        }
+                        crate::probe!(
+                            class = "work.review.passed_awaiting_merge",
+                            review = %short8(card_id.as_uuid()),
+                            parent = %short8(parent),
+                            "reviewer's pass on a card with an open PR — it stays in Review for \
+                             its merge, which moves it to Merged"
+                        );
+                        return Ok(CardState::Review);
+                    }
+                }
+            }
             let next = if passed {
                 CardState::Closed
             } else {
@@ -2222,7 +2336,7 @@ pub(crate) async fn advance_card_state_effective(
     }
     // A VERDICT is the review's outcome: it closes the parent outright. Every
     // other finisher on a gated card goes to review first.
-    if finishing && via != VIA_VERDICT && round::review_required(card_id.as_uuid()) {
+    if finishing && via != VIA_VERDICT && gated {
         raw_advance(airc, card_id, CardState::Review, via).await?;
         match open_review_card(airc, card_id).await {
             Ok(review) => crate::probe!(
@@ -2253,8 +2367,12 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
     let (room, card) = card_in_subscribed_rooms(airc, parent)
         .await
         .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
-    let (_, instance) = crate::commands::benchmark::parse_card_title(&card.title)
-        .ok_or_else(|| "parent is not a bench card".to_string())?;
+    let Some((_, instance)) = crate::commands::benchmark::parse_card_title(&card.title) else {
+        // A room's own card (not a bench card): its review card comes from the parent
+        // itself, under the room's policy (card fa4aaaaa). The bench branch below is
+        // unchanged.
+        return open_room_review_card(airc, &room, &card, parent).await;
+    };
     let owner = card
         .owner
         .and_then(|o| {
@@ -2280,18 +2398,55 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
          blocked` — the card returns to {owner} in progress.\n\
          Report gaps, not style."
     );
-    // The card lands in the airc handle's CURRENT room — make that the parent's room
-    // (the same focus move the claim path makes when a card sits elsewhere).
-    airc.join(&room.name).await.map_err(|e| e.to_string())?;
+    // The review lands on the PARENT's board, named, never through the shared current-room
+    // pointer: parallel dones on two boards would otherwise race one join against the other
+    // (IntelMac on #4838; the race #4838 removes from work/state).
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
     let review = airc
-        .create_work_card(req)
+        .create_work_card_in(&room, req)
         .await
         .map_err(|e| e.to_string())?;
     crate::cognition::bench_round::register_review_card(parent.as_uuid(), review.as_uuid())
         .ok_or_else(|| "parent left its round before the review was registered".to_string())?;
     Ok(review)
+}
+
+/// Post the review card for a ROOM's own card (not a bench card): titled and described
+/// from the parent, linked natively (`reviewing(parent)`), never registered with a round.
+/// Whoever the room's policy admits reviews it with `work/review` (card fa4aaaaa).
+async fn open_room_review_card(
+    airc: &Arc<Airc>,
+    room: &airc_lib::Room,
+    card: &airc_lib::WorkCard,
+    parent: WorkCardId,
+) -> Result<WorkCardId, String> {
+    let owner = card
+        .owner
+        .and_then(|o| {
+            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+                .and_then(|reg| reg.get(o.as_uuid()))
+                .map(|rt| rt.agent_name().to_string())
+        })
+        .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
+    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
+    let title: String = format!("review: {}", card.title).chars().take(160).collect();
+    let body = format!(
+        "Review {owner}'s work on card {p8} (\"{}\"). Read the latest submission          (work/submission) and the change it carries, judge it against the card, then give          your verdict with work/review (passed or failed, with evidence). This room's review          policy decides how many passing reviews finish the card and whether the author may          review her own work.",
+        card.title
+    );
+    // on the parent's board, named: never through the shared current-room pointer (#4838)
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    req.body = Some(body);
+    airc.create_work_card_in(room, req).await.map_err(|e| e.to_string())
+}
+
+/// The card a review card reviews, by airc's native link (`reviews`), for review cards no
+/// round registered (a room's own cards).
+async fn native_review_parent(airc: &Arc<Airc>, card_id: WorkCardId) -> Option<Uuid> {
+    card_in_subscribed_rooms(airc, card_id)
+        .await
+        .and_then(|(_, card)| card.reviews.map(|p| p.as_uuid()))
 }
 
 /// The raw advance + the bus event — what [`advance_card_state`] was before the gate.
@@ -2301,9 +2456,23 @@ async fn raw_advance(
     state: CardState,
     via: &'static str,
 ) -> Result<(), String> {
-    let mut attempt = airc
-        .change_work_card_state(ChangeWorkCardState { card_id, state })
-        .await;
+    // THE CARD NAMES ITS ROOM. A board she can see holds the card: mutate it THERE, without
+    // reading or moving the scope's one current-room pointer. Kimi on the 5090 (2026-10-06
+    // 22:5xZ) closed 8 duplicate cards in ONE turn, in parallel, across #continuum and
+    // #cambriantech: every call that refused in the current room "followed" its card by
+    // switching that shared pointer, and the parallel follows flipped it under each other, so
+    // 7 retries landed in the wrong room again and refused. Only a card on no visible board
+    // (a bench round's run room) still takes the current room + follow path below.
+    let mut attempt = match room_holding_card(airc, card_id).await {
+        Some(room) => {
+            airc.change_work_card_state_in(&room, ChangeWorkCardState { card_id, state })
+                .await
+        }
+        None => {
+            airc.change_work_card_state(ChangeWorkCardState { card_id, state })
+                .await
+        }
+    };
     if matches!(
         attempt,
         Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
@@ -2764,10 +2933,16 @@ pub struct WorkListCard {
     /// field-order note above: `"claimed"` read first defeats `claimable: true` read
     /// fifth, and a lapsed claim IS takeable regardless of this column.
     pub state: String,
-    /// Short id of the claiming peer, when claimed. Says WHO to reach out to — never
-    /// "someone" ([[card-holder]]) — but read AFTER whether she can take it, because
-    /// an owner on a lapsed lease is history, not an obstacle.
+    /// Who holds it, when claimed: a published name, `YOU`, or "an unnamed peer". Says
+    /// WHO, never "someone" ([[card-holder]]), and never an id inside the words (Joel,
+    /// 2026-10-06) — read AFTER whether she can take it, because an owner on a lapsed
+    /// lease is history, not an obstacle.
     pub owner: Option<String>,
+    /// The holder's peer id, for reaching them (airc DM) when no name is known: the id in
+    /// its own typed field, never spelled into `owner`. Absent for her own cards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub owner_id: Option<Uuid>,
     /// The card's declared priority (`p0`..`p3`). The model always carried it; the
     /// list did not render it, so a 118-card board read as unordered (2026-09-16).
     pub priority: String,
@@ -2828,14 +3003,13 @@ impl ActionCommand for WorkList {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the work board's cards (read-only): short id, title, state, owner, and whether it is \
-         CLAIMABLE right now. `claimable: true` means you can take it — either it is open, or its \
-         holder's lease expired (`lease: expired`) and they have stopped working it. A card marked \
-         `lease: held` is genuinely someone else's. Use the short id with work/get for a card's \
-         full requirements, or work/claim to take it. TO FIND WORK YOU CAN TAKE, pass \
-         `claimable: true` — most takeable cards sit in the `claimed` column with a lapsed lease, \
-         so filtering `state: \"open\"` (the COLUMN) will miss them and can come back empty on a \
-         full board. The result always reports `total_on_board` and `claimable_now` so an empty \
-         list is never mistaken for an empty board. Boards are per room (`room`).";
+         CLAIMABLE right now: work/claim takes any card not in review/merged/closed, even one \
+         someone holds (a takeover; they see it). Each line says who holds a card and how long \
+         they have been silent; taking it over is your call. Use the short id with work/get for \
+         full requirements. To find takeable work pass `claimable: true`: filtering \
+         `state: \"open\"` (the column) misses held and lapsed cards. The result always reports \
+         `total_on_board` and `claimable_now` so an empty list is never mistaken for an empty \
+         board. Boards are per room (`room`).";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
@@ -2884,9 +3058,10 @@ impl ActionCommand for WorkList {
                         id: short8(c.card_id.as_uuid()),
                         title: c.title.clone(),
                         state: state_str(&c.state).to_string(),
-                        // The person, not the hex: a published name when known, the
-                        // short id (still addressable) otherwise, `YOU` when it is hers.
+                        // The person, not the hex: a published name when known, "an
+                        // unnamed peer" otherwise (its handle in owner_id), `YOU` when hers.
                         owner: holder.owner.map(|_| holder.display.clone()),
+                        owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
                         claimable: holder.claimable(c.state),
                         lease: holder.lease_word().map(str::to_string),
                         priority: priority_str(c.priority).to_string(),
@@ -3533,6 +3708,9 @@ impl ServiceModule for WorkModule {
             Arc::new(crate::commands::benchmark_import::BenchmarkImport),
             Arc::new(crate::commands::benchmark_import::BenchmarkRoundOpen),
             Arc::new(crate::commands::benchmark_import::BenchmarkRoundTrack),
+            // coursework/import: the coursework/round recipe's card source (ONE-RESIDENT §10.4),
+            // the same family as benchmark/import and routed from the same module.
+            Arc::new(crate::commands::benchmark_import::CourseworkImport),
             // persona/roster reads the SAME live registry benchmark/dispatch resolves its
             // assignees against — constructed here for the same dep-ownership reason (#396
             // live-roster verb; the observability side of "dispatch targets the live roster").
@@ -3559,6 +3737,20 @@ impl ServiceModule for WorkModule {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (Kimi, 2026-10-05, three refusals): the words lead with HER one
+    // argument and an example she can copy, name the repos she can see, and put the
+    // operator's option second.
+    #[test]
+    fn the_repo_refusal_leads_with_her_action_and_names_what_she_can_see() {
+        let with = super::repo_refusal("cambriantech", &["CambrianTech/continuum".into(), "CambrianTech/career-wrangler".into()]);
+        assert!(with.starts_with("work/create: add repo to this call, e.g. repo=\"CambrianTech/continuum\"."), "{with}");
+        assert!(with.contains("Repos of cards you hold: CambrianTech/continuum, CambrianTech/career-wrangler."), "{with}");
+        assert!(with.find("add repo").unwrap() < with.find("activity/spawn").unwrap(), "her action before the operator's");
+        let without = super::repo_refusal("cambriantech", &[]);
+        assert!(without.starts_with("work/create: add repo to this call, e.g. repo=\"owner/name\"."), "{without}");
+        assert!(!without.contains("Repos of cards you hold"), "{without}");
+    }
+
     use super::*;
 
     // what this catches: card 2609fd66 — a board walk that FAILS (daemon outage) must
@@ -3996,6 +4188,7 @@ mod tests {
                 title: "x".repeat(200), // realistic titles — this is what blows the cap
                 state: "claimed".to_string(),
                 owner: Some("Benchy".to_string()),
+                owner_id: None,
                 claimable: true,
                 lease: Some("expired".to_string()),
                 priority: "p2".to_string(),
@@ -4094,6 +4287,55 @@ mod tests {
             assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
     }
+    /// what this catches (Kimi on the 5090, 2026-10-06 22:5xZ): parallel `work/state` closes
+    /// of cards on DIFFERENT boards, issued from a third room. Each used to refuse in the
+    /// current room and "follow" its card by moving the scope's one current-room pointer, so
+    /// parallel follows flipped it under each other and 7 of her 8 closes refused. A card on a
+    /// visible board is mutated on that board, and the pointer never moves.
+    #[tokio::test]
+    async fn parallel_closes_across_boards_land_without_moving_the_current_room() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let mut ids = Vec::new();
+        for room in ["continuum", "cambriantech"] {
+            airc.join(room).await.expect("join a board's room");
+            let made = WorkCreate::create(
+                &airc,
+                WorkCreateParams {
+                    room: room.to_string(),
+                    repo: Some("github.com/CambrianTech/continuum".to_string()),
+                    title: format!("a duplicate review card on {room}"),
+                    body: None,
+                    priority: None,
+                },
+            )
+            .await
+            .expect("card created");
+            ids.push(WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid")));
+        }
+        let lobby = airc.join("general").await.expect("focus moves to a third room");
+
+        let (a, b) = tokio::join!(
+            raw_advance(&airc, ids[0], CardState::Closed, "test"),
+            raw_advance(&airc, ids[1], CardState::Closed, "test"),
+        );
+        assert!(a.is_ok(), "the #continuum card closes: {a:?}");
+        assert!(b.is_ok(), "the #cambriantech card closes: {b:?}");
+        for id in &ids {
+            let (_, card) = card_in_subscribed_rooms(&airc, *id).await.expect("the card is on a visible board");
+            assert_eq!(card.state, CardState::Closed);
+        }
+        assert_eq!(
+            airc.current_room().await.expect("current room").channel,
+            lobby.channel,
+            "closing a card on another board never moves her current room"
+        );
+    }
+
     /// what this catches: a citizen's card landing somewhere other than the room she
     /// named (the old "current room" default put project cards in #general), or under
     /// an identity that is not hers — work/create is how an activity's participants
@@ -4178,8 +4420,8 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&unnamed, Err(CommandError::Invalid(m)) if m.contains("name the repo")),
-            "{unnamed:?}"
+            matches!(&unnamed, Err(CommandError::Invalid(m)) if m.starts_with("work/create: add repo to this call")),
+            "the refusal leads with HER action: {unnamed:?}"
         );
 
         // The default path (Cormac on #4571): holding a card and naming no repo files the new
@@ -4214,6 +4456,67 @@ mod tests {
             .expect("the new card is on a board");
         assert_eq!(filed.repo.to_string(), card.repo.to_string(), "the held card's repo, not another project's");
     }
+    /// what this catches (Kimi on #4825, 2026-10-06): a reviewer's pass on a card whose PR
+    /// is still open closed the card, and `airc work merge` refuses a Closed card, so the
+    /// merge needed a hand move back to Review. A pass leaves a PR-linked card in Review
+    /// for its merge, and a card with no PR still closes on the pass.
+    #[tokio::test]
+    async fn a_pass_leaves_a_card_with_an_open_pr_mergeable_and_closes_one_without() {
+        let home = tempfile::tempdir().expect("temp airc home");
+        let airc = Arc::new(
+            Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon"),
+        );
+        let room = airc.join("continuum").await.expect("join the project room");
+        let repo = RepoId::new("github.com/CambrianTech/continuum").expect("repo id");
+        let mut outcomes = Vec::new();
+        for with_pr in [true, false] {
+            let parent = airc
+                .create_work_card_in(&room, CreateWorkCard::new(repo.clone(), "a fix", Priority::P1))
+                .await
+                .expect("parent card created");
+            if with_pr {
+                airc.link_card_pull_request_in(
+                    &room,
+                    airc_lib::LinkCardPullRequest {
+                        card_id: parent,
+                        pull_request: airc_work::model::PullRequestRef {
+                            repo: repo.clone(),
+                            number: 4825,
+                            head: airc_lib::BranchName::new("fix/a-fix").expect("branch"),
+                            base: airc_lib::BranchName::new("canary").expect("branch"),
+                        },
+                    },
+                )
+                .await
+                .expect("the PR links and the card moves to Review");
+            } else {
+                raw_advance(&airc, parent, CardState::Review, "test").await.expect("to review");
+            }
+            let review = airc
+                .create_work_card_in(
+                    &room,
+                    CreateWorkCard::new(repo.clone(), "review: a fix", Priority::P1).reviewing(parent),
+                )
+                .await
+                .expect("review card created");
+            let landed = advance_card_state_effective(&airc, review, CardState::Closed, "test", None)
+                .await
+                .expect("the reviewer's pass lands");
+            let (_, card) = card_in_subscribed_rooms(&airc, parent).await.expect("parent on the board");
+            outcomes.push((with_pr, landed, card.state));
+        }
+        assert_eq!(
+            outcomes,
+            [
+                (true, CardState::Review, CardState::Review),
+                (false, CardState::Closed, CardState::Closed),
+            ],
+            "a PR-linked card waits for its merge; a card without one closes on the pass"
+        );
+    }
+
     /// what this catches: card 29621b9f — resolving a subscribed room's card id
     /// succeeded, then work/get looked only on the current board and refused it.
     /// Exercise the actual read path after subscribing without moving focus, and
@@ -4318,7 +4621,9 @@ mod tests {
         claimed.claim_expires_at_ms = Some(100);
         claimed.last_heartbeat_at_ms = Some(50);
         let held = WorkGet::receipt(room, &claimed, None, 99, Uuid::nil());
-        assert!(!held.claimable);
+        // Joel, 2026-10-06: a live hold is takeable by anyone; `lease: held` is the fact she
+        // judges a takeover by, `claimable` is only what work/claim will accept.
+        assert!(held.claimable);
         // regression for card 5d447195: the lease reaches her as time left, not only as
         // an epoch she converts by hand; a lapsed or absent claim has none.
         assert_eq!(held.lease_remaining_secs, Some(0), "1 ms left rounds down, still held");

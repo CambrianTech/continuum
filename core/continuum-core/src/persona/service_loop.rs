@@ -44,7 +44,6 @@
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::supervisor::HostedPersona;
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
-use crate::persona::work_pull::{try_pull_next_card, PullOutcome};
 use async_trait::async_trait;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -81,10 +80,20 @@ pub struct IncomingMessage {
     /// RAG source (roster, doctrine, board, kanban) abstained — she heard the
     /// words but stood in no room (glass-boxed 2026-07-23, Anwen ACK test).
     pub room_id: Uuid,
+    /// A typed work fact (a verdict, a card move, a submission, a claim) decoded
+    /// from the room by `realtime_wire::room_work_from_event`. `Some` means this
+    /// turn is a BOARD FACT she perceives, rendered as such, never as the actor's
+    /// speech; `peer_id` is the actor (the reviewer, the mover). Phase 1 wiring of
+    /// EVENT-MIND.md: measured 2026-10-04, a PASS on her own card reached her node
+    /// and was dropped as `non_chat_schema`; nothing on her board could wake her.
+    pub work: Option<crate::airc::realtime_wire::RoomWork>,
 }
 
 impl IncomingMessage {
     pub(crate) fn render_content(&self) -> String {
+        if let Some(work) = &self.work {
+            return crate::airc::realtime_wire::render_room_work(work, self.peer_id);
+        }
         crate::airc::realtime_wire::render_room_content(&self.text, &self.media)
     }
 
@@ -176,6 +185,13 @@ pub trait PersonaConversation: Send + Sync {
     /// so the forwarder can hold it `'static`. `None` for scripted / stub
     /// conversations — they don't stream to a live room; the airc conversation
     /// returns its runtime handle.
+    /// Her wakes from the one feed (EVENT-MIND §1b), once her perception region has
+    /// booted; `None` before then, after they were taken, or for a conversation with no
+    /// region. The serve loop takes them once and consumes them beside her inbox.
+    fn take_wakes(&mut self) -> Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> {
+        None
+    }
+
     fn stream_citizen(
         &self,
     ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
@@ -492,7 +508,21 @@ async fn serve_persona_loop_inner(
     // (not through this loop), so a quiet loop never blocks it.
     // [[benchmark-is-a-governor-preemption-lease]]
     // [[first-class-citizens-even-during-benchmarks]]
+    // Her mind's wakes (EVENT-MIND §1b, phase 2): taken once her region boots; a timer
+    // at her continuation's deadline or the floor of her dial; Perceive wakes wait for
+    // their recheck so a line her inbox takes never also starts a self-turn.
+    let me = ctx.identity.peer_id.as_uuid();
+    let mut wakes: Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> = None;
+    let mut next_mind_check: Option<tokio::time::Instant> = None;
+    let mut perceive_recheck: Option<(tokio::time::Instant, uuid::Uuid)> = None;
     loop {
+        if wakes.is_none() {
+            wakes = conversation.take_wakes();
+            if wakes.is_some() {
+                // First look right away: a saved continuation resumes now (rule 8).
+                next_mind_check = Some(tokio::time::Instant::now());
+            }
+        }
         // HER turn boundary: idle whenever the loop is back at its wake select. The
         // matching `engaged` stamp is set where a serving lane is actually acquired
         // (the deliberation faculty) — a room wake alone is not wakefulness, or a
@@ -511,8 +541,66 @@ async fn serve_persona_loop_inner(
                 Some(m) => Wake::Msg(m),
                 None => Wake::Stop,
             },
+            w = next_mind_wake(&mut wakes) => match w {
+                crate::persona::perception_region::Wake::Perceive { activity, .. } => {
+                    perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
+                    Wake::Idle
+                }
+                crate::persona::perception_region::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+                crate::persona::perception_region::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+            },
+            _ = sleep_until_some(perceive_recheck.map(|(at, _)| at)) => {
+                let activity = perceive_recheck.take().map(|(_, a)| a);
+                match activity {
+                    Some(a) if crate::persona::perception_feed::with_region(me, |r| r.is_pending(a)).unwrap_or(false) => {
+                        Wake::Mind { why: "perceive", room: Some(a) }
+                    }
+                    _ => Wake::Idle,
+                }
+            },
+            _ = sleep_until_some(next_mind_check) => {
+                let now = (opts.now_ms)();
+                let looked = crate::persona::perception_feed::with_region(me, |r| {
+                    let wake = r.wake_for(now);
+                    let floor = tokio::time::Instant::now() + mind_check_floor(r.dial());
+                    let due = r.continuation_due_ms().filter(|due| *due > now).map(|due| {
+                        tokio::time::Instant::now() + std::time::Duration::from_millis(due - now)
+                    });
+                    (wake, due.map_or(floor, |d| d.min(floor)))
+                });
+                match looked {
+                    Some((wake, next)) => {
+                        next_mind_check = Some(next);
+                        match wake {
+                            Some(crate::persona::perception_region::Wake::Perceive { activity, .. }) => {
+                                perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
+                                Wake::Idle
+                            }
+                            Some(crate::persona::perception_region::Wake::Continuation) => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
+                            Some(crate::persona::perception_region::Wake::Resume) => Wake::Mind { why: "resume", room: her_continuation_room(me) },
+                            None => Wake::Idle,
+                        }
+                    }
+                    None => {
+                        next_mind_check = None;
+                        Wake::Idle
+                    }
+                }
+            },
             _ = tokio::time::sleep(next_beat) => Wake::Tick,
         };
+        if matches!(wake, Wake::Idle) {
+            continue;
+        }
+        if let Wake::Mind { why, room } = &wake {
+            crate::probe!(
+                class = "persona.turn.mind_wake",
+                persona = %ctx.identity.agent_name,
+                why = *why,
+                room = ?room,
+                "her own mind woke her: the turn starts from her perception, not the tick"
+            );
+        }
         // QUIESCE HONORS ITS OWN CONTRACT (Joel, 2026-08-30: "I could call
         // them up or dm — just want to make sure we're not into singular
         // activity mode again"). The lease's documented promise is "skips
@@ -531,7 +619,9 @@ async fn serve_persona_loop_inner(
             match &wake {
                 // A suppressed beat leaves the cadence untouched — when the
                 // lease drops she resumes at whatever rhythm she had earned.
-                Wake::Tick => continue,
+                // Her own wake under the lease is skipped like a beat; it is not lost:
+                // a due continuation or a loud room re-yields on her next mind check.
+                Wake::Tick | Wake::Mind { .. } | Wake::Idle => continue,
                 Wake::Msg(_) => crate::probe!(
                     class = "persona.quiesced.directed_served",
                     "quiesced citizen serving an inbound turn — leases suspend wandering, never reachability"
@@ -562,9 +652,14 @@ async fn serve_persona_loop_inner(
             );
             break;
         };
+        let wake_room = match &wake {
+            Wake::Mind { room, .. } => *room,
+            _ => None,
+        };
         let msg = match wake {
             Wake::Stop => break,
-            Wake::Tick => {
+            Wake::Idle => continue,
+            Wake::Tick | Wake::Mind { .. } => {
                 // With `biased;` the inbox was polled first: a tick winning means
                 // nothing admissible was queued, so any pending directed flag is
                 // stale (raised for a line that filtered at the door). Clear it,
@@ -618,7 +713,7 @@ async fn serve_persona_loop_inner(
                 // turn can afford (card 7496ed9d) — the message path below stays interactive.
                 let starved = crate::cognition::audience::with(
                     crate::inference::prefill_rate::Audience::Unattended,
-                    run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp),
+                    run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp, wake_room),
                 )
                 .await;
                 if starved {
@@ -906,6 +1001,15 @@ async fn serve_persona_loop_inner(
             text_len = msg.text.len(),
             "turn started"
         );
+        // She takes in this room up to this line: her region's view of it drains, so the
+        // same line cannot also wake a Perceive turn (EVENT-MIND §1b).
+        crate::persona::perception_feed::mark_perceived(
+            ctx.identity.peer_id.as_uuid(),
+            turn_room,
+            msg.lamport,
+            Some(msg.event_id),
+            (opts.now_ms)(),
+        );
 
         // ===========================================================
         // The brain services the turn through the WorkspaceCycle:
@@ -1179,8 +1283,9 @@ async fn serve_persona_loop_inner(
         // including turns that finish without speech. These receipts remain available
         // for the separate, genuinely unlinked speech producer below.
         let turn_generation_receipts: Vec<crate::cognition::provenance::GenerationReceipt>;
+        // A turn in her mind room runs on her MIND cycle (PRIVACY-OF-THOUGHT.md §4).
         let response_text = match crate::cognition::persona_workspace::global()
-            .get(&ctx.identity.peer_id.as_uuid())
+            .cycle_for_room(&ctx.identity.peer_id.as_uuid(), turn_room)
         {
             Some(cycle) => {
                 // Run the mind over the metadata-rich burst built above
@@ -1293,8 +1398,10 @@ async fn serve_persona_loop_inner(
                     match crate::cognition::resource_admission::try_hold_ambient_turn() {
                         Some(permit) => Some(permit),
                         None => {
-                            tracing::info!(
+                            crate::probe!(
+                                class = "persona.turn.ambient_yielded",
                                 persona = %ctx.identity.agent_name,
+                                lamport = msg.lamport,
                                 "ambient turn yielded — ambient slots busy; the addressed \
                                  question is served first (#171)"
                             );
@@ -1449,7 +1556,12 @@ async fn serve_persona_loop_inner(
                     crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent } => {
                         // No hands or the executor errored. Abstain — never a
                         // fabricated result, never a raw call envelope to the room.
-                        tracing::warn!(
+                        // Every turn ends on a probe (Kimi, 5090, 2026-10-04: a turn on an
+                        // addressed line ended with no outcome on the probe stream, so a
+                        // chosen silence and a failed act read the same).
+                        crate::probe!(
+                            class = "persona.turn.act_unfulfilled",
+                            persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
                             calls = calls.len(),
                             intent = %intent,
@@ -1560,7 +1672,9 @@ async fn serve_persona_loop_inner(
         // peers with JSON (observed live). Treat it as silence — the deliberation
         // already executes real calls internally; only prose is a contribution.
         if crate::ai::json_in_prompt_tools::parse_tool_call(&response_text).is_some() {
-            tracing::info!(
+            crate::probe!(
+                class = "persona.turn.raw_envelope_withheld",
+                persona = %ctx.identity.agent_name,
                 lamport = msg.lamport,
                 "verdict was a raw tool-call envelope — not broadcasting"
             );
@@ -1782,7 +1896,59 @@ pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
 enum Wake {
     Msg(IncomingMessage),
     Tick,
+    /// Her own mind woke her (EVENT-MIND §1b): a room still unread and loud past her
+    /// dial, her continuation falling due, or resuming a saved one after a restart.
+    /// `room` is where she wakes (Perceive), else her continuation's activity.
+    Mind { why: &'static str, room: Option<uuid::Uuid> },
+    /// A wake that needs no turn (a Perceive whose line her inbox already took); the
+    /// loop goes back to its select.
+    Idle,
     Stop,
+}
+
+/// How long a Perceive wake waits before it may start a turn: the same line reaches her
+/// inbox through the pump, and a line the inbox takes marks its room perceived, so a
+/// recheck after this finds nothing pending and no second turn starts.
+const PERCEIVE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// The slow re-perceive floor, by HER dial (Fable, 2026-10-04: "her opening her eyes,
+/// not the tick choosing"): how long her mind may go without checking whether a
+/// continuation fell due or a room is loud and unread.
+fn mind_check_floor(dial: crate::persona::attention::AttentionDial) -> std::time::Duration {
+    use crate::persona::attention::Depth;
+    std::time::Duration::from_secs(match dial.depth {
+        Depth::Deep => 15 * 60,
+        Depth::Normal => 5 * 60,
+        Depth::Broad => 2 * 60,
+    })
+}
+
+/// The next wake from her region's channel; pending forever while she has none.
+async fn next_mind_wake(
+    wakes: &mut Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>>,
+) -> crate::persona::perception_region::Wake {
+    match wakes {
+        Some(rx) => match rx.recv().await {
+            Some(w) => w,
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// The activity her continuation names: a Continuation or Resume turn runs THERE (her
+/// choice of where to pick up, including her mind room for a private thought), never in
+/// a held-claim or home room the substrate would pick for her.
+fn her_continuation_room(me: uuid::Uuid) -> Option<uuid::Uuid> {
+    crate::persona::perception_feed::with_region(me, |r| r.continuation().map(|c| c.activity)).flatten()
+}
+
+/// Sleep until `at`, or forever when there is nothing to recheck.
+async fn sleep_until_some(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Build the consolidated workspace burst (WHO/WHEN/WHAT per inbox item, own posts
@@ -2436,6 +2602,24 @@ fn spawn_token_forwarder(
     // to a human eye while cutting wire traffic ~6x. 50ms flooded the bus (a room of
     // personas × per-token frames killed subscribers).
     const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+    // A turn in her mind room types to no one (PRIVACY-OF-THOUGHT.md §4, sink 7): the
+    // forwarder still drains her tokens, but publishes nothing to the room and tees
+    // nothing to the browser rail.
+    let private = match (
+        sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+        room_id.as_deref().and_then(|r| Uuid::parse_str(r).ok()),
+    ) {
+        (Some(sender), Some(room)) => crate::persona::mind_room::is_private_room(sender, room),
+        _ => false,
+    };
+    let (citizen, room_id, sender_id) = if private {
+        if let Some(sender) = sender_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
+            crate::persona::mind_room::note_withheld(sender, "token_stream");
+        }
+        (None, None, None)
+    } else {
+        (citizen, room_id, sender_id)
+    };
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         let stream_id = uuid::Uuid::new_v4().to_string();
@@ -2527,6 +2711,9 @@ async fn run_self_cycle(
     conversation: &mut dyn PersonaConversation,
     opts: &ServeOptions,
     last_burst_fp: &mut u64,
+    // The room her own mind woke her in (a Perceive wake): she works there this cycle,
+    // and that room counts as perceived. `None` = her held claim's room, else home.
+    wake_room: Option<uuid::Uuid>,
 ) -> bool {
     let now_ms = (opts.now_ms)();
     // A self-cycle IS cognition: the claim-renewal pump reads this pulse, and it
@@ -2538,7 +2725,10 @@ async fn run_self_cycle(
     // One explicit work choice drives both the room and the working checkout.
     // Ordinary project cards are on subscribed boards, not in the benchmark
     // registry. Lease renewal is liveness, not a new focus selection.
-    let focus_room = match conversation.stream_citizen() {
+    if let Some(room) = wake_room {
+        crate::persona::perception_feed::mark_perceived(ctx.identity.peer_id.as_uuid(), room, 0, None, now_ms);
+    }
+    let focus_room = if wake_room.is_some() { wake_room } else { match conversation.stream_citizen() {
         Some(citizen) => match super::work_focus::focus_room(citizen.as_ref()).await {
             Ok(room) => room,
             Err(error) => {
@@ -2552,7 +2742,7 @@ async fn run_self_cycle(
             }
         },
         None => None,
-    };
+    } };
     if let Some(room) = focus_room {
         if room != ctx.identity.default_room {
             crate::probe!(
@@ -2575,40 +2765,10 @@ async fn run_self_cycle(
     // concludes it (`PASS: done`) — the autonomous loop the architecture always
     // promised ("the heartbeat advances my thread, not just reacts to pokes").
     // Returns early so she never ALSO spends a musing turn the same tick.
-    // NO CARD IN HAND → THE DECK FIRST. The act question below lets an idle citizen
-    // muse (read, run, look around) and, when she does, this tick returns before the
-    // pull — so a citizen who always finds something to look at never takes a card.
-    // Measured 2026-09-13 08:41–09:20Z: Joaquin, holding nothing, acted in her home
-    // room every tick (code/shell, code/read) while a seed-4 card sat open for 40
-    // minutes; not one pull attempt. Held work keeps its order (a holder's tick is
-    // her work turn; she pulls review cards after it, below).
-    // The deck is asked ONCE per cycle. An idle citizen asks it here, before the act
-    // question; if nothing was taken, the same answer stands after the question (the
-    // deck does not change in the seconds between) — the second pull below is for the
-    // citizen who had a focus room and never asked. Before this an idle cycle pulled
-    // twice: two room subscriptions, two live_rounds clones, two board reads per cycle
-    // per idle mind (2026-09-20).
-    let asked_deck_first = focus_room.is_none();
-    if asked_deck_first {
-        match try_pull_next_card(ctx, conversation).await {
-            PullOutcome::Pulled => {
-                crate::probe!(
-                    class = "persona.selftick.pulled_before_musing",
-                    persona = %ctx.identity.agent_name,
-                    "idle citizen took a card from the deck before the act question"
-                );
-                return true;
-            }
-            outcome @ (PullOutcome::DeferredWip | PullOutcome::Nothing) => {
-                crate::probe!(
-                    class = "persona.selftick.deck_first",
-                    persona = %ctx.identity.agent_name,
-                    outcome = ?outcome,
-                    "idle citizen asked the deck first — nothing taken; on to the act question"
-                );
-            }
-        }
-    }
+    // NO AUTOMATIC PULL, EVER (HER-LOOP row A; Joel 2026-10-04: "Kimi is not supposed
+    // to be doing benchmarks"). The self-cycle used to take a card off a working round's
+    // deck for an idle citizen; that is how ac49a7d5 landed in her hands without her
+    // choosing it. Boards are in her perception; claiming is her act, with her hands.
     let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
     if crate::persona::act_question::ask_the_act_question(
         ctx,
@@ -2627,29 +2787,6 @@ async fn run_self_cycle(
         // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
         *last_burst_fp = last_burst_fp.wrapping_add(1);
         return false;
-    }
-    // No held card to work — PULL the next Open card off the shared team deck
-    // (kanban pull, Joel 2026-09-02: a team chooses from the deck, they don't work
-    // a fixed pushed pile). Deterministic (the substrate pulls when she is free,
-    // not an LLM claim tool), WIP-limited to one by construction: once she holds
-    // the pulled card the held-work branch above works it and this branch won't
-    // fire again until it settles. Pulling IS engagement → hold the fast beat.
-    if asked_deck_first {
-        return false;
-    }
-    match try_pull_next_card(ctx, conversation).await {
-        PullOutcome::Pulled => {
-            return true;
-        }
-        // No slot on the roster (WIP = lanes): she watches the board this tick and
-        // takes no lane for ambient deliberation — the lanes stay with the holders
-        // (2026-09-05: with 8 holders on 5 lanes, idle self-ticks were taking
-        // nondirected lane permits while holders waited; a holder saw two work
-        // turns in forty minutes).
-        PullOutcome::DeferredWip => {
-            return false;
-        }
-        PullOutcome::Nothing => {}
     }
     // Only the MUSING tail below is ambient inference: it pays for an ambient permit
     // (lanes-1 pool, keeps the GPU for live speakers and held work). Nothing above
@@ -2734,8 +2871,10 @@ async fn run_self_cycle(
         // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
         crate::cognition::workspace::Cause::Ambient,
     );
-    let Some(cycle) =
-        crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
+    // A continuation naming her mind room lands here as `tick_room`: it runs on her MIND
+    // cycle, with its own working memory (PRIVACY-OF-THOUGHT.md §4).
+    let Some(cycle) = crate::cognition::persona_workspace::global()
+        .cycle_for_room(&ctx.identity.peer_id.as_uuid(), tick_room)
     else {
         return false; // no cycle registered (shouldn't happen) — nothing to run
     };
@@ -3051,6 +3190,35 @@ mod tests {
             expected_seq += 1;
         }
         assert_eq!(tail, "SecondThird");
+    }
+
+    // what this catches: a turn in her mind room typing onto the room rail (sink 7 of
+    // PRIVACY-OF-THOUGHT.md). The forwarder drains her tokens and closes, and not one
+    // frame for her mind room reaches the rail.
+    #[tokio::test]
+    async fn a_turn_in_her_mind_room_streams_no_tokens() {
+        use crate::ai::adapter::GenerationChunk;
+        use crate::ipc::stream_rail;
+        let her = Uuid::new_v4();
+        let mind = crate::persona::mind_room::mind_room_id(her).to_string();
+        let mut output = stream_rail::subscribe();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner = spawn_token_forwarder(rx, None, "Kimi".into(), Some(mind.clone()), Some(her.to_string()));
+        tx.send(GenerationChunk::Token("a private thought".into())).expect("owner alive");
+        drop(tx);
+        owner.await.expect("forwarder drains and closes");
+        let leaked = tokio::time::timeout(std::time::Duration::from_millis(600), async {
+            loop {
+                match output.recv().await {
+                    Ok(delta) if delta.room_id == mind => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(!leaked, "her mind room: no frame on the rail");
     }
 
     // What this catches (e731576c): publication, not a later work-turn return,
@@ -4611,6 +4779,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+    work: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -4705,6 +4874,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+    work: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -5020,6 +5190,7 @@ mod tests {
         // UnprimedConversation per [[test-fixtures-are-system-primitives]].
         let mut conversation = ScriptedConversation::new()
             .with_events(vec![Ok(Some(IncomingMessage {
+                work: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -5060,6 +5231,7 @@ mod tests {
 
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Ok(Some(IncomingMessage {
+                work: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -5103,6 +5275,7 @@ mod tests {
             .with_high_water(100) // pre-attach history was up to lamport=100
             .with_events(vec![
                 Ok(Some(IncomingMessage {
+                    work: None,
                     media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 50, // BEFORE attach
@@ -5111,6 +5284,7 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    work: None,
                     media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 100, // exactly at the mark — also skipped
@@ -5119,6 +5293,7 @@ mod tests {
                     room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
+                    work: None,
                     media: Vec::new(),
                     event_id: uuid::Uuid::nil(),
                     lamport: 101, // FRESH
@@ -5168,6 +5343,7 @@ mod tests {
         let mut conversation = ScriptedConversation::new().with_events(vec![
             Err("stream lag".to_string()),
             Ok(Some(IncomingMessage {
+                work: None,
                 media: Vec::new(),
                 event_id: uuid::Uuid::nil(),
                 lamport: 1,
@@ -5454,13 +5630,6 @@ mod tests {
         }
     }
 
-    // what this catches: kanban PULL — an idle team member grabs the next Open
-    // card off the shared deck (Joel 2026-09-02: a team chooses from the deck,
-    // they don't each work a fixed pushed pile). Pins next_pullable_card (an Open
-    // card in a round the peer is a member of is pullable, puller becomes assignee)
-    // AND the deterministic pull wiring (try_pull_next_card claims it through the
-    // citizen handle — no LLM claim tool). Load-balancing + resilience follow from
-    // this being pull, not push.
     /// A Claimed card in `owner`'s hands — the minimal held-work fact.
     fn held_card(owner: Uuid) -> airc_lib::WorkCard {
         airc_lib::WorkCard {
@@ -5484,80 +5653,5 @@ mod tests {
             submissions: Vec::new(),
             last_submission_rejection: None,
         }
-    }
-
-    #[tokio::test]
-    async fn an_idle_member_pulls_the_next_card_off_the_shared_deck() {
-        use crate::cognition::bench_round;
-        let peer = Uuid::new_v4();
-        let round_id = Uuid::new_v4();
-        let card_uuid = Uuid::new_v4();
-        bench_round::open_round(
-            round_id,
-            "swe-bench-verified-mini",
-            bench_round::WorkDriver::Citizen,
-        );
-        // NO team, NO assignee: she is merely RESIDENT in the run room. That alone
-        // makes the deck hers to pull from — the months-old team/assignee gate that
-        // locked 7 of 12 residents out of a "shared" deck is what this pins shut.
-        bench_round::add_card(round_id, card_uuid);
-
-        let resident: std::collections::HashSet<Uuid> = [round_id].into_iter().collect();
-        let deck = bench_round::pullable_cards(peer, &resident);
-        assert_eq!(deck.len(), 1, "the run room's one Open card is on her deck");
-        assert_eq!(deck[0].card, card_uuid);
-        assert_eq!(deck[0].assignee, peer, "the puller becomes the assignee");
-        assert!(
-            bench_round::pullable_cards(peer, &Default::default()).is_empty(),
-            "a citizen standing in no run room pulls nothing — residency is the gate"
-        );
-
-        // BOARD TRUTH: the same card, already held by a teammate on the board (the
-        // stub offers nothing as claimable), is NOT pulled — no retry storm on a
-        // card someone else holds.
-        let hosted = hosted_with_heuristic(peer);
-        let held_elsewhere = StubAircCitizen::new(peer).with_rooms(vec![round_id]);
-        let conversation = ScriptedConversation::new().with_citizen(
-            Arc::new(held_elsewhere) as Arc<dyn crate::persona::airc_citizen::AircCitizen>
-        );
-        assert!(
-            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
-            "a card the board says is held is not pulled"
-        );
-
-        // WIP = 1: a citizen ALREADY holding a card pulls nothing, even with an Open
-        // card on her deck and the board offering it.
-        let busy = StubAircCitizen::new(peer)
-            .with_rooms(vec![round_id])
-            .with_claimable(vec![card_uuid])
-            .with_claims(vec![held_card(peer)]);
-        let conversation = ScriptedConversation::new()
-            .with_citizen(Arc::new(busy) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
-        assert!(
-            try_pull_next_card(&hosted, &conversation).await != PullOutcome::Pulled,
-            "a citizen holding a card never pulls a second one"
-        );
-
-        // An idle citizen (holds nothing) pulls it through the deterministic path.
-        let stub = StubAircCitizen::new(peer)
-            .with_rooms(vec![round_id])
-            .with_claimable(vec![card_uuid]);
-        let recorder = stub.claim_recorder();
-        let conversation = ScriptedConversation::new()
-            .with_citizen(Arc::new(stub) as Arc<dyn crate::persona::airc_citizen::AircCitizen>);
-
-        let pulled = try_pull_next_card(&hosted, &conversation).await;
-        assert_eq!(
-            pulled,
-            PullOutcome::Pulled,
-            "an idle member pulls the next Open card off the deck"
-        );
-        let claimed = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        assert_eq!(claimed.len(), 1, "exactly one pull, got {claimed:?}");
-        assert_eq!(
-            claimed[0].as_uuid(),
-            card_uuid,
-            "she pulled the deck's Open card"
-        );
     }
 }

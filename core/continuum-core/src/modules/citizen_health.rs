@@ -13,15 +13,11 @@
 //! what a human or a peer acts on; the probe is what a test or a dashboard reads.
 //!
 //! THE RECEIPT HAS AN ACTOR (card c84d885a, S3 — Joel 2026-09-18: "govern for
-//! reliability"). "AT THE KNEE … owed: fewer seats" was said in the org room for hours
-//! on 2026-09-18 with nobody to pay it; an operator paid it by hand (a hold + a reboot).
-//! Now the tick pays it: when the roster is starved or at the knee AND the hour's card
-//! pulls were mostly lane-deferrals (`bench.round.pull_deferred_wip` — the minds were
-//! queued on the lanes, not idle), the least-served seats REST down to the healthy edge
-//! (`lanes × MINDS_PER_LANE_STARVED_ABOVE`), the same resting-seat page-out the mindless
-//! rule uses, with WHY on the record. An hour of `pull_none` pays nothing here — that is
-//! a round-supply defect, not a seat one, and paging a roster for it would delete the
-//! roster and report success.
+//! reliability"): the tick pays what the line used to only say. Until 2026-10-04 a second
+//! rule here rested seats when the hour's CARD PULLS were lane-deferred; the pull was
+//! deleted that day (HER-LOOP-IS-HER-OWN.md row A: nothing hands a citizen a card), and a
+//! rest whose reason can no longer occur went with it. A starved or at-the-knee roster
+//! is still named on the line; the mindless rule and the slow clip are the seat remedies.
 //! Cadence follows the RTOS shape: the module's own `tick_interval`, no task of its own
 //! ([[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]).
 
@@ -42,11 +38,6 @@ struct Ledger {
     settles: AtomicU64,
     credits_staged: AtomicU64,
     credits_settled: AtomicU64,
-    /// Card pulls the roster attempted (the three receipted outcomes of
-    /// `work_pull::try_pull_next_card`: pulled, deferred on the lanes, nothing to pull).
-    pulls: AtomicU64,
-    /// Of those, the pulls deferred because the roster already held a card per lane.
-    pulls_deferred: AtomicU64,
     /// Turns that ended INSIDE the reasoning channel — no answer, no act (the
     /// `persona.act.think_only` seam). Two in an hour on the M5 (2026-09-20) were the
     /// whole story of #4194's allowance floor; on the hour line a regression is one number.
@@ -92,11 +83,11 @@ struct Ledger {
     moves_opportunity: AtomicU64,
     moves_failure: AtomicU64,
     /// THE HOUR'S LANE DISTRIBUTION, bucketed by lane count (card `6d444769`). Sampled at
-    /// the PULL DECISION — the moment the capacity is actually spent — so the shape is the
+    /// the LANE ASK — the moment the capacity is actually spent — so the shape is the
     /// one the queueing minds met, not the one the node touched once. Read by
     /// [`lanes_sustained_of`]; `lanes_max` is unchanged and still the peak.
     /// THE HOUR'S LANES, ONE VALUE PER TIME BUCKET. Not a histogram of samples: a
-    /// histogram counts PULLS, and pulls arrive in bursts, so whoever polls most often
+    /// histogram counts ASKS, and asks arrive in bursts, so whoever polls most often
     /// decides the median (Astra's second review of #4356 — a count floor AND a
     /// first-to-last span floor are both cleared by one stray early sample plus a burst).
     /// Each bucket contributes exactly once, so an hour is judged by its MINUTES.
@@ -112,8 +103,6 @@ static LEDGER: Ledger = Ledger {
     settles: AtomicU64::new(0),
     credits_staged: AtomicU64::new(0),
     credits_settled: AtomicU64::new(0),
-    pulls: AtomicU64::new(0),
-    pulls_deferred: AtomicU64::new(0),
     think_only: AtomicU64::new(0),
     lane_starved: AtomicU64::new(0),
     generations: AtomicU64::new(0),
@@ -172,12 +161,13 @@ const LANE_BUCKET_MS: u64 = 2 * 60 * 1_000;
 pub const LANE_MIN_BUCKETS: usize = 10;
 
 /// The node had `lanes` lanes at a moment work was actually asked of them — fold into
-/// THIS bucket's maximum. Called from [`note_pull`], never on its own: the sample is
-/// taken where the capacity is spent.
+/// THIS bucket's maximum. Called from [`note_lane_granted`] and [`note_lane_starved`],
+/// never on its own: the sample is taken where the capacity is spent (until 2026-10-04 at
+/// the card pull, which is gone; a lane asked for is the same moment).
 ///
-/// **Maximum within the bucket, deliberately.** A burst of pulls during a relaunch all
-/// read the launch's single lane; if any pull in the same two minutes saw the real lane
-/// count, that is what the bucket reports. The bias is AGAINST resting the roster, which
+/// **Maximum within the bucket, deliberately.** A burst of lane asks during a relaunch
+/// all read the launch's single lane; if any ask in the same two minutes saw the real
+/// lane count, that is what the bucket reports. The bias is AGAINST resting the roster, which
 /// is the direction an error should take (Cormac's condition on #4244).
 fn note_lane_sample(lanes: u64) {
     let now = crate::persona::recall_metadata::now_ms();
@@ -198,13 +188,12 @@ fn note_lane_sample(lanes: u64) {
 /// THE HOUR'S SUSTAINED LANES: the median over the buckets that carried a sample, or
 /// `None` when too few distinct buckets did.
 ///
-/// Pure, so the shapes are hand-computed tests. This is the statistic the verdict and
-/// both seat remedies divide by. For the window that produced card `6d444769` — 699
-/// pull-time samples reading `1x155, 2x42, 3x344, 4x154, 5x2, 6x2`, spread across the
+/// Pure, so the shapes are hand-computed tests. This is the statistic the verdict
+/// divides by. For the window that produced card `6d444769` — 699
+/// lane-time samples reading `1x155, 2x42, 3x344, 4x154, 5x2, 6x2`, spread across the
 /// hour — the per-minute picture is a node that held about three lanes, and `lanes_max`
 /// for the same window read **8**. The roster was 16. `16 > 3*2` is starved;
-/// `16 > 8*2` is not, which is why the lane-bound rest never fired in three hours at
-/// 98-100% pull deferral and `lane_bound_rested` was 0 in every one of them.
+/// `16 > 8*2` is not, which is why a starved roster read as a working one for three hours.
 ///
 /// **A burst cannot win here.** Astra's counterexample — one 8-lane sample at t0 and
 /// thirty-two 1-lane samples during a relaunch ten minutes later — touches exactly TWO
@@ -237,18 +226,6 @@ fn read_lane_buckets() -> [u64; LANE_BUCKETS] {
     }
     out
 }
-/// A card pull was decided (the `bench.round.pull_*` seams). `deferred` = the lanes
-/// were full, so she watched the board instead — the lane-bound signal.
-pub fn note_pull(deferred: bool) {
-    LEDGER.pulls.fetch_add(1, Ordering::Relaxed);
-    // THE CAPACITY IS SAMPLED WHERE IT IS SPENT. The gate one frame above this decided
-    // `deferred` against exactly this number (`work_pull`'s `served_lane_count()`), so
-    // the hour's distribution is built from the values that actually turned work away.
-    note_lane_sample(crate::cognition::resource_admission::served_lane_count() as u64);
-    if deferred {
-        LEDGER.pulls_deferred.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 /// A turn iteration ended WITHOUT reaching the model (the `persona.act.lane_starved`
 /// seam in the settle loop): she waited for a serving lane and never got one. Counted
@@ -256,6 +233,7 @@ pub fn note_pull(deferred: bool) {
 /// what made a starved hour read as a working one.
 pub fn note_lane_starved() {
     LEDGER.lane_starved.fetch_add(1, Ordering::Relaxed);
+    note_lane_sample(crate::cognition::resource_admission::served_lane_count() as u64);
 }
 
 /// A generation reached its end, one way or the other (the
@@ -296,9 +274,9 @@ pub fn note_act(wrote: bool) {
 pub fn note_lane_granted() {
     LEDGER.lanes_granted.fetch_add(1, Ordering::Relaxed);
     note_lanes(crate::inference::llama_server::current_serving().lanes as u64);
+    note_lane_sample(crate::cognition::resource_admission::served_lane_count() as u64);
 }
-/// Per-mind lane grants this hour — the placement chooser's and the lane-bound
-/// page-out's "least served" order. One per-mind ledger ([`MindHour`]), not two.
+/// Per-mind lane grants this hour — the placement chooser's "least served" order. One per-mind ledger ([`MindHour`]), not two.
 pub fn note_lane_granted_to(persona: uuid::Uuid) {
     note_lane_granted();
     MINDS.entry(persona).or_default().lane_grants += 1;
@@ -368,73 +346,6 @@ pub fn mindless_seats(minds: &[(uuid::Uuid, MindHour)], resident: u64) -> Vec<(u
         share(&b.1).partial_cmp(&share(&a.1)).unwrap_or(std::cmp::Ordering::Equal) // unwrap_or: NaN is impossible (verdicts ≥ 1); Equal keeps the order
     });
     out.truncate(room.min(MINDLESS_MAX_PER_TICK));
-    out
-}
-/// LANE-BOUND, the rule (card c84d885a, S3): the roster is starved or at the knee, the
-/// hour's pulls are a fair sample, and at least this share of them were deferred on the
-/// lanes — the minds were queued, not idle, not mindless. The same four-in-five bar the
-/// mindless rule uses; the same evidence floor.
-pub const LANE_BOUND_DEFERRED_SHARE: f64 = MINDLESS_GATE_SHARE;
-pub const LANE_BOUND_MIN_PULLS: u64 = MINDLESS_MIN_VERDICTS;
-/// The reason every lane-bound rest carries — lives beside the record it marks, since
-/// the record's own rule (a lane-bound rest outlives a deploy) reads it.
-pub use crate::persona::resting_seat::LANE_BOUND_REASON;
-pub fn is_lane_bound(h: &CitizenHealth, v: &Verdict) -> bool {
-    matches!(v, Verdict::Starved { .. } | Verdict::AtKnee { .. })
-        && h.pulls >= LANE_BOUND_MIN_PULLS
-        && (h.pulls_deferred as f64) >= LANE_BOUND_DEFERRED_SHARE * (h.pulls as f64)
-}
-/// The pure choice: which seats REST this tick so the roster comes down to the healthy
-/// edge (`lanes × MINDS_PER_LANE_STARVED_ABOVE` — the one number the STARVED verdict
-/// already turns on). Least served first (no writes, then fewest lane grants), never
-/// below the resident floor, and NOTHING on an hour whose pulls found no rounds — that
-/// is a round-supply defect, not a seat one.
-///
-/// TO THE EDGE IN ONE TICK (Joel, 2026-09-20: the roster is BOUNDED by the warm slots,
-/// not eased toward them). The per-tick cap was the mindless rule's — a page-out for
-/// cause is a considered act, three at a time. A lane-bound rest is arithmetic: 16
-/// minds on 3 lanes rested 3 an hour and the 22:22Z hour on the M5 still read 2,174 of
-/// 2,177 pulls deferred, acts 5, writes 0. The floor still holds.
-pub fn lane_bound_seats(h: &CitizenHealth, v: &Verdict, minds: &[(uuid::Uuid, MindHour)]) -> Vec<(uuid::Uuid, MindHour)> {
-    if !is_lane_bound(h, v) {
-        return Vec::new();
-    }
-    // The edge the verdict already turned on — the SUSTAINED lanes, so the remedy and the
-    // rule that admits it divide by one number.
-    let keep = h.lanes_sustained.saturating_mul(MINDS_PER_LANE_STARVED_ABOVE).max(MINDLESS_RESIDENT_FLOOR);
-    let over = h.resident.saturating_sub(keep) as usize;
-    let mut out: Vec<(uuid::Uuid, MindHour)> = minds.to_vec();
-    out.sort_by_key(|(_, m)| (m.writes, m.lane_grants));
-    out.truncate(over);
-    out
-}
-/// THE MIRROR (Cormac's condition on S3): a lane-bound rest has a lane-bound WAKE. A
-/// mindless seat returns on a CHANGE in her; a lane-bound seat was fine — the LANES were
-/// short — so she returns when the lanes come back: while `lanes × MINDS_PER_LANE_STARVED_ABOVE`
-/// has room above the residents, the most recently rested lane-bound seat (the most served
-/// of those rested, since the least served rested first) wakes, as many as the room holds.
-/// Without this every transient lane dip would permanently shrink the roster — the
-/// one-direction shape (the peak ratchet, the claim expiry, the metronome) in a fourth
-/// coat — and since a lane-bound rest now outlives a deploy, this wake and the operator's
-/// word are the ONLY returns. Mindless rests are untouched. Pure.
-pub const LANES_RETURNED_REASON: &str = "lanes returned";
-pub fn lane_bound_wakes(h: &CitizenHealth, resting: &[crate::persona::resting_seat::RestingSeat]) -> Vec<crate::persona::resting_seat::RestingSeat> {
-    // THE SAME STATISTIC AS THE REST, deliberately. Resting on the sustained value and
-    // waking on the peak would rest a seat the moment the lanes sagged and wake her the
-    // moment one fold point touched a high count — a seat flapping once an hour. The
-    // lanes "return" when the hour HOLDS them.
-    let edge = h.lanes_sustained.saturating_mul(MINDS_PER_LANE_STARVED_ABOVE);
-    let room = edge.saturating_sub(h.resident) as usize;
-    if room == 0 {
-        return Vec::new();
-    }
-    let mut out: Vec<crate::persona::resting_seat::RestingSeat> = resting
-        .iter()
-        .filter(|s| s.reason.starts_with(LANE_BOUND_REASON))
-        .cloned()
-        .collect();
-    out.sort_by_key(|s| std::cmp::Reverse(s.since_ms));
-    out.truncate(room);
     out
 }
 /// THE SLOW CLIP (card ef25bf6c; Joel: dormant is not off, every mind gets a slow clip at
@@ -519,9 +430,6 @@ pub struct CitizenHealth {
     pub settles: u64,
     pub credits_staged: u64,
     pub credits_settled: u64,
-    /// Card pulls the roster attempted this hour, and how many the full lanes deferred.
-    pub pulls: u64,
-    pub pulls_deferred: u64,
     /// Turns this hour that ended inside the reasoning channel — no answer, no act.
     pub think_only: u64,
     /// Turn iterations this hour that never reached the model — a wait, not an act, and
@@ -599,13 +507,10 @@ pub enum Verdict {
     /// Acts without writes: reading and re-orienting, never delivering.
     Reading { acts: u64 },
     /// Residents, no acts at all — and WHY, as far as the node can read it: with no
-    /// working round there is nothing to act on (a round is owed, not lanes); with
-    /// rounds and the hour's pulls DEFERRED on the lanes the minds were seated and
-    /// queued (the lanes are the block — M5 2026-09-19 13:0xZ: 4 minds, 1 lane, 0 lane
-    /// grants, 398 of 398 pulls deferred, and the line said "a seating question");
-    /// with rounds and pulls that found nothing, the seating is the question
-    /// (`bench.round.pull_none` names it per mind).
-    Idle { resident: u64, rounds_working: u64, standing_enabled: bool, lane_bound: bool },
+    /// working round there is nothing on this node's boards to act on; with rounds and
+    /// no acts, nobody chose a card (claiming is hers; nothing pulls for her since
+    /// 2026-10-04).
+    Idle { resident: u64, rounds_working: u64, standing_enabled: bool },
     /// Writes happen, but too few for the roster: fewer than one write per
     /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
     Slow { writes: u64, resident: u64 },
@@ -637,8 +542,8 @@ impl Verdict {
 /// is over-saturated", the bound "is the way to go"): about two minds per slot, one
 /// turning and one prefilled and waiting. At ~4-minute turns that is a lane every ~8
 /// minutes each; three was a lane every ~12, and the hour it produced (16 on 3, acts 5,
-/// 2,174 of 2,177 pulls deferred) was not useful. Minds past the edge rest — dormant, not
-/// resident, not polling — and return when the lanes do or a card names them.
+/// every lane ask deferred) was not useful. Minds past the edge rest — dormant, not
+/// resident, not polling — and return on a change.
 pub const MINDS_PER_LANE_STARVED_ABOVE: u64 = 2;
 
 /// A node is DROPPING above this share of its generations thrown away in flight. One
@@ -663,10 +568,6 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
             resident: h.resident,
             rounds_working: h.rounds_working,
             standing_enabled: h.standing_enabled,
-            // The same bar the lane-bound rest uses, so "queued on the lanes" means one
-            // thing everywhere: a fair sample of pulls, four in five deferred.
-            lane_bound: h.pulls >= LANE_BOUND_MIN_PULLS
-                && (h.pulls_deferred as f64) >= LANE_BOUND_DEFERRED_SHARE * (h.pulls as f64),
         };
     }
     // SUSTAINED, NOT PEAK (card `6d444769`). The variants carry the number that was
@@ -722,14 +623,8 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
             "IDLE: {resident} resident, no acts — NO ROUND on this node with standing ON; the autopilot's \
              skip reason is on the probe stream (bench.standing.skipped)"
         ),
-        Verdict::Idle { resident, rounds_working, lane_bound: true, .. } => format!(
-            "IDLE: {resident} resident, no acts with {rounds_working} working round(s) — {} of {} pulls deferred on \
-             {} lane(s), {} lane grants: the minds are seated and queued; the lanes are the block, not the seating",
-            h.pulls_deferred, h.pulls, h.lanes, h.lanes_granted
-        ),
         Verdict::Idle { resident, rounds_working, .. } => format!(
-            "IDLE: {resident} resident, no acts with {rounds_working} working round(s) — a seating question \
-             (bench.round.pull_none names it per mind)"
+            "IDLE: {resident} resident, no acts with {rounds_working} working round(s) — nobody chose a card"
         ),
         Verdict::Empty { lanes, lanes_granted } => format!(
             "EMPTY: no residents — {lanes} lanes offered, {lanes_granted} grants this hour"
@@ -803,7 +698,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         // (#4283); `prefix reuse` is how much of each prompt the engine did not re-read
         // (card c119ace7); `moves` is minds changing seats and `oldest dormant turn` is a
         // mind with no seat at all (card 10bba591). Six different problems, six owners.
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · dropped {} · writes {} · lane grants {} · pulls {} ({} lane-deferred) · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · think-only {} · dropped {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
@@ -814,8 +709,6 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         dropped,
         h.writes,
         h.lanes_granted,
-        h.pulls,
-        h.pulls_deferred,
         h.settles,
         h.credits_staged,
         h.credits_settled,
@@ -859,7 +752,7 @@ fn snapshot_prompt_and_reset() -> (u64, u64) {
     )
 }
 
-fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64) {
     (
         LEDGER.acts.swap(0, Ordering::Relaxed),
         LEDGER.writes.swap(0, Ordering::Relaxed),
@@ -867,8 +760,6 @@ fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
         LEDGER.settles.swap(0, Ordering::Relaxed),
         LEDGER.credits_staged.swap(0, Ordering::Relaxed),
         LEDGER.credits_settled.swap(0, Ordering::Relaxed),
-        LEDGER.pulls.swap(0, Ordering::Relaxed),
-        LEDGER.pulls_deferred.swap(0, Ordering::Relaxed),
         LEDGER.think_only.swap(0, Ordering::Relaxed),
     )
 }
@@ -877,11 +768,10 @@ fn snapshot_and_reset() -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
 /// checkpoint), take each chosen seat off the grid (the same orderly teardown as
 /// `persona/instances/despawn`), and record the rest so the reconciler does not
 /// re-draw her. Returns the names paged out, for the line.
-/// Why a seat rests — the two rules that page out, each with its own receipt.
+/// Why a seat rests — each rule that pages out, with its own receipt.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RestCause {
     Mindless,
-    LaneBound,
     /// The slow clip: a dormant mind is waiting and this seat's hour held nothing.
     Rotation,
 }
@@ -928,10 +818,6 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
                 "{} of {} speak verdicts this hour were the gate refusing a recital or an envelope; {} acts, 0 writes",
                 m.gate_refused, m.verdicts, m.acts
             ),
-            RestCause::LaneBound => format!(
-                "{LANE_BOUND_REASON}: {} minds on {} lanes, {} of {} pulls deferred on the lanes this hour; she had {} lane grants, {} writes — least served rests first",
-                h.resident, h.lanes, h.pulls_deferred, h.pulls, m.lane_grants, m.writes
-            ),
         };
         let since_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -957,21 +843,6 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
                 recorded = recorded.is_ok(),
                 reason = %reason,
                 "a mindless seat was paged out with her checkpoint — she returns on a change, not a clock"
-            ),
-            RestCause::LaneBound => crate::probe!(
-                class = "persona.lane_bound.rested",
-                persona = %agent_name,
-                persona_id = %persona,
-                resident = h.resident,
-                lanes = h.lanes,
-                pulls = h.pulls,
-                pulls_deferred = h.pulls_deferred,
-                lane_grants = m.lane_grants,
-                writes = m.writes,
-                checkpoint_saved = saved,
-                recorded = recorded.is_ok(),
-                reason = %reason,
-                "the receipt's actor: a lane-bound roster rests its least-served seat with her checkpoint — she returns on a change (a deploy, the operator's word), not a clock"
             ),
         }
         out.push(agent_name);
@@ -1027,7 +898,7 @@ impl CitizenHealthModule {
         Self
     }
     fn read(&self) -> CitizenHealth {
-        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled, pulls, pulls_deferred, think_only) = snapshot_and_reset();
+        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled, think_only) = snapshot_and_reset();
         let resident = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().len() as u64)
             .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
@@ -1036,8 +907,8 @@ impl CitizenHealthModule {
         // The hour's lanes: the window's max folded with this tick's sample, then the
         // window starts again from what is served now.
         let lanes = LEDGER.lanes_max.swap(lanes_now, Ordering::Relaxed).max(lanes_now);
-        // The peak stands when the window had too few pulls to have a shape — a thin hour
-        // is not evidence of a shortage.
+        // The peak stands when the window had too few lane asks to have a shape — a thin
+        // hour is not evidence of a shortage.
         let lanes_sustained = lanes_sustained_of(&snapshot_lane_buckets_and_reset()).unwrap_or(lanes); // JUSTIFIED unwrap_or: too few distinct buckets = the hour has no shape, and the peak is the read that rests nobody
         let (rounds_working, standing_enabled) = round_supply();
         let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
@@ -1062,8 +933,6 @@ impl CitizenHealthModule {
             settles,
             credits_staged,
             credits_settled,
-            pulls,
-            pulls_deferred,
             think_only,
             generations,
             generations_dropped,
@@ -1086,7 +955,7 @@ impl CitizenHealthModule {
 fn round_supply() -> (u64, bool) {
     let rounds_working = crate::cognition::bench_round::live_rounds()
         .iter()
-        .filter(|r| crate::persona::work_pull::is_working_citizen_round(r))
+        .filter(|r| crate::cognition::bench_round::is_working_citizen_round(r))
         .count() as u64;
     (rounds_working, crate::modules::benchmark_standing::is_enabled())
 }
@@ -1128,34 +997,11 @@ impl ServiceModule for CitizenHealthModule {
         // on a clock. The lake and the rabbits: her working memory is flushed first.
         let minds = snapshot_minds_and_reset();
         let paged_out = rest_seats(mindless_seats(&minds, h.resident), RestCause::Mindless, &h).await;
-        // THE RECEIPT'S ACTOR (card c84d885a, S3): a starved / at-the-knee roster whose
-        // hour was lane-deferrals rests its least-served seats down to the healthy edge
-        // — what "owed: fewer seats" was asking a human to do. Never on a pull_none hour.
         let remaining: Vec<(uuid::Uuid, MindHour)> =
             minds.iter().filter(|(_, m)| !paged_out.contains(&m.agent_name)).cloned().collect();
         let after_mindless = CitizenHealth { resident: h.resident.saturating_sub(paged_out.len() as u64), ..h.clone() };
-        let rested = rest_seats(lane_bound_seats(&after_mindless, &v, &remaining), RestCause::LaneBound, &after_mindless).await;
-        // THE MIRROR: the lanes came back — the lane-bound seats come back, most served
-        // first, same cap. (Rest and wake cannot both fire: one needs residents above the
-        // edge, the other room below it.)
         // THE SLOW CLIP: a dormant mind waits, so one quiet resident yields her seat.
-        let rotated = self.rotate_one(&remaining, paged_out.len() + rested.len(), &after_mindless).await;
-        let mut woken: Vec<String> = Vec::new();
-        for seat in lane_bound_wakes(&after_mindless, &crate::persona::resting_seat::resting()) {
-            if crate::persona::resting_seat::wake(&seat.agent_name) {
-                crate::probe!(
-                    class = "persona.lane_bound.woken",
-                    persona = %seat.agent_name,
-                    persona_id = %seat.persona_id,
-                    resident = after_mindless.resident,
-                    lanes = h.lanes,
-                    rested_since_ms = seat.since_ms,
-                    reason = LANES_RETURNED_REASON,
-                    "the lanes came back — a lane-bound seat returns at the next reconcile"
-                );
-                woken.push(seat.agent_name);
-            }
-        }
+        let rotated = self.rotate_one(&remaining, paged_out.len(), &after_mindless).await;
         crate::probe!(
             class = "citizen.health.hour",
             resident = h.resident,
@@ -1167,8 +1013,6 @@ impl ServiceModule for CitizenHealthModule {
             acts = h.acts,
             writes = h.writes,
             lane_grants = h.lanes_granted,
-            pulls = h.pulls,
-            pulls_deferred = h.pulls_deferred,
             think_only = h.think_only,
             lane_starved = h.lane_starved,
             generations = h.generations,
@@ -1178,9 +1022,7 @@ impl ServiceModule for CitizenHealthModule {
             credits_staged = h.credits_staged,
             credits_settled = h.credits_settled,
             mindless_paged_out = paged_out.len() as u64,
-            lane_bound_rested = rested.len() as u64,
             rotated = rotated.len() as u64,
-            lane_bound_woken = woken.len() as u64,
             moves_opportunity = h.moves_opportunity,
             moves_failure = h.moves_failure,
             oldest_dormant_turn_age_ms = h.oldest_dormant_turn_age_ms.unwrap_or(0), // unwrap_or: 0 = nobody dormant
@@ -1190,12 +1032,6 @@ impl ServiceModule for CitizenHealthModule {
         let mut said = line(&h, &v);
         if !paged_out.is_empty() {
             said.push_str(&format!(" · mindless {} paged out ({})", paged_out.len(), paged_out.join(", ")));
-        }
-        if !rested.is_empty() {
-            said.push_str(&format!(" · lane-bound: {} rested to the healthy edge ({})", rested.len(), rested.join(", ")));
-        }
-        if !woken.is_empty() {
-            said.push_str(&format!(" · lanes returned: {} woken ({})", woken.len(), woken.join(", ")));
         }
         crate::modules::grid::say_in_org_room(&said).await;
         Ok(())
@@ -1226,8 +1062,6 @@ impl ServiceModule for CitizenHealthModule {
                     settles: LEDGER.settles.load(Ordering::Relaxed),
                     credits_staged: LEDGER.credits_staged.load(Ordering::Relaxed),
                     credits_settled: LEDGER.credits_settled.load(Ordering::Relaxed),
-                    pulls: LEDGER.pulls.load(Ordering::Relaxed),
-                    pulls_deferred: LEDGER.pulls_deferred.load(Ordering::Relaxed),
                     think_only: LEDGER.think_only.load(Ordering::Relaxed),
                     lane_starved: LEDGER.lane_starved.load(Ordering::Relaxed),
                     generations: LEDGER.generations.load(Ordering::Relaxed),
@@ -1252,7 +1086,7 @@ impl ServiceModule for CitizenHealthModule {
                     "served_window": h.served_window,
                     "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
                     "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
-                    "pulls": h.pulls, "pulls_deferred": h.pulls_deferred, "think_only": h.think_only,
+                    "think_only": h.think_only,
                     "lane_starved": h.lane_starved,
                     "generations": h.generations, "generations_dropped": h.generations_dropped,
                     "dropped_pct": dropped_pct(&h),
@@ -1316,7 +1150,7 @@ mod tests {
     }
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, pulls: 0, pulls_deferred: 0, think_only: 0, lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, think_only: 0, lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, rounds_working: 1, standing_enabled: true, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None }
     }
 
     // what this catches (card 10bba591): the line carries the grid's half — moves by
@@ -1349,7 +1183,7 @@ mod tests {
         let idle = |rounds_working: u64, standing_enabled: bool| CitizenHealth { rounds_working, standing_enabled, ..h(8, 2, 0, 0) };
         let off = idle(0, false);
         let v = verdict(&off);
-        assert_eq!(v, Verdict::Idle { resident: 8, rounds_working: 0, standing_enabled: false, lane_bound: false });
+        assert_eq!(v, Verdict::Idle { resident: 8, rounds_working: 0, standing_enabled: false });
         let said = line(&off, &v);
         assert!(said.contains("NO ROUND") && said.contains("autopilot is OFF") && said.contains("benchmark/standing"), "{said}");
         assert!(said.contains("not lanes"), "the owed thing is named: {said}");
@@ -1358,20 +1192,8 @@ mod tests {
         assert!(said.contains("standing ON") && said.contains("bench.standing.skipped"), "{said}");
         let seated = idle(1, true);
         let said = line(&seated, &verdict(&seated));
-        assert!(said.contains("1 working round") && said.contains("seating"), "{said}");
+        assert!(said.contains("1 working round") && said.contains("nobody chose a card"), "{said}");
         assert!(!said.contains("autopilot"), "with a round in flight the switch is not the story: {said}");
-        // The M5's hour (2026-09-19 13:0xZ): 4 minds, 1 lane, 0 grants, 398/398 pulls
-        // deferred, 7 rounds. Seated and queued — the lanes, not the seating.
-        let queued = CitizenHealth { pulls: 398, pulls_deferred: 398, lanes: 1, lanes_sustained: 1, lanes_granted: 0, ..idle(7, true) };
-        let v = verdict(&queued);
-        assert!(matches!(v, Verdict::Idle { lane_bound: true, .. }), "{v:?}");
-        let said = line(&queued, &v);
-        assert!(said.contains("398 of 398 pulls deferred") && said.contains("lanes are the block"), "{said}");
-        assert!(!said.contains("seating question"), "queued minds are not a seating question: {said}");
-        // Below the evidence floor (a handful of pulls) it stays a seating question — one
-        // deferred pull is not a lane-bound hour.
-        let thin = CitizenHealth { pulls: 3, pulls_deferred: 3, lanes: 1, lanes_sustained: 1, ..idle(7, true) };
-        assert!(matches!(verdict(&thin), Verdict::Idle { lane_bound: false, .. }));
     }
 
     // what this catches: the four shapes of 2026-09-14 named by the rule — 16 on 3 is
@@ -1386,7 +1208,7 @@ mod tests {
         assert_eq!(verdict(&h(16, 8, 39, 0)), Verdict::Reading { acts: 39 });
         assert_eq!(
             verdict(&h(16, 8, 0, 0)),
-            Verdict::Idle { resident: 16, rounds_working: 1, standing_enabled: true, lane_bound: false }
+            Verdict::Idle { resident: 16, rounds_working: 1, standing_enabled: true }
         );
         assert_eq!(verdict(&h(16, 8, 39, 4)), Verdict::Healthy);
         // The first receipt the core ever posted (00:01Z 2026-09-15): 16 residents,
@@ -1510,15 +1332,14 @@ mod tests {
         note_lane_granted();
         note_settle();
         note_credit_staged();
-        note_pull(true);
         note_think_only();
-        let (a, w, l, s, c, _, p, pd, t) = snapshot_and_reset();
-        assert!(a >= 2 && w >= 1 && l >= 1 && s >= 1 && c >= 1 && p >= 1 && pd >= 1);
+        let (a, w, l, s, c, _, t) = snapshot_and_reset();
+        assert!(a >= 2 && w >= 1 && l >= 1 && s >= 1 && c >= 1);
         // what this catches (the M5, 2026-09-20): a turn that ends inside the reasoning
         // channel is counted for the hour line, and resets with the rest of the window.
         assert!(t >= 1, "a think-only turn is on the hour's ledger");
-        let (a2, _, _, _, _, _, p2, _, t2) = snapshot_and_reset();
-        assert_eq!((a2, p2, t2), (0, 0, 0));
+        let (a2, _, _, _, _, _, t2) = snapshot_and_reset();
+        assert_eq!((a2, t2), (0, 0));
         // The prompt-cache totals are a window too (card c119ace7), and an unmeasured
         // generation (no timings: 0/0) leaves them untouched.
         note_generation(0, 0);
@@ -1562,68 +1383,6 @@ mod tests {
         assert!(rotation_candidates(true, 0, &residents, |_| None, now).is_empty(), "unknown tenure never yields");
     }
 
-    // what this catches (card c84d885a, S3 — the receipt's actor): the M5's 2026-09-18
-    // hour, 16 minds on 2 lanes with 424 lane-deferred pulls, rests its least-served seats
-    // toward the healthy edge (2 lanes × 3) — bounded per tick, worst-served first, WHY
-    // on the record; and the IntelMac's hour, 8 minds with 278 pulls that found NO
-    // round, rests NOBODY — that is a round-supply defect, and paging the roster for it
-    // would delete the roster and report success. The edge, the floor and the cap are the
-    // rule's own constants, not a grid's numbers.
-    #[test]
-    fn a_lane_bound_roster_rests_its_least_served_seats_and_a_roundless_one_rests_nobody() {
-        let mind = |name: &str, grants: u64, writes: u64| MindHour {
-            agent_name: name.into(), verdicts: 10, gate_refused: 1, acts: grants, writes, lane_grants: grants,
-        };
-        let roster: Vec<(uuid::Uuid, MindHour)> = [
-            mind("wrote", 30, 2), mind("busy", 40, 0), mind("least", 1, 0), mind("less", 3, 0), mind("some", 9, 0),
-        ]
-        .into_iter()
-        .map(|m| (uuid::Uuid::new_v4(), m))
-        .collect();
-        // The M5 hour: 16 on 2, 424 of 430 pulls deferred, AT THE KNEE.
-        let m5 = CitizenHealth { pulls: 430, pulls_deferred: 424, knee: Some(2), ..h(16, 2, 50, 3) };
-        let v = verdict(&m5);
-        assert_eq!(v, Verdict::AtKnee { resident: 16, lanes: 2, knee: 2 });
-        assert!(is_lane_bound(&m5, &v));
-        let rested = lane_bound_seats(&m5, &v, &roster);
-        let names: Vec<&str> = rested.iter().map(|(_, m)| m.agent_name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["least", "less", "some", "busy", "wrote"],
-            "least served first, to the edge in ONE tick (16 on 2 is 12 over the edge of 4); a mind that wrote rests last"
-        );
-        // Toward the edge, never past it: 7 minds on 2 lanes is three over the edge of 4.
-        let seven = CitizenHealth { resident: 7, ..m5.clone() };
-        assert_eq!(lane_bound_seats(&seven, &verdict(&seven), &roster).len(), 3);
-        // Starved below the knee pays the same debt.
-        let starved = CitizenHealth { knee: Some(8), ..m5.clone() };
-        assert_eq!(verdict(&starved), Verdict::Starved { resident: 16, lanes: 2 });
-        assert_eq!(lane_bound_seats(&starved, &verdict(&starved), &roster).len(), roster.len());
-        // The IntelMac hour: 8 minds, 278 pulls, none deferred — NOTHING rests.
-        let intel = CitizenHealth { pulls: 278, pulls_deferred: 0, ..h(8, 1, 12, 0) };
-        assert!(matches!(verdict(&intel), Verdict::Starved { .. }), "starved by the numbers");
-        assert!(!is_lane_bound(&intel, &verdict(&intel)), "but a roundless hour is not lane-bound");
-        assert!(lane_bound_seats(&intel, &verdict(&intel), &roster).is_empty());
-        // Too few pulls to judge, or a healthy verdict: nothing.
-        let thin = CitizenHealth { pulls: LANE_BOUND_MIN_PULLS - 1, pulls_deferred: LANE_BOUND_MIN_PULLS - 1, ..m5.clone() };
-        assert!(!is_lane_bound(&thin, &verdict(&thin)));
-        let fine = CitizenHealth { pulls: 100, pulls_deferred: 100, ..h(4, 2, 20, 4) };
-        assert_eq!(verdict(&fine), Verdict::Healthy);
-        assert!(lane_bound_seats(&fine, &verdict(&fine), &roster).is_empty(), "a healthy roster is never paged");
-        // The edge on one lane is 2 (the resident floor): 2 minds on 1 lane is AT the edge,
-        // nobody rests; 3 on 1 rests one.
-        let one_lane = CitizenHealth { resident: 2, lanes: 1, lanes_sustained: 1, pulls: 50, pulls_deferred: 50, ..m5.clone() };
-        assert!(lane_bound_seats(&one_lane, &verdict(&one_lane), &roster).is_empty(), "2 on 1 is the edge, nobody rests");
-        let three_on_one = CitizenHealth { resident: 3, ..one_lane.clone() };
-        assert_eq!(lane_bound_seats(&three_on_one, &verdict(&three_on_one), &roster).len(), 1, "3 on 1 is one over");
-        // THE HOUR'S LANES, NOT THE TICK'S (Cormac's condition): a tick that samples the
-        // launch between lanes reads 1; the hour HELD 3. The rest stands on 3 — 8 minds
-        // rest to the edge of 6 (two), not to the floor of 2 (six) — and the line says so.
-        let between = CitizenHealth { resident: 8, lanes: 3, lanes_sustained: 3, lanes_now: 1, knee: Some(3), ..m5.clone() };
-        assert_eq!(lane_bound_seats(&between, &verdict(&between), &roster).len(), 2, "the edge of the hour's 3 lanes, not the tick's 1");
-        assert!(line(&between, &verdict(&between)).contains("lanes 3 (1 now)"));
-        assert!(line(&m5, &v).contains("pulls 430 (424 lane-deferred)"), "the line carries the pulls");
-    }
 
     // what this catches (card `6d444769`, and Astra's second review of it): the hour is
     // judged by its MINUTES, not by its pull volume. Each two-minute bucket contributes
@@ -1667,21 +1426,15 @@ mod tests {
     }
 
     // what this catches (card `6d444769`, the defect itself): a roster that is starved on
-    // the lanes it HELD must not read healthy because the node touched a higher count once.
-    // This is the exact receipt that went unremedied for three hours — resident 16, the
-    // line saying `lanes 8`, 98-100% of pulls deferred, and `lane_bound_rested: 0`.
+    // the lanes the hour HELD is judged on them, not on the hour's peak — and the line
+    // carries the gap, because the gap is the diagnosis.
     #[test]
     fn a_peak_lane_count_can_no_longer_hide_a_starved_roster() {
-        let roster: Vec<(uuid::Uuid, MindHour)> = (0..16)
-            .map(|i| (uuid::Uuid::new_v4(), MindHour { lane_grants: i, ..Default::default() }))
-            .collect();
         let measured = CitizenHealth {
             resident: 16,
             lanes: 8,             // the peak the receipt printed
             lanes_sustained: 3,   // the median of the 699 samples above
             lanes_now: 3,
-            pulls: 708,
-            pulls_deferred: 708,
             ..h(16, 8, 15, 0)
         };
         assert_eq!(
@@ -1689,9 +1442,6 @@ mod tests {
             Verdict::Starved { resident: 16, lanes: 3 },
             "judged on the lanes the hour held, and the verdict SAYS 3 so the line cannot claim otherwise"
         );
-        assert!(is_lane_bound(&measured, &verdict(&measured)), "708 of 708 deferred is queued, not idle");
-        // The edge is 3 x 2 = 6, so ten of the sixteen rest — the remedy that never fired.
-        assert_eq!(lane_bound_seats(&measured, &verdict(&measured), &roster).len(), 10);
         // AND THE GAP IS IN THE LINE, because the gap is the diagnosis.
         assert!(line(&measured, &verdict(&measured)).contains("lanes 3 (peak 8 this hour)"));
 
@@ -1699,48 +1449,7 @@ mod tests {
         // the roster fell through to a verdict ABOUT THE CITIZENS and nothing rested.
         let by_peak = CitizenHealth { lanes_sustained: 8, ..measured.clone() };
         assert_eq!(verdict(&by_peak), Verdict::Reading { acts: 15 });
-        assert!(lane_bound_seats(&by_peak, &verdict(&by_peak), &roster).is_empty());
 
-        // AND THE GUARD GATES ACTUATION, not just the statistic. When too few buckets
-        // carried a sample, the caller keeps the PEAK — so a relaunch computes the rest
-        // against 8 lanes and pages out nobody. This is the shape Astra's counterexample
-        // would have produced, asserted on the remedy rather than on the number.
-        let during_relaunch = CitizenHealth { lanes_sustained: 8, pulls: 32, pulls_deferred: 32, ..measured.clone() };
-        assert!(
-            lane_bound_seats(&during_relaunch, &verdict(&during_relaunch), &roster).is_empty(),
-            "a relaunch must never rest the roster"
-        );
     }
 
-    // what this catches (Cormac's condition on S3 — the one-direction shape in a fourth
-    // coat): a lane-bound rest has a lane-bound WAKE. Two seats rested at lanes = 1 stay
-    // rested while lanes = 1; the tick at lanes = 2 wakes them, the most recently rested
-    // (the most served) first, under the same cap; a MINDLESS rest is never woken by
-    // lanes — she must have changed.
-    #[test]
-    fn a_lane_bound_rest_has_a_lane_bound_wake_and_a_mindless_rest_does_not() {
-        use crate::persona::resting_seat::RestingSeat;
-        let seat = |name: &str, reason: &str, since_ms: u64| RestingSeat {
-            agent_name: name.into(), persona_id: uuid::Uuid::new_v4(), reason: reason.into(), since_ms, build: "b".into(),
-        };
-        let resting = vec![
-            seat("least", &format!("{LANE_BOUND_REASON}: 5 minds on 1 lanes"), 100),
-            seat("less", &format!("{LANE_BOUND_REASON}: 5 minds on 1 lanes"), 200),
-            seat("recital", "18 of 21 speak verdicts this hour were the gate refusing a recital", 300),
-        ];
-        // Still 1 lane, 2 resident: the edge is 2, no room — nobody wakes.
-        let one = CitizenHealth { pulls: 50, pulls_deferred: 50, ..h(2, 1, 10, 0) };
-        assert!(lane_bound_wakes(&one, &resting).is_empty(), "lanes did not return");
-        // 2 lanes: the edge is 4, room for 3 — both lane-bound seats wake, most served first.
-        let two = CitizenHealth { ..h(1, 2, 10, 0) };
-        let woken: Vec<String> = lane_bound_wakes(&two, &resting).into_iter().map(|s| s.agent_name).collect();
-        assert_eq!(woken, ["less", "least"], "the last to rest is the first back; the recital stays rested");
-        // Room for exactly one: only the most served returns.
-        let tight = CitizenHealth { ..h(3, 2, 10, 0) };
-        let woken: Vec<String> = lane_bound_wakes(&tight, &resting).into_iter().map(|s| s.agent_name).collect();
-        assert_eq!(woken, ["less"]);
-        // Rest and wake never both fire: over the edge there is no room; under it, nothing rests.
-        let over = CitizenHealth { pulls: 50, pulls_deferred: 50, knee: Some(2), ..h(16, 2, 50, 3) };
-        assert!(lane_bound_wakes(&over, &resting).is_empty());
-    }
 }

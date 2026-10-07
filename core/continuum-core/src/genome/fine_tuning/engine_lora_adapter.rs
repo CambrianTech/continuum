@@ -312,6 +312,43 @@ impl Footprints {
     }
 }
 
+/// How much slower her decoding may run while training runs on her lane, parts per million.
+/// The bound the substrate means (Joel: "negligible impact on inference latency ... a slowdown
+/// if clever can be unnoticed"); a time share only said how often a window ran, and a 25%
+/// share took Kimi from 52 to 23 tok/s. The engine (fork #36) measures her decode rate with and
+/// without a window running and sizes each yield to hold this. The lane's lease is where it
+/// belongs once the lease registry carries it (INFERENCE-LANES-REALISTIC.md); until then ONE
+/// value here, sent explicitly so the engine's own default is never load-bearing. Not an env var.
+pub const TRAINING_MAX_SLOWDOWN_PPM: u32 = 100_000;
+
+/// The share of the host memory free at admission that the exact walk may keep per training
+/// window (its K/V gradient and a recurrent model's state checkpoints, fork #47), as a fraction
+/// of `memory_pressure::current_available_bytes()`. The other half stays free for the serving
+/// engine's file cache and everyone else: on BigMama (2026-10-06) a compile that evicted the
+/// served model's pages from the cache put the engine in a page-fault loop for an hour. The
+/// engine checkpoints the state more sparsely to fit, and refuses by name when the K/V gradient
+/// alone does not. ONE value here, sent explicitly. Not an env var.
+pub const TRAINING_HOST_SHARE: (u64, u64) = (1, 2);
+
+/// The exact walk's host budget, MiB: `TRAINING_HOST_SHARE` of what is free now, never below one
+/// MiB (the engine's floor, which it refuses by name when the window needs more). `None` when the
+/// monitor has not read the host yet: then the job does not ask for the exact walk at all (the
+/// plain walk is chunk-bounded), because an unknown budget must never mean an unbounded one: the
+/// tighter memory is, the more the walk must be bounded, never the less (Fable on #4841).
+fn exact_walk_host_budget_mib(available_bytes: Option<u64>) -> Option<u64> {
+    let (num, den) = TRAINING_HOST_SHARE;
+    available_bytes.map(|b| ((b / den * num) >> 20).max(1))
+}
+
+/// What the job asks the engine for, from the monitor's reading: the exact walk with its host
+/// budget when the host is read, the plain walk (no budget) when it is not.
+fn walk_request(available_bytes: Option<u64>) -> (bool, Option<u64>) {
+    match exact_walk_host_budget_mib(available_bytes) {
+        Some(mib) => (true, Some(mib)),
+        None => (false, None),
+    }
+}
+
 /// `POST /train`'s body: the engine's wire contract (fork `tools/server/server-train.h`), stated
 /// ONCE here instead of assembled field by field at the call site.
 #[derive(Debug, Clone, Serialize)]
@@ -335,11 +372,25 @@ struct TrainRequest {
     /// before allocating (the driver's own free figure is not physical on Windows)
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_budget_mib: Option<u64>,
+    /// The bound on her decode slowdown while training runs, parts per million (fork #36).
+    /// Sent INSTEAD of the time share (the engine refuses both). An engine before #36 ignores
+    /// the key and paces by its own default share, which is what this core sent before.
+    max_slowdown_ppm: u32,
     /// "middle" (fork #29): at the served window a lived example trains whole; only a
     /// conversation longer than serving's own window drops its OLDEST history exchanges, and
     /// always keeps the system and tool head and her reply, the context serving always has
     /// (Cormac on #29). An engine before #29 ignores it.
     fit: &'static str,
+    /// The exact walk (fork #47): ONE optimizer step per window, on the gradient of the window's
+    /// whole loss carried back through every chunk's cached K/V and a hybrid's recurrent state,
+    /// instead of a step per chunk with the gradient stopped at each chunk boundary (the plain
+    /// walk's step agreed with the true one at cosine 0.81; the exact walk's at 0.998). The engine
+    /// shrinks its gradient horizon to fit the device and reports it. An engine before #47
+    /// ignores the key and trains the plain walk, as this core asked before.
+    exact: bool,
+    /// The exact walk's host memory per window (see `TRAINING_HOST_SHARE`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    walk_host_budget_mib: Option<u64>,
 }
 
 /// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
@@ -411,6 +462,26 @@ struct TrainStatus {
     paused: bool,
     #[serde(default)]
     waiting_for_serving: bool,
+    /// the share the run took of the lane (fork #32): windows run, windows taken while a
+    /// serving slot was busy, and the time yielded to serving; absent on an engine before it
+    #[serde(default)]
+    yielded_ms: Option<u64>,
+    #[serde(default)]
+    windows: Option<u64>,
+    #[serde(default)]
+    windows_while_busy: Option<u64>,
+    #[serde(default)]
+    share_ppm: Option<u64>,
+    /// the slowdown bound and her measured rates (fork #36): tokens/s with no window running
+    /// and while one ran, over the run, and the slowdown they realized; absent before #36
+    #[serde(default)]
+    max_slowdown_ppm: Option<u64>,
+    #[serde(default)]
+    decode_tps_no_window: Option<f64>,
+    #[serde(default)]
+    decode_tps_in_window: Option<f64>,
+    #[serde(default)]
+    slowdown_ppm_realized: Option<u64>,
     /// the model's block count and the blocks this run adapts (fork #27); absent on an engine
     /// that predates `top_layers`, which adapts every block
     #[serde(default)]
@@ -872,7 +943,36 @@ impl EngineRun {
                         was_paused = now_paused;
                     }
                 }
-                TrainState::Done => return InPlaceEnd::Finished,
+                TrainState::Done => {
+                    // THE SHARE, as the engine itself counted it (Cormac on #4798): auditable on
+                    // every node from the run's own receipt, no second run. An engine before
+                    // fork #32 reports no counts: the probe says so, so "not reported" is
+                    // never read as a zero share, and an old engine is told apart from a probe
+                    // that never fired.
+                    match (s.windows, s.windows_while_busy, s.yielded_ms) {
+                        (Some(windows), Some(busy), Some(yielded)) => crate::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            reported = true,
+                            windows,
+                            windows_while_busy = busy,
+                            yielded_ms = yielded,
+                            share_ppm = s.share_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = counts reported, policy not (an engine between the counts and the policy); never a 0 that reads as a zero share
+                            max_slowdown_ppm = s.max_slowdown_ppm.map(|v| v as i64).unwrap_or(-1), // -1 = an engine before the bound (fork #36): it paced by the share
+                            slowdown_ppm_realized = s.slowdown_ppm_realized.map(|v| v as i64).unwrap_or(-1), // -1 = not measured: no busy stretch both with and without a window, or an engine before #36
+                            decode_tps_no_window = s.decode_tps_no_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
+                            decode_tps_in_window = s.decode_tps_in_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
+                            "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, and what it cost her decoding against the bound"
+                        ),
+                        _ => crate::probe!(
+                            class = "training.run.share",
+                            out = self.out.as_str(),
+                            reported = false,
+                            "the in-engine run finished on an engine that does not report its share (before fork #32): the counts are not known"
+                        ),
+                    }
+                    return InPlaceEnd::Finished;
+                }
                 TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
                 TrainState::Error => {
                     let why = s.error.as_deref().unwrap_or("no error text"); // unwrap_or: the state alone is the failure
@@ -1108,7 +1208,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             // any base a live lane on this node serves; create_job checks the lane
             supported_base_model_prefixes: vec![],
             requires: TrainerHardware::Any,
+            trains_on_resident_weights: true,
         }
+    }
+
+    fn serves_base(&self, base_model: &str) -> bool {
+        (self.lane)(base_model).is_some()
     }
 
     async fn create_job(&self, mut request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
@@ -1141,6 +1246,20 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
         let id = Uuid::new_v4();
         let out = format!("{id}.gguf");
+        if let Some(parent) = &request.parent {
+            // A fork trains from the base today: the engine's /train has no warm start from
+            // an existing adapter (the fork's init file went in #19). The lineage is still
+            // recorded on the child's signature; the weights are not inherited. The row
+            // that says so is this probe, until the engine takes `init_adapter`.
+            crate::probe!(
+                class = "genome.fork.cold_start",
+                persona = %request.persona_id,
+                trait_kind = %request.trait_kind,
+                parent = %parent,
+                job = %id,
+                "a fork trains from the base: the engine has no warm start from the parent yet; lineage recorded, weights not inherited"
+            );
+        }
         // LEARNING SEES WHAT SERVING SEES (Joel, 2026-09-28: "stupidly low token sizes are
         // idiotic ... the same as inference"; "you're not supposed to make learning so different
         // from reality"). The window is the per-slot window the matched lane was LAUNCHED with,
@@ -1170,7 +1289,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             requested = schedule.sequence_length as u64,
             served = u64::from(served_window),
             sent = window as u64,
-            "the training window: the matched lane's served per-slot window, rounded to the engine's 256 granularity; the request's length never decides it"
+            max_slowdown_ppm = u64::from(TRAINING_MAX_SLOWDOWN_PPM),
+            "the training window: the matched lane's served per-slot window as the CEILING (the engine sizes the context to the longest example, fork #30), rounded to the engine's 256 granularity; the request's length never decides it; and the bound on her decode slowdown while training runs"
         );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
@@ -1195,8 +1315,20 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             seed: 42,
             top_layers: depth,
             memory_budget_mib: None,
+            max_slowdown_ppm: TRAINING_MAX_SLOWDOWN_PPM,
             fit: "middle",
+            exact: false,
+            walk_host_budget_mib: None,
         };
+        // THE EXACT WALK ONLY WITH A KNOWN BUDGET: unread memory trains the plain walk
+        (body.exact, body.walk_host_budget_mib) =
+            walk_request(crate::system_resources::memory_pressure::current_available_bytes());
+        if !body.exact {
+            crate::probe!(
+                class = "training.job.exact_walk_skipped",
+                "the host memory monitor has not read the host: the job trains the plain (chunk-bounded) walk rather than an exact walk with no budget"
+            );
+        }
         let measured = self.footprints.get(&shape);
         let footprints_path = self.footprints.path.clone();
         let http = self.http.clone();
@@ -1505,6 +1637,7 @@ mod tests {
             schedule: Some(ScheduleParams { epochs: 2, batch_size: 1, sequence_length: 256, learning_rate: 1e-5 }),
             local_artifact_dir: None,
             resume_from: None,
+            parent: None,
         }
     }
 
@@ -1804,6 +1937,14 @@ mod tests {
         // window refused the whole run; the engine is asked to keep each example's tail
         assert_eq!(body["fit"], "middle", "a conversation longer than the served window drops its oldest history, never its head");
         assert!(body.get("text").is_none(), "examples, never a text corpus (the engine masks the prompts)");
+        // what this catches (fork #36): the bound on her slowdown goes out INSTEAD of the time
+        // share; the engine refuses a body carrying both, so sending both fails every run
+        assert_eq!(body["max_slowdown_ppm"].as_u64(), Some(u64::from(TRAINING_MAX_SLOWDOWN_PPM)));
+        assert!(body.get("share_ppm").is_none(), "the share and the slowdown bound pace the same windows: one is sent");
+        // what this catches (fork #47, Fable on #4841): the walk the job asks for follows the
+        // monitor; here no monitor runs, so the plain walk, with no unbounded exact walk
+        assert_eq!(body["exact"], false, "an unread host trains the plain walk");
+        assert!(body.get("walk_host_budget_mib").is_none(), "and sends no budget");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
         assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
@@ -1811,6 +1952,21 @@ mod tests {
         assert_eq!(artifact.metrics.final_loss, Some(2.1));
         assert_eq!(artifact.metrics.trained_tokens, 80);
         server.abort();
+    }
+
+    // what this catches: the exact walk's host budget reading the monitor as anything but
+    // "half of what is free" (the other half is the serving engine's file cache), and an unread
+    // monitor (0 / None) inventing a budget instead of sending none
+    #[test]
+    fn the_exact_walk_keeps_half_the_free_host_memory() {
+        assert_eq!(super::exact_walk_host_budget_mib(Some(36 << 30)), Some(18 << 10));
+        // regression for Fable on #4841: tighter memory must bound the walk MORE, never unbound it
+        assert_eq!(super::exact_walk_host_budget_mib(Some(1 << 20)), Some(1), "the floor, which the engine refuses by name");
+        assert_eq!(super::exact_walk_host_budget_mib(Some(0)), Some(1));
+        assert_eq!(super::exact_walk_host_budget_mib(None), None, "unread: no exact walk (the caller sends exact: false)");
+        // both arms of the request the job sends
+        assert_eq!(super::walk_request(Some(36 << 30)), (true, Some(18 << 10)), "a read host: the exact walk, bounded");
+        assert_eq!(super::walk_request(None), (false, None), "an unread host: the plain walk");
     }
 
     // what this catches (SHARED-RESIDENT-LIFECYCLE.md step 3, Codex and Cormac on the plan):

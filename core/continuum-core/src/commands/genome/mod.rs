@@ -140,6 +140,7 @@ pub(crate) mod test_support {
                 produces_local_artifact: false,
                 supported_base_model_prefixes: vec![],
                 requires: TrainerHardware::Any,
+                trains_on_resident_weights: false,
             }
         }
         async fn create_job(&self, _r: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
@@ -189,6 +190,7 @@ pub(crate) mod test_support {
             base_model: base.into(),
             trait_kind: "test-trait".into(),
             resume_from: None,
+            parent: None,
             dataset: dataset(),
             eval_set: None,
             lora: None,

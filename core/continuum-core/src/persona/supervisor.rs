@@ -774,11 +774,25 @@ pub async fn materialize_adapters(
         // ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
         // The board is ONE global fold (unlike the per-room roster), so the
         // handle is the global bench substrate the emitter dual-publishes into.
+        // Per ROOM since 2026-10-04 (HER-LOOP-IS-HER-OWN.md rule 5): she reads the
+        // board of the activity she is in, the way she reads its roster. The
+        // node-wide fold stays on the human rail; it is no longer in her head.
         let bench_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
                 continuum_positron::bench::BenchViewState,
-            >::new(crate::ipc::global_bench_substrate()));
+            >::per_room(crate::ipc::global_room_substrates()));
         cognition.set_bench_source(bench_source);
+
+        // Her awareness across ALL her activities (EVENT-MIND §6, the strip): one block,
+        // loudest first, with her continuation and her dial, read from her perception
+        // region by persona. The region boots when her conversation attaches; until then
+        // the source delivers nothing, which is the truth.
+        let awareness_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::awareness_source::AwarenessRagSource::new(
+                identity.peer_id.as_uuid(),
+                Some(runtime.clone()),
+            ));
+        cognition.set_awareness_source(awareness_source);
 
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature

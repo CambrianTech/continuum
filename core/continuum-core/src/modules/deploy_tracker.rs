@@ -201,6 +201,23 @@ fn origin_repo(repo_dir: &std::path::Path) -> Option<String> {
 
 #[async_trait]
 impl DeploySource for GitGhDeploySource {
+    async fn build_key(&self, tip: &str) -> Option<String> {
+        let tip = tip.to_string();
+        tokio::task::spawn_blocking(move || {
+            let dir = checkout_now().ok()?.to_string_lossy().into_owned();
+            let mut args = vec!["-C".to_string(), dir];
+            args.extend(continuum_cli_lifecycle::prebuilt_artifact::build_key_log_args(&tip));
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            crate::system_resources::bounded_command::probe("git", &args, GIT_TIMEOUT)
+                .stdout_if_ok()
+                .map(|out| out.trim().to_string())
+                .filter(|key| !key.is_empty())
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     async fn tip(&self) -> Result<Option<(String, Checks)>, String> {
         let branch = self.branch.clone();
         tokio::task::spawn_blocking(move || {
@@ -220,8 +237,16 @@ impl DeploySource for GitGhDeploySource {
                 return Err(format!("git rev-parse origin/{branch} {}", tip_out.outcome()));
             };
             // Check-state via gh (gh manages its own rate-limiting). gh unreachable → Unknown → wait.
+            // Both reads ask gh for ONLY the fields `parse_tip_checks` uses: the raw bodies
+            // (31 KB and 90 KB on a canary tip, growing with every check) overran the 64 KB
+            // probe capture, the runs body arrived cut in half, and #4706's exclusion never
+            // applied: every node waited on the 44-73 min core-binaries legs.
             let path = format!("repos/{repo}/commits/{tip}/check-runs?per_page=100");
-            let gh_out = probe("gh", &["api", &path], GH_TIMEOUT);
+            let gh_out = probe(
+                "gh",
+                &["api", &path, "--jq", "{check_runs: [.check_runs[] | {name, status, conclusion, check_suite: {id: .check_suite.id}}]}"],
+                GH_TIMEOUT,
+            );
             let Some(check_runs) = gh_out.stdout_if_ok() else {
                 return Ok(Some((tip, Checks::Unknown))); // gh unreachable = Unknown = wait, never a deploy on a guess
             };
@@ -229,7 +254,11 @@ impl DeploySource for GitGhDeploySource {
             // without them a scheduled audit's failure reads as the tip's own (#4243). A
             // failed read here degrades to the all-checks rule inside `parse_tip_checks`.
             let runs_path = format!("repos/{repo}/actions/runs?head_sha={tip}&per_page=100");
-            let runs_out = probe("gh", &["api", &runs_path], GH_TIMEOUT);
+            let runs_out = probe(
+                "gh",
+                &["api", &runs_path, "--jq", "{workflow_runs: [.workflow_runs[] | {event, path, check_suite_id}]}"],
+                GH_TIMEOUT,
+            );
             let read = parse_tip_checks(check_runs, runs_out.stdout_if_ok());
             if read.excluded > 0 || !read.filtered {
                 crate::probe!(
@@ -384,9 +413,14 @@ impl ServiceModule for DeployTrackerModule {
         // a live owner excludes a new deploy even past its claim's expiry (card 634f644d)
         let build_in_flight =
             crate::runtime::deploy_claim::in_flight(&self.root, now).excludes_deploy();
+        let tip_build_key = match &tip_sha {
+            Some(tip) => self.source.build_key(tip).await,
+            None => None,
+        };
         let inputs = TickInputs {
             running_sha: Some(running_sha().to_string()),
             tip_sha,
+            tip_build_key,
             source_error,
             checks,
             hold: read_hold(&self.state_dir),
@@ -405,9 +439,17 @@ impl ServiceModule for DeployTrackerModule {
         // Whether the standing request is stranded — the only condition under which the
         // actuator may launch the consumer a second time for one request.
         let mut stranded = false;
+        let request = read_deploy_request(state_dir);
+        // The request's own key: the same as this tick's when it asks for this tip.
+        let request_build_key = match &request {
+            Some(req) if inputs.tip_sha.as_deref() == Some(req.tip_sha.as_str()) => inputs.tip_build_key.clone(),
+            Some(req) => self.source.build_key(&req.tip_sha).await,
+            None => None,
+        };
         match crate::runtime::deploy_tracker::reconcile_request(
-            read_deploy_request(state_dir).as_ref(),
+            request.as_ref(),
             running_sha(),
+            request_build_key.as_deref(),
             build_in_flight,
             now,
         ) {
@@ -539,6 +581,30 @@ impl ServiceModule for DeployTrackerModule {
                 }
             }
             DeployVerdict::UpToDate => {}
+            DeployVerdict::BuildInFlight { deployable_tip } => {
+                // THE REQUEST FOLLOWS THE TIP, THE ACTUATION WAITS. A consumer in flight may
+                // be waiting on CI for a tip that is now superseded (its run cancelled); the
+                // request on disk is how it learns that. Recorded, never actuated here.
+                if let Some(tip_sha) = deployable_tip {
+                    let standing = read_deploy_request(state_dir);
+                    if let Some(req) = crate::runtime::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
+                        write_deploy_request(state_dir, &req);
+                        crate::probe!(
+                            class = "deploy.track.request_moved_in_flight",
+                            tip = tip_sha.as_str(),
+                            running = running_sha(),
+                            "a newer green tip while a deploy is in flight — the request now names it; the consumer follows"
+                        );
+                    }
+                }
+                crate::probe!(
+                    class = "deploy.track.decision",
+                    verdict = "build_in_flight",
+                    deployable_tip = deployable_tip.as_deref().unwrap_or(""), // "" = not deployable yet
+                    running = running_sha(),
+                    "deploy not taken this tick — a build is in flight"
+                );
+            }
             DeployVerdict::Held { reason, stale } => {
                 crate::probe!(
                     class = "deploy.track.decision",

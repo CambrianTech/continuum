@@ -133,15 +133,27 @@ pub fn spawn_daemon_attach(
 /// the gap instead of replaying the room's entire history into the UI and
 /// every persona's perception (glass-boxed three times on 2026-07-30 — each
 /// reboot re-fed days of transcript as fresh inbox to every mind).
-fn cursor_path(channel: &RoomId) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".continuum/state")
-        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid()))
+///
+/// Under the canonical continuum home, never a cwd-relative `.`: on the 5090
+/// (2026-10-06) the Windows service had no `HOME`, the old `unwrap_or(".")`
+/// resolved `.\.continuum\state` against an unwritable working directory, and
+/// 592 persists failed "Access is denied", so every core restart re-fed the
+/// room into the desktop, the human views and every persona as if it were new.
+fn cursor_path(channel: &RoomId) -> Result<PathBuf, String> {
+    Ok(crate::paths::continuum_home()?
+        .join("state")
+        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid())))
 }
 
 fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
-    let raw = std::fs::read_to_string(cursor_path(channel)).ok()?;
+    let path = match cursor_path(channel) {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("airc attach cursor has no home ({error}): this attach starts as a first attach");
+            return None;
+        }
+    };
+    let raw = std::fs::read_to_string(path).ok()?;
     // A corrupt watermark degrades to first-attach semantics (one full seed) —
     // annoying, never wrong. It is presentation-adjacent state, not truth: the
     // durable transcript is the storage of record either way.
@@ -149,7 +161,13 @@ fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
 }
 
 fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
-    let path = cursor_path(channel);
+    let path = match cursor_path(channel) {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("failed to persist airc attach cursor: no continuum home ({error})");
+            return;
+        }
+    };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -170,8 +188,10 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
 /// "When you join a Discord channel do you read the whole history from 10
 /// years back? No — one page"). The daemon streams the newest
 /// `FIRST_ATTACH_PAGE` backlog events at the catch-up seam and coalesces
-/// everything older into the watermark summary (airc PR #1312).
-const FIRST_ATTACH_PAGE: u32 = 32;
+/// everything older into the watermark summary (airc PR #1312). Ten, not a
+/// screenful (Joel, 2026-10-06: "no bookmark should also default to like last N
+/// being like 10"); with the bookmark persisting, a first attach is rare.
+const FIRST_ATTACH_PAGE: u32 = 10;
 
 /// Build the attach request for this consumer's cursor state (#295).
 ///
@@ -292,7 +312,7 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
         // TranscriptEvent. A malformed buffer is logged + skipped (the
         // live stream shouldn't die because one event failed to parse).
         Response::Event { envelope } => match decode_wire_event(envelope) {
-            Ok(event) => publish_transcript_event(&event, bus).await,
+            Ok(event) => publish_transcript_event(&Arc::new(event), bus).await,
             Err(error) => {
                 warn!("Skipping malformed airc daemon event: {error}");
                 Ok(())
@@ -310,9 +330,32 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
 }
 
 pub async fn publish_transcript_event(
-    event: &airc_core::TranscriptEvent,
+    event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
 ) -> Result<(), String> {
+    // ONE FEED (EVENT-MIND.md §1b, 2026-10-04): every resident persona's perception
+    // region is fed from this seam, the one place each room event crosses once per
+    // core, instead of from a per-persona subscription (which on the 5090 never
+    // carried other peers' durable pushes while this path did). Synchronous and
+    // cheap: one classification, one lock per resident, no await.
+    let fed = crate::persona::perception_feed::feed(event, crate::persona::trace::now_ms());
+    if fed > 0 {
+        crate::probe!(
+            class = "mind.feed.event",
+            room = %event.room_id.as_uuid(),
+            from = %event.peer_id.as_uuid(),
+            residents = fed,
+            "a room event fed to resident minds"
+        );
+    }
+    // THE CURRICULUM HEARS THE ROOM'S VERDICT at the same seam (genome lane, 2026-10-05).
+    // A review on a submission is the room judging the work, so it settles the staged
+    // learning credit of every resident who worked that card. Until today settlement
+    // fired only from a benchmark instance's recorded verdict, so a card on a project
+    // board (Career Wrangler, the paper) earned credit all day that nothing could ever
+    // settle, and none of her real work reached her curriculum. The grader's verdict
+    // arrives through this same event since #4761, so one path serves both.
+    crate::persona::training_producer::settle_on_review(event);
     let envelope = match envelope_from_event(event) {
         Ok(Some(envelope)) => envelope,
         // Not a Continuum EventBridge envelope. Before dropping it, try
@@ -669,7 +712,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -723,7 +766,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -758,7 +801,7 @@ mod tests {
             Default::default(),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -780,7 +823,7 @@ mod tests {
         let mut receiver = bus.receiver();
         let event = transcript_event(Some(Body::text("hello room")), Default::default());
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -815,7 +858,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::Receipt;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
@@ -837,7 +880,7 @@ mod tests {
         let mut event = transcript_event(None, Default::default());
         event.kind = TranscriptKind::WallPostPublished;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -880,7 +923,7 @@ mod tests {
         let mut event = transcript_event(Some(body), headers);
         event.kind = TranscriptKind::System;
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         let delivered = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -903,7 +946,7 @@ mod tests {
             headers_for_envelope(&envelope),
         );
 
-        publish_transcript_event(&event, &bus).await.unwrap();
+        publish_transcript_event(&Arc::new(event), &bus).await.unwrap();
 
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await

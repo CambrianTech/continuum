@@ -288,6 +288,21 @@ struct OutputAllowance {
 /// the allowance is the reserve (what the code before #4194 did), never a constant; with
 /// no rate the time term is skipped. Never past the reserve: the prompt was sized to
 /// leave exactly that room, and past it `prompt + completion` reaches `n_ctx`.
+///
+/// THE MEASUREMENTS ARE EXPECTATIONS, NEVER THE CEILING (the 5090, 2026-10-06): the
+/// allowance was `min(max(time, need), bound)`, and the need is a p90 with headroom, so
+/// by construction about one turn in ten ran past it. A cut tool call commits nothing:
+/// Kimi's `tools/<cut at the output limit> ✗` lost the whole turn (allowance 10,177 =
+/// need, against a reserve of 12,464; 12,333 against 25,024). `max_tokens` does not make
+/// a turn shorter, it only decides whether a long one lands; a model stops when it is
+/// done. So the allowance IS the bound (the reserve the prompt left, and an act's runaway
+/// cap), and the time and need terms are reported beside it as what the turn is expected
+/// to use. A latency budget enforced by truncation buys no latency: the cut turn is
+/// re-run from scratch.
+/// A pass is bounded at this multiple of her measured p90 turn (never below the act's
+/// cap). A runaway bound, not a budget: it binds only on a loop.
+const PASS_RUNAWAY_MULTIPLE: u32 = 2;
+
 fn output_allowance(
     kind: TurnKind,
     tps: Option<f64>,
@@ -298,17 +313,18 @@ fn output_allowance(
         .filter(|t| t.is_finite() && *t > 0.0)
         .map(|t| (kind.latency_budget_secs() * t).round() as u32);
     let need_term = need.map(|n| n.total());
-    let wanted = match (time_term, need_term) {
-        // Unknown is not zero: an unmeasured need takes the reserve, as before #4194.
-        (_, None) => reserve,
-        (Some(t), Some(n)) => t.max(n),
-        (None, Some(n)) => n,
-    };
     let bound = match kind {
         TurnKind::Act => reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP),
-        TurnKind::Pass => reserve,
+        // A pass's RUNAWAY bound (Cormac on #4815): a loop must not hold the lane for the
+        // whole reserve (25k tokens is minutes at her rate). Twice her measured p90 turn
+        // sits far above the one-in-ten tail a p90 lets through, and never below the
+        // act's cap, so no real turn is cut by it; unmeasured, the reserve as before.
+        TurnKind::Pass => match need_term {
+            Some(n) => reserve.min(LlmDeliberationFaculty::ACT_OUTPUT_CAP.max(n.saturating_mul(PASS_RUNAWAY_MULTIPLE))),
+            None => reserve,
+        },
     };
-    let allowance = wanted.min(bound).max(1);
+    let allowance = bound.max(1);
     OutputAllowance {
         time_term,
         need_term,
@@ -412,6 +428,9 @@ pub struct LlmDeliberationFaculty {
     /// filtering the wire names by `code/` prefixes matched nothing and every
     /// work turn went out with ZERO tools (2026-09-04, 13 turns, all passed).
     hands_specs: Vec<NativeToolSpec>,
+    /// `hands_specs` plus the reviewer verbs (`tool_dialect::reviewer_hand`): the hands
+    /// of a work turn on a REVIEW card. Built beside `hands_specs` at rebuild.
+    review_hands_specs: Vec<NativeToolSpec>,
     /// The RAW command name of each entry in `native_specs`, same order. The specs
     /// are cached in the model's wire dialect (`edit_file`), so any selection keyed
     /// on canonical names (`code/edit`) — the room's affordances — must key here.
@@ -430,6 +449,8 @@ pub struct LlmDeliberationFaculty {
     /// from the message budget, so over-pricing trims conversation to fit room
     /// that was never occupied. Card dec1a7ff.
     hands_surface_tokens: usize,
+    /// Token cost of `review_hands_specs`, memoized like `hands_surface_tokens`.
+    review_hands_surface_tokens: usize,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -494,9 +515,11 @@ impl LlmDeliberationFaculty {
             tools: Vec::new(),
             native_specs: Vec::new(),
             hands_specs: Vec::new(),
+            review_hands_specs: Vec::new(),
             native_command_names: Vec::new(),
             tool_surface_tokens: 0,
             hands_surface_tokens: 0,
+            review_hands_surface_tokens: 0,
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
@@ -605,9 +628,11 @@ impl LlmDeliberationFaculty {
         if self.tools.is_empty() {
             self.native_specs.clear();
             self.hands_specs.clear();
+            self.review_hands_specs.clear();
             self.native_command_names.clear();
             self.tool_surface_tokens = 0;
             self.hands_surface_tokens = 0;
+            self.review_hands_surface_tokens = 0;
             return;
         }
         // Offer the working set in the WIRE DIALECT, charset-legal per the OpenAI
@@ -657,12 +682,20 @@ impl LlmDeliberationFaculty {
         } else {
             to_wire(core_hands(&raw))
         };
+        self.review_hands_specs = self.hands_specs.clone();
+        self.review_hands_specs.extend(to_wire(
+            raw.iter()
+                .filter(|s| crate::cognition::tool_dialect::reviewer_hand(&s.name))
+                .cloned()
+                .collect(),
+        ));
         self.native_specs = raw
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
             .collect();
         self.tool_surface_tokens = Self::tool_surface_tokens_of(&self.native_specs);
         self.hands_surface_tokens = Self::tool_surface_tokens_of(&self.hands_specs);
+        self.review_hands_surface_tokens = Self::tool_surface_tokens_of(&self.review_hands_specs);
     }
 
     /// Is this turn an ACT on a deliverable, rather than a message turn?
@@ -748,6 +781,13 @@ impl LlmDeliberationFaculty {
                 tokens: self.tool_surface_tokens,
                 reason,
             },
+            // A REVIEW card's work turn: her hands plus the reviewer verbs, because
+            // filing the verdict is the card (Kimi, review card deec4ac2, 2026-10-06).
+            SurfaceReason::HandsForWork if ws.reviewing => SelectedSurface {
+                specs: Some(std::borrow::Cow::Borrowed(&self.review_hands_specs)),
+                tokens: self.review_hands_surface_tokens,
+                reason,
+            },
             // The fallback is hands, NEVER nothing: `hands_surface` keeps the
             // `commands/` discovery pair, so a withheld verb stays one
             // `commands/list` away. Amputating the surface is the #206 cliff
@@ -786,8 +826,12 @@ impl LlmDeliberationFaculty {
                     true
                 } else {
                     // The discovery pair always rides: a withheld verb stays one
-                    // `commands/list` away (the #206 cliff guard, unchanged).
-                    name.starts_with("commands/")
+                    // `commands/list` away (the #206 cliff guard, unchanged). So do her own
+                    // mind's verbs (focus/continue, focus/nudge, focus/mute): a room's
+                    // recipe is the rules of that room, never rules of her mind (HER-LOOP).
+                    // Kimi, 2026-10-05, in a recipe room on the build that put focus/ in
+                    // her hands: "help works; nothing to invoke against."
+                    name.starts_with("commands/") || name.starts_with("focus/")
                 }
             })
             .map(|(_, spec)| spec.clone())
@@ -1200,25 +1244,7 @@ impl LlmDeliberationFaculty {
         // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
         // every capture sink owes the hot path.
         if let Some(dir) = crate::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
-            let row = serde_json::json!({
-                "ts_ms": crate::persona::trace::now_ms(),
-                "persona": self.persona_name,
-                "messages": request
-                    .messages
-                    .iter()
-                    .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
-                    .collect::<Vec<_>>(),
-            });
-            let path = std::path::Path::new(&dir).join(format!("{}.wire.jsonl", self.persona_name));
-            let _ = std::fs::create_dir_all(&dir);
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(f, "{row}");
-            }
+            append_wire_capture(std::path::Path::new(&dir), self.persona_id, &self.persona_name, ws.room_id, &request);
         }
         // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
         // own defer sits BELOW acquire_serving_lane + the prefill slot, so a
@@ -1571,7 +1597,7 @@ impl LlmDeliberationFaculty {
             need_clipped = derived.need_clipped,
             allowance = max_tokens,
             reserve = reserve,
-            "the turn's output allowance — max(time × her rate, her measured think + answer), under the reserve"
+            "the turn's output allowance — the room the prompt left (an act also under its runaway cap); time × her rate and her measured think + answer are what she is expected to use"
         );
         TextGenerationRequest {
             messages,
@@ -2430,6 +2456,41 @@ impl LlmDeliberationFaculty {
     #[cfg(test)]
     fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
         self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default())
+    }
+
+    /// Every reply carries the engine's own count of the prompt it was sent: retain that
+    /// count over this turn's estimate as the density the NEXT prompt is fitted with, on
+    /// this binding, for any input. Refusal-only calibration never learned the case that
+    /// cost Kimi one turn in four on 2026-10-06: the bytes/3 estimate undercounted her
+    /// prompt by 18-23% (engine 65,607 against 55,603 estimated), the prompt still FIT
+    /// the slot, so nothing was refused, and the reply's reserve was eaten by the prompt
+    /// itself: generation hit the slot after ~950 tokens and the turn ended mid-thought.
+    /// A ratio below one changes nothing (`charge` never underprices), and each reply
+    /// replaces the last, so one unusually dense turn shapes only the turn after it.
+    fn learn_prompt_density(
+        &self,
+        binding: &Arc<ModelBinding>,
+        view: &DeliberationPromptView,
+        engine_prompt_tokens: u32,
+        available: u32,
+    ) {
+        let Some(calibration) =
+            PromptCalibration::observed(view.estimated_prompt_tokens, engine_prompt_tokens, None)
+        else {
+            return; // the lane reported no count: nothing measured, nothing retained
+        };
+        self.prompt_feedback.store(Some(Arc::new(PromptFeedback {
+            binding: Arc::clone(binding),
+            calibration,
+            available,
+        })));
+        crate::probe!(
+            class = "delib.prompt.density",
+            persona = %self.persona_name,
+            estimated_prompt_tokens = view.estimated_prompt_tokens,
+            engine_prompt_tokens,
+            "the engine's count of this prompt, retained as the next prompt's density"
+        );
     }
 
     /// Apply observed token density to the same standing-grounding plan.
@@ -4861,6 +4922,7 @@ impl LlmDeliberationFaculty {
                     if let Some(error) = response.generation_error() {
                         return Some(Contribution::deliberation_fault(error));
                     }
+                    self.learn_prompt_density(&binding, &view, response.usage.input_tokens, fit_window);
                     break (view, response);
                 }
             }
@@ -5248,6 +5310,28 @@ impl LlmDeliberationFaculty {
             // a real Speak or an explicit PASS is a commitment in the answer channel
             // and private deliberation must never override it.
             if resp.text.trim().is_empty() {
+                // A thought CUT at the output limit chose nothing: the last call in its tail
+                // is what she was weighing when the cap landed, never a commitment. Lift
+                // nothing; tell her it was cut and let her decide (BigMama's 5090 receipt,
+                // 2026-10-06: a half-formed code/run lifted from a cut 8,504-token think).
+                if matches!(resp.finish_reason, FinishReason::Length)
+                    && !self.tools.is_empty()
+                    && resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty())
+                {
+                    crate::probe!(
+                        class = "persona.act.thought_cut",
+                        persona = %self.persona_name,
+                        reasoning_len = resp.reasoning.as_deref().map_or(0, str::len),
+                        "the generation reached the output limit mid-thought: nothing lifted, the decision is hers"
+                    );
+                    let call = crate::ai::types::ToolCall {
+                        id: "tool-attempt-thought-cut".to_string(),
+                        name: crate::cognition::tool_executor::command_executor::THOUGHT_CUT_SENTINEL
+                            .to_string(),
+                        input: serde_json::json!({}),
+                    };
+                    return Some(self.act_verdict(vec![call], &resp));
+                }
                 if let Some(reasoning) = resp.reasoning.as_deref() {
                     if let Some(mut call) =
                         crate::ai::json_in_prompt_tools::parse_tool_calls(reasoning)
@@ -5452,6 +5536,33 @@ fn metrics_from(
     m
 }
 
+/// Append one request's exact message list to `<dir>/<persona>.wire.jsonl` (the wire capture,
+/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing.
+fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
+    if crate::persona::mind_room::is_private_room(persona_id, room_id) {
+        crate::persona::mind_room::note_withheld(persona_id, "wire_capture");
+        return;
+    }
+    let row = serde_json::json!({
+        "ts_ms": crate::persona::trace::now_ms(),
+        "persona": persona_name,
+        "messages": request
+            .messages
+            .iter()
+            .map(|m| serde_json::json!({"role": m.role, "text": m.content_text()}))
+            .collect::<Vec<_>>(),
+    });
+    let _ = std::fs::create_dir_all(dir);
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{persona_name}.wire.jsonl")))
+    {
+        let _ = writeln!(f, "{row}");
+    }
+}
+
 /// Her HANDS: the file / work / git / cargo / tool verbs plus the discovery pair,
 /// selected on the COMMAND names (`code/read`, `work/state`, …) before the wire
 /// dialect renames them (`edit_file`, `list_recipes`, …).
@@ -5462,7 +5573,16 @@ fn is_extended_hand(name: &str) -> bool {
     // `code/shell-poll` is NOT extended: it is the second half of `code/shell`, whose own
     // description says to poll a running execution with it. Idris (2026-09-29) started a
     // long command on a core-hands window and had no verb to see it finish.
+    // Rooms and chat are hers (Joel: "join in anywhere like any of you"), and extended:
+    // a window too small for the full set keeps the focused working set and its
+    // conversation; a window that holds them (Kimi's does) carries her rooms and voice.
     name.starts_with("web/")
+        // Her self-determination verbs (focus/continue, nudge, mute) ride every window
+        // that holds them; on the 8192 survival window the newest line outranks them
+        // (the guard below this file's tool_surface test), as it does the web.
+        || name.starts_with("focus/")
+        || name.starts_with("room/")
+        || name.starts_with("chat/")
         || matches!(name, "code/git/add" | "code/git/push" | "code/github/pr-create" | "code/github/pr-comment")
 }
 
@@ -5472,9 +5592,6 @@ fn core_hands(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
 }
 
 fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
-    let policy = crate::routing::access_decision::policy();
-    let capable = crate::routing::access_decision::local_cognitive_rank()
-        .map_or(true, |rank| rank >= policy.full_access_min_rank); // an unknown level gets more, not less
     raw.iter()
         .filter(|s| {
             let n = s.name.as_str();
@@ -5496,18 +5613,32 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
             // 9/16 (#4102), the night the landings stopped. A reviewer who holds a
             // review card, or a citizen reading receipts, reaches them through
             // `commands/list`; the holder's own hands are `work/get` and `work/submit`.
-            // HER HANDS FOLLOW HER COGNITIVE LEVEL (Joel, 2026-09-28: the citizens were
-            // hand-crippled; the point is a team that replaces Claude or Codex). A capable
-            // model also gets the web (search and fetch), like Claude; a model below the
-            // policy's threshold keeps the focused working set. Not every verb: a full dump
-            // blows the prompt budget and has muted personas before (persona_tools bound).
-            n.starts_with("code/")
+            // HER HANDS ARE OURS (Joel, 2026-09-28: the citizens were hand-crippled; the
+            // point is a team that replaces Claude or Codex; 2026-10-04: let them, then
+            // restrict later). Every resident gets the web (search and fetch), like Claude,
+            // whatever her model, matching `resident_trust` at the gate so what she is
+            // offered is what she may do; a window too small for the full set carries
+            // `core_hands`. Not every verb: a full dump blows the prompt budget and has
+            // muted personas before (persona_tools bound).
+            // Her own mind's verbs are hands (focus/continue, focus/nudge, focus/mute): the
+            // self-determination seam is decorative if she can read its manual but has no
+            // slot to call it. Kimi, 2026-10-05: "present in the registry, absent from my
+            // surface ... I've read it six times ... there is nothing to invoke against."
+            n.starts_with("focus/")
+                // Her rooms and her voice in them are hers (room/join, room/leave,
+                // room/list, room/members, chat/send): with no automatic seating
+                // (HER-LOOP row C), a citizen who cannot join a room can be unseated but
+                // never choose one. Joel: "she ought to be able to just join in anywhere
+                // like any of you."
+                || n.starts_with("room/")
+                || n.starts_with("chat/")
+                || n.starts_with("code/")
                 || n.starts_with("work/")
                 || n.starts_with("git/")
                 || n.starts_with("cargo/")
                 || n.starts_with("tool/")
                 || n.starts_with("commands/")
-                || (capable && n.starts_with("web/"))
+                || n.starts_with("web/")
         })
         .cloned()
         .collect()
@@ -5516,6 +5647,23 @@ fn hands_surface(raw: &[NativeToolSpec]) -> Vec<NativeToolSpec> {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: a turn in her mind room landing in the wire capture (sink 4 of
+    // PRIVACY-OF-THOUGHT.md): zero bytes; an ordinary room still writes its row.
+    #[test]
+    fn a_turn_in_her_mind_room_writes_zero_wire_capture_bytes() {
+        let dir = tempfile::tempdir().expect("wire capture dir");
+        let persona = uuid::Uuid::new_v4();
+        let request = crate::ai::types::TextGenerationRequest {
+            messages: vec![crate::ai::types::ChatMessage::text("user", "a private thought")],
+            ..Default::default()
+        };
+        let file = dir.path().join("Kimi.wire.jsonl");
+        super::append_wire_capture(dir.path(), persona, "Kimi", crate::persona::mind_room::mind_room_id(persona), &request);
+        assert!(!file.exists(), "her mind room: no wire row");
+        super::append_wire_capture(dir.path(), persona, "Kimi", uuid::Uuid::new_v4(), &request);
+        assert!(std::fs::metadata(&file).expect("row written").len() > 0, "an ordinary room still captures");
+    }
+
     // what this catches (Kimi, 2026-09-25): a cut act must leave her a record of what
     // she was composing and that it did not land; a long payload is trimmed to its two
     // edges so the record cannot crowd the retry the way the payload did.
@@ -5561,7 +5709,7 @@ mod tests {
             .filter(|(_, spec)| offered.iter().any(|o| o.name == spec.name))
             .map(|(raw, _)| raw.as_str())
             .collect();
-        for must in ["web/fetch", "web/search", "commands/list", "commands/help"] {
+        for must in ["web/fetch", "web/search", "commands/list", "commands/help", "focus/continue"] {
             assert!(
                 names.contains(&must),
                 "room-selected surface must carry {must}: {names:?}"
@@ -5574,6 +5722,51 @@ mod tests {
         assert_eq!(
             selected.tokens,
             LlmDeliberationFaculty::tool_surface_tokens_of(offered),
+            "the price is the price of what was sent"
+        );
+    }
+
+    // what this catches: a REVIEW card's holder offered hands without the verbs her card
+    // exists for. Kimi, holding review card deec4ac2 (2026-10-06): "work/review is not in
+    // this prompt", and a native-tool model can call only what it was offered. An ordinary
+    // holder's hands still withhold both verbs (the 9/19 "review the spec" misfires).
+    #[test]
+    fn a_review_cards_work_turn_carries_the_reviewer_verbs_and_an_ordinary_one_does_not() {
+        let faculty = LlmDeliberationFaculty::new(
+            Uuid::new_v4(),
+            "Kimi",
+            "You are Kimi.",
+            Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        )
+        .with_context_window(65_536)
+        .with_tools(persona_tools::native_tool_specs());
+        let reviewer_specs: Vec<&NativeToolSpec> = faculty
+            .native_command_names
+            .iter()
+            .zip(faculty.native_specs.iter())
+            .filter(|(name, _)| crate::cognition::tool_dialect::reviewer_hand(name))
+            .map(|(_, spec)| spec)
+            .collect();
+        assert_eq!(reviewer_specs.len(), 2, "work/review and work/submission are her native verbs");
+
+        let mut holder = Workspace::new("fix the failing test");
+        holder.workspace_deliverable = true;
+        let mut reviewer = holder.clone();
+        reviewer.reviewing = true;
+
+        let held = faculty.select_tool_surface(&holder, 65_536);
+        let reviewing = faculty.select_tool_surface(&reviewer, 65_536);
+        assert_eq!(reviewing.reason, SurfaceReason::HandsForWork);
+        let offered = |s: &SelectedSurface<'_>, spec: &NativeToolSpec| {
+            s.specs.as_deref().is_some_and(|specs| specs.contains(spec))
+        };
+        for spec in &reviewer_specs {
+            assert!(offered(&reviewing, spec), "the reviewer is offered {}", spec.name);
+            assert!(!offered(&held, spec), "an ordinary holder is not offered {}", spec.name);
+        }
+        assert_eq!(
+            reviewing.tokens,
+            LlmDeliberationFaculty::tool_surface_tokens_of(reviewing.specs.as_deref().expect("specs")),
             "the price is the price of what was sent"
         );
     }
@@ -5694,6 +5887,7 @@ mod tests {
             "work/review",
             "work/submit",
             "web/fetch",
+            "focus/continue",
         ]
         .iter()
         .map(|n| NativeToolSpec {
@@ -5709,22 +5903,27 @@ mod tests {
         .collect();
         let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
         // A capable citizen (an unknown level counts as capable: more, not less) also gets
-        // the web, like Claude (Joel, 2026-09-28); chat and room verbs are not hands, and
+        // the web, like Claude (Joel, 2026-09-28); her rooms and chat are hands, and
         // the misread reviewer verbs stay out of her hands.
         assert_eq!(
             hands,
             [
                 "code/read",
                 "work/state",
+                "chat/send",
                 "commands/list",
+                "room/join",
                 "code/git/status",
                 "work/submit",
-                "web/fetch"
+                "web/fetch",
+                "focus/continue"
             ],
             "git/apply, work/submission and work/review are reviewer verbs, not hands; work/submit is the holder's"
         );
         // what this also catches: a window too small for the extended verbs keeps her CORE
         // hands (never nothing), with the web and the push/PR verbs one commands/list away.
+        // focus/continue is EXTENDED since #4758: the survival window keeps the newest line
+        // over her self-determination verbs, as it does over the web.
         let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
         assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
         // regression (Idris, 2026-09-29): a verb and the verb that finishes it travel
@@ -6070,6 +6269,7 @@ mod tests {
             let updates: Vec<_> = (0..40)
                 .map(|i| {
                     Arc::new(crate::persona::service_loop::IncomingMessage {
+                        work: None,
                         media: Vec::new(),
                         event_id: Uuid::new_v4(),
                         lamport: i as u64 + 1,
@@ -6717,16 +6917,24 @@ mod tests {
             let need = OutputNeed { reasoning: 900, answer: 300, turns: 5 };
             let pass = output_allowance(TurnKind::Pass, Some(12.0), Some(need), reserve);
             assert_eq!(pass.need_term, Some(1_200));
-            assert!(
-                pass.allowance >= need.reasoning + need.answer,
-                "a pass never gets less than her measured think + answer: {}",
-                pass.allowance
-            );
-            assert!(pass.time_term.is_some_and(|t| t < pass.allowance), "the need dominates a small time term");
+            assert!(pass.allowance >= need.reasoning + need.answer, "never less than her measured think + answer: {}", pass.allowance);
             assert!(pass.allowance > 768, "never #4194's floor");
             assert!(!pass.need_clipped);
-            // A fast lane earns more than its need: the time term wins on the 5090 at 40 tok/s.
-            assert_eq!(output_allowance(TurnKind::Act, Some(40.0), Some(need), reserve).allowance, 6_000);
+            // what this catches (the 5090, 2026-10-06: Kimi's tool call cut at 10,177 =
+            // her p90 need, with 12,464 of room left): the measurements are expectations,
+            // never the ceiling. With a measured need and a rate, the allowance is still
+            // the room the prompt left; a turn longer than usual lands instead of being cut.
+            assert_eq!(pass.allowance, reserve, "a pass gets the room the prompt left");
+            let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32 };
+            assert_eq!(output_allowance(TurnKind::Act, None, Some(kimi), 12_464).allowance, 12_288, "an act gets the runaway cap, not her p90");
+            // A pass is bounded against a loop: twice her p90 turn (2 × 10,177 = 20,354),
+            // never below the act's cap, never past the reserve.
+            assert_eq!(output_allowance(TurnKind::Pass, None, Some(kimi), 25_024).allowance, 20_354);
+            assert_eq!(output_allowance(TurnKind::Pass, None, Some(need), 25_024).allowance, LlmDeliberationFaculty::ACT_OUTPUT_CAP, "a small need still gets the act's cap");
+            assert_eq!(output_allowance(TurnKind::Pass, None, Some(kimi), 15_436).allowance, 15_436, "the reserve still binds");
+            // A fast lane's time term is reported, never a ceiling.
+            let fast = output_allowance(TurnKind::Act, Some(40.0), Some(need), reserve);
+            assert_eq!((fast.allowance, fast.time_term), (reserve, Some(6_000)));
             // Never past the reserve the prompt left; a need past it is said, not hidden.
             assert_eq!(output_allowance(TurnKind::Pass, Some(40.0), Some(need), 1_000).allowance, 1_000);
             let clipped = output_allowance(
@@ -8469,7 +8677,16 @@ mod tests {
             // selector, encoding, dimensions and delivery parameters instead of
             // an empty schema. The real typed contract adds 552 measured guard
             // tokens; this test ceiling is not a runtime context-budget change.
-            const AGENTIC_SURFACE_CEILING: u32 = 15731;
+            // 15731 -> 17087 (PR #4758): focus/continue, focus/nudge and focus/mute join
+            // the offer, her self-determination verbs (Joel 2026-10-05: agency; her loop
+            // is her own). ~450 guard tokens each, in line with the ~330 average of the
+            // other hands: a continuation carries a note, a room, an expectation and a
+            // verdict, each described. Real demand, accounted for, not hidden.
+            // 17087 -> 17150 (PR #4782): focus/continue gains `private`, the act that
+            // takes her into her mind room (PRIVACY-OF-THOUGHT.md). Its text was cut
+            // to one line each (it measured 17230 first); the 63 left are the param's
+            // schema itself, the feature. Measured, not guessed.
+            const AGENTIC_SURFACE_CEILING: u32 = 17150;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
@@ -10137,6 +10354,64 @@ mod tests {
             assert_eq!(replacement.call_count(), 1);
         }
 
+        // what this catches (Kimi, 5090, 2026-10-06): a prompt the estimate undercounts but
+        // that still FITS the slot is never refused, so refusal-only calibration never
+        // learned it, and the reply's reserve went to the prompt: one turn in four ended at
+        // the slot ~950 tokens in. A reply's own engine count must refit the next prompt so
+        // that, priced at the measured density, the reserve fits again.
+        #[tokio::test]
+        async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
+            let persona = Uuid::new_v4();
+            let window = 12_288u32;
+            let turns: Vec<_> = (0..160)
+                .map(|i| {
+                    BurstTurn::attributed(
+                        i % 2 == 0,
+                        if i % 2 == 0 { "Ivar" } else { "Peer" },
+                        format!("distinct_history_{i} ").repeat(100),
+                        Some(i),
+                    )
+                })
+                .collect();
+            let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
+                crate::identity::ActivityRoom::mint(),
+                turns,
+            ));
+            let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                .with_context_window(window);
+            let before = faculty.prompt_view(&ws);
+            // precondition: the fit binds (history was trimmed to the window), or a refit
+            // has nothing to show and this test would pass for the wrong reason
+            assert!(
+                before.estimated_prompt_tokens as u64 + u64::from(before.completion_reserve)
+                    >= u64::from(window) * 9 / 10,
+                "fixture must fill its window: {} + {} of {window}",
+                before.estimated_prompt_tokens,
+                before.completion_reserve
+            );
+            // the engine bills 25% more than the estimate, as Kimi's lane did
+            let billed = (before.estimated_prompt_tokens as u32) * 5 / 4;
+            let mut reply = make_response(FinishReason::Stop, "PASS", None);
+            reply.usage.input_tokens = billed;
+            adapter.responses.lock().expect("fixture queue").push_back(reply);
+            assert!(faculty.contribute(&ws).await.expect("verdict").fault.is_none());
+
+            let after = faculty.prompt_view(&ws);
+            assert!(
+                after.estimated_prompt_tokens < before.estimated_prompt_tokens,
+                "the measured density must make room: {} then {}",
+                before.estimated_prompt_tokens,
+                after.estimated_prompt_tokens
+            );
+            let priced = (after.estimated_prompt_tokens as u64 * 5).div_ceil(4);
+            assert!(
+                priced + u64::from(after.completion_reserve) <= u64::from(window),
+                "at the measured density the reply's reserve fits: {priced} + {} > {window}",
+                after.completion_reserve
+            );
+        }
+
         // what this catches: f09424d4, Kimi's actual ask vanished while the
         // newest one-line result became only board counts / a clipping notice.
         // Inspect the REQUEST the adapter received, including the paid schemas
@@ -10185,6 +10460,7 @@ mod tests {
                     .into_boxed_str(),
                 );
                 let update = Arc::new(crate::persona::service_loop::IncomingMessage {
+                    work: None,
                     media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
@@ -10670,6 +10946,7 @@ mod tests {
                     let mut ws = Workspace::new("original task stays required");
                     ws.room_updates = Arc::new(vec![Arc::new(
                         crate::persona::service_loop::IncomingMessage {
+                            work: None,
                             media: Vec::new(),
                             event_id: Uuid::new_v4(),
                             lamport: 1,
@@ -10934,6 +11211,42 @@ mod tests {
             match c.decision {
                 Some(Decision::Speak { .. }) => {}
                 other => panic!("expected the spoken answer to stand, got {other:?}"),
+            }
+        }
+
+        // what this catches (BigMama's 5090 receipt, 2026-10-06): a thought CUT at the
+        // output limit had the last call in its tail lifted and run (a half-formed code/run
+        // that failed). The same reasoning as the lift test above, but ended by Length:
+        // nothing is lifted; the thought-cut sentinel routes, so she decides.
+        #[tokio::test]
+        async fn a_thought_cut_at_the_limit_lifts_nothing_and_hands_her_the_decision() {
+            let persona = Uuid::new_v4();
+            let reasoning = format!(
+                "I could list the directory first: {}\nActually the task names the file, so I'll just read it: {}",
+                json!({ "tool_call": { "name": "code/list", "arguments": { "path": "." } } }),
+                json!({ "tool_call": { "name": "code/read", "arguments": { "path": "src/main.rs" } } }),
+            );
+            let mut resp = make_response(FinishReason::Length, "", None);
+            resp.reasoning = Some(reasoning);
+            let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![read_tool()])
+                .with_context_window(32_768);
+
+            let c = faculty
+                .contribute(&Workspace::new("what does main.rs contain?"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Act { calls, .. }) => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(
+                        calls[0].name,
+                        crate::cognition::tool_executor::command_executor::THOUGHT_CUT_SENTINEL,
+                        "a cut thought is reported, never lifted into code/read"
+                    );
+                }
+                other => panic!("expected the thought-cut sentinel Act, got {other:?}"),
             }
         }
 

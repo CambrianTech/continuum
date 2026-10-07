@@ -34,6 +34,7 @@
 //! when that lands: the backend behind `contribute` gets smarter, the brain is
 //! unchanged.
 
+use crate::utils::age::humanize_age;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -869,21 +870,6 @@ fn render_memory_line(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String 
         format!("- {prefix}\u{201c}{}\u{201d}", engram.content)
     } else {
         format!("- {prefix}{}", engram.content)
-    }
-}
-
-/// Coarse human age buckets — a memory's rough distance in time, not a
-/// timestamp. Coarseness is deliberate: "2h ago" orients; "7,243,118ms"
-/// is noise the model would parrot.
-fn humanize_age(delta_ms: u64) -> String {
-    const MIN: u64 = 60_000;
-    const HOUR: u64 = 60 * MIN;
-    const DAY: u64 = 24 * HOUR;
-    match delta_ms {
-        d if d < 2 * MIN => "moments ago".to_string(),
-        d if d < 2 * HOUR => format!("{}m ago", d / MIN),
-        d if d < 2 * DAY => format!("{}h ago", d / HOUR),
-        d => format!("{}d ago", d / DAY),
     }
 }
 

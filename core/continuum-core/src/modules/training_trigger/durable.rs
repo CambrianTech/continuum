@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::commands::genome::job_create::Took;
 #[cfg(not(test))]
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::genome::fine_tuning::{job_board::DispatchLookup, JobHandle};
@@ -44,6 +45,9 @@ pub(crate) enum DispatchFailure {
 
 pub(crate) enum DispatchResult {
     Empty,
+    /// The fill was held without a job (joined a job, awaited a trial, or adopted an
+    /// existing gene for trial); its examples stay in the bucket for the next fill.
+    Held { examples: usize, took: Took },
     Dispatched {
         examples: usize,
         handle: JobHandle,
@@ -87,6 +91,10 @@ pub enum DispatchPhase {
     Retryable { error: String },
     RecoveryRequired { error: String },
     Dispatched { handle: JobHandle, provider: String },
+    /// The fill was held without a job (a job of hers already training this competence,
+    /// a trial judging it, or an existing gene adopted for trial): nothing was created,
+    /// the batch went back into the bucket, and this intent is finished.
+    Held { took: Took },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Entity)]
@@ -327,14 +335,21 @@ fn entity_id(base: &BaseEntity) -> Result<Uuid, String> {
 }
 
 impl PendingBatch {
+    /// THE fields a bucket pins at first arrival and every later batch must agree on.
+    pub(crate) fn policy(&self) -> super::BucketPolicy {
+        super::BucketPolicy {
+            source: self.source.clone(),
+            lora: self.lora.clone(),
+            schedule: self.schedule.clone(),
+            validation_split: self.validation_split,
+            local_artifact_dir: self.local_artifact_dir.clone(),
+            preferred_provider: self.preferred_provider.clone(),
+            eval_set: self.eval_set.clone(),
+        }
+    }
+
     pub(crate) fn same_policy(&self, other: &Self) -> bool {
-        self.source == other.source
-            && self.lora == other.lora
-            && self.schedule == other.schedule
-            && self.validation_split == other.validation_split
-            && self.local_artifact_dir == other.local_artifact_dir
-            && self.preferred_provider == other.preferred_provider
-            && self.eval_set == other.eval_set
+        self.policy() == other.policy()
     }
 
     fn same_submission(&self, other: &Self) -> bool {
@@ -365,6 +380,23 @@ fn append_batch(
         *current = Some(incoming);
     }
     Ok(())
+}
+
+/// Her measured verdict surprise when it is BELOW the floor: the room confirms her
+/// expectations, memories suffice, and the bucket holds (`Took::Unsurprised`). `None`
+/// when she is surprised enough, or not yet judged at all (unknown never halts
+/// training), or no mind of hers is resident on this core. One in-memory read of her
+/// strip; the same number job-create decides on, read here so a fill that would only
+/// come back unsurprised is never dispatched.
+fn unsurprised(persona: Uuid) -> Option<f32> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0); // pre-epoch clock: every tally reads outside its window = not measured
+    crate::persona::perception_feed::awareness_of(persona, now_ms)
+        .and_then(|a| a.verdict_surprise())
+        .map(|v| v.s)
+        .filter(|s| *s < crate::genome::competence::SURPRISE_FLOOR)
 }
 
 impl TrainingTriggerState {
@@ -741,6 +773,15 @@ impl TrainingTriggerState {
     }
 
     pub(crate) fn ready_to_dispatch(&self, key: &BucketKey) -> bool {
+        // A JOB OF HERS ALREADY TRAINING THIS COMPETENCE, or a gene of hers ON TRIAL for
+        // it: the bucket keeps filling and waits; the fill after the job lands or the
+        // trial decides judges against what came of it (Fork, Reuse, or a retired gene
+        // never offered again), never a second mint beside it (ten Mints for one
+        // competence on the 5090, 2026-10-05) and never a fork of a gene still being
+        // judged. An active dispatch of this bucket still resumes.
+        if !self.active_dispatches.contains_key(key) && self.held_for(key).is_some() {
+            return false;
+        }
         self.active_dispatches.contains_key(key)
             || self
                 .buckets
@@ -748,7 +789,69 @@ impl TrainingTriggerState {
                 .is_some_and(|batch| batch.examples.len() >= batch.min_examples as usize)
     }
 
-    fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {
+    /// The training job for this bucket's `(persona, trait, base)` on the job board, if
+    /// one is in flight: the job a held fill's examples wait for.
+    pub(crate) fn job_in_flight_for(&self, key: &BucketKey) -> Option<Uuid> {
+        #[cfg(not(test))]
+        let jobs = crate::genome::fine_tuning::TrainingJobBoard::global().pending();
+        #[cfg(test)]
+        let jobs = self.test_job_board.pending();
+        jobs.iter()
+            .find(|j| j.persona_id == key.persona_id && j.trait_kind == key.trait_kind && j.base_model == key.base_model)
+            .map(|j| j.handle.local_id)
+    }
+
+    /// What holds this bucket without a dispatch of its own: a job of hers in flight for
+    /// the key, else a gene of hers on trial for it. `None` = nothing pending; the bucket
+    /// dispatches when full. ONE computation serves the gate and the submit receipt.
+    pub(crate) fn held_for(&self, key: &BucketKey) -> Option<Took> {
+        if let Some(job) = self.job_in_flight_for(key) {
+            return Some(Took::Joined { job });
+        }
+        match self.trial_open_for(key) {
+            Ok(Some(trial)) => Some(Took::Awaited { trial }),
+            Ok(None) => unsurprised(key.persona_id).map(|s| Took::Unsurprised { s }),
+            Err(()) => Some(Took::TrialFileUnreadable),
+        }
+    }
+
+    /// The open trial of a gene of hers for this bucket's `(persona, trait, base)`, if
+    /// one is being judged in her work (its id). The trial file is one small JSON read,
+    /// bounded by the genes ever trialled. A trial past its window holds nothing
+    /// (`is_live`). An UNREADABLE file holds the bucket, loudly: nothing dispatches
+    /// beside a trial nobody can see (Cormac on #4794, point 5).
+    fn trial_open_for(&self, key: &BucketKey) -> Result<Option<Uuid>, ()> {
+        #[cfg(not(test))]
+        let trials = crate::genome::gene_trial::GeneTrials::default_store();
+        #[cfg(test)]
+        let trials = Some(crate::genome::gene_trial::GeneTrials::at(self.test_trials.path()));
+        let Some(trials) = trials else {
+            return Ok(None); // no home directory: no trial file can exist, nothing to hold
+        };
+        let all = match trials.load() {
+            Ok(all) => all,
+            Err(error) => {
+                crate::probe!(
+                    class = "training.trigger.trial_file_unreadable",
+                    persona = %key.persona_id,
+                    trait_kind = %key.trait_kind,
+                    error = %error,
+                    "her trial file could not be read: the bucket holds until it can, nothing dispatches beside a trial nobody can see"
+                );
+                return Err(());
+            }
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0); // pre-epoch clock: every open trial reads as live, the conservative side
+        Ok(all
+            .iter()
+            .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_live(now_ms))
+            .map(|t| t.id))
+    }
+
+    pub(crate) fn contains_submission(&self, key: &BucketKey, id: Uuid) -> bool {
         self.buckets
             .get(key)
             .is_some_and(|b| b.submission_ids.contains(&id))
@@ -827,6 +930,11 @@ impl TrainingTriggerState {
                 return self
                     .finish_dispatch(key, &active, handle.clone(), provider.clone())
                     .await;
+            }
+            // Finished at a restart: the batch was returned to the bucket when it was held.
+            DispatchPhase::Held { .. } => {
+                self.active_dispatches.remove(key);
+                return Ok(DispatchResult::Empty);
             }
             DispatchPhase::Dispatching | DispatchPhase::RecoveryRequired { .. } => {
                 let cursor = active.journal_cursor;
@@ -920,7 +1028,8 @@ impl TrainingTriggerState {
             )
             .await
         {
-            Ok((handle, provider)) => self.finish_dispatch(key, &active, handle, provider).await,
+            Ok(super::Created::Job(handle, provider)) => self.finish_dispatch(key, &active, handle, provider).await,
+            Ok(super::Created::Held(took)) => self.finish_held(key, &active, took).await,
             Err(failure) => {
                 let (phase, kind, error) = match failure {
                     DispatchFailure::Retryable(error) => (
@@ -959,6 +1068,36 @@ impl TrainingTriggerState {
                 Ok(DispatchResult::Failed { kind, error })
             }
         }
+    }
+
+    /// The fill was held without a job (joined a job of hers, awaited a trial, or adopted
+    /// an existing gene for trial): the batch returns to the bucket whole (every
+    /// submission id, every example), the intent ends as `Held` and is persisted, and the
+    /// bucket waits (`ready_to_dispatch` is false while that job or trial is pending) for
+    /// the fill that decides against what came of it.
+    async fn finish_held(&self, key: &BucketKey, active: &ActiveDispatch, took: Took) -> Result<DispatchResult, String> {
+        let examples = active.batch.examples.len();
+        let mut intent = active.intent.clone();
+        intent.phase = DispatchPhase::Held { took: took.clone() };
+        intent.is_active = false;
+        self.durable
+            .require()?
+            .dispatches
+            .update(entity_id(&intent.base)?, &intent)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.active_dispatches.remove(key);
+        let returned = (*active.batch).clone();
+        self.buckets.insert(key.clone(), returned);
+        crate::probe!(
+            class = "training.trigger.held",
+            persona = %key.persona_id,
+            trait_kind = %key.trait_kind,
+            took = ?took,
+            examples = examples as u64,
+            "the fill was held without a job (a job, a trial, or an existing gene pending) — its examples wait in the bucket"
+        );
+        Ok(DispatchResult::Held { examples, took })
     }
 
     async fn finish_dispatch(

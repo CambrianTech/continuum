@@ -72,6 +72,54 @@ pub(crate) const CATCH_UP_PAGE: usize = 32;
 /// Event ids remembered per room to tell "seen" from "dropped" (bounded).
 const SEEN_RING: usize = 128;
 
+/// Her perception region and its wake channel, registered on the core's one feed.
+struct MindFeed {
+    persona: Uuid,
+    region: Arc<std::sync::Mutex<crate::persona::perception_region::PerceptionRegion>>,
+    wake_tx: tokio::sync::mpsc::Sender<crate::persona::perception_region::Wake>,
+    /// Her wakes until the loop's Wake consumer takes them (`take_wakes`).
+    wakes: Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>>,
+}
+
+impl MindFeed {
+    fn boot(persona: Uuid) -> Option<Self> {
+        let Some(dir) = crate::persona::perception_feed::mind_dir(persona) else {
+            crate::probe!(
+                class = "mind.feed.unbooted",
+                persona = %persona,
+                "no persistent home: her perception region cannot load her durable state"
+            );
+            return None;
+        };
+        // Turn budget 0: the awareness strip's context share is unread until the
+        // loop's Wake consumer composes it, so it reports 0 rather than a guess.
+        let now = crate::persona::trace::now_ms();
+        let (mut region, _strip) = crate::persona::perception_region::PerceptionRegion::boot(
+            airc_core::PeerId::from_uuid(persona),
+            &dir,
+            0,
+            now,
+        );
+        // Her private continuation is never in mind-state.json; it is sealed in her mind
+        // store (PRIVACY-OF-THOUGHT.md sink 10). Restore it when no open one was saved.
+        if region.continuation().is_none() {
+            if let Some(private) = crate::persona::mind_room::sealed_continuation(persona) {
+                region.restore_private_continuation(private, now);
+            }
+        }
+        let (wake_tx, wakes) = tokio::sync::mpsc::channel(8);
+        Some(Self { persona, region: Arc::new(std::sync::Mutex::new(region)), wake_tx, wakes: Some(wakes) })
+    }
+}
+
+impl Drop for MindFeed {
+    /// A conversation that ends takes her off the feed; the registry would otherwise
+    /// keep feeding a region nobody reads.
+    fn drop(&mut self) {
+        crate::persona::perception_feed::unregister(self.persona);
+    }
+}
+
 /// Per room: the WALL-TIME floor adopted at first sight (nothing older is ever
 /// replayed) and a bounded ring of EVENT IDS actually forwarded (live or paged).
 /// Neither lamport nor "max seen" can stand in for this: a lamport is the
@@ -389,6 +437,10 @@ pub struct AircPersonaConversation {
     /// Room-turns recovered by the rejoin replay, yielded ahead of the live
     /// stream. See the epoch-reopen branch in `next_message`.
     rejoin_backlog: std::collections::VecDeque<IncomingMessage>,
+    /// Her perception region on the core's ONE feed (EVENT-MIND.md §1b), booted at
+    /// the first membership read. `None` until then, or when her durable dir cannot
+    /// be resolved (probe `mind.feed.unbooted` says so).
+    mind: Option<MindFeed>,
 }
 
 impl AircPersonaConversation {
@@ -412,7 +464,57 @@ impl AircPersonaConversation {
             initial_watermark: None,
             next_catch_up: tokio::time::Instant::now() + CATCH_UP_EVERY,
             rejoin_backlog: std::collections::VecDeque::new(),
+            mind: None,
         }
+    }
+
+    /// Her events from the ONE feed for `rooms`. Boots her region on first use and
+    /// re-registers with a fresh sender on every membership change (the pump that
+    /// owned the previous receiver is replaced with it).
+    async fn feed_events(
+        &mut self,
+        rooms: &[Uuid],
+    ) -> Option<
+        impl futures::Stream<Item = Result<Arc<TranscriptEvent>, airc_lib::LiveLag>> + Send + 'static,
+    > {
+        use futures::StreamExt as _;
+        let persona = self.own_peer_id;
+        if self.mind.is_none() {
+            self.mind = MindFeed::boot(persona);
+        }
+        let mind = self.mind.as_ref()?;
+        // Her name, by the same lookup `signal_if_directed` uses: the region detects
+        // "addressed to me" through `PersonaIdentity::mentions`, so a region without
+        // her name would be blind to every @-mention. No name, no region.
+        let Some(agent_name) = crate::persona::PersonaAircRuntimeRegistry::try_global()
+            .and_then(|r| r.get(persona))
+            .map(|rt| rt.agent_name().to_string())
+        else {
+            crate::probe!(
+                class = "mind.feed.unbooted",
+                persona = %persona,
+                "her runtime is not registered: no name to detect mentions with; the region waits for the next membership read"
+            );
+            return None;
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(INBOX_CAPACITY);
+        crate::persona::perception_feed::register(
+            persona,
+            airc_core::PeerId::from_uuid(persona),
+            &agent_name,
+            Arc::clone(&mind.region),
+            mind.wake_tx.clone(),
+            Some(tx),
+        );
+        let mut named = Vec::with_capacity(rooms.len());
+        for room in rooms {
+            let name = crate::persona::airc_citizen::room_name_by_id(*room)
+                .await
+                .unwrap_or_else(|| room.to_string()); // unwrap_or: an unnamed room is perceived under its id, never dropped
+            named.push((*room, name));
+        }
+        crate::persona::perception_feed::refresh_membership(persona, &named);
+        Some(tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok))
     }
 
     /// Borrow the underlying citizen — useful for the supervisor's
@@ -446,7 +548,14 @@ impl AircPersonaConversation {
                 .subscribe_all_rooms()
                 .await
                 .map_err(|e| format!("subscribe failed: {e}"))?;
-            self.install_stream(stream);
+            // ONE FEED, phase-in: the core's single attach per room feeds her pump
+            // beside the private subscription, deduped by event id in the pump. The
+            // private subscription and its store catch-up retire together once this
+            // path is proven live (Cormac, 2026-10-04: never a window with no path).
+            match self.feed_events(&rooms).await {
+                Some(feed) => self.install_stream(futures::stream::select(stream, feed)),
+                None => self.install_stream(stream),
+            }
         } else {
             self.stop_stream();
             crate::probe!(
@@ -548,6 +657,11 @@ impl AircPersonaConversation {
                                     continue;
                                 }
                                 let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+                                // Two sources may carry one event (the one feed and,
+                                // until it retires, the private subscription): admit once.
+                                if s.was_seen(ev.room_id.as_uuid(), ev.event_id.as_uuid()) {
+                                    continue;
+                                }
                                 s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
                                 if let Ok((peer, text)) =
                                     crate::airc::realtime_wire::room_turn_from_event(ev)
@@ -846,10 +960,18 @@ impl AircPersonaConversation {
                     self.refresh_pending = false;
                     continue;
                 }
+                // The attach set itself: which channels this persona's live stream now
+                // carries. Without it, "she never hears another peer in her project room"
+                // (Kimi, 2026-10-04: a durable chat in 700663d5 reached the core's chat
+                // projector live and never her raw_event) could not be split into "not in
+                // her set" vs "in her set, not delivered".
+                let attached = self.rooms.as_deref().unwrap_or_default(); // unwrap_or_default: refresh_membership just set it; none = an empty set, reported as 0
                 crate::probe!(
                     class = "persona.inbound.resubscribed",
                     persona = %self.own_peer_id,
                     reason = reason,
+                    attached_rooms = attached.len() as u64,
+                    attached = %attached.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(","),
                     "re-opening the subscribe stream"
                 );
                 // REPLAY THE GAP (2026-08-21, the FOURTH deaf-kickoff variant). The
@@ -916,6 +1038,12 @@ impl AircPersonaConversation {
 
 #[async_trait]
 impl PersonaConversation for AircPersonaConversation {
+    fn take_wakes(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>> {
+        self.mind.as_mut().and_then(|m| m.wakes.take())
+    }
+
     /// Eagerly opens the airc subscribe stream. Idempotent — calling
     /// twice is a no-op after the first.
     ///
@@ -987,6 +1115,14 @@ impl PersonaConversation for AircPersonaConversation {
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
+        // Speech in her mind room reaches its only member, her (PRIVACY-OF-THOUGHT.md §4):
+        // it is never published, so no airc channel (not even one named by the room's
+        // uuid) ever carries it. Saying it to the room is publishing; that is her act.
+        let me = self.own_peer_id;
+        if crate::persona::mind_room::is_private_room(me, room_id) {
+            crate::persona::mind_room::note_withheld(me, "speech");
+            return Ok(());
+        }
         self.runtime
             .say_in(room_id, text)
             .await
@@ -1047,6 +1183,7 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
         return Err("work_presence");
     }
     Ok(IncomingMessage {
+    work: None,
         media: turn.media,
         event_id: event.event_id.as_uuid(),
         lamport: event.lamport,
@@ -1154,8 +1291,14 @@ mod tests {
 
         // A page counts examined events, not stash/admit loop iterations.
         // Fill its first N-1 positions with legitimate non-turn control traffic.
+        // Distinct events: the pump admits one event id once, so N copies of one
+        // control frame would no longer fill N positions.
         let mut page: Vec<_> = (0..CATCH_UP_PAGE - 1)
-            .map(|_| Ok(Arc::clone(&control)))
+            .map(|_| {
+                let mut distinct = (*control).clone();
+                distinct.event_id = airc_core::EventId::new();
+                Ok(Arc::new(distinct))
+            })
             .collect();
         page.push(Ok(Arc::new(event("last event in one admission page"))));
         let (drained, ready) = tokio::sync::oneshot::channel();
@@ -1168,6 +1311,22 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
         let last = conversation.next_message_inner(false, false).await.unwrap().unwrap();
         assert_eq!(last.text, "last event in one admission page");
+
+        // what this catches (5090, 2026-10-04): the one feed runs beside the private
+        // subscription until that retires, so one event can arrive on both. The pump
+        // admits it once; a second copy must not become a second turn.
+        let twice = Arc::new(event("one event, two sources"));
+        let (drained, ready) = tokio::sync::oneshot::channel();
+        conversation.install_stream(
+            futures::stream::iter([Ok(Arc::clone(&twice)), Ok(Arc::clone(&twice))]).chain(
+                futures::stream::once(async move {
+                    drained.send(()).unwrap();
+                    std::future::pending().await
+                }),
+            ),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
+        assert_eq!(conversation.inbox.as_mut().unwrap().len(), 1, "one event on two sources is admitted once");
 
         // Error frames must still reach the consumer, never disappear as noise.
         let (drained, ready) = tokio::sync::oneshot::channel();
@@ -1189,6 +1348,28 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("lagged 7"), "{error}");
         conversation.stop_stream();
+    }
+
+    // what this catches: speech in her mind room published to airc (PRIVACY-OF-THOUGHT.md
+    // §4). It reaches its only member, her, and nothing goes out: without the gate the
+    // runtime would publish to a room NAMED by the mind room's uuid, which this scope
+    // has never joined.
+    #[tokio::test]
+    async fn speech_in_her_mind_room_is_never_published() {
+        use crate::persona::identity_provider::PersonaIdentitySource;
+        use crate::persona::PersonaAircRuntime;
+        let home = tempfile::tempdir().unwrap();
+        let airc = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await.unwrap());
+        let room = airc.join("open-room").await.unwrap().channel;
+        let runtime = Arc::new(PersonaAircRuntime::from_attached(
+            airc.peer_id().as_uuid(), "open-room", home.path().to_path_buf(),
+            airc.clone(), room, PersonaIdentitySource::FreshlyMinted,
+        ));
+        let conversation = AircPersonaConversation::new(runtime.clone());
+        let mind = crate::persona::mind_room::mind_room_id(airc.peer_id().as_uuid());
+        conversation.say_in(mind, "a private word").await.expect("said to herself, never published");
+        conversation.say_in(room.as_uuid(), "an open word").await.expect("an open room still publishes");
     }
 
     // Regression: priming establishes readiness once; the live loop must not
@@ -1993,6 +2174,48 @@ impl AircPersonaConversation {
                     .collect(),
             },
         };
+        // A typed work fact in the room is perception (EVENT-MIND.md §1b): a
+        // verdict, a card move, a submission, a claim. It becomes a labelled board
+        // fact in her burst, attributed to the actor, never dropped as
+        // `non_chat_schema`. Her own acts' echoes are skipped like her own words.
+        match crate::airc::realtime_wire::room_work_from_event(&event) {
+            Ok(Some(work)) => {
+                if event.peer_id.as_uuid() == self.own_peer_id {
+                    return None;
+                }
+                crate::probe!(
+                    class = "persona.inbound.work_fact",
+                    persona = %self.own_peer_id,
+                    from_peer = %event.peer_id,
+                    room = %event.room_id,
+                    work = ?work,
+                    "a typed work fact admitted as perception"
+                );
+                return Some(IncomingMessage {
+                    event_id: event.event_id.as_uuid(),
+                    lamport: event.lamport,
+                    peer_id: event.peer_id.as_uuid(),
+                    text: String::new(),
+                    media: Vec::new(),
+                    room_id: event.room_id.as_uuid(),
+                    work: Some(work),
+                });
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                crate::probe!(
+                    class = "persona.inbound.filtered_non_turn",
+                    persona = %self.own_peer_id,
+                    from_peer = %event.peer_id,
+                    body_kind,
+                    event_kind,
+                    body_preview,
+                    reason,
+                    "a work-hinted event FAILED to decode — a board fact may be unheard"
+                );
+                return None;
+            }
+        }
         let message = match perceptual_from_event(&event) {
             Ok(message) => message,
             Err(reason) => {

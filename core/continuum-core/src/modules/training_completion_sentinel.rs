@@ -123,10 +123,16 @@ impl TrainingCompletionSentinel {
                 trait_kind = %job.trait_kind,
                 "training-completion-sentinel: executor not installed — cannot convert the completed job; no trial opened"
             );
+            // no chain, no hold: the competence is not pending on anything
+            TrainingJobBoard::global().adoption_done(job.handle.local_id);
             return;
         };
 
         tokio::spawn(async move {
+            // The competence stays PENDING on the board until this chain ends, adopted or
+            // refused, on every path out of it: a fill in the meantime joins the job
+            // instead of minting beside it (card cb14cc13). Dropped = released.
+            let _pending = AdoptionHold { job: job.handle.local_id };
             // Dispatch AS the persona (LocalPersona → Trusted, which may run the
             // Privileged convert) over the wired executor — the same
             // persona-is-a-client path the L2 producer uses ([[persona-is-a-client]]).
@@ -164,65 +170,11 @@ impl TrainingCompletionSentinel {
                 return;
             }
 
-            // INTEGRATED, NOT PARALLEL (Joel, 2026-09-27). The gene is registered, so the serving
-            // engine loads it in place, dormant (#4467), and a TRIAL opens: from now on each
-            // card she works draws an arm, and the room's outcome for the card is what promotes
-            // or retires it (genome/gene_trial.rs). No eval copy of her mind scores it beside
-            // her life.
-            if let Err(e) = crate::forge::adapter_manifest::register(crate::forge::adapter_manifest::TrainedAdapter {
-                alias: job.trait_kind.clone(),
-                path: std::path::PathBuf::from(&path_str),
-                base_model_id: job.base_model.clone(),
-            }) {
-                crate::probe!(
-                    class = "genome.trial.refused",
-                    persona = %job.persona_id,
-                    gene = job.trait_kind.as_str(),
-                    error = e.as_str(),
-                    "the trained gene could not be registered for serving: no trial opened"
-                );
-                return;
-            }
-            let Some(store) = crate::genome::gene_trial::GeneTrials::default_store() else {
-                tracing::error!(persona = %job.persona_id, "no home directory: the gene trial file has no place, no trial opened");
-                return;
-            };
-            let trial = match store.open(
-                job.persona_id,
-                &job.trait_kind,
-                std::path::Path::new(&path_str),
-                &job.base_model,
-                chrono::Utc::now().timestamp_millis().max(0) as u64,
-            ) {
-                Ok(t) => t,
-                Err(e) => {
-                    crate::probe!(
-                        class = "genome.trial.refused",
-                        persona = %job.persona_id,
-                        gene = job.trait_kind.as_str(),
-                        error = e.as_str(),
-                        "the gene trial file did not take the trial: no trial opened"
-                    );
-                    return;
-                }
-            };
-            crate::probe!(
-                class = "genome.trial.opened",
-                persona = %job.persona_id,
-                gene = job.trait_kind.as_str(),
-                trial = %trial.id,
-                base = job.base_model.as_str(),
-                share_milli = trial.share_milli as u64,
-                loss = loss.unwrap_or_default(), // probe field: guarded finite above
-                loss_source = loss_source,
-                "a trained gene opened a trial: it now works a share of her cards, and her work's outcomes decide it"
-            );
-
-            // STAMP the signature into the sidecar at the same moment the gene
-            // becomes live — adoption is the one event where the gene's path,
-            // its minted signature, and its measured worth are all in hand.
-            // Best-effort: a failed stamp warns; the gene serves either way and
-            // routes by fallback until the next adoption re-stamps.
+            // STAMP the signature into the sidecar BEFORE the gene becomes live (Cormac on
+            // #4794, point 6): from the moment the trial opens, a fill must find this gene
+            // in the store, by distance, so it awaits the trial rather than minting beside
+            // it. Best-effort: a failed stamp warns; the gene serves either way and routes
+            // by fallback until the next adoption re-stamps.
             if let Some(sig) = job.signature.clone() {
                 match crate::genome::signature::signature_store_path() {
                     Ok(store) => {
@@ -239,7 +191,59 @@ impl TrainingCompletionSentinel {
                 }
             }
 
+
+            // INTEGRATED, NOT PARALLEL (Joel, 2026-09-27). The gene is registered, so the serving
+            // engine loads it in place, dormant (#4467), and a TRIAL opens: from now on each
+            // card she works draws an arm, and the room's outcome for the card is what promotes
+            // or retires it (genome/gene_trial.rs). No eval copy of her mind scores it beside
+            // her life. The same seam a reuse decision adopts an existing gene through.
+            let adopted = crate::genome::gene_trial::Adoption::default_paths().and_then(|a| {
+                a.adopt(
+                    job.persona_id,
+                    &job.trait_kind,
+                    std::path::Path::new(&path_str),
+                    &job.base_model,
+                    chrono::Utc::now().timestamp_millis().max(0) as u64,
+                )
+            });
+            let trial = match adopted {
+                Ok(t) => t,
+                Err(refusal) => {
+                    crate::probe!(
+                        class = "genome.trial.refused",
+                        persona = %job.persona_id,
+                        gene = job.trait_kind.as_str(),
+                        refusal = %refusal,
+                        "the trained gene was not adopted: no trial opened, her genome unchanged"
+                    );
+                    return;
+                }
+            };
+            crate::probe!(
+                class = "genome.trial.opened",
+                persona = %job.persona_id,
+                gene = job.trait_kind.as_str(),
+                trial = %trial.id,
+                base = job.base_model.as_str(),
+                share_milli = trial.share_milli as u64,
+                loss = loss.unwrap_or_default(), // probe field: guarded finite above
+                loss_source = loss_source,
+                "a trained gene opened a trial: it now works a share of her cards, and her work's outcomes decide it"
+            );
+
         });
+    }
+}
+
+/// Holds a completed job's competence as pending on the board for the life of its
+/// adoption chain; dropping it (any path out of the chain) releases it.
+struct AdoptionHold {
+    job: uuid::Uuid,
+}
+
+impl Drop for AdoptionHold {
+    fn drop(&mut self) {
+        crate::genome::fine_tuning::TrainingJobBoard::global().adoption_done(self.job);
     }
 }
 
@@ -391,6 +395,18 @@ impl ServiceModule for TrainingCompletionSentinel {
     /// runs on a 15s background cadence; the only heavy work (the eval chain) is
     /// spawned off-tick so the poll loop never blocks on it.
     async fn tick(&self) -> Result<(), String> {
+        // Trials past their window end unjudged on this cadence, so a bucket they held is
+        // released and their gene leaves serving (gene_trial::TRIAL_WINDOW_MS).
+        if let Some(trials) = crate::genome::gene_trial::GeneTrials::default_store() {
+            let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+            if let Err(error) = trials.expire_stale(now_ms) {
+                crate::probe!(
+                    class = "genome.trial.expire_unreadable",
+                    error = error.as_str(),
+                    "the trial file could not be read on the sentinel's tick: no trial expired this tick"
+                );
+            }
+        }
         let jobs = TrainingJobBoard::global().snapshot();
         if jobs.is_empty() {
             return Ok(());

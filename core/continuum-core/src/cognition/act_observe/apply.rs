@@ -95,6 +95,26 @@ impl ActChain {
     }
 }
 
+/// The activity an act happens IN: the board room of the card her hands are rooted on, by
+/// the one definition of "which board holds a card" (`modules::work::room_holding_card`,
+/// any activity, project or benchmark); else the room the turn was woken in. The wake room
+/// is a fallback for acts with no subject yet (a help call before she has chosen a task),
+/// never an override of one.
+async fn act_activity_room(persona_id: Uuid, wake_room: Uuid) -> Uuid {
+    let Some(card) = crate::cognition::persona_workspace::acting_card_of(persona_id) else {
+        return wake_room;
+    };
+    let Some(runtime) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+        .and_then(|registry| registry.get(persona_id))
+    else {
+        return wake_room;
+    };
+    match crate::modules::work::room_holding_card(runtime.airc(), airc_lib::WorkCardId::from_uuid(card)).await {
+        Some(room) => room.channel.as_uuid(),
+        None => wake_room,
+    }
+}
+
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
@@ -106,6 +126,29 @@ pub async fn apply_act(
     let Some(body) = cycle.acting() else {
         return ActOutcome::NoHands;
     };
+    // ONE decision per act: the activity it is IN is its SUBJECT's, never the room whose
+    // event happened to wake the turn (docs/architecture/EVENT-MIND.md, "the activity rides
+    // on the event"). Everything below (the tools' context, the act update, her working-
+    // memory stamp, the receipt) reads this one value. It used to be two: the stamp took the
+    // wake room and the receipt took `bench_round::room_for_card`, which knows benchmark
+    // rounds only, so Kimi's Career Wrangler work was stamped and radiated into the org
+    // room `cb2e21a1` all day (2026-10-04, "[result #9327; room cb2e21a1; ...]").
+    let wake_room = room_id;
+    // A turn in her mind room stays in her mind room (PRIVACY-OF-THOUGHT.md §4): its acts
+    // are never re-homed to a card's public activity, and nothing about them is published
+    // (no thought line, no receipt; sink 6). Her tools still act on the world; telling the
+    // room about it is hers to do, by publishing.
+    let private = crate::persona::mind_room::is_private_room(body.persona_id, wake_room);
+    let room_id = if private { wake_room } else { act_activity_room(body.persona_id, wake_room).await };
+    if room_id != wake_room {
+        crate::probe!(
+            class = "act.activity.resolved",
+            actor = %body.persona_id,
+            activity = %room_id,
+            wake_room = %wake_room,
+            "the act lands in its subject's activity; the wake room is provenance only"
+        );
+    }
 
     // Call history is not a cache-validity proof. Reads can change, failures can
     // recover, and earlier results may no longer fit the prompt. Execute through
@@ -143,6 +186,9 @@ pub async fn apply_act(
     // dispatch listener when it lands. Requires the core executor (a live persona's hands
     // expose it; harnesses don't → everything runs synchronously). No long-running calls —
     // the overwhelmingly common case — means `fg_calls == calls` and this is inert.
+    // Her checkout before the batch: `wrote` is what the batch DID to it, by any verb.
+    let acting_root = crate::cognition::persona_workspace::acting_root_of(body.persona_id);
+    let disk_before = super::disk_change::fingerprint_at(acting_root.clone()).await;
     let mut bg_notes: Vec<String> = Vec::new();
     // The long-running calls that were dispatched (not run synchronously) — retained so a
     // pure-background batch (no foreground calls) can still emit a typed act, keeping
@@ -503,10 +549,10 @@ pub async fn apply_act(
         // Receipts radiate into the CARD's activity room when a held card
         // rooted her hands — the room her reviewer and teammates watch — not
         // the room whose line triggered the turn (`acting_card_of`).
-        let receipt_room = crate::cognition::persona_workspace::acting_card_of(body.persona_id)
-            .and_then(crate::cognition::bench_round::room_for_card)
-            .unwrap_or(room_id);
-        if !lines.is_empty() {
+        let receipt_room = room_id;
+        if private {
+            crate::persona::mind_room::note_withheld(body.persona_id, "thought_line");
+        } else if !lines.is_empty() {
             if let Some(rt) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .and_then(|reg| reg.get(body.persona_id))
             {
@@ -695,13 +741,27 @@ pub async fn apply_act(
     // `wrote` is the question we actually keep asking, precomputed so it is a filter and
     // not a substring guess at query time: did anything in this batch reach DISK?
     let verbs: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-    // Honest: a mutating verb that ERRORED reached no disk. Freya (2026-09-05)
-    // had a correct `code/edit` answer "File not found" and still read as a write.
-    let wrote = acts.iter().any(|a| {
+    // MEASURED, by any verb: her checkout's fingerprint after the batch against before it.
+    // A write through code/shell (sed -i, a heredoc, git apply, git commit) used to count
+    // as reading, because `wrote` read the verb NAME (Joel, 2026-10-06: "0 writes always a
+    // serious plumbing bug"). An executed mutating verb still counts on its own, for a
+    // write that lands outside the checkout. A mutating verb that ERRORED reached no disk
+    // (Freya, 2026-09-05: a `code/edit` answering "File not found" read as a write).
+    let disk = super::disk_change::DiskChange::between(
+        disk_before,
+        super::disk_change::fingerprint_at(acting_root).await,
+    );
+    let wrote_by_verb = acts.iter().any(|a| {
         let n = a.call.name.replace('_', "/");
         matches!(a.status, crate::cognition::act_observe::ActStatus::Executed)
             && (n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit"))
     });
+    // and the board: a submission, a review verdict, a ledger note or a card she put up is
+    // written work that reaches no disk, and counted as reading until now
+    let published = acts.iter().any(|a| {
+        matches!(a.status, crate::cognition::act_observe::ActStatus::Executed) && a.output.verb.publishes()
+    });
+    let wrote = wrote_by_verb || published || disk == super::disk_change::DiskChange::Changed;
     crate::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
@@ -709,6 +769,8 @@ pub async fn apply_act(
         tools = calls.len(),
         verbs = %verbs.join(","),
         wrote,
+        disk = disk.as_str(),
+        published,
         chars = observation.len(),
         "acted and observed the result"
     );

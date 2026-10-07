@@ -34,7 +34,8 @@ use continuum_client::{ClientError, Connection};
 use continuum_cli_lifecycle::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use continuum_cli_lifecycle::deploy_provenance::{
-    cli_self_build, cli_staleness_note, deploy_verdict, sha_matches, CliSelfBuild,
+    cli_replaced_this_run, cli_self_build, cli_staleness_note, deploy_verdict, sha_matches,
+    CliSelfBuild,
 };
 use serde_json::Value;
 
@@ -58,6 +59,10 @@ use continuum_cli_lifecycle::launchd;
 #[cfg(windows)]
 #[path = "continuum/elevated_teardown.rs"]
 mod elevated_teardown;
+// The service host's one drop of privilege (S4U ignores RunLevel); Windows-only like its caller.
+#[cfg(windows)]
+#[path = "continuum/unelevated_service.rs"]
+mod unelevated_service;
 use continuum_cli_lifecycle::elevated_teardown::StopOptions;
 
 #[derive(Debug, thiserror::Error)]
@@ -1063,6 +1068,12 @@ struct RebootOptions {
     require_engine_receipt: bool,
     /// Installer-to-reboot transfer binds the entire selected release.
     service_descriptor_sha: Option<String>,
+    /// The caller already installed the CLI that ships with `prebuilt` (deploy-consume's
+    /// CI companions, card 50ca737e). Not a CLI flag. Without it, a download deploy that
+    /// DID replace the CLI reported "⚠ STALE CLI ... nothing in this run replaced it" and
+    /// told the operator to `reboot`, which on a slow node is a multi-hour compile that
+    /// fixes nothing (IntelMac, 2026-10-04, card cca11352).
+    cli_installed: bool,
 }
 
 impl RebootOptions {
@@ -1147,27 +1158,29 @@ impl PrebuiltCore {
             .map_err(|e| format!("cannot locate checkout for prebuilt verification: {e}"))?;
         let git_dir = std::env::var_os("GIT_DIR");
         let checkout_sha = prebuilt_checkout_sha(&cwd, git_dir.as_deref()).await?;
-        Self::from_report(path, build_sha, checkout_sha.as_deref())
+        // THE BUILD KEY, NOT HEAD (card 9080ffb0 / #4732). The core is a function of the
+        // build inputs, so CI publishes one artifact per commit that touched them and a
+        // docs-only tip is served by its key's artifact. Checking that artifact against
+        // HEAD refused every such tip in two seconds ("DEPLOY MISMATCH ... shipped build
+        // 937976559 (git HEAD)" on the M5, 2026-10-05 01:55Z, for the key f8c69966e).
+        let expected = match checkout_sha.as_deref() {
+            Some(head) => Some(prebuilt_checkout_build_key(&cwd, git_dir.as_deref(), head)),
+            None => None,
+        };
+        Self::from_report(path, build_sha, expected.as_ref().map(|(sha, src)| (sha.as_str(), *src)))
     }
 
     fn from_report(
         path: PathBuf,
         build_sha: String,
-        checkout_sha: Option<&str>,
+        expected: Option<(&str, &'static str)>,
     ) -> Result<Self, String> {
         // Reuse #194's credible-SHA and short/full-SHA comparison. Without a
         // checkout the artifact anchors its own receipt; unknown/malformed
-        // provenance still fails. With a checkout it must also match HEAD.
-        deploy_verdict(
-            Some(&build_sha),
-            checkout_sha.unwrap_or(&build_sha),
-            if checkout_sha.is_some() {
-                "git HEAD of this checkout"
-            } else {
-                "selected prebuilt artifact"
-            },
-            &path.display().to_string(),
-        )?;
+        // provenance still fails. With a checkout it must match the checkout's
+        // build key (its HEAD when git cannot name the key).
+        let (expected_sha, source) = expected.unwrap_or((&build_sha, "selected prebuilt artifact"));
+        deploy_verdict(Some(&build_sha), expected_sha, source, &path.display().to_string())?;
         Ok(Self { path, build_sha })
     }
 }
@@ -1190,6 +1203,34 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         use std::os::windows::process::CommandExt;
         if !(3..=4).contains(&args.len()) || args.iter().any(|arg| arg.is_empty()) {
             return Err("service-host requires <core-path> <socket> <engine-path> [eye-root]".to_string());
+        }
+        // The core runs with its user's hands, not an administrator's (S4U ignores the
+        // task's RunLevel; see unelevated_service). If the drop itself fails, the host
+        // runs as it did before and says so: that is today's state, reported, not a
+        // success claimed.
+        // An unreadable token never stops the node: the core launches as before, and the
+        // line says the drop was not attempted (Cormac's review of #4739).
+        let elevated = match unelevated_service::token_is_elevated() {
+            Ok(elevated) => elevated,
+            Err(why) => {
+                eprintln!(
+                    "service-host: token elevation UNREADABLE ({why}); launching the core without the unelevated relaunch"
+                );
+                false
+            }
+        };
+        if unelevated_service::must_relaunch(elevated, std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some()) {
+            match tokio::task::spawn_blocking(unelevated_service::relaunch_unelevated).await {
+                Ok(Ok(code)) => return Ok(code),
+                Ok(Err(why)) => eprintln!(
+                    "service-host: ELEVATED — could not relaunch as the normal user ({why}); the core and every citizen shell run with Administrator's token"
+                ),
+                Err(join) => eprintln!(
+                    "service-host: ELEVATED — the unelevated relaunch did not complete ({join}); the core runs with Administrator's token"
+                ),
+            }
+        } else if elevated {
+            eprintln!("service-host: ELEVATED although relaunched as the normal user; the token still reads elevated");
         }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command)?;
@@ -1304,6 +1345,15 @@ struct CoreServiceTask {
     state: String,
 }
 
+/// A path the ContinuumCore descriptor names, absolute and resolved, or why not.
+#[cfg(any(windows, test))]
+fn resolve_service_path(path: &str) -> Result<PathBuf, String> {
+    if !Path::new(path).is_absolute() {
+        return Err(format!("ContinuumCore path must be absolute: {path}"));
+    }
+    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
+}
+
 #[cfg(any(windows, test))]
 impl CoreServiceTask {
     fn validate_description_sha(&self, expected: &str) -> Result<(), String> {
@@ -1318,18 +1368,30 @@ impl CoreServiceTask {
         Ok(())
     }
 
-    fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
+    /// What a restart needs from the registered release that staging does not write: a
+    /// parseable descriptor whose engine is an installed file and whose log directory
+    /// exists. The reboot checks this BEFORE it stops the running core, and `validate`
+    /// re-checks it after staging. Measured on the 5090 2026-10-06: the descriptor named an
+    /// engine slot that had been moved aside, `validate` first looked after the stop, and the
+    /// node sat with no core until a hand restored the slot. A deploy that cannot start the
+    /// next core must refuse while the old one still serves.
+    fn runtime_paths_resolve(&self) -> Result<CoreServiceDescription, String> {
         let description: CoreServiceDescription =
             serde_json::from_str(&self.description).map_err(|e| {
                 format!("ContinuumCore has no valid installer artifact descriptor: {e}")
             })?;
-        let resolve = |path: &str| {
-            if !Path::new(path).is_absolute() {
-                return Err(format!("ContinuumCore path must be absolute: {path}"));
-            }
-            std::fs::canonicalize(path)
-                .map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
-        };
+        if !resolve_service_path(&description.log_directory)?.is_dir() {
+            return Err("ContinuumCore logDirectory is not a directory".to_string());
+        }
+        if !resolve_service_path(&description.engine)?.is_file() {
+            return Err("ContinuumCore engine is not an installed file".to_string());
+        }
+        Ok(description)
+    }
+
+    fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
+        let description = self.runtime_paths_resolve()?;
+        let resolve = resolve_service_path;
         if !self.enabled
             || resolve(&description.artifact)? != candidate.path
             || description.socket != socket
@@ -1347,12 +1409,6 @@ impl CoreServiceTask {
                         .to_string(),
                 );
             }
-        }
-        if !resolve(&description.log_directory)?.is_dir() {
-            return Err("ContinuumCore logDirectory is not a directory".to_string());
-        }
-        if !resolve(&description.engine)?.is_file() {
-            return Err("ContinuumCore engine is not an installed file".to_string());
         }
         if Path::new(&description.cli).file_name() != Some(std::ffi::OsStr::new("continuum.exe"))
             || Path::new(&description.launcher).file_name()
@@ -1453,8 +1509,11 @@ impl PreparedCoreService {
         let original = Self::query().await?.description;
         let receipt = WarmBuildReceipt::create()?;
         let repo_arg = repo.to_string_lossy().replace('\'', "''");
+        let cuda = build_env_cuda(repo)?;
         let script = format!(
-            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'",
+            "$ErrorActionPreference='Stop'; $env:CUDA_PATH='{}'; $env:NVCC_PREPEND_FLAGS='{}'; . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'",
+            cuda.cuda_path.replace('\'', "''"),
+            cuda.nvcc_prepend_flags.replace('\'', "''"),
             original.replace('\'', "''"), receipt.0.to_string_lossy().replace('\'', "''")
         );
         Self::run_installer_script(&script)?;
@@ -1590,24 +1649,7 @@ impl PreparedCoreService {
             }
             let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
                 if to.exists() {
-                    let prev = to.with_extension("prev.exe");
-                    // `.prev.exe` is a SINGLE parking space, so staging cannot proceed
-                    // while something still holds that exact name. This used to fail
-                    // silently (`let _ = remove_file`) and the rename below then reported
-                    // its error against `to` — naming the CURRENT file for a refusal that
-                    // happened on a DIFFERENT one, which cost an hour of reading on
-                    // 2026-09-22. Report the path that actually refused and the OS's own
-                    // words for why; the cause is not inferable from here.
-                    if let Err(e) = std::fs::remove_file(&prev) {
-                        if prev.exists() {
-                            return Err(format!(
-                                "the previous artifact at {} could not be removed ({e}) and \
-                                 is still present; staging cannot move the current artifact \
-                                 aside onto an occupied name",
-                                prev.display()
-                            ));
-                        }
-                    }
+                    let prev = park_previous_artifact(to)?;
                     std::fs::rename(to, &prev)
                         .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
                 }
@@ -1616,6 +1658,22 @@ impl PreparedCoreService {
                     .map_err(|e| format!("cannot stage {} into {}: {e}", from.display(), to.display()))
             };
             move_aside_and_copy(&built.path, &slot_core)?;
+            // A CI core carries its CUDA runtime beside it (card cb587931): the DLLs its
+            // manifest listed, recorded by fetch_ci_core, go beside the staged core too, so
+            // launch never depends on which CUDA tree is on PATH. A warm build has no list.
+            let listed = built.path.with_file_name(RUNTIME_LIBS_FILE);
+            if listed.is_file() {
+                let names = std::fs::read_to_string(&listed)
+                    .map_err(|e| format!("cannot read {}: {e}", listed.display()))?;
+                for name in names.lines().map(str::trim).filter(|n| !n.is_empty()) {
+                    let source = built.path.with_file_name(name);
+                    if !source.is_file() {
+                        return Err(format!("runtime library {} is missing beside the CI core", source.display()));
+                    }
+                    // parked as `<name>.prev.exe` by park_previous_artifact: a DLL, despite the name
+                    move_aside_and_copy(&source, &slot_core.with_file_name(name))?;
+                }
+            }
             for name in media_files {
                 move_aside_and_copy(&built.path.with_file_name(name), &slot_core.with_file_name(name))?;
             }
@@ -2050,6 +2108,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         None => None,
     };
     let requested_source_build = prebuilt.is_none();
+    let cli_installed = options.cli_installed;
     if options.validate_only {
         let candidate = prebuilt
             .as_ref()
@@ -2345,6 +2404,16 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
         }
     }
+    // The staged hand-off re-validates the release only after the stop; what staging does
+    // not write (the engine and log paths the release names) must be checked while the
+    // running core can still keep serving.
+    #[cfg(windows)]
+    if options.service && service.is_none() && prebuilt.is_some() {
+        PreparedCoreService::query()
+            .await?
+            .runtime_paths_resolve()
+            .map_err(|e| format!("{e}; the running core was left serving"))?;
+    }
     let _ = stop_with_authority(true, options.operator_present).await?;
     // NOW the slot is free. Staging writes the artifact the supervisor is bound to and
     // prepares the handoff; the validation that decides whether the core should have been
@@ -2391,9 +2460,12 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // installed node with no checkout nothing was rebuilt, and on Windows `cli_self_build`
     // deliberately skips. Getting this wrong in either direction re-creates the noise this
     // flag exists to remove, or hides a genuinely stale CLI behind a reassuring handoff line.
-    let rebuilt_cli = requested_source_build
-        && locate_start_script().is_ok()
-        && matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild);
+    let rebuilt_cli = cli_replaced_this_run(
+        cli_installed,
+        requested_source_build,
+        locate_start_script().is_ok(),
+        matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
+    );
     verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await
 }
 
@@ -2800,8 +2872,10 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
     };
     let claim = deploy_claim::read(&root);
     let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
-    match deploy_claim::decide(claim.as_ref(), alive, now_ms()) {
-        DeployGate::Clear => Ok(()),
+    let now = now_ms();
+    match deploy_claim::with_wait(deploy_claim::decide(claim.as_ref(), alive, now), deploy_claim::read_waiting(&root).as_ref(), now) {
+        // A deploy waiting on CI has swapped nothing: the installed core is the running build.
+        DeployGate::Clear | DeployGate::Waiting { .. } => Ok(()),
         DeployGate::Abandoned { pid, age_ms, why } => {
             eprintln!(
                 "⚠ sweeping an abandoned deploy claim (pid {pid}, {}s old, {why:?}) — \
@@ -2948,6 +3022,7 @@ impl Drop for DeployClaimGuard {
         if let Some(renewer) = self.renewer.take() {
             let _ = renewer.join();
         }
+        let _ = continuum_core::runtime::deploy_claim::clear_waiting(&self.root, self.pid);
         let _ = continuum_core::runtime::deploy_claim::clear(&self.root, self.pid);
     }
 }
@@ -3126,6 +3201,7 @@ const CONSUME_MAX_ATTEMPTS: u32 = 3;
 
 fn consume_verdict(
     request_tip: Option<&str>,
+    tip_build_key: Option<&str>,
     running_sha: Option<&str>,
     checkout_dirty: bool,
     build_in_flight: bool,
@@ -3134,9 +3210,11 @@ fn consume_verdict(
     let Some(tip) = request_tip else {
         return ConsumeVerdict::NothingOwed;
     };
-    // ONE sha-equivalence rule for the fleet's deploy owner (the 7-char floor, either
-    // spelling as the prefix) — the tracker's, not a second copy of it.
-    if running_sha.is_some_and(|running| continuum_cli_lifecycle::deploy_tracker::same_commit(tip, running)) {
+    // ONE rule for "already running what the tip asks for", the tracker's: the tip itself
+    // or its build key (a docs-only tip names the same core, card 9080ffb0).
+    if running_sha.is_some_and(|running| {
+        continuum_cli_lifecycle::deploy_tracker::running_satisfies(running, tip, tip_build_key)
+    }) {
         return ConsumeVerdict::AlreadyRunning;
     }
     if build_in_flight {
@@ -3199,6 +3277,14 @@ fn tracked_repo_dir() -> Result<PathBuf, String> {
         Ok(None) => Err(format!("deploy-consume: no checkout to deploy from (set {TRACK_REPO_DIR_KEY})")),
         Err(e) => Err(format!("deploy-consume: {e}")),
     }
+}
+
+/// `tip`'s build key in `repo` (`prebuilt_artifact::build_key_log_args`), or `None` if git
+/// cannot say; `None` falls back to the tip itself.
+fn build_key_in(repo: &Path, tip: &str) -> Option<String> {
+    let args = continuum_cli_lifecycle::prebuilt_artifact::build_key_log_args(tip);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    git_in(repo, &args).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
 }
 
 fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
@@ -4073,8 +4159,33 @@ fn consumer_uses_service(os: &str) -> bool {
     os == "windows"
 }
 
+/// The consumer follows the REQUEST, not a tip it once read: while it waits on CI for one
+/// tip the tracker keeps writing newer requests beside it, and on canary GitHub keeps the
+/// running build and only the newest QUEUED push (older queued pushes are dropped and show
+/// as `cancelled`; #4729 keeps cancel-in-progress PR-only). Waiting for an artifact that
+/// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
+/// built tips went by. A pass that finds its request superseded starts over on the new one.
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     let DeployConsumeOptions {} = options;
+    loop {
+        match deploy_consume_pass().await? {
+            PassEnd::Superseded(new_tip) => {
+                deploy_note(&format!("deploy-consume: request superseded by {new_tip}; starting over on it"));
+                continue;
+            }
+            PassEnd::Done => return Ok(()),
+        }
+    }
+}
+
+/// How a consume pass ended. Typed, so "start over" can never be forged by an error text
+/// (Cormac's condition on #4750): a superseded pass charges no attempt to the old tip.
+enum PassEnd {
+    Done,
+    Superseded(String),
+}
+
+async fn deploy_consume_pass() -> Result<PassEnd, String> {
     let request_path = deploy_request_path()?;
     let _ = DEPLOY_LOG.set(
         continuum_core::modules::persona_instance_manager::resolve_continuum_root()
@@ -4114,8 +4225,11 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         .as_deref()
         .map(|t| read_consume_failures(&attempts_path, t))
         .unwrap_or(0); // unwrap_or: no request = nothing to have failed
+    // The tip's build key, read from the same checkout the tracker fetched into.
+    let tip_build_key = tip.as_deref().and_then(|t| build_key_in(&repo, t));
     let verdict = consume_verdict(
         tip.as_deref(),
+        tip_build_key.as_deref(),
         running.as_deref(),
         dirty,
         build_in_flight,
@@ -4127,7 +4241,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
         running.as_deref().unwrap_or("none") // unwrap_or: display only — no core answering prints as "none"
     ));
     match verdict {
-        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(()),
+        ConsumeVerdict::NothingOwed | ConsumeVerdict::AlreadyRunning | ConsumeVerdict::BuildInFlight => Ok(PassEnd::Done),
         ConsumeVerdict::GaveUp => Err(format!(
             "deploy-consume: tip {} failed {prior_failures} times on this box — not retrying; \
              the tracker's deploy.stranded is the receipt, and a NEW tip resets this",
@@ -4144,8 +4258,13 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
             // spent the tip's attempts (card 677437fa). Judge it before the attempt: a stale
             // one is cleared with a receipt, a possibly-live one is named and waited on.
             if !settle_index_lock(&repo)? {
-                return Ok(());
+                return Ok(PassEnd::Done);
             }
+            // The build this pass deploys: the tip's, or the newest CI has published when the
+            // tip's is not out yet. The log names THIS, never the request in its place: on
+            // 2026-10-07 the pass deployed 69a2c2b96 for request d2cf23221 and logged
+            // "d2cf23221 handed off", a build that was not running (card 4752fea6).
+            let mut deployed = tip.clone();
             let attempt = async {
                 // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
                 // The CI wait below can run for hours, and without a claim nothing marks
@@ -4172,12 +4291,46 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 // Take the core CI built for this tip instead of compiling it here (card
                 // 50ca737e). `None` means CI cannot deliver for this node, said in the log,
                 // and the reboot's warm build compiles as before.
-                let prebuilt = ci_core_for(&repo, &tip).await;
+                // CI publishes a core for the commit that last touched a build input; a
+                // docs-only tip is served by that commit's core (card 9080ffb0).
+                // Not only the tip's core: the newest one CI has PUBLISHED since the running
+                // core (card d1db1a83). On a busy canary the tip's build has not started
+                // while an older one is out, and waiting only on the tip never deployed.
+                let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
+                let candidates = deploy_candidates(&repo, running.as_deref(), &tip, &newest_key);
+                let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
+                // The wait is over, whatever it found: from here the deploy promotes the
+                // engine and swaps the core, which the claim must block. A marker that cannot
+                // be removed ends this attempt rather than let a swap read as a wait.
+                if let Ok(root) = continuum_root() {
+                    continuum_core::runtime::deploy_claim::clear_waiting(&root, std::process::id() as i32)
+                        .map_err(|e| format!("deploy-consume: cannot clear the wait marker: {e}"))?;
+                }
+                let prebuilt = match ci_core {
+                    CiCore::Built { core, key } => {
+                        if key != newest_key {
+                            // An older published core: stand the checkout on ITS commit, so
+                            // the reboot's build-sha check and deploy-verify compare like with
+                            // like. The next pass moves on toward the tip.
+                            git_in(&repo, &["checkout", "--quiet", "--detach", &key])?;
+                            git_in(&repo, &["submodule", "update", "--quiet", "--recursive"])?;
+                            deploy_note(&format!(
+                                "deploy-consume: {key} is the newest core CI has published (the request is {tip}); deploying it now"
+                            ));
+                        }
+                        // CI's core for this pass: an older published one, or the build-key
+                        // commit's core serving a docs-only tip (card 9080ffb0).
+                        deployed = key.clone();
+                        Some(core)
+                    }
+                    CiCore::CompileHere => None,
+                    CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
+                };
                 if let Some(core) = &prebuilt {
                     install_ci_companions(&repo, core)?;
                 }
                 deploy_note(&format!(
-                    "▶ deploy-consume: {} at {tip} — reboot{}{}",
+                    "▶ deploy-consume: {} — reboot into {deployed}{}{}",
                     repo.display(),
                     if service { " --service" } else { "" },
                     if prebuilt.is_some() { " --prebuilt (the CI build)" } else { "" }
@@ -4185,14 +4338,19 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 // A downloaded core lives in the artifact cache; launchd execs only its slot,
                 // so it is STAGED into the slot after the stop, like a warm build's artifact.
                 let stage_prebuilt = prebuilt.is_some();
-                reboot(RebootOptions { service, prebuilt, stage_prebuilt, ..Default::default() }).await
+                // install_ci_companions above already put this core's CLI on PATH.
+                let cli_installed = prebuilt.is_some();
+                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                Ok(PassEnd::Done)
             }
             .await;
             match &attempt {
-                Ok(()) => {
+                Ok(PassEnd::Done) => {
                     let _ = std::fs::remove_file(&attempts_path);
-                    deploy_note(&format!("✓ deploy-consume: {tip} handed off"));
+                    let request = if deployed == tip { String::new() } else { format!(" (request {tip})") };
+                    deploy_note(&format!("✓ deploy-consume: {deployed} handed off{request}"));
                 }
+                Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
                     write_consume_failures(&attempts_path, &tip, prior_failures + 1);
                     deploy_note(&format!(
@@ -4206,26 +4364,58 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
     }
 }
 
-/// The core CI built for `tip`, downloaded, verified and extracted, for `reboot --prebuilt`
-/// (card 50ca737e). While CI is still inside its budget this WAITS, in this detached
-/// consumer, rather than returning: the actuator re-launches a consumer only after the
-/// request is stranded (1.5x the last deploy time), so a "come back later" would idle the
-/// node for hours and spend an actuation. `None` = compile here; the reason is logged.
-async fn ci_core_for(repo: &Path, tip: &str) -> Option<PathBuf> {
-    use continuum_cli_lifecycle::prebuilt_artifact::{platform_key, when_artifact_missing, MissingArtifact};
+/// The core to deploy, downloaded, verified and extracted, for `reboot --prebuilt` (card
+/// 50ca737e): the newest of `candidates` (build keys newer than the running core, newest
+/// first, the tip's key at their head) that CI has PUBLISHED (card d1db1a83). While none
+/// is, this WAITS, in this detached consumer, rather than returning: the actuator
+/// re-launches a consumer only after the request is stranded (1.5x the last deploy time),
+/// so a "come back later" would idle the node for hours and spend an actuation. The CI
+/// budget is the tip's. `CompileHere` = CI cannot deliver for this node; the reason is
+/// logged. `Superseded` = the request (`request_path`) no longer names `requested_tip`:
+/// the caller lists candidates again against the new tip.
+async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
+    use continuum_cli_lifecycle::prebuilt_artifact::{newest_published, platform_key, when_artifact_missing, MissingArtifact};
     let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
+    let newest = &candidates[0]; // deploy_candidates always puts the tip's key first
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     loop {
         tick.tick().await;
+        if let Some(new_tip) = continuum_cli_lifecycle::prebuilt_artifact::request_superseded(
+            requested_tip,
+            read_deploy_request_tip(request_path).as_deref(),
+        ) {
+            return CiCore::Superseded(new_tip);
+        }
         let missing = match platform {
             None => when_artifact_missing(None, 0),
-            Some(p) => match fetch_ci_core(repo, tip, p).await {
-                Ok(Some(core)) => return Some(core),
-                Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, tip)),
-                Err(why) => MissingArtifact::BuildFromSource(format!(
-                    "the CI build for {tip} was refused: {why}; compiling here"
-                )),
-            },
+            Some(p) => {
+                let mut published = Vec::with_capacity(candidates.len());
+                for key in candidates {
+                    published.push(match ci_core_published(key, p).await {
+                        Ok(out) => out,
+                        Err(why) => {
+                            deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}"));
+                            false
+                        }
+                    });
+                }
+                match newest_published(candidates, &published) {
+                    None => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
+                    Some(key) => match fetch_ci_core(repo, key, p).await {
+                        Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
+                        // published a moment ago and gone now: the next tick asks again
+                        Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
+                        Err(why) if key == newest.as_str() => MissingArtifact::BuildFromSource(format!(
+                            "the CI build for {key} was refused: {why}; compiling here"
+                        )),
+                        // an older core refused: keep waiting for the tip's, within its budget
+                        Err(why) => {
+                            deploy_note(&format!("deploy-consume: the CI build for {key} was refused: {why}"));
+                            when_artifact_missing(Some(p), tip_age_secs(repo, newest))
+                        }
+                    },
+                }
+            }
         };
         match missing {
             MissingArtifact::Wait(why) => {
@@ -4233,22 +4423,110 @@ async fn ci_core_for(repo: &Path, tip: &str) -> Option<PathBuf> {
                 // Waiting on CI is this deploy's progress. The claim's renewer judges progress
                 // by CPU, and a wait has none, so without this the claim would read Stalled
                 // after an hour; still excluding, but naming a healthy wait as a hang.
+                // The wait marker says it is only a wait: nothing builds beside the core and
+                // nothing is swapped, so launches and decode samples go on (the caller clears
+                // it before the install).
                 if let Ok(root) = continuum_root() {
-                    let _ = continuum_core::runtime::deploy_claim::renew(&root, std::process::id() as i32, now_ms(), true);
+                    let pid = std::process::id() as i32;
+                    let now = now_ms();
+                    let _ = continuum_core::runtime::deploy_claim::renew(&root, pid, now, true);
+                    if let Err(e) = continuum_core::runtime::deploy_claim::mark_waiting(&root, pid, now) {
+                        deploy_note(&format!(
+                            "deploy-consume: could not mark the wait ({e}); the claim keeps blocking as a build would"
+                        ));
+                    }
                 }
             }
             MissingArtifact::BuildFromSource(why) => {
                 deploy_note(&format!("deploy-consume: {why}"));
-                return None;
+                return CiCore::CompileHere;
             }
         }
+    }
+}
+
+/// The build keys this node could move to, newest first: those after the running core up
+/// to the tip (bounded by `DEPLOY_CANDIDATE_LIMIT`), with the tip's own key always first.
+/// With no running core, or a history git cannot walk, it is the tip's key alone, said in
+/// the log.
+fn deploy_candidates(repo: &Path, running: Option<&str>, tip: &str, newest_key: &str) -> Vec<String> {
+    let mut keys: Vec<String> = match running {
+        None => Vec::new(),
+        Some(running) => {
+            let args = continuum_cli_lifecycle::prebuilt_artifact::candidate_keys_log_args(running, tip);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            match git_in(repo, &args) {
+                Ok(out) => out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+                Err(why) => {
+                    deploy_note(&format!("deploy-consume: cannot list builds since {running}: {why}; waiting on the tip's core only"));
+                    Vec::new()
+                }
+            }
+        }
+    };
+    keys.retain(|key| key != newest_key);
+    keys.insert(0, newest_key.to_string());
+    keys
+}
+
+/// Has CI published `key`'s core for `platform`? One small request for the manifest: the
+/// archive is fetched only for the key chosen.
+async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
+    let url = continuum_cli_lifecycle::prebuilt_artifact::manifest_url(key, platform)
+        .ok_or_else(|| format!("{key} is not a full commit sha"))?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    // GET, not HEAD: a release asset redirects to storage signed for GET, which can refuse
+    // a HEAD; the manifest is a few hundred bytes.
+    let resp = client.get(&url).send().await.map_err(|e| format!("asking {url}: {e}"))?;
+    match resp.status() {
+        reqwest::StatusCode::NOT_FOUND => Ok(false),
+        status if status.is_success() => Ok(true),
+        status => Err(format!("asking {url}: {status}")),
+    }
+}
+
+/// What the CI wait resolved to.
+enum CiCore {
+    /// The extracted core, and the build key it is (the tip's, or an older published one).
+    Built { core: PathBuf, key: String },
+    CompileHere,
+    Superseded(String),
+}
+
+/// Beside a CI core: the names of the runtime libraries its manifest bundles, one per line.
+const RUNTIME_LIBS_FILE: &str = "runtime-libs.txt";
+
+/// What this node's NVIDIA driver and GPUs can run, from `nvidia-smi`. A missing tool or an
+/// unreadable answer leaves the field `None`, which refuses a CUDA artifact by name.
+async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
+    use continuum_cli_lifecycle::prebuilt_artifact::{driver_cuda, lowest_compute_cap, NodeGpu};
+    let run = |args: &'static [&'static str]| async move {
+        let out = tokio::time::timeout(
+            Duration::from_secs(20),
+            tokio::process::Command::new("nvidia-smi").args(args).output(),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    };
+    NodeGpu {
+        driver_cuda: run(&[]).await.as_deref().and_then(driver_cuda),
+        lowest_compute_cap: run(&["--query-gpu=compute_cap", "--format=csv,noheader"])
+            .await
+            .as_deref()
+            .and_then(lowest_compute_cap),
     }
 }
 
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
 /// published is not THE build for this node, or does not match its checksum.
 async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
-    use continuum_cli_lifecycle::prebuilt_artifact::{manifest_url, manifest_verdict, ArtifactManifest};
+    use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
     use std::io::Write;
     let url = manifest_url(tip, platform).ok_or_else(|| format!("{tip} is not a full commit sha"))?;
@@ -4268,6 +4546,18 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
         .await
         .map_err(|e| format!("reading {url}: {e}"))?;
     manifest_verdict(&manifest, tip, platform, &local_core_features(repo)?)?;
+    // A CUDA build carries its runtime, and the node's driver and GPUs must be able to run it
+    // (card cb587931): read only when the artifact names CUDA, so a Mac never probes.
+    if manifest.cuda_version.is_some() {
+        gpu_verdict(&manifest, &node_gpu().await)?;
+    }
+    if let Some(bad) = manifest
+        .runtime_libs
+        .iter()
+        .find(|lib| lib.contains(['/', '\\']) || lib.contains("..") || lib.is_empty())
+    {
+        return Err(format!("runtime library name `{bad}` is not a plain file name"));
+    }
     if manifest.archive.contains(['/', '\\']) || manifest.archive.contains("..") {
         return Err(format!("archive name `{}` is not a plain file name", manifest.archive));
     }
@@ -4296,11 +4586,9 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     if digest != manifest.sha256.to_ascii_lowercase() {
         return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256));
     }
-    let status = std::process::Command::new("tar")
-        .args(["-xzf"])
-        .arg(&archive)
-        .arg("-C")
-        .arg(&dir)
+    // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
+    // GNU tar never reads the drive letter as a host (Fable on #4834).
+    let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
     if !status.success() {
@@ -4310,6 +4598,17 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     let core = dir.join(format!("continuum-core-{platform}")).join(install_cli::cli_file_name("continuum-core-server"));
     if !core.is_file() {
         return Err(format!("the archive has no {}", core.display()));
+    }
+    // The bundled runtime travels with the core: staging copies what this file lists beside
+    // the staged exe (`PreparedCoreService::stage`). A warm local build has no such file.
+    if !manifest.runtime_libs.is_empty() {
+        for lib in &manifest.runtime_libs {
+            if !core.with_file_name(lib).is_file() {
+                return Err(format!("the archive lists runtime library {lib} but does not carry it"));
+            }
+        }
+        std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), manifest.runtime_libs.join("\n"))
+            .map_err(|e| format!("cannot record the runtime libraries beside {}: {e}", core.display()))?;
     }
     deploy_note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
     prune_ci_cores(&root, &dir);
@@ -4334,10 +4633,13 @@ fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// This node's core feature set, from the ONE mapping CI also builds with.
+/// The core feature set this node's HARDWARE runs, from the ONE mapping CI also builds
+/// with: what a published core is judged against. Not the set this node could compile
+/// right now — a Windows NVIDIA box without MSVC on PATH builds DirectML only, yet runs
+/// CI's CUDA core, and judging by the build set refused it as a mismatch (card e391d449).
 fn local_core_features(repo: &Path) -> Result<String, String> {
     let out = std::process::Command::new(locate_bash()?)
-        .args(["-c", "source tools/scripts/lib/core-features.sh && select_core_features && printf %s \"$CONTINUUM_FEATURES\""])
+        .args(["-c", "source tools/scripts/lib/core-features.sh && select_core_features && printf %s \"$CONTINUUM_HARDWARE_FEATURES\""])
         .current_dir(repo)
         .output()
         .map_err(|e| format!("core-features.sh: {e}"))?;
@@ -4442,6 +4744,34 @@ async fn prebuilt_checkout_sha(
         return Err("prebuilt checkout HEAD lookup returned no SHA".into());
     }
     Ok(Some(head.to_owned()))
+}
+
+/// The checkout's BUILD KEY: the newest commit at or before `head` that touched a build
+/// input (`prebuilt_artifact::BUILD_INPUTS`), which is the commit CI built a core for. Falls
+/// back to `head` itself, named as such, when git cannot say.
+fn prebuilt_checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &str) -> (String, &'static str) {
+    let args = continuum_cli_lifecycle::prebuilt_artifact::build_key_log_args(head);
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(cwd).args(&args).env_remove("GIT_DIR").stdin(Stdio::null());
+    if let Some(git_dir) = git_dir {
+        cmd.env("GIT_DIR", git_dir);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if key.is_empty() {
+                (head.to_string(), "git HEAD of this checkout (no build key found)")
+            } else {
+                (key, "build key of this checkout (newest commit touching a build input)")
+            }
+        }
+        _ => (head.to_string(), "git HEAD of this checkout (build key unreadable)"),
+    }
 }
 
 /// Detect repository metadata without asking Git to read HEAD. Both a normal
@@ -5188,6 +5518,48 @@ fn pid_alive(pid: i32) -> bool {
 /// Order: explicit `CONTINUUM_BASH` override, then the Git-for-Windows locations, then a PATH scan
 /// that SKIPS the System32 WSL shim. Fails loud and names the fix rather than falling back to a
 /// bash that will not work.
+/// The CUDA toolchain the Windows build environment declared: THE one selection
+/// (`tools/scripts/lib/windows-build-env.sh`: linkable, runnable, highest major over
+/// the managed `cuda-*` trees), read back by sourcing it, so the engine build cannot
+/// choose a different tree from the core build. Measured on the 5090 2026-10-05: the
+/// unattended deploy's engine prep ran in a PowerShell child with the plain user PATH,
+/// failed on `Get-Command nvcc`, and the lanes silently kept the old engine while the
+/// deploy reported the core verified.
+#[cfg(windows)]
+struct BuildEnvCuda {
+    cuda_path: String,
+    nvcc_prepend_flags: String,
+}
+
+#[cfg(windows)]
+fn build_env_cuda(repo: &Path) -> Result<BuildEnvCuda, String> {
+    let lib = repo.join("tools/scripts/lib/windows-build-env.sh");
+    let out = std::process::Command::new(locate_bash()?)
+        .arg("-c")
+        .arg(r#"source "$1" >/dev/null 2>&1 || exit 3; printf '%s\n%s\n' "$CUDA_PATH" "$NVCC_PREPEND_FLAGS""#)
+        .arg("windows-build-env")
+        .arg(&lib)
+        .env_remove("CUDA_PATH")
+        .output()
+        .map_err(|e| format!("the build environment ({}) could not be run: {e}", lib.display()))?;
+    if !out.status.success() {
+        return Err(format!(
+            "the build environment ({}) did not load (exit {:?})",
+            lib.display(),
+            out.status.code()
+        ));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let cuda_path = lines.next().map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| {
+        "the build environment declared no complete CUDA tree (needs cuda.lib + curand.lib and a cublas64_*.dll): the engine cannot build".to_string()
+    })?;
+    Ok(BuildEnvCuda {
+        cuda_path: cuda_path.to_string(),
+        nvcc_prepend_flags: lines.next().map(str::trim).unwrap_or_default().to_string(), // unwrap_or_default: printf always emits this line; an older toolkit exports no prepend flags, so it is empty
+    })
+}
+
 fn locate_bash() -> Result<PathBuf, String> {
     // Body moved to `continuum_core::shell_portable` — a private `fn` here could
     // not be reused, so `code/shell` (a persona's HANDS) grew the identical
@@ -6636,8 +7008,91 @@ fn usage() -> String {
         .to_string()
 }
 
+/// Free `.prev.exe`, the single parking space beside a slot artifact, and return it.
+///
+/// The stop that precedes staging frees the space only for the CORE. A media process the
+/// stop leaves running (livekit-bridge) can still execute from its `.prev.exe`, and Windows
+/// will not delete a running image. Measured 2026-10-05 on the 5090: livekit-bridge pid
+/// 25696 ran from its `.prev`, staging refused AFTER the core had stopped, and the node sat
+/// with no core for twenty minutes until the file was renamed by hand (a second
+/// `orphan-27732` from the same failure was already beside it). A running image CAN be
+/// renamed, so an occupied `.prev` is parked under a unique `.orphan-<ms>.exe` name, and
+/// orphans whose process has since exited are deleted here, so they never accumulate.
+/// The error still names the path that refused and the OS's words when even the rename
+/// fails (2026-09-22: a refusal reported against the wrong file cost an hour).
+#[cfg(any(windows, test))] // staged only by the Windows slot handoff; tested everywhere
+fn park_previous_artifact(to: &Path) -> Result<PathBuf, String> {
+    let prev = to.with_extension("prev.exe");
+    let stem = to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let orphan_prefix = format!("{stem}.orphan-");
+    if let Some(dir) = to.parent() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(&orphan_prefix) && name.ends_with(".exe") {
+                    // An orphan still executing refuses; it is deleted on a later stage.
+                    let _ = std::fs::remove_file(entry.path()); // a held orphan is expected, not an error
+                }
+            }
+        }
+    }
+    let Err(removal) = std::fs::remove_file(&prev) else {
+        return Ok(prev);
+    };
+    if !prev.exists() {
+        return Ok(prev);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let orphan = to.with_extension(format!("orphan-{stamp}.exe"));
+    std::fs::rename(&prev, &orphan).map_err(|e| {
+        format!(
+            "the previous artifact at {} could not be removed ({removal}) nor parked as {} ({e}); \
+             staging cannot move the current artifact aside onto an occupied name",
+            prev.display(),
+            orphan.display()
+        )
+    })?;
+    Ok(prev)
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches (2026-10-05, the 5090): staging refusing AFTER the core stopped
+    // because a still-running livekit-bridge held `.prev.exe`, the single parking space,
+    // so the node sat with no core. A `.prev` that cannot be deleted is parked as an
+    // orphan, the space is free, and an orphan whose process has exited is swept on the
+    // next stage. A directory stands in for a running image: it refuses `remove_file` on
+    // every platform and still renames.
+    #[test]
+    fn an_occupied_prev_is_parked_as_an_orphan_and_swept_once_free() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let current = dir.path().join("livekit-bridge.exe");
+        std::fs::write(&current, b"current").expect("test: current");
+        let prev = dir.path().join("livekit-bridge.prev.exe");
+        std::fs::create_dir(&prev).expect("test: an undeletable prev");
+        let stale = dir.path().join("livekit-bridge.orphan-1.exe");
+        std::fs::write(&stale, b"exited").expect("test: a free orphan");
+        let other = dir.path().join("continuum.orphan-1.exe");
+        std::fs::write(&other, b"not ours").expect("test: another artifact's orphan");
+
+        let parked = super::park_previous_artifact(&current).expect("the space is freed");
+        assert_eq!(parked, prev);
+        assert!(!prev.exists(), "the parking space is empty");
+        assert!(!stale.exists(), "an orphan whose process exited is swept");
+        assert!(other.exists(), "another artifact's orphans are not this one's to sweep");
+        let orphans: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("test: read")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("livekit-bridge.orphan-"))
+            .collect();
+        assert_eq!(orphans.len(), 1, "the occupied prev now lives as one orphan: {orphans:?}");
+        std::fs::rename(&current, &parked).expect("the current artifact moves aside");
+    }
+
     // what this catches (M5, 2026-09-26): the start/reboot receipt promised "the web build
     // lands in the background" on eight consecutive supervised deploys while no dist was
     // configured and none was being built. An unconfigured desktop must be NAMED, with the
@@ -6768,7 +7223,7 @@ mod tests {
     #[test]
     fn the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running() {
         use super::{consume_verdict, ConsumeVerdict, DeployConsumeOptions};
-        let v = |tip: Option<&str>, running: Option<&str>, dirty: bool| consume_verdict(tip, running, dirty, false, 0);
+        let v = |tip: Option<&str>, running: Option<&str>, dirty: bool| consume_verdict(tip, None, running, dirty, false, 0);
         assert_eq!(v(None, Some("6d8fc04de"), false), ConsumeVerdict::NothingOwed);
         assert_eq!(v(Some("6d8fc04de"), Some("6d8fc04de1234567"), false), ConsumeVerdict::AlreadyRunning);
         assert_eq!(v(Some("6d8fc04de1234567"), Some("6d8fc04de"), false), ConsumeVerdict::AlreadyRunning, "either spelling as the prefix");
@@ -6783,12 +7238,12 @@ mod tests {
         // A live deploy claim = a build in flight from an earlier tick: NEVER a second
         // reboot into it (the 10-min task vs a 50-min build). It outranks dirty and the
         // ledger because nothing about this tick should act at all.
-        assert_eq!(consume_verdict(Some("abc1234"), None, false, true, 0), ConsumeVerdict::BuildInFlight);
-        assert_eq!(consume_verdict(Some("abc1234"), None, true, true, 9), ConsumeVerdict::BuildInFlight);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, false, true, 0), ConsumeVerdict::BuildInFlight);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, true, true, 9), ConsumeVerdict::BuildInFlight);
         // A tip that would not land here is tried CONSUME_MAX_ATTEMPTS times, then left to
         // deploy.stranded — never a rebuild loop every tick until the claim ages out.
-        assert_eq!(consume_verdict(Some("abc1234"), None, false, false, 2), ConsumeVerdict::Deploy);
-        assert_eq!(consume_verdict(Some("abc1234"), None, false, false, 3), ConsumeVerdict::GaveUp);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 2), ConsumeVerdict::Deploy);
+        assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 3), ConsumeVerdict::GaveUp);
         // The ledger is per tip: a new tip starts at zero.
         let dir = std::env::temp_dir().join(format!("consume-ledger-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture — a temp dir that cannot be made fails the test loudly
@@ -7124,6 +7579,14 @@ mod tests {
             build_sha: "123456789".to_string(),
         };
         task.validate(&candidate, &socket, &shell).unwrap();
+        // regression for the 5090 2026-10-06 outage: an engine slot the release names, moved
+        // aside, must fail the PRE-stop check (which needs no staged artifact), not only the
+        // post-stop `validate`.
+        task.runtime_paths_resolve().unwrap();
+        let moved = engine_directory.with_file_name("engine-slot.moved");
+        std::fs::rename(&engine_directory, &moved).unwrap();
+        assert!(task.runtime_paths_resolve().is_err(), "a missing engine refuses before the stop");
+        std::fs::rename(&moved, &engine_directory).unwrap();
         // A worker root is part of the registered release, not the scheduler's
         // cwd. Legacy releases omit it; new releases must pass it in the action.
         let mut with_eye = description.clone();
@@ -7182,7 +7645,7 @@ mod tests {
             assert!(super::PrebuiltCore::from_report(
                 artifact.clone(),
                 report.into(),
-                Some("abc123f")
+                Some(("abc123f", "git HEAD of this checkout"))
             )
             .is_err());
         }
@@ -7192,7 +7655,7 @@ mod tests {
             );
         }
         let ready =
-            super::PrebuiltCore::from_report(artifact, "abc123f0123456789".into(), Some("abc123f"))
+            super::PrebuiltCore::from_report(artifact, "abc123f0123456789".into(), Some(("abc123f", "git HEAD of this checkout")))
                 .unwrap();
         assert_eq!(ready.build_sha, "abc123f0123456789");
     }
@@ -7288,7 +7751,7 @@ mod tests {
         assert!(super::PrebuiltCore::from_report(
             standalone.join("core"),
             "abc123f".into(),
-            absent.as_deref(),
+            absent.as_deref().map(|h| (h, "git HEAD of this checkout")),
         )
         .is_ok());
         assert_eq!(
@@ -7309,6 +7772,49 @@ mod tests {
             super::prebuilt_checkout_sha(&nested, None).await.is_err(),
             "a broken worktree gitfile is not a standalone installation"
         );
+    }
+
+    // what this catches (M5, 2026-10-05 01:55Z): a prebuilt core is CI's build of the
+    // checkout's BUILD KEY, so a docs-only HEAD on top of a core change must accept the
+    // key's artifact; HEAD itself is the expectation only when no build input was ever
+    // touched. Checked against HEAD, every docs-only tip refused in two seconds.
+    #[tokio::test]
+    async fn a_prebuilt_is_expected_to_be_the_checkouts_build_key_not_its_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let hooks = tmp.path().join("empty-hooks");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&hooks).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"])
+                .arg("-c")
+                .arg(format!("core.hooksPath={}", hooks.display()))
+                .env_remove("GIT_DIR")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::create_dir_all(repo.join("core")).unwrap();
+        std::fs::write(repo.join("core/lib.rs"), "// core").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "core change"]);
+        let key = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("README.md"), "docs only").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "docs only"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        assert_ne!(key, head);
+        let (expected, source) = super::prebuilt_checkout_build_key(&repo, None, &head);
+        assert_eq!(expected, key, "the expectation is the key, not HEAD");
+        assert!(source.starts_with("build key"), "{source}");
+        // The key's artifact is accepted; HEAD's would not have been built by CI at all.
+        assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), key.clone(), Some((&expected, source))).is_ok());
+        assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), head.clone(), Some((&expected, source))).is_err());
     }
 
     // what this catches: card 67f53b63 — an inherited build request, an available

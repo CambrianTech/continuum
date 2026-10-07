@@ -34,3 +34,16 @@ configure_cuda_targets() {
     export CUDA_COMPUTE_CAP="$lowest"
     printf 'CUDA targets: CMake=%s, Candle PTX=%s\n' "$CMAKE_CUDA_ARCHITECTURES" "$CUDA_COMPUTE_CAP" >&2
 }
+
+# A PUBLISHED build (CI's Windows core) runs on GPUs it never sees, so its Candle PTX targets a
+# floor instead of a detected device: compute_80 (Ampere, RTX 30xx) JITs forward onto every newer
+# card (the 5090's sm_120 included) and keeps candle's bf16 kernels, which compile only at >= 80
+# (candle-kernels 0.9.2). Its fp8 kernels compile only at >= 89, so the published build has none.
+# A node below the floor must not take the build; the manifest carries the value so the
+# consumer can refuse it (prebuilt_artifact::manifest_verdict).
+PUBLISHED_CUDA_COMPUTE_CAP=80
+configure_published_cuda_targets() {
+    export CUDA_COMPUTE_CAP="$PUBLISHED_CUDA_COMPUTE_CAP"
+    export CMAKE_CUDA_ARCHITECTURES="$PUBLISHED_CUDA_COMPUTE_CAP"
+    printf 'CUDA targets (published floor): CMake=%s, Candle PTX=%s\n' "$CMAKE_CUDA_ARCHITECTURES" "$CUDA_COMPUTE_CAP" >&2
+}

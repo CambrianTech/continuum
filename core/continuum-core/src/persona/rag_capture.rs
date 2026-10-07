@@ -207,6 +207,13 @@ impl JsonlRagCaptureSink {
     }
 }
 
+/// A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 5): nothing about its
+/// retrieval is captured. The ONE predicate every RAG capture record asks.
+pub(crate) fn turn_is_private(ctx: &RagContext) -> bool {
+    ctx.airc_room
+        .is_some_and(|room| crate::persona::mind_room::is_private_room(ctx.persona_id, room.as_uuid()))
+}
+
 impl RagCaptureSink for JsonlRagCaptureSink {
     fn record(&self, event: RagCaptureEvent) {
         let mut line = match serde_json::to_string(&event) {
@@ -297,7 +304,11 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
             cursor: None,
             delivery: delivery.clone(),
         };
-        self.sink.record(event);
+        if turn_is_private(ctx) {
+            crate::persona::mind_room::note_withheld(ctx.persona_id, "rag_capture");
+        } else {
+            self.sink.record(event);
+        }
         delivery
     }
 
@@ -319,7 +330,11 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
             cursor: Some(cursor_for_event),
             delivery: delivery.clone(),
         };
-        self.sink.record(event);
+        if turn_is_private(ctx) {
+            crate::persona::mind_room::note_withheld(ctx.persona_id, "rag_capture");
+        } else {
+            self.sink.record(event);
+        }
         Some(delivery)
     }
 }

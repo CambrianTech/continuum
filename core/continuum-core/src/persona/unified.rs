@@ -48,6 +48,10 @@ const ROSTER_WINDOW_FRACTION: u32 = 64;
 /// a richer room contract without competing with engram/airc for grow headroom.
 // context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
 const DOCTRINE_WINDOW_FRACTION: u32 = 16;
+/// The strip: one line per activity, a few words each, plus her note. A 32k window
+/// gives it ~680 tokens, a 4k window ~85 (two or three activities), fitted loudest first.
+// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
+const AWARENESS_WINDOW_FRACTION: u32 = 48;
 
 /// What a heavyweight grounding source gets when there IS room — its comfortable
 /// size, not its survival minimum. Formerly this same number was ALSO used as the
@@ -115,13 +119,16 @@ pub struct PersonaCognition {
     /// persona confabulating other citizens' turns. See
     /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
     pub roster_source: Option<Arc<dyn RagSource>>,
+    /// Her awareness strip across all activities (`AwarenessRagSource`); turn churn.
+    pub awareness_source: Option<Arc<dyn RagSource>>,
     /// The persona's benchmark-board RAG source — the live run rows
-    /// (`ViewStateRagSource::<BenchViewState>` over
-    /// `ipc::global_bench_substrate()`), the SAME fold the academy
-    /// rail renders. Bound at supervisor boot (#426); `None` pre-attach
-    /// / in tests. This is the benchmarks-as-activity acceptance test
-    /// made real: a citizen perceives run state through the same pipe
-    /// the human's screen uses, never a file read
+    /// (`ViewStateRagSource::<BenchViewState>::per_room` over
+    /// `ipc::global_room_substrates()`): the board of the ROOM the turn is
+    /// in, the same rows the academy rail renders for that round. Bound at
+    /// supervisor boot (#426); per room since 2026-10-04 (HER-LOOP-IS-HER-OWN.md
+    /// rule 5: nothing node-wide is pushed into her head). `None` pre-attach
+    /// / in tests. A citizen perceives run state through the same pipe the
+    /// human's screen uses, never a file read
     /// ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
     pub bench_source: Option<Arc<dyn RagSource>>,
     /// The persona's room-doctrine RAG source — "what KIND of room is
@@ -223,6 +230,7 @@ impl PersonaCognition {
             engram_source,
             airc_source: None,
             roster_source: None,
+            awareness_source: None,
             bench_source: None,
             doctrine_source: None,
             capture_sink,
@@ -284,9 +292,20 @@ impl PersonaCognition {
         self.roster_source = Some(decorated);
     }
 
+    /// Bind the brain's awareness-strip source (`AwarenessRagSource`): what she
+    /// perceives across ALL her activities, loudest first, with her continuation. Same
+    /// boot-time wire and capture decoration as the roster.
+    pub fn set_awareness_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.awareness_source = Some(decorated);
+    }
+
     /// Bind the brain's benchmark-board RAG source
-    /// (`ViewStateRagSource::<BenchViewState>` over the global bench
-    /// substrate). Same boot-time wire and capture decoration as
+    /// (`ViewStateRagSource::<BenchViewState>::per_room` over the room
+    /// registry). Same boot-time wire and capture decoration as
     /// `set_roster_source` — bench deliveries are recorded + replayable
     /// on the same wire (task #426).
     pub fn set_bench_source(&mut self, raw_source: Arc<dyn RagSource>) {
@@ -388,6 +407,12 @@ impl PersonaCognition {
         if let Some(ref bench) = self.bench_source {
             sources.push(bench.clone());
         }
+        // Her awareness across every activity (EVENT-MIND §6): the strip. Lightweight,
+        // loudest first, fitted by its own source; the one block that says where else
+        // she is needed while she works here.
+        if let Some(ref awareness) = self.awareness_source {
+            sources.push(awareness.clone());
+        }
 
         // Per-source budget claims. The two HEAVYWEIGHT sources (engram
         // long-term memory + airc recent conversation) split idle
@@ -428,6 +453,11 @@ impl PersonaCognition {
                         0,
                         (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max),
                     ),
+                    crate::persona::awareness_source::SOURCE_ID => (
+                        0,
+                        0,
+                        (context_window / AWARENESS_WINDOW_FRACTION).min(per_source_max),
+                    ),
                     _ => {
                         // FLOOR is what the source needs to say ONE true thing;
                         // MIN is what it wants when there is room. Conflating them
@@ -464,25 +494,31 @@ impl PersonaCognition {
         // Emit the TurnStart capture so audit/replay sees the
         // budget the brain actually asked for, not what landed.
         let turn_id = Uuid::new_v4();
-        self.capture_sink.record(RagCaptureEvent::TurnStart {
-            captured_at_ms: now_ms,
-            persona_id,
-            turn_id: Some(turn_id),
-            context_window,
-            reserved,
-            source_budgets: budgets.clone(),
-            context: rag_ctx.clone(),
-        });
+        // A turn in her mind room: no retrieval capture at all (sink 5).
+        let captured = !crate::persona::rag_capture::turn_is_private(&rag_ctx);
+        if captured {
+            self.capture_sink.record(RagCaptureEvent::TurnStart {
+                captured_at_ms: now_ms,
+                persona_id,
+                turn_id: Some(turn_id),
+                context_window,
+                reserved,
+                source_budgets: budgets.clone(),
+                context: rag_ctx.clone(),
+            });
+        }
 
         let adapter = FlexboxRagBudgetAdapter::new();
         let allocation = adapter.allocate(&rag_ctx, context_window, reserved, &budgets);
 
-        self.capture_sink.record(RagCaptureEvent::BudgetAllocated {
-            captured_at_ms: now_ms,
-            persona_id,
-            turn_id: Some(turn_id),
-            allocation: allocation.clone(),
-        });
+        if captured {
+            self.capture_sink.record(RagCaptureEvent::BudgetAllocated {
+                captured_at_ms: now_ms,
+                persona_id,
+                turn_id: Some(turn_id),
+                allocation: allocation.clone(),
+            });
+        }
 
         let mut deliveries = Vec::with_capacity(sources.len());
         for (source, source_alloc) in sources.iter().zip(allocation.allocations.iter()) {
@@ -496,11 +532,13 @@ impl PersonaCognition {
             deliveries.push(delivery);
         }
 
-        self.capture_sink.record(RagCaptureEvent::TurnEnd {
-            captured_at_ms: now_ms,
-            persona_id,
-            turn_id: Some(turn_id),
-        });
+        if captured {
+            self.capture_sink.record(RagCaptureEvent::TurnEnd {
+                captured_at_ms: now_ms,
+                persona_id,
+                turn_id: Some(turn_id),
+            });
+        }
 
         ComposedTurn {
             allocation,
@@ -888,6 +926,7 @@ mod tests {
         use continuum_positron::StateBuilder;
 
         let id = Uuid::new_v4();
+        let room = Uuid::new_v4();
         let rag = Arc::new(RagEngine::new());
         let mut pc = PersonaCognition::new(id, "TestBot".into(), rag);
 
@@ -917,13 +956,20 @@ mod tests {
             }],
             rounds: vec![],
             sample_interval_ms: 1000,
+            room_id: Some(room.to_string()),
         }));
+        // Per room since 2026-10-04 (HER-LOOP-IS-HER-OWN.md rule 5): the board is
+        // the turn's room's own view in the room registry, so the turn names it.
+        let rooms = Arc::new(continuum_positron::scoping::PerRoomSubstrates::new());
+        rooms.for_room(room).store_shared(
+            substrate.cache().get(BenchViewState::KIND).expect("stored above"),
+        );
         let bench: Arc<dyn RagSource> = Arc::new(
-            crate::persona::viewstate_rag::ViewStateRagSource::<BenchViewState>::new(substrate),
+            crate::persona::viewstate_rag::ViewStateRagSource::<BenchViewState>::per_room(rooms),
         );
         pc.set_bench_source(bench);
 
-        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(room)).await;
         let bench_delivery = composed
             .deliveries
             .iter()
@@ -940,6 +986,24 @@ mod tests {
             rendered.contains("sympy__sympy-24152"),
             "instance missing: {rendered}"
         );
+    }
+
+    // what this catches: a turn in her mind room landing in the RAG capture (sink 5 of
+    // PRIVACY-OF-THOUGHT.md), through either the turn brackets or a recording source's
+    // delivery. Zero events for her mind room; an ordinary room still records its turn.
+    #[tokio::test]
+    async fn a_turn_in_her_mind_room_captures_no_retrieval() {
+        let id = Uuid::new_v4();
+        let sink = Arc::new(InMemoryRagCaptureSink::new());
+        let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
+        let mut pc =
+            PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), 200.0, sink_dyn);
+        pc.set_airc_source(Arc::new(CannedSource { id: "airc", tokens_per_item: 50, items_offered: 2 }));
+        let mind = crate::persona::mind_room::mind_room_id(id);
+        let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(mind)).await;
+        assert!(sink.is_empty(), "her mind room: no capture events, got {}", sink.len());
+        let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(Uuid::new_v4())).await;
+        assert!(!sink.is_empty(), "an ordinary room still records its turn");
     }
 
     /// The brain's capture sink records the TurnStart / BudgetAllocated

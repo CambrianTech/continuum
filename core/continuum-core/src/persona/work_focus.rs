@@ -51,7 +51,13 @@ pub(crate) async fn focus_room(
     citizen: &dyn super::airc_citizen::AircCitizen,
 ) -> Result<Option<uuid::Uuid>, airc_lib::AircError> {
     let held = citizen.active_claims().await?;
-    let Some(card) = focus_actionable_card(&held) else {
+    // A card she holds is her focus in ANY non-terminal column, Review included
+    // (HER-LOOP-IS-HER-OWN.md; 7b0e8246). Excluding Review here sent a citizen
+    // whose only held card awaited a verdict to her DEFAULT room for every
+    // self-cycle: her thoughts, her notes and her resubmission posted into the
+    // org room instead of her project's, and her project board never saw them
+    // (Kimi, 2026-10-04). Active work still wins over a Review card.
+    let Some(card) = focus_workspace_card(&held) else {
         return Ok(None);
     };
     let mut unreadable = None;
@@ -159,6 +165,23 @@ mod tests {
         assert!(matches!(focus_room(&citizen).await, Err(airc_lib::AircError::NotSubscribed(_))));
         let citizen = citizen.with_claims(vec![]);
         assert_eq!(focus_room(&citizen).await.expect("idle"), None);
+    }
+
+    // what this catches: a citizen whose only held card is in Review has NO focus
+    // room, so every self-cycle runs in her default room and her project work
+    // (thoughts, notes, the resubmission) posts into the org room (Kimi,
+    // 2026-10-04). A held card is her focus in any non-terminal column.
+    #[tokio::test]
+    async fn a_held_review_card_is_her_focus_room() {
+        use super::super::airc_citizen::StubAircCitizen;
+        let project_room = uuid::Uuid::new_v4();
+        let mut review = card(Some(10), 10);
+        review.state = airc_work::CardState::Review;
+        let citizen = StubAircCitizen::new(uuid::Uuid::new_v4())
+            .with_rooms(vec![project_room])
+            .with_claims(vec![review.clone()])
+            .with_board(project_room, vec![review]);
+        assert_eq!(focus_room(&citizen).await.expect("board readable"), Some(project_room));
     }
 
     // what this catches: the focus drifting to the OLDER card (e.g. by board

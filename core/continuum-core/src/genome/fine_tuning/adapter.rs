@@ -152,6 +152,14 @@ pub struct FineTuningCapabilities {
     /// never routes a job to a trainer the host can't run. `Any` for
     /// cloud HTTP trainers and accelerator-agnostic in-process trainers.
     pub requires: TrainerHardware,
+    /// This trainer fits the adapter ON THE RESIDENT WEIGHTS of the lane that serves
+    /// the base: no second copy of the model, no trainer process (ONE-RESIDENT-MODEL
+    /// S3/S4; Joel, 2026-10-05: "inference and training are exactly the same model with
+    /// training switched on in the model that can inference; separate is a waste of
+    /// GPU"). The coordinator ranks such a trainer FIRST whenever a live lane serves the
+    /// request's base; the process trainers are the fallbacks (S6). `false` for every
+    /// trainer that loads its own copy.
+    pub trains_on_resident_weights: bool,
 }
 
 // ─── The trait ───────────────────────────────────────────────────────
@@ -185,6 +193,14 @@ pub trait FineTuningAdapter: Send + Sync {
     /// Static identity + what this adapter accepts. Called once at
     /// registration time + occasionally for dispatcher inspection.
     fn capabilities(&self) -> FineTuningCapabilities;
+
+    /// Can this trainer take `base_model` on THIS node right now? The default is the
+    /// static answer (`capabilities`); a trainer bound to live state answers from it: the
+    /// in-engine trainer says yes only while a live lane serves that base, so the
+    /// coordinator never routes to it a job it would refuse at `create_job`.
+    fn serves_base(&self, _base_model: &str) -> bool {
+        true
+    }
 
     /// Submit a training job. Returns a [`JobHandle`] the substrate
     /// persists alongside the originating request. Idempotency is
@@ -246,6 +262,7 @@ mod tests {
                 produces_local_artifact: true,
                 supported_base_model_prefixes: vec![],
                 requires: TrainerHardware::Any,
+                trains_on_resident_weights: false,
             }
         }
 
@@ -302,6 +319,7 @@ mod tests {
             base_model: "gpt-4o-mini".into(),
             trait_kind: "test-trait".into(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::TeacherSynthesized,

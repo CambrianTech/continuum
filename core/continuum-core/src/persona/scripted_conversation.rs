@@ -301,6 +301,7 @@ mod tests {
 
     fn one_msg() -> IncomingMessage {
         IncomingMessage {
+            work: None,
             media: Vec::new(),
             event_id: uuid::Uuid::nil(),
             lamport: 1,

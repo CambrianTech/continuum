@@ -136,7 +136,9 @@ impl FineTuningCoordinator {
             .filter_map(|id| self.registry.get(id).map(|a| (id.clone(), a)))
             .filter_map(|(id, adapter)| {
                 let caps = adapter.capabilities();
-                if self.caps_match(&caps, request) {
+                // A trainer bound to live state (the in-engine one) is asked whether it
+                // serves THIS base now, so it is never chosen for a job it would refuse.
+                if self.caps_match(&caps, request) && adapter.serves_base(&request.base_model) {
                     Some((id, adapter, caps))
                 } else {
                     None
@@ -229,13 +231,22 @@ impl FineTuningCoordinator {
     /// `requires` lands in tier 0 on its native host with zero
     /// coordinator change. Future signals (cost, pressure, reputation)
     /// slot in as additional tiers or fractional adjustments here.
+    /// THE STATE WALK (ONE-RESIDENT-MODEL §4.6): the trainer on the RESIDENT weights first,
+    /// then a process trainer built for this host's accelerator, then any local trainer,
+    /// then the rest. Before 2026-10-05 the engine trainer declared `requires: Any` (it
+    /// needs no accelerator of its own, the lane holds the weights) and so ranked BELOW
+    /// `cuda-local` on the very machine where the resident engine should win: Kimi's
+    /// first gene (job bcb7316f) went to the separate Python trainer and parked forever
+    /// waiting for 30 GB the serving lane holds.
     fn rank(&self, caps: &FineTuningCapabilities) -> u8 {
-        if caps.requires.is_specific_accelerator() && caps.requires.satisfied_by(&self.host) {
+        if caps.trains_on_resident_weights {
             0
-        } else if caps.produces_local_artifact {
+        } else if caps.requires.is_specific_accelerator() && caps.requires.satisfied_by(&self.host) {
             1
-        } else {
+        } else if caps.produces_local_artifact {
             2
+        } else {
+            3
         }
     }
 }
@@ -282,6 +293,7 @@ mod tests {
             produces_local_artifact,
             supported_base_model_prefixes: vec![],
             requires,
+            trains_on_resident_weights: false,
         }
     }
 
@@ -321,6 +333,7 @@ mod tests {
             // Existing tests exercise base-prefix / locality / lora /
             // validation gates with host-agnostic adapters.
             requires: TrainerHardware::Any,
+            trains_on_resident_weights: false,
         }
     }
 
@@ -331,6 +344,7 @@ mod tests {
             base_model: base_model.into(),
             trait_kind: "test-trait".into(),
             resume_from: None,
+            parent: None,
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::OperatorCurated,

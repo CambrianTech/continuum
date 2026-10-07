@@ -56,7 +56,7 @@ use std::sync::LazyLock;
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use crate::code::git_bridge::run_git;
+use crate::code::git_bridge::{run_git, run_git_with_env};
 
 /// Where a diverged local checkout is kept when the remote wins an arrival.
 pub const STRANDED_REF_PREFIX: &str = "refs/continuum/stranded/";
@@ -306,13 +306,27 @@ pub fn has_unpushed_work(root: &Path) -> bool {
 /// The message a work-in-progress commit carries: which card, and which node made it —
 /// the "from" half of the transfer receipt on arrival, read back by
 /// [`node_of_wip_subject`]. Plain text in the commit, so plain git carries it.
-pub fn wip_message(card: Uuid, node: &str) -> String {
-    format!("wip({}): continuum act on node {node}", &card.to_string()[..8])
+///
+/// The acting citizen is credited as a co-author, keyed to her airc identity
+/// (`<name> <peer_id@airc.citizen>`, the convention adopted 2026-10-05): her name on the
+/// commits she made is the receipt that she made them. Kimi's §12 pass committed as a bare
+/// `wip(...)` and the merger had to add her trailer by hand (card e5e72485).
+pub fn wip_message(card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> String {
+    let subject = format!("wip({}): continuum act on node {node}", &card.to_string()[..8]);
+    match actor {
+        Some((peer, name)) => format!("{subject}
+
+Co-Authored-By: {name} <{peer}@airc.citizen>"),
+        None => subject,
+    }
 }
 
 /// PURE: the node a [`wip_message`] names, or `None` for any other subject.
 pub fn node_of_wip_subject(subject: &str) -> Option<String> {
     subject
+        .lines()
+        .next()
+        .unwrap_or_default() // unwrap_or_default: an empty message names no node
         .trim()
         .split_once(" on node ")
         .map(|(_, node)| node.trim().to_string())
@@ -324,13 +338,24 @@ pub fn node_of_wip_subject(subject: &str) -> Option<String> {
 /// hook: `add -A`, `write-tree`, `commit-tree`, and — when `advance_branch` — an
 /// `update-ref` of the current branch so HEAD moves to it. With `advance_branch` false
 /// the commit is dangling for the caller to name (the stranded ref). Returns the sha.
-fn commit_tree_no_hooks(root: &Path, message: &str, advance_branch: bool) -> Result<String, String> {
+fn commit_tree_no_hooks(
+    root: &Path,
+    message: &str,
+    advance_branch: bool,
+    actor: Option<(Uuid, &str)>,
+) -> Result<String, String> {
     run_git(root, &["add", "-A"])?;
     let tree = run_git(root, &["write-tree"])?.trim().to_string();
     let parent = head_sha(root);
+    // The acting citizen is the AUTHOR; the node stays the committer (Cormac, e5e72485).
+    let email = actor.map(|(peer, _)| format!("{peer}@airc.citizen"));
+    let env: Vec<(&str, &str)> = match (&actor, &email) {
+        (Some((_, name)), Some(email)) => vec![("GIT_AUTHOR_NAME", name), ("GIT_AUTHOR_EMAIL", email.as_str())],
+        _ => Vec::new(),
+    };
     let commit = match &parent {
-        Some(p) => run_git(root, &["commit-tree", &tree, "-p", p, "-m", message])?,
-        None => run_git(root, &["commit-tree", &tree, "-m", message])?,
+        Some(p) => run_git_with_env(root, &["commit-tree", &tree, "-p", p, "-m", message], &env)?,
+        None => run_git_with_env(root, &["commit-tree", &tree, "-m", message], &env)?,
     }
     .trim()
     .to_string();
@@ -385,8 +410,8 @@ fn is_missing_remote_ref(err: &str) -> bool {
 /// current branch to `origin`. Synchronous git; the async, bounded, probed form the
 /// turn path calls is [`sync_after_act_for`]. `node` is stamped into the WIP commit's
 /// subject so the receiving node can say where the work came from.
-pub fn sync_after_act(root: &Path, card: Uuid, node: &str) -> PushOutcome {
-    sync_after_act_over(root, card, node, carry_of(root))
+pub fn sync_after_act(root: &Path, card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> PushOutcome {
+    sync_after_act_over(root, card, node, carry_of(root), actor)
 }
 
 /// [`sync_after_act`] with the carry decision supplied — the POLICY (can this checkout
@@ -396,7 +421,7 @@ pub fn sync_after_act(root: &Path, card: Uuid, node: &str) -> PushOutcome {
 /// two real clones and a real remote, and an offline test's remote is necessarily a local
 /// path — the very thing the policy refuses. Injecting the decision lets each be tested as
 /// what it is, instead of a fixture quietly proving neither.
-fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry) -> PushOutcome {
+fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, actor: Option<(Uuid, &str)>) -> PushOutcome {
     // Asked BEFORE anything is written: a checkout that cannot carry is left exactly as
     // her act left it. No WIP commit either — a commit whose push can never happen only
     // makes the work harder to see (and a benchmark copy's commits are its grade).
@@ -412,7 +437,7 @@ fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry) -> Pus
     let mut committed = false;
     match is_dirty(root) {
         Ok(true) => {
-            if let Err(error) = commit_tree_no_hooks(root, &wip_message(card, node), true) {
+            if let Err(error) = commit_tree_no_hooks(root, &wip_message(card, node, actor), true, actor) {
                 return PushOutcome::CommitFailed { branch, error };
             }
             committed = true;
@@ -491,9 +516,10 @@ pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf
     let node = crate::capacity::gossip::this_process_origin().to_string();
     let started = std::time::Instant::now();
     let root_for_git = root.clone();
+    let actor_name = persona_name.to_string();
     let outcome = match tokio::time::timeout(
         SYNC_BOUND,
-        tokio::task::spawn_blocking(move || sync_after_act(&root_for_git, card, &node)),
+        tokio::task::spawn_blocking(move || sync_after_act(&root_for_git, card, &node, Some((persona, actor_name.as_str())))),
     )
     .await
     {
@@ -608,7 +634,7 @@ fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
     if dirty || local_only > 0 {
         let reference = format!("{STRANDED_REF_PREFIX}{branch}-{now_ms}");
         let keep = if dirty {
-            match commit_tree_no_hooks(root, &format!("stranded: local state of {branch} before transfer"), false) {
+            match commit_tree_no_hooks(root, &format!("stranded: local state of {branch} before transfer"), false, None) {
                 Ok(sha) => sha,
                 Err(error) => return ArrivalOutcome::Failed { branch: branch_s, stage: "strand_commit", error },
             }
@@ -711,7 +737,7 @@ mod tests {
     /// tested apart: the policy in
     /// `a_push_only_transfers_when_the_other_node_can_read_its_target`, the mechanism here.
     fn sync(root: &Path, card: Uuid, node: &str) -> PushOutcome {
-        sync_after_act_over(root, card, node, Carry::Via("https://origin.test/repo.git".into()))
+        sync_after_act_over(root, card, node, Carry::Via("https://origin.test/repo.git".into()), None)
     }
 
     /// A bare `origin` and two clones — machine A and machine B — sharing one `main`
@@ -951,8 +977,15 @@ mod tests {
         assert_eq!(classify_push_error("ssh: Could not resolve hostname github.com"), PushFailure::Unreachable);
         assert_eq!(classify_push_error("something new"), PushFailure::Unreachable, "unknown reads as not delivered");
         let card = Uuid::new_v4();
-        assert_eq!(node_of_wip_subject(&wip_message(card, "node-a")).as_deref(), Some("node-a"));
-        assert!(wip_message(card, "n").starts_with(&format!("wip({})", &card.to_string()[..8])));
+        assert_eq!(node_of_wip_subject(&wip_message(card, "node-a", None)).as_deref(), Some("node-a"));
+        assert!(wip_message(card, "n", None).starts_with(&format!("wip({})", &card.to_string()[..8])));
+        // what this catches (card e5e72485): her act commits carried no trailer, so her
+        // authorship of her own work had to be added by hand. Credited, and the node still
+        // reads back from the subject line.
+        let kimi = Uuid::from_u128(0xe2f0);
+        let credited = wip_message(card, "node-a", Some((kimi, "Kimi")));
+        assert!(credited.ends_with(&format!("Co-Authored-By: Kimi <{kimi}@airc.citizen>")), "{credited}");
+        assert_eq!(node_of_wip_subject(&credited).as_deref(), Some("node-a"));
         assert_eq!(node_of_wip_subject("fix: the printer"), None);
         // Not pushable is said, not guessed.
         let m = two_machines();
@@ -1013,7 +1046,7 @@ mod tests {
         std::fs::write(staged.join("work.txt"), "her act\n").unwrap();
 
         let (card, persona) = (Uuid::new_v4(), Uuid::new_v4());
-        let out = sync_after_act(&staged, card, "node-a");
+        let out = sync_after_act(&staged, card, "node-a", None);
         assert_eq!(out, PushOutcome::NotPushable { reason: LOCAL_ORIGIN_REASON }, "never a push into this node's own cache");
         assert_eq!(out.label(), "not_pushable");
         assert!(out.pins_the_mind(), "work that cannot be carried must pin her");
@@ -1060,7 +1093,7 @@ mod tests {
         git(&orphan, &["commit", "-q", "-m", "workspace: initial state"]);
         std::fs::write(orphan.join("a.txt"), "x\n").unwrap();
         assert_eq!(carry_of(&orphan), Carry::NoOrigin);
-        assert_eq!(sync_after_act(&orphan, card, "n"), PushOutcome::NotPushable { reason: NO_ORIGIN_REASON });
+        assert_eq!(sync_after_act(&orphan, card, "n", None), PushOutcome::NotPushable { reason: NO_ORIGIN_REASON });
         assert!(has_unpushed_work(&orphan), "dirty work with nowhere to go pins her");
     }
 }

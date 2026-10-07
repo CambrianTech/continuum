@@ -20,4 +20,15 @@ rounds: Array<BenchRoundRow>,
 /**
  * Emitter cadence in ms so renderers label freshness from data.
  */
-sample_interval_ms: number, };
+sample_interval_ms: number, 
+/**
+ * The ONE room this view describes, when it is a room's view: a round's
+ * room (its round row + the runs under it) or a solve room (its runs + the
+ * parent round). `None` is the node-wide fold the human rail renders.
+ *
+ * A citizen reads the board of the activity she is standing in and nothing
+ * else, like the roster (HER-LOOP-IS-HER-OWN.md rule 5): the node-wide
+ * fold is never pushed into a mind. `Option` + `default` so the wire the
+ * rail already reads is unchanged.
+ */
+room_id?: string, };

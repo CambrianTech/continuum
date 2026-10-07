@@ -162,7 +162,7 @@ tokenizers = { workspace = true, features = ["onig"] }
 
 # Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
 # Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
-pocket-tts = { version = "0.6", default-features = false }
+pocket-tts = { version = "0.6", default-features = false, optional = true }  # behind feature `pocket-tts`: 0.6 pulls intel-mkl-src even without its mkl feature
 
 # Model loading (for inference module)
 safetensors.workspace = true  # Model weight files
@@ -278,7 +278,7 @@ tikv-jemallocator = "0.6"
 # The CLI's detached spawn also uses an explicit native handle allow-list so
 # background cores do not retain their launcher's output-pipe writers.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Threading", "Win32_System_Pipes"] }
+windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Environment", "Win32_System_SystemServices"] }
 # Tokio's Mio sockets must not survive a core restart inside preserved children.
 # Keep the fixed release as a resolution floor, including without our lockfile.
 # Mio #1946 creates sockets with WSA_FLAG_NO_HANDLE_INHERIT (since 1.2.1).
@@ -330,6 +330,12 @@ livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
 # request for 3D rendering fails loudly naming this feature — never a silent
 # substitute.
 avatar-3d = ["dep:bevy", "dep:wgpu", "dep:wgpu-hal"]
+# Pocket-TTS (117M Candle, voice cloning, 23x slower than realtime on CPU). Backwards
+# compatibility only: Kokoro is the voice floor (#4698) and learned voices are the plan
+# (docs/planning/VOICE-ENGINE-PLAN.md). OFF by default because pocket-tts 0.6 pulls
+# intel-mkl-src even with default-features = false, which broke packaging the Windows CLI
+# (#4665, BIGGIEDESK). Enable it explicitly to get the adapter.
+pocket-tts = ["dep:pocket-tts"]
 # Legacy TypeScript-SDK generator (sdk_codegen::emit). OFF by default: nothing
 # live consumes its output (the new client SDKs are independent), so it's pure
 # CI/compile cost + a tempting-but-wrong extension point. The HEADLESS command

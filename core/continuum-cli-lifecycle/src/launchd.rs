@@ -51,7 +51,9 @@ impl Domain {
     pub fn plist_path(&self, home: &Path) -> PathBuf {
         match self {
             Domain::System => PathBuf::from(format!("/Library/LaunchDaemons/{LABEL}.plist")),
-            Domain::Gui(_) => home.join("Library/LaunchAgents").join(format!("{LABEL}.plist")),
+            Domain::Gui(_) => home
+                .join("Library/LaunchAgents")
+                .join(format!("{LABEL}.plist")),
         }
     }
 }
@@ -167,7 +169,10 @@ pub fn start_verdict(runs_before: Option<u64>, print: &str) -> StartVerdict {
     let Some(failed) = refusal_of_this_start(runs_before, print) else {
         return StartVerdict::Pending;
     };
-    let codesigning = failed.reason.as_deref().is_some_and(|r| r.starts_with("OS_REASON_CODESIGNING"));
+    let codesigning = failed
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.starts_with("OS_REASON_CODESIGNING"));
     let repaired_and_refused = matches!(
         (runs_before, runs_from_launchctl_print(print)),
         (Some(before), Some(now)) if now >= before + 2
@@ -197,10 +202,14 @@ pub fn spawn_failed_from_launchctl_print(output: &str) -> Option<SpawnFailed> {
             .find_map(|l| l.strip_prefix(key))
             .map(|v| v.trim().to_string())
     };
-    if pid_from_launchctl_print(output).is_some() || field("job state = ").as_deref() != Some("spawn failed") {
+    if pid_from_launchctl_print(output).is_some()
+        || field("job state = ").as_deref() != Some("spawn failed")
+    {
         return None;
     }
-    Some(SpawnFailed { reason: field("last exit reason = ") })
+    Some(SpawnFailed {
+        reason: field("last exit reason = "),
+    })
 }
 
 /// What a deploy does after it stopped the serving core and asked launchd to start the
@@ -231,17 +240,29 @@ pub fn after_staged_start(started: Result<(), String>, core_answering: bool) -> 
 pub fn restore_previous_in(slot: &Path, now_ms: u64) -> Result<PathBuf, String> {
     let prev = slot.with_extension("prev");
     if !prev.exists() {
-        return Err(format!("no previous build at {} to restore", prev.display()));
+        return Err(format!(
+            "no previous build at {} to restore",
+            prev.display()
+        ));
     }
     let kept = slot.with_extension(format!("failed-{now_ms}"));
     if slot.exists() {
         if kept.exists() {
-            return Err(format!("{} already exists; not overwriting a kept build", kept.display()));
+            return Err(format!(
+                "{} already exists; not overwriting a kept build",
+                kept.display()
+            ));
         }
-        std::fs::rename(slot, &kept).map_err(|e| format!("cannot move {} aside: {e}", slot.display()))?;
+        std::fs::rename(slot, &kept)
+            .map_err(|e| format!("cannot move {} aside: {e}", slot.display()))?;
     }
-    std::fs::rename(&prev, slot)
-        .map_err(|e| format!("cannot restore {} into {}: {e}", prev.display(), slot.display()))?;
+    std::fs::rename(&prev, slot).map_err(|e| {
+        format!(
+            "cannot restore {} into {}: {e}",
+            prev.display(),
+            slot.display()
+        )
+    })?;
     Ok(kept)
 }
 
@@ -259,7 +280,10 @@ pub enum SupervisionVerdict {
     Unsupervised,
     /// A job exists but launchd's pid is not the core answering on the socket: the core
     /// was spawned outside the job (the pre-#a1bd8b58 `reboot`), so a crash is dark.
-    JobPresentCoreOrphaned { job_pid: Option<u32>, core_pid: Option<u32> },
+    JobPresentCoreOrphaned {
+        job_pid: Option<u32>,
+        core_pid: Option<u32>,
+    },
     /// launchd owns the running core, but its domain cannot spawn on demand — a crash
     /// will not be healed. The user agent on a gui domain in on-demand-only mode.
     OwnedButCannotHeal { domain: Domain },
@@ -336,7 +360,10 @@ pub enum MacDrift {
     /// The plist lacks `AbandonProcessGroup`: a kickstart or heal would kill the lanes.
     KillsLanes,
     /// The job exists but the core on the socket is not its pid (or nothing answers).
-    NotOwned { job_pid: Option<u32>, core_pid: Option<u32> },
+    NotOwned {
+        job_pid: Option<u32>,
+        core_pid: Option<u32>,
+    },
     /// The agent's domain is on-demand-only: registered, cannot heal.
     CannotHeal,
 }
@@ -355,7 +382,10 @@ pub fn mac_drift(
     };
     let mut out = Vec::new();
     if domain != want {
-        out.push(MacDrift::Domain { have: domain.clone(), want: want.clone() });
+        out.push(MacDrift::Domain {
+            have: domain.clone(),
+            want: want.clone(),
+        });
     }
     if plist.contains("<string>/bin/bash</string>") || plist.contains("<string>/bin/sh</string>") {
         out.push(MacDrift::WrapperCommand);
@@ -366,7 +396,9 @@ pub fn mac_drift(
     match supervision_verdict(Some(domain.clone()), job_pid, core_pid, on_demand_only) {
         SupervisionVerdict::Supervised { .. } => {}
         SupervisionVerdict::OwnedButCannotHeal { .. } => out.push(MacDrift::CannotHeal),
-        SupervisionVerdict::JobPresentCoreOrphaned { job_pid, core_pid } => out.push(MacDrift::NotOwned { job_pid, core_pid }),
+        SupervisionVerdict::JobPresentCoreOrphaned { job_pid, core_pid } => {
+            out.push(MacDrift::NotOwned { job_pid, core_pid })
+        }
         SupervisionVerdict::Unsupervised => out.push(MacDrift::Absent),
     }
     out
@@ -390,7 +422,10 @@ pub struct PlistSpec<'a> {
 }
 
 fn xml(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// The digest that binds a draft plist to the elevated argv. The consent a human gives
@@ -412,7 +447,11 @@ pub fn render_plist(spec: &PlistSpec<'_>) -> String {
     let logs = data.join("logs");
     let mut env = String::new();
     for (k, v) in spec.env {
-        env.push_str(&format!("    <key>{}</key><string>{}</string>\n", xml(k), xml(v)));
+        env.push_str(&format!(
+            "    <key>{}</key><string>{}</string>\n",
+            xml(k),
+            xml(v)
+        ));
     }
     let user = match spec.domain {
         Domain::System => format!("  <key>UserName</key><string>{}</string>\n", xml(spec.user)),
@@ -475,8 +514,13 @@ pub mod live {
     }
 
     fn launchctl_print(domain: &Domain) -> Option<String> {
-        let out = Command::new("launchctl").args(["print", &domain.target()]).output().ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        let out = Command::new("launchctl")
+            .args(["print", &domain.target()])
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     /// The job that owns the core on this Mac, if the installer registered one. `None`
@@ -488,12 +532,23 @@ pub mod live {
         let Some(domain) = choose_domain(system, gui, uid) else {
             return Ok(None);
         };
-        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("HOME is not set")?;
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or("HOME is not set")?;
         let plist_path = domain.plist_path(&home);
-        let plist = std::fs::read_to_string(&plist_path)
-            .map_err(|e| format!("launchd job {} is registered but its plist is unreadable at {}: {e}", domain.target(), plist_path.display()))?;
+        let plist = std::fs::read_to_string(&plist_path).map_err(|e| {
+            format!(
+                "launchd job {} is registered but its plist is unreadable at {}: {e}",
+                domain.target(),
+                plist_path.display()
+            )
+        })?;
         let slot = slot_from_plist(&plist).ok_or_else(|| {
-            format!("launchd job {} plist at {} names no core artifact to stage into", domain.target(), plist_path.display())
+            format!(
+                "launchd job {} plist at {} names no core artifact to stage into",
+                domain.target(),
+                plist_path.display()
+            )
         })?;
         Ok(Some(Job { domain, slot }))
     }
@@ -509,7 +564,10 @@ pub mod live {
         // inside `caffeinate -s -i …continuum-core-server …sock`, a lower pid that an
         // unanchored match returned first (Fable, #4228 review).
         let out = Command::new("pgrep")
-            .args(["-f", &format!("^([^ ]*/)?continuum-core-server {}$", regex_escape(socket))])
+            .args([
+                "-f",
+                &format!("^([^ ]*/)?continuum-core-server {}$", regex_escape(socket)),
+            ])
             .output()
             .ok()?;
         String::from_utf8_lossy(&out.stdout)
@@ -552,7 +610,9 @@ pub mod live {
             ])
             .output();
         match out {
-            Ok(o) if o.status.success() => domain_is_on_demand_only(&String::from_utf8_lossy(&o.stdout)),
+            Ok(o) if o.status.success() => {
+                domain_is_on_demand_only(&String::from_utf8_lossy(&o.stdout))
+            }
             _ => false,
         }
     }
@@ -563,17 +623,24 @@ pub mod live {
     /// `PreparedCoreService::stage`; the slot is the plist's, never a guess.
     pub fn stage(job: &Job, artifact: &Path) -> Result<PathBuf, String> {
         if let Some(dir) = job.slot.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("cannot create slot dir {}: {e}", dir.display()))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("cannot create slot dir {}: {e}", dir.display()))?;
         }
         let same = std::fs::canonicalize(artifact).ok() == std::fs::canonicalize(&job.slot).ok();
         if !same {
             if job.slot.exists() {
                 let prev = job.slot.with_extension("prev");
                 let _ = std::fs::remove_file(&prev);
-                std::fs::rename(&job.slot, &prev).map_err(|e| format!("cannot move {} aside: {e}", job.slot.display()))?;
+                std::fs::rename(&job.slot, &prev)
+                    .map_err(|e| format!("cannot move {} aside: {e}", job.slot.display()))?;
             }
-            std::fs::copy(artifact, &job.slot)
-                .map_err(|e| format!("cannot stage {} into {}: {e}", artifact.display(), job.slot.display()))?;
+            std::fs::copy(artifact, &job.slot).map_err(|e| {
+                format!(
+                    "cannot stage {} into {}: {e}",
+                    artifact.display(),
+                    job.slot.display()
+                )
+            })?;
         }
         Ok(job.slot.clone())
     }
@@ -630,7 +697,9 @@ pub mod live {
     /// make launchd spawn (a kickstart, a kill), and hand it to [`wait_owned`]: read after,
     /// an instant refusal is already counted and looks stale (BIGGIEDESK on #4681).
     pub fn spawn_runs(domain: &Domain) -> Option<u64> {
-        launchctl_print(domain).as_deref().and_then(runs_from_launchctl_print)
+        launchctl_print(domain)
+            .as_deref()
+            .and_then(runs_from_launchctl_print)
     }
 
     /// Wait until `up()` reports the core answering AND launchd's pid for the job is the
@@ -688,10 +757,15 @@ pub mod live {
                     if awaiting_repair_since.is_none() {
                         awaiting_repair_since = Some(Instant::now());
                         if let Err(e) = kickstart_if_stopped(&job.domain) {
-                            return Err(refused(&failed, &format!(", and the repair spawn could not be triggered: {e}")));
+                            return Err(refused(
+                                &failed,
+                                &format!(", and the repair spawn could not be triggered: {e}"),
+                            ));
                         }
                     }
-                    if awaiting_repair_since.is_some_and(|since| since.elapsed() >= LWCR_REPAIR_GRACE) {
+                    if awaiting_repair_since
+                        .is_some_and(|since| since.elapsed() >= LWCR_REPAIR_GRACE)
+                    {
                         return Err(refused(&failed, ", and the repair spawn did not come up"));
                     }
                 }
@@ -710,7 +784,11 @@ pub mod live {
     fn run(cmd: &mut Command, what: &str) -> Result<String, String> {
         let out = cmd.output().map_err(|e| format!("{what}: {e}"))?;
         if !out.status.success() {
-            return Err(format!("{what} failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
+            return Err(format!(
+                "{what} failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -721,20 +799,43 @@ pub mod live {
     /// `System` is the LaunchDaemon: three privileged steps through `sudo` — the one
     /// consent macOS requires, the same class as the 5090's UAC (card 7b56a84b). It does
     /// NOT start the core: the caller kickstarts and waits, so the receipt is one place.
-    pub fn install(domain: Domain, artifact: &Path, slot: &Path, socket: &str, env: &[(String, String)]) -> Result<Job, String> {
-        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("HOME is not set")?;
+    pub fn install(
+        domain: Domain,
+        artifact: &Path,
+        slot: &Path,
+        socket: &str,
+        env: &[(String, String)],
+    ) -> Result<Job, String> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or("HOME is not set")?;
         let user = std::env::var("USER").map_err(|_| "USER is not set".to_string())?;
-        let job = Job { domain, slot: slot.to_path_buf() };
+        let job = Job {
+            domain,
+            slot: slot.to_path_buf(),
+        };
         stage(&job, artifact)?;
         let data = home.join(".continuum");
-        std::fs::create_dir_all(data.join("logs")).map_err(|e| format!("cannot create ~/.continuum/logs: {e}"))?;
-        let plist = render_plist(&PlistSpec { domain: &job.domain, slot: &job.slot, socket, home: &home, user: &user, env });
+        std::fs::create_dir_all(data.join("logs"))
+            .map_err(|e| format!("cannot create ~/.continuum/logs: {e}"))?;
+        let plist = render_plist(&PlistSpec {
+            domain: &job.domain,
+            slot: &job.slot,
+            socket,
+            home: &home,
+            user: &user,
+            env,
+        });
         let plist_path = job.domain.plist_path(&home);
         // Written under ~/.continuum first so `plutil -lint` reads the exact bytes that
         // will be installed, and a root-owned destination is never half-written.
         let draft = data.join(format!("{LABEL}.plist.draft"));
-        std::fs::write(&draft, plist).map_err(|e| format!("cannot write {}: {e}", draft.display()))?;
-        run(Command::new("plutil").args(["-lint", &draft.display().to_string()]), "plutil -lint")?;
+        std::fs::write(&draft, plist)
+            .map_err(|e| format!("cannot write {}: {e}", draft.display()))?;
+        run(
+            Command::new("plutil").args(["-lint", &draft.display().to_string()]),
+            "plutil -lint",
+        )?;
         let target = job.domain.target();
         match &job.domain {
             Domain::System => {
@@ -743,11 +844,19 @@ pub mod live {
                 // byte moved, installs it root-owned, bootstraps (RunAtLoad starts the
                 // core) — and nothing else. `sudo install`/`launchctl` on the draft path
                 // directly would register whatever the file said at that moment.
-                let bytes = std::fs::read(&draft).map_err(|e| format!("cannot re-read {}: {e}", draft.display()))?;
+                let bytes = std::fs::read(&draft)
+                    .map_err(|e| format!("cannot re-read {}: {e}", draft.display()))?;
                 let digest = sha256_hex(&bytes);
                 let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
                 let receipt = run(
-                    Command::new("sudo").arg(&exe).args(["install", "--elevated", "--plan", &draft.display().to_string(), "--plan-sha", &digest]),
+                    Command::new("sudo").arg(&exe).args([
+                        "install",
+                        "--elevated",
+                        "--plan",
+                        &draft.display().to_string(),
+                        "--plan-sha",
+                        &digest,
+                    ]),
                     "sudo continuum install --elevated",
                 )?;
                 for line in receipt.lines().filter(|l| !l.trim().is_empty()) {
@@ -756,11 +865,22 @@ pub mod live {
             }
             Domain::Gui(uid) => {
                 if let Some(dir) = plist_path.parent() {
-                    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+                    std::fs::create_dir_all(dir)
+                        .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
                 }
-                let _ = Command::new("launchctl").args(["bootout", &target]).output();
-                std::fs::copy(&draft, &plist_path).map_err(|e| format!("cannot write {}: {e}", plist_path.display()))?;
-                run(Command::new("launchctl").args(["bootstrap", &format!("gui/{uid}"), &plist_path.display().to_string()]), "launchctl bootstrap")?;
+                let _ = Command::new("launchctl")
+                    .args(["bootout", &target])
+                    .output();
+                std::fs::copy(&draft, &plist_path)
+                    .map_err(|e| format!("cannot write {}: {e}", plist_path.display()))?;
+                run(
+                    Command::new("launchctl").args([
+                        "bootstrap",
+                        &format!("gui/{uid}"),
+                        &plist_path.display().to_string(),
+                    ]),
+                    "launchctl bootstrap",
+                )?;
                 let _ = Command::new("launchctl").args(["enable", &target]).output();
             }
         }
@@ -774,9 +894,12 @@ pub mod live {
     pub fn register_elevated(plan: &Path, sha256: &str) -> Result<Vec<String>, String> {
         // SAFETY: geteuid has no preconditions and cannot fail.
         if unsafe { libc::geteuid() } != 0 {
-            return Err("install --elevated runs as root under sudo; it is not a verb to type".to_string());
+            return Err(
+                "install --elevated runs as root under sudo; it is not a verb to type".to_string(),
+            );
         }
-        let bytes = std::fs::read(plan).map_err(|e| format!("cannot read the plan {}: {e}", plan.display()))?;
+        let bytes = std::fs::read(plan)
+            .map_err(|e| format!("cannot read the plan {}: {e}", plan.display()))?;
         let actual = sha256_hex(&bytes);
         if actual != sha256 {
             return Err(format!(
@@ -785,32 +908,61 @@ pub mod live {
             ));
         }
         if slot_from_plist(&String::from_utf8_lossy(&bytes)).is_none() {
-            return Err("REFUSED: the plan names no core artifact; nothing was registered".to_string());
+            return Err(
+                "REFUSED: the plan names no core artifact; nothing was registered".to_string(),
+            );
         }
         let plist_path = Domain::System.plist_path(Path::new("/"));
         let target = Domain::System.target();
         // The invoking user's agent, if any, goes first: two jobs for one socket is the
         // mistake `choose_domain` names, not one to make. SUDO_UID is sudo's own record.
-        if let Some(uid) = std::env::var("SUDO_UID").ok().and_then(|u| u.parse::<u32>().ok()) {
-            let _ = Command::new("launchctl").args(["bootout", &Domain::Gui(uid).target()]).output();
+        if let Some(uid) = std::env::var("SUDO_UID")
+            .ok()
+            .and_then(|u| u.parse::<u32>().ok())
+        {
+            let _ = Command::new("launchctl")
+                .args(["bootout", &Domain::Gui(uid).target()])
+                .output();
         }
-        let _ = Command::new("launchctl").args(["bootout", &target]).output();
-        std::fs::write(&plist_path, &bytes).map_err(|e| format!("cannot write {}: {e}", plist_path.display()))?;
-        std::os::unix::fs::chown(&plist_path, Some(0), Some(0)).map_err(|e| format!("cannot chown {}: {e}", plist_path.display()))?;
-        std::fs::set_permissions(&plist_path, std::os::unix::fs::PermissionsExt::from_mode(0o644))
-            .map_err(|e| format!("cannot chmod {}: {e}", plist_path.display()))?;
-        run(Command::new("launchctl").args(["bootstrap", "system", &plist_path.display().to_string()]), "launchctl bootstrap system")?;
+        let _ = Command::new("launchctl")
+            .args(["bootout", &target])
+            .output();
+        std::fs::write(&plist_path, &bytes)
+            .map_err(|e| format!("cannot write {}: {e}", plist_path.display()))?;
+        std::os::unix::fs::chown(&plist_path, Some(0), Some(0))
+            .map_err(|e| format!("cannot chown {}: {e}", plist_path.display()))?;
+        std::fs::set_permissions(
+            &plist_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o644),
+        )
+        .map_err(|e| format!("cannot chmod {}: {e}", plist_path.display()))?;
+        run(
+            Command::new("launchctl").args([
+                "bootstrap",
+                "system",
+                &plist_path.display().to_string(),
+            ]),
+            "launchctl bootstrap system",
+        )?;
         let _ = Command::new("launchctl").args(["enable", &target]).output();
         Ok(vec![
-            format!("registered {target} from a plan whose sha256 matched the consent ({})", &sha256[..12]),
-            format!("plist {} root:wheel 0644; bootstrapped (RunAtLoad starts the core)", plist_path.display()),
+            format!(
+                "registered {target} from a plan whose sha256 matched the consent ({})",
+                &sha256[..12]
+            ),
+            format!(
+                "plist {} root:wheel 0644; bootstrapped (RunAtLoad starts the core)",
+                plist_path.display()
+            ),
         ])
     }
 
     /// Unregister the job from whichever domain holds it (both are tried; the daemon's
     /// half through `sudo`). The staged binary stays — it is the operator's artifact.
     pub fn uninstall() -> Result<Vec<Domain>, String> {
-        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("HOME is not set")?;
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or("HOME is not set")?;
         let mut removed = Vec::new();
         for domain in [Domain::System, Domain::Gui(uid())] {
             if launchctl_print(&domain).is_none() && !domain.plist_path(&home).exists() {
@@ -819,11 +971,18 @@ pub mod live {
             let plist = domain.plist_path(&home).display().to_string();
             match domain {
                 Domain::System => {
-                    let _ = Command::new("sudo").args(["launchctl", "bootout", &domain.target()]).output();
-                    run(Command::new("sudo").args(["rm", "-f", &plist]), "sudo rm (plist)")?;
+                    let _ = Command::new("sudo")
+                        .args(["launchctl", "bootout", &domain.target()])
+                        .output();
+                    run(
+                        Command::new("sudo").args(["rm", "-f", &plist]),
+                        "sudo rm (plist)",
+                    )?;
                 }
                 Domain::Gui(_) => {
-                    let _ = Command::new("launchctl").args(["bootout", &domain.target()]).output();
+                    let _ = Command::new("launchctl")
+                        .args(["bootout", &domain.target()])
+                        .output();
                     let _ = std::fs::remove_file(&plist);
                 }
             }
@@ -845,11 +1004,25 @@ mod tests {
     fn the_slot_is_read_from_either_plist_form_and_never_guessed() {
         let wrapper = r#"<key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>-lc</string><string>export PATH="/x:$PATH"; if [ -f "/Users/j/.continuum/config.env" ]; then set -a; . "/Users/j/.continuum/config.env"; set +a; fi; exec "/Users/j/.continuum/bin/continuum-core-server" "/tmp/continuum-core.sock"</string></array>"#;
-        assert_eq!(slot_from_plist(wrapper), Some(PathBuf::from("/Users/j/.continuum/bin/continuum-core-server")));
+        assert_eq!(
+            slot_from_plist(wrapper),
+            Some(PathBuf::from(
+                "/Users/j/.continuum/bin/continuum-core-server"
+            ))
+        );
         let direct = r#"<key>ProgramArguments</key>
   <array><string>/Users/j/.continuum/bin/continuum-core-server</string><string>/tmp/continuum-core.sock</string></array>"#;
-        assert_eq!(slot_from_plist(direct), Some(PathBuf::from("/Users/j/.continuum/bin/continuum-core-server")));
-        assert_eq!(slot_from_plist("<key>Label</key><string>x</string>"), None, "no ProgramArguments = no slot, never a default");
+        assert_eq!(
+            slot_from_plist(direct),
+            Some(PathBuf::from(
+                "/Users/j/.continuum/bin/continuum-core-server"
+            ))
+        );
+        assert_eq!(
+            slot_from_plist("<key>Label</key><string>x</string>"),
+            None,
+            "no ProgramArguments = no slot, never a default"
+        );
     }
 
     // what this catches: the receipt's one number. `launchctl print` carries the pid on
@@ -859,7 +1032,8 @@ mod tests {
     fn the_job_pid_is_read_from_launchctl_print_or_is_none() {
         let running = "com.continuum.core = {\n\tactive count = 1\n\tpath = /x.plist\n\tstate = running\n\n\tpid = 93518\n\tprogram = /bin/bash\n}";
         assert_eq!(pid_from_launchctl_print(running), Some(93518));
-        let idle = "com.continuum.core = {\n\tstate = not running\n\tlast exit code = (never exited)\n}";
+        let idle =
+            "com.continuum.core = {\n\tstate = not running\n\tlast exit code = (never exited)\n}";
         assert_eq!(pid_from_launchctl_print(idle), None);
     }
 
@@ -874,11 +1048,22 @@ mod tests {
     fn a_refused_kickstart_or_spawn_with_nothing_answering_rolls_back() {
         assert_eq!(after_staged_start(Ok(()), true), HandoffNext::Done);
         assert_eq!(
-            after_staged_start(Err("launchctl kickstart -k system/x failed: Operation not permitted".into()), false),
-            HandoffNext::RollBack("launchctl kickstart -k system/x failed: Operation not permitted".into())
+            after_staged_start(
+                Err("launchctl kickstart -k system/x failed: Operation not permitted".into()),
+                false
+            ),
+            HandoffNext::RollBack(
+                "launchctl kickstart -k system/x failed: Operation not permitted".into()
+            )
         );
-        assert!(matches!(after_staged_start(Err("spawn failed".into()), false), HandoffNext::RollBack(_)));
-        assert!(matches!(after_staged_start(Err("orphan".into()), true), HandoffNext::Report(_)));
+        assert!(matches!(
+            after_staged_start(Err("spawn failed".into()), false),
+            HandoffNext::RollBack(_)
+        ));
+        assert!(matches!(
+            after_staged_start(Err("orphan".into()), true),
+            HandoffNext::Report(_)
+        ));
     }
 
     // what this catches (review of #4668): the rollback deleted any earlier `.failed`
@@ -899,12 +1084,19 @@ mod tests {
         assert_eq!(std::fs::read(&slot).unwrap(), b"serving");
         assert_eq!(kept, slot.with_extension("failed-42"));
         assert_eq!(std::fs::read(&kept).unwrap(), b"refused");
-        assert_eq!(std::fs::read(slot.with_extension("failed")).unwrap(), b"older evidence");
+        assert_eq!(
+            std::fs::read(slot.with_extension("failed")).unwrap(),
+            b"older evidence"
+        );
         assert!(!slot.with_extension("prev").exists());
 
         let err = restore_previous_in(&slot, 43).unwrap_err();
         assert!(err.contains("no previous build"), "{err}");
-        assert_eq!(std::fs::read(&slot).unwrap(), b"serving", "a refused rollback leaves the slot alone");
+        assert_eq!(
+            std::fs::read(&slot).unwrap(),
+            b"serving",
+            "a refused rollback leaves the slot alone"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -913,7 +1105,9 @@ mod tests {
         let failed = "com.continuum.core = {\n\tstate = not running\n\truns = 2\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
         assert_eq!(
             spawn_failed_from_launchctl_print(failed),
-            Some(SpawnFailed { reason: Some("OS_REASON_CODESIGNING".to_string()) })
+            Some(SpawnFailed {
+                reason: Some("OS_REASON_CODESIGNING".to_string())
+            })
         );
         let running = "com.continuum.core = {\n\tstate = running\n\tpid = 93518\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
         assert_eq!(spawn_failed_from_launchctl_print(running), None);
@@ -929,9 +1123,18 @@ mod tests {
     fn a_spawn_failure_counts_only_after_launchd_spawned_again() {
         let failed = "com.continuum.core = {\n\tstate = not running\n\truns = 11\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = spawn failed\n}";
         assert_eq!(runs_from_launchctl_print(failed), Some(11));
-        assert!(!fresh_spawn_attempt(Some(11), Some(11)), "the same count is the previous attempt's refusal");
-        assert!(fresh_spawn_attempt(Some(11), Some(12)), "launchd spawned again and was refused again");
-        assert!(!fresh_spawn_attempt(None, Some(12)), "no baseline: not evidence, wait the ceiling");
+        assert!(
+            !fresh_spawn_attempt(Some(11), Some(11)),
+            "the same count is the previous attempt's refusal"
+        );
+        assert!(
+            fresh_spawn_attempt(Some(11), Some(12)),
+            "launchd spawned again and was refused again"
+        );
+        assert!(
+            !fresh_spawn_attempt(None, Some(12)),
+            "no baseline: not evidence, wait the ceiling"
+        );
         assert!(!fresh_spawn_attempt(Some(11), None));
 
         // The ordering BIGGIEDESK named on #4681: runs read BEFORE the kickstart (11), the
@@ -941,17 +1144,41 @@ mod tests {
         let pre_start = runs_from_launchctl_print(failed);
         let refused_at_once = failed.replace("runs = 11", "runs = 12");
         let now = runs_from_launchctl_print(&refused_at_once);
-        assert!(fresh_spawn_attempt(pre_start, now), "an instant refusal after a pre-start baseline is this start's");
+        assert!(
+            fresh_spawn_attempt(pre_start, now),
+            "an instant refusal after a pre-start baseline is this start's"
+        );
         assert!(spawn_failed_from_launchctl_print(&refused_at_once).is_some());
-        assert!(!fresh_spawn_attempt(now, now), "a baseline taken after the kickstart hides the instant refusal");
+        assert!(
+            !fresh_spawn_attempt(now, now),
+            "a baseline taken after the kickstart hides the instant refusal"
+        );
 
         // The decision wait_owned takes, pinned whole (Cormac on #4681): a refusal counts
         // for this start only with a pre-trigger baseline below the current count.
-        let refused = Some(SpawnFailed { reason: Some("OS_REASON_CODESIGNING".to_string()) });
-        assert_eq!(refusal_of_this_start(Some(11), &refused_at_once), refused, "pre-kickstart baseline: this start was refused");
-        assert_eq!(refusal_of_this_start(Some(12), &refused_at_once), None, "post-kickstart baseline: the refusal would be hidden");
-        assert_eq!(refusal_of_this_start(Some(11), failed), None, "no spawn since the baseline: the previous attempt's line");
-        assert_eq!(refusal_of_this_start(None, &refused_at_once), None, "no baseline: wait the ceiling");
+        let refused = Some(SpawnFailed {
+            reason: Some("OS_REASON_CODESIGNING".to_string()),
+        });
+        assert_eq!(
+            refusal_of_this_start(Some(11), &refused_at_once),
+            refused,
+            "pre-kickstart baseline: this start was refused"
+        );
+        assert_eq!(
+            refusal_of_this_start(Some(12), &refused_at_once),
+            None,
+            "post-kickstart baseline: the refusal would be hidden"
+        );
+        assert_eq!(
+            refusal_of_this_start(Some(11), failed),
+            None,
+            "no spawn since the baseline: the previous attempt's line"
+        );
+        assert_eq!(
+            refusal_of_this_start(None, &refused_at_once),
+            None,
+            "no baseline: wait the ceiling"
+        );
     }
 
     // what this catches (M5 2026-10-03, system log 13:54 and 15:02): the FIRST spawn of every
@@ -965,7 +1192,9 @@ mod tests {
         let print = |runs: u64, reason: &str| {
             format!("com.continuum.core = {{\n\tstate = not running\n\truns = {runs}\n\tlast exit reason = {reason}\n\tjob state = spawn failed\n}}")
         };
-        let codesigning = SpawnFailed { reason: Some("OS_REASON_CODESIGNING".to_string()) };
+        let codesigning = SpawnFailed {
+            reason: Some("OS_REASON_CODESIGNING".to_string()),
+        };
         assert_eq!(
             start_verdict(Some(30), &print(31, "OS_REASON_CODESIGNING")),
             StartVerdict::AwaitingRepairRespawn(codesigning.clone()),
@@ -978,12 +1207,22 @@ mod tests {
         );
         assert_eq!(
             start_verdict(Some(30), &print(31, "OS_REASON_EXEC")),
-            StartVerdict::Refused(SpawnFailed { reason: Some("OS_REASON_EXEC".to_string()) }),
+            StartVerdict::Refused(SpawnFailed {
+                reason: Some("OS_REASON_EXEC".to_string())
+            }),
             "a refusal that is not a launch constraint is final on the first spawn"
         );
-        assert_eq!(start_verdict(Some(31), &print(31, "OS_REASON_CODESIGNING")), StartVerdict::Pending, "stale line from an earlier attempt");
+        assert_eq!(
+            start_verdict(Some(31), &print(31, "OS_REASON_CODESIGNING")),
+            StartVerdict::Pending,
+            "stale line from an earlier attempt"
+        );
         let running = "com.continuum.core = {\n\tstate = running\n\tpid = 55819\n\truns = 31\n\tlast exit reason = OS_REASON_CODESIGNING\n\tjob state = running\n}";
-        assert_eq!(start_verdict(Some(30), running), StartVerdict::Pending, "the repaired build runs: no refusal");
+        assert_eq!(
+            start_verdict(Some(30), running),
+            StartVerdict::Pending,
+            "the repaired build runs: no refusal"
+        );
     }
 
     // what this catches (2026-09-19 13:32Z, IntelMac): the four states a Mac can be in,
@@ -993,29 +1232,53 @@ mod tests {
     #[test]
     fn the_verdict_names_the_four_states_and_the_daemon_outranks_the_agent() {
         use SupervisionVerdict::*;
-        assert_eq!(supervision_verdict(None, None, Some(63839), false), Unsupervised);
+        assert_eq!(
+            supervision_verdict(None, None, Some(63839), false),
+            Unsupervised
+        );
         let gui = Some(Domain::Gui(501));
         assert_eq!(
             supervision_verdict(gui.clone(), Some(93518), Some(93518), true),
-            OwnedButCannotHeal { domain: Domain::Gui(501) },
+            OwnedButCannotHeal {
+                domain: Domain::Gui(501)
+            },
             "the IntelMac case: launchd owns it and cannot spawn it"
         );
-        assert_eq!(supervision_verdict(gui.clone(), Some(93518), Some(93518), false), Supervised { domain: Domain::Gui(501), pid: 93518 });
+        assert_eq!(
+            supervision_verdict(gui.clone(), Some(93518), Some(93518), false),
+            Supervised {
+                domain: Domain::Gui(501),
+                pid: 93518
+            }
+        );
         assert_eq!(
             supervision_verdict(gui, None, Some(63839), false),
-            JobPresentCoreOrphaned { job_pid: None, core_pid: Some(63839) },
+            JobPresentCoreOrphaned {
+                job_pid: None,
+                core_pid: Some(63839)
+            },
             "an agent installed beside an orphan core is not supervision"
         );
         assert_eq!(
             supervision_verdict(Some(Domain::System), Some(7), Some(7), true),
-            Supervised { domain: Domain::System, pid: 7 },
+            Supervised {
+                domain: Domain::System,
+                pid: 7
+            },
             "on-demand-only is a gui-domain fact; the daemon is not subject to it"
         );
         assert_eq!(choose_domain(true, true, 501), Some(Domain::System));
         assert_eq!(choose_domain(false, true, 501), Some(Domain::Gui(501)));
         assert_eq!(choose_domain(false, false, 501), None);
         assert!(domain_is_on_demand_only("launchd[1] [gui/501 [100002]:] pending spawn, domain in on-demand-only mode: com.continuum.core"));
-        assert!(!Unsupervised.is_healthy() && Supervised { domain: Domain::System, pid: 1 }.is_healthy());
+        assert!(
+            !Unsupervised.is_healthy()
+                && Supervised {
+                    domain: Domain::System,
+                    pid: 1
+                }
+                .is_healthy()
+        );
     }
 
     // what this catches (audit #4223 item 7): the plist `continuum install` writes runs the
@@ -1026,22 +1289,51 @@ mod tests {
     #[test]
     fn the_installed_plist_runs_the_binary_and_round_trips_its_slot() {
         let slot = PathBuf::from("/Volumes/Cold Storage/payloads/j/bin/continuum-core-server");
-        let env = vec![("PATH".to_string(), "/a:/b".to_string()), ("ORT_DYLIB_PATH".to_string(), "/l/x&y.dylib".to_string())];
+        let env = vec![
+            ("PATH".to_string(), "/a:/b".to_string()),
+            ("ORT_DYLIB_PATH".to_string(), "/l/x&y.dylib".to_string()),
+        ];
         let spec = |domain: &Domain| {
-            render_plist(&PlistSpec { domain, slot: &slot, socket: "/tmp/continuum-core.sock", home: Path::new("/Users/j"), user: "j", env: &env })
+            render_plist(&PlistSpec {
+                domain,
+                slot: &slot,
+                socket: "/tmp/continuum-core.sock",
+                home: Path::new("/Users/j"),
+                user: "j",
+                env: &env,
+            })
         };
         let daemon = spec(&Domain::System);
-        assert_eq!(slot_from_plist(&daemon), Some(slot.clone()), "the stage step reads back the slot the installer wrote");
-        assert!(!daemon.contains("/bin/bash") && !daemon.contains("-lc"), "the binary is the command");
-        assert!(daemon.contains("<key>UserName</key><string>j</string>"), "a LaunchDaemon runs as the operator");
-        assert!(daemon.contains("<key>ORT_DYLIB_PATH</key><string>/l/x&amp;y.dylib</string>"), "escaped, in launchd's dict");
-        assert!(daemon.contains("<key>Crashed</key><true/>") && daemon.contains("<key>RunAtLoad</key><true/>"));
+        assert_eq!(
+            slot_from_plist(&daemon),
+            Some(slot.clone()),
+            "the stage step reads back the slot the installer wrote"
+        );
+        assert!(
+            !daemon.contains("/bin/bash") && !daemon.contains("-lc"),
+            "the binary is the command"
+        );
+        assert!(
+            daemon.contains("<key>UserName</key><string>j</string>"),
+            "a LaunchDaemon runs as the operator"
+        );
+        assert!(
+            daemon.contains("<key>ORT_DYLIB_PATH</key><string>/l/x&amp;y.dylib</string>"),
+            "escaped, in launchd's dict"
+        );
+        assert!(
+            daemon.contains("<key>Crashed</key><true/>")
+                && daemon.contains("<key>RunAtLoad</key><true/>")
+        );
         assert!(
             daemon.contains("<key>AbandonProcessGroup</key><true/>"),
             "a kickstart or a heal must not SIGKILL the serving lanes in the core's process group (M5: a cold 27B load per deploy)"
         );
         let agent = spec(&Domain::Gui(501));
-        assert!(!agent.contains("UserName"), "an agent already runs as its user");
+        assert!(
+            !agent.contains("UserName"),
+            "an agent already runs as its user"
+        );
         assert_eq!(slot_from_plist(&agent), Some(slot));
     }
 
@@ -1053,27 +1345,79 @@ mod tests {
     fn mac_drift_is_empty_when_converged_and_names_each_departure() {
         let slot = PathBuf::from("/Users/j/.continuum/bin/continuum-core-server");
         let env = vec![("PATH".to_string(), "/a".to_string())];
-        let daemon = render_plist(&PlistSpec { domain: &Domain::System, slot: &slot, socket: "/tmp/c.sock", home: Path::new("/Users/j"), user: "j", env: &env });
-        assert!(mac_drift(Some((&Domain::System, &daemon)), &Domain::System, Some(7), Some(7), false).is_empty(), "converged is silent");
-        assert_eq!(mac_drift(None, &Domain::System, None, Some(3), false), vec![MacDrift::Absent]);
+        let daemon = render_plist(&PlistSpec {
+            domain: &Domain::System,
+            slot: &slot,
+            socket: "/tmp/c.sock",
+            home: Path::new("/Users/j"),
+            user: "j",
+            env: &env,
+        });
+        assert!(
+            mac_drift(
+                Some((&Domain::System, &daemon)),
+                &Domain::System,
+                Some(7),
+                Some(7),
+                false
+            )
+            .is_empty(),
+            "converged is silent"
+        );
+        assert_eq!(
+            mac_drift(None, &Domain::System, None, Some(3), false),
+            vec![MacDrift::Absent]
+        );
         let wrapper = "<key>ProgramArguments</key><array><string>/bin/bash</string><string>-lc</string><string>exec \"/x\" \"/s\"</string></array>";
         assert_eq!(
-            mac_drift(Some((&Domain::Gui(501), wrapper)), &Domain::System, Some(9), Some(9), true),
+            mac_drift(
+                Some((&Domain::Gui(501), wrapper)),
+                &Domain::System,
+                Some(9),
+                Some(9),
+                true
+            ),
             vec![
-                MacDrift::Domain { have: Domain::Gui(501), want: Domain::System },
+                MacDrift::Domain {
+                    have: Domain::Gui(501),
+                    want: Domain::System
+                },
                 MacDrift::WrapperCommand,
                 MacDrift::KillsLanes,
                 MacDrift::CannotHeal,
             ],
             "the script-installed agent on IntelMac, read against the daemon contract"
         );
-        let agent = render_plist(&PlistSpec { domain: &Domain::Gui(501), slot: &slot, socket: "/tmp/c.sock", home: Path::new("/Users/j"), user: "j", env: &env });
+        let agent = render_plist(&PlistSpec {
+            domain: &Domain::Gui(501),
+            slot: &slot,
+            socket: "/tmp/c.sock",
+            home: Path::new("/Users/j"),
+            user: "j",
+            env: &env,
+        });
         assert_eq!(
-            mac_drift(Some((&Domain::Gui(501), &agent)), &Domain::Gui(501), Some(9), Some(11), false),
-            vec![MacDrift::NotOwned { job_pid: Some(9), core_pid: Some(11) }],
+            mac_drift(
+                Some((&Domain::Gui(501), &agent)),
+                &Domain::Gui(501),
+                Some(9),
+                Some(11),
+                false
+            ),
+            vec![MacDrift::NotOwned {
+                job_pid: Some(9),
+                core_pid: Some(11)
+            }],
             "an agent asked for, registered right, beside an orphan core"
         );
-        assert!(mac_drift(Some((&Domain::Gui(501), &agent)), &Domain::Gui(501), Some(9), Some(9), false).is_empty());
+        assert!(mac_drift(
+            Some((&Domain::Gui(501), &agent)),
+            &Domain::Gui(501),
+            Some(9),
+            Some(9),
+            false
+        )
+        .is_empty());
     }
 
     // what this catches (Fable on #4232, the same window here): the consent covers the
@@ -1086,7 +1430,13 @@ mod tests {
         let b = sha256_hex(b"<plist>b</plist>");
         assert_eq!(a.len(), 64);
         assert_ne!(a, b, "one byte moved, the digest moved");
-        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(Domain::System.plist_path(Path::new("/")), PathBuf::from("/Library/LaunchDaemons/com.continuum.core.plist"));
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            Domain::System.plist_path(Path::new("/")),
+            PathBuf::from("/Library/LaunchDaemons/com.continuum.core.plist")
+        );
     }
 }

@@ -38,6 +38,7 @@ mod types;
 pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
+mod disk_change;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
@@ -1518,6 +1519,7 @@ mod tests {
             let colleague = Uuid::new_v4();
             let messages = vec![
                 IncomingMessage {
+                    work: None,
                     media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
@@ -1527,6 +1529,7 @@ mod tests {
                     room_id: room,
                 },
                 IncomingMessage {
+                    work: None,
                     media: Vec::new(),
                     event_id: Uuid::new_v4(),
                     lamport: 1,
@@ -1537,6 +1540,7 @@ mod tests {
                 },
             ];
             let later_message = IncomingMessage {
+                work: None,
                 media: Vec::new(),
                 event_id: Uuid::new_v4(),
                 lamport: 2,
