@@ -1,8 +1,8 @@
 {
   "$schema": "../../../../../protocol/schema/experience-recipe.schema.json",
-  "id": "c0a1554f-f2c1-4942-8de5-de9c13ce6783",
+  "id": "7c0e5a3b-2f4d-4e61-9b8a-3d5c1e7f9a24",
   "version": 1,
-  "purpose": "benchmark/round",
+  "purpose": "coursework/round",
   "base": "academy",
   "regions": [
     {
@@ -190,62 +190,43 @@
   ],
   "citizens": [],
   "params": {
-    "suite": {
-      "default": "swe-bench-verified",
-      "doc": "which suite to import (benchmark/list names them: swe-bench-verified/-lite/-mini, hard-rs, frontier-rs, games-rs, webdev-rs, vision-qa, coder-write-eval); task + oracle only"
+    "from_experience": {
+      "default": "",
+      "doc": "a citizen whose own objectively graded failures are the lessons (her experience stream); empty = not from experience"
+    },
+    "teach_set": {
+      "default": "",
+      "doc": "a lesson JSONL of EvalTask rows; empty (with no from_experience) = the committed default teach set. Only lessons that carry a test become cards: the test is the card's verdict"
     },
     "repo": {
       "default": "",
-      "doc": "the board key the cards land under (owner/name) \u2014 required; dispatch inferred it from the curator's room, a recipe says it"
+      "doc": "the board key the cards land under (owner/name), as benchmark/round's repo"
     },
-    "instances": {
-      "default": [],
-      "doc": "explicit instance ids (substring match); empty = the seeded sample or the suite head"
-    },
-    "sample": {
+    "limit": {
       "default": 0,
-      "doc": "seeded random sample size; 0 = no sampling. (suite, seed, sample) is the replication contract"
-    },
-    "seed": {
-      "default": 0,
-      "doc": "the sample's seed"
-    },
-    "team": {
-      "default": [],
-      "doc": "citizen names to invite into the run room; empty = nobody is seated (nothing seats a citizen into a round she did not join, HER-LOOP row C)"
-    },
-    "driver": {
-      "default": "citizen",
-      "doc": "citizen (her own held-work turns in the room) or detached_solve"
+      "doc": "cap on cards offered; 0 = every tested lesson"
     },
     "review_gate": {
       "default": false,
       "doc": "an owner's done becomes review + a sibling review card a non-owner pulls"
     },
-    "doctrine": {
-      "default": "",
-      "doc": "the round's standing rules, posted into the run room after the cards; empty = none (the control arm)"
+    "invite": {
+      "default": [],
+      "doc": "citizen names to INVITE into the round's room. An invitation, never an assignment: a citizen who leaves the room is offered none of its cards, nothing re-seats her, and leaving costs her nothing. Empty = nobody is invited"
     },
-    "limit": {
-      "default": 0,
-      "doc": "cap on cards offered after the already-resolved gate; 0 = all. The gym suites do not sample, so this is how a round takes the first N of hard-rs"
-    },
-    "language": {
-      "default": "",
-      "doc": "keep only instances whose harness speaks this language (rust, go, php, ruby, javascript, java, c; python for the SWE-bench family) \u2014 the Multilingual suite mixes nine; empty = all"
+    "about": {
+      "default": "This is a coursework round: lessons, each graded by its own test. You were invited, not assigned. If you would rather not take it, room/leave declines it at no cost, and nothing seats you back.",
+      "doc": "posted into the room after the cards, so an invited citizen knows what it is and that she may decline; empty = say nothing"
     }
   },
   "pipeline": [
     {
-      "command": "benchmark/import",
+      "command": "coursework/import",
       "params": {
-        "suite": "$args.suite",
-        "instances": "$args.instances",
-        "sample": "$args.sample",
-        "seed": "$args.seed",
-        "limit": "$args.limit",
-        "skipAlreadyResolved": true,
-        "language": "$args.language"
+        "fromExperience": "$args.from_experience",
+        "teachSet": "$args.teach_set",
+        "repo": "$args.repo",
+        "limit": "$args.limit"
       },
       "outputTo": "imported",
       "saves": [
@@ -257,10 +238,9 @@
       "params": {
         "roomId": "$room.id",
         "roomName": "$room.name",
-        "suite": "$args.suite",
-        "driver": "$args.driver",
-        "reviewGate": "$args.review_gate",
-        "team": "$args.team"
+        "suite": "$imported.suite",
+        "driver": "citizen",
+        "reviewGate": "$args.review_gate"
       }
     },
     {
@@ -289,17 +269,17 @@
       "command": "activity/invite",
       "params": {
         "room": "$room.name",
-        "members": "$args.team"
+        "members": "$args.invite"
       },
-      "condition": "$args.team"
+      "condition": "$args.invite"
     },
     {
       "command": "chat/send",
       "params": {
         "roomId": "$room.id",
-        "text": "$args.doctrine"
+        "text": "$args.about"
       },
-      "condition": "$args.doctrine != \"\""
+      "condition": "$args.about != \"\""
     }
   ],
   "layout": {

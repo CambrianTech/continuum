@@ -356,9 +356,95 @@ impl ActionCommand for BenchmarkRoundTrack {
     }
 }
 
+// ─────────────────────────── coursework/import ───────────────────────────
+
+/// Where a coursework round's lessons come from: the teach selector's sources, in its order
+/// (`commands::genome::teach::lesson_tasks`). Only TESTED lessons become cards; a lesson's test
+/// is its card's verdict (ONE-RESIDENT-MODEL §10.2).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/CourseworkImportParams.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct CourseworkImportParams {
+    /// A citizen whose own objectively graded failures are the lessons (her experience
+    /// stream, the #319 curriculum drain). Empty = not from experience.
+    #[serde(default)]
+    #[ts(optional)]
+    pub from_experience: Option<String>,
+    /// A lesson JSONL (`EvalTask` rows). Empty = the committed default teach set.
+    #[serde(default)]
+    #[ts(optional)]
+    pub teach_set: Option<String>,
+    /// The board key the cards land under (owner/name), as `benchmark/import`'s `repo`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub repo: Option<String>,
+    /// Cap on cards offered; 0 or empty = every tested lesson.
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+}
+
+pub struct CourseworkImport;
+
+#[async_trait]
+impl ActionCommand for CourseworkImport {
+    const NAME: &'static str = "coursework/import";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Import a coursework lesson set as card rows: the teach selector's TESTED lessons are \
+         written as a content-addressed set (coursework-<sha12>, the set's task identity), then \
+         projected as gym cards exactly as benchmark/import writes them. No side effects beyond \
+         the set file; the coursework/round recipe fans the rows out into work/create.";
+    type Params = CourseworkImportParams;
+    type Output = BenchmarkImportResult;
+
+    async fn run(&self, _ctx: &Ctx, p: CourseworkImportParams) -> Result<Self::Output, CommandError> {
+        let from_experience = p.from_experience.filter(|s| !s.is_empty());
+        let teach_set = p.teach_set.filter(|s| !s.is_empty());
+        // The selector reads files (her experience stream, a teach set): off the async thread.
+        let tasks = tokio::task::spawn_blocking(move || {
+            crate::commands::genome::teach::lesson_tasks(
+                None,
+                from_experience.as_deref(),
+                teach_set.as_deref(),
+                true,
+            )
+        })
+        .await
+        .map_err(|e| CommandError::Internal(format!("lesson selection task failed: {e}")))??;
+        let home = crate::commands::benchmark::continuum_home()?;
+        let set = crate::cognition::coursework::write_set(&home, &tasks).map_err(CommandError::Invalid)?;
+        let reference = crate::commands::benchmark::eval_set_reference(&set).ok_or_else(|| {
+            CommandError::Internal(format!("coursework set {set} was written but does not resolve"))
+        })?;
+        let prepared = crate::commands::benchmark::prepare_gym_cards(&set, &reference)?;
+        let limit = p.limit.filter(|n| *n > 0).map_or(usize::MAX, |n| n as usize);
+        let cards = prepared
+            .iter()
+            .take(limit)
+            .map(|pc| imported_from(pc, p.repo.as_deref().unwrap_or("")))
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::probe!(
+            class = "coursework.set_imported",
+            set = %set,
+            lessons = prepared.len() as u64,
+            offered = cards.len() as u64,
+            "a coursework lesson set was written under its content name and projected as cards"
+        );
+        Ok(BenchmarkImportResult {
+            suite: set,
+            cards,
+            skipped_already_resolved: Vec::new(),
+            skipped_ungradeable: Vec::new(),
+            skipped_duplicate: Vec::new(),
+        })
+    }
+}
+
 crate::register_command!(BenchmarkImport);
 crate::register_command!(BenchmarkRoundOpen);
 crate::register_command!(BenchmarkRoundTrack);
+crate::register_command!(CourseworkImport);
 
 #[cfg(test)]
 mod tests {

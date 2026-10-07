@@ -1017,12 +1017,24 @@ impl GenomeTeach {
 }
 
 fn select_teach_tasks(p: GenomeTeachParams) -> Result<Vec<EvalTask>, CommandError> {
-    // Task source: inline → from_experience (the #319 curriculum drain) →
-    // teach_set JSONL → committed default. A missing explicit path is a loud
-    // error (don't silently teach an empty set).
-    let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
+    let strict = p.training.is_some();
+    lesson_tasks(p.tasks, p.from_experience.as_deref(), p.teach_set.as_deref(), strict)
+}
+
+/// Where lessons come from, in order: inline → `from_experience` (the #319 curriculum drain,
+/// her own objectively graded failures) → a `teach_set` JSONL → the committed default. The ONE
+/// selector `genome/teach` and `coursework/import` share. `strict` parses a teach set with the
+/// gym's fail-loud parser (a training run must not silently drop a malformed row). A missing
+/// explicit path is a loud error (don't silently teach an empty set).
+pub(crate) fn lesson_tasks(
+    inline: Option<Vec<EvalTask>>,
+    from_experience: Option<&str>,
+    teach_set: Option<&str>,
+    strict: bool,
+) -> Result<Vec<EvalTask>, CommandError> {
+    let tasks: Vec<EvalTask> = if let Some(inline) = inline {
         inline
-    } else if let Some(solver) = p.from_experience.as_deref() {
+    } else if let Some(solver) = from_experience {
         // Her lived, objectively graded failures become her curriculum. Same
         // citizen layout as the grader that wrote the stream (one resolver),
         // latest-per-task dedup so a later PASS retires the failure, then the
@@ -1088,11 +1100,11 @@ fn select_teach_tasks(p: GenomeTeachParams) -> Result<Vec<EvalTask>, CommandErro
         }
         teach
     } else {
-        let path = p.teach_set.as_deref().unwrap_or(DEFAULT_TEACH_SET);
+        let path = teach_set.unwrap_or(DEFAULT_TEACH_SET);
         let text = std::fs::read_to_string(path).map_err(|e| {
             CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
         })?;
-        if p.training.is_some() {
+        if strict {
             crate::cognition::gym::parse_tasks(&text, path).map_err(CommandError::Invalid)?
         } else {
             text.lines()
