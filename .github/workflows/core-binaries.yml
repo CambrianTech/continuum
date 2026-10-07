@@ -305,8 +305,15 @@ jobs:
                  --notes "Canary core binaries for ${GITHUB_SHA}. No LTO; for the development grid, not for users. Built by .github/workflows/core-binaries.yml." \
             || gh release view "$tag" >/dev/null
           name="${{ steps.package.outputs.name }}"
+          # The manifest is what a consumer reads as "published", so it goes up LAST, in its own
+          # call, only after the archive it names is complete. One call uploading all three let the
+          # small .json land minutes before the large tarball: the 5090 read the 8fe8e5fd4 Windows
+          # manifest at 07:09:54Z and its fetch 404'd at 07:10:02Z (BigMama, 2026-10-07). For the
+          # tip's own core a refused fetch reads as "compile here": an hour of local build over
+          # seconds of upload order.
           gh release upload "$tag" --clobber \
-            "$RUNNER_TEMP/$name.tar.gz" "$RUNNER_TEMP/$name.tar.gz.sha256" "$RUNNER_TEMP/$name.json"
+            "$RUNNER_TEMP/$name.tar.gz" "$RUNNER_TEMP/$name.tar.gz.sha256"
+          gh release upload "$tag" --clobber "$RUNNER_TEMP/$name.json"
 
   prune:
     name: prune old canary releases
