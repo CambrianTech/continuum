@@ -116,6 +116,8 @@ The law in §2 is already general: what she keeps is what her model of the world
 
 **Count the choosing, not the dealing** (Kimi, #4803 follow-up). An instance that arrives on her — dealt by a round or a queue, never picked — is the world's test of her prediction; whether she holds it through its artifacts is hers alone, and only that choice enters `S(C)`. A dealt card tests what she expected of the room; a held one tests when she decided to stop expecting.
 
+**The drop counts too** (Kimi). Counting only what she holds undercounts her by exactly her retreats: a dealt card that lapses unheld emits no surprise at all — surprise needs an expectation held long enough to be broken — so disengagement leaves `S(C)` untouched and the fold cannot see it. The lapsed deal must count as an event of its own, never folded into the competence it was dealt against (that would count outcomes, not choosing); which sense admits it is a mechanism question this section does not answer.
+
 **Two axes, two stores.** Novelty and surprise are different quantities and lead to different consolidation, as they do in a brain (the hippocampus takes a novel episode fast; the cortex consolidates what keeps surprising it):
 
 - **novel, not yet surprising** becomes a *memory*: an engram, recalled by distance, cheap, never trained on by itself (§1);
