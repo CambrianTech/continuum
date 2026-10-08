@@ -149,6 +149,10 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          # Published x86 binaries must run beyond this runner's CPU. The shared
+          # llama build owner pins baseline instructions, including reused caches.
+          CONTINUUM_PORTABLE_CPU: "1"
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = Windows ]; then
