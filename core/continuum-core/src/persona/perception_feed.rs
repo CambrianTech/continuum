@@ -270,6 +270,7 @@ mod tests {
             reviewer: PeerId::from_uuid(reviewer),
             outcome: airc_work::WorkReviewOutcome::Passed,
             evidence: test_media(),
+            evidence_text: None,
             reviewed_at_ms: 6_000,
         };
         let (headers, body) = airc_work::encode_work_event(&airc_work::WorkEvent::WorkSubmissionReviewed(review)).unwrap();
