@@ -3437,6 +3437,9 @@ pub struct WorkGetParams {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkGetResult {
+    /// Signed reviews of this card (or the linked parent for a review card).
+    /// Legacy evidence_text=None means the evidence bytes were not published.
+    pub reviews: Vec<submission::WorkReviewResult>,
     pub id: String,
     /// The board that supplied this receipt; never the caller's current focus.
     #[ts(type = "string")]
@@ -3488,10 +3491,10 @@ impl WorkGet {
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
         let card_id = resolve_card_id_in_boards(&horizon, requested)?;
-        let (room, card) = horizon
+        let (room, board, card) = horizon
             .boards
             .iter()
-            .find_map(|(room, board)| board.card(card_id).map(|c| (room, c)))
+            .find_map(|(room, board)| board.card(card_id).map(|c| (room, board, c)))
             .ok_or_else(|| horizon.not_found("card", requested))?;
         use crate::experience::ledger::LedgerStore as _;
         // Best effort: an unreadable ledger is an absence on the card, never a refusal of
@@ -3500,13 +3503,13 @@ impl WorkGet {
             .read(room, card_id.as_uuid())
             .await
             .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
-        Ok(Self::receipt(
-            room,
-            card,
-            ledger,
-            crate::modules::chat::now_ms(),
-            reader,
-        ))
+        let mut receipt = Self::receipt(room, card, ledger, crate::modules::chat::now_ms(), reader);
+        let parent = card.reviews.and_then(|id| board.card(id)).unwrap_or(card);
+        receipt.reviews = parent.submissions.iter()
+            .flat_map(|s| board.submission_reviews_for(s.submission_id))
+            .filter(|r| r.card_id == parent.card_id)
+            .map(submission::WorkReviewResult::from).collect();
+        Ok(receipt)
     }
 
     fn receipt(
@@ -3523,6 +3526,7 @@ impl WorkGet {
             &crate::persona::card_holder::NoNames,
         );
         WorkGetResult {
+            reviews: Vec::new(),
             id: short8(card.card_id.as_uuid()),
             room_id: room.channel,
             room: room.name.clone(),
@@ -3550,7 +3554,7 @@ impl ActionCommand for WorkGet {
     const NATIVE: bool = true; // core room workflow — re-reading a card's spec mid-task must not require asking the room
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Read one work card in full (read-only): title, body (the task's requirements), state, \
+        "Read one work card in full (read-only), including signed review verdicts and published evidence_text (null on legacy hash-only reviews): title, body (the task's requirements), state, \
          board room, claimability, lease expiry/heartbeat, owner and claim id. Accepts a full or short id from any room you belong to, without \
          changing your current room. This is how you re-check a spec mid-task.";
     type Params = WorkGetParams;
@@ -4678,6 +4682,38 @@ mod tests {
             before,
             "successful and unknown-card reads must preserve subscriptions and focus"
         );
+        // Regression9f1de8dd: an author can read exact signed review words without
+        // holding a reviewer claim or calling the verdict-publishing verb.
+        let claim = airc.claim_work_card(ClaimWorkCard { card_id: local_card, ttl_ms: 600_000 }).await.unwrap();
+        let artifact = airc_work::SubmissionArtifact {
+            hash: airc_blobs::ContentHash::from_bytes(b"patch"), size_bytes: 5, mime: Some("text/x-patch".into()),
+        };
+        let submitted = airc.submit_work_in(&current_room, airc_lib::SubmitWork {
+            submission_id: airc_work::SubmissionId::new(), card_id: local_card, claim_id: claim,
+            instance: "ordinary".into(), base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            artifact: artifact.clone(),
+        }).await.unwrap();
+        let review_card = airc.create_work_card(CreateWorkCard::new(
+            RepoId::new("github.com/CambrianTech/continuum").unwrap(), "review", Priority::P2,
+        ).reviewing(local_card)).await.unwrap();
+        let review_claim = airc.claim_work_card(ClaimWorkCard { card_id: review_card, ttl_ms: 600_000 }).await.unwrap();
+        let words = "Resolve the selected branch, not checkout HEAD.";
+        let review = airc.review_work_submission_in(&current_room, airc_lib::ReviewWorkSubmission {
+            review_id: airc_work::WorkReviewId::new(), card_id: local_card,
+            submission_id: submitted.submission_id, artifact,
+            review_card_id: review_card, review_claim_id: review_claim,
+            outcome: airc_work::WorkReviewOutcome::Failed,
+            evidence: airc_work::SubmissionArtifact { hash: airc_blobs::ContentHash::from_bytes(words.as_bytes()), size_bytes: words.len() as u64, mime: Some("text/plain".into()) },
+            evidence_text: Some(words.into()),
+        }).await.unwrap();
+        for target in [local_card, review_card] {
+            let read = WorkGet::read_card(&airc, &target.to_string(), Uuid::nil()).await.unwrap();
+            assert_eq!(read.reviews.len(), 1);
+            assert_eq!(read.reviews[0].review_id, review.review_id.as_uuid());
+            assert_eq!(read.reviews[0].reviewer, review.reviewer.as_uuid());
+            assert_eq!(read.reviews[0].evidence_text.as_deref(), Some(words));
+        }
+
     }
 
     // what this catches: a done that carries nothing (clean tree, HEAD at the

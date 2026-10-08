@@ -2872,8 +2872,10 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
     };
     let claim = deploy_claim::read(&root);
     let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
-    match deploy_claim::decide(claim.as_ref(), alive, now_ms()) {
-        DeployGate::Clear => Ok(()),
+    let now = now_ms();
+    match deploy_claim::with_wait(deploy_claim::decide(claim.as_ref(), alive, now), deploy_claim::read_waiting(&root).as_ref(), now) {
+        // A deploy waiting on CI has swapped nothing: the installed core is the running build.
+        DeployGate::Clear | DeployGate::Waiting { .. } => Ok(()),
         DeployGate::Abandoned { pid, age_ms, why } => {
             eprintln!(
                 "⚠ sweeping an abandoned deploy claim (pid {pid}, {}s old, {why:?}) — \
@@ -3020,6 +3022,7 @@ impl Drop for DeployClaimGuard {
         if let Some(renewer) = self.renewer.take() {
             let _ = renewer.join();
         }
+        let _ = continuum_core::runtime::deploy_claim::clear_waiting(&self.root, self.pid);
         let _ = continuum_core::runtime::deploy_claim::clear(&self.root, self.pid);
     }
 }
@@ -4285,9 +4288,8 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
                 let service = consumer_uses_service(std::env::consts::OS);
-                // Take the core CI built for this tip instead of compiling it here (card
-                // 50ca737e). `None` means CI cannot deliver for this node, said in the log,
-                // and the reboot's warm build compiles as before.
+                // Only a verified CI artifact reaches the handoff. Missing or rejected
+                // artifacts refuse this attempt before touching the running core.
                 // CI publishes a core for the commit that last touched a build input; a
                 // docs-only tip is served by that commit's core (card 9080ffb0).
                 // Not only the tip's core: the newest one CI has PUBLISHED since the running
@@ -4295,7 +4297,15 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // while an older one is out, and waiting only on the tip never deployed.
                 let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                 let candidates = deploy_candidates(&repo, running.as_deref(), &tip, &newest_key);
-                let prebuilt = match ci_core_for(&repo, &candidates, &request_path, &tip).await {
+                let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
+                // The wait is over, whatever it found: from here the deploy promotes the
+                // engine and swaps the core, which the claim must block. A marker that cannot
+                // be removed ends this attempt rather than let a swap read as a wait.
+                if let Ok(root) = continuum_root() {
+                    continuum_core::runtime::deploy_claim::clear_waiting(&root, std::process::id() as i32)
+                        .map_err(|e| format!("deploy-consume: cannot clear the wait marker: {e}"))?;
+                }
+                let prebuilt = match ci_core {
                     CiCore::Built { core, key } => {
                         if key != newest_key {
                             // An older published core: stand the checkout on ITS commit, so
@@ -4310,26 +4320,23 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         // CI's core for this pass: an older published one, or the build-key
                         // commit's core serving a docs-only tip (card 9080ffb0).
                         deployed = key.clone();
-                        Some(core)
+                        core
                     }
-                    CiCore::CompileHere => None,
+                    CiCore::Refused(why) => return Err(why),
                     CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
-                if let Some(core) = &prebuilt {
-                    install_ci_companions(&repo, core)?;
-                }
+                install_ci_companions(&repo, &prebuilt)?;
                 deploy_note(&format!(
-                    "▶ deploy-consume: {} — reboot into {deployed}{}{}",
+                    "▶ deploy-consume: {} — reboot into {deployed}{} --prebuilt (the CI build)",
                     repo.display(),
-                    if service { " --service" } else { "" },
-                    if prebuilt.is_some() { " --prebuilt (the CI build)" } else { "" }
+                    if service { " --service" } else { "" }
                 ));
                 // A downloaded core lives in the artifact cache; launchd execs only its slot,
                 // so it is STAGED into the slot after the stop, like a warm build's artifact.
-                let stage_prebuilt = prebuilt.is_some();
+                let stage_prebuilt = true;
                 // install_ci_companions above already put this core's CLI on PATH.
-                let cli_installed = prebuilt.is_some();
-                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                let cli_installed = true;
+                reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await?;
                 Ok(PassEnd::Done)
             }
             .await;
@@ -4359,8 +4366,9 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
 /// is, this WAITS, in this detached consumer, rather than returning: the actuator
 /// re-launches a consumer only after the request is stranded (1.5x the last deploy time),
 /// so a "come back later" would idle the node for hours and spend an actuation. The CI
-/// budget is the tip's. `CompileHere` = CI cannot deliver for this node; the reason is
-/// logged. `Superseded` = the request (`request_path`) no longer names `requested_tip`:
+/// budget is the tip's. `Refused` leaves the running core intact: an unavailable or
+/// invalid artifact never authorizes a source build. `Superseded` = the request
+/// (`request_path`) no longer names `requested_tip`:
 /// the caller lists candidates again against the new tip.
 async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
     use continuum_cli_lifecycle::prebuilt_artifact::{newest_published, platform_key, when_artifact_missing, MissingArtifact};
@@ -4394,8 +4402,8 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                         Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
                         // published a moment ago and gone now: the next tick asks again
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
-                        Err(why) if key == newest.as_str() => MissingArtifact::BuildFromSource(format!(
-                            "the CI build for {key} was refused: {why}; compiling here"
+                        Err(why) if key == newest.as_str() => MissingArtifact::Refuse(format!(
+                            "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),
                         // an older core refused: keep waiting for the tip's, within its budget
                         Err(why) => {
@@ -4412,13 +4420,23 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                 // Waiting on CI is this deploy's progress. The claim's renewer judges progress
                 // by CPU, and a wait has none, so without this the claim would read Stalled
                 // after an hour; still excluding, but naming a healthy wait as a hang.
+                // The wait marker says it is only a wait: nothing builds beside the core and
+                // nothing is swapped, so launches and decode samples go on (the caller clears
+                // it before the install).
                 if let Ok(root) = continuum_root() {
-                    let _ = continuum_core::runtime::deploy_claim::renew(&root, std::process::id() as i32, now_ms(), true);
+                    let pid = std::process::id() as i32;
+                    let now = now_ms();
+                    let _ = continuum_core::runtime::deploy_claim::renew(&root, pid, now, true);
+                    if let Err(e) = continuum_core::runtime::deploy_claim::mark_waiting(&root, pid, now) {
+                        deploy_note(&format!(
+                            "deploy-consume: could not mark the wait ({e}); the claim keeps blocking as a build would"
+                        ));
+                    }
                 }
             }
-            MissingArtifact::BuildFromSource(why) => {
+            MissingArtifact::Refuse(why) => {
                 deploy_note(&format!("deploy-consume: {why}"));
-                return CiCore::CompileHere;
+                return CiCore::Refused(why);
             }
         }
     }
@@ -4472,7 +4490,7 @@ async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
 enum CiCore {
     /// The extracted core, and the build key it is (the tip's, or an older published one).
     Built { core: PathBuf, key: String },
-    CompileHere,
+    Refused(String),
     Superseded(String),
 }
 
