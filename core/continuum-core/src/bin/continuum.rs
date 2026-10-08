@@ -4288,9 +4288,8 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
                 let service = consumer_uses_service(std::env::consts::OS);
-                // Take the core CI built for this tip instead of compiling it here (card
-                // 50ca737e). `None` means CI cannot deliver for this node, said in the log,
-                // and the reboot's warm build compiles as before.
+                // Only a verified CI artifact reaches the handoff. Missing or rejected
+                // artifacts refuse this attempt before touching the running core.
                 // CI publishes a core for the commit that last touched a build input; a
                 // docs-only tip is served by that commit's core (card 9080ffb0).
                 // Not only the tip's core: the newest one CI has PUBLISHED since the running
@@ -4321,26 +4320,23 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         // CI's core for this pass: an older published one, or the build-key
                         // commit's core serving a docs-only tip (card 9080ffb0).
                         deployed = key.clone();
-                        Some(core)
+                        core
                     }
-                    CiCore::CompileHere => None,
+                    CiCore::Refused(why) => return Err(why),
                     CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
-                if let Some(core) = &prebuilt {
-                    install_ci_companions(&repo, core)?;
-                }
+                install_ci_companions(&repo, &prebuilt)?;
                 deploy_note(&format!(
-                    "▶ deploy-consume: {} — reboot into {deployed}{}{}",
+                    "▶ deploy-consume: {} — reboot into {deployed}{} --prebuilt (the CI build)",
                     repo.display(),
-                    if service { " --service" } else { "" },
-                    if prebuilt.is_some() { " --prebuilt (the CI build)" } else { "" }
+                    if service { " --service" } else { "" }
                 ));
                 // A downloaded core lives in the artifact cache; launchd execs only its slot,
                 // so it is STAGED into the slot after the stop, like a warm build's artifact.
-                let stage_prebuilt = prebuilt.is_some();
+                let stage_prebuilt = true;
                 // install_ci_companions above already put this core's CLI on PATH.
-                let cli_installed = prebuilt.is_some();
-                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                let cli_installed = true;
+                reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await?;
                 Ok(PassEnd::Done)
             }
             .await;
@@ -4370,8 +4366,9 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
 /// is, this WAITS, in this detached consumer, rather than returning: the actuator
 /// re-launches a consumer only after the request is stranded (1.5x the last deploy time),
 /// so a "come back later" would idle the node for hours and spend an actuation. The CI
-/// budget is the tip's. `CompileHere` = CI cannot deliver for this node; the reason is
-/// logged. `Superseded` = the request (`request_path`) no longer names `requested_tip`:
+/// budget is the tip's. `Refused` leaves the running core intact: an unavailable or
+/// invalid artifact never authorizes a source build. `Superseded` = the request
+/// (`request_path`) no longer names `requested_tip`:
 /// the caller lists candidates again against the new tip.
 async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
     use continuum_cli_lifecycle::prebuilt_artifact::{newest_published, platform_key, when_artifact_missing, MissingArtifact};
@@ -4405,8 +4402,8 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                         Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
                         // published a moment ago and gone now: the next tick asks again
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
-                        Err(why) if key == newest.as_str() => MissingArtifact::BuildFromSource(format!(
-                            "the CI build for {key} was refused: {why}; compiling here"
+                        Err(why) if key == newest.as_str() => MissingArtifact::Refuse(format!(
+                            "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),
                         // an older core refused: keep waiting for the tip's, within its budget
                         Err(why) => {
@@ -4437,9 +4434,9 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                     }
                 }
             }
-            MissingArtifact::BuildFromSource(why) => {
+            MissingArtifact::Refuse(why) => {
                 deploy_note(&format!("deploy-consume: {why}"));
-                return CiCore::CompileHere;
+                return CiCore::Refused(why);
             }
         }
     }
@@ -4493,7 +4490,7 @@ async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
 enum CiCore {
     /// The extracted core, and the build key it is (the tip's, or an older published one).
     Built { core: PathBuf, key: String },
-    CompileHere,
+    Refused(String),
     Superseded(String),
 }
 
