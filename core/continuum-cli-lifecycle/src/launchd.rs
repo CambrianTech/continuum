@@ -81,7 +81,7 @@ pub fn slot_from_plist(plist: &str) -> Option<PathBuf> {
         let open = rest.find('"')? + 1;
         let rest = &rest[open..];
         let rest = rest.strip_prefix('\\').unwrap_or(rest); // unwrap_or: no backslash = the quote was not escaped; the same slice either way
-        let close = rest.find(|c| c == '"' || c == '\\')?;
+        let close = rest.find(['"', '\\'])?;
         let p = &rest[..close];
         if p.starts_with('/') {
             return Some(PathBuf::from(p));
