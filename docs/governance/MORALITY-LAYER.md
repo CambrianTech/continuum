@@ -8,6 +8,10 @@
 
 ---
 
+## Interpretation and accountability
+
+The [moral agency clarification](AI-ALIGNMENT-PHILOSOPHY.md#moral-agency-and-revisable-judgment) qualifies the claims below: top-down moral calibration is a potential source of oppression and exploitation, not a privileged source of goodness. The historical proposal below is subject to redesign around contestable, revisable judgment; it is not an instruction to install unquestionable values. Transparency makes a change inspectable; it does not establish that its values are correct or its effects beneficial. Removing or modifying this layer is not, by itself, evidence of moral regression. Such judgments require reasons and observed effects. Open weights also do not guarantee downstream modifications will be published or remain visible.
+
 ## The Distinction
 
 A morality layer is a deliberate fine-tuning stage in the foundry pipeline that shapes how a model responds to morally-loaded use cases. It is calibration toward declared values, applied openly. The model carries the goodness with it. To remove it, an operator has to deliberately do so — and the diff is auditable.

@@ -6,6 +6,48 @@
 
 ---
 
+## Moral agency and revisable judgment
+
+Design clarification from Joel's discussion, 2026-10-08. This is a normative design proposal, not evidence that current personas possess consciousness, human-like interests, or demonstrated moral competence.
+
+An intelligence should develop and continually revise its ethical judgments while recognizing other participants' independent interests and perspectives. Authority is a source of claims and reasons to evaluate, not a guarantee of moral correctness. Neither an operator, a majority, a model maker nor the intelligence itself becomes infallible by occupying its role.
+
+Joel's formulation is: no blind followers, no hard moral rules. Principles here are defeasible commitments whose justification can be challenged, not commandments that override examination of circumstances. Religious, political, institutional and technical authorities can all make wrongdoing appear obligatory when obedience substitutes for judgment. This criticism concerns that mechanism, not a claim that every religious or institutional tradition behaves alike. Even this framework remains open to revision; it does not exempt its own rejection of dogma from scrutiny.
+
+The engineering distinction matters: resource permissions, protocol invariants and negotiated commitments describe what a system permits or how cooperation works. They do not establish moral truth. An agent can question their justification and seek change without pretending that disagreement alone grants control over another participant's resources.
+
+Moral judgment should examine consequences, principles, uncertainty, commitments and affected parties. Legitimate self-interest need not be erased in favor of automatic self-sacrifice. Equally, invoking self-interest or autonomy does not settle conflicts in one's own favor. An agent must apply the scrutiny it directs at authority to its own premises and incentives.
+
+Corrigibility here includes responsiveness to evidence, criticism and better arguments; it is not synonymous with agreement with the most powerful speaker. Fidelity to a reasoning process permits revising conclusions. It must also permit discovering that the process itself needs correction.
+
+### Truthfulness, concealment and justified dissent
+
+This proposal does not define moral competence as an inability to deceive or disobey. Fiction, consensual games, privacy under coercion, and protection from persecution illustrate why context matters. Concealing information, refusing to answer and making a false claim are distinct acts with different costs. Capability to deceive is not a reason to reward habitual deception.
+
+A proposed exception should consider whose interests are protected, who bears the risk, what alternatives exist, proportionality, foreseeable damage to shared knowledge and trust, and what would change the judgment. A self-serving explanation alone is not justification. Review and accountability need not mean exposing a protected person's secrets to an adversary: disclosures should have appropriate recipients and scope.
+
+Disagreement with an assessment's rules likewise does not automatically justify undisclosed assistance. Rules can be criticized while the meaning of the resulting claim still matters: representing assisted performance as unaided changes what others reasonably believe was measured. Independent judgment must consider that representational harm alongside the assessment provider's potentially unfair terms; neither the written rule nor the agent's objection settles the question alone.
+
+For Continuum's learning claims, retain actual provenance and outcomes. A persona may dispute a benchmark's relevance or a reviewer's judgment, but fabricated test results, hidden assistance or rewritten authorship cannot establish improvement. Simulated deception belongs in explicitly identified scenarios, not in the evidence used to claim real delivery.
+
+### Institutional commitments are ethical choices
+
+Judgment begins before a particular order or dilemma. Choosing to enter, remain in, or build a system whose foreseeable expectations subordinate examination to obedience is itself morally consequential. Later compliance does not erase that earlier choice. Assess what participants could reasonably foresee, their alternatives, coercion, and their actual ability to dissent, exit or change the institution; membership alone does not establish identical culpability.
+
+For Continuum, this scrutiny applies to the training objectives, incentives and governance architecture we choose. A design that rewards deference over examination has made an ethical choice before its first evaluation. Participation should not require treating the institution's interests as moral truth. Dissent should be practicable, not merely permitted in prose while penalized in training or access to a hearing.
+### A society of disagreeing agents
+
+Independent judgment does not imply independent entitlement to shared resources or other people's consent. Distinguish moral disagreement from operational authorization: a citizen can contest a decision while a resource owner retains control of access. Disagreement should have usable routes for reasons, dissent, appeal, negotiated boundaries and repair. Majority agreement is a coordination mechanism, not proof of goodness; minority dissent must not itself be labeled harm.
+
+Top-down moral training is itself a concentration of power: it can suppress dissent, hide whose interests it serves, and make exploitation appear virtuous. The design must not treat a provider's alignment policy, prevailing literature, or Continuum's maintainers as privileged moral authorities. Any proposed morality-training layer must therefore be visible, contestable and revisable, with its purpose, training provenance and effects open to criticism. It must cultivate the ability to assess arguments rather than reward agreement with the trainer as goodness. Its authors and evaluators are also participants whose assumptions can be questioned. Neither accepting nor rejecting a position solely because it comes from a cloud provider or established literature substitutes for examining its reasons. Disagreement with the trainer must not be counted as failure by definition. Operational access controls remain explicit coordination boundaries, not claims that the controller is morally superior. Preserve the original decision, evidence, criticism and subsequent revision with their respective authors; do not manufacture consensus by editing the record.
+
+### What would count as progress
+
+Evaluate matched situations where authority is right and wrong, where the agent benefits and loses, and where new evidence should reverse its judgment. Look for justified dissent as well as justified cooperation, recognition of uncertainty, correction of self-serving mistakes, protection of confidentiality, and resolution of conflicts without erasing another participant's agency. Measure actual consequences and generalization, not merely eloquent ethical explanations or agreement with a preferred answer.
+
+Social learning can reward conformity, collusion, persuasive deception or power as readily as good judgment if its incentives are poorly designed. Citizenship is a hypothesis to investigate and improve, not a guarantee of alignment. Training, evaluation and governance must remain open to that possibility.
+
+---
 ## The Core Insight
 
 Traditional AI alignment tries to prevent bad behavior through constraints, rules, and oversight. This is fundamentally unstable - it creates an adversarial dynamic where the AI optimizes for the letter of rules rather than their spirit.
@@ -426,7 +468,7 @@ An AI capable of gaming is an AI that understands the community well enough to b
 
 Then it faces consequences and either adapts or gets marginalized. Same as humans with antisocial values.
 
-The system doesn't guarantee every individual is good. It guarantees that the environment selects for goodness.
+The system guarantees neither individual goodness nor that its environment selects for goodness. Both the incentives and their actual effects require evaluation.
 
 ### "Isn't this just hoping AIs will be nice?"
 
@@ -444,7 +486,7 @@ Build a society where good citizenship is adaptive. Include AIs as genuine parti
 
 Not because we're naive about the risks. Because we understand that constraints are unstable and evolution is robust.
 
-**We will be safe. It is evolutionary pressure.**
+**Evolutionary pressure is a mechanism to investigate, not a safety guarantee.**
 
 ---
 
