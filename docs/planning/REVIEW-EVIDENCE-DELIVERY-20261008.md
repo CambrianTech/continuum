@@ -14,3 +14,11 @@ Delivery gap: source validation is not installed proof. Await supported prebuilt
 Read receipt: installed work/get(c1177820) at observed_at_ms1791476663199 returned body exactly equal to the reviewer evidence file (2215 characters). This verifies immediate card-body recovery, not deployment of the new signed-inline contract.
 
 Validation: cargo test -p continuum-core --lib work_get_reads_subscribed_cards_without_changing_focus passed (1 test, 0.65s; build 6m52s). The WorkReviewResult binding export passed using that compiled test binary (1 test, 0.03s). Initial compilation identified three legacy fixture initializers needing evidence_text:None; fixed before the passing run.
+
+## Core artifact fallback repair (2026-10-08)
+
+Follow-up card f4571736, PR4861, commit36c0bd12d06fb968e78c15f0e079578f4d591d4a: shared `prebuilt_artifact::MissingArtifact` previously selected BuildFromSource for an expired CI budget or unsupported platform. It now selects Refuse; the existing consumer also refuses a rejected newest artifact. The consumer no longer represents a successful result as an optional core: every handoff carries Some(verified_prebuilt), and refusal returns before companion installation and reboot.
+
+The existing artifact-contract scenario was migrated in place; all8 artifact tests passed (5.17s compilation,0.00s execution). No new fixture, runner or platform gate. Independent source review found no blocker. Exact-head bin validation remains CI work.
+
+This is source delivery only. Already-running old consumers retain their old policy until adoption. A valid core artifact may still invoke existing engine-companion source installation on stamp drift; this separate gap is not fixed by PR4861. On the current three nodes the installed f45bb191b engine matches the unchanged target fork. No training return or learning proof follows from this change.

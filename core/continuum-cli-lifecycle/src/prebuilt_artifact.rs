@@ -66,9 +66,9 @@ pub fn build_key_log_args(tip: &str) -> Vec<String> {
     args
 }
 
-/// How long a consumer waits for CI to publish a tip before compiling it itself. The
+/// How long a consumer waits for CI to publish a tip before reporting a refusal. The
 /// workflow's timeout is 150 min; the measured cold builds were 58 min (arm64) and 73 min
-/// (x86_64), 2026-10-03. Past this, waiting longer only keeps the node on an old build.
+/// (x86_64), 2026-10-03. Expiry never authorizes compilation on a user node.
 pub const CI_PUBLISH_BUDGET_SECS: u64 = 180 * 60;
 
 /// This node's platform key in CI's matrix, or `None` where no leg publishes yet.
@@ -294,23 +294,23 @@ pub fn newest_published<'a>(candidates: &'a [String], published: &[bool]) -> Opt
 pub enum MissingArtifact {
     /// CI is still inside its budget: try again next tick, without spending an attempt.
     Wait(String),
-    /// Compile on the node, saying why.
-    BuildFromSource(String),
+    /// End this attempt without changing the running installation.
+    Refuse(String),
 }
 
 /// `platform` is [`platform_key`]'s answer; `tip_age_secs` is how long ago the tip landed.
 pub fn when_artifact_missing(platform: Option<&str>, tip_age_secs: u64) -> MissingArtifact {
     match platform {
-        None => MissingArtifact::BuildFromSource(
-            "CI publishes no build for this platform yet; compiling here".into(),
+        None => MissingArtifact::Refuse(
+            "CI publishes no build for this platform yet; publish a compatible prebuilt artifact before retrying; running core preserved".into(),
         ),
         Some(p) if tip_age_secs < CI_PUBLISH_BUDGET_SECS => MissingArtifact::Wait(format!(
             "CI has not published {p} for this tip yet ({} of {} min); waiting for it",
             tip_age_secs / 60,
             CI_PUBLISH_BUDGET_SECS / 60
         )),
-        Some(p) => MissingArtifact::BuildFromSource(format!(
-            "CI published no {p} build within {} min of the tip; compiling here",
+        Some(p) => MissingArtifact::Refuse(format!(
+            "CI published no {p} build within {} min of the tip; repair or publish the prebuilt artifact before retrying; running core preserved",
             CI_PUBLISH_BUDGET_SECS / 60
         )),
     }
@@ -476,8 +476,8 @@ mod tests {
         }
     }
 
-    // what this catches: a consumer compiling for hours while CI's artifact is minutes away,
-    // or waiting forever for a platform CI never builds.
+    // what this catches (f4571736): user nodes must never fall back to compiling when
+    // CI is late or does not support their platform. Explicit developer builds are separate.
     #[test]
     fn a_missing_artifact_waits_only_while_ci_can_still_deliver() {
         assert!(matches!(
@@ -486,11 +486,11 @@ mod tests {
         ));
         assert!(matches!(
             when_artifact_missing(Some("macos-x86_64"), CI_PUBLISH_BUDGET_SECS),
-            MissingArtifact::BuildFromSource(_)
+            MissingArtifact::Refuse(_)
         ));
         assert!(matches!(
             when_artifact_missing(None, 0),
-            MissingArtifact::BuildFromSource(_)
+            MissingArtifact::Refuse(_)
         ));
         assert_eq!(platform_key("macos", "x86_64"), Some("macos-x86_64"));
         assert_eq!(platform_key("windows", "x86_64"), Some("windows-x86_64"));
